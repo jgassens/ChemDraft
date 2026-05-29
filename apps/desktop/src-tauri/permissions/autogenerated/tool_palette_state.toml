@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tool-palette-state"
+description = "Enables the tool_palette_state command without any pre-configured scope."
+commands.allow = ["tool_palette_state"]
+
+[[permission]]
+identifier = "deny-tool-palette-state"
+description = "Denies the tool_palette_state command without any pre-configured scope."
+commands.deny = ["tool_palette_state"]

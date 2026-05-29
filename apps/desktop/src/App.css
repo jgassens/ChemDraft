@@ -1,4 +1,14 @@
 :root {
+  --chrome: #f7f8f7;
+  --chrome-2: #ecefed;
+  --line: #bac2c8;
+  --line-soft: #d2d8dc;
+  --canvas: #dfe4e8;
+  --canvas-grid: rgb(101 111 120 / 14%);
+  --ink: #20242a;
+  --muted: #687179;
+  --accent: #1d7f68;
+  --accent-soft: #d8efe8;
   color: #20242a;
   background: #dfe4e8;
   font-family:
@@ -25,6 +35,11 @@ body {
   overflow: hidden;
 }
 
+body.palette-window-body {
+  min-width: 0;
+  background: transparent;
+}
+
 button {
   font: inherit;
 }
@@ -39,16 +54,6 @@ button {
 }
 
 .app-shell {
-  --chrome: #f7f8f7;
-  --chrome-2: #ecefed;
-  --line: #bac2c8;
-  --line-soft: #d2d8dc;
-  --canvas: #dfe4e8;
-  --canvas-grid: rgb(101 111 120 / 14%);
-  --ink: #20242a;
-  --muted: #687179;
-  --accent: #1d7f68;
-  --accent-soft: #d8efe8;
   display: grid;
   grid-template-rows: 30px 42px minmax(0, 1fr) 26px;
   width: 100%;
@@ -56,6 +61,10 @@ button {
   min-height: 560px;
   background: var(--canvas);
   color: var(--ink);
+}
+
+.app-shell.native-shell {
+  grid-template-rows: 42px minmax(0, 1fr) 26px;
 }
 
 .menu-bar,
@@ -181,10 +190,6 @@ button {
 }
 
 .tool-palette {
-  position: absolute;
-  z-index: 4;
-  top: 16px;
-  left: 14px;
   display: grid;
   gap: 7px;
   width: 46px;
@@ -192,7 +197,66 @@ button {
   border: 1px solid #aeb8be;
   border-radius: 5px;
   background: rgb(249 250 249 / 96%);
+}
+
+.tool-palette.docked {
+  position: absolute;
+  z-index: 4;
+  top: 16px;
+  left: 14px;
   box-shadow: 0 10px 26px rgb(34 40 44 / 18%);
+}
+
+.tool-palette.floating {
+  position: static;
+  width: 88px;
+  padding: 6px;
+  border: 0;
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.tool-palette.floating .tool-group {
+  grid-template-columns: repeat(2, 30px);
+  justify-content: center;
+  column-gap: 8px;
+  row-gap: 5px;
+}
+
+.palette-window-shell {
+  display: grid;
+  gap: 0;
+  place-items: start center;
+  width: 92px;
+  min-height: 100vh;
+  padding: 0 4px 8px;
+  border: 1px solid #aeb8be;
+  border-radius: 16px;
+  background: #edf0ef;
+  color: var(--ink);
+  box-shadow: 0 14px 34px rgb(34 40 44 / 20%);
+  overflow: hidden;
+}
+
+.palette-title {
+  width: calc(100% + 8px);
+  height: 28px;
+  margin: 0 -4px;
+  display: grid;
+  place-items: center;
+  border-bottom: 1px solid #c8ced2;
+  background: linear-gradient(#f6f8f7, #dfe4e3);
+  color: #848d94;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+  cursor: grab;
+}
+
+.palette-title:active {
+  cursor: grabbing;
 }
 
 .tool-group {
@@ -477,6 +541,10 @@ button {
     grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
+  .app-shell.native-shell {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
   .menu-bar,
   .command-bar,
   .statusbar {
@@ -511,7 +579,7 @@ button {
     margin-left: 0;
   }
 
-  .tool-palette {
+  .tool-palette.docked {
     top: 10px;
     left: 10px;
   }

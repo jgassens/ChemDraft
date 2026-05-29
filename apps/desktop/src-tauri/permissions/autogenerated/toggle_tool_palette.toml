@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toggle-tool-palette"
+description = "Enables the toggle_tool_palette command without any pre-configured scope."
+commands.allow = ["toggle_tool_palette"]
+
+[[permission]]
+identifier = "deny-toggle-tool-palette"
+description = "Denies the toggle_tool_palette command without any pre-configured scope."
+commands.deny = ["toggle_tool_palette"]

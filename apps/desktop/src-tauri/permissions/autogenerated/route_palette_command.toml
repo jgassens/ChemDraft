@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-route-palette-command"
+description = "Enables the route_palette_command command without any pre-configured scope."
+commands.allow = ["route_palette_command"]
+
+[[permission]]
+identifier = "deny-route-palette-command"
+description = "Denies the route_palette_command command without any pre-configured scope."
+commands.deny = ["route_palette_command"]

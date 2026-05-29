@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-and-tool-palette",
+  "description": "Allow the ChemDraft document window and native tool palette to use core window/event APIs and the narrow palette command bridge.",
+  "windows": ["main", "tool-palette"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "allow-open-tool-palette",
+    "allow-close-tool-palette",
+    "allow-focus-tool-palette",
+    "allow-toggle-tool-palette",
+    "allow-tool-palette-state",
+    "allow-route-palette-command"
+  ]
+}
