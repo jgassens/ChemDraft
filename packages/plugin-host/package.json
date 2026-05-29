@@ -1,0 +1,16 @@
+{
+  "name": "@chemdraft/plugin-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/plugin-api": "workspace:*"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

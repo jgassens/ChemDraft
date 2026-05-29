@@ -1,0 +1,27 @@
+{
+  "name": "@chemdraft/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/chemistry-adapter": "workspace:*",
+    "@chemdraft/editor-adapter": "workspace:*",
+    "@chemdraft/export-engine": "workspace:*",
+    "@chemdraft/plugin-host": "workspace:*",
+    "@chemdraft/rdkit-adapter": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "vite": "^7.0.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@chemdraft/plugin-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chemdraft/chem-core": "workspace:*",
+    "zod": "^3.25.76"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

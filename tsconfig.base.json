@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@chemdraft/chem-core": ["packages/chem-core/src/index.ts"],
+      "@chemdraft/editor-shell": ["packages/editor-shell/src/index.ts"],
+      "@chemdraft/editor-adapter": ["packages/editor-adapter/src/index.ts"],
+      "@chemdraft/ketcher-adapter": ["packages/ketcher-adapter/src/index.ts"],
+      "@chemdraft/chemistry-adapter": ["packages/chemistry-adapter/src/index.ts"],
+      "@chemdraft/rdkit-adapter": ["packages/rdkit-adapter/src/index.ts"],
+      "@chemdraft/cdx-compat": ["packages/cdx-compat/src/index.ts"],
+      "@chemdraft/clipboard-adapter": ["packages/clipboard-adapter/src/index.ts"],
+      "@chemdraft/export-engine": ["packages/export-engine/src/index.ts"],
+      "@chemdraft/layout-engine": ["packages/layout-engine/src/index.ts"],
+      "@chemdraft/shortcut-engine": ["packages/shortcut-engine/src/index.ts"],
+      "@chemdraft/mechanism-tools": ["packages/mechanism-tools/src/index.ts"],
+      "@chemdraft/template-library": ["packages/template-library/src/index.ts"],
+      "@chemdraft/plugin-api": ["packages/plugin-api/src/index.ts"],
+      "@chemdraft/plugin-host": ["packages/plugin-host/src/index.ts"],
+      "@chemdraft/ui-kit": ["packages/ui-kit/src/index.ts"],
+      "@chemdraft/fixtures": ["packages/fixtures/src/index.ts"],
+      "@chemdraft/test-utils": ["packages/test-utils/src/index.ts"]
+    }
+  }
+}
