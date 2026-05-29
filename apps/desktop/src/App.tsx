@@ -18,14 +18,17 @@ import { Icon, type IconName } from "./icons";
 
 type Drawer = "inspector" | "plugins" | null;
 
-interface CommandSpec extends CommandDefinition {
+export interface CommandSpec extends CommandDefinition {
   icon: IconName;
   shortcut?: string;
 }
 
-const menuItems = ["File", "Edit", "Structure", "Object", "View", "Tools", "Analyze", "Window", "Help"];
+export const menuItems = ["File", "Edit", "Structure", "Object", "View", "Tools", "Analyze", "Window", "Help"];
 
-function createQuickActions(document: ChemDraftDocument, selectedMolecule: MoleculeObject | undefined): CommandSpec[] {
+export function createQuickActions(
+  document: ChemDraftDocument,
+  selectedMolecule: MoleculeObject | undefined
+): CommandSpec[] {
   const hasObjects = document.pages.some((page) => page.objects.length > 0);
 
   return [
@@ -50,7 +53,7 @@ function createQuickActions(document: ChemDraftDocument, selectedMolecule: Molec
   ];
 }
 
-const paletteGroups: CommandSpec[][] = [
+export const paletteGroups: CommandSpec[][] = [
   [
     { id: "tool.select", title: "Select", icon: "select", shortcut: "V", source: "core" },
     { id: "tool.adapterFallback", title: "Insert Adapter Fallback Molecule", icon: "atom", source: "core" },
@@ -75,9 +78,15 @@ const paletteGroups: CommandSpec[][] = [
   ]
 ];
 
-const drawerActions: CommandSpec[] = [
+export const drawerActions: CommandSpec[] = [
   { id: "view.toggleInspector", title: "Toggle Inspector", icon: "inspector", source: "core" },
   { id: "view.togglePlugins", title: "Toggle Plugins", icon: "plugin", source: "core" }
+];
+
+export const styleActions: CommandSpec[] = [
+  { id: "style.bondStroke", title: "Bond Stroke 1.2 px", icon: "style", source: "core", enabled: false },
+  { id: "style.textSize", title: "Text Size 10 pt", icon: "text", source: "core", enabled: false },
+  { id: "style.preset.acs", title: "ACS Style Preset", icon: "style", source: "core", enabled: false }
 ];
 
 export function App() {
@@ -192,6 +201,10 @@ export function App() {
       });
     });
 
+    styleActions.forEach((action) => {
+      register(action);
+    });
+
     return commandRegistry;
   }, [chemistryAdapter, document, quickActions]);
 
@@ -233,11 +246,6 @@ export function App() {
         onChange={handleOpenFile}
       />
       <header className="menu-bar">
-        <div className="traffic-lights" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
         <div className="brand">ChemDraft</div>
         <nav className="menu" aria-label="Application menu">
           {menuItems.map((item) => (
@@ -255,17 +263,7 @@ export function App() {
           </button>
         </div>
         <Toolbar commands={quickActions} registry={registry} onInvoke={invoke} />
-        <div className="style-strip" aria-label="Style controls">
-          <button type="button" disabled>
-            1.2 px
-          </button>
-          <button type="button" disabled>
-            10 pt
-          </button>
-          <button type="button" disabled>
-            ACS
-          </button>
-        </div>
+        <StyleStrip commands={styleActions} registry={registry} onInvoke={invoke} />
       </section>
 
       <section className="workspace">
@@ -358,6 +356,37 @@ function Toolbar({
   );
 }
 
+function StyleStrip({
+  commands,
+  registry,
+  onInvoke
+}: {
+  commands: CommandSpec[];
+  registry: CommandRegistry;
+  onInvoke: (commandId: string) => void;
+}) {
+  return (
+    <div className="style-strip" aria-label="Style controls">
+      {commands.map((command) => {
+        const definition = registry.get(command.id);
+
+        return (
+          <button
+            type="button"
+            key={command.id}
+            title={`${command.title}: unavailable until style presets are connected`}
+            aria-label={`${command.title}: unavailable until style presets are connected`}
+            disabled={definition?.enabled === false}
+            onClick={() => onInvoke(command.id)}
+          >
+            {styleControlLabel(command.id)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ToolPalette({
   groups,
   activeTool,
@@ -423,6 +452,18 @@ function IconButton({
       {showShortcut && command.shortcut ? <span className="shortcut">{command.shortcut}</span> : null}
     </button>
   );
+}
+
+function styleControlLabel(commandId: string): string {
+  if (commandId === "style.bondStroke") {
+    return "1.2 px";
+  }
+
+  if (commandId === "style.textSize") {
+    return "10 pt";
+  }
+
+  return "ACS";
 }
 
 function DocumentObjectView({ object, selected }: { object: DocumentObject; selected: boolean }) {

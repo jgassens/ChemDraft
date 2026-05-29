@@ -6,7 +6,7 @@ This repository intentionally does not include real chemistry drawing, Ketcher, 
 
 ## Current Status
 
-- `apps/desktop` contains a Vite, React, and TypeScript app shell.
+- `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell.
 - `packages/chem-core` owns the first native document model, schemas, patches, serialization, and history helpers.
 - `packages/plugin-api` defines manifest schemas, permission names, command contributions, plugin context types, and recognition-result types.
 - `packages/plugin-host` contains command registration, permission checks, plugin storage scoping, and proposed-patch handling.
@@ -21,9 +21,12 @@ pnpm lint
 pnpm test
 pnpm build
 pnpm dev
+pnpm dev:web
 ```
 
-`pnpm dev` starts the Vite desktop-shell preview. Tauri is intentionally not scaffolded yet; add it once the frontend and package boundaries are stable.
+`pnpm dev` launches the ChemDraft Tauri desktop app. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface.
+
+The `./run-app` helper follows the same desktop-first path. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 
 ## Architecture Rules
 

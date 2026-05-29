@@ -1,0 +1,16 @@
+[package]
+name = "chemdraft"
+version = "0.0.0"
+description = "ChemDraft desktop shell"
+authors = ["ChemDraft contributors"]
+edition = "2021"
+
+[lib]
+name = "chemdraft_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

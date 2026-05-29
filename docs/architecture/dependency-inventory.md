@@ -13,3 +13,6 @@ This file records dependencies added during the repository foundation and early 
 | `@types/react` | TypeScript types for React. | MIT | Desktop app development dependency | No runtime distribution impact. |
 | `@types/react-dom` | TypeScript types for React DOM. | MIT | Desktop app development dependency | No runtime distribution impact. |
 | `zod` | Runtime schema validation for the native ChemDraft document model and plugin manifests/result envelopes. | MIT | Core runtime dependency | Included with code that validates native documents and plugin API inputs. |
+| `@tauri-apps/cli` | Tauri v2 CLI for launching and building the desktop shell. | Apache-2.0 OR MIT | Desktop app development dependency | Required for desktop dev/build commands; no direct frontend runtime payload. |
+| `tauri` | Rust runtime for the native desktop shell. | Apache-2.0 OR MIT | Desktop app runtime dependency | Included in the native desktop app binary once Rust/Cargo is installed and the app is built. |
+| `tauri-build` | Rust build helper for Tauri configuration/code generation. | Apache-2.0 OR MIT | Desktop app build dependency | Build-time only for the native desktop app. |
