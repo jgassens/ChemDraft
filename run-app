@@ -17,6 +17,12 @@ fi
 cd "$APP_DIR"
 
 if ! command -v cargo >/dev/null 2>&1; then
+  if [ -x "$HOME/.cargo/bin/cargo" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
   echo "ChemDraft now launches through Tauri, but Rust/Cargo is not installed or not on PATH."
   echo "Install Rust from https://rustup.rs/, then run ./run-app again."
   exit 1
