@@ -1,13 +1,17 @@
+use std::{collections::HashMap, fs, path::PathBuf};
+
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
+const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
+const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
@@ -44,12 +48,20 @@ struct ToolsetWindowSize {
     min_height: Option<f64>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsetWindowPosition {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolsetWindowState {
     toolset_id: String,
     open: bool,
     focused: bool,
+    position: Option<ToolsetWindowPosition>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -58,22 +70,104 @@ struct ToolsetCommandPayload {
     command_id: String,
 }
 
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedToolsetState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<f64>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsetLayoutState {
+    version: u32,
+    toolsets: HashMap<String, PersistedToolsetState>,
+}
+
+impl Default for ToolsetLayoutState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            toolsets: HashMap::new(),
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .menu(create_app_menu)
         .on_menu_event(|app, event| {
             let command_id = event.id().as_ref();
+            if let Some(toolset_id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
+                if let Err(error) = toggle_toolset_window(app.clone(), toolset_id.to_string()) {
+                    eprintln!("Could not toggle ChemDraft toolbar {toolset_id}: {error}");
+                }
+                return;
+            }
+            if command_id == "view.toggleRulers" || command_id == "view.toggleCrosshairs" {
+                if let Err(error) = toggle_check_menu_item(app, command_id) {
+                    eprintln!("Could not update ChemDraft menu check state {command_id}: {error}");
+                }
+            }
             if is_routed_menu_command(command_id) {
                 if let Err(error) = emit_command_to_main(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
                 }
             }
         })
+        .on_window_event(|window, event| {
+            let Some(toolset_id) = toolset_id_for_window_label(window.label()) else {
+                return;
+            };
+            let app = window.app_handle();
+
+            match event {
+                WindowEvent::Moved(position) => {
+                    let logical_position = logical_toolset_position_from_physical(
+                        position.x as f64,
+                        position.y as f64,
+                        window.scale_factor().unwrap_or(1.0),
+                    );
+                    if let Err(error) =
+                        persist_toolset_position(app, &toolset_id, logical_position.x, logical_position.y)
+                    {
+                        eprintln!("Could not persist ChemDraft toolset position {toolset_id}: {error}");
+                    }
+                }
+                WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                    if let Err(error) = persist_toolset_visibility(app, &toolset_id, false) {
+                        eprintln!("Could not persist ChemDraft toolset visibility {toolset_id}: {error}");
+                    }
+                    if let Err(error) = set_toolset_menu_checked(app, &toolset_id, false) {
+                        eprintln!("Could not update ChemDraft toolbar menu state {toolset_id}: {error}");
+                    }
+                    let state = ToolsetWindowState {
+                        toolset_id: toolset_id.clone(),
+                        open: false,
+                        focused: false,
+                        position: persisted_toolset_position(app, &toolset_id),
+                    };
+                    let _ = emit_toolset_window_state_to_main(app, &state);
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
+            let app = app.handle();
+            let layout_state = load_toolset_layout_state(app);
+
             for toolset in toolset_manifest().toolsets {
-                if toolset.default_visible && toolset.default_mode == "floating" {
-                    if let Err(error) = ensure_toolset_window(app.handle(), &toolset.id) {
+                let visible = toolset_visible(&toolset, &layout_state);
+                if let Err(error) = set_toolset_menu_checked(app, &toolset.id, visible) {
+                    eprintln!("Could not initialize ChemDraft toolbar menu state {}: {error}", toolset.id);
+                }
+                if visible && toolset.default_mode == "floating" {
+                    if let Err(error) = ensure_toolset_window(app, &toolset.id) {
                         eprintln!("Could not open ChemDraft toolset {}: {error}", toolset.id);
                     }
                 }
@@ -102,20 +196,34 @@ pub fn run() {
 #[tauri::command]
 fn open_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<ToolsetWindowState, String> {
     ensure_toolset_window(&app, &toolset_id)?;
-    toolset_state(&app, &toolset_id)
+    persist_toolset_visibility(&app, &toolset_id, true)?;
+    set_toolset_menu_checked(&app, &toolset_id, true)?;
+
+    let state = toolset_state(&app, &toolset_id)?;
+    let _ = emit_toolset_window_state_to_main(&app, &state);
+    Ok(state)
 }
 
 #[tauri::command]
 fn close_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<ToolsetWindowState, String> {
     if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
+        if let Some(position) = current_toolset_window_position(&window) {
+            persist_toolset_position(&app, &toolset_id, position.x, position.y)?;
+        }
         window.close().map_err(|error| error.to_string())?;
     }
 
-    Ok(ToolsetWindowState {
-        toolset_id,
+    persist_toolset_visibility(&app, &toolset_id, false)?;
+    set_toolset_menu_checked(&app, &toolset_id, false)?;
+
+    let state = ToolsetWindowState {
+        toolset_id: toolset_id.clone(),
         open: false,
         focused: false,
-    })
+        position: persisted_toolset_position(&app, &toolset_id),
+    };
+    let _ = emit_toolset_window_state_to_main(&app, &state);
+    Ok(state)
 }
 
 #[tauri::command]
@@ -198,6 +306,19 @@ fn emit_command_to_main<R: Runtime>(app: &tauri::AppHandle<R>, command_id: &str)
         },
     )
     .map_err(|error| error.to_string())
+}
+
+fn emit_toolset_window_state_to_main<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &ToolsetWindowState,
+) -> Result<(), String> {
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(());
+    };
+
+    main
+        .emit(TOOLSET_WINDOW_STATE_EVENT, state.clone())
+        .map_err(|error| error.to_string())
 }
 
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -300,7 +421,7 @@ fn create_toolbars_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<
         let item = CheckMenuItem::with_id(
             app,
             toolset_toggle_command_id(&toolset.id),
-            toolset.title,
+            &toolset.title,
             true,
             toolset.default_visible,
             None::<&str>,
@@ -323,13 +444,13 @@ fn ensure_toolset_window(app: &tauri::AppHandle, toolset_id: &str) -> Result<(),
         return Ok(());
     }
 
-    let size = toolset.preferred_window_size.unwrap_or(ToolsetWindowSize {
+    let size = toolset.preferred_window_size.clone().unwrap_or(ToolsetWindowSize {
         width: 96.0,
         height: 420.0,
         min_width: Some(96.0),
         min_height: Some(240.0),
     });
-    let offset = toolset_index(toolset_id).unwrap_or(0) as f64 * 18.0;
+    let position = preferred_toolset_position(app, toolset_id);
 
     WebviewWindowBuilder::new(
         app,
@@ -344,7 +465,7 @@ fn ensure_toolset_window(app: &tauri::AppHandle, toolset_id: &str) -> Result<(),
     .shadow(false)
     .always_on_top(false)
     .skip_taskbar(false)
-    .position(88.0 + offset, 154.0 + offset)
+    .position(position.x, position.y)
     .build()
     .map(|_| ())
     .map_err(|error| error.to_string())
@@ -356,11 +477,13 @@ fn toolset_state(app: &tauri::AppHandle, toolset_id: &str) -> Result<ToolsetWind
             toolset_id: toolset_id.to_string(),
             open: true,
             focused: window.is_focused().unwrap_or(false),
+            position: current_toolset_window_position(&window),
         }),
         None => Ok(ToolsetWindowState {
             toolset_id: toolset_id.to_string(),
             open: false,
             focused: false,
+            position: persisted_toolset_position(app, toolset_id),
         }),
     }
 }
@@ -397,10 +520,273 @@ fn toolset_window_label(toolset_id: &str) -> String {
     format!("toolset-{suffix}")
 }
 
+fn toolset_id_for_window_label(label: &str) -> Option<String> {
+    toolset_manifest()
+        .toolsets
+        .into_iter()
+        .find(|toolset| toolset_window_label(&toolset.id) == label)
+        .map(|toolset| toolset.id)
+}
+
 fn toolset_toggle_command_id(toolset_id: &str) -> String {
     format!("{TOOLSET_TOGGLE_PREFIX}{toolset_id}")
 }
 
 fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
+}
+
+fn toolset_visible(toolset: &ToolsetDefinition, layout_state: &ToolsetLayoutState) -> bool {
+    layout_state
+        .toolsets
+        .get(&toolset.id)
+        .and_then(|state| state.visible)
+        .unwrap_or(toolset.default_visible)
+}
+
+fn preferred_toolset_position<R: Runtime>(app: &tauri::AppHandle<R>, toolset_id: &str) -> ToolsetWindowPosition {
+    persisted_toolset_position(app, toolset_id).unwrap_or_else(|| default_toolset_position(toolset_id))
+}
+
+fn default_toolset_position(toolset_id: &str) -> ToolsetWindowPosition {
+    let offset = toolset_index(toolset_id).unwrap_or(0) as f64 * 18.0;
+    ToolsetWindowPosition {
+        x: 88.0 + offset,
+        y: 154.0 + offset,
+    }
+}
+
+fn persisted_toolset_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+) -> Option<ToolsetWindowPosition> {
+    let layout_state = load_toolset_layout_state(app);
+    layout_state.toolsets.get(toolset_id).and_then(|state| {
+        Some(ToolsetWindowPosition {
+            x: state.x?,
+            y: state.y?,
+        })
+    })
+}
+
+fn current_toolset_window_position<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Option<ToolsetWindowPosition> {
+    let position = window.outer_position().ok()?;
+    Some(logical_toolset_position(
+        window,
+        position.x as f64,
+        position.y as f64,
+    ))
+}
+
+fn logical_toolset_position<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    physical_x: f64,
+    physical_y: f64,
+) -> ToolsetWindowPosition {
+    logical_toolset_position_from_physical(
+        physical_x,
+        physical_y,
+        window.scale_factor().unwrap_or(1.0),
+    )
+}
+
+fn logical_toolset_position_from_physical(
+    physical_x: f64,
+    physical_y: f64,
+    scale_factor: f64,
+) -> ToolsetWindowPosition {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+
+    ToolsetWindowPosition {
+        x: physical_x / scale_factor,
+        y: physical_y / scale_factor,
+    }
+}
+
+fn persist_toolset_visibility<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+    visible: bool,
+) -> Result<(), String> {
+    update_toolset_layout_state(app, |layout_state| {
+        layout_state
+            .toolsets
+            .entry(toolset_id.to_string())
+            .or_default()
+            .visible = Some(visible);
+    })
+}
+
+fn persist_toolset_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    update_toolset_layout_state(app, |layout_state| {
+        let state = layout_state.toolsets.entry(toolset_id.to_string()).or_default();
+        state.x = Some(x);
+        state.y = Some(y);
+    })
+}
+
+fn update_toolset_layout_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    update: impl FnOnce(&mut ToolsetLayoutState),
+) -> Result<(), String> {
+    let mut layout_state = load_toolset_layout_state(app);
+    update(&mut layout_state);
+    save_toolset_layout_state(app, &layout_state)
+}
+
+fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLayoutState {
+    let Ok(path) = toolset_layout_state_path(app) else {
+        return ToolsetLayoutState::default();
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return ToolsetLayoutState::default();
+    };
+
+    serde_json::from_str(&contents).unwrap_or_default()
+}
+
+fn save_toolset_layout_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    layout_state: &ToolsetLayoutState,
+) -> Result<(), String> {
+    let path = toolset_layout_state_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let contents = serde_json::to_string_pretty(layout_state).map_err(|error| error.to_string())?;
+    fs::write(path, contents).map_err(|error| error.to_string())
+}
+
+fn toolset_layout_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join(TOOLSET_LAYOUT_STATE_FILENAME))
+}
+
+fn set_toolset_menu_checked<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+    checked: bool,
+) -> Result<(), String> {
+    let command_id = toolset_toggle_command_id(toolset_id);
+    set_check_menu_item_checked(app, &command_id, checked)
+}
+
+fn toggle_check_menu_item<R: Runtime>(app: &tauri::AppHandle<R>, command_id: &str) -> Result<(), String> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(item) = menu.get(command_id) else {
+        return Ok(());
+    };
+    let Some(check_item) = item.as_check_menuitem() else {
+        return Ok(());
+    };
+
+    let checked = check_item.is_checked().map_err(|error| error.to_string())?;
+    check_item
+        .set_checked(!checked)
+        .map_err(|error| error.to_string())
+}
+
+fn set_check_menu_item_checked<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    command_id: &str,
+    checked: bool,
+) -> Result<(), String> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(item) = menu.get(command_id) else {
+        return Ok(());
+    };
+    let Some(check_item) = item.as_check_menuitem() else {
+        return Ok(());
+    };
+
+    check_item
+        .set_checked(checked)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn toolset(id: &str, default_visible: bool) -> ToolsetDefinition {
+        ToolsetDefinition {
+            id: id.to_string(),
+            title: "Fixture Toolbar".to_string(),
+            default_visible,
+            default_mode: "floating".to_string(),
+            preferred_window_size: None,
+        }
+    }
+
+    #[test]
+    fn persisted_visibility_overrides_manifest_defaults() {
+        let mut state = ToolsetLayoutState::default();
+        state.toolsets.insert(
+            "core.fixture".to_string(),
+            PersistedToolsetState {
+                visible: Some(false),
+                ..PersistedToolsetState::default()
+            },
+        );
+
+        expect_false(toolset_visible(&toolset("core.fixture", true), &state));
+        expect_true(toolset_visible(&toolset("core.other", true), &state));
+    }
+
+    #[test]
+    fn toolset_labels_round_trip_to_ids() {
+        expect_eq("toolset-core-main", &toolset_window_label("core.main"));
+        expect_eq(Some("core.main".to_string()), toolset_id_for_window_label("toolset-core-main"));
+        expect_eq(None, toolset_id_for_window_label("main"));
+    }
+
+    #[test]
+    fn default_positions_are_staggered_by_manifest_order() {
+        let main = default_toolset_position("core.main");
+        let structure = default_toolset_position("core.structure");
+
+        expect_eq(88.0, main.x);
+        expect_eq(154.0, main.y);
+        expect_true(structure.x > main.x);
+        expect_true(structure.y > main.y);
+    }
+
+    #[test]
+    fn retina_positions_are_persisted_as_logical_points() {
+        let position = logical_toolset_position_from_physical(520.0, 380.0, 2.0);
+
+        expect_eq(260.0, position.x);
+        expect_eq(190.0, position.y);
+    }
+
+    fn expect_true(value: bool) {
+        assert!(value);
+    }
+
+    fn expect_false(value: bool) {
+        assert!(!value);
+    }
+
+    fn expect_eq<T: PartialEq + std::fmt::Debug>(expected: T, actual: T) {
+        assert_eq!(expected, actual);
+    }
 }

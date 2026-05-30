@@ -1,10 +1,17 @@
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
+export const TOOLSET_WINDOW_STATE_EVENT = "chemdraft://toolset-window-state";
 export const DEFAULT_TOOLSET_ID = "core.main";
+
+export interface ToolsetWindowPosition {
+  x: number;
+  y: number;
+}
 
 export interface ToolsetWindowState {
   toolsetId: string;
   open: boolean;
   focused: boolean;
+  position?: ToolsetWindowPosition;
 }
 
 export type PaletteWindowState = ToolsetWindowState;
@@ -32,6 +39,15 @@ export function createPaletteCommandPayload(commandId: string): PaletteCommandPa
 
 export function createToolsetCommandPayload(commandId: string): ToolsetCommandPayload {
   return { commandId };
+}
+
+export function createToolsetWindowStatePayload(
+  toolsetId: string,
+  open: boolean,
+  focused = false,
+  position?: ToolsetWindowPosition
+): ToolsetWindowState {
+  return { toolsetId, open, focused, position };
 }
 
 export async function openToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
@@ -111,6 +127,19 @@ export async function listenForToolsetCommands(handler: (commandId: string) => v
   return listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, (event) => {
     if (typeof event.payload?.commandId === "string") {
       handler(event.payload.commandId);
+    }
+  });
+}
+
+export async function listenForToolsetWindowStates(handler: (state: ToolsetWindowState) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<ToolsetWindowState>(TOOLSET_WINDOW_STATE_EVENT, (event) => {
+    if (typeof event.payload?.toolsetId === "string" && typeof event.payload?.open === "boolean") {
+      handler(event.payload);
     }
   });
 }

@@ -36,8 +36,9 @@ import { ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
   isDesktopRuntime,
+  listToolsetWindowStates,
   listenForToolsetCommands,
-  openToolsetWindow,
+  listenForToolsetWindowStates,
   toggleToolsetWindow
 } from "./window-manager";
 import {
@@ -237,7 +238,7 @@ export function MainWindow({
       return;
     }
 
-    void Promise.all(desktopToolsetRegistry.listDefaultVisibleToolsets().map((toolset) => openToolsetWindow(toolset.id)))
+    void listToolsetWindowStates()
       .then((states) => {
         setVisibleToolsetIds(new Set(states.filter((state) => state.open).map((state) => state.toolsetId)));
       })
@@ -253,6 +254,7 @@ export function MainWindow({
     }
 
     let unlisten: (() => void) | undefined;
+    let unlistenState: (() => void) | undefined;
     void listenForToolsetCommands((commandId) => invokeCommandRef.current(commandId))
       .then((cleanup) => {
         unlisten = cleanup;
@@ -260,9 +262,19 @@ export function MainWindow({
       .catch(() => {
         setStatus("Toolset command bridge unavailable");
       });
+    void listenForToolsetWindowStates((state) => {
+      setVisibleToolsetIds((current) => updateVisibleToolsets(current, state.toolsetId, state.open));
+    })
+      .then((cleanup) => {
+        unlistenState = cleanup;
+      })
+      .catch(() => {
+        setStatus("Toolset state bridge unavailable");
+      });
 
     return () => {
       unlisten?.();
+      unlistenState?.();
     };
   }, [nativePalette]);
 

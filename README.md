@@ -6,7 +6,7 @@ This repository intentionally does not include real chemistry drawing, Ketcher, 
 
 ## Current Status
 
-- `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell with a native floating tool-palette window for desktop builds.
+- `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell with native floating toolset windows for desktop builds.
 - `packages/chem-core` owns the first native document model, schemas, patches, serialization, and history helpers.
 - `packages/plugin-api` defines manifest schemas, permission names, command contributions, plugin context types, and recognition-result types.
 - `packages/plugin-host` contains command registration, permission checks, plugin storage scoping, and proposed-patch handling.
@@ -24,7 +24,7 @@ pnpm dev
 pnpm dev:web
 ```
 
-`pnpm dev` launches the ChemDraft Tauri desktop app. In the desktop app, the drawing palette is a separate native window that routes command IDs back to the main document window. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface; the browser preview uses an in-window floating palette overlay, not a palette embedded in the document canvas.
+`pnpm dev` launches the ChemDraft Tauri desktop app. In the desktop app, drawing toolsets are separate native windows that route command IDs back to the main document window, with visibility and placement persisted by the desktop shell. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface; the browser preview uses in-window floating palette overlays, not palettes embedded in the document canvas.
 
 The `./run-app` helper follows the same desktop-first path. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 

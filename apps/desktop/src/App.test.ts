@@ -7,8 +7,10 @@ import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import {
   DEFAULT_TOOLSET_ID,
+  TOOLSET_WINDOW_STATE_EVENT,
   createPaletteCommandPayload,
-  createToolsetCommandPayload
+  createToolsetCommandPayload,
+  createToolsetWindowStatePayload
 } from "./window-manager";
 import {
   desktopToolsetRegistry,
@@ -214,6 +216,16 @@ describe("ChemDraft desktop shell", () => {
     expect(Object.keys(createPaletteCommandPayload("tool.select"))).toEqual(["commandId"]);
     expect(createToolsetCommandPayload("plugin.fixture.toolset.ping")).toEqual({
       commandId: "plugin.fixture.toolset.ping"
+    });
+  });
+
+  it("keeps native toolset window state events narrow and serializable", () => {
+    expect(TOOLSET_WINDOW_STATE_EVENT).toBe("chemdraft://toolset-window-state");
+    expect(createToolsetWindowStatePayload("core.structure", true, false, { x: 120, y: 180 })).toEqual({
+      toolsetId: "core.structure",
+      open: true,
+      focused: false,
+      position: { x: 120, y: 180 }
     });
   });
 
