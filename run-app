@@ -3,6 +3,71 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$ROOT_DIR/apps/desktop"
+DEV_HOST="127.0.0.1"
+DEV_PORT="5173"
+
+process_cwd() {
+  local pid="$1"
+
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+stop_process() {
+  local pid="$1"
+
+  kill "$pid" 2>/dev/null || return 0
+  for _ in {1..20}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+stop_existing_dev_apps() {
+  if ! command -v pgrep >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local pattern pid pids
+  for pattern in "$APP_DIR/src-tauri/target/debug/chemdraft" "$APP_DIR/src-tauri/target/release/chemdraft"; do
+    pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    for pid in $pids; do
+      if [ "$pid" != "$$" ]; then
+        echo "Stopping existing ChemDraft dev app process $pid."
+        stop_process "$pid"
+      fi
+    done
+  done
+}
+
+stop_existing_dev_server() {
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local cwd pid pids
+  pids="$(lsof -tiTCP:"$DEV_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in $pids; do
+    cwd="$(process_cwd "$pid")"
+    case "$cwd" in
+      "$ROOT_DIR"|"$ROOT_DIR"/*)
+        echo "Stopping existing ChemDraft dev server on $DEV_HOST:$DEV_PORT (process $pid)."
+        stop_process "$pid"
+        ;;
+      *)
+        echo "Port $DEV_PORT is already in use by process $pid."
+        if [ -n "$cwd" ]; then
+          echo "That process is running from: $cwd"
+        fi
+        echo "It does not look like this ChemDraft checkout, so ./run-app will not kill it."
+        exit 1
+        ;;
+    esac
+  done
+}
 
 cd "$ROOT_DIR"
 
@@ -28,4 +93,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-npm run dev
+stop_existing_dev_apps
+stop_existing_dev_server
+
+exec npm run dev
