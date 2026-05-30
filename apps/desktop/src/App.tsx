@@ -2,17 +2,28 @@ import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 
 export function App() {
-  if (isPaletteRoute()) {
-    return <PaletteWindow />;
+  const toolsetId = toolsetRouteId();
+  if (toolsetId) {
+    return <PaletteWindow toolsetId={toolsetId} />;
   }
 
   return <MainWindow />;
 }
 
-function isPaletteRoute(): boolean {
+function toolsetRouteId(): string | undefined {
   if (typeof window === "undefined") {
-    return false;
+    return undefined;
   }
 
-  return new URLSearchParams(window.location.search).get("window") === "tool-palette";
+  const params = new URLSearchParams(window.location.search);
+  const windowKind = params.get("window");
+  if (windowKind === "toolset") {
+    return params.get("toolsetId") ?? "core.main";
+  }
+
+  if (windowKind === "tool-palette") {
+    return "core.main";
+  }
+
+  return undefined;
 }

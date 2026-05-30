@@ -1,9 +1,9 @@
 import { useEffect, type PointerEvent } from "react";
-import { paletteGroups } from "./commands";
 import { ToolPalette } from "./ToolPalette";
+import { desktopToolsetRegistry, getToolsetCommandGroups } from "./toolsets";
 import { sendPaletteCommand, startPaletteWindowDrag } from "./window-manager";
 
-export function PaletteWindow() {
+export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string }) {
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
     document.body.classList.add("palette-window-body");
@@ -29,17 +29,21 @@ export function PaletteWindow() {
     void startPaletteWindowDrag();
   };
 
+  const toolset = desktopToolsetRegistry.get(toolsetId) ?? desktopToolsetRegistry.require("core.main");
+  const groups = getToolsetCommandGroups(toolset.id);
+
   return (
     <main
       className="palette-window-shell"
-      aria-label="ChemDraft floating tool palette"
+      aria-label={`ChemDraft floating ${toolset.title}`}
+      data-toolset-id={toolset.id}
       data-palette-drag-surface="true"
       onPointerDown={startDragFromPaletteSurface}
     >
       <div className="palette-title" data-tauri-drag-region>
-        Tools
+        {toolset.title.replace(/ Toolbar$/, "")}
       </div>
-      <ToolPalette groups={paletteGroups} activeTool="tool.select" mode="floating" onInvoke={invokeCommand} />
+      <ToolPalette groups={groups} activeTool="tool.select" mode="floating" title={toolset.title} onInvoke={invokeCommand} />
     </main>
   );
 }

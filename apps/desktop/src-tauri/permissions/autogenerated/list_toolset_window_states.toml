@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-toolset-window-states"
+description = "Enables the list_toolset_window_states command without any pre-configured scope."
+commands.allow = ["list_toolset_window_states"]
+
+[[permission]]
+identifier = "deny-list-toolset-window-states"
+description = "Denies the list_toolset_window_states command without any pre-configured scope."
+commands.deny = ["list_toolset_window_states"]

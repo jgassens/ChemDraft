@@ -8,15 +8,17 @@ export function ToolPalette({
   groups,
   activeTool,
   mode = "docked",
+  title = "Drawing tools",
   onInvoke
 }: {
   groups: CommandSpec[][];
   activeTool: string;
   mode?: ToolPaletteMode;
+  title?: string;
   onInvoke: (commandId: string) => void;
 }) {
   return (
-    <aside className={["tool-palette", mode].join(" ")} aria-label="Drawing tools">
+    <aside className={["tool-palette", mode].join(" ")} aria-label={title}>
       {groups.map((group) => (
         <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
           {group.map((tool) => (

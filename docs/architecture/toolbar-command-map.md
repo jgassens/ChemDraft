@@ -6,6 +6,8 @@ The source files in `Custom_Toolbar/2_Images` are treated as user-provided custo
 
 Current status: only `tool.select` is active. Other entries are disabled command definitions until the `editor-adapter`, `layout-engine`, `style` workflow, or selected-object workflow can perform the action honestly.
 
+ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a typed ChemDraft toolset manifest, currently read from `apps/desktop/src/toolsets/desktop-toolsets.json` and validated through `@chemdraft/toolset-registry`. Future user-editable XML or JSON toolbar files should be added through a compatibility/import layer, not by adopting proprietary toolbar XML as the native model.
+
 | Asset | ChemDraft command | Intended function | Status |
 | --- | --- | --- | --- |
 | `Custom_Select.png` | `tool.select` | Select and move document objects | Active |

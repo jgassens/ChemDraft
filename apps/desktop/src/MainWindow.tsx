@@ -9,12 +9,18 @@ import {
   type PointerEvent
 } from "react";
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
+import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
+import {
+  createViewportState,
+  viewportCssVars,
+  zoomViewportAtPoint,
+  type ViewportState
+} from "@chemdraft/viewport-engine";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   createQuickActions,
-  paletteGroups,
   viewActions,
   type CommandSpec
 } from "./commands";
@@ -27,11 +33,26 @@ import {
   openNativeDocument
 } from "./documentWorkflow";
 import { ToolPalette } from "./ToolPalette";
-import { isDesktopRuntime, listenForPaletteCommands, openToolPalette, toggleToolPalette } from "./window-manager";
+import {
+  DEFAULT_TOOLSET_ID,
+  isDesktopRuntime,
+  listenForToolsetCommands,
+  openToolsetWindow,
+  toggleToolsetWindow
+} from "./window-manager";
+import {
+  defaultVisibleToolsetIds,
+  desktopToolsetRegistry,
+  getToolsetCommandGroups,
+  getToolsetCommandSpecs,
+  getToolsetToggleActions,
+  isDisabledPlaceholderCommand
+} from "./toolsets";
 
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
 type PaletteDragState = {
+  toolsetId: string;
   pointerId: number;
   originX: number;
   originY: number;
@@ -53,17 +74,42 @@ export function MainWindow({
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
   const [document, setDocument] = useState(() => createPhase4Document());
   const [activeTool, setActiveTool] = useState("tool.select");
-  const [paletteMode, setPaletteMode] = useState<PaletteMode>(initialPaletteMode);
-  const [webPalettePosition, setWebPalettePosition] = useState<PalettePosition>({ x: 34, y: 116 });
+  const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
+    initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
+  );
+  const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
+    createDefaultToolsetPositions()
+  );
   const [rulersVisible, setRulersVisible] = useState(false);
   const [crosshairsVisible, setCrosshairsVisible] = useState(true);
-  const [zoom, setZoom] = useState(100);
+  const [viewport, setViewport] = useState(() => createViewportState());
   const [, setStatus] = useState("Blank native document");
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
 
   const selectedMolecule = getSelectedMolecule(document);
   const quickActions = useMemo(() => createQuickActions(document, selectedMolecule), [document, selectedMolecule]);
+  const visibleFloatingToolsets = useMemo(
+    () => desktopToolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
+    [visibleToolsetIds]
+  );
+
+  const toggleToolset = useCallback(async (toolsetId: string) => {
+    if (!desktopToolsetRegistry.get(toolsetId)) {
+      setStatus(`Unknown toolbar ${toolsetId}`);
+      return;
+    }
+
+    if (nativePalette) {
+      const nextState = await toggleToolsetWindow(toolsetId);
+      setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
+      setStatus(nextState.open ? `${desktopToolsetRegistry.require(toolsetId).title} open` : `${desktopToolsetRegistry.require(toolsetId).title} closed`);
+      return;
+    }
+
+    setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
+    setStatus(`Toggled ${desktopToolsetRegistry.require(toolsetId).title}`);
+  }, [nativePalette]);
 
   const registry = useMemo(() => {
     const commandRegistry = new CommandRegistry();
@@ -90,20 +136,14 @@ export function MainWindow({
           setStatus(`Saved ${payload.filename}`);
         }
         if (action.id === "view.zoomOut") {
-          setZoom((value) => Math.max(50, value - 10));
+          setViewport((current) => zoomViewportAtPoint(current, current.scale - 0.1, pageCenterPoint(current)));
         }
         if (action.id === "view.zoomIn") {
-          setZoom((value) => Math.min(200, value + 10));
+          setViewport((current) => zoomViewportAtPoint(current, current.scale + 0.1, pageCenterPoint(current)));
         }
         if (action.id === "view.toggleToolPalette") {
-          if (nativePalette) {
-            const nextState = await toggleToolPalette();
-            setStatus(nextState.open ? "Tool palette open" : "Tool palette closed");
-            return;
-          }
-
-          setPaletteMode((current) => (current === "floating" ? "hidden" : "floating"));
-          setStatus("Toggled floating tool palette");
+          await toggleToolset(DEFAULT_TOOLSET_ID);
+          setStatus("Toggled main toolbar");
         }
         if (action.id === "export.svg") {
           const result = exportPhase4Svg(document);
@@ -141,14 +181,30 @@ export function MainWindow({
       });
     });
 
-    paletteGroups.flat().forEach((tool) => {
+    getToolsetCommandSpecs().forEach((tool) => {
       register(tool, () => {
-        if (tool.enabled === false) {
-          setStatus("EditorAdapter not connected");
+        if (isDisabledPlaceholderCommand(tool)) {
+          setStatus(tool.disabledReason ?? "Tool unavailable");
           return;
         }
+        if (tool.id === "plugin.fixture.toolset.ping") {
+          setStatus("Fixture plugin toolset command routed");
+          return;
+        }
+
         setActiveTool(tool.id);
         setStatus(`${tool.title} tool`);
+      });
+    });
+
+    getToolsetToggleActions().forEach((action) => {
+      register(action, async () => {
+        const toolsetId = parseToolsetToggleCommandId(action.id);
+        if (!toolsetId) {
+          return;
+        }
+
+        await toggleToolset(toolsetId);
       });
     });
 
@@ -166,7 +222,7 @@ export function MainWindow({
     });
 
     return commandRegistry;
-  }, [chemistryAdapter, document, nativePalette, quickActions]);
+  }, [chemistryAdapter, document, nativePalette, quickActions, toggleToolset]);
 
   const invoke = useCallback((commandId: string) => {
     void registry.invoke(commandId).catch(() => {
@@ -181,13 +237,13 @@ export function MainWindow({
       return;
     }
 
-    void openToolPalette()
-      .then(() => {
-        setPaletteMode("floating");
+    void Promise.all(desktopToolsetRegistry.listDefaultVisibleToolsets().map((toolset) => openToolsetWindow(toolset.id)))
+      .then((states) => {
+        setVisibleToolsetIds(new Set(states.filter((state) => state.open).map((state) => state.toolsetId)));
       })
       .catch(() => {
-        setPaletteMode("hidden");
-        setStatus("Native tool palette unavailable");
+        setVisibleToolsetIds(new Set());
+        setStatus("Native toolset windows unavailable");
       });
   }, [nativePalette]);
 
@@ -197,12 +253,12 @@ export function MainWindow({
     }
 
     let unlisten: (() => void) | undefined;
-    void listenForPaletteCommands((commandId) => invokeCommandRef.current(commandId))
+    void listenForToolsetCommands((commandId) => invokeCommandRef.current(commandId))
       .then((cleanup) => {
         unlisten = cleanup;
       })
       .catch(() => {
-        setStatus("Tool palette command bridge unavailable");
+        setStatus("Toolset command bridge unavailable");
       });
 
     return () => {
@@ -231,20 +287,22 @@ export function MainWindow({
       });
   };
 
-  const startWebPaletteDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+  const startWebPaletteDrag = useCallback((toolsetId: string, event: PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
       return;
     }
 
+    const position = webPalettePositions[toolsetId] ?? defaultToolsetPosition(toolsetId);
     webPaletteDragRef.current = {
+      toolsetId,
       pointerId: event.pointerId,
       originX: event.clientX,
       originY: event.clientY,
-      startX: webPalettePosition.x,
-      startY: webPalettePosition.y
+      startX: position.x,
+      startY: position.y
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [webPalettePosition]);
+  }, [webPalettePositions]);
 
   const moveWebPalette = useCallback((event: PointerEvent<HTMLElement>) => {
     const drag = webPaletteDragRef.current;
@@ -254,10 +312,13 @@ export function MainWindow({
 
     const maxX = Math.max(8, globalThis.innerWidth - 112);
     const maxY = Math.max(8, globalThis.innerHeight - 120);
-    setWebPalettePosition({
-      x: clamp(drag.startX + event.clientX - drag.originX, 8, maxX),
-      y: clamp(drag.startY + event.clientY - drag.originY, 44, maxY)
-    });
+    setWebPalettePositions((current) => ({
+      ...current,
+      [drag.toolsetId]: {
+        x: clamp(drag.startX + event.clientX - drag.originX, 8, maxX),
+        y: clamp(drag.startY + event.clientY - drag.originY, 44, maxY)
+      }
+    }));
   }, []);
 
   const stopWebPaletteDrag = useCallback((event: PointerEvent<HTMLElement>) => {
@@ -278,27 +339,46 @@ export function MainWindow({
         onChange={handleOpenFile}
       />
 
-      {!nativePalette && paletteMode === "floating" ? (
-        <section
-          className="web-floating-palette"
-          aria-label="Floating drawing tool palette"
-          data-floating-palette="web-preview"
-          style={{ "--palette-x": `${webPalettePosition.x}px`, "--palette-y": `${webPalettePosition.y}px` } as CSSProperties}
-          onPointerDown={startWebPaletteDrag}
-          onPointerMove={moveWebPalette}
-          onPointerUp={stopWebPaletteDrag}
-          onPointerCancel={stopWebPaletteDrag}
-        >
-          <div className="palette-title">Tools</div>
-          <ToolPalette groups={paletteGroups} activeTool={activeTool} mode="floating" onInvoke={invoke} />
-        </section>
-      ) : null}
+      {!nativePalette
+        ? visibleFloatingToolsets.map((toolset) => {
+            const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id);
+            return (
+              <section
+                className="web-floating-palette"
+                aria-label={`Floating ${toolset.title}`}
+                data-floating-palette="web-preview"
+                data-toolset-id={toolset.id}
+                key={toolset.id}
+                style={
+                  {
+                    "--palette-x": `${position.x}px`,
+                    "--palette-y": `${position.y}px`,
+                    "--palette-width": `${toolset.preferredWindowSize?.width ?? 96}px`
+                  } as CSSProperties
+                }
+                onPointerDown={(event) => startWebPaletteDrag(toolset.id, event)}
+                onPointerMove={moveWebPalette}
+                onPointerUp={stopWebPaletteDrag}
+                onPointerCancel={stopWebPaletteDrag}
+              >
+                <div className="palette-title">{toolset.title.replace(/ Toolbar$/, "")}</div>
+                <ToolPalette
+                  groups={getToolsetCommandGroups(toolset.id)}
+                  activeTool={activeTool}
+                  mode="floating"
+                  title={toolset.title}
+                  onInvoke={invoke}
+                />
+              </section>
+            );
+          })
+        : null}
 
       <section className="workspace">
         <section className="canvas-region" aria-label="Document workspace">
-          <div className="page-stage" style={{ "--page-scale": zoom / 100 } as CSSProperties}>
+          <div className="page-stage" style={viewportCssVars(viewport) as CSSProperties}>
             <div className={["document-board", rulersVisible ? "with-rulers" : "without-rulers"].join(" ")}>
-              {rulersVisible ? <DocumentRulers /> : null}
+              {rulersVisible ? <DocumentRulers viewport={viewport} /> : null}
               <div className="page" aria-label={document.title}>
                 {crosshairsVisible ? (
                   <>
@@ -322,24 +402,62 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function DocumentRulers() {
+function updateVisibleToolsets(current: ReadonlySet<string>, toolsetId: string, visible: boolean): Set<string> {
+  const next = new Set(current);
+  if (visible) {
+    next.add(toolsetId);
+  } else {
+    next.delete(toolsetId);
+  }
+
+  return next;
+}
+
+function createDefaultToolsetPositions(): Record<string, PalettePosition> {
+  return Object.fromEntries(
+    desktopToolsetRegistry.listToolsets().map((toolset, index) => [
+      toolset.id,
+      { x: 34 + index * 18, y: 116 + index * 18 }
+    ])
+  );
+}
+
+function defaultToolsetPosition(toolsetId: string): PalettePosition {
+  const index = Math.max(0, desktopToolsetRegistry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
+  return { x: 34 + index * 18, y: 116 + index * 18 };
+}
+
+function pageCenterPoint(viewport: ViewportState): { x: number; y: number } {
+  return {
+    x: viewport.pageOriginX + viewport.translateX + 408 * viewport.scale,
+    y: viewport.pageOriginY + viewport.translateY + 528 * viewport.scale
+  };
+}
+
+function DocumentRulers({ viewport }: { viewport: ViewportState }) {
+  const horizontalMarks = Array.from({ length: 9 }, (_, index) => index);
+  const verticalMarks = Array.from({ length: 11 }, (_, index) => index);
+
   return (
     <>
       <div className="ruler-corner" aria-hidden="true" />
       <div className="ruler ruler-top" aria-hidden="true">
-        {Array.from({ length: 9 }, (_, index) => (
+        {horizontalMarks.map((index) => (
           <span key={index}>
             <strong>{index}</strong>
           </span>
         ))}
       </div>
       <div className="ruler ruler-left" aria-hidden="true">
-        {Array.from({ length: 11 }, (_, index) => (
+        {verticalMarks.map((index) => (
           <span key={index}>
             <strong>{index}</strong>
           </span>
         ))}
       </div>
+      <span className="ruler-unit-label" aria-hidden="true">
+        {viewport.rulerUnit.label}
+      </span>
     </>
   );
 }

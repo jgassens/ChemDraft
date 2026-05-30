@@ -5,7 +5,17 @@ import { allShellCommands, paletteGroups, viewActions } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
-import { createPaletteCommandPayload } from "./window-manager";
+import {
+  DEFAULT_TOOLSET_ID,
+  createPaletteCommandPayload,
+  createToolsetCommandPayload
+} from "./window-manager";
+import {
+  desktopToolsetRegistry,
+  getToolbarsMenuModel,
+  getToolsetCommandSpecs,
+  getToolsetToggleActions
+} from "./toolsets";
 
 describe("ChemDraft desktop shell", () => {
   it("renders compact web-preview workspace regions with a floating fallback palette", () => {
@@ -51,8 +61,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("palette-window-shell");
     expect(markup).toContain("data-palette-drag-surface");
     expect(markup).toContain("data-tauri-drag-region");
-    expect(markup).toContain("Tools");
+    expect(markup).toContain("Main");
     expect(markup).toContain("tool-palette");
+    expect(markup).toContain(`data-toolset-id="${DEFAULT_TOOLSET_ID}"`);
     expect(markup).not.toContain("app-shell");
     expect(markup).not.toContain("canvas-region");
     expect(markup).not.toContain("utility-drawer");
@@ -79,6 +90,7 @@ describe("ChemDraft desktop shell", () => {
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length);
     expect(commands.some((command) => command.id === "document.open")).toBe(true);
     expect(commands.some((command) => command.id === "view.toggleRulers")).toBe(true);
+    expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
   });
@@ -109,6 +121,72 @@ describe("ChemDraft desktop shell", () => {
     }
   });
 
+  it("registers built-in and plugin fixture toolsets", () => {
+    const toolsets = desktopToolsetRegistry.listToolsets();
+    const ids = toolsets.map((toolset) => toolset.id);
+
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "core.main",
+        "core.structure",
+        "core.arrows",
+        "core.annotations",
+        "core.orbitals",
+        "core.layout",
+        "core.style",
+        "plugin.fixture"
+      ])
+    );
+    expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
+    expect(desktopToolsetRegistry.require("plugin.fixture").source).toBe("plugin");
+  });
+
+  it("builds View > Toolbars menu items from registered toolsets", () => {
+    const menu = getToolbarsMenuModel(new Set(["core.main"]));
+
+    expect(menu).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Main Toolbar",
+          commandId: "view.toolset.toggle.core.main",
+          checked: true
+        }),
+        expect.objectContaining({
+          title: "Fixture Plugin Toolbar",
+          commandId: "view.toolset.toggle.plugin.fixture",
+          checked: false,
+          source: "plugin"
+        })
+      ])
+    );
+  });
+
+  it("creates toggle commands for every registered toolset", () => {
+    const toggles = getToolsetToggleActions();
+
+    expect(toggles.map((command) => command.id)).toEqual(
+      expect.arrayContaining(["view.toolset.toggle.core.structure", "view.toolset.toggle.plugin.fixture"])
+    );
+    expect(toggles.every((command) => command.category === "view")).toBe(true);
+  });
+
+  it("renders an independent plugin fixture toolset surface", () => {
+    const markup = renderToStaticMarkup(createElement(PaletteWindow, { toolsetId: "plugin.fixture" }));
+
+    expect(markup).toContain('data-toolset-id="plugin.fixture"');
+    expect(markup).toContain('data-command-id="plugin.fixture.toolset.ping"');
+    expect(markup).toContain("Fixture");
+    expect(markup).not.toContain("canvas-region");
+  });
+
+  it("keeps disabled placeholder tools from pretending to perform chemistry", () => {
+    const disabledTools = getToolsetCommandSpecs().filter((command) => command.enabled === false);
+
+    expect(disabledTools.length).toBeGreaterThan(30);
+    expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
+    expect(disabledTools.some((command) => command.id === "tool.bond")).toBe(true);
+  });
+
   it("uses custom toolbar assets for the expanded palette", () => {
     const toolCommands = paletteGroups.flat();
 
@@ -134,6 +212,9 @@ describe("ChemDraft desktop shell", () => {
   it("routes palette events as command ids only", () => {
     expect(createPaletteCommandPayload("tool.select")).toEqual({ commandId: "tool.select" });
     expect(Object.keys(createPaletteCommandPayload("tool.select"))).toEqual(["commandId"]);
+    expect(createToolsetCommandPayload("plugin.fixture.toolset.ping")).toEqual({
+      commandId: "plugin.fixture.toolset.ping"
+    });
   });
 
   it("does not show fake chemistry objects on a blank document", () => {

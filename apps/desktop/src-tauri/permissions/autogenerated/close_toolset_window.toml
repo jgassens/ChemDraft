@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-toolset-window"
+description = "Enables the close_toolset_window command without any pre-configured scope."
+commands.allow = ["close_toolset_window"]
+
+[[permission]]
+identifier = "deny-close-toolset-window"
+description = "Denies the close_toolset_window command without any pre-configured scope."
+commands.deny = ["close_toolset_window"]

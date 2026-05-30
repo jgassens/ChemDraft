@@ -197,7 +197,7 @@ button {
   top: var(--palette-y);
   left: var(--palette-x);
   display: grid;
-  width: 96px;
+  width: var(--palette-width, 96px);
   max-height: calc(100vh - var(--palette-y) - 8px);
   border: 1px solid #b8c1c6;
   background: #edf0ef;
@@ -501,6 +501,17 @@ button {
   writing-mode: vertical-rl;
 }
 
+.ruler-unit-label {
+  position: absolute;
+  top: 6px;
+  left: 7px;
+  z-index: 4;
+  color: #667078;
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .page-stage {
   position: absolute;
   inset: 0;
@@ -515,12 +526,14 @@ button {
   --page-width: calc(816px * var(--page-scale));
   --page-height: calc(1056px * var(--page-scale));
   --ruler-thickness: 32px;
-  --ruler-unit: calc(96px * var(--page-scale));
-  --ruler-minor: calc(12px * var(--page-scale));
+  --ruler-unit: var(--ruler-unit-px, calc(96px * var(--page-scale)));
+  --ruler-minor: var(--ruler-minor-px, calc(12px * var(--page-scale)));
   display: grid;
   grid-template-columns: var(--ruler-thickness) var(--page-width);
   grid-template-rows: var(--ruler-thickness) var(--page-height);
   filter: drop-shadow(0 8px 12px rgb(29 35 39 / 22%));
+  transform: translate(var(--page-translate-x, 0), var(--page-translate-y, 0));
+  transform-origin: 0 0;
 }
 
 .document-board.without-rulers {

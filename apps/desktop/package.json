@@ -18,6 +18,8 @@
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/plugin-host": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
+    "@chemdraft/toolset-registry": "workspace:*",
+    "@chemdraft/viewport-engine": "workspace:*",
     "@tauri-apps/api": "^2.11.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

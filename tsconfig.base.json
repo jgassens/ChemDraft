@@ -32,6 +32,8 @@
       "@chemdraft/template-library": ["packages/template-library/src/index.ts"],
       "@chemdraft/plugin-api": ["packages/plugin-api/src/index.ts"],
       "@chemdraft/plugin-host": ["packages/plugin-host/src/index.ts"],
+      "@chemdraft/toolset-registry": ["packages/toolset-registry/src/index.ts"],
+      "@chemdraft/viewport-engine": ["packages/viewport-engine/src/index.ts"],
       "@chemdraft/ui-kit": ["packages/ui-kit/src/index.ts"],
       "@chemdraft/fixtures": ["packages/fixtures/src/index.ts"],
       "@chemdraft/test-utils": ["packages/test-utils/src/index.ts"]

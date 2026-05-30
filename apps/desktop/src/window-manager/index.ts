@@ -1,13 +1,19 @@
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
+export const DEFAULT_TOOLSET_ID = "core.main";
 
-export interface PaletteWindowState {
+export interface ToolsetWindowState {
+  toolsetId: string;
   open: boolean;
   focused: boolean;
 }
 
-export interface PaletteCommandPayload {
+export type PaletteWindowState = ToolsetWindowState;
+
+export interface ToolsetCommandPayload {
   commandId: string;
 }
+
+export type PaletteCommandPayload = ToolsetCommandPayload;
 
 type Unlisten = () => void;
 
@@ -21,32 +27,66 @@ export function isDesktopRuntime(): boolean {
 }
 
 export function createPaletteCommandPayload(commandId: string): PaletteCommandPayload {
+  return createToolsetCommandPayload(commandId);
+}
+
+export function createToolsetCommandPayload(commandId: string): ToolsetCommandPayload {
   return { commandId };
 }
 
+export async function openToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
+  return invokeToolsetWindow("open_toolset_window", toolsetId);
+}
+
+export async function closeToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
+  return invokeToolsetWindow("close_toolset_window", toolsetId);
+}
+
+export async function focusToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
+  return invokeToolsetWindow("focus_toolset_window", toolsetId);
+}
+
+export async function toggleToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
+  return invokeToolsetWindow("toggle_toolset_window", toolsetId);
+}
+
+export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowState[]>("list_toolset_window_states");
+}
+
 export async function openToolPalette(): Promise<PaletteWindowState> {
-  return invokePaletteWindow("open_tool_palette");
+  return openToolsetWindow(DEFAULT_TOOLSET_ID);
 }
 
 export async function closeToolPalette(): Promise<PaletteWindowState> {
-  return invokePaletteWindow("close_tool_palette");
+  return closeToolsetWindow(DEFAULT_TOOLSET_ID);
 }
 
 export async function focusToolPalette(): Promise<PaletteWindowState> {
-  return invokePaletteWindow("focus_tool_palette");
+  return focusToolsetWindow(DEFAULT_TOOLSET_ID);
 }
 
 export async function toggleToolPalette(): Promise<PaletteWindowState> {
-  return invokePaletteWindow("toggle_tool_palette");
+  return toggleToolsetWindow(DEFAULT_TOOLSET_ID);
 }
 
 export async function toolPaletteState(): Promise<PaletteWindowState> {
-  return invokePaletteWindow("tool_palette_state");
+  const states = await listToolsetWindowStates();
+  return states.find((state) => state.toolsetId === DEFAULT_TOOLSET_ID) ?? {
+    toolsetId: DEFAULT_TOOLSET_ID,
+    open: false,
+    focused: false
+  };
 }
 
 export async function sendPaletteCommand(commandId: string): Promise<void> {
+  return routeToolsetCommand(commandId);
+}
+
+export async function routeToolsetCommand(commandId: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("route_palette_command", createPaletteCommandPayload(commandId) as unknown as Record<string, unknown>);
+  await invoke("route_toolset_command", createToolsetCommandPayload(commandId) as unknown as Record<string, unknown>);
 }
 
 export async function startPaletteWindowDrag(): Promise<void> {
@@ -59,19 +99,23 @@ export async function startPaletteWindowDrag(): Promise<void> {
 }
 
 export async function listenForPaletteCommands(handler: (commandId: string) => void): Promise<Unlisten> {
+  return listenForToolsetCommands(handler);
+}
+
+export async function listenForToolsetCommands(handler: (commandId: string) => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
 
   const { listen } = await import("@tauri-apps/api/event");
-  return listen<PaletteCommandPayload>(PALETTE_COMMAND_EVENT, (event) => {
+  return listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, (event) => {
     if (typeof event.payload?.commandId === "string") {
       handler(event.payload.commandId);
     }
   });
 }
 
-async function invokePaletteWindow(commandName: string): Promise<PaletteWindowState> {
+async function invokeToolsetWindow(commandName: string, toolsetId: string): Promise<ToolsetWindowState> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<PaletteWindowState>(commandName);
+  return invoke<ToolsetWindowState>(commandName, { toolsetId });
 }

@@ -35,6 +35,12 @@ importers:
       '@chemdraft/rdkit-adapter':
         specifier: workspace:*
         version: link:../../packages/rdkit-adapter
+      '@chemdraft/toolset-registry':
+        specifier: workspace:*
+        version: link:../../packages/toolset-registry
+      '@chemdraft/viewport-engine':
+        specifier: workspace:*
+        version: link:../../packages/viewport-engine
       '@tauri-apps/api':
         specifier: ^2.11.0
         version: 2.11.0
@@ -142,7 +148,15 @@ importers:
 
   packages/test-utils: {}
 
+  packages/toolset-registry:
+    dependencies:
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+
   packages/ui-kit: {}
+
+  packages/viewport-engine: {}
 
 packages:
 
