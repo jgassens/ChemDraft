@@ -36,11 +36,43 @@ export interface ViewportOptions {
   maxZoom?: number;
 }
 
+export interface RulerRenderState {
+  scrollPos: number;
+  zoom: number;
+  unit: number;
+  segment: number;
+  range: [number, number];
+}
+
+export type RulerTickKind = "major" | "mid" | "minor";
+
+export interface RulerTick {
+  value: number;
+  position: number;
+  label: string;
+  kind: RulerTickKind;
+}
+
+export interface RulerTickOptions {
+  visibleLengthPx: number;
+  scrollOffsetPx: number;
+  pageLengthPx: number;
+  rulerUnit?: RulerUnitState;
+  scale?: number;
+}
+
 export const inchRulerUnit: RulerUnitState = {
   kind: "inch",
   label: "in",
   pixelsPerUnit: 96,
   subdivisions: 8
+};
+
+export const centimeterRulerUnit: RulerUnitState = {
+  kind: "centimeter",
+  label: "cm",
+  pixelsPerUnit: 96 / 2.54,
+  subdivisions: 10
 };
 
 export function createViewportState(options: ViewportOptions = {}): ViewportState {
@@ -102,6 +134,54 @@ export function wheelDeltaToZoomFactor(deltaY: number, sensitivity = 0.002): num
   return Math.exp(-deltaY * sensitivity);
 }
 
+export function createRulerRenderState(
+  viewport: ViewportState,
+  pageLengthPx: number,
+  scrollOffsetPx: number
+): RulerRenderState {
+  const zoom = viewport.rulerUnit.pixelsPerUnit * viewport.scale;
+  const pageLengthInUnits = pageLengthPx / viewport.rulerUnit.pixelsPerUnit;
+
+  return {
+    scrollPos: scrollOffsetPx / viewport.rulerUnit.pixelsPerUnit,
+    zoom,
+    unit: 1,
+    segment: viewport.rulerUnit.subdivisions,
+    range: [0, pageLengthInUnits]
+  };
+}
+
+export function buildRulerTicks(options: RulerTickOptions): RulerTick[] {
+  const rulerUnit = options.rulerUnit ?? inchRulerUnit;
+  const scale = options.scale ?? 1;
+  const unitPx = rulerUnit.pixelsPerUnit * scale;
+  const subdivisionPx = unitPx / rulerUnit.subdivisions;
+  const pageLengthPx = Math.max(0, options.pageLengthPx * scale);
+  const visibleLengthPx = Math.max(0, options.visibleLengthPx);
+  const scrollOffsetPx = options.scrollOffsetPx * scale;
+  const firstTick = Math.floor(scrollOffsetPx / subdivisionPx) - 1;
+  const lastTick = Math.ceil((scrollOffsetPx + visibleLengthPx) / subdivisionPx) + 1;
+  const ticks: RulerTick[] = [];
+
+  for (let index = firstTick; index <= lastTick; index += 1) {
+    const pagePosition = index * subdivisionPx;
+    if (pagePosition < 0 || pagePosition > pageLengthPx) {
+      continue;
+    }
+
+    const subdivisionIndex = positiveModulo(index, rulerUnit.subdivisions);
+    const value = index / rulerUnit.subdivisions;
+    ticks.push({
+      value,
+      position: pagePosition - scrollOffsetPx,
+      label: subdivisionIndex === 0 ? formatRulerLabel(value, rulerUnit) : "",
+      kind: rulerTickKind(subdivisionIndex, rulerUnit.subdivisions)
+    });
+  }
+
+  return ticks;
+}
+
 export function viewportCssVars(viewport: ViewportState): Record<string, string | number> {
   return {
     "--page-scale": viewport.scale,
@@ -114,4 +194,28 @@ export function viewportCssVars(viewport: ViewportState): Record<string, string 
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function rulerTickKind(subdivisionIndex: number, subdivisions: number): RulerTickKind {
+  if (subdivisionIndex === 0) {
+    return "major";
+  }
+
+  if (subdivisionIndex === subdivisions / 2) {
+    return "mid";
+  }
+
+  return "minor";
+}
+
+function formatRulerLabel(value: number, rulerUnit: RulerUnitState): string {
+  if (rulerUnit.kind === "pixel") {
+    return String(Math.round(value));
+  }
+
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
 }

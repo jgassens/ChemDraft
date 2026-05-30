@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildRulerTicks,
+  createRulerRenderState,
   createViewportState,
   pageToScreen,
   screenToPage,
@@ -57,5 +59,44 @@ describe("viewport engine", () => {
     expect(wheelDeltaToZoomFactor(-120)).toBeGreaterThan(1);
     expect(wheelDeltaToZoomFactor(120)).toBeLessThan(1);
     expect(wheelDeltaToZoomFactor(0)).toBe(1);
+  });
+
+  it("creates ruler renderer settings from the same viewport scale", () => {
+    const viewport = createViewportState({ scale: 1.5 });
+
+    expect(createRulerRenderState(viewport, 816, 96)).toEqual({
+      scrollPos: 1,
+      zoom: 144,
+      unit: 1,
+      segment: 8,
+      range: [0, 8.5]
+    });
+  });
+
+  it("builds measurement ticks that move and zoom with page coordinates", () => {
+    const normalTicks = buildRulerTicks({
+      visibleLengthPx: 220,
+      scrollOffsetPx: 0,
+      pageLengthPx: 816,
+      scale: 1
+    });
+    const zoomedTicks = buildRulerTicks({
+      visibleLengthPx: 220,
+      scrollOffsetPx: 0,
+      pageLengthPx: 816,
+      scale: 2
+    });
+    const scrolledTicks = buildRulerTicks({
+      visibleLengthPx: 220,
+      scrollOffsetPx: 48,
+      pageLengthPx: 816,
+      scale: 1
+    });
+
+    expect(normalTicks.find((tick) => tick.label === "1")?.position).toBe(96);
+    expect(zoomedTicks.find((tick) => tick.label === "1")?.position).toBe(192);
+    expect(scrolledTicks.find((tick) => tick.label === "1")?.position).toBe(48);
+    expect(normalTicks.some((tick) => tick.kind === "minor")).toBe(true);
+    expect(normalTicks.some((tick) => tick.kind === "mid")).toBe(true);
   });
 });

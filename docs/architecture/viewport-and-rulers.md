@@ -1,8 +1,8 @@
 # Viewport And Rulers
 
-Status: investigation note and first boundary scaffold.
+Status: ruler renderer spike connected to the desktop viewport.
 
-ChemDraft now has a small `@chemdraft/viewport-engine` package that owns viewport state and coordinate math. The desktop UI still renders simple placeholder rulers, but zoom state and ruler unit CSS variables come from the same viewport state instead of scattered component-local numbers.
+ChemDraft has a small `@chemdraft/viewport-engine` package that owns viewport state, coordinate math, and ruler render parameters. The desktop UI renders rulers with `@scena/react-ruler`, but the ruler renderer consumes ChemDraft viewport state rather than owning document geometry.
 
 ## Current Viewport State
 
@@ -109,9 +109,9 @@ Cons:
 Recommended path:
 
 1. Keep `@chemdraft/viewport-engine` as the native state and coordinate-conversion source of truth.
-2. Spike `@scena/ruler` behind a small ruler adapter for rendered rulers only.
+2. Keep `@scena/react-ruler` behind the desktop ruler component for rendered rulers only.
 3. Spike `d3-zoom` for wheel/pan/pinch transform input, feeding transforms into `viewport-engine`.
 4. Use `@use-gesture/react` only if `d3-zoom` cannot satisfy macOS trackpad/pinch behavior cleanly.
 5. Use `react-zoom-pan-pinch` only as a throwaway prototype comparison.
 
-Do not add any of these dependencies without updating `docs/architecture/dependency-inventory.md`, recording license/distribution impact, and adding a minimal usage test or spike.
+Do not add any further viewport dependencies without updating `docs/architecture/dependency-inventory.md`, recording license/distribution impact, and adding a minimal usage test or spike.

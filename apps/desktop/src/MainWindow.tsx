@@ -12,6 +12,7 @@ import {
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
+  createRulerRenderState,
   createViewportState,
   setViewportScale,
   viewportCssVars,
@@ -19,6 +20,7 @@ import {
   zoomViewportAtPoint,
   type ViewportState
 } from "@chemdraft/viewport-engine";
+import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
@@ -69,6 +71,16 @@ type WebKitGestureEvent = Event & {
   clientY?: number;
   scale?: number;
 };
+type RulerFrame = {
+  horizontalScrollPx: number;
+  verticalScrollPx: number;
+  width: number;
+  height: number;
+};
+
+const PAGE_WIDTH = 816;
+const PAGE_HEIGHT = 1056;
+const RULER_THICKNESS = 32;
 
 export interface MainWindowProps {
   initialPaletteMode?: PaletteMode;
@@ -96,6 +108,12 @@ export function MainWindow({
   const [rulersVisible, setRulersVisible] = useState(false);
   const [crosshairsVisible, setCrosshairsVisible] = useState(true);
   const [viewport, setViewport] = useState(() => createViewportState());
+  const [rulerFrame, setRulerFrame] = useState<RulerFrame>(() => ({
+    horizontalScrollPx: 0,
+    verticalScrollPx: 0,
+    width: 0,
+    height: 0
+  }));
   const [, setStatus] = useState("Blank native document");
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
@@ -111,6 +129,56 @@ export function MainWindow({
   useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  const updateRulerFrame = useCallback(() => {
+    const canvas = canvasRegionRef.current;
+    const page = pageRef.current;
+    if (!canvas || !page) {
+      return;
+    }
+
+    const canvasRect = canvas.getBoundingClientRect();
+    const pageRect = page.getBoundingClientRect();
+    const thickness = rulersVisible ? RULER_THICKNESS : 0;
+    const nextFrame = {
+      horizontalScrollPx: (canvasRect.left + thickness - pageRect.left) / viewportRef.current.scale,
+      verticalScrollPx: (canvasRect.top + thickness - pageRect.top) / viewportRef.current.scale,
+      width: Math.max(0, canvas.clientWidth - thickness),
+      height: Math.max(0, canvas.clientHeight - thickness)
+    };
+
+    setRulerFrame((current) =>
+      rulerFramesEqual(current, nextFrame) ? current : nextFrame
+    );
+  }, [rulersVisible]);
+
+  useEffect(() => {
+    const canvas = canvasRegionRef.current;
+    const page = pageRef.current;
+    if (!canvas || !page) {
+      return undefined;
+    }
+
+    let animationFrame = 0;
+    const scheduleUpdate = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updateRulerFrame);
+    };
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+
+    canvas.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    resizeObserver.observe(canvas);
+    resizeObserver.observe(page);
+    scheduleUpdate();
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      canvas.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+      resizeObserver.disconnect();
+    };
+  }, [rulersVisible, updateRulerFrame, viewport.scale]);
 
   const zoomCanvasAtClientPoint = useCallback((nextScale: number, clientPoint: ClientPoint) => {
     const canvas = canvasRegionRef.current;
@@ -490,14 +558,14 @@ export function MainWindow({
       <section className="workspace">
         <section
           ref={canvasRegionRef}
-          className="canvas-region"
+          className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           data-zoom-surface="document"
           onWheel={handleCanvasWheel}
         >
+          {rulersVisible ? <DocumentRulers viewport={viewport} frame={rulerFrame} /> : null}
           <div className="page-stage" style={viewportCssVars(viewport) as CSSProperties}>
-            <div className={["document-board", rulersVisible ? "with-rulers" : "without-rulers"].join(" ")}>
-              {rulersVisible ? <DocumentRulers viewport={viewport} /> : null}
+            <div className="document-board without-rulers">
               <div ref={pageRef} className="page" aria-label={document.title}>
                 {crosshairsVisible ? (
                   <>
@@ -560,37 +628,82 @@ function clientPointFromGesture(event: WebKitGestureEvent, element: HTMLElement)
 
 function pageCenterPoint(viewport: ViewportState): { x: number; y: number } {
   return {
-    x: viewport.pageOriginX + viewport.translateX + 408 * viewport.scale,
-    y: viewport.pageOriginY + viewport.translateY + 528 * viewport.scale
+    x: viewport.pageOriginX + viewport.translateX + (PAGE_WIDTH / 2) * viewport.scale,
+    y: viewport.pageOriginY + viewport.translateY + (PAGE_HEIGHT / 2) * viewport.scale
   };
 }
 
-function DocumentRulers({ viewport }: { viewport: ViewportState }) {
-  const horizontalMarks = Array.from({ length: 9 }, (_, index) => index);
-  const verticalMarks = Array.from({ length: 11 }, (_, index) => index);
+function DocumentRulers({ viewport, frame }: { viewport: ViewportState; frame: RulerFrame }) {
+  const horizontalRuler = createRulerRenderState(viewport, PAGE_WIDTH, frame.horizontalScrollPx);
+  const verticalRuler = createRulerRenderState(viewport, PAGE_HEIGHT, frame.verticalScrollPx);
 
   return (
-    <>
+    <div className="document-rulers-overlay" aria-hidden="true">
       <div className="ruler-corner" aria-hidden="true" />
-      <div className="ruler ruler-top" aria-hidden="true">
-        {horizontalMarks.map((index) => (
-          <span key={index}>
-            <strong>{index}</strong>
-          </span>
-        ))}
+      <div className="ruler ruler-top" style={{ width: frame.width, height: RULER_THICKNESS }}>
+        <ScenaRuler
+          type="horizontal"
+          width={frame.width}
+          height={RULER_THICKNESS}
+          scrollPos={horizontalRuler.scrollPos}
+          zoom={horizontalRuler.zoom}
+          unit={horizontalRuler.unit}
+          segment={horizontalRuler.segment}
+          range={horizontalRuler.range}
+          negativeRuler={false}
+          backgroundColor="#f9faf9"
+          lineColor="#8f9aa1"
+          textColor="#2a3035"
+          font="11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          mainLineSize={22}
+          longLineSize={15}
+          shortLineSize={8}
+          textOffset={[4, -5]}
+          textFormat={(value) => formatRulerText(value)}
+          useResizeObserver={false}
+        />
       </div>
-      <div className="ruler ruler-left" aria-hidden="true">
-        {verticalMarks.map((index) => (
-          <span key={index}>
-            <strong>{index}</strong>
-          </span>
-        ))}
+      <div className="ruler ruler-left" style={{ width: RULER_THICKNESS, height: frame.height }}>
+        <ScenaRuler
+          type="vertical"
+          width={RULER_THICKNESS}
+          height={frame.height}
+          scrollPos={verticalRuler.scrollPos}
+          zoom={verticalRuler.zoom}
+          unit={verticalRuler.unit}
+          segment={verticalRuler.segment}
+          range={verticalRuler.range}
+          negativeRuler={false}
+          backgroundColor="#f9faf9"
+          lineColor="#8f9aa1"
+          textColor="#2a3035"
+          font="11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          mainLineSize={22}
+          longLineSize={15}
+          shortLineSize={8}
+          textOffset={[4, -5]}
+          textFormat={(value) => formatRulerText(value)}
+          useResizeObserver={false}
+        />
       </div>
       <span className="ruler-unit-label" aria-hidden="true">
         {viewport.rulerUnit.label}
       </span>
-    </>
+    </div>
   );
+}
+
+function rulerFramesEqual(left: RulerFrame, right: RulerFrame): boolean {
+  return (
+    Math.abs(left.horizontalScrollPx - right.horizontalScrollPx) < 0.5 &&
+    Math.abs(left.verticalScrollPx - right.verticalScrollPx) < 0.5 &&
+    left.width === right.width &&
+    left.height === right.height
+  );
+}
+
+function formatRulerText(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function DocumentObjectView({ object, selected }: { object: DocumentObject; selected: boolean }) {

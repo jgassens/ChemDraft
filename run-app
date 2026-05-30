@@ -32,7 +32,13 @@ stop_existing_dev_apps() {
   fi
 
   local pattern pid pids
-  for pattern in "$APP_DIR/src-tauri/target/debug/chemdraft" "$APP_DIR/src-tauri/target/release/chemdraft"; do
+  for pattern in \
+    "$APP_DIR/src-tauri/target/debug/chemdraft" \
+    "$APP_DIR/src-tauri/target/release/chemdraft" \
+    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app/Contents/MacOS/chemdraft" \
+    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-working-draft.app/Contents/MacOS/chemdraft" \
+    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-pre-scena-snapshot.app/Contents/MacOS/chemdraft" \
+    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-release-snapshot.app/Contents/MacOS/chemdraft"; do
     pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
     for pid in $pids; do
       if [ "$pid" != "$$" ]; then
