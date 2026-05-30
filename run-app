@@ -5,6 +5,22 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
 DEV_PORT="5173"
+RUN_MODE="${1:-app}"
+RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
+
+usage() {
+  cat <<EOF
+Usage: ./run-app [--dev]
+
+Default: build and launch the inspectable macOS app bundle.
+  --dev   launch Tauri dev mode with Vite/HMR.
+EOF
+}
+
+if [ "$RUN_MODE" != "app" ] && [ "$RUN_MODE" != "--dev" ]; then
+  usage
+  exit 2
+fi
 
 process_cwd() {
   local pid="$1"
@@ -33,6 +49,8 @@ stop_existing_dev_apps() {
 
   local pattern pid pids
   for pattern in \
+    "target/debug/chemdraft" \
+    "target/release/chemdraft" \
     "$APP_DIR/src-tauri/target/debug/chemdraft" \
     "$APP_DIR/src-tauri/target/release/chemdraft" \
     "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app/Contents/MacOS/chemdraft" \
@@ -75,6 +93,19 @@ stop_existing_dev_server() {
   done
 }
 
+set_bundle_display_name() {
+  local bundle="$1"
+  local display_name="$2"
+  local plist="$bundle/Contents/Info.plist"
+
+  if [ ! -f "$plist" ]; then
+    return 0
+  fi
+
+  /usr/libexec/PlistBuddy -c "Set :CFBundleName $display_name" "$plist" >/dev/null 2>&1 || true
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $display_name" "$plist" >/dev/null 2>&1 || true
+}
+
 cd "$ROOT_DIR"
 
 if [ ! -d "$ROOT_DIR/node_modules" ] || [ ! -d "$APP_DIR/node_modules" ]; then
@@ -100,6 +131,18 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 stop_existing_dev_apps
-stop_existing_dev_server
 
-exec npm run dev
+if [ "$RUN_MODE" = "--dev" ]; then
+  stop_existing_dev_server
+  exec npm run dev
+fi
+
+if [ -e "$RUN_APP_BUNDLE" ]; then
+  rm -rf "$RUN_APP_BUNDLE"
+fi
+
+node_modules/.bin/tauri build --bundles app
+set_bundle_display_name "$RUN_APP_BUNDLE" "ChemDraft Run App"
+
+echo "Launching ChemDraft Run App from $RUN_APP_BUNDLE"
+open -n "$RUN_APP_BUNDLE"
