@@ -6,13 +6,16 @@ import {
   useState,
   type CSSProperties,
   type ChangeEvent,
-  type PointerEvent
+  type PointerEvent,
+  type WheelEvent
 } from "react";
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
   createViewportState,
+  setViewportScale,
   viewportCssVars,
+  wheelDeltaToZoomFactor,
   zoomViewportAtPoint,
   type ViewportState
 } from "@chemdraft/viewport-engine";
@@ -52,6 +55,7 @@ import {
 
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
+type ClientPoint = { x: number; y: number };
 type PaletteDragState = {
   toolsetId: string;
   pointerId: number;
@@ -59,6 +63,11 @@ type PaletteDragState = {
   originY: number;
   startX: number;
   startY: number;
+};
+type WebKitGestureEvent = Event & {
+  clientX?: number;
+  clientY?: number;
+  scale?: number;
 };
 
 export interface MainWindowProps {
@@ -71,7 +80,10 @@ export function MainWindow({
   nativePalette = isDesktopRuntime()
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canvasRegionRef = useRef<HTMLElement | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
+  const gestureStartScaleRef = useRef(1);
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
   const [document, setDocument] = useState(() => createPhase4Document());
   const [activeTool, setActiveTool] = useState("tool.select");
@@ -87,6 +99,7 @@ export function MainWindow({
   const [, setStatus] = useState("Blank native document");
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
+  const viewportRef = useRef(viewport);
 
   const selectedMolecule = getSelectedMolecule(document);
   const quickActions = useMemo(() => createQuickActions(document, selectedMolecule), [document, selectedMolecule]);
@@ -94,6 +107,94 @@ export function MainWindow({
     () => desktopToolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
     [visibleToolsetIds]
   );
+
+  useEffect(() => {
+    viewportRef.current = viewport;
+  }, [viewport]);
+
+  const zoomCanvasAtClientPoint = useCallback((nextScale: number, clientPoint: ClientPoint) => {
+    const canvas = canvasRegionRef.current;
+    const page = pageRef.current;
+    const currentScale = viewportRef.current.scale;
+
+    if (!canvas || !page) {
+      setViewport((current) => {
+        const next = setViewportScale(current, nextScale);
+        viewportRef.current = next;
+        return next;
+      });
+      return;
+    }
+
+    const pageRect = page.getBoundingClientRect();
+    const focalPagePoint = {
+      x: (clientPoint.x - pageRect.left) / currentScale,
+      y: (clientPoint.y - pageRect.top) / currentScale
+    };
+
+    setViewport((current) => {
+      const next = setViewportScale(current, nextScale);
+      viewportRef.current = next;
+      return next;
+    });
+
+    window.requestAnimationFrame(() => {
+      const nextCanvas = canvasRegionRef.current;
+      const nextPage = pageRef.current;
+      if (!nextCanvas || !nextPage) {
+        return;
+      }
+
+      const nextPageRect = nextPage.getBoundingClientRect();
+      const nextClientPoint = {
+        x: nextPageRect.left + focalPagePoint.x * viewportRef.current.scale,
+        y: nextPageRect.top + focalPagePoint.y * viewportRef.current.scale
+      };
+
+      nextCanvas.scrollLeft += nextClientPoint.x - clientPoint.x;
+      nextCanvas.scrollTop += nextClientPoint.y - clientPoint.y;
+    });
+  }, []);
+
+  const handleCanvasWheel = useCallback((event: WheelEvent<HTMLElement>) => {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+
+    event.preventDefault();
+    zoomCanvasAtClientPoint(viewportRef.current.scale * wheelDeltaToZoomFactor(event.deltaY), {
+      x: event.clientX,
+      y: event.clientY
+    });
+  }, [zoomCanvasAtClientPoint]);
+
+  useEffect(() => {
+    const canvas = canvasRegionRef.current;
+    if (!canvas) {
+      return undefined;
+    }
+
+    const handleGestureStart = (event: Event) => {
+      event.preventDefault();
+      gestureStartScaleRef.current = viewportRef.current.scale;
+    };
+    const handleGestureChange = (event: Event) => {
+      const gesture = event as WebKitGestureEvent;
+      event.preventDefault();
+      zoomCanvasAtClientPoint(
+        gestureStartScaleRef.current * (gesture.scale ?? 1),
+        clientPointFromGesture(gesture, canvas)
+      );
+    };
+
+    canvas.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    canvas.addEventListener("gesturechange", handleGestureChange, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("gesturestart", handleGestureStart);
+      canvas.removeEventListener("gesturechange", handleGestureChange);
+    };
+  }, [zoomCanvasAtClientPoint]);
 
   const toggleToolset = useCallback(async (toolsetId: string) => {
     if (!desktopToolsetRegistry.get(toolsetId)) {
@@ -387,11 +488,17 @@ export function MainWindow({
         : null}
 
       <section className="workspace">
-        <section className="canvas-region" aria-label="Document workspace">
+        <section
+          ref={canvasRegionRef}
+          className="canvas-region"
+          aria-label="Document workspace"
+          data-zoom-surface="document"
+          onWheel={handleCanvasWheel}
+        >
           <div className="page-stage" style={viewportCssVars(viewport) as CSSProperties}>
             <div className={["document-board", rulersVisible ? "with-rulers" : "without-rulers"].join(" ")}>
               {rulersVisible ? <DocumentRulers viewport={viewport} /> : null}
-              <div className="page" aria-label={document.title}>
+              <div ref={pageRef} className="page" aria-label={document.title}>
                 {crosshairsVisible ? (
                   <>
                     <div className="crosshair crosshair-vertical" aria-hidden="true" />
@@ -437,6 +544,18 @@ function createDefaultToolsetPositions(): Record<string, PalettePosition> {
 function defaultToolsetPosition(toolsetId: string): PalettePosition {
   const index = Math.max(0, desktopToolsetRegistry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
   return { x: 34 + index * 18, y: 116 + index * 18 };
+}
+
+function clientPointFromGesture(event: WebKitGestureEvent, element: HTMLElement): ClientPoint {
+  if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+    return { x: event.clientX, y: event.clientY };
+  }
+
+  const rect = element.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2
+  };
 }
 
 function pageCenterPoint(viewport: ViewportState): { x: number; y: number } {

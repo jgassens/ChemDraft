@@ -4,6 +4,7 @@ import {
   pageToScreen,
   screenToPage,
   viewportCssVars,
+  wheelDeltaToZoomFactor,
   zoomViewportAtPoint,
   zoomViewportBy
 } from "./index";
@@ -50,5 +51,11 @@ describe("viewport engine", () => {
       "--ruler-unit-px": "120px",
       "--ruler-minor-px": "15px"
     });
+  });
+
+  it("converts trackpad wheel deltas into smooth zoom factors", () => {
+    expect(wheelDeltaToZoomFactor(-120)).toBeGreaterThan(1);
+    expect(wheelDeltaToZoomFactor(120)).toBeLessThan(1);
+    expect(wheelDeltaToZoomFactor(0)).toBe(1);
   });
 });

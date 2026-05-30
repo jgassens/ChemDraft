@@ -5,6 +5,12 @@ use tauri::{
     Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{
+    NSFloatingWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
+};
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
@@ -121,6 +127,10 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            if window.label() == MAIN_WINDOW_LABEL {
+                return;
+            }
+
             let Some(toolset_id) = toolset_id_for_window_label(window.label()) else {
                 return;
             };
@@ -133,18 +143,27 @@ pub fn run() {
                         position.y as f64,
                         window.scale_factor().unwrap_or(1.0),
                     );
-                    if let Err(error) =
-                        persist_toolset_position(app, &toolset_id, logical_position.x, logical_position.y)
-                    {
-                        eprintln!("Could not persist ChemDraft toolset position {toolset_id}: {error}");
+                    if let Err(error) = persist_toolset_position(
+                        app,
+                        &toolset_id,
+                        logical_position.x,
+                        logical_position.y,
+                    ) {
+                        eprintln!(
+                            "Could not persist ChemDraft toolset position {toolset_id}: {error}"
+                        );
                     }
                 }
                 WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
                     if let Err(error) = persist_toolset_visibility(app, &toolset_id, false) {
-                        eprintln!("Could not persist ChemDraft toolset visibility {toolset_id}: {error}");
+                        eprintln!(
+                            "Could not persist ChemDraft toolset visibility {toolset_id}: {error}"
+                        );
                     }
                     if let Err(error) = set_toolset_menu_checked(app, &toolset_id, false) {
-                        eprintln!("Could not update ChemDraft toolbar menu state {toolset_id}: {error}");
+                        eprintln!(
+                            "Could not update ChemDraft toolbar menu state {toolset_id}: {error}"
+                        );
                     }
                     let state = ToolsetWindowState {
                         toolset_id: toolset_id.clone(),
@@ -164,7 +183,10 @@ pub fn run() {
             for toolset in toolset_manifest().toolsets {
                 let visible = toolset_visible(&toolset, &layout_state);
                 if let Err(error) = set_toolset_menu_checked(app, &toolset.id, visible) {
-                    eprintln!("Could not initialize ChemDraft toolbar menu state {}: {error}", toolset.id);
+                    eprintln!(
+                        "Could not initialize ChemDraft toolbar menu state {}: {error}",
+                        toolset.id
+                    );
                 }
                 if visible && toolset.default_mode == "floating" {
                     if let Err(error) = ensure_toolset_window(app, &toolset.id) {
@@ -194,7 +216,10 @@ pub fn run() {
 }
 
 #[tauri::command]
-fn open_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<ToolsetWindowState, String> {
+fn open_toolset_window(
+    app: tauri::AppHandle,
+    toolset_id: String,
+) -> Result<ToolsetWindowState, String> {
     ensure_toolset_window(&app, &toolset_id)?;
     persist_toolset_visibility(&app, &toolset_id, true)?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
@@ -205,7 +230,10 @@ fn open_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<Tool
 }
 
 #[tauri::command]
-fn close_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<ToolsetWindowState, String> {
+fn close_toolset_window(
+    app: tauri::AppHandle,
+    toolset_id: String,
+) -> Result<ToolsetWindowState, String> {
     if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
         if let Some(position) = current_toolset_window_position(&window) {
             persist_toolset_position(&app, &toolset_id, position.x, position.y)?;
@@ -227,19 +255,24 @@ fn close_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<Too
 }
 
 #[tauri::command]
-fn focus_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<ToolsetWindowState, String> {
+fn focus_toolset_window(
+    app: tauri::AppHandle,
+    toolset_id: String,
+) -> Result<ToolsetWindowState, String> {
     ensure_toolset_window(&app, &toolset_id)?;
-
-    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
 
     toolset_state(&app, &toolset_id)
 }
 
 #[tauri::command]
-fn toggle_toolset_window(app: tauri::AppHandle, toolset_id: String) -> Result<ToolsetWindowState, String> {
-    if app.get_webview_window(&toolset_window_label(&toolset_id)).is_some() {
+fn toggle_toolset_window(
+    app: tauri::AppHandle,
+    toolset_id: String,
+) -> Result<ToolsetWindowState, String> {
+    if app
+        .get_webview_window(&toolset_window_label(&toolset_id))
+        .is_some()
+    {
         return close_toolset_window(app, toolset_id);
     }
 
@@ -294,7 +327,10 @@ fn route_palette_command(app: tauri::AppHandle, command_id: String) -> Result<()
     route_toolset_command(app, command_id)
 }
 
-fn emit_command_to_main<R: Runtime>(app: &tauri::AppHandle<R>, command_id: &str) -> Result<(), String> {
+fn emit_command_to_main<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    command_id: &str,
+) -> Result<(), String> {
     let main = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
@@ -316,8 +352,7 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
         return Ok(());
     };
 
-    main
-        .emit(TOOLSET_WINDOW_STATE_EVENT, state.clone())
+    main.emit(TOOLSET_WINDOW_STATE_EVENT, state.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -432,7 +467,10 @@ fn create_toolbars_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<
     Ok(menu)
 }
 
-fn ensure_toolset_window(app: &tauri::AppHandle, toolset_id: &str) -> Result<(), String> {
+fn ensure_toolset_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+) -> Result<(), String> {
     let Some(toolset) = toolset_definition(toolset_id) else {
         return Err(format!("Toolset {toolset_id} is not registered."));
     };
@@ -440,35 +478,83 @@ fn ensure_toolset_window(app: &tauri::AppHandle, toolset_id: &str) -> Result<(),
 
     if let Some(window) = app.get_webview_window(&label) {
         window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        configure_toolset_utility_window(&window)?;
         return Ok(());
     }
 
-    let size = toolset.preferred_window_size.clone().unwrap_or(ToolsetWindowSize {
-        width: 96.0,
-        height: 420.0,
-        min_width: Some(96.0),
-        min_height: Some(240.0),
-    });
+    let size = toolset
+        .preferred_window_size
+        .clone()
+        .unwrap_or(ToolsetWindowSize {
+            width: 96.0,
+            height: 420.0,
+            min_width: Some(96.0),
+            min_height: Some(240.0),
+        });
     let position = preferred_toolset_position(app, toolset_id);
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         label,
         WebviewUrl::App(format!("index.html?window=toolset&toolsetId={toolset_id}").into()),
     )
     .title(format!("ChemDraft {}", toolset.title))
     .inner_size(size.width, size.height)
-    .min_inner_size(size.min_width.unwrap_or(size.width), size.min_height.unwrap_or(size.height))
+    .min_inner_size(
+        size.min_width.unwrap_or(size.width),
+        size.min_height.unwrap_or(size.height),
+    )
+    .accept_first_mouse(true)
+    .focusable(false)
     .resizable(false)
     .decorations(false)
     .shadow(false)
-    .always_on_top(false)
-    .skip_taskbar(false)
+    .skip_taskbar(true)
     .position(position.x, position.y)
     .build()
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_utility_window(&window)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_toolset_utility_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+    let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
+        return Err("Could not access native ChemDraft toolbar window.".to_string());
+    };
+
+    let style = ns_window.styleMask()
+        | NSWindowStyleMask::UtilityWindow
+        | NSWindowStyleMask::NonactivatingPanel;
+    ns_window.setStyleMask(style);
+    ns_window.setLevel(NSFloatingWindowLevel);
+    ns_window.setHidesOnDeactivate(true);
+    ns_window.setCanHide(true);
+    ns_window.setAnimationBehavior(NSWindowAnimationBehavior::UtilityWindow);
+
+    let mut collection_behavior = ns_window.collectionBehavior();
+    collection_behavior.insert(
+        NSWindowCollectionBehavior::Transient
+            | NSWindowCollectionBehavior::Auxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle
+            | NSWindowCollectionBehavior::MoveToActiveSpace,
+    );
+    collection_behavior.remove(NSWindowCollectionBehavior::CanJoinAllApplications);
+    ns_window.setCollectionBehavior(collection_behavior);
+    ns_window.orderFront(None);
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_toolset_utility_window<R: Runtime>(
+    _window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    Ok(())
 }
 
 fn toolset_state(app: &tauri::AppHandle, toolset_id: &str) -> Result<ToolsetWindowState, String> {
@@ -489,7 +575,8 @@ fn toolset_state(app: &tauri::AppHandle, toolset_id: &str) -> Result<ToolsetWind
 }
 
 fn toolset_manifest() -> ToolsetManifest {
-    serde_json::from_str(TOOLSET_MANIFEST_JSON).expect("desktop toolset manifest should be valid JSON")
+    serde_json::from_str(TOOLSET_MANIFEST_JSON)
+        .expect("desktop toolset manifest should be valid JSON")
 }
 
 fn toolset_definition(toolset_id: &str) -> Option<ToolsetDefinition> {
@@ -544,8 +631,12 @@ fn toolset_visible(toolset: &ToolsetDefinition, layout_state: &ToolsetLayoutStat
         .unwrap_or(toolset.default_visible)
 }
 
-fn preferred_toolset_position<R: Runtime>(app: &tauri::AppHandle<R>, toolset_id: &str) -> ToolsetWindowPosition {
-    persisted_toolset_position(app, toolset_id).unwrap_or_else(|| default_toolset_position(toolset_id))
+fn preferred_toolset_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+) -> ToolsetWindowPosition {
+    persisted_toolset_position(app, toolset_id)
+        .unwrap_or_else(|| default_toolset_position(toolset_id))
 }
 
 fn default_toolset_position(toolset_id: &str) -> ToolsetWindowPosition {
@@ -630,7 +721,10 @@ fn persist_toolset_position<R: Runtime>(
     y: f64,
 ) -> Result<(), String> {
     update_toolset_layout_state(app, |layout_state| {
-        let state = layout_state.toolsets.entry(toolset_id.to_string()).or_default();
+        let state = layout_state
+            .toolsets
+            .entry(toolset_id.to_string())
+            .or_default();
         state.x = Some(x);
         state.y = Some(y);
     })
@@ -686,7 +780,10 @@ fn set_toolset_menu_checked<R: Runtime>(
     set_check_menu_item_checked(app, &command_id, checked)
 }
 
-fn toggle_check_menu_item<R: Runtime>(app: &tauri::AppHandle<R>, command_id: &str) -> Result<(), String> {
+fn toggle_check_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    command_id: &str,
+) -> Result<(), String> {
     let Some(menu) = app.menu() else {
         return Ok(());
     };
@@ -755,7 +852,10 @@ mod tests {
     #[test]
     fn toolset_labels_round_trip_to_ids() {
         expect_eq("toolset-core-main", &toolset_window_label("core.main"));
-        expect_eq(Some("core.main".to_string()), toolset_id_for_window_label("toolset-core-main"));
+        expect_eq(
+            Some("core.main".to_string()),
+            toolset_id_for_window_label("toolset-core-main"),
+        );
         expect_eq(None, toolset_id_for_window_label("main"));
     }
 

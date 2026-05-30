@@ -114,6 +114,29 @@ export async function startPaletteWindowDrag(): Promise<void> {
   await getCurrentWindow().startDragging();
 }
 
+export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosition | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const window = getCurrentWindow();
+  const [position, scaleFactor] = await Promise.all([window.outerPosition(), window.scaleFactor()]);
+  return {
+    x: position.x / scaleFactor,
+    y: position.y / scaleFactor
+  };
+}
+
+export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { getCurrentWindow, LogicalPosition } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().setPosition(new LogicalPosition(position.x, position.y));
+}
+
 export async function listenForPaletteCommands(handler: (commandId: string) => void): Promise<Unlisten> {
   return listenForToolsetCommands(handler);
 }

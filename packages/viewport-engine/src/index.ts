@@ -98,6 +98,10 @@ export function zoomViewportBy(viewport: ViewportState, scaleDelta: number, foca
   return zoomViewportAtPoint(viewport, viewport.scale * scaleDelta, focalScreenPoint);
 }
 
+export function wheelDeltaToZoomFactor(deltaY: number, sensitivity = 0.002): number {
+  return Math.exp(-deltaY * sensitivity);
+}
+
 export function viewportCssVars(viewport: ViewportState): Record<string, string | number> {
   return {
     "--page-scale": viewport.scale,

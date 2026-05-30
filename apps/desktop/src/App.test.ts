@@ -47,6 +47,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("app-shell");
     expect(markup).toContain("native-shell");
     expect(markup).toContain("canvas-region");
+    expect(markup).toContain('data-zoom-surface="document"');
     expect(markup).toContain("crosshair-horizontal");
     expect(markup).toContain("document-board without-rulers");
     expect(markup).not.toContain("ruler-top");
@@ -62,7 +63,8 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain("palette-window-shell");
     expect(markup).toContain("data-palette-drag-surface");
-    expect(markup).toContain("data-tauri-drag-region");
+    expect(markup).toContain("palette-close-button");
+    expect(markup).toContain('aria-label="Hide Main Toolbar"');
     expect(markup).toContain("Main");
     expect(markup).toContain("tool-palette");
     expect(markup).toContain(`data-toolset-id="${DEFAULT_TOOLSET_ID}"`);

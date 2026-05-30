@@ -219,6 +219,8 @@ button {
 .canvas-region {
   position: relative;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   background: #cfd7de;
 }
 
@@ -298,7 +300,9 @@ button {
   width: 100%;
   height: 28px;
   display: grid;
-  place-items: center;
+  grid-template-columns: 1fr 20px;
+  align-items: center;
+  justify-items: center;
   border-bottom: 1px solid #c8ced2;
   background: linear-gradient(#f6f8f7, #dfe4e3);
   color: #848d94;
@@ -311,6 +315,36 @@ button {
 
 .palette-title:active {
   cursor: grabbing;
+}
+
+.palette-title-label {
+  min-width: 0;
+  padding-left: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-close-button {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: #8e989f;
+  cursor: default;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.palette-close-button:hover {
+  border-color: #b5bdc2;
+  background: #ffffff;
+  color: #4d5860;
 }
 
 .tool-group {
@@ -531,9 +565,10 @@ button {
   display: grid;
   grid-template-columns: var(--ruler-thickness) var(--page-width);
   grid-template-rows: var(--ruler-thickness) var(--page-height);
-  filter: drop-shadow(0 8px 12px rgb(29 35 39 / 22%));
   transform: translate(var(--page-translate-x, 0), var(--page-translate-y, 0));
   transform-origin: 0 0;
+  contain: layout paint;
+  isolation: isolate;
 }
 
 .document-board.without-rulers {
@@ -562,6 +597,7 @@ button {
   background-size: var(--ruler-unit) var(--ruler-unit);
   border: 1px solid #b8c1c6;
   box-shadow: none;
+  contain: paint;
 }
 
 .crosshair {
