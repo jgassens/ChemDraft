@@ -19,7 +19,6 @@ import {
   exportPhase4Svg,
   getSelectedMolecule,
   getSelectedObject,
-  insertAdapterFallbackMolecule,
   openNativeDocument
 } from "./documentWorkflow";
 import { CommandIconButton, ToolPalette } from "./ToolPalette";
@@ -131,15 +130,6 @@ export function MainWindow({
 
     paletteGroups.flat().forEach((tool) => {
       register(tool, () => {
-        if (tool.id === "tool.adapterFallback") {
-          const inserted = insertAdapterFallbackMolecule(document);
-          setDocument(inserted);
-          setLastAnalysis(null);
-          setActiveTool("tool.select");
-          setStatus("Inserted adapter-backed fallback molecule");
-          return;
-        }
-
         if (tool.enabled === false) {
           setStatus("EditorAdapter not connected");
           return;

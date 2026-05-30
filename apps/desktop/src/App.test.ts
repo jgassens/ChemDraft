@@ -40,6 +40,7 @@ describe("ChemDraft desktop shell", () => {
     const markup = renderToStaticMarkup(createElement(PaletteWindow));
 
     expect(markup).toContain("palette-window-shell");
+    expect(markup).toContain("data-palette-drag-surface");
     expect(markup).toContain("data-tauri-drag-region");
     expect(markup).toContain("Tools");
     expect(markup).toContain("tool-palette");
@@ -72,24 +73,10 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("keeps chemistry tools disabled until an EditorAdapter exists", () => {
-    const disabledToolIds = new Set([
-      "tool.lasso",
-      "tool.bond",
-      "tool.wedgeBond",
-      "tool.hashedBond",
-      "tool.atom",
-      "tool.ring",
-      "tool.chain",
-      "tool.mechanismArrow",
-      "tool.reactionArrow",
-      "tool.charge",
-      "tool.text",
-      "tool.bracket"
-    ]);
+    const enabledToolIds = new Set(["tool.select"]);
+    const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 
-    const disabledTools = paletteGroups.flat().filter((command) => disabledToolIds.has(command.id));
-
-    expect(disabledTools).toHaveLength(disabledToolIds.size);
+    expect(disabledTools.length).toBeGreaterThan(30);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
 
@@ -100,6 +87,28 @@ describe("ChemDraft desktop shell", () => {
       expect(markup).toContain(`data-command-id="${command.id}"`);
       expect(markup).toContain(command.title);
     }
+  });
+
+  it("uses custom toolbar assets for the expanded palette", () => {
+    const toolCommands = paletteGroups.flat();
+
+    expect(toolCommands.length).toBeGreaterThanOrEqual(48);
+    expect(toolCommands.some((command) => command.assetName === "Custom_Bond_Wedge")).toBe(true);
+    expect(toolCommands.some((command) => command.assetName === "Custom_Arrow_Equilibrium")).toBe(true);
+    expect(toolCommands.some((command) => command.assetName === "Custom_Flip_Horizontal")).toBe(true);
+  });
+
+  it("keeps functional metadata on asset-backed palette commands", () => {
+    const assetCommands = paletteGroups.flat().filter((command) => command.assetName);
+
+    expect(assetCommands.length).toBeGreaterThanOrEqual(48);
+    expect(assetCommands.every((command) => command.category)).toBe(true);
+    expect(assetCommands.every((command) => command.description)).toBe(true);
+    expect(assetCommands.find((command) => command.assetName === "Custom_Bond_Wedge")).toMatchObject({
+      id: "tool.wedgeBond",
+      title: "Solid Wedge Bond",
+      category: "structure"
+    });
   });
 
   it("routes palette events as command ids only", () => {

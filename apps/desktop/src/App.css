@@ -35,9 +35,21 @@ body {
   overflow: hidden;
 }
 
-body.palette-window-body {
+html.palette-window-html {
   min-width: 0;
-  background: transparent;
+  background: #edf0ef;
+}
+
+body.palette-window-body {
+  width: 100%;
+  min-width: 0;
+  background: #edf0ef;
+}
+
+body.palette-window-body #root {
+  width: 100%;
+  min-width: 0;
+  background: #edf0ef;
 }
 
 button {
@@ -204,45 +216,66 @@ button {
   z-index: 4;
   top: 16px;
   left: 14px;
+  grid-template-columns: 1fr;
+  width: 88px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
   box-shadow: 0 10px 26px rgb(34 40 44 / 18%);
 }
 
 .tool-palette.floating {
   position: static;
-  width: 88px;
-  padding: 6px;
+  width: 96px;
+  max-height: calc(100vh - 28px);
+  gap: 5px;
+  padding: 5px 5px 6px;
   border: 0;
-  border-radius: 0 0 10px 10px;
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
+.tool-palette.docked .tool-group,
 .tool-palette.floating .tool-group {
-  grid-template-columns: repeat(2, 30px);
+  grid-template-columns: repeat(2, 24px);
   justify-content: center;
-  column-gap: 8px;
-  row-gap: 5px;
+  column-gap: 9px;
+  row-gap: 4px;
+}
+
+.tool-palette.floating::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .palette-window-shell {
   display: grid;
   gap: 0;
   place-items: start center;
-  width: 92px;
+  width: 100%;
+  min-width: 0;
   min-height: 100vh;
-  padding: 0 4px 8px;
-  border: 1px solid #aeb8be;
-  border-radius: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: #edf0ef;
   color: var(--ink);
-  box-shadow: 0 14px 34px rgb(34 40 44 / 20%);
+  box-shadow: none;
+  cursor: grab;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.palette-window-shell:active {
+  cursor: grabbing;
 }
 
 .palette-title {
-  width: calc(100% + 8px);
+  width: 100%;
   height: 28px;
-  margin: 0 -4px;
   display: grid;
   place-items: center;
   border-bottom: 1px solid #c8ced2;
@@ -262,7 +295,7 @@ button {
 .tool-group {
   display: grid;
   gap: 4px;
-  padding-bottom: 7px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -275,19 +308,43 @@ button {
   position: relative;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
   color: #30373d;
+  cursor: pointer;
   line-height: 1;
 }
 
 .icon-button svg {
   width: 18px;
   height: 18px;
+}
+
+.tool-palette .icon-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+}
+
+.tool-palette .icon-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.tool-icon-image {
+  width: 23px;
+  height: 23px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.tool-palette .tool-icon-image {
+  width: 21px;
+  height: 21px;
 }
 
 .icon-button:hover:not(:disabled) {
@@ -304,6 +361,11 @@ button {
 .icon-button:disabled {
   color: #a2aaaf;
   cursor: not-allowed;
+}
+
+.icon-button:disabled .tool-icon-image {
+  filter: grayscale(1);
+  opacity: 0.38;
 }
 
 .icon-button.separated {
@@ -327,6 +389,12 @@ button {
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
+}
+
+.tool-palette .shortcut {
+  right: 0;
+  bottom: 0;
+  font-size: 7px;
 }
 
 .ruler {

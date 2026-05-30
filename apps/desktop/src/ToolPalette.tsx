@@ -1,5 +1,6 @@
 import type { CommandSpec } from "./commands";
 import { Icon } from "./icons";
+import { toolbarAsset } from "./toolbarAssets";
 
 export type ToolPaletteMode = "docked" | "floating";
 
@@ -47,8 +48,9 @@ export function CommandIconButton({
   onInvoke: (commandId: string) => void;
 }) {
   const disabled = command.enabled === false;
-  const shortcutText = command.shortcut ? ` (${command.shortcut})` : "";
-  const stateText = disabled ? ": unavailable until an EditorAdapter or file workflow is connected" : "";
+  const shortcut = command.shortcut ?? command.defaultShortcut;
+  const shortcutText = shortcut ? ` (${shortcut})` : "";
+  const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
 
   return (
     <button
@@ -59,10 +61,15 @@ export function CommandIconButton({
       aria-pressed={active || undefined}
       disabled={disabled}
       data-command-id={command.id}
+      onPointerDown={(event) => event.stopPropagation()}
       onClick={() => onInvoke(command.id)}
     >
-      <Icon name={command.icon} />
-      {showShortcut && command.shortcut ? <span className="shortcut">{command.shortcut}</span> : null}
+      {command.assetName ? (
+        <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+      ) : (
+        <Icon name={command.icon} />
+      )}
+      {showShortcut && shortcut ? <span className="shortcut">{shortcut}</span> : null}
     </button>
   );
 }
