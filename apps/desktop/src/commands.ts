@@ -10,8 +10,6 @@ export interface CommandSpec extends CommandDefinition {
   disabledReason?: string;
 }
 
-export const menuItems = ["File", "Edit", "Structure", "Object", "View", "Tools", "Analyze", "Window", "Help"];
-
 export function createQuickActions(
   document: ChemDraftDocument,
   selectedMolecule: MoleculeObject | undefined
@@ -181,6 +179,27 @@ export const drawerActions: CommandSpec[] = [
   { id: "view.togglePlugins", title: "Toggle Plugins", icon: "plugin", source: "core" }
 ];
 
+export const viewActions: CommandSpec[] = [
+  {
+    id: "view.toggleRulers",
+    title: "Toggle Rulers",
+    icon: "grid",
+    source: "core",
+    shortcut: "Cmd+R",
+    category: "view",
+    description: "Show or hide document rulers"
+  },
+  {
+    id: "view.toggleCrosshairs",
+    title: "Toggle Crosshairs",
+    icon: "align",
+    source: "core",
+    shortcut: "Shift+Cmd+R",
+    category: "view",
+    description: "Show or hide document crosshairs"
+  }
+];
+
 export const styleActions: CommandSpec[] = [
   { id: "style.bondStroke", title: "Bond Stroke 1.2 px", icon: "style", source: "core", enabled: false },
   { id: "style.textSize", title: "Text Size 10 pt", icon: "text", source: "core", enabled: false },
@@ -196,6 +215,7 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...createQuickActions(document, selectedMolecule),
     ...allPaletteCommands(),
     ...drawerActions,
+    ...viewActions,
     ...styleActions
   ];
 }

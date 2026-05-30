@@ -24,7 +24,7 @@ pnpm dev
 pnpm dev:web
 ```
 
-`pnpm dev` launches the ChemDraft Tauri desktop app. In the desktop app, the drawing palette is a separate native window that routes command IDs back to the main document window. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface; the browser preview uses an in-window docked palette fallback.
+`pnpm dev` launches the ChemDraft Tauri desktop app. In the desktop app, the drawing palette is a separate native window that routes command IDs back to the main document window. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface; the browser preview uses an in-window floating palette overlay, not a palette embedded in the document canvas.
 
 The `./run-app` helper follows the same desktop-first path. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 

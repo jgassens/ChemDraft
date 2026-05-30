@@ -1,25 +1,30 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { allShellCommands, paletteGroups } from "./commands";
+import { allShellCommands, paletteGroups, viewActions } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { createPaletteCommandPayload } from "./window-manager";
 
 describe("ChemDraft desktop shell", () => {
-  it("renders compact web-preview workspace regions with the docked fallback palette", () => {
-    const markup = renderToStaticMarkup(
-      createElement(MainWindow, { initialPaletteMode: "docked", nativePalette: false })
-    );
+  it("renders compact web-preview workspace regions with a floating fallback palette", () => {
+    const markup = renderToStaticMarkup(createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: false }));
 
     expect(markup).toContain("app-shell");
-    expect(markup).toContain("menu-bar");
-    expect(markup).toContain("command-bar");
+    expect(markup).toContain("web-floating-palette");
+    expect(markup).toContain("data-floating-palette");
     expect(markup).toContain("tool-palette");
     expect(markup).toContain("canvas-region");
-    expect(markup).toContain("statusbar");
-    expect(markup).toContain("EditorAdapter not connected");
+    expect(markup).toContain("crosshair-vertical");
+    expect(markup).toContain("document-board without-rulers");
+    expect(markup).not.toContain("ruler-top");
+    expect(markup).not.toContain("menu-bar");
+    expect(markup).not.toContain("command-bar");
+    expect(markup).not.toContain("statusbar");
+    expect(markup).not.toContain("EditorAdapter not connected");
+    expect(markup).not.toContain("tool-palette docked");
+    expect(markup.indexOf("web-floating-palette")).toBeLessThan(markup.indexOf('class="workspace"'));
   });
 
   it("renders the main desktop document window without an in-window palette by default", () => {
@@ -29,11 +34,15 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain("app-shell");
     expect(markup).toContain("native-shell");
-    expect(markup).toContain("command-bar");
     expect(markup).toContain("canvas-region");
-    expect(markup).toContain("statusbar");
+    expect(markup).toContain("crosshair-horizontal");
+    expect(markup).toContain("document-board without-rulers");
+    expect(markup).not.toContain("ruler-top");
     expect(markup).not.toContain("menu-bar");
+    expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("tool-palette");
+    expect(markup).not.toContain("drawer-rail");
+    expect(markup).not.toContain("statusbar");
   });
 
   it("renders the native palette route as an independent palette-only surface", () => {
@@ -49,27 +58,38 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("utility-drawer");
   });
 
-  it("keeps inspector and plugin drawers closed by default", () => {
+  it("keeps every non-canvas panel out of the document window by default", () => {
     const markup = renderToStaticMarkup(
       createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
     );
 
     expect(markup).not.toContain("utility-drawer");
     expect(markup).not.toContain("drawer-title");
+    expect(markup).not.toContain("adapter-state");
+    expect(markup).not.toContain("margin-guide");
   });
 
-  it("renders visible shell actions from command definitions", () => {
+  it("keeps command definitions available without embedding actions in the canvas", () => {
     const document = createPhase4Document();
     const commands = allShellCommands(document);
     const markup = renderToStaticMarkup(
-      createElement(MainWindow, { initialPaletteMode: "docked", nativePalette: false })
+      createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: false })
     );
 
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length);
+    expect(commands.some((command) => command.id === "document.open")).toBe(true);
+    expect(commands.some((command) => command.id === "view.toggleRulers")).toBe(true);
+    expect(markup).not.toContain("Open Native Document");
+    expect(markup).not.toContain("Validate Selected Structure");
+  });
 
-    for (const command of commands) {
-      expect(markup).toContain(command.title);
-    }
+  it("defines View menu commands for optional canvas scaffolding", () => {
+    expect(viewActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "view.toggleRulers", title: "Toggle Rulers" }),
+        expect.objectContaining({ id: "view.toggleCrosshairs", title: "Toggle Crosshairs" })
+      ])
+    );
   });
 
   it("keeps chemistry tools disabled until an EditorAdapter exists", () => {

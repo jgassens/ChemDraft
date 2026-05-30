@@ -1,15 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent } from "react";
-import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
-import { disconnectedEditorCapabilities } from "@chemdraft/editor-adapter";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ChangeEvent,
+  type PointerEvent
+} from "react";
+import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   createQuickActions,
-  drawerActions,
-  menuItems,
   paletteGroups,
-  styleActions,
+  viewActions,
   type CommandSpec
 } from "./commands";
 import {
@@ -18,14 +24,20 @@ import {
   createPhase4Document,
   exportPhase4Svg,
   getSelectedMolecule,
-  getSelectedObject,
   openNativeDocument
 } from "./documentWorkflow";
-import { CommandIconButton, ToolPalette } from "./ToolPalette";
+import { ToolPalette } from "./ToolPalette";
 import { isDesktopRuntime, listenForPaletteCommands, openToolPalette, toggleToolPalette } from "./window-manager";
 
-type Drawer = "inspector" | "plugins" | null;
-type PaletteMode = "floating" | "docked";
+type PaletteMode = "floating" | "hidden";
+type PalettePosition = { x: number; y: number };
+type PaletteDragState = {
+  pointerId: number;
+  originX: number;
+  originY: number;
+  startX: number;
+  startY: number;
+};
 
 export interface MainWindowProps {
   initialPaletteMode?: PaletteMode;
@@ -33,24 +45,25 @@ export interface MainWindowProps {
 }
 
 export function MainWindow({
-  initialPaletteMode = isDesktopRuntime() ? "floating" : "docked",
+  initialPaletteMode = "floating",
   nativePalette = isDesktopRuntime()
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const webPaletteDragRef = useRef<PaletteDragState | null>(null);
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
   const [document, setDocument] = useState(() => createPhase4Document());
   const [activeTool, setActiveTool] = useState("tool.select");
   const [paletteMode, setPaletteMode] = useState<PaletteMode>(initialPaletteMode);
-  const [drawer, setDrawer] = useState<Drawer>(null);
+  const [webPalettePosition, setWebPalettePosition] = useState<PalettePosition>({ x: 34, y: 116 });
+  const [rulersVisible, setRulersVisible] = useState(false);
+  const [crosshairsVisible, setCrosshairsVisible] = useState(true);
   const [zoom, setZoom] = useState(100);
-  const [status, setStatus] = useState("Blank native document");
-  const [lastAnalysis, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
+  const [, setStatus] = useState("Blank native document");
+  const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
 
-  const selectedObject = getSelectedObject(document);
   const selectedMolecule = getSelectedMolecule(document);
   const quickActions = useMemo(() => createQuickActions(document, selectedMolecule), [document, selectedMolecule]);
-  const objectCount = document.pages.reduce((count, page) => count + page.objects.length, 0);
 
   const registry = useMemo(() => {
     const commandRegistry = new CommandRegistry();
@@ -89,8 +102,8 @@ export function MainWindow({
             return;
           }
 
-          setPaletteMode((current) => (current === "docked" ? "floating" : "docked"));
-          setStatus("Toggled web preview tool palette");
+          setPaletteMode((current) => (current === "floating" ? "hidden" : "floating"));
+          setStatus("Toggled floating tool palette");
         }
         if (action.id === "export.svg") {
           const result = exportPhase4Svg(document);
@@ -139,19 +152,17 @@ export function MainWindow({
       });
     });
 
-    drawerActions.forEach((action) => {
+    viewActions.forEach((action) => {
       register(action, () => {
-        setDrawer((current) => {
-          if (action.id === "view.toggleInspector") {
-            return current === "inspector" ? null : "inspector";
-          }
-          return current === "plugins" ? null : "plugins";
-        });
-      });
-    });
+        if (action.id === "view.toggleRulers") {
+          setRulersVisible((visible) => !visible);
+          return;
+        }
 
-    styleActions.forEach((action) => {
-      register(action);
+        if (action.id === "view.toggleCrosshairs") {
+          setCrosshairsVisible((visible) => !visible);
+        }
+      });
     });
 
     return commandRegistry;
@@ -175,8 +186,8 @@ export function MainWindow({
         setPaletteMode("floating");
       })
       .catch(() => {
-        setPaletteMode("docked");
-        setStatus("Native tool palette unavailable; using docked fallback");
+        setPaletteMode("hidden");
+        setStatus("Native tool palette unavailable");
       });
   }, [nativePalette]);
 
@@ -220,6 +231,42 @@ export function MainWindow({
       });
   };
 
+  const startWebPaletteDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    webPaletteDragRef.current = {
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      startX: webPalettePosition.x,
+      startY: webPalettePosition.y
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [webPalettePosition]);
+
+  const moveWebPalette = useCallback((event: PointerEvent<HTMLElement>) => {
+    const drag = webPaletteDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const maxX = Math.max(8, globalThis.innerWidth - 112);
+    const maxY = Math.max(8, globalThis.innerHeight - 120);
+    setWebPalettePosition({
+      x: clamp(drag.startX + event.clientX - drag.originX, 8, maxX),
+      y: clamp(drag.startY + event.clientY - drag.originY, 44, maxY)
+    });
+  }, []);
+
+  const stopWebPaletteDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+    if (webPaletteDragRef.current?.pointerId === event.pointerId) {
+      webPaletteDragRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
   return (
     <main className={["app-shell", nativePalette ? "native-shell" : "web-shell"].join(" ")} aria-label="ChemDraft desktop workspace">
       <input
@@ -230,153 +277,71 @@ export function MainWindow({
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
       />
-      {!nativePalette ? (
-        <header className="menu-bar">
-          <div className="brand">ChemDraft</div>
-          <nav className="menu" aria-label="Application menu">
-            {menuItems.map((item) => (
-              <button type="button" key={item}>
-                {item}
-              </button>
-            ))}
-          </nav>
-        </header>
+
+      {!nativePalette && paletteMode === "floating" ? (
+        <section
+          className="web-floating-palette"
+          aria-label="Floating drawing tool palette"
+          data-floating-palette="web-preview"
+          style={{ "--palette-x": `${webPalettePosition.x}px`, "--palette-y": `${webPalettePosition.y}px` } as CSSProperties}
+          onPointerDown={startWebPaletteDrag}
+          onPointerMove={moveWebPalette}
+          onPointerUp={stopWebPaletteDrag}
+          onPointerCancel={stopWebPaletteDrag}
+        >
+          <div className="palette-title">Tools</div>
+          <ToolPalette groups={paletteGroups} activeTool={activeTool} mode="floating" onInvoke={invoke} />
+        </section>
       ) : null}
 
-      <section className="command-bar" aria-label="Quick actions">
-        <div className="document-tabs" aria-label="Document tabs">
-          <button type="button" className="active-tab" title={document.title}>
-            {document.title}
-          </button>
-        </div>
-        <Toolbar commands={quickActions} onInvoke={invoke} />
-        <StyleStrip commands={styleActions} onInvoke={invoke} />
-      </section>
-
       <section className="workspace">
-        {paletteMode === "docked" ? (
-          <ToolPalette groups={paletteGroups} activeTool={activeTool} mode="docked" onInvoke={invoke} />
-        ) : null}
-
         <section className="canvas-region" aria-label="Document workspace">
-          <div className="ruler ruler-top" aria-hidden="true">
-            {Array.from({ length: 12 }, (_, index) => (
-              <span key={index} />
-            ))}
-          </div>
-          <div className="ruler ruler-left" aria-hidden="true">
-            {Array.from({ length: 15 }, (_, index) => (
-              <span key={index} />
-            ))}
-          </div>
           <div className="page-stage" style={{ "--page-scale": zoom / 100 } as CSSProperties}>
-            <div className="page" aria-label={document.title}>
-              <div className="margin-guide" aria-hidden="true" />
-              {document.pages[0].objects.map((object) => (
-                <DocumentObjectView key={object.id} object={object} selected={document.selection.objectIds.includes(object.id)} />
-              ))}
-              <div className="adapter-state" role="status">
-                {objectCount === 0 ? "EditorAdapter not connected" : "Adapter-backed chem-core page"}
+            <div className={["document-board", rulersVisible ? "with-rulers" : "without-rulers"].join(" ")}>
+              {rulersVisible ? <DocumentRulers /> : null}
+              <div className="page" aria-label={document.title}>
+                {crosshairsVisible ? (
+                  <>
+                    <div className="crosshair crosshair-vertical" aria-hidden="true" />
+                    <div className="crosshair crosshair-horizontal" aria-hidden="true" />
+                  </>
+                ) : null}
+                {document.pages[0].objects.map((object) => (
+                  <DocumentObjectView key={object.id} object={object} selected={document.selection.objectIds.includes(object.id)} />
+                ))}
               </div>
             </div>
           </div>
         </section>
-
-        <aside className="drawer-rail" aria-label="Optional panels">
-          {drawerActions.map((action) => (
-            <CommandIconButton
-              key={action.id}
-              command={action}
-              active={
-                (action.id === "view.toggleInspector" && drawer === "inspector") ||
-                (action.id === "view.togglePlugins" && drawer === "plugins")
-              }
-              onInvoke={invoke}
-            />
-          ))}
-        </aside>
-
-        {drawer ? (
-          <UtilityDrawer
-            drawer={drawer}
-            document={document}
-            selectedObject={selectedObject}
-            selectedMolecule={selectedMolecule}
-            lastAnalysis={lastAnalysis}
-          />
-        ) : null}
       </section>
-
-      <footer className="statusbar">
-        <span>{status}</span>
-        <span>{disconnectedEditorCapabilities.implementationName}</span>
-        <span>{objectCount} object(s)</span>
-        <span>{selectedObject ? `Selected ${selectedObject.id}` : "No selection"}</span>
-        <span>Page Letter</span>
-        <span>{zoom}%</span>
-        <span>{document.schema}</span>
-      </footer>
     </main>
   );
 }
 
-function Toolbar({
-  commands,
-  onInvoke
-}: {
-  commands: CommandSpec[];
-  onInvoke: (commandId: string) => void;
-}) {
-  return (
-    <div className="quick-toolbar">
-      {commands.map((command, index) => (
-        <CommandIconButton
-          key={command.id}
-          command={command}
-          onInvoke={onInvoke}
-          separated={index === 3 || index === 7}
-        />
-      ))}
-    </div>
-  );
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
-function StyleStrip({
-  commands,
-  onInvoke
-}: {
-  commands: CommandSpec[];
-  onInvoke: (commandId: string) => void;
-}) {
+function DocumentRulers() {
   return (
-    <div className="style-strip" aria-label="Style controls">
-      {commands.map((command) => (
-        <button
-          type="button"
-          key={command.id}
-          title={`${command.title}: unavailable until style presets are connected`}
-          aria-label={`${command.title}: unavailable until style presets are connected`}
-          disabled={command.enabled === false}
-          data-command-id={command.id}
-          onClick={() => onInvoke(command.id)}
-        >
-          {styleControlLabel(command.id)}
-        </button>
-      ))}
-    </div>
+    <>
+      <div className="ruler-corner" aria-hidden="true" />
+      <div className="ruler ruler-top" aria-hidden="true">
+        {Array.from({ length: 9 }, (_, index) => (
+          <span key={index}>
+            <strong>{index}</strong>
+          </span>
+        ))}
+      </div>
+      <div className="ruler ruler-left" aria-hidden="true">
+        {Array.from({ length: 11 }, (_, index) => (
+          <span key={index}>
+            <strong>{index}</strong>
+          </span>
+        ))}
+      </div>
+    </>
   );
-}
-
-function styleControlLabel(commandId: string): string {
-  if (commandId === "style.bondStroke") {
-    return "1.2 px";
-  }
-
-  if (commandId === "style.textSize") {
-    return "10 pt";
-  }
-
-  return "ACS";
 }
 
 function DocumentObjectView({ object, selected }: { object: DocumentObject; selected: boolean }) {
@@ -424,72 +389,6 @@ function DocumentObjectView({ object, selected }: { object: DocumentObject; sele
     >
       {object.type}
     </div>
-  );
-}
-
-function UtilityDrawer({
-  drawer,
-  document,
-  selectedObject,
-  selectedMolecule,
-  lastAnalysis
-}: {
-  drawer: Exclude<Drawer, null>;
-  document: ChemDraftDocument;
-  selectedObject: DocumentObject | undefined;
-  selectedMolecule: MoleculeObject | undefined;
-  lastAnalysis: StructureAnalysisResult | null;
-}) {
-  const objectCount = document.pages.reduce((count, page) => count + page.objects.length, 0);
-
-  if (drawer === "plugins") {
-    return (
-      <aside className="utility-drawer" aria-label="Plugin panel">
-        <div className="drawer-title">Plugins</div>
-        <dl>
-          <div>
-            <dt>Loaded</dt>
-            <dd>None</dd>
-          </div>
-          <div>
-            <dt>Pending patches</dt>
-            <dd>0</dd>
-          </div>
-        </dl>
-      </aside>
-    );
-  }
-
-  return (
-    <aside className="utility-drawer" aria-label="Inspector">
-      <div className="drawer-title">Inspector</div>
-      <dl>
-        <div>
-          <dt>Document</dt>
-          <dd>{document.title}</dd>
-        </div>
-        <div>
-          <dt>Objects</dt>
-          <dd>{objectCount}</dd>
-        </div>
-        <div>
-          <dt>Selection</dt>
-          <dd>{selectedObject?.id ?? "None"}</dd>
-        </div>
-        <div>
-          <dt>Formula</dt>
-          <dd>{selectedMolecule?.chemistry ? (lastAnalysis?.properties.formula ?? "Calculated") : "Not calculated"}</dd>
-        </div>
-        <div>
-          <dt>Mass</dt>
-          <dd>{formatMass(lastAnalysis)}</dd>
-        </div>
-        <div>
-          <dt>Warnings</dt>
-          <dd>{lastAnalysis?.warnings.length ?? document.compatibility.warnings.length}</dd>
-        </div>
-      </dl>
-    </aside>
   );
 }
 
@@ -557,14 +456,4 @@ function formatAnalysisStatus(analysis: StructureAnalysisResult): string {
 function formatValidationFailure(analysis: StructureAnalysisResult): string {
   const firstError = analysis.validation.errors[0] ?? analysis.validation.warnings[0];
   return firstError ? `Validation unavailable: ${firstError.message}` : "Validation unavailable";
-}
-
-function formatMass(analysis: StructureAnalysisResult | null): string {
-  if (!analysis?.properties.averageMass) {
-    return "Not calculated";
-  }
-
-  return analysis.properties.exactMass
-    ? `${analysis.properties.averageMass.toFixed(3)} avg / ${analysis.properties.exactMass.toFixed(4)} exact`
-    : `${analysis.properties.averageMass.toFixed(3)} avg`;
 }
