@@ -567,6 +567,9 @@ button {
 }
 
 .crosshair-overlay {
+  --crosshair-tick-minor-length: 4px;
+  --crosshair-tick-quarter-length: 6px;
+  --crosshair-tick-half-length: 9px;
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -609,27 +612,27 @@ button {
 }
 
 .crosshair-tick-minor.crosshair-tick-on-vertical {
-  width: 8px;
+  width: var(--crosshair-tick-minor-length);
 }
 
 .crosshair-tick-quarter.crosshair-tick-on-vertical {
-  width: 15px;
+  width: var(--crosshair-tick-quarter-length);
 }
 
 .crosshair-tick-half.crosshair-tick-on-vertical {
-  width: 22px;
+  width: var(--crosshair-tick-half-length);
 }
 
 .crosshair-tick-minor.crosshair-tick-on-horizontal {
-  height: 8px;
+  height: var(--crosshair-tick-minor-length);
 }
 
 .crosshair-tick-quarter.crosshair-tick-on-horizontal {
-  height: 15px;
+  height: var(--crosshair-tick-quarter-length);
 }
 
 .crosshair-tick-half.crosshair-tick-on-horizontal {
-  height: 22px;
+  height: var(--crosshair-tick-half-length);
 }
 
 .document-object {
