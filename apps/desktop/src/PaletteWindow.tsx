@@ -43,7 +43,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
     void sendPaletteCommand(commandId).catch(() => undefined);
   };
 
-  const hidePaletteWindow = (event: ReactMouseEvent<HTMLButtonElement>) => {
+  const hidePaletteWindow = (event: ReactMouseEvent<HTMLButtonElement> | PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
     void closeToolsetWindow(toolset.id).catch(() => undefined);
@@ -203,18 +203,20 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       onMouseUp={stopPaletteWindowMouseDrag}
     >
       <div className="palette-title">
-        <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
         <button
           className="palette-close-button"
           type="button"
           title={`Hide ${toolset.title}`}
           aria-label={`Hide ${toolset.title}`}
-          onPointerDown={(event) => event.stopPropagation()}
+          onPointerDown={hidePaletteWindow}
           onMouseDown={(event) => event.stopPropagation()}
-          onClick={hidePaletteWindow}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
         >
-          x
         </button>
+        <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
       </div>
       <ToolPalette groups={groups} activeTool="tool.select" mode="floating" title={toolset.title} onInvoke={invokeCommand} />
     </main>

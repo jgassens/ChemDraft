@@ -301,7 +301,7 @@ button {
   width: 100%;
   height: 28px;
   display: grid;
-  grid-template-columns: 1fr 20px;
+  grid-template-columns: 20px 1fr 20px;
   align-items: center;
   justify-items: center;
   border-bottom: 1px solid #c8ced2;
@@ -319,8 +319,8 @@ button {
 }
 
 .palette-title-label {
+  grid-column: 2;
   min-width: 0;
-  padding-left: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -329,23 +329,19 @@ button {
 .palette-close-button {
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid #d63a43;
   border-radius: 50%;
-  background: transparent;
-  color: #8e989f;
+  background: #ff5f57;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
   cursor: default;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
 }
 
 .palette-close-button:hover {
-  border-color: #b5bdc2;
-  background: #ffffff;
-  color: #4d5860;
+  border-color: #b92b34;
+  background: #ff4b45;
 }
 
 .tool-group {
