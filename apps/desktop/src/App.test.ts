@@ -2,7 +2,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { allShellCommands, paletteGroups, toolbarCustomizationActions, viewActions } from "./commands";
-import { createPhase4Document } from "./documentWorkflow";
+import {
+  applyAnalysisToSelectedMolecule,
+  createPhase4Document,
+  insertAdapterFallbackMolecule
+} from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import {
@@ -30,10 +34,12 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("data-floating-palette");
     expect(markup).toContain("tool-palette");
     expect(markup).toContain("canvas-region");
+    expect(markup).toContain("rulers-visible");
+    expect(markup).toContain("document-rulers-overlay");
+    expect(markup).toContain("ruler-top");
     expect(markup).toContain("crosshair-axis-vertical");
     expect(markup).toContain("crosshair-tick-quarter");
     expect(markup).toContain("document-board without-rulers");
-    expect(markup).not.toContain("ruler-top");
     expect(markup).not.toContain("menu-bar");
     expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("statusbar");
@@ -50,11 +56,13 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("app-shell");
     expect(markup).toContain("native-shell");
     expect(markup).toContain("canvas-region");
+    expect(markup).toContain("rulers-visible");
+    expect(markup).toContain("document-rulers-overlay");
+    expect(markup).toContain("ruler-top");
     expect(markup).toContain('data-zoom-surface="document"');
     expect(markup).toContain("crosshair-axis-horizontal");
     expect(markup).toContain("crosshair-tick-half");
     expect(markup).toContain("document-board without-rulers");
-    expect(markup).not.toContain("ruler-top");
     expect(markup).not.toContain("menu-bar");
     expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("tool-palette");
@@ -101,6 +109,21 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("crosshairs-visible");
     expect(markup).not.toContain("crosshair-overlay");
     expect(markup).not.toContain("crosshair-tick");
+  });
+
+  it("can render the document workspace with rulers hidden", () => {
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialPaletteMode: "floating",
+        initialRulersVisible: false,
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("canvas-region");
+    expect(markup).not.toContain("rulers-visible");
+    expect(markup).not.toContain("document-rulers-overlay");
+    expect(markup).not.toContain("ruler-top");
   });
 
   it("keeps command definitions available without embedding actions in the canvas", () => {
@@ -331,5 +354,37 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("reaction");
     expect(markup).not.toContain("product");
     expect(markup).not.toContain("CCO");
+  });
+
+  it("renders Phase 5 chemistry properties only for real selected molecule objects", () => {
+    const document = applyAnalysisToSelectedMolecule(
+      insertAdapterFallbackMolecule(createPhase4Document("Chemistry Fixture")),
+      {
+        input: { format: "smiles", value: "CCO" },
+        validation: { valid: true, errors: [], warnings: [] },
+        properties: {
+          formula: "C2H6O",
+          averageMass: 46.069,
+          exactMass: 46.0419,
+          totalCharge: 0,
+          atomCount: 3,
+          bondCount: 2,
+          stereochemistry: []
+        },
+        warnings: []
+      }
+    );
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("molecule-object");
+    expect(markup).toContain("C2H6O");
+    expect(markup).toContain("avg 46.069");
+    expect(markup).toContain("exact 46.0419");
   });
 });

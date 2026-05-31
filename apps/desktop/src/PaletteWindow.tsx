@@ -228,10 +228,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
           aria-label={`Hide ${toolset.title}`}
           onPointerDown={hidePaletteWindow}
           onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
+          onClick={hidePaletteWindow}
         >
         </button>
         <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>

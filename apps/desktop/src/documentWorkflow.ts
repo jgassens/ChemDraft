@@ -144,6 +144,9 @@ export function exportPhase4Svg(document: ChemDraftDocument): SvgExportResult {
 
 export function chemistryMetadataFromAnalysis(result: StructureAnalysisResult): ChemicalMetadata {
   return {
+    formula: result.properties.formula,
+    averageMass: result.properties.averageMass,
+    exactMass: result.properties.exactMass,
     atomCount: result.properties.atomCount,
     bondCount: result.properties.bondCount,
     totalCharge: result.properties.totalCharge,

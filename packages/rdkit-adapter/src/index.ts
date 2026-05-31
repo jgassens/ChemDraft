@@ -64,6 +64,27 @@ const fixtureAnalyses = new Map<string, FixtureAnalysis>([
     }
   ],
   [
+    "C[C@H](O)C(=O)O",
+    {
+      properties: {
+        formula: "C3H6O3",
+        averageMass: 90.078,
+        exactMass: 90.0317,
+        totalCharge: 0,
+        atomCount: 6,
+        bondCount: 5,
+        stereochemistry: ["tetrahedral"]
+      },
+      warnings: [
+        {
+          code: "stereochemistry.placeholder",
+          message: "Stereochemistry was detected, but assignment requires a real chemistry engine.",
+          severity: "warning"
+        }
+      ]
+    }
+  ],
+  [
     "c1ccccc1",
     {
       properties: {
@@ -73,6 +94,34 @@ const fixtureAnalyses = new Map<string, FixtureAnalysis>([
         totalCharge: 0,
         atomCount: 6,
         bondCount: 6,
+        stereochemistry: []
+      }
+    }
+  ],
+  [
+    "CC(=O)Oc1ccccc1C(=O)O",
+    {
+      properties: {
+        formula: "C9H8O4",
+        averageMass: 180.159,
+        exactMass: 180.0423,
+        totalCharge: 0,
+        atomCount: 13,
+        bondCount: 13,
+        stereochemistry: []
+      }
+    }
+  ],
+  [
+    "O=[N+]([O-])c1ccccc1",
+    {
+      properties: {
+        formula: "C6H5NO2",
+        averageMass: 123.111,
+        exactMass: 123.032,
+        totalCharge: 0,
+        atomCount: 9,
+        bondCount: 9,
         stereochemistry: []
       }
     }
@@ -92,11 +141,54 @@ const fixtureAnalyses = new Map<string, FixtureAnalysis>([
     }
   ],
   [
+    "[Na+].[Cl-]",
+    {
+      properties: {
+        formula: "ClNa",
+        averageMass: 58.443,
+        exactMass: 57.9586,
+        totalCharge: 0,
+        atomCount: 2,
+        bondCount: 0,
+        stereochemistry: []
+      },
+      warnings: [
+        {
+          code: "structure.multi_fragment_placeholder",
+          message: "Disconnected salt pairs are fixture-backed only until a real chemistry engine is connected.",
+          severity: "warning"
+        }
+      ]
+    }
+  ],
+  [
+    "F/C=C/F",
+    {
+      properties: {
+        formula: "C2H2F2",
+        averageMass: 64.034,
+        exactMass: 64.0125,
+        totalCharge: 0,
+        atomCount: 4,
+        bondCount: 3,
+        stereochemistry: ["alkene-e-or-z"]
+      },
+      warnings: [
+        {
+          code: "stereochemistry.placeholder",
+          message: "Alkene stereochemistry was detected, but assignment requires a real chemistry engine.",
+          severity: "warning"
+        }
+      ]
+    }
+  ],
+  [
     "F[C@H](Cl)Br",
     {
       properties: {
         formula: "CHBrClF",
         averageMass: 147.374,
+        exactMass: 145.8934,
         totalCharge: 0,
         atomCount: 4,
         bondCount: 3,

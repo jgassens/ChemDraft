@@ -675,6 +675,14 @@ button {
   white-space: nowrap;
 }
 
+.object-tertiary {
+  overflow: hidden;
+  color: #69757d;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .text-object,
 .generic-object {
   border: 1px solid #69757d;

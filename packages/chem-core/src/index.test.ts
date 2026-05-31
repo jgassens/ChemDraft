@@ -31,6 +31,9 @@ function moleculeObject(id = "mol_001"): MoleculeObject {
     structureFormat: "smiles",
     structure: "c1ccccc1",
     chemistry: {
+      formula: "C6H6",
+      averageMass: 78.114,
+      exactMass: 78.047,
       atomCount: 6,
       bondCount: 6,
       totalCharge: 0,

@@ -9,7 +9,7 @@ import {
   type PointerEvent,
   type WheelEvent
 } from "react";
-import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
+import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
   buildCrosshairTicks,
@@ -92,13 +92,17 @@ const VERTICAL_CROSSHAIR_TICKS = buildCrosshairTicks(PAGE_HEIGHT);
 
 export interface MainWindowProps {
   initialPaletteMode?: PaletteMode;
+  initialRulersVisible?: boolean;
   initialCrosshairsVisible?: boolean;
+  initialDocument?: ChemDraftDocument;
   nativePalette?: boolean;
 }
 
 export function MainWindow({
   initialPaletteMode = "floating",
+  initialRulersVisible = true,
   initialCrosshairsVisible = true,
+  initialDocument,
   nativePalette = isDesktopRuntime()
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,7 +111,7 @@ export function MainWindow({
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
   const gestureStartScaleRef = useRef(1);
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
-  const [document, setDocument] = useState(() => createPhase4Document());
+  const [document, setDocument] = useState(() => initialDocument ?? createPhase4Document());
   const [activeTool, setActiveTool] = useState("tool.select");
   const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
@@ -116,7 +120,7 @@ export function MainWindow({
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
-  const [rulersVisible, setRulersVisible] = useState(false);
+  const [rulersVisible, setRulersVisible] = useState(initialRulersVisible);
   const [crosshairsVisible, setCrosshairsVisible] = useState(initialCrosshairsVisible);
   const [viewport, setViewport] = useState(() => createViewportState());
   const [rulerFrame, setRulerFrame] = useState<RulerFrame>(() => ({
@@ -801,9 +805,8 @@ function DocumentObjectView({ object, selected }: { object: DocumentObject; sele
         aria-label={`Molecule ${object.structure}`}
       >
         <span className="object-primary">{object.structure}</span>
-        <span className="object-secondary">
-          {object.chemistry?.totalCharge ? `charge ${object.chemistry.totalCharge}` : object.structureFormat}
-        </span>
+        <span className="object-secondary">{object.chemistry?.formula ?? object.structureFormat}</span>
+        {object.chemistry ? <span className="object-tertiary">{formatChemistrySummary(object.chemistry)}</span> : null}
       </div>
     );
   }
@@ -890,6 +893,17 @@ function formatAnalysisStatus(analysis: StructureAnalysisResult): string {
   const mass = analysis.properties.averageMass ? `, avg mass ${analysis.properties.averageMass.toFixed(3)}` : "";
   const warningText = analysis.validation.warnings.length > 0 ? ` with ${analysis.validation.warnings.length} warning(s)` : "";
   return `Validated ${formula}${mass}${warningText}`;
+}
+
+function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry"]>): string {
+  const parts = [
+    chemistry.averageMass !== undefined ? `avg ${chemistry.averageMass.toFixed(3)}` : undefined,
+    chemistry.exactMass !== undefined ? `exact ${chemistry.exactMass.toFixed(4)}` : undefined,
+    chemistry.totalCharge ? `charge ${chemistry.totalCharge}` : undefined,
+    chemistry.stereochemistry.length > 0 ? chemistry.stereochemistry.join(", ") : undefined
+  ].filter(Boolean);
+
+  return parts.join(" | ");
 }
 
 function formatValidationFailure(analysis: StructureAnalysisResult): string {

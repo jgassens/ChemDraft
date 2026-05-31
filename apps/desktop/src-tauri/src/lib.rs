@@ -138,11 +138,6 @@ pub fn run() {
                 }
                 return;
             }
-            if command_id == "view.toggleRulers" || command_id == "view.toggleCrosshairs" {
-                if let Err(error) = toggle_check_menu_item(app, command_id) {
-                    eprintln!("Could not update ChemDraft menu check state {command_id}: {error}");
-                }
-            }
             if is_routed_menu_command(command_id) {
                 if let Err(error) = emit_command_to_main(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
@@ -195,8 +190,24 @@ pub fn run() {
         .setup(|app| {
             let app = app.handle();
             let layout_state = load_toolset_layout_state(app);
+            let customization_state = load_toolset_customization_state_from_disk(app);
+            let startup_manifest = ToolsetManifest {
+                toolsets: apply_toolset_customization(
+                    toolset_manifest().toolsets,
+                    customization_state.as_ref(),
+                ),
+            };
+            if customization_state.is_some() {
+                if let Err(error) = schedule_customized_toolset_menu(
+                    app,
+                    startup_manifest.clone(),
+                    layout_state.clone(),
+                ) {
+                    eprintln!("Could not install customized ChemDraft toolbar menu: {error}");
+                }
+            }
 
-            for toolset in toolset_manifest_for_startup(app).toolsets {
+            for toolset in startup_manifest.toolsets {
                 let visible = toolset_visible(&toolset, &layout_state);
                 if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
                     eprintln!(
@@ -378,7 +389,17 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
 }
 
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let view_menu = create_view_menu(app)?;
+    let manifest = toolset_manifest();
+    let layout_state = ToolsetLayoutState::default();
+    create_app_menu_for_toolsets(app, &manifest, &layout_state)
+}
+
+fn create_app_menu_for_toolsets<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_manifest: &ToolsetManifest,
+    layout_state: &ToolsetLayoutState,
+) -> tauri::Result<Menu<R>> {
+    let view_menu = create_view_menu(app, toolset_manifest, layout_state)?;
 
     Menu::with_items(
         app,
@@ -442,13 +463,17 @@ fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<
     )
 }
 
-fn create_view_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+fn create_view_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_manifest: &ToolsetManifest,
+    layout_state: &ToolsetLayoutState,
+) -> tauri::Result<Submenu<R>> {
     let show_rulers = CheckMenuItem::with_id(
         app,
         "view.toggleRulers",
         "Show Rulers",
         true,
-        false,
+        true,
         Some("CmdOrCtrl+R"),
     )?;
     let show_crosshairs = CheckMenuItem::with_id(
@@ -460,7 +485,7 @@ fn create_view_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Subm
         Some("CmdOrCtrl+Shift+R"),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let toolbars_menu = create_toolbars_menu(app)?;
+    let toolbars_menu = create_toolbars_menu(app, toolset_manifest, layout_state)?;
     let customize_toolbars = MenuItem::with_id(
         app,
         "view.customizeToolbars",
@@ -483,11 +508,14 @@ fn create_view_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Subm
     )
 }
 
-fn create_toolbars_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+fn create_toolbars_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_manifest: &ToolsetManifest,
+    layout_state: &ToolsetLayoutState,
+) -> tauri::Result<Submenu<R>> {
     let menu = Submenu::new(app, "Toolbars", true)?;
-    let layout_state = load_toolset_layout_state(app);
 
-    for toolset in toolset_manifest_for_startup(app).toolsets {
+    for toolset in &toolset_manifest.toolsets {
         let item = CheckMenuItem::with_id(
             app,
             toolset_toggle_command_id(&toolset.id),
@@ -500,6 +528,23 @@ fn create_toolbars_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<
     }
 
     Ok(menu)
+}
+
+fn schedule_customized_toolset_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_manifest: ToolsetManifest,
+    layout_state: ToolsetLayoutState,
+) -> Result<(), String> {
+    let app = app.clone();
+    app.clone()
+        .run_on_main_thread(move || {
+            let menu = create_app_menu_for_toolsets(&app, &toolset_manifest, &layout_state);
+            match menu.and_then(|menu| app.set_menu(menu).map(|_| ())) {
+                Ok(()) => {}
+                Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
+            }
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn ensure_toolset_window<R: Runtime>(
@@ -977,26 +1022,6 @@ fn set_toolset_menu_checked<R: Runtime>(
 ) -> Result<(), String> {
     let command_id = toolset_toggle_command_id(toolset_id);
     set_check_menu_item_checked(app, &command_id, checked)
-}
-
-fn toggle_check_menu_item<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    command_id: &str,
-) -> Result<(), String> {
-    let Some(menu) = app.menu() else {
-        return Ok(());
-    };
-    let Some(item) = find_menu_item_by_id(menu.items().unwrap_or_default(), command_id) else {
-        return Ok(());
-    };
-    let Some(check_item) = item.as_check_menuitem() else {
-        return Ok(());
-    };
-
-    let checked = check_item.is_checked().map_err(|error| error.to_string())?;
-    check_item
-        .set_checked(!checked)
-        .map_err(|error| error.to_string())
 }
 
 fn set_check_menu_item_checked<R: Runtime>(

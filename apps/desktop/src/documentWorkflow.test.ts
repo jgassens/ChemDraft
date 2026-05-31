@@ -66,6 +66,9 @@ describe("Phase 4 document workflow", () => {
     });
 
     expect(getSelectedMolecule(analyzed)?.chemistry).toMatchObject({
+      formula: "C2H6O",
+      averageMass: 46.069,
+      exactMass: 46.0419,
       atomCount: 3,
       bondCount: 2,
       totalCharge: 0

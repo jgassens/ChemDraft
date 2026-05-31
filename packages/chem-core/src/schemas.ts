@@ -55,6 +55,9 @@ const BaseObjectSchema = z
 
 export const ChemicalMetadataSchema = z
   .object({
+    formula: z.string().min(1).optional(),
+    averageMass: z.number().finite().nonnegative().optional(),
+    exactMass: z.number().finite().nonnegative().optional(),
     atomCount: z.number().int().nonnegative().optional(),
     bondCount: z.number().int().nonnegative().optional(),
     totalCharge: z.number().int().optional(),
