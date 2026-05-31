@@ -420,6 +420,36 @@ Rules:
 - Public tests should use synthetic or generated style fixtures.
 - Applying a style preset must not change chemical identity and should be explicit and undoable where practical.
 
+### 5.24 UX surface flexibility
+
+Do not bake user-facing controls into permanent architecture. Chemistry behavior, document state, command IDs, plugin permissions, adapter boundaries, and viewport coordinate math are stable contracts. Menu placement, toolbar grouping, panel layout, labels, icons, status items, canvas controls, shortcut maps, and default visibility are volatile surfaces and should be configurable where practical.
+
+For every new user-facing control:
+
+- Use a command ID if it performs an action.
+- Use a surface ID if it appears somewhere.
+- Include slot or placement metadata where relevant.
+- Include `source`: `core`, `plugin`, `user`, or `owner`.
+- Add test or smoke coverage for command routing where practical.
+
+Keep owner defaults, user preferences, and document state separate:
+
+- Owner defaults are project-level layout/style choices and may change as product direction changes.
+- User preferences are local app configuration such as toolbar visibility, panel state, and shortcut overrides.
+- Document state travels with `.chemdraft` files, including pages, page sizes, objects, and document-used styles.
+
+Do not store owner defaults or installed-user preferences in the native document unless the value truly belongs to the file. Do not treat document state as a convenient place to remember local UI layout.
+
+Plugin-contributed panels, menus, toolbar buttons, and future canvas controls should use the same command/surface contribution system where practical. Plugins must not directly mutate core UI layout without declared contributions and permissions.
+
+If a control is hard-coded temporarily:
+
+- Name the command it should eventually invoke.
+- Explain why hard-coding is temporary.
+- Keep the hard-coded placement local instead of spreading it across multiple files.
+
+UX surface tests should focus on command routing, surface registration, owner/user/document state separation, no document mutation from pure UX changes, and no chemistry mutation from layout changes.
+
 ## 6. Package-specific rules
 
 ### 6.1 `chem-core`

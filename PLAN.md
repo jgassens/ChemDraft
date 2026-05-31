@@ -305,6 +305,71 @@ Do not copy ChemDraw XML schema, command names, icon names, image assets, menu f
 
 Any future external toolbar import must be a compatibility/import layer that maps supported external actions into ChemDraft command IDs and warns for unmapped commands.
 
+### 6.15 UX flexibility and owner whimsy
+
+ChemDraft's user-facing surfaces are expected to evolve. Avoid baking user-facing layout decisions into React components or native menu code as permanent architecture. Prefer command-backed, manifest-driven surface definitions where practical.
+
+Stable contracts should stay stable:
+
+- `chem-core` document model
+- Document patches
+- Command IDs
+- Plugin permissions
+- Adapter interfaces
+- Viewport coordinate model
+- Import/export invariants
+- Chemical identity invariants
+
+Volatile or configurable surfaces may change repeatedly:
+
+- Menu placement
+- Toolbar and toolset grouping
+- Floating palette visibility
+- Panel layout
+- Inspector visibility
+- Status-bar items
+- Canvas controls such as add-page buttons
+- Labels, tooltips, and microcopy
+- Icon selection
+- Theme tokens
+- Keyboard shortcut maps
+- Default visible toolsets
+- Default page and style preferences
+
+The app should support these as separate concepts:
+
+- Owner defaults: project-level default layout and style choices that may change as product direction changes.
+- User preferences: installed-user changes such as toolbar visibility, panel state, and shortcut overrides.
+- Document state: file-traveling data such as pages, page sizes, objects, and styles used by the document.
+
+Do not mix owner defaults, user preferences, and document state without an explicit reason.
+
+New user-facing controls should move toward a UX surface model with fields like:
+
+```text
+id
+kind
+commandId
+slot
+label
+icon
+defaultVisible
+source: core | plugin | user | owner
+order
+featureFlag or experiment ID where useful
+```
+
+This model may start inside `apps/desktop/src/surfaces`. Promote it to `packages/ux-registry` only when cross-package use justifies the boundary.
+
+Examples:
+
+- A circular add-page button should be a `canvas-control` surface invoking `document.addPageAfter`, not an untracked hard-coded button.
+- Toolbars are already manifest-driven through `toolset-registry`.
+- Menus and panels should move toward the same command-backed surface pattern.
+- Empty states and status-bar items should also be surface/slot driven where practical.
+
+This direction does not implement a full UX editor, drag/drop customization, theme editor, plugin marketplace, page thumbnails, or real drawing tools.
+
 ## 7. Recommended technical architecture
 
 ### 7.1 Desktop shell
