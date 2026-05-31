@@ -16,9 +16,10 @@ Why:
 - Plugins and recognition tools need reviewable proposed patches instead of live document mutation.
 - Ketcher integration can remain replaceable and honest about unsupported ChemDraft objects.
 
-Current Phase 4 shell state:
+Current editor integration state:
 
 - The workspace shows a blank native page with rulers, grid, and margins.
-- The editor area reports `EditorAdapter not connected`.
 - No fake molecule, reaction, product, arrow, or mechanism placeholder objects are shown.
 - Inspector and plugin panels are hidden by default.
+- Phase 6 adds a concrete Ketcher adapter boundary around an injected engine host, with molecule load/save and explicit capability-gap reporting.
+- Until a real engine host is wired, the desktop app keeps using the adapter-backed fallback document workflow rather than fake chemistry.

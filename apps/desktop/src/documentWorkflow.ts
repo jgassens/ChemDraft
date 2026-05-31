@@ -11,6 +11,7 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
+import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { exportDocumentToSvg, type SvgExportResult } from "@chemdraft/export-engine";
 
 export const phase4Timestamp = "2026-05-29T00:00:00.000Z";
@@ -121,6 +122,31 @@ export function applyAnalysisToSelectedMolecule(
       changes: {
         chemistry: chemistryMetadataFromAnalysis(analysis)
       }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function applyEditorSaveResultToSelectedObject(
+  document: ChemDraftDocument,
+  result: EditorSaveResult
+): ChemDraftDocument {
+  const selectedObject = getSelectedObject(document);
+  if (!selectedObject) {
+    throw new Error("Cannot apply editor save result: no document object is selected.");
+  }
+  if (selectedObject.id !== result.object.id) {
+    throw new Error(
+      `Cannot apply editor save result: selected object "${selectedObject.id}" does not match saved object "${result.object.id}".`
+    );
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId: result.object.id,
+      changes: result.object
     },
     { now: phase4Timestamp }
   );

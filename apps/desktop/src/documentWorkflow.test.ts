@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyAnalysisToSelectedMolecule,
+  applyEditorSaveResultToSelectedObject,
   createNativeSavePayload,
   createPhase4Document,
   exportPhase4Svg,
@@ -74,5 +75,33 @@ describe("Phase 4 document workflow", () => {
       totalCharge: 0
     });
     expect(getSelectedMolecule(document)?.chemistry).toBeUndefined();
+  });
+
+  it("applies an editor adapter save result through a selected-object document patch", () => {
+    const document = insertAdapterFallbackMolecule(createPhase4Document("Editor Fixture"));
+    const selected = getSelectedMolecule(document);
+    if (!selected) {
+      throw new Error("Expected fixture molecule to be selected.");
+    }
+
+    const updated = applyEditorSaveResultToSelectedObject(document, {
+      object: {
+        ...selected,
+        structureFormat: "molfile-v3000",
+        structure: "updated-molfile"
+      },
+      warnings: []
+    });
+
+    expect(getSelectedMolecule(updated)).toMatchObject({
+      id: selected.id,
+      structureFormat: "molfile-v3000",
+      structure: "updated-molfile"
+    });
+    expect(getSelectedMolecule(document)).toMatchObject({
+      id: selected.id,
+      structureFormat: "smiles",
+      structure: "CCO"
+    });
   });
 });
