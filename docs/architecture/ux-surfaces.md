@@ -1,6 +1,6 @@
 # UX Surfaces
 
-Status: architecture direction only. No UX surface registry is implemented yet.
+Status: tiny local metadata scaffold implemented; rendered UI is not yet driven by it.
 
 ChemDraft should bake stable contracts, not user-facing placement. Chemistry behavior, native document state, command IDs, plugin permissions, adapter interfaces, viewport coordinate math, import/export rules, and chemical identity invariants should remain stable. Menus, palettes, panels, status items, canvas controls, labels, icons, shortcut maps, and default visibility may evolve as the owner and users refine the app.
 
@@ -23,7 +23,9 @@ order
 featureFlag
 ```
 
-This can start in `apps/desktop/src/surfaces`. Promote it to `packages/ux-registry` only if multiple packages need the model.
+The local `apps/desktop/src/surfaces` module now defines this metadata shape and a small set of core surface definitions. It is not a full UX registry package, plugin surface renderer, rendered surface system, or customization UI. Promote it to `packages/ux-registry` only if multiple packages need the model.
+
+Existing UI rendering is not yet wired to this metadata. Future controls should register metadata first, then wire rendering deliberately.
 
 ## State Separation
 
@@ -37,4 +39,8 @@ Toolbars already follow this direction through `toolset-registry`: toolset manif
 
 A future circular add-page button should be a `canvas-control` surface that invokes `document.addPageAfter`. It should not be a one-off hard-coded button with behavior hidden in the component.
 
+`surface.canvas.addPageAfter` currently exists only as disabled metadata. It must not render as an active control until `document.addPageAfter` exists and is wired.
+
 Empty states, menu items, panel entries, and status-bar items should move toward the same surface/slot pattern where practical.
+
+Toolsets remain under `toolset-registry`. The local surface schema is for menus, status items, canvas controls, panels, empty states, and similar chrome; it must not duplicate toolset behavior or own chemistry behavior.

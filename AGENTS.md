@@ -74,6 +74,7 @@ mechanism-tools    Owns mechanism annotation primitives and rendering hooks
 template-library   Owns original templates, abbreviations/superatoms, and style presets
 toolset-registry   Owns typed toolset manifests, built-in/plugin/user toolset models, customization state, menu models, and command-ID validation
 viewport-engine    Owns viewport state, coordinate conversion, zoom math, and ruler render state
+apps/desktop/src/surfaces  Local UX surface metadata scaffold for menu/status/canvas-control/panel chrome; metadata only
 plugin-api         Defines public plugin API types
 plugin-host        Loads plugins, validates manifests, enforces permissions
 export-engine      Coordinates export formats
@@ -311,7 +312,9 @@ Phase 5 should focus on `chemistry-adapter`, `rdkit-adapter` or an honest placeh
 
 Phase 5 should not add broad UI polish, new toolbar concepts, CDXML/CDX compatibility, clipboard compatibility, NMR/MS/pKa/logP plugins, or image-to-structure recognition unless explicitly requested.
 
-The current next narrow implementation interlude is Phase 6.5: canvas page-size infrastructure. It should happen before broad Phase 7 drawing productivity work. Keep it limited to native page layout state, geometry invariants, legacy migration, command-backed US Letter, US Legal, popular ISO A-size, portrait, and landscape controls under File > Page Setup, document-backed viewport/ruler/crosshair/object/export geometry, and tests.
+Phase 6.5 canvas page-size infrastructure is closed out and should be treated as the baseline for later drawing, export, and layout work. Preserve native page layout state, geometry invariants, legacy migration, command-backed US Letter, US Legal, popular ISO A-size, portrait, and landscape controls under File > Page Setup, document-backed viewport/ruler/crosshair/object/export geometry, and tests.
+
+The current next implementation lane is Phase 7: core drawing productivity. Do not restart Phase 6.5 unless fixing a regression.
 
 ### 5.18 Floating palette rules
 
@@ -449,6 +452,10 @@ If a control is hard-coded temporarily:
 - Keep the hard-coded placement local instead of spreading it across multiple files.
 
 UX surface tests should focus on command routing, surface registration, owner/user/document state separation, no document mutation from pure UX changes, and no chemistry mutation from layout changes.
+
+The local `apps/desktop/src/surfaces` module may describe menu, status, canvas-control, panel-trigger, and empty-state metadata. It must not own chemistry behavior, document mutation, plugin permissions, command implementation, or rendering side effects. Surface metadata may reference command IDs, but command implementation stays in the command registry or the relevant owning package.
+
+Disabled future surfaces, including `surface.canvas.addPageAfter`, must not be rendered as active controls until the referenced command exists and is wired. Phase 6.5 page-size infrastructure is closed out; the next implementation lane is Phase 7 core drawing productivity, not a full UX registry package, add-page button, plugin surface renderer, or customization UI.
 
 ## 6. Package-specific rules
 

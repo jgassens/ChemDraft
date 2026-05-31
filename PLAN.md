@@ -35,8 +35,11 @@ Recent implementation work corrected the desktop product direction rather than a
 - Disabled toolbar customization command surface.
 - `packages/viewport-engine`.
 - Ruler rendering through `@scena/react-ruler`, with ChemDraft viewport state remaining the source of truth.
+- A tiny local UX surface metadata scaffold in `apps/desktop/src/surfaces` for menu, status, canvas-control, panel, and empty-state chrome.
 
-Treat this as core drawing-workspace infrastructure. The next narrow implementation task is `Phase 6.5: Canvas page-size infrastructure`; do not treat it as broad UI polish, a full Page Setup feature, or a new chemistry phase.
+The UX surface scaffold is metadata-only. Existing rendered UI is not driven by it yet, and it should not be treated as a full UX registry package, plugin surface renderer, customization UI, or add-page implementation.
+
+Treat this as core drawing-workspace infrastructure. `Phase 6.5: Canvas page-size infrastructure` is closed out and should now be treated as the page-layout baseline. The next implementation lane is `Phase 7: Core drawing productivity`; do not backslide into broad UI polish, a full Page Setup feature, a rendered surface-system task, or a new chemistry phase.
 
 ## 2. Target users
 
@@ -359,16 +362,17 @@ order
 featureFlag or experiment ID where useful
 ```
 
-This model may start inside `apps/desktop/src/surfaces`. Promote it to `packages/ux-registry` only when cross-package use justifies the boundary.
+A tiny local version of this model exists in `apps/desktop/src/surfaces`. It is metadata-only and does not yet drive rendered UI. Promote it to `packages/ux-registry` only when cross-package use justifies the boundary.
 
 Examples:
 
-- A circular add-page button should be a `canvas-control` surface invoking `document.addPageAfter`, not an untracked hard-coded button.
+- A future circular add-page button should be a `canvas-control` surface invoking `document.addPageAfter`, not an untracked hard-coded button.
+- `surface.canvas.addPageAfter` may exist only as disabled metadata until `document.addPageAfter` is implemented and wired.
 - Toolbars are already manifest-driven through `toolset-registry`.
 - Menus and panels should move toward the same command-backed surface pattern.
 - Empty states and status-bar items should also be surface/slot driven where practical.
 
-This direction does not implement a full UX editor, drag/drop customization, theme editor, plugin marketplace, page thumbnails, or real drawing tools.
+This direction does not implement rendered surface wiring, a full UX editor, drag/drop customization, theme editor, plugin marketplace, page thumbnails, add-page behavior, or real drawing tools.
 
 ## 7. Recommended technical architecture
 
@@ -1225,7 +1229,7 @@ Stage correction note:
 
 This documentation update is a correction after the first scaffold. The existing scaffold is acceptable only as technical proof that the workspace builds; its dashboard-like UI is not product direction. Do not continue polishing that scaffold.
 
-This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. The roadmap keeps the historical Phase 4.5, Phase 5, and Phase 6 lanes for traceability. The current next narrow implementation lane is `Phase 6.5: Canvas page-size infrastructure`, then the roadmap proceeds to `Phase 7: Core drawing productivity`.
+This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. The roadmap keeps the historical Phase 4.5, Phase 5, and Phase 6 lanes for traceability. `Phase 6.5: Canvas page-size infrastructure` is now closed out. The current next implementation lane is `Phase 7: Core drawing productivity`.
 
 ### Phase 0: Repository foundation
 
@@ -1354,7 +1358,9 @@ Deliverables:
 
 ### Phase 6.5: Canvas page-size infrastructure
 
-This narrow interlude prepares the document canvas for real page/layout work before broader drawing productivity.
+Status: closed out and verified. Treat this as the page-layout baseline for later drawing, export, and layout work.
+
+This narrow interlude prepared the document canvas for real page/layout work before broader drawing productivity.
 
 Deliverables:
 
@@ -1379,6 +1385,17 @@ Required tests:
 - Page-size commands preserving molecule payloads and selection.
 
 Do not add a full Page Setup dialog, custom-size editor, printing, new dependencies, Ketcher, RDKit, CDXML/CDX, clipboard compatibility, or toolbar customization work in this interlude.
+
+Closeout evidence:
+
+- Page layout state, physical paper presets, orientation, geometry invariants, and legacy migration live in `chem-core`.
+- Page-size and orientation changes are command-backed through File > Page Setup.
+- Viewport, rulers, crosshairs, page rendering, PNG fallback dimensions, and SVG physical size export consume native document page layout.
+- US presets use inch rulers/grid/crosshair spacing; ISO A presets use centimeter rulers/grid/crosshair spacing.
+- Regression tests cover conversion, orientation, migration, save/open preservation, SVG units and `viewBox`, PNG fallback, ruler-unit switching, and molecule payload preservation.
+- Live app stress on the `./run-app` bundle covered A0, A4, US Legal, US Letter, portrait/landscape switching, ruler/crosshair toggles, scroll/ruler sync, and single-app-process verification.
+
+Future work should preserve this behavior rather than reimplementing page geometry in React constants or renderer-local state.
 
 ### Phase 7: Core drawing productivity
 
@@ -1534,7 +1551,7 @@ Harden the editor engine integration behind EditorAdapter and document capabilit
 Task 9:
 
 ```text
-Implement canvas page-size infrastructure. Add native page layout state in `chem-core` with paper preset, orientation, source physical units, CSS-pixel dimensions, and margins. Enforce the invariant that `page.width`/`page.height` match `page.layout.widthPx`/`page.layout.heightPx` when both exist. Migrate legacy Phase 4 documents without `page.layout` to US Letter portrait while preserving objects, selection, and chemistry payloads. Add command-backed minimal controls under File > Page Setup for US Letter, US Legal, popular ISO A sizes, portrait, and landscape. Make viewport, rulers, crosshairs, object positioning, SVG export, and PNG export consume document page layout instead of hard-coded Letter constants. Rulers, grid, and crosshair tick spacing should use inches for US presets and centimeters for ISO A presets. SVG width/height should use inches for Letter/Legal-style presets and millimeters for ISO presets while the viewBox remains in CSS-pixel coordinates. Add tests for conversions, orientation, migration, save/open preservation, physical SVG units, PNG fallback behavior, ruler/grid/crosshair unit switching, and page-size commands preserving molecule payloads. Do not build a Page Setup dialog, custom-size editor, printing, Ketcher, RDKit, CDXML/CDX, clipboard compatibility, or toolbar customization UI.
+Phase 6.5 canvas page-size infrastructure is complete. Do not rerun this as the next implementation task unless repairing a regression. Preserve native page layout state in `chem-core`, File > Page Setup commands, document-backed viewport/ruler/crosshair/export geometry, inch units for US presets, centimeter units for ISO A presets, physical SVG size units with CSS-pixel `viewBox`, PNG pixel fallback behavior, and tests that page-size commands preserve molecule payloads.
 ```
 
 Task 10:
