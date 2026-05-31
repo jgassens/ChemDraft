@@ -27,6 +27,7 @@ import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   createQuickActions,
+  toolbarCustomizationActions,
   viewActions,
   type CommandSpec
 } from "./commands";
@@ -393,6 +394,12 @@ export function MainWindow({
         if (action.id === "view.toggleCrosshairs") {
           setCrosshairsVisible((visible) => !visible);
         }
+      });
+    });
+
+    toolbarCustomizationActions.forEach((action) => {
+      register(action, () => {
+        setStatus(action.disabledReason ?? "Toolbar customization UI is not implemented yet");
       });
     });
 

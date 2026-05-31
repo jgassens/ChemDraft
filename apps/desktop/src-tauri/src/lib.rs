@@ -423,12 +423,25 @@ fn create_view_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Subm
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let toolbars_menu = create_toolbars_menu(app)?;
+    let customize_toolbars = MenuItem::with_id(
+        app,
+        "view.customizeToolbars",
+        "Customize Toolbars...",
+        false,
+        None::<&str>,
+    )?;
 
     Submenu::with_items(
         app,
         "View",
         true,
-        &[&show_rulers, &show_crosshairs, &separator, &toolbars_menu],
+        &[
+            &show_rulers,
+            &show_crosshairs,
+            &separator,
+            &toolbars_menu,
+            &customize_toolbars,
+        ],
     )
 }
 

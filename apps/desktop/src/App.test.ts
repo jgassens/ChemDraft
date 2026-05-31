@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { allShellCommands, paletteGroups, viewActions } from "./commands";
+import { allShellCommands, paletteGroups, toolbarCustomizationActions, viewActions } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
@@ -121,6 +121,22 @@ describe("ChemDraft desktop shell", () => {
       expect.arrayContaining([
         expect.objectContaining({ id: "view.toggleRulers", title: "Toggle Rulers" }),
         expect.objectContaining({ id: "view.toggleCrosshairs", title: "Toggle Crosshairs" })
+      ])
+    );
+  });
+
+  it("defines disabled toolbar customization command placeholders", () => {
+    expect(toolbarCustomizationActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "view.customizeToolbars",
+          enabled: false,
+          disabledReason: "Toolbar customization UI is not implemented yet"
+        }),
+        expect.objectContaining({ id: "view.toolset.resetLayout", enabled: false }),
+        expect.objectContaining({ id: "view.toolset.resetAllLayouts", enabled: false }),
+        expect.objectContaining({ id: "view.toolset.createUserToolset", enabled: false }),
+        expect.objectContaining({ id: "view.toolset.cloneToolset", enabled: false })
       ])
     );
   });

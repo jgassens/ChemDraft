@@ -68,6 +68,59 @@ export const viewActions: CommandSpec[] = [
   }
 ];
 
+export const toolbarCustomizationActions: CommandSpec[] = [
+  {
+    id: "view.customizeToolbars",
+    title: "Customize Toolbars",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: false,
+    disabledReason: "Toolbar customization UI is not implemented yet",
+    description: "Open the future toolbar customization editor"
+  },
+  {
+    id: "view.toolset.resetLayout",
+    title: "Reset Toolbar Layout",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: false,
+    disabledReason: "Toolbar customization UI is not implemented yet",
+    description: "Reset the selected toolbar layout after customization support is implemented"
+  },
+  {
+    id: "view.toolset.resetAllLayouts",
+    title: "Reset All Toolbar Layouts",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: false,
+    disabledReason: "Toolbar customization UI is not implemented yet",
+    description: "Reset all toolbar customization state after customization support is implemented"
+  },
+  {
+    id: "view.toolset.createUserToolset",
+    title: "Create User Toolbar",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: false,
+    disabledReason: "Toolbar customization UI is not implemented yet",
+    description: "Create a user toolbar after customization support is implemented"
+  },
+  {
+    id: "view.toolset.cloneToolset",
+    title: "Clone Toolbar",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: false,
+    disabledReason: "Toolbar customization UI is not implemented yet",
+    description: "Clone a built-in or plugin toolbar after customization support is implemented"
+  }
+];
+
 export const styleActions: CommandSpec[] = [
   { id: "style.bondStroke", title: "Bond Stroke 1.2 px", icon: "style", source: "core", enabled: false },
   { id: "style.textSize", title: "Text Size 10 pt", icon: "text", source: "core", enabled: false },
@@ -84,6 +137,7 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...allPaletteCommands(),
     ...drawerActions,
     ...viewActions,
+    ...toolbarCustomizationActions,
     ...getToolsetToggleActions(),
     ...styleActions
   ]);
