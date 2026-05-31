@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCrosshairTicks,
   buildRulerTicks,
   createRulerRenderState,
   createViewportState,
@@ -98,5 +99,22 @@ describe("viewport engine", () => {
     expect(scrolledTicks.find((tick) => tick.label === "1")?.position).toBe(48);
     expect(normalTicks.some((tick) => tick.kind === "minor")).toBe(true);
     expect(normalTicks.some((tick) => tick.kind === "mid")).toBe(true);
+  });
+
+  it("builds crosshair ticks from exact eighth-inch ruler subdivisions", () => {
+    const ticks = buildCrosshairTicks(96);
+
+    expect(ticks.slice(0, 9).map((tick) => tick.position)).toEqual([0, 12, 24, 36, 48, 60, 72, 84, 96]);
+    expect(ticks.slice(0, 9).map((tick) => tick.kind)).toEqual([
+      "half",
+      "minor",
+      "quarter",
+      "minor",
+      "half",
+      "minor",
+      "quarter",
+      "minor",
+      "half"
+    ]);
   });
 });

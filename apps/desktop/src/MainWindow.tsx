@@ -12,6 +12,7 @@ import {
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
+  buildCrosshairTicks,
   createRulerRenderState,
   createViewportState,
   setViewportScale,
@@ -81,14 +82,18 @@ type RulerFrame = {
 const PAGE_WIDTH = 816;
 const PAGE_HEIGHT = 1056;
 const RULER_THICKNESS = 32;
+const HORIZONTAL_CROSSHAIR_TICKS = buildCrosshairTicks(PAGE_WIDTH);
+const VERTICAL_CROSSHAIR_TICKS = buildCrosshairTicks(PAGE_HEIGHT);
 
 export interface MainWindowProps {
   initialPaletteMode?: PaletteMode;
+  initialCrosshairsVisible?: boolean;
   nativePalette?: boolean;
 }
 
 export function MainWindow({
   initialPaletteMode = "floating",
+  initialCrosshairsVisible = true,
   nativePalette = isDesktopRuntime()
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -106,7 +111,7 @@ export function MainWindow({
     createDefaultToolsetPositions()
   );
   const [rulersVisible, setRulersVisible] = useState(false);
-  const [crosshairsVisible, setCrosshairsVisible] = useState(true);
+  const [crosshairsVisible, setCrosshairsVisible] = useState(initialCrosshairsVisible);
   const [viewport, setViewport] = useState(() => createViewportState());
   const [rulerFrame, setRulerFrame] = useState<RulerFrame>(() => ({
     horizontalScrollPx: 0,
@@ -566,13 +571,12 @@ export function MainWindow({
           {rulersVisible ? <DocumentRulers viewport={viewport} frame={rulerFrame} /> : null}
           <div className="page-stage" style={viewportCssVars(viewport) as CSSProperties}>
             <div className="document-board without-rulers">
-              <div ref={pageRef} className="page" aria-label={document.title}>
-                {crosshairsVisible ? (
-                  <>
-                    <div className="crosshair crosshair-vertical" aria-hidden="true" />
-                    <div className="crosshair crosshair-horizontal" aria-hidden="true" />
-                  </>
-                ) : null}
+              <div
+                ref={pageRef}
+                className={["page", crosshairsVisible ? "crosshairs-visible" : "crosshairs-hidden"].join(" ")}
+                aria-label={document.title}
+              >
+                {crosshairsVisible ? <CrosshairOverlay /> : null}
                 {document.pages[0].objects.map((object) => (
                   <DocumentObjectView key={object.id} object={object} selected={document.selection.objectIds.includes(object.id)} />
                 ))}
@@ -704,6 +708,29 @@ function rulerFramesEqual(left: RulerFrame, right: RulerFrame): boolean {
 
 function formatRulerText(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function CrosshairOverlay() {
+  return (
+    <div className="crosshair-overlay" aria-hidden="true">
+      <div className="crosshair-axis crosshair-axis-vertical" />
+      <div className="crosshair-axis crosshair-axis-horizontal" />
+      {VERTICAL_CROSSHAIR_TICKS.map((tick) => (
+        <span
+          className={["crosshair-tick", "crosshair-tick-on-vertical", `crosshair-tick-${tick.kind}`].join(" ")}
+          key={`vertical-${tick.index}`}
+          style={{ top: `calc(${tick.position}px * var(--page-scale))` }}
+        />
+      ))}
+      {HORIZONTAL_CROSSHAIR_TICKS.map((tick) => (
+        <span
+          className={["crosshair-tick", "crosshair-tick-on-horizontal", `crosshair-tick-${tick.kind}`].join(" ")}
+          key={`horizontal-${tick.index}`}
+          style={{ left: `calc(${tick.position}px * var(--page-scale))` }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function DocumentObjectView({ object, selected }: { object: DocumentObject; selected: boolean }) {

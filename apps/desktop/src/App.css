@@ -552,35 +552,84 @@ button {
   position: relative;
   width: var(--page-width);
   height: var(--page-height);
-  background:
-    linear-gradient(#e1e1e1 1px, transparent 1px),
-    linear-gradient(90deg, #e1e1e1 1px, transparent 1px),
-    #fff;
-  background-size: var(--ruler-unit) var(--ruler-unit);
+  background: #fff;
   border: 1px solid #b8c1c6;
   box-shadow: none;
   contain: paint;
 }
 
-.crosshair {
+.page.crosshairs-visible {
+  background:
+    linear-gradient(#e1e1e1 1px, transparent 1px),
+    linear-gradient(90deg, #e1e1e1 1px, transparent 1px),
+    #fff;
+  background-size: var(--ruler-unit) var(--ruler-unit);
+}
+
+.crosshair-overlay {
   position: absolute;
+  inset: 0;
   z-index: 1;
+  pointer-events: none;
+}
+
+.crosshair-axis,
+.crosshair-tick {
+  position: absolute;
   background: #111;
   pointer-events: none;
 }
 
-.crosshair-vertical {
+.crosshair-axis-vertical {
   top: 0;
   bottom: 0;
   left: 50%;
   width: 1px;
+  transform: translateX(-50%);
 }
 
-.crosshair-horizontal {
+.crosshair-axis-horizontal {
   top: 50%;
   right: 0;
   left: 0;
   height: 1px;
+  transform: translateY(-50%);
+}
+
+.crosshair-tick-on-vertical {
+  left: 50%;
+  height: 1px;
+  transform: translate(-50%, -50%);
+}
+
+.crosshair-tick-on-horizontal {
+  top: 50%;
+  width: 1px;
+  transform: translate(-50%, -50%);
+}
+
+.crosshair-tick-minor.crosshair-tick-on-vertical {
+  width: 8px;
+}
+
+.crosshair-tick-quarter.crosshair-tick-on-vertical {
+  width: 15px;
+}
+
+.crosshair-tick-half.crosshair-tick-on-vertical {
+  width: 22px;
+}
+
+.crosshair-tick-minor.crosshair-tick-on-horizontal {
+  height: 8px;
+}
+
+.crosshair-tick-quarter.crosshair-tick-on-horizontal {
+  height: 15px;
+}
+
+.crosshair-tick-half.crosshair-tick-on-horizontal {
+  height: 22px;
 }
 
 .document-object {

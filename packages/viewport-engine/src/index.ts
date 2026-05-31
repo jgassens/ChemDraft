@@ -45,12 +45,19 @@ export interface RulerRenderState {
 }
 
 export type RulerTickKind = "major" | "mid" | "minor";
+export type CrosshairTickKind = "half" | "quarter" | "minor";
 
 export interface RulerTick {
   value: number;
   position: number;
   label: string;
   kind: RulerTickKind;
+}
+
+export interface CrosshairTick {
+  index: number;
+  position: number;
+  kind: CrosshairTickKind;
 }
 
 export interface RulerTickOptions {
@@ -182,6 +189,27 @@ export function buildRulerTicks(options: RulerTickOptions): RulerTick[] {
   return ticks;
 }
 
+export function buildCrosshairTicks(pageLengthPx: number, rulerUnit: RulerUnitState = inchRulerUnit): CrosshairTick[] {
+  const subdivisionPx = rulerUnit.pixelsPerUnit / rulerUnit.subdivisions;
+  const halfSubdivision = rulerUnit.subdivisions / 2;
+  const quarterSubdivision = rulerUnit.subdivisions / 4;
+  const tickCount = Math.floor(Math.max(0, pageLengthPx) / subdivisionPx);
+  const ticks: CrosshairTick[] = [];
+
+  for (let index = 0; index <= tickCount; index += 1) {
+    const position = index * subdivisionPx;
+    const subdivisionIndex = positiveModulo(index, rulerUnit.subdivisions);
+
+    ticks.push({
+      index,
+      position,
+      kind: crosshairTickKind(subdivisionIndex, halfSubdivision, quarterSubdivision)
+    });
+  }
+
+  return ticks;
+}
+
 export function viewportCssVars(viewport: ViewportState): Record<string, string | number> {
   return {
     "--page-scale": viewport.scale,
@@ -190,6 +218,22 @@ export function viewportCssVars(viewport: ViewportState): Record<string, string 
     "--ruler-unit-px": `${viewport.rulerUnit.pixelsPerUnit * viewport.scale}px`,
     "--ruler-minor-px": `${(viewport.rulerUnit.pixelsPerUnit / viewport.rulerUnit.subdivisions) * viewport.scale}px`
   };
+}
+
+function crosshairTickKind(
+  subdivisionIndex: number,
+  halfSubdivision: number,
+  quarterSubdivision: number
+): CrosshairTickKind {
+  if (subdivisionIndex === 0 || subdivisionIndex === halfSubdivision) {
+    return "half";
+  }
+
+  if (subdivisionIndex === quarterSubdivision || subdivisionIndex === halfSubdivision + quarterSubdivision) {
+    return "quarter";
+  }
+
+  return "minor";
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -28,7 +28,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("data-floating-palette");
     expect(markup).toContain("tool-palette");
     expect(markup).toContain("canvas-region");
-    expect(markup).toContain("crosshair-vertical");
+    expect(markup).toContain("crosshair-axis-vertical");
+    expect(markup).toContain("crosshair-tick-quarter");
     expect(markup).toContain("document-board without-rulers");
     expect(markup).not.toContain("ruler-top");
     expect(markup).not.toContain("menu-bar");
@@ -48,7 +49,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("native-shell");
     expect(markup).toContain("canvas-region");
     expect(markup).toContain('data-zoom-surface="document"');
-    expect(markup).toContain("crosshair-horizontal");
+    expect(markup).toContain("crosshair-axis-horizontal");
+    expect(markup).toContain("crosshair-tick-half");
     expect(markup).toContain("document-board without-rulers");
     expect(markup).not.toContain("ruler-top");
     expect(markup).not.toContain("menu-bar");
@@ -82,6 +84,21 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("drawer-title");
     expect(markup).not.toContain("adapter-state");
     expect(markup).not.toContain("margin-guide");
+  });
+
+  it("hides the crosshair overlay and page grid together", () => {
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialCrosshairsVisible: false,
+        initialPaletteMode: "floating",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("crosshairs-hidden");
+    expect(markup).not.toContain("crosshairs-visible");
+    expect(markup).not.toContain("crosshair-overlay");
+    expect(markup).not.toContain("crosshair-tick");
   });
 
   it("keeps command definitions available without embedding actions in the canvas", () => {
