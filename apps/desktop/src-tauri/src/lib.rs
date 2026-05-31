@@ -18,6 +18,7 @@ const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
+const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
@@ -103,6 +104,28 @@ impl Default for ToolsetLayoutState {
     }
 }
 
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsetCustomizationState {
+    version: u32,
+    #[serde(default)]
+    toolset_order: Vec<String>,
+    #[serde(default)]
+    toolset_overrides: Vec<ToolsetCustomizationOverride>,
+    #[serde(default)]
+    user_toolsets: Vec<ToolsetDefinition>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsetCustomizationOverride {
+    toolset_id: String,
+    title: Option<String>,
+    visible: Option<bool>,
+    mode: Option<String>,
+    preferred_window_size: Option<ToolsetWindowSize>,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -136,10 +159,10 @@ pub fn run() {
                 return;
             }
 
-            let Some(toolset_id) = toolset_id_for_window_label(window.label()) else {
+            let app = window.app_handle();
+            let Some(toolset_id) = toolset_id_for_window_label(app, window.label()) else {
                 return;
             };
-            let app = window.app_handle();
 
             match event {
                 WindowEvent::Moved(position) => {
@@ -173,7 +196,7 @@ pub fn run() {
             let app = app.handle();
             let layout_state = load_toolset_layout_state(app);
 
-            for toolset in toolset_manifest().toolsets {
+            for toolset in toolset_manifest_for_startup(app).toolsets {
                 let visible = toolset_visible(&toolset, &layout_state);
                 if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
                     eprintln!(
@@ -191,6 +214,7 @@ pub fn run() {
             focus_toolset_window,
             toggle_toolset_window,
             list_toolset_window_states,
+            load_toolset_customization_state,
             route_toolset_command,
             open_tool_palette,
             close_tool_palette,
@@ -264,11 +288,25 @@ fn toggle_toolset_window(
 
 #[tauri::command]
 fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindowState>, String> {
-    Ok(toolset_manifest()
+    Ok(toolset_manifest_for_startup(&app)
         .toolsets
         .into_iter()
         .map(|toolset| toolset_state(&app, &toolset.id))
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+fn load_toolset_customization_state(
+    app: tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    let path = toolset_customization_state_path(&app)?;
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Ok(None);
+    };
+
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))
 }
 
 #[tauri::command]
@@ -447,14 +485,15 @@ fn create_view_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Subm
 
 fn create_toolbars_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
     let menu = Submenu::new(app, "Toolbars", true)?;
+    let layout_state = load_toolset_layout_state(app);
 
-    for toolset in toolset_manifest().toolsets {
+    for toolset in toolset_manifest_for_startup(app).toolsets {
         let item = CheckMenuItem::with_id(
             app,
             toolset_toggle_command_id(&toolset.id),
             &toolset.title,
             true,
-            toolset.default_visible,
+            toolset_visible(&toolset, &layout_state),
             None::<&str>,
         )?;
         menu.append(&item)?;
@@ -467,7 +506,7 @@ fn ensure_toolset_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
 ) -> Result<(), String> {
-    let Some(toolset) = toolset_definition(toolset_id) else {
+    let Some(toolset) = toolset_definition(app, toolset_id) else {
         return Err(format!("Toolset {toolset_id} is not registered."));
     };
     let label = toolset_window_label(toolset_id);
@@ -517,7 +556,7 @@ fn ensure_toolset_window<R: Runtime>(
 fn restore_visible_toolset_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let layout_state = load_toolset_layout_state(app);
 
-    for toolset in toolset_manifest().toolsets {
+    for toolset in toolset_manifest_for_startup(app).toolsets {
         let visible = toolset_visible(&toolset, &layout_state);
         sync_toolset_window_from_layout(app, &toolset, visible)?;
     }
@@ -610,15 +649,87 @@ fn toolset_manifest() -> ToolsetManifest {
         .expect("desktop toolset manifest should be valid JSON")
 }
 
-fn toolset_definition(toolset_id: &str) -> Option<ToolsetDefinition> {
-    toolset_manifest()
+fn toolset_manifest_for_startup<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetManifest {
+    ToolsetManifest {
+        toolsets: apply_toolset_customization(
+            toolset_manifest().toolsets,
+            load_toolset_customization_state_from_disk(app).as_ref(),
+        ),
+    }
+}
+
+fn apply_toolset_customization(
+    mut toolsets: Vec<ToolsetDefinition>,
+    customization: Option<&ToolsetCustomizationState>,
+) -> Vec<ToolsetDefinition> {
+    let Some(customization) = customization else {
+        return toolsets;
+    };
+
+    for user_toolset in &customization.user_toolsets {
+        if !toolsets.iter().any(|toolset| toolset.id == user_toolset.id) {
+            toolsets.push(user_toolset.clone());
+        }
+    }
+
+    for override_state in &customization.toolset_overrides {
+        let Some(toolset) = toolsets
+            .iter_mut()
+            .find(|toolset| toolset.id == override_state.toolset_id)
+        else {
+            continue;
+        };
+
+        if let Some(title) = override_state.title.as_ref() {
+            toolset.title = title.clone();
+        }
+        if let Some(visible) = override_state.visible {
+            toolset.default_visible = visible;
+        }
+        if let Some(mode) = override_state.mode.as_ref() {
+            toolset.default_mode = mode.clone();
+        }
+        if let Some(size) = override_state.preferred_window_size.as_ref() {
+            toolset.preferred_window_size = Some(size.clone());
+        }
+    }
+
+    order_toolsets(toolsets, &customization.toolset_order)
+}
+
+fn order_toolsets(
+    mut toolsets: Vec<ToolsetDefinition>,
+    preferred_order: &[String],
+) -> Vec<ToolsetDefinition> {
+    if preferred_order.is_empty() {
+        return toolsets;
+    }
+
+    let mut ordered = Vec::with_capacity(toolsets.len());
+    for toolset_id in preferred_order {
+        if let Some(index) = toolsets
+            .iter()
+            .position(|toolset| &toolset.id == toolset_id)
+        {
+            ordered.push(toolsets.remove(index));
+        }
+    }
+    ordered.extend(toolsets);
+    ordered
+}
+
+fn toolset_definition<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+) -> Option<ToolsetDefinition> {
+    toolset_manifest_for_startup(app)
         .toolsets
         .into_iter()
         .find(|toolset| toolset.id == toolset_id)
 }
 
-fn toolset_index(toolset_id: &str) -> Option<usize> {
-    toolset_manifest()
+fn toolset_index<R: Runtime>(app: &tauri::AppHandle<R>, toolset_id: &str) -> Option<usize> {
+    toolset_manifest_for_startup(app)
         .toolsets
         .iter()
         .position(|toolset| toolset.id == toolset_id)
@@ -638,12 +749,21 @@ fn toolset_window_label(toolset_id: &str) -> String {
     format!("toolset-{suffix}")
 }
 
-fn toolset_id_for_window_label(label: &str) -> Option<String> {
-    toolset_manifest()
-        .toolsets
-        .into_iter()
+fn toolset_id_for_window_label<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Option<String> {
+    toolset_id_for_window_label_from_toolsets(&toolset_manifest_for_startup(app).toolsets, label)
+}
+
+fn toolset_id_for_window_label_from_toolsets(
+    toolsets: &[ToolsetDefinition],
+    label: &str,
+) -> Option<String> {
+    toolsets
+        .iter()
         .find(|toolset| toolset_window_label(&toolset.id) == label)
-        .map(|toolset| toolset.id)
+        .map(|toolset| toolset.id.clone())
 }
 
 fn toolset_toggle_command_id(toolset_id: &str) -> String {
@@ -667,11 +787,18 @@ fn preferred_toolset_position<R: Runtime>(
     toolset_id: &str,
 ) -> ToolsetWindowPosition {
     persisted_toolset_position(app, toolset_id)
-        .unwrap_or_else(|| default_toolset_position(toolset_id))
+        .unwrap_or_else(|| default_toolset_position(app, toolset_id))
 }
 
-fn default_toolset_position(toolset_id: &str) -> ToolsetWindowPosition {
-    let offset = toolset_index(toolset_id).unwrap_or(0) as f64 * 18.0;
+fn default_toolset_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    toolset_id: &str,
+) -> ToolsetWindowPosition {
+    default_toolset_position_for_index(toolset_index(app, toolset_id).unwrap_or(0))
+}
+
+fn default_toolset_position_for_index(index: usize) -> ToolsetWindowPosition {
+    let offset = index as f64 * 18.0;
     ToolsetWindowPosition {
         x: 88.0 + offset,
         y: 154.0 + offset,
@@ -799,6 +926,19 @@ fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLa
     serde_json::from_str(&contents).unwrap_or_default()
 }
 
+fn load_toolset_customization_state_from_disk<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<ToolsetCustomizationState> {
+    let path = toolset_customization_state_path(app).ok()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let state: ToolsetCustomizationState = serde_json::from_str(&contents).ok()?;
+    if state.version == 1 {
+        Some(state)
+    } else {
+        None
+    }
+}
+
 fn save_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     layout_state: &ToolsetLayoutState,
@@ -818,6 +958,16 @@ fn toolset_layout_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Pa
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join(TOOLSET_LAYOUT_STATE_FILENAME))
+}
+
+fn toolset_customization_state_path<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join(TOOLSET_CUSTOMIZATION_STATE_FILENAME))
 }
 
 fn set_toolset_menu_checked<R: Runtime>(
@@ -940,23 +1090,83 @@ mod tests {
 
     #[test]
     fn toolset_labels_round_trip_to_ids() {
+        let toolsets = vec![toolset("core.main", true)];
         expect_eq("toolset-core-main", &toolset_window_label("core.main"));
         expect_eq(
             Some("core.main".to_string()),
-            toolset_id_for_window_label("toolset-core-main"),
+            toolset_id_for_window_label_from_toolsets(&toolsets, "toolset-core-main"),
         );
-        expect_eq(None, toolset_id_for_window_label("main"));
+        expect_eq(
+            None,
+            toolset_id_for_window_label_from_toolsets(&toolsets, "main"),
+        );
     }
 
     #[test]
     fn default_positions_are_staggered_by_manifest_order() {
-        let main = default_toolset_position("core.main");
-        let structure = default_toolset_position("core.structure");
+        let main = default_toolset_position_for_index(0);
+        let structure = default_toolset_position_for_index(1);
 
         expect_eq(88.0, main.x);
         expect_eq(154.0, main.y);
         expect_true(structure.x > main.x);
         expect_true(structure.y > main.y);
+    }
+
+    #[test]
+    fn customization_state_adds_and_orders_user_toolsets() {
+        let toolsets = vec![toolset("core.main", true), toolset("plugin.fixture", false)];
+        let customization = ToolsetCustomizationState {
+            version: 1,
+            toolset_order: vec![
+                "user.quick".to_string(),
+                "plugin.fixture".to_string(),
+                "core.main".to_string(),
+            ],
+            user_toolsets: vec![toolset("user.quick", true)],
+            ..ToolsetCustomizationState::default()
+        };
+
+        let customized = apply_toolset_customization(toolsets, Some(&customization));
+
+        expect_eq("user.quick", customized[0].id.as_str());
+        expect_eq("plugin.fixture", customized[1].id.as_str());
+        expect_eq("core.main", customized[2].id.as_str());
+    }
+
+    #[test]
+    fn customization_overrides_title_visibility_mode_and_size() {
+        let toolsets = vec![toolset("core.main", true)];
+        let customization = ToolsetCustomizationState {
+            version: 1,
+            toolset_overrides: vec![ToolsetCustomizationOverride {
+                toolset_id: "core.main".to_string(),
+                title: Some("My Main Toolbar".to_string()),
+                visible: Some(false),
+                mode: Some("hidden".to_string()),
+                preferred_window_size: Some(ToolsetWindowSize {
+                    width: 120.0,
+                    height: 240.0,
+                    min_width: Some(100.0),
+                    min_height: Some(200.0),
+                }),
+            }],
+            ..ToolsetCustomizationState::default()
+        };
+
+        let customized = apply_toolset_customization(toolsets, Some(&customization));
+
+        expect_eq("My Main Toolbar", customized[0].title.as_str());
+        expect_false(customized[0].default_visible);
+        expect_eq("hidden", customized[0].default_mode.as_str());
+        expect_eq(
+            120.0,
+            customized[0]
+                .preferred_window_size
+                .as_ref()
+                .expect("size should be applied")
+                .width,
+        );
     }
 
     #[test]

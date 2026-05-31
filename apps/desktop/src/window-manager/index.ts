@@ -71,6 +71,15 @@ export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {
   return invoke<ToolsetWindowState[]>("list_toolset_window_states");
 }
 
+export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<unknown | null>("load_toolset_customization_state").then((state) => state ?? undefined);
+}
+
 export async function openToolPalette(): Promise<PaletteWindowState> {
   return openToolsetWindow(DEFAULT_TOOLSET_ID);
 }

@@ -13,8 +13,10 @@ import {
   createToolsetWindowStatePayload
 } from "./window-manager";
 import {
+  createDesktopToolsetRegistry,
   desktopToolsetRegistry,
   getToolbarsMenuModel,
+  getToolsetCommandGroups,
   getToolsetCommandSpecs,
   getToolsetToggleActions
 } from "./toolsets";
@@ -196,6 +198,62 @@ describe("ChemDraft desktop shell", () => {
         })
       ])
     );
+  });
+
+  it("applies persisted toolbar layout state to startup registry and menu models", () => {
+    const registry = createDesktopToolsetRegistry({
+      version: 1,
+      toolsetOrder: ["user.quick", "plugin.fixture", "core.main"],
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          title: "My Main Toolbar",
+          visible: false,
+          hiddenCommandIds: ["tool.lasso"],
+          itemOrder: {
+            "core.main.selection": ["tool.text", "tool.select", "tool.eraser"]
+          }
+        }
+      ],
+      userToolsets: [
+        {
+          id: "user.quick",
+          title: "My Quick Tools",
+          source: "user",
+          defaultVisible: true,
+          defaultMode: "floating",
+          groups: [
+            {
+              id: "user.quick.tools",
+              items: [
+                { commandId: "tool.select", title: "Selection Tool" },
+                { commandId: "plugin.fixture.toolset.ping", title: "Fixture Toolset Command" }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const menu = getToolbarsMenuModel(new Set(["user.quick"]), registry);
+
+    expect(registry.listToolsets().map((toolset) => toolset.id).slice(0, 3)).toEqual([
+      "user.quick",
+      "plugin.fixture",
+      "core.main"
+    ]);
+    expect(registry.require("core.main").title).toBe("My Main Toolbar");
+    expect(registry.require("core.main").defaultVisible).toBe(false);
+    expect(menu[0]).toMatchObject({
+      title: "My Quick Tools",
+      commandId: "view.toolset.toggle.user.quick",
+      checked: true,
+      source: "user"
+    });
+    expect(getToolsetCommandGroups("core.main", registry)[0].map((command) => command.id)).toEqual([
+      "tool.text",
+      "tool.select",
+      "tool.eraser"
+    ]);
   });
 
   it("creates toggle commands for every registered toolset", () => {

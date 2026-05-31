@@ -1,9 +1,11 @@
-import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { ToolPalette } from "./ToolPalette";
-import { desktopToolsetRegistry, getToolsetCommandGroups } from "./toolsets";
+import { createDesktopToolsetRegistry, desktopToolsetRegistry, getToolsetCommandGroups } from "./toolsets";
 import {
+  DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
   currentWindowLogicalPosition,
+  loadToolsetLayoutState,
   sendPaletteCommand,
   setCurrentWindowLogicalPosition,
   startPaletteWindowDrag,
@@ -24,8 +26,9 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
   const animationFrameRef = useRef<number | undefined>(undefined);
-  const toolset = desktopToolsetRegistry.get(toolsetId) ?? desktopToolsetRegistry.require("core.main");
-  const groups = getToolsetCommandGroups(toolset.id);
+  const [toolsetRegistry, setToolsetRegistry] = useState(() => desktopToolsetRegistry);
+  const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
+  const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
@@ -36,6 +39,21 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       if (animationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(animationFrameRef.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void loadToolsetLayoutState()
+      .then((layoutState) => {
+        if (active && layoutState !== undefined) {
+          setToolsetRegistry(createDesktopToolsetRegistry(layoutState));
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
     };
   }, []);
 

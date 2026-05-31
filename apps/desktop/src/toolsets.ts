@@ -1,5 +1,6 @@
 import {
   ToolsetRegistry,
+  applyToolsetLayoutState,
   createToolbarsMenuModel,
   createToolsetToggleCommandDefinitions,
   parseToolsetManifest,
@@ -12,27 +13,47 @@ import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 
 export type DesktopToolsetDefinition = ToolsetDefinition<IconName, ToolbarAssetName>;
+export type DesktopToolsetRegistry = ToolsetRegistry<IconName, ToolbarAssetName>;
 
 export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(manifest);
-export const desktopToolsetRegistry = new ToolsetRegistry<IconName, ToolbarAssetName>(desktopToolsets);
-export const defaultVisibleToolsetIds = new Set(
-  desktopToolsetRegistry.listDefaultVisibleToolsets().map((toolset) => toolset.id)
-);
+export const desktopToolsetRegistry = createDesktopToolsetRegistry();
+export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopToolsetRegistry);
 
-export function getToolsetCommandGroups(toolsetId: string): CommandSpec[][] {
-  return desktopToolsetRegistry.require(toolsetId).groups.map((group) => group.items.map(toolsetItemToCommandSpec));
+export function createDesktopToolsetRegistry(layoutState?: unknown): DesktopToolsetRegistry {
+  const toolsets = layoutState === undefined || layoutState === null
+    ? desktopToolsets
+    : applyToolsetLayoutState<IconName, ToolbarAssetName>(desktopToolsets, layoutState);
+
+  return new ToolsetRegistry<IconName, ToolbarAssetName>(toolsets);
 }
 
-export function getToolsetCommandSpecs(): CommandSpec[] {
+export function createDefaultVisibleToolsetIds(
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): Set<string> {
+  return new Set(registry.listDefaultVisibleToolsets().map((toolset) => toolset.id));
+}
+
+export function getToolsetCommandGroups(
+  toolsetId: string,
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): CommandSpec[][] {
+  return registry.require(toolsetId).groups.map((group) => group.items.map(toolsetItemToCommandSpec));
+}
+
+export function getToolsetCommandSpecs(
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): CommandSpec[] {
   return dedupeCommands(
-    desktopToolsetRegistry
+    registry
       .listToolsets()
       .flatMap((toolset) => toolset.groups.flatMap((group) => group.items.map(toolsetItemToCommandSpec)))
   );
 }
 
-export function getToolsetToggleActions(): CommandSpec[] {
-  return createToolsetToggleCommandDefinitions(desktopToolsetRegistry.listToolsets()).map((command) => ({
+export function getToolsetToggleActions(
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): CommandSpec[] {
+  return createToolsetToggleCommandDefinitions(registry.listToolsets()).map((command) => ({
     id: command.id,
     title: command.title,
     icon: "palette",
@@ -42,8 +63,11 @@ export function getToolsetToggleActions(): CommandSpec[] {
   }));
 }
 
-export function getToolbarsMenuModel(visibleToolsetIds: ReadonlySet<string> = defaultVisibleToolsetIds): ToolbarsMenuItem[] {
-  return createToolbarsMenuModel(desktopToolsetRegistry.listToolsets(), visibleToolsetIds);
+export function getToolbarsMenuModel(
+  visibleToolsetIds: ReadonlySet<string> = defaultVisibleToolsetIds,
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): ToolbarsMenuItem[] {
+  return createToolbarsMenuModel(registry.listToolsets(), visibleToolsetIds);
 }
 
 export function isDisabledPlaceholderCommand(command: CommandSpec): boolean {

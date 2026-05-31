@@ -22,6 +22,22 @@ Secondary goal:
 Create a plugin architecture that lets users add analysis, prediction, import/export, visualization, and workflow tools without turning the core application into a bloated suite.
 ```
 
+## 1.1 Roadmap synchronization note
+
+Recent implementation work corrected the desktop product direction rather than adding random UI polish. ChemDraft now has or scaffolds:
+
+- Tauri desktop as the default launch target.
+- Native floating toolset windows for desktop builds.
+- Declarative command-backed toolsets.
+- `packages/toolset-registry`.
+- Built-in, plugin-contributed, and user-created toolset concepts.
+- Versioned user toolbar layout/customization state.
+- Disabled toolbar customization command surface.
+- `packages/viewport-engine`.
+- Ruler rendering through `@scena/react-ruler`, with ChemDraft viewport state remaining the source of truth.
+
+Treat this as core drawing-workspace infrastructure. The next narrow implementation task is to wire persisted user toolbar layout state into the desktop registry startup path; do not treat it as broad UI polish or a new chemistry phase.
+
 ## 2. Target users
 
 Primary users:
@@ -178,6 +194,8 @@ External style sheets such as .cds    -> StyleCompat or documented style compati
 Native desktop shell                  -> DesktopBridge
 Clipboard access                      -> ClipboardAdapter
 Plugin loading                        -> PluginHost
+Toolbars/toolsets                     -> ToolsetRegistry
+Viewport, zoom, ruler state           -> ViewportEngine
 Image-to-structure recognition        -> Recognizer plugin or NativeServicePlugin
 ```
 
@@ -249,15 +267,43 @@ Menu items, quick-action toolbar buttons, floating/dockable palette tools, keybo
 
 Do not hard-code important actions only inside button click handlers. Placeholder tools may exist as disabled command definitions, but they must not pretend to perform chemistry.
 
-### 6.12 Floating palette architecture
+### 6.12 Floating toolset architecture
 
-The desktop app should support both docked/in-window palettes and native floating utility palettes.
+ChemDraft has toolsets, not just one tool palette. Toolsets can be built-in, plugin-contributed, or user-created. The desktop app should support native floating utility windows, with docked or in-window toolsets as fallback or optional modes.
 
-- Native floating palettes should be managed through a desktop window-manager boundary, initially in `apps/desktop/src/window-manager` unless a shared `packages/window-manager` becomes justified.
-- Floating palette windows should be associated with the active document window when possible.
+- Native floating toolsets should be managed through a desktop window-manager boundary, initially in `apps/desktop/src/window-manager` unless a shared `packages/window-manager` becomes justified.
+- Floating toolset windows should be associated with the active document window when possible.
 - Avoid global always-on-top behavior unless the user deliberately enables it.
-- Browser or web builds may use in-window floating palettes as the fallback.
-- Palette buttons invoke command IDs. They do not own chemistry behavior, document mutation, Ketcher calls, or RDKit calls.
+- Browser or web builds may use in-window floating toolsets as the fallback.
+- Toolset buttons invoke command IDs. They do not own chemistry behavior, document mutation, Ketcher calls, or RDKit calls.
+- View > Toolbars should be generated from the registry plus user layout state.
+- Toolset visibility, position, layout, mode, and size should be persisted without mutating source manifests.
+- Startup should apply persisted user toolbar layout state before constructing registry, menu, and window state.
+
+### 6.13 Toolbar/toolset customization
+
+Full drag-and-drop toolbar customization UI is deferred until the model is wired and tested. The customization architecture is now part of core UI infrastructure.
+
+Rules:
+
+- User customization edits versioned user layout state.
+- Built-in toolset manifests remain stable.
+- Plugin toolset manifests remain stable.
+- User toolsets reference command IDs.
+- Customization must not duplicate command implementations.
+- Customization must not grant plugin permissions.
+- Customization must not bypass command registration.
+- Future drag-and-drop editors should modify the same state model.
+- `view.customizeToolbars`, `view.toolset.resetLayout`, `view.toolset.resetAllLayouts`, `view.toolset.createUserToolset`, and `view.toolset.cloneToolset` are valid command concepts.
+- These commands may remain disabled until a real customization UI exists.
+
+### 6.14 ChemDraw toolbar XML boundary
+
+ChemDraw toolbar XML/customization files demonstrate that toolbar layout can be declarative data. ChemDraft should use its own typed manifest and customization model.
+
+Do not copy ChemDraw XML schema, command names, icon names, image assets, menu files, command definition files, file paths, templates, or trade dress. Do not treat uploaded ChemDraw toolbar XML as a ChemDraft runtime input.
+
+Any future external toolbar import must be a compatibility/import layer that maps supported external actions into ChemDraft command IDs and warns for unmapped commands.
 
 ## 7. Recommended technical architecture
 
@@ -327,6 +373,8 @@ chemdraft/
     shortcut-engine/          Command-bound keyboard shortcuts and type-to-build behavior
     mechanism-tools/          Curved arrows, electron marks, lone pairs, radical glyphs
     template-library/         Original built-in fragments, superatoms, templates, style presets
+    toolset-registry/         Typed toolset manifests, customization state, menu models
+    viewport-engine/          Viewport state, coordinate conversion, zoom, ruler state
     plugin-api/               Public plugin API types
     plugin-host/              Plugin loading, permissions, command registry
     ui-kit/                   Original app UI components and icons
@@ -465,6 +513,42 @@ Coordinates SVG, PNG, PDF, MOL, SDF, RXN, SMILES, CDXML, and CDX export through 
 ### 8.16 `packages/ui-kit`
 
 Owns original UI components and icons. It must not contain chemistry logic or copied proprietary assets.
+
+### 8.17 `packages/toolset-registry`
+
+Owns typed toolbar/toolset data.
+
+Responsibilities:
+
+- Typed toolset manifest schema.
+- Built-in, plugin, and user toolset definitions.
+- Toolset source separation: core, plugin, and user.
+- Toolset visibility and mode metadata.
+- Grid, row, column, and item placement metadata.
+- Toolset toggle command generation.
+- View > Toolbars menu model generation.
+- Versioned user customization state.
+- User-created toolsets.
+- User overrides for order, visibility, hidden commands, placement, size, and mode.
+- Validation that user customizations only reference registered command IDs.
+
+Must not own chemistry behavior, own plugin permissions, mutate plugin manifests, grant command permissions, copy ChemDraw XML/schema/command IDs/icons/assets, or become a hard-coded React-only palette model.
+
+### 8.18 `packages/viewport-engine`
+
+Owns the shared viewport coordinate system.
+
+Responsibilities:
+
+- Viewport scale.
+- Scroll and page origins.
+- Screen/page coordinate conversion.
+- Focal-point zoom.
+- Ruler render state.
+- Future pan/pinch integration boundary.
+- Keeping rulers, page rendering, hit testing, and future editor interactions in one coordinate system.
+
+Must not own chemistry object state, become a black-box canvas editor, let ruler rendering own the coordinate model, or hide coordinate math inside React components.
 
 ## 9. Native document model and patches
 
@@ -999,6 +1083,17 @@ Required tests:
 - Style application identity invariants.
 - Export functions.
 - Clipboard operations where testable.
+- Toolset layout state parsing.
+- Applying user toolset overrides.
+- User-created and plugin-contributed toolsets.
+- View > Toolbars generation from built-in, plugin, and user state.
+- Startup application of persisted user toolbar state.
+- Rust/Tauri menu and window behavior staying aligned with the manifest/layout model.
+- Toolbar command IDs rejecting unregistered commands.
+- Viewport coordinate conversion.
+- Focal-point zoom.
+- Ruler state sync with viewport state.
+- Gesture and pinch behavior where practical.
 - Visual regression tests for molecule, reaction, mechanism, text, arrow, bracket, and export rendering.
 - Recognition plugin tests with mocked MolScribe output, confidence display, warning display, source-image preservation, and proposed-patch approval.
 
@@ -1035,7 +1130,7 @@ Stage correction note:
 
 This documentation update is a correction after the first scaffold. The existing scaffold is acceptable only as technical proof that the workspace builds; its dashboard-like UI is not product direction. Do not continue polishing that scaffold.
 
-This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. The next implementation phase after Phase 4 closeout is `Phase 5: Chemistry validation and basic properties`. Do not begin Phase 5 in this documentation-only task.
+This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. Before Phase 5, complete the short `Phase 4.5: Toolset and viewport infrastructure closeout` interlude below. After that closeout, the roadmap returns to `Phase 5: Chemistry validation and basic properties`. Do not begin Phase 5 in this documentation-only task.
 
 ### Phase 0: Repository foundation
 
@@ -1118,6 +1213,21 @@ Completion requires:
 - Tests covering the implemented flow.
 
 Do not mark Phase 4 complete if the implementation only displays fake UI elements, fake molecule/reaction/product placeholders, or disabled controls without the documented fallback behavior.
+
+### Phase 4.5: Toolset and viewport infrastructure closeout
+
+This interlude reflects the implemented desktop workspace corrections and should stay narrow.
+
+Deliverables:
+
+- Wire persisted user toolbar layout state into desktop startup.
+- Apply user layout state before constructing toolset registry, menu, and window state.
+- Keep Rust/Tauri menu generation aligned with the TypeScript registry model.
+- Persist visibility, position, layout, mode, and size without mutating source manifests.
+- Add tests for built-in, plugin, and user toolset menu generation.
+- Add tests for user layout state applied to the startup registry.
+- Keep drag-and-drop customization UI deferred.
+- Keep chemistry implementation out of this task.
 
 ### Phase 5: Chemistry validation and basic properties
 
@@ -1283,58 +1393,64 @@ Close out Phase 4 first drawing workflow: real blank document flow, active Edito
 Task 6:
 
 ```text
-Begin Phase 5 chemistry validation and basic properties: chemistry-adapter contract, RDKit adapter or honest placeholder, selected-structure validation, formula, average mass, exact mass where available, total charge, stereochemistry warnings where available, and fixture tests. Do not turn this into broad UI redesign.
+Wire persisted user toolbar layout state into the desktop registry startup path. Use `applyToolsetLayoutState`, load persisted layout state, apply it to the desktop toolset registry/menu/window model, ensure user-created toolsets can appear in View > Toolbars, ensure hidden/reordered tools affect rendered toolsets, preserve command-driven behavior, and add tests. Do not implement drag/drop customization UI. Do not implement chemistry drawing.
 ```
 
 Task 7:
 
 ```text
-Harden the editor engine integration behind EditorAdapter and document capability gaps around mechanism annotations, page layout, and other non-editor objects.
+Begin Phase 5 chemistry validation and basic properties: chemistry-adapter contract, RDKit adapter or honest placeholder, selected-structure validation, formula, average mass, exact mass where available, total charge, stereochemistry warnings where available, and fixture tests. Do not turn this into broad UI redesign.
 ```
 
 Task 8:
 
 ```text
-Implement native style preset schema and default-style preservation in documents, including tests that save/reopen the selected preset.
+Harden the editor engine integration behind EditorAdapter and document capability gaps around mechanism annotations, page layout, and other non-editor objects.
 ```
 
 Task 9:
 
 ```text
-Implement `.cds` style-sheet import through the style compatibility boundary, converting supported settings into native ChemDraft style presets with warnings and synthetic/legal fixtures.
+Implement native style preset schema and default-style preservation in documents, including tests that save/reopen the selected preset.
 ```
 
 Task 10:
 
 ```text
-Implement core drawing productivity tools: shortcuts, atom labels, abbreviations/superatoms, bonds, rings, reaction arrows, mechanism annotations, templates, native style controls, and basic layout commands.
+Implement `.cds` style-sheet import through the style compatibility boundary, converting supported settings into native ChemDraft style presets with warnings and synthetic/legal fixtures.
 ```
 
 Task 11:
 
 ```text
-Implement MOL/SDF/SMILES/RXN import/export plus SVG/PNG/PDF export with warnings and fixtures.
+Implement core drawing productivity tools: shortcuts, atom labels, abbreviations/superatoms, bonds, rings, reaction arrows, mechanism annotations, templates, native style controls, and basic layout commands.
 ```
 
 Task 12:
 
 ```text
-Implement basic CDXML export with stereochemistry and superatom fixtures.
+Implement MOL/SDF/SMILES/RXN import/export plus SVG/PNG/PDF export with warnings and fixtures.
 ```
 
 Task 13:
 
 ```text
-Implement CDXML import fixture-by-fixture and add CDXML clipboard support where supported.
+Implement basic CDXML export with stereochemistry and superatom fixtures.
 ```
 
 Task 14:
 
 ```text
-Implement CDX best-effort read/paste support before CDX writing, with compatibility warnings and fixtures.
+Implement CDXML import fixture-by-fixture and add CDXML clipboard support where supported.
 ```
 
 Task 15:
+
+```text
+Implement CDX best-effort read/paste support before CDX writing, with compatibility warnings and fixtures.
+```
+
+Task 16:
 
 ```text
 Upgrade the MolScribe OCSR plugin from scaffold to optional local-service spike. Keep it out of the core app dependency graph.

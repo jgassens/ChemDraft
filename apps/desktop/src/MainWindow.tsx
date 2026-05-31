@@ -44,17 +44,21 @@ import {
   DEFAULT_TOOLSET_ID,
   isDesktopRuntime,
   listToolsetWindowStates,
+  loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
   toggleToolsetWindow
 } from "./window-manager";
 import {
+  createDefaultVisibleToolsetIds,
+  createDesktopToolsetRegistry,
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
   getToolsetToggleActions,
-  isDisabledPlaceholderCommand
+  isDisabledPlaceholderCommand,
+  type DesktopToolsetRegistry
 } from "./toolsets";
 
 type PaletteMode = "floating" | "hidden";
@@ -105,11 +109,12 @@ export function MainWindow({
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
   const [document, setDocument] = useState(() => createPhase4Document());
   const [activeTool, setActiveTool] = useState("tool.select");
+  const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
-    createDefaultToolsetPositions()
+    createDefaultToolsetPositions(desktopToolsetRegistry)
   );
   const [rulersVisible, setRulersVisible] = useState(false);
   const [crosshairsVisible, setCrosshairsVisible] = useState(initialCrosshairsVisible);
@@ -128,9 +133,43 @@ export function MainWindow({
   const selectedMolecule = getSelectedMolecule(document);
   const quickActions = useMemo(() => createQuickActions(document, selectedMolecule), [document, selectedMolecule]);
   const visibleFloatingToolsets = useMemo(
-    () => desktopToolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
-    [visibleToolsetIds]
+    () => toolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
+    [toolsetRegistry, visibleToolsetIds]
   );
+
+  useEffect(() => {
+    if (!nativePalette) {
+      return undefined;
+    }
+
+    let active = true;
+    void loadToolsetLayoutState()
+      .then((layoutState) => {
+        if (!active || layoutState === undefined) {
+          return;
+        }
+
+        const nextRegistry = createDesktopToolsetRegistry(layoutState);
+        setToolsetRegistry(nextRegistry);
+        setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
+        setVisibleToolsetIds((current) => {
+          const knownVisibleIds = [...current].filter((toolsetId) => nextRegistry.get(toolsetId));
+          if (current.size === 0) {
+            return createDefaultVisibleToolsetIds(nextRegistry);
+          }
+          return current.size === knownVisibleIds.length
+            ? current
+            : new Set(knownVisibleIds.length > 0 ? knownVisibleIds : createDefaultVisibleToolsetIds(nextRegistry));
+        });
+      })
+      .catch((error: unknown) => {
+        setStatus(`Toolbar layout unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [nativePalette]);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -271,7 +310,7 @@ export function MainWindow({
   }, [zoomCanvasAtClientPoint]);
 
   const toggleToolset = useCallback(async (toolsetId: string) => {
-    if (!desktopToolsetRegistry.get(toolsetId)) {
+    if (!toolsetRegistry.get(toolsetId)) {
       setStatus(`Unknown toolbar ${toolsetId}`);
       return;
     }
@@ -279,13 +318,13 @@ export function MainWindow({
     if (nativePalette) {
       const nextState = await toggleToolsetWindow(toolsetId);
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
-      setStatus(nextState.open ? `${desktopToolsetRegistry.require(toolsetId).title} open` : `${desktopToolsetRegistry.require(toolsetId).title} closed`);
+      setStatus(nextState.open ? `${toolsetRegistry.require(toolsetId).title} open` : `${toolsetRegistry.require(toolsetId).title} closed`);
       return;
     }
 
     setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
-    setStatus(`Toggled ${desktopToolsetRegistry.require(toolsetId).title}`);
-  }, [nativePalette]);
+    setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
+  }, [nativePalette, toolsetRegistry]);
 
   const registry = useMemo(() => {
     const commandRegistry = new CommandRegistry();
@@ -357,7 +396,7 @@ export function MainWindow({
       });
     });
 
-    getToolsetCommandSpecs().forEach((tool) => {
+    getToolsetCommandSpecs(toolsetRegistry).forEach((tool) => {
       register(tool, () => {
         if (isDisabledPlaceholderCommand(tool)) {
           setStatus(tool.disabledReason ?? "Tool unavailable");
@@ -373,7 +412,7 @@ export function MainWindow({
       });
     });
 
-    getToolsetToggleActions().forEach((action) => {
+    getToolsetToggleActions(toolsetRegistry).forEach((action) => {
       register(action, async () => {
         const toolsetId = parseToolsetToggleCommandId(action.id);
         if (!toolsetId) {
@@ -404,7 +443,7 @@ export function MainWindow({
     });
 
     return commandRegistry;
-  }, [chemistryAdapter, document, nativePalette, quickActions, toggleToolset]);
+  }, [chemistryAdapter, document, nativePalette, quickActions, toggleToolset, toolsetRegistry]);
 
   const invoke = useCallback((commandId: string) => {
     void registry.invoke(commandId).catch(() => {
@@ -421,13 +460,17 @@ export function MainWindow({
 
     void listToolsetWindowStates()
       .then((states) => {
-        setVisibleToolsetIds(new Set(states.filter((state) => state.open).map((state) => state.toolsetId)));
+        setVisibleToolsetIds(new Set(
+          states
+            .filter((state) => state.open && toolsetRegistry.get(state.toolsetId))
+            .map((state) => state.toolsetId)
+        ));
       })
       .catch(() => {
         setVisibleToolsetIds(new Set());
         setStatus("Native toolset windows unavailable");
       });
-  }, [nativePalette]);
+  }, [nativePalette, toolsetRegistry]);
 
   useEffect(() => {
     if (!nativePalette) {
@@ -485,7 +528,7 @@ export function MainWindow({
       return;
     }
 
-    const position = webPalettePositions[toolsetId] ?? defaultToolsetPosition(toolsetId);
+    const position = webPalettePositions[toolsetId] ?? defaultToolsetPosition(toolsetId, toolsetRegistry);
     webPaletteDragRef.current = {
       toolsetId,
       pointerId: event.pointerId,
@@ -495,7 +538,7 @@ export function MainWindow({
       startY: position.y
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [webPalettePositions]);
+  }, [toolsetRegistry, webPalettePositions]);
 
   const moveWebPalette = useCallback((event: PointerEvent<HTMLElement>) => {
     const drag = webPaletteDragRef.current;
@@ -534,7 +577,7 @@ export function MainWindow({
 
       {!nativePalette
         ? visibleFloatingToolsets.map((toolset) => {
-            const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id);
+            const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             return (
               <section
                 className="web-floating-palette"
@@ -556,7 +599,7 @@ export function MainWindow({
               >
                 <div className="palette-title">{toolset.title.replace(/ Toolbar$/, "")}</div>
                 <ToolPalette
-                  groups={getToolsetCommandGroups(toolset.id)}
+                  groups={getToolsetCommandGroups(toolset.id, toolsetRegistry)}
                   activeTool={activeTool}
                   mode="floating"
                   title={toolset.title}
@@ -611,17 +654,17 @@ function updateVisibleToolsets(current: ReadonlySet<string>, toolsetId: string, 
   return next;
 }
 
-function createDefaultToolsetPositions(): Record<string, PalettePosition> {
+function createDefaultToolsetPositions(registry: DesktopToolsetRegistry): Record<string, PalettePosition> {
   return Object.fromEntries(
-    desktopToolsetRegistry.listToolsets().map((toolset, index) => [
+    registry.listToolsets().map((toolset, index) => [
       toolset.id,
       { x: 34 + index * 18, y: 116 + index * 18 }
     ])
   );
 }
 
-function defaultToolsetPosition(toolsetId: string): PalettePosition {
-  const index = Math.max(0, desktopToolsetRegistry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
+function defaultToolsetPosition(toolsetId: string, registry: DesktopToolsetRegistry): PalettePosition {
+  const index = Math.max(0, registry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
   return { x: 34 + index * 18, y: 116 + index * 18 };
 }
 

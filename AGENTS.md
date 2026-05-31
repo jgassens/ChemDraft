@@ -72,6 +72,8 @@ layout-engine      Owns page/object layout operations
 shortcut-engine    Owns command-bound shortcuts and type-to-build behavior
 mechanism-tools    Owns mechanism annotation primitives and rendering hooks
 template-library   Owns original templates, abbreviations/superatoms, and style presets
+toolset-registry   Owns typed toolset manifests, built-in/plugin/user toolset models, customization state, menu models, and command-ID validation
+viewport-engine    Owns viewport state, coordinate conversion, zoom math, and ruler render state
 plugin-api         Defines public plugin API types
 plugin-host        Loads plugins, validates manifests, enforces permissions
 export-engine      Coordinates export formats
@@ -303,7 +305,9 @@ Phase 4 completion requires real implemented behavior or clearly labeled adapter
 - Status reporting.
 - Tests.
 
-The next implementation phase is Phase 5: chemistry validation and basic properties. Phase 5 should focus on `chemistry-adapter`, `rdkit-adapter` or an honest placeholder, selected-structure validation, formula, average mass, exact mass where available, total charge, basic stereochemistry warnings where available, and fixture tests.
+The next narrow implementation interlude is Phase 4.5: toolset and viewport infrastructure closeout. It should wire persisted user toolbar layout state into desktop startup/menu/window generation and keep Rust/Tauri menu behavior aligned with the TypeScript registry model. After that closeout, Phase 5 is chemistry validation and basic properties.
+
+Phase 5 should focus on `chemistry-adapter`, `rdkit-adapter` or an honest placeholder, selected-structure validation, formula, average mass, exact mass where available, total charge, basic stereochemistry warnings where available, and fixture tests.
 
 Phase 5 should not add broad UI polish, new toolbar concepts, CDXML/CDX compatibility, clipboard compatibility, NMR/MS/pKa/logP plugins, or image-to-structure recognition unless explicitly requested.
 
@@ -321,7 +325,56 @@ Rules:
 - Do not turn the tool palette into a permanent SaaS-style sidebar.
 - Native floating palette behavior should live behind a desktop window-manager boundary, not random UI code.
 
-### 5.19 Style sheets and default styles
+### 5.19 Toolset customization rules
+
+Toolbars/toolsets are declarative command-backed data.
+
+Rules:
+
+- Toolbar buttons invoke command IDs; they do not own chemistry behavior.
+- Built-in toolsets come from ChemDraft manifests.
+- Plugin toolsets come from plugin contributions.
+- User toolsets and user customizations come from versioned user layout state.
+- User customization must not mutate built-in manifests.
+- User customization must not mutate plugin manifests.
+- User customization must not grant plugin permissions.
+- User customization must not bypass command registration.
+- User customization must not duplicate command implementations.
+- Persisted user layout state must be applied before menu/window models are finalized.
+- If a user customization references an unregistered command ID, reject it or disable it with a clear warning.
+
+When changing desktop toolbar/menu/window startup behavior, keep these in sync:
+
+- TypeScript toolset registry.
+- Persisted user layout state.
+- Native Tauri View > Toolbars menu.
+- Native toolset windows.
+- Web fallback toolsets.
+- Command registry.
+
+Do not let Rust menu generation and TypeScript registry behavior drift apart. If Rust must parse shared JSON, tests or fixtures must cover alignment.
+
+Full drag-and-drop toolbar customization UI is deferred until the state model is wired and tested. Do not add a drag-and-drop dependency until implementing the real customization editor. Prefer `dnd-kit` for that future editor. Do not use `react-beautiful-dnd`.
+
+### 5.20 ChemDraw toolbar XML boundary
+
+Do not copy ChemDraw toolbar XML, schemas, command IDs, icon names, images, menu files, command definition files, file paths, or toolbar art.
+
+Uploaded ChemDraw custom toolbar files may be used only as conceptual evidence that toolbar layout can be declarative. They are not ChemDraft runtime fixtures and should not be committed or imported unless an explicit clean-room compatibility task is created.
+
+### 5.21 Viewport and ruler ownership
+
+`viewport-engine` is the source of truth for viewport state.
+
+Rules:
+
+- Ruler renderers consume viewport state; they do not own geometry.
+- Zoom, pinch, and pan behavior must preserve coordinate conversion correctness.
+- Do not hide scale/origin math inside React components.
+- Do not add another viewport dependency without updating dependency inventory and tests.
+- Any pointer or hit-testing work must use viewport conversion helpers.
+
+### 5.22 Style sheets and default styles
 
 ChemDraw `.cds` files are compatibility inputs to native ChemDraft style presets. They are not molecule, reaction, page, document, or native style model formats.
 
@@ -575,6 +628,43 @@ Not allowed:
 - Proprietary icon copies
 - Proprietary UI assets
 - Chemistry logic
+
+### 6.15 `toolset-registry`
+
+Allowed:
+
+- Manifest schemas
+- Layout/customization schemas
+- User toolsets
+- User overrides
+- Menu model generation
+- Toggle command generation
+- Command-ID validation
+
+Not allowed:
+
+- Chemistry behavior
+- Plugin permission grants
+- Direct Tauri window creation
+- Direct React rendering
+- Copying ChemDraw toolbar XML, schema, or assets
+
+### 6.16 `viewport-engine`
+
+Allowed:
+
+- Scale/origin state
+- Coordinate conversion
+- Focal zoom math
+- Ruler render state
+- Pan/pinch helper math
+
+Not allowed:
+
+- Document mutation
+- Chemistry object ownership
+- Direct renderer ownership
+- Dependency-specific black-box state
 
 ## 7. Plugin API rules
 
@@ -855,6 +945,8 @@ clipboard:        format detection and lossy/warning behavior where testable
 export-engine:    export output and warning tests
 adapters:         adapter contract tests
 ui:               command wiring, floating/docked palette routing, and smoke tests
+toolsets:         customization state, persisted layout application, plugin/user toolsets, unregistered command rejection, native menu/window alignment where practical
+viewport:         coordinate conversion, focal-point zoom, ruler/zoom sync, gesture/pinch behavior where practical
 recognizers:      mocked output, confidence/warning display, source-image preservation, proposed patch flow
 ```
 
