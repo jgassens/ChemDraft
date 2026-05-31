@@ -1,13 +1,22 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { allShellCommands, paletteGroups, toolbarCustomizationActions, viewActions } from "./commands";
+import {
+  allShellCommands,
+  pageOrientationActions,
+  pageSizeActions,
+  paletteGroups,
+  toolbarCustomizationActions,
+  viewActions
+} from "./commands";
 import {
   applyAnalysisToSelectedMolecule,
   createPhase4Document,
-  insertAdapterFallbackMolecule
+  insertAdapterFallbackMolecule,
+  setDocumentPageOrientation,
+  setDocumentPageSize
 } from "./documentWorkflow";
-import { MainWindow } from "./MainWindow";
+import { MainWindow, resolvePngCanvasSize } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import {
   DEFAULT_TOOLSET_ID,
@@ -136,6 +145,10 @@ describe("ChemDraft desktop shell", () => {
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length);
     expect(commands.some((command) => command.id === "document.open")).toBe(true);
     expect(commands.some((command) => command.id === "view.toggleRulers")).toBe(true);
+    expect(commands.some((command) => command.id === "page.setSize.legal")).toBe(true);
+    expect(commands.some((command) => command.id === "page.setSize.a4")).toBe(true);
+    expect(commands.some((command) => command.id === "page.setSize.a0")).toBe(true);
+    expect(commands.some((command) => command.id === "page.setOrientation.landscape")).toBe(true);
     expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
@@ -148,6 +161,23 @@ describe("ChemDraft desktop shell", () => {
         expect.objectContaining({ id: "view.toggleCrosshairs", title: "Toggle Crosshairs" })
       ])
     );
+  });
+
+  it("defines minimal command-backed page-size and orientation controls", () => {
+    expect(pageSizeActions.map((command) => command.id)).toEqual([
+      "page.setSize.letter",
+      "page.setSize.legal",
+      "page.setSize.a4",
+      "page.setSize.a3",
+      "page.setSize.a2",
+      "page.setSize.a1",
+      "page.setSize.a0",
+      "page.setSize.a5"
+    ]);
+    expect(pageOrientationActions.map((command) => command.id)).toEqual([
+      "page.setOrientation.portrait",
+      "page.setOrientation.landscape"
+    ]);
   });
 
   it("defines disabled toolbar customization command placeholders", () => {
@@ -386,5 +416,80 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("C2H6O");
     expect(markup).toContain("avg 46.069");
     expect(markup).toContain("exact 46.0419");
+  });
+
+  it("renders canvas geometry from the active document page layout", () => {
+    const document = setDocumentPageSize(createPhase4Document("A4 Canvas"), "a4");
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain(`--page-layout-width:${document.pages[0].width}px`);
+    expect(markup).toContain(`--page-layout-height:${document.pages[0].height}px`);
+  });
+
+  it("sets ruler units from the active document page family", () => {
+    const a4Document = setDocumentPageSize(createPhase4Document("Metric Canvas"), "a4");
+    const legalDocument = setDocumentPageSize(createPhase4Document("US Legal Canvas"), "legal");
+    const a4Markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: a4Document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    const legalMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: legalDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(a4Markup).toContain(">cm</span>");
+    expect(a4Markup).toContain("crosshair-tick-half");
+    expect(legalMarkup).toContain(">in</span>");
+    expect(legalMarkup).toContain("crosshair-tick-quarter");
+  });
+
+  it("updates page size and orientation without mutating molecule payloads", () => {
+    const document = applyAnalysisToSelectedMolecule(
+      insertAdapterFallbackMolecule(createPhase4Document("Payload Fixture")),
+      {
+        input: { format: "smiles", value: "CCO" },
+        validation: { valid: true, errors: [], warnings: [] },
+        properties: {
+          formula: "C2H6O",
+          averageMass: 46.069,
+          exactMass: 46.0419,
+          totalCharge: 0,
+          atomCount: 3,
+          bondCount: 2,
+          stereochemistry: []
+        },
+        warnings: []
+      }
+    );
+    const moleculeBefore = document.pages[0].objects[0];
+    const resized = setDocumentPageOrientation(setDocumentPageSize(document, "a1"), "landscape");
+
+    expect(resized.pages[0].layout).toMatchObject({ presetId: "a1", orientation: "landscape" });
+    expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
+    expect(resized.selection).toEqual(document.selection);
+  });
+
+  it("uses active page dimensions as the PNG fallback instead of hard-coded Letter", () => {
+    expect(resolvePngCanvasSize(0, 0, { width: 1122.5, height: 793.7 })).toEqual({
+      width: 1123,
+      height: 794
+    });
+    expect(resolvePngCanvasSize(640, 480, { width: 1122.5, height: 793.7 })).toEqual({
+      width: 640,
+      height: 480
+    });
   });
 });

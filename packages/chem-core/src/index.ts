@@ -17,6 +17,10 @@ export {
   GroupObjectSchema,
   MechanismArrowObjectSchema,
   MoleculeObjectSchema,
+  PageLayoutSchema,
+  PageOrientationSchema,
+  PageSizePresetIdSchema,
+  PageSizeUnitSchema,
   PlusObjectSchema,
   PointSchema,
   RGroupDisplaySchema,
@@ -46,6 +50,10 @@ export {
   type GroupObject,
   type MechanismArrowObject,
   type MoleculeObject,
+  type PageLayout,
+  type PageOrientation,
+  type PageSizePresetId,
+  type PageSizeUnit,
   type PlusObject,
   type Point,
   type RGroupDisplay,
@@ -58,6 +66,29 @@ export {
   type TextSpan,
   type UnknownCompatibilityObject
 } from "./schemas";
+
+export {
+  CSS_PX_PER_INCH,
+  DefaultPageLayout,
+  DefaultPageMarginPx,
+  MM_PER_INCH,
+  MinimalPageSizePresetIds,
+  PAGE_LAYOUT_TOLERANCE,
+  PageOrientations,
+  PageSizePresetIds,
+  PageSizePresets,
+  PageSizeUnits,
+  createPageLayout,
+  findPageSizePreset,
+  inchesToCssPx,
+  mmToCssPx,
+  pageLayoutMatchesSize,
+  pageLayoutSvgSize,
+  pageMarginFromLayout,
+  type PageMargin,
+  type PageSizeCategory,
+  type PageSizePreset
+} from "./page-layout";
 
 export {
   cloneDocument,

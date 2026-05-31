@@ -518,8 +518,8 @@ button {
   display: grid;
   align-items: start;
   justify-items: center;
-  min-width: max(900px, calc((816px * var(--page-scale)) + 136px));
-  min-height: max(1180px, calc((1056px * var(--page-scale)) + 120px));
+  min-width: max(900px, calc((var(--page-layout-width) * var(--page-scale)) + 136px));
+  min-height: max(1180px, calc((var(--page-layout-height) * var(--page-scale)) + 120px));
   padding: 44px 68px 76px;
 }
 
@@ -529,8 +529,8 @@ button {
 }
 
 .document-board {
-  --page-width: calc(816px * var(--page-scale));
-  --page-height: calc(1056px * var(--page-scale));
+  --page-width: calc(var(--page-layout-width) * var(--page-scale));
+  --page-height: calc(var(--page-layout-height) * var(--page-scale));
   --ruler-thickness: 32px;
   --ruler-unit: var(--ruler-unit-px, calc(96px * var(--page-scale)));
   --ruler-minor: var(--ruler-minor-px, calc(12px * var(--page-scale)));

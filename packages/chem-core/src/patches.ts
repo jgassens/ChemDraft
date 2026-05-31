@@ -1,16 +1,20 @@
 import {
   ChemDraftDocumentSchema,
   DocumentObjectSchema,
+  PageLayoutSchema,
   type AnnotationObject,
   type ChemDraftDocument,
-  type DocumentObject
+  type DocumentObject,
+  type PageLayout
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
+import { pageMarginFromLayout } from "./page-layout";
 
 export type DocumentPatch =
   | { op: "addObject"; pageId: string; object: DocumentObject }
   | { op: "removeObject"; objectId: string }
   | { op: "updateObject"; objectId: string; changes: Partial<DocumentObject> }
+  | { op: "updatePageLayout"; pageId: string; layout: PageLayout }
   | { op: "moveObject"; objectId: string; x: number; y: number }
   | { op: "setSelection"; pageId?: string; objectIds: string[] }
   | { op: "addAnnotation"; pageId: string; annotation: AnnotationObject }
@@ -43,6 +47,9 @@ export function applyPatch(
       break;
     case "updateObject":
       updateObject(next, patch.objectId, patch.changes);
+      break;
+    case "updatePageLayout":
+      updatePageLayout(next, patch.pageId, patch.layout);
       break;
     case "moveObject":
       updateObject(next, patch.objectId, { x: patch.x, y: patch.y });
@@ -112,6 +119,19 @@ function setSelection(document: ChemDraftDocument, pageId: string | undefined, o
     pageId: page.id,
     objectIds: [...objectIds]
   };
+}
+
+function updatePageLayout(document: ChemDraftDocument, pageId: string, layout: PageLayout): void {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page) {
+    throw new DocumentPatchError(`Cannot update page layout: page "${pageId}" does not exist.`);
+  }
+
+  const parsedLayout = PageLayoutSchema.parse(layout);
+  page.layout = parsedLayout;
+  page.width = parsedLayout.widthPx;
+  page.height = parsedLayout.heightPx;
+  page.margin = pageMarginFromLayout(parsedLayout);
 }
 
 function updateObject(

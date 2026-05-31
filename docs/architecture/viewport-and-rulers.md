@@ -4,6 +4,10 @@ Status: ruler renderer spike connected to the desktop viewport.
 
 ChemDraft has a small `@chemdraft/viewport-engine` package that owns viewport state, coordinate math, and ruler render parameters. The desktop UI renders rulers with `@scena/react-ruler`, but the ruler renderer consumes ChemDraft viewport state rather than owning document geometry.
 
+Page size and paper layout are native document data in `@chemdraft/chem-core`. The viewport, rulers, crosshairs, object positioning, and exports consume the active page layout; React canvas constants are not the geometry source of truth.
+
+Ruler units follow the active paper family. US presets such as Letter and Legal use inch rulers and inch-based grid/crosshair ticks. ISO A presets use centimeter rulers and centimeter-based grid/crosshair ticks. Page size switching is exposed through command-backed File > Page Setup menu items.
+
 ## Current Viewport State
 
 The viewport boundary tracks:

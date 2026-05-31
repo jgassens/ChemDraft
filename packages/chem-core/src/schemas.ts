@@ -1,4 +1,11 @@
 import { z } from "zod";
+import {
+  PageOrientations,
+  PageSizePresetIds,
+  PageSizeUnits,
+  pageLayoutMatchesSize,
+  type PageLayout as NativePageLayout
+} from "./page-layout";
 
 export const DocumentSchemaVersion = "chemdraft.document.v1" as const;
 
@@ -220,6 +227,26 @@ export const DocumentObjectSchema = z.discriminatedUnion("type", [
   UnknownCompatibilityObjectSchema
 ]);
 
+export const PageSizePresetIdSchema = z.enum(PageSizePresetIds);
+export const PageSizeUnitSchema = z.enum(PageSizeUnits);
+export const PageOrientationSchema = z.enum(PageOrientations);
+
+export const PageLayoutSchema: z.ZodType<NativePageLayout> = z
+  .object({
+    presetId: PageSizePresetIdSchema,
+    orientation: PageOrientationSchema,
+    widthPx: z.number().finite().positive(),
+    heightPx: z.number().finite().positive(),
+    marginTopPx: z.number().finite().nonnegative(),
+    marginRightPx: z.number().finite().nonnegative(),
+    marginBottomPx: z.number().finite().nonnegative(),
+    marginLeftPx: z.number().finite().nonnegative(),
+    sourceUnit: PageSizeUnitSchema.optional(),
+    sourceWidth: z.number().finite().positive().optional(),
+    sourceHeight: z.number().finite().positive().optional()
+  })
+  .strict();
+
 export const DocumentPageSchema = z
   .object({
     id: IdSchema,
@@ -234,9 +261,19 @@ export const DocumentPageSchema = z
       })
       .strict()
       .default({ top: 72, right: 72, bottom: 72, left: 72 }),
+    layout: PageLayoutSchema,
     objects: z.array(DocumentObjectSchema)
   })
-  .strict();
+  .strict()
+  .superRefine((page, context) => {
+    if (!pageLayoutMatchesSize(page.layout, page.width, page.height)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["layout"],
+        message: "Page layout widthPx/heightPx must match page width/height."
+      });
+    }
+  });
 
 export const DocumentSelectionSchema = z
   .object({
@@ -291,6 +328,10 @@ export type RGroupLabelObject = z.infer<typeof RGroupLabelObjectSchema>;
 export type GenericAtomLabelObject = z.infer<typeof GenericAtomLabelObjectSchema>;
 export type UnknownCompatibilityObject = z.infer<typeof UnknownCompatibilityObjectSchema>;
 export type DocumentObject = z.infer<typeof DocumentObjectSchema>;
+export type PageSizePresetId = z.infer<typeof PageSizePresetIdSchema>;
+export type PageSizeUnit = z.infer<typeof PageSizeUnitSchema>;
+export type PageOrientation = z.infer<typeof PageOrientationSchema>;
+export type PageLayout = z.infer<typeof PageLayoutSchema>;
 export type DocumentPage = z.infer<typeof DocumentPageSchema>;
 export type DocumentSelection = z.infer<typeof DocumentSelectionSchema>;
 export type ChemDraftDocument = z.infer<typeof ChemDraftDocumentSchema>;

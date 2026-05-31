@@ -1,7 +1,9 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu},
+    menu::{
+        AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
+    },
     Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
@@ -25,6 +27,16 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "document.save",
     "export.svg",
     "export.png",
+    "page.setSize.letter",
+    "page.setSize.legal",
+    "page.setSize.a4",
+    "page.setSize.a3",
+    "page.setSize.a2",
+    "page.setSize.a1",
+    "page.setSize.a0",
+    "page.setSize.a5",
+    "page.setOrientation.portrait",
+    "page.setOrientation.landscape",
     "view.toggleRulers",
     "view.toggleCrosshairs",
     "chemistry.validateSelection",
@@ -399,11 +411,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     toolset_manifest: &ToolsetManifest,
     layout_state: &ToolsetLayoutState,
 ) -> tauri::Result<Menu<R>> {
+    #[cfg(target_os = "macos")]
+    let native_app_menu = create_native_app_menu(app)?;
+    let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, toolset_manifest, layout_state)?;
 
     Menu::with_items(
         app,
         &[
+            #[cfg(target_os = "macos")]
+            &native_app_menu,
             &Submenu::with_items(
                 app,
                 "File",
@@ -412,6 +429,8 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
                     &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
                     &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &page_setup_menu,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "export.svg", "Export SVG", true, None::<&str>)?,
                     &MenuItem::with_id(app, "export.png", "Export PNG", true, None::<&str>)?,
@@ -460,6 +479,86 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             )?,
             &Submenu::with_items(app, "Help", true, &[])?,
         ],
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    let package_info = app.package_info();
+    let config = app.config();
+    let about_metadata = AboutMetadata {
+        name: Some("ChemDraft".to_string()),
+        version: Some(package_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config
+            .bundle
+            .publisher
+            .clone()
+            .map(|publisher| vec![publisher]),
+        ..Default::default()
+    };
+
+    Submenu::with_items(
+        app,
+        package_info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )
+}
+
+fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    let paper_size_menu = Submenu::with_items(
+        app,
+        "Paper Size",
+        true,
+        &[
+            &MenuItem::with_id(app, "page.setSize.letter", "US Letter", true, None::<&str>)?,
+            &MenuItem::with_id(app, "page.setSize.legal", "US Legal", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "page.setSize.a4", "A4", true, None::<&str>)?,
+            &MenuItem::with_id(app, "page.setSize.a3", "A3", true, None::<&str>)?,
+            &MenuItem::with_id(app, "page.setSize.a2", "A2", true, None::<&str>)?,
+            &MenuItem::with_id(app, "page.setSize.a1", "A1", true, None::<&str>)?,
+            &MenuItem::with_id(app, "page.setSize.a0", "A0", true, None::<&str>)?,
+            &MenuItem::with_id(app, "page.setSize.a5", "A5", true, None::<&str>)?,
+        ],
+    )?;
+    let orientation_menu = Submenu::with_items(
+        app,
+        "Orientation",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "page.setOrientation.portrait",
+                "Portrait",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "page.setOrientation.landscape",
+                "Landscape",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+
+    Submenu::with_items(
+        app,
+        "Page Setup",
+        true,
+        &[&paper_size_menu, &orientation_menu],
     )
 }
 
@@ -1200,6 +1299,25 @@ mod tests {
 
         expect_eq(260.0, position.x);
         expect_eq(190.0, position.y);
+    }
+
+    #[test]
+    fn page_setup_menu_commands_are_routed() {
+        for command_id in [
+            "page.setSize.letter",
+            "page.setSize.legal",
+            "page.setSize.a4",
+            "page.setSize.a3",
+            "page.setSize.a2",
+            "page.setSize.a1",
+            "page.setSize.a0",
+            "page.setSize.a5",
+            "page.setOrientation.portrait",
+            "page.setOrientation.landscape",
+        ] {
+            expect_true(is_routed_menu_command(command_id));
+        }
+        expect_false(is_routed_menu_command("page.setSize.custom"));
     }
 
     fn expect_true(value: bool) {

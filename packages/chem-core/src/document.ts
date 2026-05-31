@@ -5,6 +5,7 @@ import {
   type ChemDraftDocument,
   type DocumentObject
 } from "./schemas";
+import { DefaultPageLayout, createPageLayout, pageMarginFromLayout } from "./page-layout";
 
 export interface CreateEmptyDocumentOptions {
   id?: string;
@@ -24,6 +25,7 @@ export type DocumentValidationResult =
 
 export function createEmptyDocument(options: CreateEmptyDocumentOptions = {}): ChemDraftDocument {
   const timestamp = toIsoTimestamp(options.now ?? new Date());
+  const layout = DefaultPageLayout;
 
   return ChemDraftDocumentSchema.parse({
     schema: DocumentSchemaVersion,
@@ -34,8 +36,10 @@ export function createEmptyDocument(options: CreateEmptyDocumentOptions = {}): C
     pages: [
       {
         id: options.pageId ?? "page_001",
-        width: 816,
-        height: 1056,
+        width: layout.widthPx,
+        height: layout.heightPx,
+        margin: pageMarginFromLayout(layout),
+        layout,
         objects: []
       }
     ],
@@ -96,6 +100,14 @@ export function migrateDocument(candidate: unknown): ChemDraftDocument {
     return result.document;
   }
 
+  const migrated = migrateLegacyPageLayouts(candidate);
+  if (migrated !== candidate) {
+    const migratedResult = validateDocument(migrated);
+    if (migratedResult.ok) {
+      return migratedResult.document;
+    }
+  }
+
   throw new Error(`Unsupported or invalid ChemDraft document: ${formatValidationIssues(result.issues)}`);
 }
 
@@ -109,4 +121,45 @@ export function toIsoTimestamp(value: Date | string): string {
 
 function formatValidationIssues(issues: DocumentValidationIssue[]): string {
   return issues.map((issue) => `${issue.path || "<root>"}: ${issue.message}`).join("; ");
+}
+
+function migrateLegacyPageLayouts(candidate: unknown): unknown {
+  if (!isRecord(candidate) || !Array.isArray(candidate.pages)) {
+    return candidate;
+  }
+
+  let changed = false;
+  const pages = candidate.pages.map((page) => {
+    if (!isRecord(page) || "layout" in page) {
+      return page;
+    }
+
+    const margin = isMargin(page.margin) ? page.margin : undefined;
+    const layout = createPageLayout("letter", "portrait", margin);
+    changed = true;
+
+    return {
+      ...page,
+      width: layout.widthPx,
+      height: layout.heightPx,
+      margin: pageMarginFromLayout(layout),
+      layout
+    };
+  });
+
+  return changed ? { ...candidate, pages } : candidate;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMargin(value: unknown): value is { top: number; right: number; bottom: number; left: number } {
+  return (
+    isRecord(value) &&
+    typeof value.top === "number" &&
+    typeof value.right === "number" &&
+    typeof value.bottom === "number" &&
+    typeof value.left === "number"
+  );
 }

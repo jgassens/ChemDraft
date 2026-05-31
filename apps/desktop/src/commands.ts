@@ -1,4 +1,9 @@
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import {
+  MinimalPageSizePresetIds,
+  findPageSizePreset,
+  type ChemDraftDocument,
+  type MoleculeObject
+} from "@chemdraft/chem-core";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
 import type { IconName } from "./icons";
@@ -65,6 +70,37 @@ export const viewActions: CommandSpec[] = [
     shortcut: "Shift+Cmd+R",
     category: "view",
     description: "Show or hide document crosshairs"
+  }
+];
+
+export const pageSizeActions: CommandSpec[] = MinimalPageSizePresetIds.map((presetId) => {
+  const preset = findPageSizePreset(presetId);
+  return {
+    id: `page.setSize.${presetId}`,
+    title: `Set Page Size: ${preset.title}`,
+    icon: "grid",
+    source: "core",
+    category: "page",
+    description: `Set the active page size to ${preset.title}`
+  };
+});
+
+export const pageOrientationActions: CommandSpec[] = [
+  {
+    id: "page.setOrientation.portrait",
+    title: "Set Page Orientation: Portrait",
+    icon: "grid",
+    source: "core",
+    category: "page",
+    description: "Set the active page orientation to portrait"
+  },
+  {
+    id: "page.setOrientation.landscape",
+    title: "Set Page Orientation: Landscape",
+    icon: "grid",
+    source: "core",
+    category: "page",
+    description: "Set the active page orientation to landscape"
   }
 ];
 
@@ -137,6 +173,8 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...allPaletteCommands(),
     ...drawerActions,
     ...viewActions,
+    ...pageSizeActions,
+    ...pageOrientationActions,
     ...toolbarCustomizationActions,
     ...getToolsetToggleActions(),
     ...styleActions

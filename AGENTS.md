@@ -291,7 +291,7 @@ Do not show molecule, reaction, arrow, product, or mechanism placeholders unless
 
 Do not show molecule, reaction, mechanism, arrow, product, or analysis objects unless they are backed by `chem-core` document objects, produced by the active editor adapter and explicitly represented as adapter-backed temporary state, or clearly marked as disabled/unavailable development placeholders. Prefer "EditorAdapter not connected" or "No selected structure" over fake chemistry content.
 
-### 5.17 Phase 4 closeout and Phase 5 boundary
+### 5.17 Phase closeout and current boundary
 
 Do not consider Phase 4 complete if it only displays visual placeholders.
 
@@ -305,11 +305,13 @@ Phase 4 completion requires real implemented behavior or clearly labeled adapter
 - Status reporting.
 - Tests.
 
-The next narrow implementation interlude is Phase 4.5: toolset and viewport infrastructure closeout. It should wire persisted user toolbar layout state into desktop startup/menu/window generation and keep Rust/Tauri menu behavior aligned with the TypeScript registry model. After that closeout, Phase 5 is chemistry validation and basic properties.
+The Phase 4.5 toolset/viewport interlude should wire persisted user toolbar layout state into desktop startup/menu/window generation and keep Rust/Tauri menu behavior aligned with the TypeScript registry model.
 
 Phase 5 should focus on `chemistry-adapter`, `rdkit-adapter` or an honest placeholder, selected-structure validation, formula, average mass, exact mass where available, total charge, basic stereochemistry warnings where available, and fixture tests.
 
 Phase 5 should not add broad UI polish, new toolbar concepts, CDXML/CDX compatibility, clipboard compatibility, NMR/MS/pKa/logP plugins, or image-to-structure recognition unless explicitly requested.
+
+The current next narrow implementation interlude is Phase 6.5: canvas page-size infrastructure. It should happen before broad Phase 7 drawing productivity work. Keep it limited to native page layout state, geometry invariants, legacy migration, command-backed US Letter, US Legal, popular ISO A-size, portrait, and landscape controls under File > Page Setup, document-backed viewport/ruler/crosshair/object/export geometry, and tests.
 
 ### 5.18 Floating palette rules
 
@@ -374,7 +376,36 @@ Rules:
 - Do not add another viewport dependency without updating dependency inventory and tests.
 - Any pointer or hit-testing work must use viewport conversion helpers.
 
-### 5.22 Style sheets and default styles
+### 5.22 Page layout and canvas geometry
+
+Page size lives in native page layout state. Do not let React canvas constants, CSS literals, ruler renderers, or export helpers become the geometry source of truth.
+
+Rules:
+
+- `chem-core` owns page layout state: paper preset, orientation, internal CSS-pixel size, margins, and source physical units.
+- If both `page.width`/`page.height` and `page.layout.widthPx`/`page.layout.heightPx` exist, they must match. Treat top-level width/height as denormalized compatibility fields, not a second source of truth.
+- Legacy pages without layout metadata must migrate cleanly to US Letter portrait without changing objects, selection, molecule payloads, or chemistry metadata.
+- `MainWindow` must not define hard-coded Letter dimensions as the canvas geometry source of truth.
+- Viewport, rulers, crosshairs, object positioning, hit testing, and export must consume document page layout.
+- Page-size changes must be command-backed and patch-based.
+- Page-size changes must not scale, move, reorder, select, deselect, or chemically alter page objects.
+- SVG export should use physical `width`/`height` units from page layout when available while keeping `viewBox` in ChemDraft CSS-pixel coordinates. PNG export remains pixel-based.
+- Rulers, grid, and crosshair tick spacing should follow the active page family: inches for US paper presets and centimeters for ISO A presets.
+- The first page-size UI should stay command-backed and minimal under File > Page Setup: US Letter, US Legal, popular ISO A sizes, portrait, and landscape.
+- Full Page Setup UI, custom-size editing, printing, favorites, and broad layout tooling remain deferred until explicitly scoped.
+
+Required page-size tests:
+
+- US Letter, US Legal, popular ISO A-size conversion and orientation.
+- Invariant enforcement between layout dimensions and denormalized page dimensions.
+- Legacy Phase 4 document migration.
+- Save/open preservation.
+- SVG physical units plus CSS-pixel `viewBox`.
+- PNG export avoiding hard-coded Letter fallback.
+- Ruler/grid/crosshair unit switching between US and ISO page families.
+- Page-size commands preserving object coordinates, selection, and molecule payloads.
+
+### 5.23 Style sheets and default styles
 
 ChemDraw `.cds` files are compatibility inputs to native ChemDraft style presets. They are not molecule, reaction, page, document, or native style model formats.
 
@@ -403,6 +434,7 @@ Allowed:
 - Migrations
 - Validation
 - Native object definitions for molecules, reactions, mechanism annotations, text, arrows, brackets, groups, graphics, superatoms/abbreviations, basic R-group display, and unknown compatibility objects
+- Native page layout, paper-size presets, orientation, margins, and page-size migrations
 - Native style preset definitions and selected document style preset references
 
 Not allowed:

@@ -13,12 +13,15 @@ import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdra
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
   buildCrosshairTicks,
+  centimeterRulerUnit,
   createRulerRenderState,
   createViewportState,
+  inchRulerUnit,
   setViewportScale,
   viewportCssVars,
   wheelDeltaToZoomFactor,
   zoomViewportAtPoint,
+  type RulerUnitState,
   type ViewportState
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
@@ -27,6 +30,8 @@ import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   createQuickActions,
+  pageOrientationActions,
+  pageSizeActions,
   toolbarCustomizationActions,
   viewActions,
   type CommandSpec
@@ -37,7 +42,9 @@ import {
   createPhase4Document,
   exportPhase4Svg,
   getSelectedMolecule,
-  openNativeDocument
+  openNativeDocument,
+  setDocumentPageOrientation,
+  setDocumentPageSize
 } from "./documentWorkflow";
 import { ToolPalette } from "./ToolPalette";
 import {
@@ -84,11 +91,7 @@ type RulerFrame = {
   height: number;
 };
 
-const PAGE_WIDTH = 816;
-const PAGE_HEIGHT = 1056;
 const RULER_THICKNESS = 32;
-const HORIZONTAL_CROSSHAIR_TICKS = buildCrosshairTicks(PAGE_WIDTH);
-const VERTICAL_CROSSHAIR_TICKS = buildCrosshairTicks(PAGE_HEIGHT);
 
 export interface MainWindowProps {
   initialPaletteMode?: PaletteMode;
@@ -122,7 +125,9 @@ export function MainWindow({
   );
   const [rulersVisible, setRulersVisible] = useState(initialRulersVisible);
   const [crosshairsVisible, setCrosshairsVisible] = useState(initialCrosshairsVisible);
-  const [viewport, setViewport] = useState(() => createViewportState());
+  const [viewport, setViewport] = useState(() =>
+    createViewportState({ rulerUnit: rulerUnitForDocument(initialDocument) })
+  );
   const [rulerFrame, setRulerFrame] = useState<RulerFrame>(() => ({
     horizontalScrollPx: 0,
     verticalScrollPx: 0,
@@ -135,7 +140,25 @@ export function MainWindow({
   const viewportRef = useRef(viewport);
 
   const selectedMolecule = getSelectedMolecule(document);
+  const activePage = document.pages[0];
+  const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   const quickActions = useMemo(() => createQuickActions(document, selectedMolecule), [document, selectedMolecule]);
+  const pageCssVars = useMemo(
+    () =>
+      ({
+        "--page-layout-width": `${activePage.width}px`,
+        "--page-layout-height": `${activePage.height}px`
+      }) as CSSProperties,
+    [activePage.height, activePage.width]
+  );
+  const horizontalCrosshairTicks = useMemo(
+    () => buildCrosshairTicks(activePage.width, pageRulerUnit),
+    [activePage.width, pageRulerUnit]
+  );
+  const verticalCrosshairTicks = useMemo(
+    () => buildCrosshairTicks(activePage.height, pageRulerUnit),
+    [activePage.height, pageRulerUnit]
+  );
   const visibleFloatingToolsets = useMemo(
     () => toolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
     [toolsetRegistry, visibleToolsetIds]
@@ -178,6 +201,18 @@ export function MainWindow({
   useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  useEffect(() => {
+    setViewport((current) => {
+      if (current.rulerUnit.kind === pageRulerUnit.kind) {
+        return current;
+      }
+
+      const next = { ...current, rulerUnit: pageRulerUnit };
+      viewportRef.current = next;
+      return next;
+    });
+  }, [pageRulerUnit]);
 
   const updateRulerFrame = useCallback(() => {
     const canvas = canvasRegionRef.current;
@@ -355,10 +390,10 @@ export function MainWindow({
           setStatus(`Saved ${payload.filename}`);
         }
         if (action.id === "view.zoomOut") {
-          setViewport((current) => zoomViewportAtPoint(current, current.scale - 0.1, pageCenterPoint(current)));
+          setViewport((current) => zoomViewportAtPoint(current, current.scale - 0.1, pageCenterPoint(current, activePage)));
         }
         if (action.id === "view.zoomIn") {
-          setViewport((current) => zoomViewportAtPoint(current, current.scale + 0.1, pageCenterPoint(current)));
+          setViewport((current) => zoomViewportAtPoint(current, current.scale + 0.1, pageCenterPoint(current, activePage)));
         }
         if (action.id === "view.toggleToolPalette") {
           await toggleToolset(DEFAULT_TOOLSET_ID);
@@ -371,7 +406,7 @@ export function MainWindow({
         }
         if (action.id === "export.png") {
           const result = exportPhase4Svg(document);
-          const blob = await svgToPngBlob(result.contents);
+          const blob = await svgToPngBlob(result.contents, { width: activePage.width, height: activePage.height });
           downloadBlob(createExportFilename(document, "png"), blob);
           setStatus(result.warnings.length > 0 ? `Exported PNG with ${result.warnings.length} warning(s)` : "Exported PNG");
         }
@@ -437,6 +472,22 @@ export function MainWindow({
         if (action.id === "view.toggleCrosshairs") {
           setCrosshairsVisible((visible) => !visible);
         }
+      });
+    });
+
+    pageSizeActions.forEach((action) => {
+      register(action, () => {
+        const presetId = action.id.replace("page.setSize.", "");
+        setDocument((current) => setDocumentPageSize(current, presetId as Parameters<typeof setDocumentPageSize>[1]));
+        setStatus(action.title.replace("Set Page Size: ", "Page size: "));
+      });
+    });
+
+    pageOrientationActions.forEach((action) => {
+      register(action, () => {
+        const orientation = action.id.endsWith(".landscape") ? "landscape" : "portrait";
+        setDocument((current) => setDocumentPageOrientation(current, orientation));
+        setStatus(action.title.replace("Set Page Orientation: ", "Page orientation: "));
       });
     });
 
@@ -622,17 +673,35 @@ export function MainWindow({
           data-zoom-surface="document"
           onWheel={handleCanvasWheel}
         >
-          {rulersVisible ? <DocumentRulers viewport={viewport} frame={rulerFrame} /> : null}
-          <div className="page-stage" style={viewportCssVars(viewport) as CSSProperties}>
+          {rulersVisible ? (
+            <DocumentRulers
+              viewport={viewport}
+              frame={rulerFrame}
+              pageWidth={activePage.width}
+              pageHeight={activePage.height}
+            />
+          ) : null}
+          <div className="page-stage" style={{ ...viewportCssVars(viewport), ...pageCssVars } as CSSProperties}>
             <div className="document-board without-rulers">
               <div
                 ref={pageRef}
                 className={["page", crosshairsVisible ? "crosshairs-visible" : "crosshairs-hidden"].join(" ")}
                 aria-label={document.title}
               >
-                {crosshairsVisible ? <CrosshairOverlay /> : null}
+                {crosshairsVisible ? (
+                  <CrosshairOverlay
+                    horizontalTicks={horizontalCrosshairTicks}
+                    verticalTicks={verticalCrosshairTicks}
+                  />
+                ) : null}
                 {document.pages[0].objects.map((object) => (
-                  <DocumentObjectView key={object.id} object={object} selected={document.selection.objectIds.includes(object.id)} />
+                  <DocumentObjectView
+                    key={object.id}
+                    object={object}
+                    pageHeight={activePage.height}
+                    pageWidth={activePage.width}
+                    selected={document.selection.objectIds.includes(object.id)}
+                  />
                 ))}
               </div>
             </div>
@@ -684,16 +753,37 @@ function clientPointFromGesture(event: WebKitGestureEvent, element: HTMLElement)
   };
 }
 
-function pageCenterPoint(viewport: ViewportState): { x: number; y: number } {
+function pageCenterPoint(
+  viewport: ViewportState,
+  page: ChemDraftDocument["pages"][number]
+): { x: number; y: number } {
   return {
-    x: viewport.pageOriginX + viewport.translateX + (PAGE_WIDTH / 2) * viewport.scale,
-    y: viewport.pageOriginY + viewport.translateY + (PAGE_HEIGHT / 2) * viewport.scale
+    x: viewport.pageOriginX + viewport.translateX + (page.width / 2) * viewport.scale,
+    y: viewport.pageOriginY + viewport.translateY + (page.height / 2) * viewport.scale
   };
 }
 
-function DocumentRulers({ viewport, frame }: { viewport: ViewportState; frame: RulerFrame }) {
-  const horizontalRuler = createRulerRenderState(viewport, PAGE_WIDTH, frame.horizontalScrollPx);
-  const verticalRuler = createRulerRenderState(viewport, PAGE_HEIGHT, frame.verticalScrollPx);
+function rulerUnitForDocument(document: ChemDraftDocument | undefined): RulerUnitState {
+  return rulerUnitForPageLayout(document?.pages[0]?.layout);
+}
+
+function rulerUnitForPageLayout(layout: ChemDraftDocument["pages"][number]["layout"] | undefined): RulerUnitState {
+  return layout?.sourceUnit === "mm" ? centimeterRulerUnit : inchRulerUnit;
+}
+
+function DocumentRulers({
+  viewport,
+  frame,
+  pageWidth,
+  pageHeight
+}: {
+  viewport: ViewportState;
+  frame: RulerFrame;
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const horizontalRuler = createRulerRenderState(viewport, pageWidth, frame.horizontalScrollPx);
+  const verticalRuler = createRulerRenderState(viewport, pageHeight, frame.verticalScrollPx);
 
   return (
     <div className="document-rulers-overlay" aria-hidden="true">
@@ -764,19 +854,25 @@ function formatRulerText(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function CrosshairOverlay() {
+function CrosshairOverlay({
+  horizontalTicks,
+  verticalTicks
+}: {
+  horizontalTicks: ReturnType<typeof buildCrosshairTicks>;
+  verticalTicks: ReturnType<typeof buildCrosshairTicks>;
+}) {
   return (
     <div className="crosshair-overlay" aria-hidden="true">
       <div className="crosshair-axis crosshair-axis-vertical" />
       <div className="crosshair-axis crosshair-axis-horizontal" />
-      {VERTICAL_CROSSHAIR_TICKS.map((tick) => (
+      {verticalTicks.map((tick) => (
         <span
           className={["crosshair-tick", "crosshair-tick-on-vertical", `crosshair-tick-${tick.kind}`].join(" ")}
           key={`vertical-${tick.index}`}
           style={{ top: `calc(${tick.position}px * var(--page-scale))` }}
         />
       ))}
-      {HORIZONTAL_CROSSHAIR_TICKS.map((tick) => (
+      {horizontalTicks.map((tick) => (
         <span
           className={["crosshair-tick", "crosshair-tick-on-horizontal", `crosshair-tick-${tick.kind}`].join(" ")}
           key={`horizontal-${tick.index}`}
@@ -787,12 +883,22 @@ function CrosshairOverlay() {
   );
 }
 
-function DocumentObjectView({ object, selected }: { object: DocumentObject; selected: boolean }) {
+function DocumentObjectView({
+  object,
+  pageWidth,
+  pageHeight,
+  selected
+}: {
+  object: DocumentObject;
+  pageWidth: number;
+  pageHeight: number;
+  selected: boolean;
+}) {
   const style = {
-    left: `${(object.x / 816) * 100}%`,
-    top: `${(object.y / 1056) * 100}%`,
-    width: `${(object.width / 816) * 100}%`,
-    height: `${(object.height / 1056) * 100}%`,
+    left: `${(object.x / pageWidth) * 100}%`,
+    top: `${(object.y / pageHeight) * 100}%`,
+    width: `${(object.width / pageWidth) * 100}%`,
+    height: `${(object.height / pageHeight) * 100}%`,
     transform: `rotate(${object.rotation}deg)`
   } as CSSProperties;
 
@@ -847,7 +953,7 @@ function downloadBlob(filename: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-async function svgToPngBlob(svg: string): Promise<Blob> {
+async function svgToPngBlob(svg: string, fallbackSize: { width: number; height: number }): Promise<Blob> {
   const image = new Image();
   const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
 
@@ -859,8 +965,9 @@ async function svgToPngBlob(svg: string): Promise<Blob> {
     });
 
     const canvas = globalThis.document.createElement("canvas");
-    canvas.width = image.naturalWidth || 816;
-    canvas.height = image.naturalHeight || 1056;
+    const size = resolvePngCanvasSize(image.naturalWidth, image.naturalHeight, fallbackSize);
+    canvas.width = size.width;
+    canvas.height = size.height;
     const context = canvas.getContext("2d");
     if (!context) {
       throw new Error("Could not create canvas context for PNG export.");
@@ -881,6 +988,17 @@ async function svgToPngBlob(svg: string): Promise<Blob> {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+export function resolvePngCanvasSize(
+  naturalWidth: number,
+  naturalHeight: number,
+  fallbackSize: { width: number; height: number }
+): { width: number; height: number } {
+  return {
+    width: Math.max(1, Math.round(naturalWidth || fallbackSize.width)),
+    height: Math.max(1, Math.round(naturalHeight || fallbackSize.height))
+  };
 }
 
 function createExportFilename(document: ChemDraftDocument, extension: "svg" | "png"): string {

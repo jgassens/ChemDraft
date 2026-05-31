@@ -1,4 +1,10 @@
-import type { ChemDraftDocument, DocumentObject, MoleculeObject, TextObject } from "@chemdraft/chem-core";
+import {
+  pageLayoutSvgSize,
+  type ChemDraftDocument,
+  type DocumentObject,
+  type MoleculeObject,
+  type TextObject
+} from "@chemdraft/chem-core";
 
 export type ExportFormat = "svg" | "png" | "pdf" | "mol" | "sdf" | "smiles" | "rxn" | "cdxml";
 
@@ -28,6 +34,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     throw new Error(`Cannot export SVG: page index ${pageIndex} does not exist.`);
   }
 
+  const svgSize = pageLayoutSvgSize(page.layout);
   const body = page.objects.map((object) => renderObject(object, warnings)).join("\n  ");
   const warningMarkup =
     options.includeWarnings === true && warnings.length > 0
@@ -37,7 +44,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   return {
     format: "svg",
     contents: [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${page.width}" height="${page.height}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${svgSize.width}" height="${svgSize.height}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
       `  <rect width="${page.width}" height="${page.height}" fill="#ffffff" />`,
       `  <rect x="${page.margin.left}" y="${page.margin.top}" width="${page.width - page.margin.left - page.margin.right}" height="${page.height - page.margin.top - page.margin.bottom}" fill="none" stroke="#9fc9bd" stroke-width="1" opacity="0.5" />`,
       body ? `  ${body}` : "",

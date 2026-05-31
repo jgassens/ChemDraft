@@ -5,9 +5,13 @@ import {
   applyPatch,
   applyPatchWithHistory,
   applyPatches,
+  createPageLayout,
   createDocumentHistory,
   createEmptyDocument,
   deserializeDocument,
+  inchesToCssPx,
+  mmToCssPx,
+  pageLayoutMatchesSize,
   redo,
   serializeDocument,
   undo,
@@ -88,6 +92,19 @@ describe("createEmptyDocument", () => {
             bottom: 72,
             left: 72
           },
+          layout: {
+            presetId: "letter",
+            orientation: "portrait",
+            widthPx: 816,
+            heightPx: 1056,
+            marginTopPx: 72,
+            marginRightPx: 72,
+            marginBottomPx: 72,
+            marginLeftPx: 72,
+            sourceUnit: "inch",
+            sourceWidth: 8.5,
+            sourceHeight: 11
+          },
           objects: []
         }
       ],
@@ -100,6 +117,145 @@ describe("createEmptyDocument", () => {
         warnings: []
       }
     });
+  });
+});
+
+describe("page layout presets and migration", () => {
+  it("converts required paper presets through the 96 CSS px per inch coordinate convention", () => {
+    expect(createPageLayout("letter")).toMatchObject({
+      widthPx: inchesToCssPx(8.5),
+      heightPx: inchesToCssPx(11),
+      sourceUnit: "inch",
+      sourceWidth: 8.5,
+      sourceHeight: 11
+    });
+    expect(createPageLayout("legal")).toMatchObject({
+      widthPx: inchesToCssPx(8.5),
+      heightPx: inchesToCssPx(14),
+      sourceUnit: "inch",
+      sourceWidth: 8.5,
+      sourceHeight: 14
+    });
+
+    expect(createPageLayout("a4")).toMatchObject({
+      widthPx: mmToCssPx(210),
+      heightPx: mmToCssPx(297),
+      sourceUnit: "mm",
+      sourceWidth: 210,
+      sourceHeight: 297
+    });
+    expect(createPageLayout("a3")).toMatchObject({
+      widthPx: mmToCssPx(297),
+      heightPx: mmToCssPx(420)
+    });
+    expect(createPageLayout("a2")).toMatchObject({
+      widthPx: mmToCssPx(420),
+      heightPx: mmToCssPx(594)
+    });
+    expect(createPageLayout("a1")).toMatchObject({
+      widthPx: mmToCssPx(594),
+      heightPx: mmToCssPx(841)
+    });
+    expect(createPageLayout("a0")).toMatchObject({
+      widthPx: mmToCssPx(841),
+      heightPx: mmToCssPx(1189)
+    });
+    expect(createPageLayout("a5")).toMatchObject({
+      widthPx: mmToCssPx(148),
+      heightPx: mmToCssPx(210)
+    });
+  });
+
+  it("swaps page dimensions and source units for landscape orientation", () => {
+    const a4Landscape = createPageLayout("a4", "landscape");
+
+    expect(a4Landscape).toMatchObject({
+      orientation: "landscape",
+      widthPx: mmToCssPx(297),
+      heightPx: mmToCssPx(210),
+      sourceWidth: 297,
+      sourceHeight: 210
+    });
+  });
+
+  it("enforces the invariant between page layout geometry and denormalized page dimensions", () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const result = validateDocument({
+      ...document,
+      pages: [
+        {
+          ...document.pages[0],
+          width: 1
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.issues.map((issue) => issue.message)).toContain(
+      "Page layout widthPx/heightPx must match page width/height."
+    );
+  });
+
+  it("migrates Phase 4 pages without layout to Letter portrait without changing content", () => {
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: moleculeObject() },
+      { now: timestamp }
+    );
+    const selected = applyPatch(document, { op: "setSelection", pageId: "page_001", objectIds: ["mol_001"] }, { now: timestamp });
+    const legacy = JSON.parse(serializeDocument(selected)) as {
+      pages: Array<Record<string, unknown>>;
+    };
+    delete legacy.pages[0].layout;
+
+    const migrated = deserializeDocument(JSON.stringify(legacy));
+
+    expect(migrated.pages[0].layout).toMatchObject({
+      presetId: "letter",
+      orientation: "portrait",
+      widthPx: 816,
+      heightPx: 1056
+    });
+    expect(migrated.pages[0].objects).toEqual(selected.pages[0].objects);
+    expect(migrated.selection).toEqual(selected.selection);
+    expect(migrated.pages[0].objects[0]).toMatchObject({
+      type: "molecule",
+      structure: "c1ccccc1",
+      chemistry: selected.pages[0].objects[0]?.type === "molecule" ? selected.pages[0].objects[0].chemistry : undefined
+    });
+  });
+
+  it("updates page layout through patches without moving or changing molecules", () => {
+    const selected = applyPatches(
+      createEmptyDocument({ now: timestamp }),
+      [
+        { op: "addObject", pageId: "page_001", object: moleculeObject() },
+        { op: "setSelection", pageId: "page_001", objectIds: ["mol_001"] }
+      ],
+      { now: timestamp }
+    );
+    const moleculeBefore = selected.pages[0].objects[0];
+    const a3Landscape = createPageLayout("a3", "landscape");
+    const resized = applyPatch(
+      selected,
+      { op: "updatePageLayout", pageId: "page_001", layout: a3Landscape },
+      { now: timestamp }
+    );
+
+    expect(pageLayoutMatchesSize(resized.pages[0].layout, resized.pages[0].width, resized.pages[0].height)).toBe(true);
+    expect(resized.pages[0]).toMatchObject({
+      width: a3Landscape.widthPx,
+      height: a3Landscape.heightPx,
+      margin: {
+        top: a3Landscape.marginTopPx,
+        right: a3Landscape.marginRightPx,
+        bottom: a3Landscape.marginBottomPx,
+        left: a3Landscape.marginLeftPx
+      }
+    });
+    expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
+    expect(resized.selection).toEqual(selected.selection);
+    expect(deserializeDocument(serializeDocument(resized))).toEqual(resized);
   });
 });
 

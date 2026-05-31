@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCrosshairTicks,
   buildRulerTicks,
+  centimeterRulerUnit,
   createRulerRenderState,
   createViewportState,
   pageToScreen,
@@ -113,6 +114,34 @@ describe("viewport engine", () => {
       "half",
       "minor",
       "quarter",
+      "minor",
+      "half"
+    ]);
+  });
+
+  it("builds metric ruler and crosshair ticks from centimeter subdivisions", () => {
+    const viewport = createViewportState({ rulerUnit: centimeterRulerUnit });
+    const ticks = buildCrosshairTicks(centimeterRulerUnit.pixelsPerUnit, centimeterRulerUnit);
+
+    expect(createRulerRenderState(viewport, centimeterRulerUnit.pixelsPerUnit * 21, 0)).toMatchObject({
+      scrollPos: 0,
+      zoom: centimeterRulerUnit.pixelsPerUnit,
+      segment: 10,
+      range: [0, 21]
+    });
+    expect(ticks.slice(0, 11).map((tick) => tick.position)).toEqual(
+      Array.from({ length: 11 }, (_, index) => index * (centimeterRulerUnit.pixelsPerUnit / 10))
+    );
+    expect(ticks.slice(0, 11).map((tick) => tick.kind)).toEqual([
+      "half",
+      "minor",
+      "minor",
+      "minor",
+      "minor",
+      "half",
+      "minor",
+      "minor",
+      "minor",
       "minor",
       "half"
     ]);

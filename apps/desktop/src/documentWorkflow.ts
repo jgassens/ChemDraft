@@ -2,13 +2,17 @@ import {
   applyPatch,
   applyPatches,
   createEmptyDocument,
+  createPageLayout,
   deserializeDocument,
+  pageMarginFromLayout,
   serializeDocument,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
   type DocumentObject,
-  type MoleculeObject
+  type MoleculeObject,
+  type PageOrientation,
+  type PageSizePresetId
 } from "@chemdraft/chem-core";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
@@ -164,6 +168,39 @@ export function openNativeDocument(contents: string): ChemDraftDocument {
   return deserializeDocument(contents);
 }
 
+export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageSizePresetId): ChemDraftDocument {
+  const page = firstPage(document);
+  const layout = createPageLayout(presetId, page.layout.orientation, pageMarginFromLayout(page.layout));
+
+  return applyPatch(
+    document,
+    {
+      op: "updatePageLayout",
+      pageId: page.id,
+      layout
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function setDocumentPageOrientation(
+  document: ChemDraftDocument,
+  orientation: PageOrientation
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const layout = createPageLayout(page.layout.presetId, orientation, pageMarginFromLayout(page.layout));
+
+  return applyPatch(
+    document,
+    {
+      op: "updatePageLayout",
+      pageId: page.id,
+      layout
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 export function exportPhase4Svg(document: ChemDraftDocument): SvgExportResult {
   return exportDocumentToSvg(document, { includeWarnings: true });
 }
@@ -201,6 +238,15 @@ function nextObjectId(document: ChemDraftDocument, prefix: string): string {
   }
 
   return id;
+}
+
+function firstPage(document: ChemDraftDocument): ChemDraftDocument["pages"][number] {
+  const page = document.pages[0];
+  if (!page) {
+    throw new Error("Cannot update page layout: document has no pages.");
+  }
+
+  return page;
 }
 
 function sanitizeFilename(value: string): string {

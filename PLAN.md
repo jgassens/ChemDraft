@@ -36,7 +36,7 @@ Recent implementation work corrected the desktop product direction rather than a
 - `packages/viewport-engine`.
 - Ruler rendering through `@scena/react-ruler`, with ChemDraft viewport state remaining the source of truth.
 
-Treat this as core drawing-workspace infrastructure. The next narrow implementation task is to wire persisted user toolbar layout state into the desktop registry startup path; do not treat it as broad UI polish or a new chemistry phase.
+Treat this as core drawing-workspace infrastructure. The next narrow implementation task is `Phase 6.5: Canvas page-size infrastructure`; do not treat it as broad UI polish, a full Page Setup feature, or a new chemistry phase.
 
 ## 2. Target users
 
@@ -604,6 +604,35 @@ Native style presets should preserve, where supported:
 
 The default drawing style for new documents should come from the selected native style preset. Native documents should preserve their selected style preset when saved and reopened.
 
+### 9.1 Page layout and paper size
+
+Page size lives in the native document page model, not in React canvas constants.
+
+Rules:
+
+- `page.layout` is the source of truth for paper preset, orientation, internal CSS-pixel size, margins, and source physical units.
+- `page.width` and `page.height` may remain as denormalized compatibility fields, but they must match `page.layout.widthPx` and `page.layout.heightPx`.
+- Schema validation, parsing, migration, and patch tests must enforce the geometry invariant.
+- Legacy Phase 4 pages without `page.layout` must migrate to US Letter portrait while preserving objects, selection, and chemistry payloads.
+- Use the existing coordinate convention: `96 CSS px = 1 inch`.
+- Keep conversion helpers in `chem-core`: inches to CSS px and millimeters to CSS px.
+- Required first presets are US Letter, US Legal, and popular ISO A sizes, with Tabloid/Ledger, ISO A0-A10, and Custom represented in preset data where practical.
+- Page-size commands should expose US Letter, US Legal, popular ISO A sizes, portrait, and landscape in the first minimal File > Page Setup UI.
+- Page-size changes must not scale, move, or chemically alter document objects.
+- Full Page Setup, custom-size editing, printing, and saved page-size favorites remain deferred.
+
+Viewport, rulers, crosshairs, object positioning, and export consume document page layout. `MainWindow` constants must not be the geometry source of truth.
+Ruler, grid, and crosshair tick units follow the active page family: inches for US paper presets and centimeters for ISO A presets.
+
+SVG export should preserve physical export intent when page layout source units are available:
+
+```text
+US Letter/Legal and other inch presets -> SVG width/height in inches
+ISO A presets                          -> SVG width/height in millimeters
+viewBox                                -> ChemDraft internal CSS-px coordinates
+PNG export                             -> pixel-based
+```
+
 Use patches for all document mutation.
 
 Example patch types:
@@ -613,6 +642,7 @@ export type DocumentPatch =
   | { op: "addObject"; pageId: string; object: DocumentObject }
   | { op: "removeObject"; objectId: string }
   | { op: "updateObject"; objectId: string; changes: Partial<DocumentObject> }
+  | { op: "updatePageLayout"; pageId: string; layout: PageLayout }
   | { op: "moveObject"; objectId: string; x: number; y: number }
   | { op: "addAnnotation"; annotation: ObjectAnnotation }
   | { op: "removeAnnotation"; annotationId: string };
@@ -1130,7 +1160,7 @@ Stage correction note:
 
 This documentation update is a correction after the first scaffold. The existing scaffold is acceptable only as technical proof that the workspace builds; its dashboard-like UI is not product direction. Do not continue polishing that scaffold.
 
-This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. Before Phase 5, complete the short `Phase 4.5: Toolset and viewport infrastructure closeout` interlude below. After that closeout, the roadmap returns to `Phase 5: Chemistry validation and basic properties`. Do not begin Phase 5 in this documentation-only task.
+This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. The roadmap keeps the historical Phase 4.5, Phase 5, and Phase 6 lanes for traceability. The current next narrow implementation lane is `Phase 6.5: Canvas page-size infrastructure`, then the roadmap proceeds to `Phase 7: Core drawing productivity`.
 
 ### Phase 0: Repository foundation
 
@@ -1256,6 +1286,34 @@ Deliverables:
 - Basic molecule load/save through adapter.
 - Documented gaps around mechanism annotations, page layout, and other non-editor objects.
 - Continued preservation of the composited `chem-core` page as the document source of truth.
+
+### Phase 6.5: Canvas page-size infrastructure
+
+This narrow interlude prepares the document canvas for real page/layout work before broader drawing productivity.
+
+Deliverables:
+
+- Native page layout state with paper preset, orientation, source physical units, CSS-pixel dimensions, and margins.
+- Geometry invariant enforcement between `page.layout.widthPx`/`heightPx` and any denormalized `page.width`/`height`.
+- Legacy Phase 4 document migration to US Letter portrait without changing objects, selection, or chemistry payloads.
+- Command-backed minimal page-size surface under File > Page Setup for US Letter, US Legal, popular ISO A sizes, portrait, and landscape.
+- Viewport, rulers, crosshairs, page rendering, object positioning, and export driven by native page layout.
+- SVG physical width/height units for inch and ISO millimeter presets, with CSS-pixel `viewBox`.
+- PNG export kept pixel-based without hard-coded Letter fallback.
+- Inch rulers/grid/crosshair ticks for US presets and centimeter rulers/grid/crosshair ticks for ISO A presets.
+
+Required tests:
+
+- US Letter, US Legal, and popular ISO A-size conversion and orientation.
+- Page geometry invariant validation.
+- Legacy document migration.
+- Save/open preservation.
+- SVG physical units plus `viewBox`.
+- PNG export avoiding hard-coded Letter fallback.
+- Ruler/grid/crosshair unit switching between US and ISO presets.
+- Page-size commands preserving molecule payloads and selection.
+
+Do not add a full Page Setup dialog, custom-size editor, printing, new dependencies, Ketcher, RDKit, CDXML/CDX, clipboard compatibility, or toolbar customization work in this interlude.
 
 ### Phase 7: Core drawing productivity
 
@@ -1409,6 +1467,12 @@ Harden the editor engine integration behind EditorAdapter and document capabilit
 ```
 
 Task 9:
+
+```text
+Implement canvas page-size infrastructure. Add native page layout state in `chem-core` with paper preset, orientation, source physical units, CSS-pixel dimensions, and margins. Enforce the invariant that `page.width`/`page.height` match `page.layout.widthPx`/`page.layout.heightPx` when both exist. Migrate legacy Phase 4 documents without `page.layout` to US Letter portrait while preserving objects, selection, and chemistry payloads. Add command-backed minimal controls under File > Page Setup for US Letter, US Legal, popular ISO A sizes, portrait, and landscape. Make viewport, rulers, crosshairs, object positioning, SVG export, and PNG export consume document page layout instead of hard-coded Letter constants. Rulers, grid, and crosshair tick spacing should use inches for US presets and centimeters for ISO A presets. SVG width/height should use inches for Letter/Legal-style presets and millimeters for ISO presets while the viewBox remains in CSS-pixel coordinates. Add tests for conversions, orientation, migration, save/open preservation, physical SVG units, PNG fallback behavior, ruler/grid/crosshair unit switching, and page-size commands preserving molecule payloads. Do not build a Page Setup dialog, custom-size editor, printing, Ketcher, RDKit, CDXML/CDX, clipboard compatibility, or toolbar customization UI.
+```
+
+Task 10:
 
 ```text
 Implement native style preset schema and default-style preservation in documents, including tests that save/reopen the selected preset.
