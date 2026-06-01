@@ -5,6 +5,7 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
+import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
@@ -164,7 +165,7 @@ export const styleActions: CommandSpec[] = [
 ];
 
 export function allPaletteCommands(): CommandSpec[] {
-  return getToolsetCommandSpecs();
+  return withStandaloneDrawingToolCommands(getToolsetCommandSpecs());
 }
 
 export function allShellCommands(document: ChemDraftDocument, selectedMolecule?: MoleculeObject): CommandSpec[] {

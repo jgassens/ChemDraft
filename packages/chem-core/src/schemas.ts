@@ -94,11 +94,32 @@ export const RGroupDisplaySchema = z
   })
   .strict();
 
+export const MoleculeAtomSchema = z
+  .object({
+    id: IdSchema,
+    element: z.string().min(1),
+    x: z.number().finite(),
+    y: z.number().finite(),
+    formalCharge: z.number().int().default(0)
+  })
+  .strict();
+
+export const MoleculeBondSchema = z
+  .object({
+    id: IdSchema,
+    fromAtomId: IdSchema,
+    toAtomId: IdSchema,
+    order: z.enum(["single", "double", "triple", "aromatic", "unknown"]).default("single")
+  })
+  .strict();
+
 export const MoleculeObjectSchema = BaseObjectSchema.extend({
   type: z.literal("molecule"),
   structureFormat: z.enum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
   structure: z.string(),
   chemistry: ChemicalMetadataSchema.optional(),
+  atoms: z.array(MoleculeAtomSchema).default([]),
+  bonds: z.array(MoleculeBondSchema).default([]),
   superatoms: z.array(SuperatomMetadataSchema).default([]),
   rGroups: z.array(RGroupDisplaySchema).default([])
 }).strict();
@@ -310,6 +331,8 @@ export type Anchor = z.infer<typeof AnchorSchema>;
 export type ChemicalMetadata = z.infer<typeof ChemicalMetadataSchema>;
 export type SuperatomMetadata = z.infer<typeof SuperatomMetadataSchema>;
 export type RGroupDisplay = z.infer<typeof RGroupDisplaySchema>;
+export type MoleculeAtom = z.infer<typeof MoleculeAtomSchema>;
+export type MoleculeBond = z.infer<typeof MoleculeBondSchema>;
 export type MoleculeObject = z.infer<typeof MoleculeObjectSchema>;
 export type ReactionComponent = z.infer<typeof ReactionComponentSchema>;
 export type ReactionObject = z.infer<typeof ReactionObjectSchema>;

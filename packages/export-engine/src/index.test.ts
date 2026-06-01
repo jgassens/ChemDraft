@@ -23,6 +23,8 @@ function moleculeObject(): MoleculeObject {
     style: {},
     structureFormat: "smiles",
     structure: "CCO",
+    atoms: [],
+    bonds: [],
     chemistry: {
       atomCount: 3,
       bondCount: 2,

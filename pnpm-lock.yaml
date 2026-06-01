@@ -35,6 +35,9 @@ importers:
       '@chemdraft/rdkit-adapter':
         specifier: workspace:*
         version: link:../../packages/rdkit-adapter
+      '@chemdraft/shortcut-engine':
+        specifier: workspace:*
+        version: link:../../packages/shortcut-engine
       '@chemdraft/toolset-registry':
         specifier: workspace:*
         version: link:../../packages/toolset-registry

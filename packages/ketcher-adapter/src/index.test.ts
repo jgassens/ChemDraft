@@ -18,6 +18,8 @@ const molecule = {
   style: {},
   structureFormat: "smiles",
   structure: "CCO",
+  atoms: [],
+  bonds: [],
   superatoms: [],
   rGroups: []
 } satisfies EditorLoadRequest["object"];

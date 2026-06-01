@@ -220,6 +220,8 @@ function createMockBenzeneObject(input: MolScribeOcsrInput): MoleculeObject {
       stereochemistry: [],
       warnings: []
     },
+    atoms: [],
+    bonds: [],
     superatoms: [],
     rGroups: [],
     compatibility: {

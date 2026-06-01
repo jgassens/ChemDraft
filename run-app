@@ -93,6 +93,16 @@ stop_existing_dev_server() {
   done
 }
 
+clear_saved_window_state() {
+  local saved_state_dir="$HOME/Library/Saved Application State/org.chemdraft.desktop.savedState"
+
+  if [ -d "$saved_state_dir" ]; then
+    rm -rf "$saved_state_dir"
+  fi
+
+  defaults delete org.chemdraft.desktop NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
+}
+
 set_bundle_display_name() {
   local bundle="$1"
   local display_name="$2"
@@ -143,6 +153,7 @@ fi
 
 node_modules/.bin/tauri build --bundles app
 set_bundle_display_name "$RUN_APP_BUNDLE" "ChemDraft Run App"
+clear_saved_window_state
 
 echo "Launching ChemDraft Run App from $RUN_APP_BUNDLE"
 open -n "$RUN_APP_BUNDLE"

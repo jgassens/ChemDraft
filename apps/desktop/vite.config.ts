@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@chemdraft/toolset-registry": workspacePackage("../../packages/toolset-registry/src/index.ts"),
+      "@chemdraft/shortcut-engine": workspacePackage("../../packages/shortcut-engine/src/index.ts"),
       "@chemdraft/viewport-engine": workspacePackage("../../packages/viewport-engine/src/index.ts")
     }
   }

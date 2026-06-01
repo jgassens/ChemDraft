@@ -11,13 +11,16 @@ import {
 } from "./commands";
 import {
   applyAnalysisToSelectedMolecule,
+  applySingleBondToolAtPoint,
   createPhase4Document,
   insertAdapterFallbackMolecule,
+  insertNativeSingleBondMolecule,
   setDocumentPageOrientation,
   setDocumentPageSize
 } from "./documentWorkflow";
 import { MainWindow, resolvePngCanvasSize } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
+import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DEFAULT_TOOLSET_ID,
   TOOLSET_WINDOW_STATE_EVENT,
@@ -150,8 +153,19 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "page.setSize.a0")).toBe(true);
     expect(commands.some((command) => command.id === "page.setOrientation.landscape")).toBe(true);
     expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
+    expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
+  });
+
+  it("builds keyboard shortcuts from command definitions", () => {
+    const registry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), "macos");
+
+    expect(registry.resolve({ key: "v" })).toBe("tool.select");
+    expect(registry.resolve({ key: "r", metaKey: true })).toBe("view.toggleRulers");
+    expect(registry.resolve({ key: "r", metaKey: true, shiftKey: true })).toBe("view.toggleCrosshairs");
+    expect(registry.resolve({ key: "b" })).toBe("tool.bond");
+    expect(registry.conflicts()).toEqual([]);
   });
 
   it("defines View menu commands for optional canvas scaffolding", () => {
@@ -196,10 +210,11 @@ describe("ChemDraft desktop shell", () => {
     );
   });
 
-  it("keeps chemistry tools disabled until an EditorAdapter exists", () => {
-    const enabledToolIds = new Set(["tool.select"]);
+  it("keeps unsupported chemistry tools disabled while native single bond is enabled", () => {
+    const enabledToolIds = new Set(["tool.select", "tool.bond"]);
     const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 
+    expect(paletteGroups.flat().find((command) => command.id === "tool.bond")).toMatchObject({ enabled: true });
     expect(disabledTools.length).toBeGreaterThan(30);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
@@ -332,7 +347,19 @@ describe("ChemDraft desktop shell", () => {
 
     expect(disabledTools.length).toBeGreaterThan(30);
     expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
-    expect(disabledTools.some((command) => command.id === "tool.bond")).toBe(true);
+    expect(disabledTools.some((command) => command.id === "tool.wedgeBond")).toBe(true);
+    expect(disabledTools.some((command) => command.id === "tool.bond")).toBe(false);
+  });
+
+  it("exposes active tool state without rendering fake chemistry", () => {
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
+    );
+
+    expect(markup).toContain('data-active-tool="tool.select"');
+    expect(markup).toContain('data-active-tool-kind="selection"');
+    expect(markup).not.toContain("Atom Label Tool");
+    expect(markup).not.toContain("Single Bond active");
   });
 
   it("uses custom toolbar assets for the expanded palette", () => {
@@ -417,6 +444,44 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("avg 46.069");
     expect(markup).toContain("exact 46.0419");
   });
+
+  it("renders native single-bond molecules as document-backed bond geometry", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Bond Render"), { x: 200, y: 220 });
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("native-single-bond");
+    expect(markup).toContain('data-structure="CC"');
+    expect(markup).toContain("Molecule CC");
+    expect(markup).not.toContain("adapter-backed");
+  });
+
+  it("renders connected native molecule graphs from one document object", () => {
+    const document = applySingleBondToolAtPoint(
+      insertNativeSingleBondMolecule(createPhase4Document("Connected Render"), { x: 200, y: 220 }),
+      { x: 300, y: 220 }
+    );
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("native-carbon-chain");
+    expect(markup).toContain('data-structure="CCC"');
+    expect(markup).toContain('data-atom-count="3"');
+    expect(markup).toContain('data-bond-count="2"');
+    expect((markup.match(/native-bond-line/g) ?? []).length).toBe(2);
+    expect(document.pages[0].objects).toHaveLength(1);
+  });
+
 
   it("renders canvas geometry from the active document page layout", () => {
     const document = setDocumentPageSize(createPhase4Document("A4 Canvas"), "a4");

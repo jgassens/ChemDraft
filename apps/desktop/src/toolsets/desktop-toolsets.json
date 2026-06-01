@@ -21,7 +21,7 @@
         {
           "id": "core.main.structure",
           "items": [
-            { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "B", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
+            { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "B", "category": "structure" },
             { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
             { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
             { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
@@ -109,7 +109,7 @@
         {
           "id": "core.structure.tools",
           "items": [
-            { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "B", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
+            { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "B", "category": "structure" },
             { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
             { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
             { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },

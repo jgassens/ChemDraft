@@ -1,15 +1,19 @@
 # ChemDraft
 
-ChemDraft is a lightweight, local-file-first chemical drawing application under early development. The current milestone has a clean monorepo foundation, strict package boundaries, a native document model scaffold, plugin API/host foundations, and an optional fixture-backed MolScribe OCSR plugin scaffold.
+ChemDraft is a lightweight, local-file-first chemical drawing application under early development. The current milestone has a clean monorepo foundation, strict package boundaries, a native document model scaffold, plugin API/host foundations, page-layout infrastructure, and an optional fixture-backed MolScribe OCSR plugin scaffold.
 
-This repository intentionally does not include real chemistry drawing, Ketcher, RDKit, CDXML/CDX parsing, native clipboard handling, plugin sandboxing, real MolScribe OCSR inference, or proprietary assets yet.
+This repository intentionally does not include full chemistry drawing beyond the first native single-bond and connected carbon-chain slices, a fully embedded Ketcher drawing surface, full RDKit integration, CDXML/CDX parsing, native clipboard handling, plugin sandboxing, real MolScribe OCSR inference, or proprietary assets yet.
 
 ## Current Status
 
-- `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell with native floating toolset windows for desktop builds.
-- `packages/chem-core` owns the first native document model, schemas, patches, serialization, and history helpers.
+- `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell with native floating toolset windows for desktop builds and command-backed File > Page Setup controls.
+- Phase 7 has started with command-backed active drawing tools, keyboard shortcut routing, a minimal document-backed native single-bond insertion path, and selected carbon-chain extension through native atom/bond payloads.
+- `packages/chem-core` owns the first native document model, schemas, patches, serialization, history helpers, page layout state, and paper-size presets.
+- `packages/ketcher-adapter` provides a host adapter boundary with capability reporting and molecule load/save contracts; it does not make Ketcher a full embedded app editor yet.
 - `packages/plugin-api` defines manifest schemas, permission names, command contributions, plugin context types, and recognition-result types.
 - `packages/plugin-host` contains command registration, permission checks, plugin storage scoping, and proposed-patch handling.
+- `packages/viewport-engine` owns viewport state, coordinate conversion, zoom math, and ruler render state; rulers and crosshairs consume document page layout.
+- `apps/desktop/src/surfaces` contains a tiny metadata-only UX surface scaffold. Rendered UI is not yet driven from it.
 - Other packages are boundary placeholders for future work.
 - `examples/plugins/molscribe-ocsr` provides an optional fixture-backed MolScribe OCSR scaffold without adding ML dependencies.
 

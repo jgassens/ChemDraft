@@ -312,9 +312,22 @@ Phase 5 should focus on `chemistry-adapter`, `rdkit-adapter` or an honest placeh
 
 Phase 5 should not add broad UI polish, new toolbar concepts, CDXML/CDX compatibility, clipboard compatibility, NMR/MS/pKa/logP plugins, or image-to-structure recognition unless explicitly requested.
 
+Phase 6 editor engine hardening is conditionally complete as an adapter boundary. `KetcherAdapter` exists with capability reporting and molecule load/save contracts, but this does not mean a full embedded Ketcher drawing surface is present. Keep page-level gaps explicit and keep `chem-core` as the composited page source of truth.
+
 Phase 6.5 canvas page-size infrastructure is closed out and should be treated as the baseline for later drawing, export, and layout work. Preserve native page layout state, geometry invariants, legacy migration, command-backed US Letter, US Legal, popular ISO A-size, portrait, and landscape controls under File > Page Setup, document-backed viewport/ruler/crosshair/object/export geometry, and tests.
 
 The current next implementation lane is Phase 7: core drawing productivity. Do not restart Phase 6.5 unless fixing a regression.
+
+Phase 7 rules:
+
+- Keep tools command-backed.
+- Tool buttons may activate tools only through command/state architecture.
+- Do not wire chemistry behavior only into button-local handlers.
+- Do not show fake molecule, reaction, mechanism, arrow, product, or analysis output.
+- Unsupported tools must remain disabled or report explicit unavailable state.
+- Do not import Ketcher or RDKit directly into UI code.
+- Use `editor-adapter`, `chem-core`, and command-registry boundaries.
+- Do not turn Phase 7 into CDXML/CDX, clipboard, OCSR, `.cds` style import, NMR/MS/pKa/logP, full Page Setup, add-page UI, drag/drop toolbar customization, or broad UI-polish work.
 
 ### 5.18 Floating palette rules
 

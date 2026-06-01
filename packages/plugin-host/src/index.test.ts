@@ -23,6 +23,8 @@ function moleculeObject(id = "mol_001"): MoleculeObject {
     style: {},
     structureFormat: "smiles",
     structure: "c1ccccc1",
+    atoms: [],
+    bonds: [],
     superatoms: [],
     rGroups: []
   };

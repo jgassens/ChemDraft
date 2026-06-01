@@ -80,6 +80,10 @@ function renderObject(object: DocumentObject, warnings: ExportWarning[]): string
 }
 
 function renderMoleculeObject(object: MoleculeObject): string {
+  if (isNativeMoleculeGraph(object)) {
+    return renderNativeMoleculeGraph(object);
+  }
+
   const label = object.structureFormat === "smiles" ? object.structure : `${object.structureFormat} object`;
   const formula = object.chemistry?.warnings.length ? "warnings" : (object.chemistry ? "validated" : "adapter-backed");
   return [
@@ -87,6 +91,26 @@ function renderMoleculeObject(object: MoleculeObject): string {
     `  <rect x="${object.x}" y="${object.y}" width="${object.width}" height="${object.height}" rx="4" fill="#ffffff" stroke="#2f3b42" stroke-width="1.5" />`,
     `  <text x="${object.x + 12}" y="${object.y + 34}" font-family="Arial, sans-serif" font-size="22" fill="#172026">${escapeXml(label)}</text>`,
     `  <text x="${object.x + 12}" y="${object.y + object.height - 16}" font-family="Arial, sans-serif" font-size="11" fill="#52616b">${escapeXml(formula)}</text>`,
+    "</g>"
+  ].join("\n  ");
+}
+
+function renderNativeMoleculeGraph(object: MoleculeObject): string {
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const primitive = moleculeDrawingPrimitive(object) === "single-bond" ? "single-bond" : "connected-carbon-chain";
+  const lines = object.bonds.map((bond) => {
+    const fromAtom = atomById.get(bond.fromAtomId);
+    const toAtom = atomById.get(bond.toAtomId);
+    if (!fromAtom || !toAtom) {
+      return "";
+    }
+
+    return `  <line x1="${fromAtom.x}" y1="${fromAtom.y}" x2="${toAtom.x}" y2="${toAtom.y}" stroke="#111111" stroke-width="1.6" stroke-linecap="round" />`;
+  }).filter(Boolean);
+
+  return [
+    `<g data-object-id="${escapeXml(object.id)}" data-object-type="molecule" data-chem-primitive="${primitive}" data-structure="${escapeXml(object.structure)}" data-atom-count="${object.atoms.length}" data-bond-count="${object.bonds.length}" transform="${rotationTransform(object)}">`,
+    ...lines,
     "</g>"
   ].join("\n  ");
 }
@@ -140,6 +164,14 @@ function rotationTransform(object: DocumentObject): string {
   }
 
   return `rotate(${object.rotation} ${object.x + object.width / 2} ${object.y + object.height / 2})`;
+}
+
+function moleculeDrawingPrimitive(object: MoleculeObject): "single-bond" | undefined {
+  return object.style.drawingPrimitive === "single-bond" && object.atoms.length === 2 ? "single-bond" : undefined;
+}
+
+function isNativeMoleculeGraph(object: MoleculeObject): boolean {
+  return object.atoms.length > 0 && object.bonds.length > 0;
 }
 
 function escapeXml(value: string): string {

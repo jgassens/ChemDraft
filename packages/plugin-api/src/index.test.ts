@@ -172,6 +172,8 @@ describe("RecognizedStructureResult", () => {
             style: {},
             structureFormat: "smiles",
             structure: "c1ccccc1",
+            atoms: [],
+            bonds: [],
             superatoms: [],
             rGroups: []
           }

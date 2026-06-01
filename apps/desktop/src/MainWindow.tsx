@@ -26,6 +26,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
+import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
@@ -37,7 +38,14 @@ import {
   type CommandSpec
 } from "./commands";
 import {
+  activateDrawingToolCommand,
+  createActiveToolState,
+  isDrawingToolCommand,
+  withStandaloneDrawingToolCommands
+} from "./drawingTools";
+import {
   applyAnalysisToSelectedMolecule,
+  applySingleBondToolAtPoint,
   createNativeSavePayload,
   createPhase4Document,
   exportPhase4Svg,
@@ -67,6 +75,7 @@ import {
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry
 } from "./toolsets";
+import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
@@ -115,7 +124,7 @@ export function MainWindow({
   const gestureStartScaleRef = useRef(1);
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
   const [document, setDocument] = useState(() => initialDocument ?? createPhase4Document());
-  const [activeTool, setActiveTool] = useState("tool.select");
+  const [activeToolState, setActiveToolState] = useState(() => createActiveToolState());
   const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
@@ -162,6 +171,26 @@ export function MainWindow({
   const visibleFloatingToolsets = useMemo(
     () => toolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
     [toolsetRegistry, visibleToolsetIds]
+  );
+  const activeTool = activeToolState.activeCommandId;
+  const toolCommandSpecs = useMemo(
+    () => withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
+    [toolsetRegistry]
+  );
+  const shortcutCommands = useMemo(
+    () => [
+      ...quickActions,
+      ...toolCommandSpecs,
+      ...viewActions,
+      ...pageSizeActions,
+      ...pageOrientationActions,
+      ...toolbarCustomizationActions
+    ],
+    [quickActions, toolCommandSpecs]
+  );
+  const shortcutRegistry = useMemo(
+    () => createDesktopShortcutRegistry(shortcutCommands),
+    [shortcutCommands]
   );
 
   useEffect(() => {
@@ -435,7 +464,7 @@ export function MainWindow({
       });
     });
 
-    getToolsetCommandSpecs(toolsetRegistry).forEach((tool) => {
+    toolCommandSpecs.forEach((tool) => {
       register(tool, () => {
         if (isDisabledPlaceholderCommand(tool)) {
           setStatus(tool.disabledReason ?? "Tool unavailable");
@@ -446,8 +475,14 @@ export function MainWindow({
           return;
         }
 
-        setActiveTool(tool.id);
-        setStatus(`${tool.title} tool`);
+        if (!isDrawingToolCommand(tool.id)) {
+          setStatus(`${tool.title} command routed`);
+          return;
+        }
+
+        const result = activateDrawingToolCommand(activeToolState, tool);
+        setActiveToolState(result.state);
+        setStatus(result.status);
       });
     });
 
@@ -498,7 +533,7 @@ export function MainWindow({
     });
 
     return commandRegistry;
-  }, [chemistryAdapter, document, nativePalette, quickActions, toggleToolset, toolsetRegistry]);
+  }, [activeToolState, chemistryAdapter, document, nativePalette, quickActions, toggleToolset, toolCommandSpecs, toolsetRegistry]);
 
   const invoke = useCallback((commandId: string) => {
     void registry.invoke(commandId).catch(() => {
@@ -507,6 +542,27 @@ export function MainWindow({
   }, [registry]);
 
   invokeCommandRef.current = invoke;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (shouldIgnoreShortcutTarget(event.target) || event.defaultPrevented) {
+        return;
+      }
+
+      const commandId = shortcutRegistry.resolve(event);
+      if (!commandId) {
+        return;
+      }
+
+      event.preventDefault();
+      invokeCommandRef.current(commandId);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [shortcutRegistry]);
 
   useEffect(() => {
     if (!nativePalette) {
@@ -619,8 +675,34 @@ export function MainWindow({
     }
   }, []);
 
+  const handlePagePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.defaultPrevented || activeToolState.activeCommandId !== "tool.bond") {
+      return;
+    }
+    const page = pageRef.current;
+    if (!page) {
+      return;
+    }
+
+    const rect = page.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left) / viewportRef.current.scale,
+      y: (event.clientY - rect.top) / viewportRef.current.scale
+    };
+    const nextDocument = applySingleBondToolAtPoint(document, point);
+    const selected = getSelectedMolecule(nextDocument);
+    const atomCount = selected?.atoms.length ?? 0;
+    setDocument(nextDocument);
+    setStatus(atomCount > 2 ? `Extended carbon chain to ${atomCount} atoms` : "Inserted single bond molecule");
+  }, [activeToolState.activeCommandId, document]);
+
   return (
-    <main className={["app-shell", nativePalette ? "native-shell" : "web-shell"].join(" ")} aria-label="ChemDraft desktop workspace">
+    <main
+      className={["app-shell", nativePalette ? "native-shell" : "web-shell"].join(" ")}
+      aria-label="ChemDraft desktop workspace"
+      data-active-tool={activeToolState.activeCommandId}
+      data-active-tool-kind={activeToolState.activeKind}
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -687,6 +769,7 @@ export function MainWindow({
                 ref={pageRef}
                 className={["page", crosshairsVisible ? "crosshairs-visible" : "crosshairs-hidden"].join(" ")}
                 aria-label={document.title}
+                onPointerDown={handlePagePointerDown}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -903,6 +986,47 @@ function DocumentObjectView({
   } as CSSProperties;
 
   if (object.type === "molecule") {
+    if (isNativeMoleculeGraph(object)) {
+      return (
+        <div
+          className={[
+            "document-object",
+            "molecule-object",
+            "native-molecule-object",
+            moleculeDrawingPrimitive(object) === "single-bond" ? "native-single-bond" : "native-carbon-chain",
+            selected ? "selected" : ""
+          ].filter(Boolean).join(" ")}
+          style={style}
+          data-object-id={object.id}
+          data-structure={object.structure}
+          data-atom-count={object.atoms.length}
+          data-bond-count={object.bonds.length}
+          aria-label={`Molecule ${object.structure}`}
+        >
+          <svg className="molecule-glyph" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
+            {object.bonds.map((bond) => {
+              const fromAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+              const toAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+              if (!fromAtom || !toAtom) {
+                return null;
+              }
+
+              return (
+                <line
+                  className="native-bond-line"
+                  key={bond.id}
+                  x1={fromAtom.x - object.x}
+                  y1={fromAtom.y - object.y}
+                  x2={toAtom.x - object.x}
+                  y2={toAtom.y - object.y}
+                />
+              );
+            })}
+          </svg>
+        </div>
+      );
+    }
+
     return (
       <div
         className={["document-object", "molecule-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
@@ -1022,6 +1146,14 @@ function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry
   ].filter(Boolean);
 
   return parts.join(" | ");
+}
+
+function moleculeDrawingPrimitive(object: MoleculeObject): "single-bond" | undefined {
+  return object.style.drawingPrimitive === "single-bond" && object.atoms.length === 2 ? "single-bond" : undefined;
+}
+
+function isNativeMoleculeGraph(object: MoleculeObject): boolean {
+  return object.atoms.length > 0 && object.bonds.length > 0;
 }
 
 function formatValidationFailure(analysis: StructureAnalysisResult): string {

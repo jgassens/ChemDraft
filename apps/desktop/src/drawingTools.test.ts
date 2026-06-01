@@ -1,0 +1,132 @@
+import { describe, expect, it } from "vitest";
+import {
+  activateDrawingToolCommand,
+  coreDrawingToolDefinitions,
+  createActiveToolState,
+  getDrawingToolCommandSpecs,
+  getDrawingToolDefinition,
+  isDrawingToolCommand,
+  withStandaloneDrawingToolCommands
+} from "./drawingTools";
+import { getToolsetCommandSpecs } from "./toolsets";
+import type { CommandSpec } from "./commands";
+
+describe("Phase 7 drawing tool activation", () => {
+  it("defines command-backed core drawing tool kinds", () => {
+    const commandsForKind = (kind: (typeof coreDrawingToolDefinitions)[number]["kind"]) =>
+      coreDrawingToolDefinitions.filter((definition) => definition.kind === kind).map((definition) => definition.commandId);
+
+    expect(commandsForKind("selection")).toContain("tool.select");
+    expect(commandsForKind("bond")).toContain("tool.bond");
+    expect(commandsForKind("atom")).toContain("tool.atom");
+    expect(commandsForKind("ring")).toContain("tool.cyclopentane");
+    expect(commandsForKind("text")).toContain("tool.text");
+    expect(commandsForKind("arrow")).toContain("tool.reactionArrow");
+  });
+
+  it("starts with the selection tool active", () => {
+    expect(createActiveToolState()).toEqual({
+      activeCommandId: "tool.select",
+      activeKind: "selection",
+      lastOutcome: "activated",
+      lastCommandId: "tool.select"
+    });
+  });
+
+  it("activates enabled drawing tools through state transitions", () => {
+    const command: CommandSpec = {
+      id: "tool.bond",
+      title: "Single Bond",
+      icon: "bond",
+      source: "core",
+      category: "structure",
+      enabled: true
+    };
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Single Bond active");
+    expect(result.state).toMatchObject({
+      activeCommandId: "tool.bond",
+      activeKind: "bond",
+      lastOutcome: "activated"
+    });
+  });
+
+  it("activates the manifest-backed single bond tool", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.bond");
+    if (!command) {
+      throw new Error("Expected tool.bond to be registered by the toolset manifest.");
+    }
+
+    const current = createActiveToolState();
+    const result = activateDrawingToolCommand(current, command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Single Bond active");
+    expect(result.state.activeCommandId).toBe("tool.bond");
+    expect(result.state.activeKind).toBe("bond");
+    expect(command.enabled).toBe(true);
+  });
+
+  it("keeps unavailable tools from changing the active tool", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.wedgeBond");
+    if (!command) {
+      throw new Error("Expected tool.wedgeBond to be registered by the toolset manifest.");
+    }
+
+    const current = createActiveToolState();
+    const result = activateDrawingToolCommand(current, command);
+
+    expect(result.outcome).toBe("unavailable");
+    expect(result.status).toContain("unavailable until an EditorAdapter is connected");
+    expect(result.state.activeCommandId).toBe("tool.select");
+    expect(result.state.activeKind).toBe("selection");
+    expect(result.state.lastCommandId).toBe("tool.wedgeBond");
+  });
+
+  it("ignores non-toolset plugin commands instead of making them active tools", () => {
+    const result = activateDrawingToolCommand(createActiveToolState(), {
+      id: "plugin.fixture.toolset.ping",
+      title: "Fixture Toolset Command",
+      icon: "plugin",
+      source: "plugin",
+      category: "plugin"
+    });
+
+    expect(result.outcome).toBe("ignored");
+    expect(result.state.activeCommandId).toBe("tool.select");
+    expect(result.status).toBe("Fixture Toolset Command command routed");
+  });
+
+  it("adds standalone atom metadata without mutating rendered toolbar manifests", () => {
+    const toolsetCommands = getToolsetCommandSpecs();
+    const withStandalone = withStandaloneDrawingToolCommands(toolsetCommands);
+
+    expect(toolsetCommands.some((command) => command.id === "tool.atom")).toBe(false);
+    expect(withStandalone.find((command) => command.id === "tool.atom")).toMatchObject({
+      id: "tool.atom",
+      title: "Atom Label Tool",
+      enabled: false,
+      disabledReason: "unavailable until an EditorAdapter is connected"
+    });
+  });
+
+  it("collects only drawing tool command specs for activation routing", () => {
+    const drawingCommands = getDrawingToolCommandSpecs(getToolsetCommandSpecs());
+
+    expect(drawingCommands.some((command) => command.id === "tool.atom")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "tool.benzene")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "tool.reactionArrow")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "plugin.fixture.toolset.ping")).toBe(false);
+  });
+
+  it("classifies drawing tool commands by command id", () => {
+    expect(isDrawingToolCommand("tool.text")).toBe(true);
+    expect(isDrawingToolCommand("layout.alignLeft")).toBe(false);
+    expect(getDrawingToolDefinition("tool.equilibriumArrow")).toMatchObject({
+      kind: "arrow",
+      category: "arrows"
+    });
+  });
+});
