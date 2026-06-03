@@ -6,6 +6,7 @@ import {
   useState,
   type CSSProperties,
   type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1037,6 +1038,25 @@ export function MainWindow({
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
   }, [replacePresentDocument]);
 
+  const startTextObjectEdit = useCallback((objectId: string) => {
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type !== "text") {
+      return;
+    }
+
+    replacePresentDocument((current) => selectDocumentObject(current, objectId));
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(objectId);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setStatus("Editing text");
+  }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
+
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     const currentDocument = documentRef.current;
     const selected = getSelectedTextObject(currentDocument);
@@ -1254,6 +1274,10 @@ export function MainWindow({
 
         const result = activateDrawingToolCommand(activeToolState, tool);
         setActiveToolState(result.state);
+        if (result.outcome === "activated") {
+          setActiveTextEditObjectId(undefined);
+          setActiveAtomLabelEdit(undefined);
+        }
         setStatus(result.status);
       });
     });
@@ -1344,6 +1368,30 @@ export function MainWindow({
   }, [registry]);
 
   invokeCommandRef.current = invoke;
+
+  useEffect(() => {
+    if (!activeTextEditObjectId) {
+      return;
+    }
+
+    const focusHandle = window.setTimeout(() => {
+      const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
+        `[data-object-id="${activeTextEditObjectId}"] .text-object-editor`
+      );
+      if (!editor) {
+        return;
+      }
+
+      editor.focus();
+      if (editor.value === "Text") {
+        editor.select();
+      }
+    });
+
+    return () => {
+      window.clearTimeout(focusHandle);
+    };
+  }, [activeTextEditObjectId, document]);
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
@@ -2010,6 +2058,8 @@ export function MainWindow({
     }
 
     if (activeToolState.activeCommandId === "tool.text") {
+      event.preventDefault();
+      event.stopPropagation();
       applyTextDocumentAtPoint(point);
       return;
     }
@@ -3099,6 +3149,8 @@ export function MainWindow({
                     onRotatePointerDown={handleObjectRotatePointerDown}
                     onContextMenu={handleObjectContextMenu}
                     onTextChange={updateTextObjectContent}
+                    onTextEditStart={startTextObjectEdit}
+                    onTextEditFinish={() => setActiveTextEditObjectId(undefined)}
                     onTextResizeStart={startTextResize}
                     onAtomLabelChange={updateAtomLabelDraft}
                     onAtomLabelCancel={cancelAtomLabelEdit}
@@ -4187,6 +4239,8 @@ function DocumentObjectView({
   onRotatePointerDown,
   onContextMenu,
   onTextChange,
+  onTextEditStart,
+  onTextEditFinish,
   onTextResizeStart,
   onAtomLabelChange,
   onAtomLabelCancel,
@@ -4213,11 +4267,31 @@ function DocumentObjectView({
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onContextMenu(objectId: string, event: ReactMouseEvent<HTMLDivElement>): void;
   onTextChange(objectId: string, text: string): void;
+  onTextEditStart(objectId: string): void;
+  onTextEditFinish(): void;
   onTextResizeStart(objectId: string, edge: TextResizeEdge, event: PointerEvent<HTMLButtonElement>): void;
   onAtomLabelChange(state: AtomLabelEditState, text: string): void;
   onAtomLabelCancel(state: AtomLabelEditState): void;
   onAtomLabelFinish(): void;
 }) {
+  const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (!editingText || object.type !== "text") {
+      return;
+    }
+
+    const editor = textEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    editor.focus();
+    if (object.text === "Text") {
+      editor.select();
+    }
+  }, [editingText, object]);
+
   const handleObjectPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     onPointerDown(object.id, event);
   };
@@ -4241,6 +4315,69 @@ function DocumentObjectView({
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     onTextChange(object.id, event.currentTarget.value);
+  };
+  const insertTextAtEditorSelection = (editor: HTMLTextAreaElement, text: string) => {
+    if (object.type !== "text" || text.length === 0) {
+      return;
+    }
+
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    const currentValue = editor.value;
+    const nextValue = `${currentValue.slice(0, start)}${text}${currentValue.slice(end)}`;
+    const cursor = start + text.length;
+    onTextChange(object.id, nextValue);
+    window.requestAnimationFrame(() => {
+      editor.focus();
+      editor.setSelectionRange(cursor, cursor);
+    });
+  };
+  const handleTextPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData("text/plain");
+    if (text.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    insertTextAtEditorSelection(event.currentTarget, text);
+  };
+  const handleTextKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onTextEditFinish();
+      return;
+    }
+
+    const commandKeyPressed = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+
+    if (commandKeyPressed && key === "a") {
+      event.preventDefault();
+      event.currentTarget.select();
+      return;
+    }
+
+    if (commandKeyPressed && key === "v") {
+      event.preventDefault();
+      const editor = event.currentTarget;
+      void readClipboardPayload().then((payload) => {
+        const detectedPayload = inspectClipboardPayload(payload);
+        if (detectedPayload.kind === "plain-text") {
+          insertTextAtEditorSelection(editor, detectedPayload.text);
+        }
+      });
+    }
+  };
+  const handleTextDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (object.type !== "text") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    onTextEditStart(object.id);
   };
   const handleTextResizeStart = (edge: TextResizeEdge) => (event: PointerEvent<HTMLButtonElement>) => {
     onTextResizeStart(object.id, edge, event);
@@ -4652,6 +4789,7 @@ function DocumentObjectView({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
+        onDoubleClick={handleTextDoubleClick}
       >
         <span className="object-primary">{object.structure}</span>
         <span className="object-secondary">{object.chemistry?.formula ?? object.structureFormat}</span>
@@ -4768,16 +4906,18 @@ function DocumentObjectView({
             aria-label="Text object"
             autoFocus
             className="text-object-editor"
+            ref={textEditorRef}
             spellCheck={false}
             style={textCss}
             value={object.text}
             onChange={handleTextChange}
+            onPaste={handleTextPaste}
             onFocus={(event) => {
               if (object.text === "Text") {
                 event.currentTarget.select();
               }
             }}
-            onKeyDown={(event) => event.stopPropagation()}
+            onKeyDown={handleTextKeyDown}
             onPointerDown={(event) => event.stopPropagation()}
           />
         ) : (

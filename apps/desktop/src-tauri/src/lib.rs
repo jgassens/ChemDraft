@@ -4,7 +4,7 @@ use tauri::{
     menu::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
     },
-    Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 #[cfg(target_os = "macos")]
@@ -174,10 +174,19 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if window.label() == MAIN_WINDOW_LABEL {
-                if let WindowEvent::Focused(true) = event {
-                    if let Err(error) = restore_visible_toolset_windows(window.app_handle()) {
-                        eprintln!("Could not restore ChemDraft toolbar windows: {error}");
+                match event {
+                    WindowEvent::Focused(true) => {
+                        if let Err(error) = restore_visible_toolset_windows(window.app_handle()) {
+                            eprintln!("Could not restore ChemDraft toolbar windows: {error}");
+                        }
                     }
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        if let Err(error) = window.hide() {
+                            eprintln!("Could not hide ChemDraft main window: {error}");
+                        }
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -271,8 +280,15 @@ pub fn run() {
             tool_palette_state,
             route_palette_command
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ChemDraft");
+        .build(tauri::generate_context!())
+        .expect("error while building ChemDraft")
+        .run(|app, event| {
+            if let RunEvent::Reopen { .. } = event {
+                if let Err(error) = ensure_main_window_visible(app) {
+                    eprintln!("Could not reopen ChemDraft main window: {error}");
+                }
+            }
+        });
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
@@ -281,9 +297,15 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         None => create_main_window(app)?,
     };
 
-    window.set_decorations(true).map_err(|error| error.to_string())?;
-    window.set_focusable(true).map_err(|error| error.to_string())?;
-    window.set_skip_taskbar(false).map_err(|error| error.to_string())?;
+    window
+        .set_decorations(true)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_focusable(true)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_skip_taskbar(false)
+        .map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window.center().map_err(|error| error.to_string())?;
@@ -504,7 +526,12 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
         (false, &bytes[2..])
     } else {
         let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
-        let odd_nulls = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+        let odd_nulls = bytes
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .filter(|byte| **byte == 0)
+            .count();
         if even_nulls > odd_nulls {
             (true, bytes)
         } else if odd_nulls > even_nulls {
@@ -528,7 +555,9 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
             }
         })
         .collect::<Vec<_>>();
-    String::from_utf16(&units).ok().filter(|text| !text.is_empty())
+    String::from_utf16(&units)
+        .ok()
+        .filter(|text| !text.is_empty())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -659,13 +688,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
-                    &MenuItem::with_id(
-                        app,
-                        "clipboard.paste",
-                        "Paste",
-                        true,
-                        Some("CmdOrCtrl+V"),
-                    )?,
+                    &MenuItem::with_id(app, "clipboard.paste", "Paste", true, Some("CmdOrCtrl+V"))?,
                 ],
             )?,
             &view_menu,
@@ -1547,7 +1570,10 @@ mod tests {
     #[test]
     fn clipboard_byte_decoder_accepts_utf16_payloads() {
         let text = "M  END";
-        let bytes = text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+        let bytes = text
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
     }
