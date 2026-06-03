@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { EditorAdapterError, type EditorLoadRequest } from "@chemdraft/editor-adapter";
 import {
   createKetcherAdapter,
+  createKetcherEngineHost,
   ketcherAdapterDisconnectedCapabilities,
   type KetcherEngineHost,
+  type KetcherRuntimeApi,
   type KetcherStructurePayload
 } from "./index";
 
@@ -62,6 +64,46 @@ function createObservableFixtureEngine(): KetcherEngineHost & {
 }
 
 describe("KetcherAdapter", () => {
+  it("wraps the real Ketcher runtime shape behind the engine host contract", async () => {
+    const calls: string[] = [];
+    const runtime: KetcherRuntimeApi = {
+      version: "runtime-fixture",
+      async setMolecule(structure) {
+        calls.push(`set:${structure}`);
+      },
+      async getSmiles() {
+        calls.push("get:smiles");
+        return "CCN";
+      },
+      async getMolfile(format) {
+        calls.push(`get:molfile:${format}`);
+        return `molfile-${format}`;
+      },
+      async generateImage(data) {
+        calls.push(`svg:${data}`);
+        return new Blob(["<svg data-ketcher-runtime=\"fixture\" />"], { type: "image/svg+xml" });
+      }
+    };
+    const engine = createKetcherEngineHost(runtime);
+
+    await engine.loadMolecule({ format: "smiles", value: "CCO" });
+    await expect(engine.saveMolecule("smiles")).resolves.toEqual({ format: "smiles", value: "CCN" });
+    await expect(engine.saveMolecule("molfile-v3000")).resolves.toEqual({
+      format: "molfile-v3000",
+      value: "molfile-v3000"
+    });
+    await expect(engine.exportSvg?.()).resolves.toContain("data-ketcher-runtime");
+
+    expect(engine.version).toBe("runtime-fixture");
+    expect(calls).toEqual([
+      "set:CCO",
+      "get:smiles",
+      "get:molfile:v3000",
+      "get:molfile:v3000",
+      "svg:molfile-v3000"
+    ]);
+  });
+
   it("reports honest disconnected capabilities without pretending to edit chemistry", () => {
     const adapter = createKetcherAdapter();
 

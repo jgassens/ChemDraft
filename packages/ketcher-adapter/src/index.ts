@@ -35,6 +35,17 @@ export interface KetcherEngineHost {
   onChange?(listener: EditorChangeListener): Disposable | (() => void);
 }
 
+export type KetcherRuntimeMolfileFormat = "v2000" | "v3000";
+
+export interface KetcherRuntimeApi {
+  readonly version?: string;
+  setMolecule(structure: string, options?: { needZoom?: boolean }): Promise<void | undefined>;
+  getSmiles?(isExtended?: boolean): Promise<string>;
+  getMolfile?(format?: KetcherRuntimeMolfileFormat): Promise<string>;
+  generateImage?(data: string, options?: { outputFormat?: "svg" | "png" }): Promise<Blob>;
+  setZoom?(value: number): void;
+}
+
 export interface CreateKetcherAdapterOptions {
   engine?: KetcherEngineHost;
   implementationVersion?: string;
@@ -43,6 +54,48 @@ export interface CreateKetcherAdapterOptions {
 }
 
 const defaultSupportedFormats = ["molfile-v2000", "molfile-v3000", "smiles"] satisfies KetcherMoleculeFormat[];
+
+export function createKetcherEngineHost(ketcher: KetcherRuntimeApi): KetcherEngineHost {
+  return {
+    version: ketcher.version,
+    clear() {
+      return ketcher.setMolecule("", { needZoom: true });
+    },
+    loadMolecule(payload) {
+      return ketcher.setMolecule(payload.value, { needZoom: true });
+    },
+    async saveMolecule(format) {
+      if (format === "smiles") {
+        if (!ketcher.getSmiles) {
+          throw new EditorAdapterError("editor.format_unavailable", "Ketcher runtime cannot export SMILES.");
+        }
+
+        return {
+          format,
+          value: await ketcher.getSmiles()
+        };
+      }
+
+      if (!ketcher.getMolfile) {
+        throw new EditorAdapterError("editor.format_unavailable", "Ketcher runtime cannot export Molfile.");
+      }
+
+      return {
+        format,
+        value: await ketcher.getMolfile(format === "molfile-v2000" ? "v2000" : "v3000")
+      };
+    },
+    async exportSvg() {
+      if (!ketcher.generateImage || !ketcher.getMolfile) {
+        throw new EditorAdapterError("editor.svg_unavailable", "Ketcher runtime cannot export SVG.");
+      }
+
+      const molfile = await ketcher.getMolfile("v3000");
+      const image = await ketcher.generateImage(molfile, { outputFormat: "svg" });
+      return image.text();
+    }
+  };
+}
 
 export const ketcherAdapterDisconnectedCapabilities: EditorCapabilityReport = {
   connected: false,

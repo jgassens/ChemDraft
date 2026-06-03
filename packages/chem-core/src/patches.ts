@@ -10,12 +10,15 @@ import {
 import { cloneDocument, toIsoTimestamp } from "./document";
 import { pageMarginFromLayout } from "./page-layout";
 
+export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
+
 export type DocumentPatch =
   | { op: "addObject"; pageId: string; object: DocumentObject }
   | { op: "removeObject"; objectId: string }
   | { op: "updateObject"; objectId: string; changes: Partial<DocumentObject> }
   | { op: "updatePageLayout"; pageId: string; layout: PageLayout }
   | { op: "moveObject"; objectId: string; x: number; y: number }
+  | { op: "reorderObject"; objectId: string; placement: ObjectReorderPlacement }
   | { op: "setSelection"; pageId?: string; objectIds: string[] }
   | { op: "addAnnotation"; pageId: string; annotation: AnnotationObject }
   | { op: "removeAnnotation"; annotationId: string };
@@ -53,6 +56,9 @@ export function applyPatch(
       break;
     case "moveObject":
       updateObject(next, patch.objectId, { x: patch.x, y: patch.y });
+      break;
+    case "reorderObject":
+      reorderObject(next, patch.objectId, patch.placement);
       break;
     case "setSelection":
       setSelection(next, patch.pageId, patch.objectIds);
@@ -100,6 +106,29 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
 
   location.page.objects.splice(location.objectIndex, 1);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
+}
+
+function reorderObject(
+  document: ChemDraftDocument,
+  objectId: string,
+  placement: ObjectReorderPlacement
+): void {
+  const location = findObject(document, objectId);
+  if (!location) {
+    throw new DocumentPatchError(`Cannot reorder object: object "${objectId}" does not exist.`);
+  }
+
+  const objects = location.page.objects;
+  const [object] = objects.splice(location.objectIndex, 1);
+  const targetIndex =
+    placement === "front"
+      ? objects.length
+      : placement === "back"
+        ? 0
+        : placement === "forward"
+          ? Math.min(location.objectIndex + 1, objects.length)
+          : Math.max(location.objectIndex - 1, 0);
+  objects.splice(targetIndex, 0, object);
 }
 
 function setSelection(document: ChemDraftDocument, pageId: string | undefined, objectIds: string[]): void {

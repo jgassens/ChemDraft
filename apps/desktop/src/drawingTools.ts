@@ -1,6 +1,6 @@
 import type { CommandSpec } from "./commands";
 
-export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow";
+export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
 
 export interface DrawingToolDefinition {
@@ -159,8 +159,23 @@ export const coreDrawingToolDefinitions = [
     kind: "text",
     category: "annotation",
     icon: "text",
-    defaultShortcut: "T",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    defaultShortcut: "T"
+  },
+  {
+    commandId: "tool.plus",
+    title: "Positive Charge Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    defaultShortcut: "+"
+  },
+  {
+    commandId: "tool.minus",
+    title: "Negative Charge Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    defaultShortcut: "-"
   },
   {
     commandId: "tool.reactionArrow",

@@ -15,7 +15,7 @@
             { "commandId": "tool.select", "title": "Selection Tool", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
             { "commandId": "tool.lasso", "title": "Lasso Selection", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "selection" },
             { "commandId": "tool.eraser", "title": "Eraser Tool", "icon": "select", "assetName": "Custom_Eraser", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "selection" },
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" }
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
         {
@@ -51,8 +51,8 @@
             { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.plus", "title": "Plus Symbol Tool", "icon": "charge", "assetName": "Custom_Plus", "shortcutDisplay": "+", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.minus", "title": "Minus Symbol Tool", "icon": "charge", "assetName": "Custom_Minus", "shortcutDisplay": "-", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
+            { "commandId": "tool.plus", "title": "Positive Charge Tool", "icon": "charge", "assetName": "Custom_Plus", "shortcutDisplay": "+", "category": "annotation" },
+            { "commandId": "tool.minus", "title": "Negative Charge Tool", "icon": "charge", "assetName": "Custom_Minus", "shortcutDisplay": "-", "category": "annotation" },
             { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" }
@@ -82,8 +82,10 @@
             { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" }
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
           ]
         },
         {
@@ -158,12 +160,12 @@
         {
           "id": "core.annotations.tools",
           "items": [
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" },
             { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.plus", "title": "Plus Symbol Tool", "icon": "charge", "assetName": "Custom_Plus", "shortcutDisplay": "+", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.minus", "title": "Minus Symbol Tool", "icon": "charge", "assetName": "Custom_Minus", "shortcutDisplay": "-", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
+            { "commandId": "tool.plus", "title": "Positive Charge Tool", "icon": "charge", "assetName": "Custom_Plus", "shortcutDisplay": "+", "category": "annotation" },
+            { "commandId": "tool.minus", "title": "Negative Charge Tool", "icon": "charge", "assetName": "Custom_Minus", "shortcutDisplay": "-", "category": "annotation" },
             { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" }
@@ -214,8 +216,10 @@
             { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" }
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
           ]
         }
       ]
@@ -237,6 +241,83 @@
             { "commandId": "tool.settings", "title": "Object Settings", "icon": "inspector", "assetName": "Custom_Settings", "disabledReason": "unavailable until selectable document objects exist", "category": "selection" },
             { "commandId": "tool.toolOptions", "title": "Tool Options", "icon": "palette", "assetName": "Custom_Tools", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "selection" },
             { "commandId": "tool.templateGrid", "title": "Template Grid", "icon": "grid", "assetName": "Custom_Tools", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "template" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core.text",
+      "title": "Text Toolbar",
+      "source": "core",
+      "defaultVisible": false,
+      "defaultMode": "floating",
+      "preferredWindowSize": { "width": 176, "height": 620, "minWidth": 128, "minHeight": 360 },
+      "category": "core",
+      "groups": [
+        {
+          "id": "core.text.tool",
+          "items": [
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
+          ]
+        },
+        {
+          "id": "core.text.font",
+          "items": [
+            { "commandId": "text.font.system", "title": "Font: System Sans", "icon": "text", "category": "text" },
+            { "commandId": "text.font.times", "title": "Font: Times", "icon": "text", "category": "text" },
+            { "commandId": "text.font.courier", "title": "Font: Courier", "icon": "text", "category": "text" },
+            { "commandId": "text.font.georgia", "title": "Font: Georgia", "icon": "text", "category": "text" }
+          ]
+        },
+        {
+          "id": "core.text.size",
+          "items": [
+            { "commandId": "text.size.10", "title": "Size: 10 pt", "icon": "text", "category": "text" },
+            { "commandId": "text.size.12", "title": "Size: 12 pt", "icon": "text", "category": "text" },
+            { "commandId": "text.size.14", "title": "Size: 14 pt", "icon": "text", "category": "text" },
+            { "commandId": "text.size.18", "title": "Size: 18 pt", "icon": "text", "category": "text" },
+            { "commandId": "text.size.24", "title": "Size: 24 pt", "icon": "text", "category": "text" }
+          ]
+        },
+        {
+          "id": "core.text.color",
+          "items": [
+            { "commandId": "text.color.black", "title": "Color: Black", "icon": "style", "category": "text" },
+            { "commandId": "text.color.blue", "title": "Color: Blue", "icon": "style", "category": "text" },
+            { "commandId": "text.color.red", "title": "Color: Red", "icon": "style", "category": "text" },
+            { "commandId": "text.color.green", "title": "Color: Green", "icon": "style", "category": "text" },
+            { "commandId": "text.color.gray", "title": "Color: Gray", "icon": "style", "category": "text" }
+          ]
+        },
+        {
+          "id": "core.text.spacing",
+          "items": [
+            { "commandId": "text.spacing.tight", "title": "Letter Spacing: Tight", "icon": "align", "category": "text" },
+            { "commandId": "text.spacing.normal", "title": "Letter Spacing: Normal", "icon": "align", "category": "text" },
+            { "commandId": "text.spacing.wide", "title": "Letter Spacing: Wide", "icon": "align", "category": "text" },
+            { "commandId": "text.lineHeight.tight", "title": "Line Height: Tight", "icon": "align", "category": "text" },
+            { "commandId": "text.lineHeight.normal", "title": "Line Height: Normal", "icon": "align", "category": "text" },
+            { "commandId": "text.lineHeight.loose", "title": "Line Height: Loose", "icon": "align", "category": "text" }
+          ]
+        },
+        {
+          "id": "core.text.justification",
+          "items": [
+            { "commandId": "text.align.left", "title": "Align Text Left", "icon": "align", "category": "text" },
+            { "commandId": "text.align.center", "title": "Align Text Center", "icon": "align", "category": "text" },
+            { "commandId": "text.align.right", "title": "Align Text Right", "icon": "align", "category": "text" },
+            { "commandId": "text.align.justify", "title": "Justify Text", "icon": "align", "category": "text" }
+          ]
+        },
+        {
+          "id": "core.text.paragraph",
+          "items": [
+            { "commandId": "text.paragraph.none", "title": "Paragraph Spacing: None", "icon": "align", "category": "text" },
+            { "commandId": "text.paragraph.small", "title": "Paragraph Spacing: Small", "icon": "align", "category": "text" },
+            { "commandId": "text.paragraph.medium", "title": "Paragraph Spacing: Medium", "icon": "align", "category": "text" },
+            { "commandId": "text.bold", "title": "Bold Text", "icon": "text", "category": "text" },
+            { "commandId": "text.italic", "title": "Italic Text", "icon": "text", "category": "text" },
+            { "commandId": "text.underline", "title": "Underline Text", "icon": "text", "category": "text" }
           ]
         }
       ]

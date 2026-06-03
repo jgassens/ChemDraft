@@ -69,6 +69,21 @@ describe("Phase 7 drawing tool activation", () => {
     expect(command.enabled).toBe(true);
   });
 
+  it("activates the manifest-backed text tool without requiring an editor adapter", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.text");
+    if (!command) {
+      throw new Error("Expected tool.text to be registered by the toolset manifest.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Text Tool active");
+    expect(result.state.activeCommandId).toBe("tool.text");
+    expect(result.state.activeKind).toBe("text");
+    expect(command.enabled).toBe(true);
+  });
+
   it("keeps unavailable tools from changing the active tool", () => {
     const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.wedgeBond");
     if (!command) {

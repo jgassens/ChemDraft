@@ -6,7 +6,10 @@ APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
 DEV_PORT="5173"
 RUN_MODE="${1:-app}"
-RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
+TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
+RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app"
+RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
+RUN_APP_DISPLAY_NAME="ChemDraft Run App"
 
 usage() {
   cat <<EOF
@@ -54,6 +57,7 @@ stop_existing_dev_apps() {
     "$APP_DIR/src-tauri/target/debug/chemdraft" \
     "$APP_DIR/src-tauri/target/release/chemdraft" \
     "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app/Contents/MacOS/chemdraft" \
+    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app/Contents/MacOS/chemdraft" \
     "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-working-draft.app/Contents/MacOS/chemdraft" \
     "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-pre-scena-snapshot.app/Contents/MacOS/chemdraft" \
     "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-release-snapshot.app/Contents/MacOS/chemdraft"; do
@@ -68,6 +72,8 @@ stop_existing_dev_apps() {
 }
 
 stop_existing_dev_server() {
+  local unrelated_mode="${1:-strict}"
+
   if ! command -v lsof >/dev/null 2>&1; then
     return 0
   fi
@@ -87,6 +93,9 @@ stop_existing_dev_server() {
           echo "That process is running from: $cwd"
         fi
         echo "It does not look like this ChemDraft checkout, so ./run-app will not kill it."
+        if [ "$unrelated_mode" = "ignore-unrelated" ]; then
+          return 0
+        fi
         exit 1
         ;;
     esac
@@ -95,12 +104,17 @@ stop_existing_dev_server() {
 
 clear_saved_window_state() {
   local saved_state_dir="$HOME/Library/Saved Application State/org.chemdraft.desktop.savedState"
+  local run_app_saved_state_dir="$HOME/Library/Saved Application State/$RUN_APP_BUNDLE_ID.savedState"
 
   if [ -d "$saved_state_dir" ]; then
     rm -rf "$saved_state_dir"
   fi
+  if [ -d "$run_app_saved_state_dir" ]; then
+    rm -rf "$run_app_saved_state_dir"
+  fi
 
   defaults delete org.chemdraft.desktop NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
+  defaults delete "$RUN_APP_BUNDLE_ID" NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
 }
 
 set_bundle_display_name() {
@@ -112,8 +126,72 @@ set_bundle_display_name() {
     return 0
   fi
 
-  /usr/libexec/PlistBuddy -c "Set :CFBundleName $display_name" "$plist" >/dev/null 2>&1 || true
-  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $display_name" "$plist" >/dev/null 2>&1 || true
+  plist_set_or_add_string "$plist" CFBundleName "$display_name"
+  plist_set_or_add_string "$plist" CFBundleDisplayName "$display_name"
+  plist_set_or_add_string "$plist" CFBundleIdentifier "$RUN_APP_BUNDLE_ID"
+  /usr/libexec/PlistBuddy -c "Delete :LSRequiresCarbon" "$plist" >/dev/null 2>&1 || true
+  plist_set_or_add_string "$plist" NSPrincipalClass NSApplication
+}
+
+plist_set_or_add_string() {
+  local plist="$1"
+  local key="$2"
+  local value="$3"
+
+  if ! /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist" >/dev/null 2>&1 || true
+  fi
+}
+
+stage_run_app_bundle() {
+  if [ ! -d "$TAURI_OUTPUT_BUNDLE" ]; then
+    echo "Tauri build did not produce the expected app bundle:"
+    echo "$TAURI_OUTPUT_BUNDLE"
+    exit 1
+  fi
+
+  if [ -e "$RUN_APP_BUNDLE" ]; then
+    rm -rf "$RUN_APP_BUNDLE"
+  fi
+
+  mv "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_BUNDLE"
+}
+
+resign_local_bundle() {
+  local bundle="$1"
+
+  if command -v codesign >/dev/null 2>&1; then
+    codesign --force --deep --sign - "$bundle" >/dev/null
+  fi
+}
+
+launch_bundle() {
+  local bundle="$1"
+
+  if ! open -n "$bundle"; then
+    echo "macOS open failed. The bundle was built, but LaunchServices refused to open it."
+    echo "Check for stale ChemDraft processes, then run ./run-app again."
+    exit 1
+  fi
+}
+
+activate_launched_bundle() {
+  if ! command -v osascript >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for _ in {1..30}; do
+    if osascript \
+      -e "tell application id \"$RUN_APP_BUNDLE_ID\" to activate" \
+      -e "tell application \"System Events\" to tell (first process whose bundle identifier is \"$RUN_APP_BUNDLE_ID\") to set frontmost to true" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "ChemDraft launched, but macOS did not report it as foreground yet."
+  echo "If the window is not active, click $RUN_APP_DISPLAY_NAME once or run ./run-app again."
 }
 
 cd "$ROOT_DIR"
@@ -143,17 +221,25 @@ fi
 stop_existing_dev_apps
 
 if [ "$RUN_MODE" = "--dev" ]; then
-  stop_existing_dev_server
+  stop_existing_dev_server strict
   exec npm run dev
 fi
+
+stop_existing_dev_server ignore-unrelated
 
 if [ -e "$RUN_APP_BUNDLE" ]; then
   rm -rf "$RUN_APP_BUNDLE"
 fi
+if [ -e "$TAURI_OUTPUT_BUNDLE" ]; then
+  rm -rf "$TAURI_OUTPUT_BUNDLE"
+fi
 
 node_modules/.bin/tauri build --bundles app
-set_bundle_display_name "$RUN_APP_BUNDLE" "ChemDraft Run App"
+set_bundle_display_name "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_DISPLAY_NAME"
+stage_run_app_bundle
+resign_local_bundle "$RUN_APP_BUNDLE"
 clear_saved_window_state
 
-echo "Launching ChemDraft Run App from $RUN_APP_BUNDLE"
-open -n "$RUN_APP_BUNDLE"
+echo "Launching $RUN_APP_DISPLAY_NAME from $RUN_APP_BUNDLE"
+launch_bundle "$RUN_APP_BUNDLE"
+activate_launched_bundle

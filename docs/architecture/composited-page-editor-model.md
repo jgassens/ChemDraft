@@ -22,4 +22,5 @@ Current editor integration state:
 - No fake molecule, reaction, product, arrow, or mechanism placeholder objects are shown.
 - Inspector and plugin panels are hidden by default.
 - Phase 6 adds a concrete Ketcher adapter boundary around an injected engine host, with molecule load/save and explicit capability-gap reporting.
-- Until a real engine host is wired, the desktop app keeps using the adapter-backed fallback document workflow rather than fake chemistry.
+- Phase 7.1 wires a narrow desktop Ketcher host for active selected-molecule editing. Ketcher handles molecule-internal drawing behavior for that session, then returns an edited molecule through the adapter.
+- ChemDraft still owns page layout, selection, object lists, mechanisms, arrows, text, export, save/open, and unsupported objects.

@@ -660,6 +660,7 @@ button {
   border: 0;
   border-radius: 0;
   background: transparent;
+  pointer-events: none;
 }
 
 .molecule-glyph {
@@ -667,18 +668,337 @@ button {
   width: 100%;
   height: 100%;
   overflow: visible;
+  pointer-events: none;
 }
 
 .native-bond-line {
   stroke: #111;
   stroke-width: 1.8;
+  stroke-linecap: butt;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-bond-hit-target {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-atom-hit-target {
+  fill: transparent;
+  stroke: transparent;
+  pointer-events: all;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-bond-knockout {
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-bond-delete-hover {
+  stroke: #b3261e;
+  stroke-width: 3;
+}
+
+.native-bond-selected {
+  stroke: #1d7f68;
+  stroke-width: 3.2;
+  filter: drop-shadow(0 0 2px rgb(29 127 104 / 80%)) drop-shadow(0 0 5px rgb(29 127 104 / 52%));
+  pointer-events: all;
+}
+
+.native-bond-selected-hit-target {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+}
+
+.native-molecule-selected .native-bond-line {
+  filter: drop-shadow(0 0 2px rgb(29 127 104 / 76%)) drop-shadow(0 0 6px rgb(29 127 104 / 46%));
+}
+
+.native-molecule-object.selected {
+  outline: none;
+}
+
+.native-atom-label {
+  fill: #111;
+  font: 15px Arial, Helvetica, sans-serif;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+.native-atom-label-background {
+  pointer-events: none;
+}
+
+.native-atom-delete-hover {
+  fill: rgb(179 38 30 / 12%);
+  stroke: #b3261e;
+  stroke-width: 1.4;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-atom-selected {
+  fill: rgb(29 127 104 / 13%);
+  stroke: #1d7f68;
+  stroke-width: 1.7;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-atom-invalid-marker {
+  pointer-events: none;
+}
+
+.native-atom-invalid-ring {
+  fill: rgb(255 255 255 / 92%);
+  stroke: #b3261e;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-atom-invalid-exclamation {
+  fill: #b3261e;
+  font: 700 8px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
+}
+
+.native-atom-hover {
+  fill: rgb(29 127 104 / 14%);
+  stroke: #1d7f68;
+  stroke-width: 1.4;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-bond-growth-preview {
+  pointer-events: none;
+}
+
+.native-freeform-bond-preview {
+  pointer-events: none;
+}
+
+.native-bond-preview-arrow {
+  stroke: #1d7f68;
+  stroke-width: 1.25;
+  stroke-dasharray: 3 2;
   stroke-linecap: round;
+  opacity: 0.92;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-bond-preview-arrow-head {
+  fill: #1d7f68;
+  opacity: 0.92;
+}
+
+.native-bond-preview-option-alternate {
+  opacity: 0.42;
+}
+
+.native-bond-preview-arrow-alternate {
+  stroke-dasharray: 2 3;
+}
+
+.native-bond-freeform-line {
+  stroke: #1d7f68;
+  stroke-width: 1.45;
+  stroke-dasharray: 4 2.5;
+  stroke-linecap: round;
+  opacity: 0.88;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-freeform-endpoint {
+  fill: #ffffff;
+  stroke: #1d7f68;
+  stroke-width: 1.2;
+  opacity: 0.95;
+  vector-effect: non-scaling-stroke;
+}
+
+.native-freeform-target-atom {
+  fill: rgb(45 114 210 / 15%);
+  stroke: #2d72d2;
+  stroke-width: 1.5;
+  pointer-events: none;
   vector-effect: non-scaling-stroke;
 }
 
 .document-object.selected {
   outline: 2px solid #1d7f68;
   outline-offset: 3px;
+}
+
+.selection-marquee {
+  position: absolute;
+  z-index: 100;
+  box-sizing: border-box;
+  border: 1px solid #1d7f68;
+  background: rgb(29 127 104 / 10%);
+  pointer-events: none;
+}
+
+.object-context-menu {
+  position: fixed;
+  z-index: 200;
+  display: grid;
+  min-width: 152px;
+  padding: 4px;
+  border: 1px solid #7f8c86;
+  border-radius: 4px;
+  background: #f8faf8;
+  box-shadow: 0 12px 28px rgb(28 35 32 / 22%);
+}
+
+.object-context-menu-title {
+  padding: 4px 7px 5px;
+  border-bottom: 1px solid #d8ddda;
+  color: #5d6a64;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.object-context-menu-item {
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #1f2824;
+  font-size: 12px;
+  text-align: left;
+}
+
+.object-context-menu-item:hover,
+.object-context-menu-item:focus-visible {
+  outline: none;
+  background: #dfe9e5;
+}
+
+.charge-mark-object {
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  color: #111;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+
+.ketcher-editor-host {
+  position: absolute;
+  z-index: 12;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  grid-template-rows: 30px minmax(220px, 38vh) 22px;
+  width: min(760px, calc(100vw - 56px));
+  min-height: 280px;
+  max-height: min(620px, calc(100vh - 56px));
+  border: 1px solid #9faab1;
+  background: #eef1ef;
+  box-shadow: 0 18px 42px rgb(34 40 44 / 22%);
+}
+
+.ketcher-editor-header {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content 18px;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid #c8ced2;
+  background: linear-gradient(#f7f8f7, #dde3e2);
+}
+
+.ketcher-editor-title {
+  color: #4d5860;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ketcher-editor-object {
+  min-width: 0;
+  overflow: hidden;
+  color: #69757d;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ketcher-editor-apply {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid #8ca6a0;
+  border-radius: 4px;
+  background: #fff;
+  color: #20332e;
+  font-size: 11px;
+}
+
+.ketcher-editor-apply:disabled {
+  color: #8a949b;
+}
+
+.ketcher-editor-close {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid #d63a43;
+  border-radius: 50%;
+  background: #ff5f57;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
+}
+
+.ketcher-editor-frame {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.ketcher-editor-frame > div:not(.ketcher-editor-message) {
+  width: 100%;
+  height: 100%;
+}
+
+.ketcher-editor-message {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: #52616b;
+  font-size: 12px;
+}
+
+.ketcher-editor-status {
+  overflow: hidden;
+  padding: 4px 8px;
+  border-top: 1px solid #d8dddf;
+  color: #52616b;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .object-primary {
@@ -707,13 +1027,98 @@ button {
   white-space: nowrap;
 }
 
-.text-object,
 .generic-object {
   border: 1px solid #69757d;
   border-radius: 4px;
   background: #ffffff;
   color: #172026;
   font-size: 12px;
+}
+
+.text-object {
+  display: block;
+  overflow: visible;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #111111;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.text-object-content {
+  display: block;
+  min-width: 100%;
+  min-height: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.text-resize-handle {
+  position: absolute;
+  z-index: 3;
+  top: -3px;
+  bottom: -3px;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.text-resize-handle::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 18px;
+  border: 1px solid #1d7f68;
+  background: #ffffff;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.text-resize-handle-left {
+  left: -7px;
+}
+
+.text-resize-handle-right {
+  right: -7px;
+}
+
+.text-object-editor {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 28px;
+  overflow: hidden;
+  resize: none;
+  padding: 0;
+  border: 1px solid rgb(29 127 104 / 55%);
+  border-radius: 2px;
+  outline: none;
+  background: rgb(255 255 255 / 80%);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.native-atom-label-editor {
+  position: absolute;
+  z-index: 4;
+  width: 2.6em;
+  min-width: 24px;
+  padding: 1px 2px;
+  border: 1px solid rgb(29 127 104 / 72%);
+  border-radius: 2px;
+  outline: none;
+  background: rgb(255 255 255 / 92%);
+  color: #111;
+  pointer-events: auto;
+  text-align: center;
+  transform: translate(-50%, -50%);
 }
 
 .drawer-rail {

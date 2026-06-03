@@ -9,13 +9,14 @@ use tauri::{
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSFloatingWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSFloatingWindowLevel, NSPasteboard, NSWindow, NSWindowAnimationBehavior,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
+const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
@@ -25,6 +26,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
     "document.save",
+    "clipboard.paste",
     "export.svg",
     "export.png",
     "page.setSize.letter",
@@ -87,6 +89,20 @@ struct ToolsetWindowState {
 #[serde(rename_all = "camelCase")]
 struct ToolsetCommandPayload {
     command_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardTextItem {
+    r#type: String,
+    text: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardReadPayload {
+    types: Vec<String>,
+    text_items: Vec<ClipboardTextItem>,
 }
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -219,6 +235,14 @@ pub fn run() {
                 }
             }
 
+            if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
+                eprintln!("Could not set ChemDraft activation policy: {error}");
+            }
+
+            if let Err(error) = ensure_main_window_visible(app) {
+                eprintln!("Could not show ChemDraft main window: {error}");
+            }
+
             for toolset in startup_manifest.toolsets {
                 let visible = toolset_visible(&toolset, &layout_state);
                 if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
@@ -239,6 +263,7 @@ pub fn run() {
             list_toolset_window_states,
             load_toolset_customization_state,
             route_toolset_command,
+            read_clipboard_payload,
             open_tool_palette,
             close_tool_palette,
             focus_tool_palette,
@@ -248,6 +273,49 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running ChemDraft");
+}
+
+fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+        Some(window) => window,
+        None => create_main_window(app)?,
+    };
+
+    window.set_decorations(true).map_err(|error| error.to_string())?;
+    window.set_focusable(true).map_err(|error| error.to_string())?;
+    window.set_skip_taskbar(false).map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.center().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+fn create_main_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    if let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == MAIN_WINDOW_LABEL)
+    {
+        return WebviewWindowBuilder::from_config(app, config)
+            .map_err(|error| error.to_string())?
+            .build()
+            .map_err(|error| error.to_string());
+    }
+
+    WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
+        .title("ChemDraft")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(900.0, 640.0)
+        .resizable(true)
+        .accept_first_mouse(true)
+        .visible(true)
+        .center()
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -342,6 +410,136 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
 }
 
 #[tauri::command]
+fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
+    read_clipboard_payload_impl()
+}
+
+#[cfg(target_os = "macos")]
+fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let types = pasteboard
+        .types()
+        .map(|types| {
+            types
+                .to_vec()
+                .into_iter()
+                .map(|pasteboard_type| pasteboard_type.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let text_items = pasteboard
+        .types()
+        .map(|types| {
+            types
+                .to_vec()
+                .into_iter()
+                .filter_map(|pasteboard_type| {
+                    clipboard_text_for_type(&pasteboard, &pasteboard_type).map(|text| {
+                        ClipboardTextItem {
+                            r#type: pasteboard_type.to_string(),
+                            text,
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(ClipboardReadPayload { types, text_items })
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_text_for_type(
+    pasteboard: &NSPasteboard,
+    pasteboard_type: &objc2_app_kit::NSPasteboardType,
+) -> Option<String> {
+    if let Some(text) = pasteboard.stringForType(pasteboard_type) {
+        let text = text.to_string();
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    let data = pasteboard.dataForType(pasteboard_type)?;
+    decode_clipboard_text_bytes(&data.to_vec())
+}
+
+fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    if looks_like_utf16_bytes(bytes) {
+        if let Some(text) = decode_utf16_bytes(bytes) {
+            return Some(text);
+        }
+    }
+
+    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    decode_utf16_bytes(bytes)
+}
+
+fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0xff, 0xfe]) {
+        return true;
+    }
+
+    if bytes.len() < 4 {
+        return false;
+    }
+
+    let null_count = bytes.iter().filter(|byte| **byte == 0).count();
+    null_count * 4 >= bytes.len()
+}
+
+fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
+    let (big_endian, content) = if bytes.starts_with(&[0xfe, 0xff]) {
+        (true, &bytes[2..])
+    } else if bytes.starts_with(&[0xff, 0xfe]) {
+        (false, &bytes[2..])
+    } else {
+        let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
+        let odd_nulls = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+        if even_nulls > odd_nulls {
+            (true, bytes)
+        } else if odd_nulls > even_nulls {
+            (false, bytes)
+        } else {
+            return None;
+        }
+    };
+
+    if content.len() < 2 || content.len() % 2 != 0 {
+        return None;
+    }
+
+    let units = content
+        .chunks_exact(2)
+        .map(|chunk| {
+            if big_endian {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    String::from_utf16(&units).ok().filter(|text| !text.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
+    Ok(ClipboardReadPayload {
+        types: Vec::new(),
+        text_items: Vec::new(),
+    })
+}
+
+#[tauri::command]
 fn open_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
     open_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
 }
@@ -378,13 +576,24 @@ fn emit_command_to_main<R: Runtime>(
     let main = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
+    let payload = ToolsetCommandPayload {
+        command_id: command_id.to_string(),
+    };
 
-    main.emit(
-        TOOLSET_COMMAND_EVENT,
-        ToolsetCommandPayload {
-            command_id: command_id.to_string(),
-        },
-    )
+    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_COMMAND_EVENT, payload.clone())
+        .map_err(|error| error.to_string())?;
+    dispatch_dom_command_event(&main, &payload)
+}
+
+fn dispatch_dom_command_event<R: Runtime>(
+    main: &tauri::WebviewWindow<R>,
+    payload: &ToolsetCommandPayload,
+) -> Result<(), String> {
+    let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
+    let event_json = serde_json::to_string(DOM_COMMAND_EVENT).map_err(|error| error.to_string())?;
+    main.eval(format!(
+        "window.dispatchEvent(new CustomEvent({event_json}, {{ detail: {payload_json} }}));"
+    ))
     .map_err(|error| error.to_string())
 }
 
@@ -392,11 +601,11 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
         return Ok(());
-    };
+    }
 
-    main.emit(TOOLSET_WINDOW_STATE_EVENT, state.clone())
+    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_WINDOW_STATE_EVENT, state.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -450,7 +659,13 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
-                    &PredefinedMenuItem::paste(app, None)?,
+                    &MenuItem::with_id(
+                        app,
+                        "clipboard.paste",
+                        "Paste",
+                        true,
+                        Some("CmdOrCtrl+V"),
+                    )?,
                 ],
             )?,
             &view_menu,
@@ -675,7 +890,7 @@ fn ensure_toolset_window<R: Runtime>(
     let window = WebviewWindowBuilder::new(
         app,
         label,
-        WebviewUrl::App(format!("index.html?window=toolset&toolsetId={toolset_id}").into()),
+        WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
     )
     .title(format!("ChemDraft {}", toolset.title))
     .inner_size(size.width, size.height)
@@ -1318,6 +1533,23 @@ mod tests {
             expect_true(is_routed_menu_command(command_id));
         }
         expect_false(is_routed_menu_command("page.setSize.custom"));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_accepts_control_prefixed_utf8_payloads() {
+        let text = decode_clipboard_text_bytes(b"\x04$RXN\x06M  END")
+            .expect("control-prefixed UTF-8 should decode");
+
+        expect_true(text.contains("$RXN"));
+        expect_true(text.contains("M  END"));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_accepts_utf16_payloads() {
+        let text = "M  END";
+        let bytes = text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+
+        expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
     }
 
     fn expect_true(value: bool) {

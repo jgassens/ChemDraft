@@ -36,13 +36,14 @@ Recent implementation work corrected the desktop product direction rather than a
 - `packages/viewport-engine`.
 - Ruler rendering through `@scena/react-ruler`, with ChemDraft viewport state remaining the source of truth.
 - A tiny local UX surface metadata scaffold in `apps/desktop/src/surfaces` for menu, status, canvas-control, panel, and empty-state chrome.
-- `KetcherAdapter` as a host adapter boundary with capability reporting and molecule load/save contracts. The real Ketcher engine is not yet embedded as a full drawing surface.
+- `KetcherAdapter` as a host adapter boundary with capability reporting and molecule load/save contracts.
+- A narrow lazy Ketcher desktop host for active selected-molecule editing through `ketcher-react` and `ketcher-standalone`.
 - Native page layout and paper-size infrastructure with File > Page Setup commands, document-backed viewport/ruler/crosshair/export geometry, and physical SVG size metadata.
 - Phase 7 has started with command-backed active drawing tools, shortcut routing, a minimal native single-bond insertion path, and first connected carbon-chain extension backed by `chem-core` atoms and bonds.
 
 The UX surface scaffold is metadata-only. Existing rendered UI is not driven by it yet, and it should not be treated as a full UX registry package, plugin surface renderer, customization UI, or add-page implementation.
 
-Treat this as core drawing-workspace infrastructure. `Phase 6: Editor engine hardening` is conditionally complete as an adapter boundary, not a fully embedded Ketcher editor. `Phase 6.5: Canvas page-size infrastructure` is closed out and should now be treated as the page-layout baseline. The next implementation lane is `Phase 7: Core drawing productivity`; do not backslide into broad UI polish, a full Page Setup feature, a rendered surface-system task, or a new chemistry phase.
+Treat this as core drawing-workspace infrastructure. `Phase 6: Editor engine hardening` is conditionally complete as an adapter boundary. `Phase 7.1` now uses Ketcher only as the active molecule-internal editor for a selected `MoleculeObject`; ChemDraft still owns the composited page/document state. `Phase 6.5: Canvas page-size infrastructure` is closed out and should now be treated as the page-layout baseline. The next implementation lane remains `Phase 7: Core drawing productivity`; do not backslide into broad UI polish, a full Page Setup feature, a rendered surface-system task, or a new chemistry phase.
 
 ## 2. Target users
 
@@ -1351,11 +1352,12 @@ Do not let Phase 5 become broad UI polish, a new toolbar concept, CDXML/CDX comp
 
 ### Phase 6: Editor engine hardening
 
-Status: conditionally complete as an adapter-boundary closeout. The real Ketcher engine is not yet a fully embedded drawing surface.
+Status: conditionally complete as an adapter-boundary closeout. Phase 7.1 has added a narrow real Ketcher host for active selected-molecule editing; it is not the whole ChemDraft canvas.
 
 Deliverables:
 
 - `KetcherAdapter` or other selected editor adapter implementation.
+- Narrow desktop Ketcher host for a selected `MoleculeObject`.
 - Capability report.
 - Basic molecule load/save through adapter.
 - Documented gaps around mechanism annotations, page layout, and other non-editor objects.
@@ -1363,7 +1365,7 @@ Deliverables:
 
 Closeout evidence:
 
-- `packages/ketcher-adapter` exposes a host adapter boundary rather than importing Ketcher into UI code.
+- `packages/ketcher-adapter` exposes a host adapter boundary and the desktop Ketcher host is the only intended direct Ketcher UI import boundary.
 - Capability reporting distinguishes disconnected and connected host states.
 - Molecule load/save contracts cover supported molecule formats and reject unsupported objects or formats.
 - Page-level gaps remain explicit: reactions, mechanism annotations, page layout, superatoms, and R-group metadata are outside the adapter boundary.
@@ -1412,7 +1414,7 @@ Future work should preserve this behavior rather than reimplementing page geomet
 
 ### Phase 7: Core drawing productivity
 
-Status: in progress. The command-backed active-tool and shortcut-routing slices are in place. The first narrow real editing slices add native single-bond insertion and selected carbon-chain extension backed by `chem-core` atom and bond payloads.
+Status: in progress. The command-backed active-tool and shortcut-routing slices are in place. The first narrow real editing slices add native single-bond insertion, selected carbon-chain extension backed by `chem-core` atom and bond payloads, and a lazy Ketcher host for active selected-molecule editing.
 
 First slice:
 
@@ -1421,7 +1423,7 @@ First slice:
 - Tool activation through the command/state architecture, not button-local chemistry behavior.
 - Unsupported tools remain disabled or report explicit unavailable state.
 - No fake molecule, reaction, arrow, product, or mechanism output.
-- No direct Ketcher or RDKit imports in UI code.
+- No direct Ketcher or RDKit imports in random UI code; the narrow desktop Ketcher host is the only current direct Ketcher import boundary.
 - Editor-adapter-mediated molecule edits where available.
 - `chem-core` document objects remain the source of truth for page content.
 
@@ -1573,7 +1575,7 @@ Begin Phase 5 chemistry validation and basic properties: chemistry-adapter contr
 Task 8:
 
 ```text
-Phase 6 editor engine hardening is conditionally complete as an adapter-boundary closeout. Preserve the KetcherAdapter host boundary, capability reporting, molecule load/save contract, documented page-level gaps, and `chem-core` as the composited page source of truth. Do not treat this as evidence that a full embedded Ketcher drawing surface exists.
+Phase 6 editor engine hardening is conditionally complete as an adapter-boundary closeout. Preserve the KetcherAdapter host boundary, capability reporting, molecule load/save contract, narrow desktop Ketcher host, documented page-level gaps, and `chem-core` as the composited page source of truth. Do not treat the Ketcher host as ownership of the whole ChemDraft canvas.
 ```
 
 Task 9:
@@ -1597,7 +1599,7 @@ Implement `.cds` style-sheet import through the style compatibility boundary, co
 Task 11:
 
 ```text
-Begin Phase 7 with a narrow command-backed active-tool slice: define real tool activation/state architecture, command-backed bond/atom/ring/text/arrow tool definitions, disabled/unavailable states for unsupported tools, and tests for command routing. Do not create fake chemistry output, import Ketcher or RDKit directly into UI code, or start CDXML/CDX, clipboard, `.cds`, OCSR, full Page Setup, add-page UI, drag/drop toolbar customization, or broad visual redesign work.
+Continue Phase 7 with narrow command-backed drawing-productivity slices. Preserve real tool activation/state architecture, command-backed bond/atom/ring/text/arrow tool definitions, disabled/unavailable states for unsupported tools, the narrow active Ketcher molecule editor host, and tests for command routing. Do not create fake chemistry output, spread Ketcher/RDKit imports outside adapter/host boundaries, or start CDXML/CDX, clipboard, `.cds`, OCSR, full Page Setup, add-page UI, drag/drop toolbar customization, or broad visual redesign work.
 ```
 
 Task 12:

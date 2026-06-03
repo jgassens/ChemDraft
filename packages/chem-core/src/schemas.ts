@@ -104,12 +104,19 @@ export const MoleculeAtomSchema = z
   })
   .strict();
 
+export const MoleculeBondDisplaySchema = z
+  .object({
+    doubleBondSide: z.enum(["left", "right"]).optional()
+  })
+  .strict();
+
 export const MoleculeBondSchema = z
   .object({
     id: IdSchema,
     fromAtomId: IdSchema,
     toAtomId: IdSchema,
-    order: z.enum(["single", "double", "triple", "aromatic", "unknown"]).default("single")
+    order: z.enum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
+    display: MoleculeBondDisplaySchema.optional()
   })
   .strict();
 
@@ -332,6 +339,7 @@ export type ChemicalMetadata = z.infer<typeof ChemicalMetadataSchema>;
 export type SuperatomMetadata = z.infer<typeof SuperatomMetadataSchema>;
 export type RGroupDisplay = z.infer<typeof RGroupDisplaySchema>;
 export type MoleculeAtom = z.infer<typeof MoleculeAtomSchema>;
+export type MoleculeBondDisplay = z.infer<typeof MoleculeBondDisplaySchema>;
 export type MoleculeBond = z.infer<typeof MoleculeBondSchema>;
 export type MoleculeObject = z.infer<typeof MoleculeObjectSchema>;
 export type ReactionComponent = z.infer<typeof ReactionComponentSchema>;

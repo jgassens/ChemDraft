@@ -17,6 +17,7 @@ export {
   GroupObjectSchema,
   MechanismArrowObjectSchema,
   MoleculeAtomSchema,
+  MoleculeBondDisplaySchema,
   MoleculeBondSchema,
   MoleculeObjectSchema,
   PageLayoutSchema,
@@ -52,6 +53,7 @@ export {
   type GroupObject,
   type MechanismArrowObject,
   type MoleculeAtom,
+  type MoleculeBondDisplay,
   type MoleculeBond,
   type MoleculeObject,
   type PageLayout,
@@ -114,7 +116,8 @@ export {
   applyPatch,
   applyPatches,
   type ApplyPatchOptions,
-  type DocumentPatch
+  type DocumentPatch,
+  type ObjectReorderPlacement
 } from "./patches";
 
 export {
@@ -124,3 +127,20 @@ export {
   undo,
   type DocumentHistory
 } from "./history";
+
+export {
+  ChemDraftSyntheticStylePreset,
+  DefaultNativeTextStyle,
+  DefaultNativeDrawingStyle,
+  nativeDrawingStyleFromObjectStyle,
+  nativeTextStyleFromObjectStyle,
+  stylePresetToObjectStyle,
+  textStyleToObjectStyle,
+  type ChemDraftStylePreset,
+  type NativeBondLineCap,
+  type NativeDrawingStyle,
+  type NativeTextAlignment,
+  type NativeTextDecoration,
+  type NativeTextFontStyle,
+  type NativeTextStyle
+} from "./styles";

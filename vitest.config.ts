@@ -5,6 +5,8 @@ const workspacePackage = (path: string) => new URL(path, import.meta.url).pathna
 export default defineConfig({
   resolve: {
     alias: {
+      "@chemdraft/chem-core": workspacePackage("./packages/chem-core/src/index.ts"),
+      "@chemdraft/style-compat": workspacePackage("./packages/style-compat/src/index.ts"),
       "@chemdraft/shortcut-engine": workspacePackage("./packages/shortcut-engine/src/index.ts")
     }
   },

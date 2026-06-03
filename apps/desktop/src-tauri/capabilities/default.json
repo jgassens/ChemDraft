@@ -26,6 +26,7 @@
     "allow-toggle-toolset-window",
     "allow-list-toolset-window-states",
     "allow-route-toolset-command",
+    "allow-read-clipboard-payload",
     "allow-open-tool-palette",
     "allow-close-tool-palette",
     "allow-focus-tool-palette",

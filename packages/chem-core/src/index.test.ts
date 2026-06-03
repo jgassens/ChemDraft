@@ -5,15 +5,22 @@ import {
   applyPatch,
   applyPatchWithHistory,
   applyPatches,
+  ChemDraftSyntheticStylePreset,
   createPageLayout,
   createDocumentHistory,
   createEmptyDocument,
+  DefaultNativeDrawingStyle,
+  DefaultNativeTextStyle,
   deserializeDocument,
   inchesToCssPx,
   mmToCssPx,
+  nativeDrawingStyleFromObjectStyle,
+  nativeTextStyleFromObjectStyle,
   pageLayoutMatchesSize,
   redo,
   serializeDocument,
+  stylePresetToObjectStyle,
+  textStyleToObjectStyle,
   undo,
   validateDocument,
   type AnnotationObject,
@@ -261,6 +268,90 @@ describe("page layout presets and migration", () => {
   });
 });
 
+describe("native drawing styles", () => {
+  it("keeps the ChemDraft synthetic style in CSS-px page units", () => {
+    expect(ChemDraftSyntheticStylePreset).toMatchObject({
+      id: "chemdraft.synthetic",
+      source: "core",
+      drawing: {
+        bondLengthPx: 22,
+        bondStrokeWidthPx: 2,
+        doubleBondInsetPx: 4.5,
+        bondOverlapClearancePx: 6,
+        atomLabelFontFamily: expect.stringContaining("Arial")
+      }
+    });
+  });
+
+  it("serializes presets into object style metadata and resolves missing values", () => {
+    const objectStyle = stylePresetToObjectStyle(ChemDraftSyntheticStylePreset);
+    const resolved = nativeDrawingStyleFromObjectStyle({
+      ...objectStyle,
+      bondStrokeWidthPx: 2.4,
+      bondLineCap: "round",
+      atomLabelPaddingPx: 3
+    });
+
+    expect(objectStyle).toMatchObject({
+      stylePresetId: "chemdraft.synthetic",
+      bondLengthPx: DefaultNativeDrawingStyle.bondLengthPx
+    });
+    expect(resolved).toMatchObject({
+      stylePresetId: "chemdraft.synthetic",
+      bondLengthPx: DefaultNativeDrawingStyle.bondLengthPx,
+      bondStrokeWidthPx: 2.4,
+      bondLineCap: "round",
+      doubleBondInsetPx: DefaultNativeDrawingStyle.doubleBondInsetPx,
+      bondOverlapClearancePx: DefaultNativeDrawingStyle.bondOverlapClearancePx,
+      atomLabelPaddingPx: 3
+    });
+    expect(nativeDrawingStyleFromObjectStyle({ bondLengthPx: -1, atomLabelFontFamily: "" })).toMatchObject({
+      bondLengthPx: DefaultNativeDrawingStyle.bondLengthPx,
+      atomLabelFontFamily: DefaultNativeDrawingStyle.atomLabelFontFamily
+    });
+  });
+
+  it("resolves native text style metadata for document text objects", () => {
+    const objectStyle = textStyleToObjectStyle({
+      fontFamily: "Times New Roman, Times, serif",
+      fontSizePx: 24,
+      color: "#b3261e",
+      textAlign: "center",
+      fontWeight: 700
+    });
+    const resolved = nativeTextStyleFromObjectStyle({
+      ...objectStyle,
+      lineHeight: 1.5,
+      letterSpacingPx: 0.8,
+      fontStyle: "italic",
+      textDecoration: "underline"
+    });
+
+    expect(objectStyle).toMatchObject({
+      fontFamily: "Times New Roman, Times, serif",
+      fontSizePx: 24,
+      color: "#b3261e",
+      textAlign: "center",
+      fontWeight: 700
+    });
+    expect(resolved).toMatchObject({
+      fontFamily: "Times New Roman, Times, serif",
+      fontSizePx: 24,
+      color: "#b3261e",
+      lineHeight: 1.5,
+      letterSpacingPx: 0.8,
+      textAlign: "center",
+      fontWeight: 700,
+      fontStyle: "italic",
+      textDecoration: "underline"
+    });
+    expect(nativeTextStyleFromObjectStyle({ fontSizePx: -1, textAlign: "sideways" })).toMatchObject({
+      fontSizePx: DefaultNativeTextStyle.fontSizePx,
+      textAlign: DefaultNativeTextStyle.textAlign
+    });
+  });
+});
+
 describe("native document validation and serialization", () => {
   it("round-trips a valid native document through JSON", () => {
     const document = createEmptyDocument({ id: "doc_roundtrip", now: timestamp });
@@ -275,6 +366,34 @@ describe("native document validation and serialization", () => {
     );
 
     expect(deserializeDocument(serializeDocument(withMolecule))).toEqual(withMolecule);
+  });
+
+  it("accepts optional molecule bond display metadata", () => {
+    const molecule = {
+      ...moleculeObject(),
+      atoms: [
+        { id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 22, y: 0, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_001",
+          fromAtomId: "atom_001",
+          toAtomId: "atom_002",
+          order: "double",
+          display: { doubleBondSide: "right" }
+        }
+      ]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      bonds: [{ id: "bond_001", display: { doubleBondSide: "right" } }]
+    });
   });
 
   it("reports validation issues for unsupported object shapes", () => {
@@ -372,6 +491,47 @@ describe("document patches", () => {
         objectIds: ["mol_missing"]
       })
     ).toThrow(DocumentPatchError);
+  });
+
+  it("reorders objects without changing selection or object payloads", () => {
+    const document = applyPatches(
+      createEmptyDocument({ now: timestamp }),
+      [
+        { op: "addObject", pageId: "page_001", object: moleculeObject("mol_back") },
+        { op: "addObject", pageId: "page_001", object: moleculeObject("mol_middle") },
+        { op: "addObject", pageId: "page_001", object: moleculeObject("mol_front") },
+        { op: "setSelection", pageId: "page_001", objectIds: ["mol_middle"] }
+      ],
+      { now: timestamp }
+    );
+    const selectedPayload = document.pages[0].objects[1];
+    const forward = applyPatch(
+      document,
+      { op: "reorderObject", objectId: "mol_middle", placement: "forward" },
+      { now: timestamp }
+    );
+    const back = applyPatch(
+      forward,
+      { op: "reorderObject", objectId: "mol_middle", placement: "back" },
+      { now: timestamp }
+    );
+    const front = applyPatch(
+      back,
+      { op: "reorderObject", objectId: "mol_middle", placement: "front" },
+      { now: timestamp }
+    );
+    const backward = applyPatch(
+      front,
+      { op: "reorderObject", objectId: "mol_middle", placement: "backward" },
+      { now: timestamp }
+    );
+
+    expect(forward.pages[0].objects.map((object) => object.id)).toEqual(["mol_back", "mol_front", "mol_middle"]);
+    expect(back.pages[0].objects.map((object) => object.id)).toEqual(["mol_middle", "mol_back", "mol_front"]);
+    expect(front.pages[0].objects.map((object) => object.id)).toEqual(["mol_back", "mol_front", "mol_middle"]);
+    expect(backward.pages[0].objects.map((object) => object.id)).toEqual(["mol_back", "mol_middle", "mol_front"]);
+    expect(backward.pages[0].objects[1]).toEqual(selectedPayload);
+    expect(backward.selection).toEqual({ pageId: "page_001", objectIds: ["mol_middle"] });
   });
 
   it("only removes annotations through removeAnnotation", () => {
