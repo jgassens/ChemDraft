@@ -18,6 +18,7 @@ import {
   createNativeSavePayload,
   createNativeSingleBondMolecule,
   createPhase4Document,
+  deleteSelectedDocumentObjects,
   exportPhase4Svg,
   findNativeMoleculeDeleteHit,
   findNativeMoleculeAtomHit,
@@ -49,6 +50,7 @@ import {
   nativeTextObjectSizeForText,
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
+  rotateDocumentObject,
   resizeNativeTextObjectBox,
   updateNativeTextObjectStyle,
   updateNativeTextObjectText
@@ -499,6 +501,52 @@ describe("Phase 4 document workflow", () => {
     expect(movedMolecule.bonds).toEqual(molecule.bonds);
     expect(movedMolecule.chemistry).toEqual(molecule.chemistry);
     expect(moved.selection.objectIds).toEqual([molecule.id]);
+  });
+
+  it("rotates a selected native molecule around its center without changing chemical identity", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Rotate Fixture"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const center = {
+      x: molecule.x + molecule.width / 2,
+      y: molecule.y + molecule.height / 2
+    };
+    const rotated = rotateDocumentObject(document, molecule.id, 90);
+    const rotatedMolecule = selectedMolecule(rotated);
+
+    expect(rotatedMolecule.id).toBe(molecule.id);
+    expect(rotatedMolecule.rotation).toBe(0);
+    expect(rotatedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
+    expect(rotatedMolecule.structure).toBe(molecule.structure);
+    expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(rotated.selection.objectIds).toEqual([molecule.id]);
+    molecule.atoms.forEach((atom, index) => {
+      const rotatedAtom = rotatedMolecule.atoms[index];
+      expect(rotatedAtom?.x).toBeCloseTo(center.x - (atom.y - center.y), 3);
+      expect(rotatedAtom?.y).toBeCloseTo(center.y + (atom.x - center.x), 3);
+      expect(pointDistance(atom, center)).toBeCloseTo(pointDistance(rotatedAtom ?? atom, center), 3);
+    });
+  });
+
+  it("rotates selected text boxes in the page plane", () => {
+    const document = insertNativeTextObject(createPhase4Document("Rotate Text"), { x: 120, y: 140 }, "label");
+    const text = getSelectedTextObject(document);
+    if (!text) {
+      throw new Error("Expected selected text object.");
+    }
+    const rotated = rotateDocumentObject(document, text.id, 37.5);
+    const rotatedText = getSelectedTextObject(rotated);
+
+    expect(rotatedText).toMatchObject({
+      id: text.id,
+      type: "text",
+      text: "label",
+      x: text.x,
+      y: text.y,
+      width: text.width,
+      height: text.height,
+      rotation: 37.5
+    });
   });
 
   it("extends the selected native single bond into one connected molecule graph", () => {
@@ -1160,12 +1208,13 @@ describe("Phase 4 document workflow", () => {
 
   it("normalizes full atom labels and validates real element symbols", () => {
     expect(normalizeNativeAtomElementLabel("cl")).toBe("Cl");
+    expect(normalizeNativeAtomElementLabel("iPr")).toBe("iPr");
     expect(nativeElementFromAtomLabel("cl")).toBe("Cl");
     expect(nativeElementFromAtomLabel("Br")).toBe("Br");
     expect(nativeElementFromAtomLabel("Xx")).toBeUndefined();
   });
 
-  it("updates hovered atom labels to full element symbols and flags invalid symbols", () => {
+  it("updates hovered atom labels to full element symbols and accepts generic labels", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Labels"), { x: 300, y: 300 });
     const molecule = selectedMolecule(document);
     const target = {
@@ -1176,15 +1225,41 @@ describe("Phase 4 document workflow", () => {
     } as const;
     const chloride = applyNativeAtomElementTarget(document, target, "cl");
     const labeled = selectedMolecule(chloride);
-    const invalid = applyNativeAtomElementTarget(chloride, target, "Xx");
-    const invalidMolecule = selectedMolecule(invalid);
+    const generic = applyNativeAtomElementTarget(chloride, target, "Xx");
+    const genericMolecule = selectedMolecule(generic);
+    const yGeneric = applyNativeAtomElementTarget(generic, target, "Y");
+    const yMolecule = selectedMolecule(yGeneric);
 
     expect(labeled.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Cl" });
     expect(nativeAtomDisplayLabel(labeled.atoms[0], labeled.bonds)).toBe("Cl");
     expect(nativeMoleculeInvalidAtomStates(labeled)).toEqual([]);
-    expect(invalidMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
-    expect(nativeMoleculeInvalidAtomStates(invalidMolecule)[0]).toMatchObject({
+    expect(genericMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
+    expect(nativeAtomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds)).toBe("Xx");
+    expect(nativeMoleculeInvalidAtomStates(genericMolecule)).toEqual([]);
+    expect(yMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Y" });
+    expect(nativeMoleculeInvalidAtomStates(yMolecule)).toEqual([]);
+  });
+
+  it("keeps actual element labels valence-checked after atom relabeling", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Label Valence"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(document);
+    const withBranches = [45, 135, -90].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      document
+    );
+    const target = {
+      objectId: molecule.id,
+      kind: "atom",
       atomId: "atom_001",
+      distanceToPointer: 0
+    } as const;
+    const nitrogen = applyNativeAtomElementTarget(withBranches, target, "N");
+    const nitrogenMolecule = selectedMolecule(nitrogen);
+
+    expect(nitrogenMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "N" });
+    expect(nativeMoleculeInvalidAtomStates(nitrogenMolecule)[0]).toMatchObject({
+      atomId: "atom_001",
+      element: "N",
       valid: false
     });
   });
@@ -1310,6 +1385,46 @@ describe("Phase 4 document workflow", () => {
     expect(narrowedText.style.textBoxSizingMode).toBe("fixed-width");
     expect(shortenedText?.width).toBe(72);
     expect(shortenedText?.height).toBeLessThan(narrowedText.height);
+  });
+
+  it("lets text boxes stretch vertically and preserves an explicit text area while text changes", () => {
+    const document = insertNativeTextObject(
+      createPhase4Document("Resizable Text Height"),
+      { x: 120, y: 140 },
+      "short note",
+      { fontSizePx: 18 }
+    );
+    const text = getSelectedTextObject(document);
+    if (!text) {
+      throw new Error("Expected selected text object.");
+    }
+    const taller = resizeNativeTextObjectBox(document, text.id, { y: text.y - 18, height: text.height + 48 });
+    const tallerText = getSelectedTextObject(taller);
+    if (!tallerText) {
+      throw new Error("Expected selected resized text object.");
+    }
+    const changed = updateNativeTextObjectText(taller, tallerText.id, "a much longer note that would normally reflow");
+    const changedText = getSelectedTextObject(changed);
+
+    expect(tallerText.y).toBe(text.y - 18);
+    expect(tallerText.height).toBe(text.height + 48);
+    expect(tallerText.style.textBoxSizingMode).toBe("fixed-size");
+    expect(changedText?.width).toBe(tallerText.width);
+    expect(changedText?.height).toBe(tallerText.height);
+  });
+
+  it("deletes selected native text objects without touching chemistry objects", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Delete Text"), { x: 300, y: 300 });
+    const withText = insertNativeTextObject(document, { x: 120, y: 140 }, "delete me");
+    const text = getSelectedTextObject(withText);
+    if (!text) {
+      throw new Error("Expected selected text object.");
+    }
+    const deleted = deleteSelectedDocumentObjects(withText);
+
+    expect(deleted.pages[0].objects.some((object) => object.id === text.id)).toBe(false);
+    expect(deleted.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule")).toHaveLength(1);
+    expect(deleted.selection.objectIds).toEqual([]);
   });
 
   it("pastes MOL clipboard payloads as native molecule geometry", () => {

@@ -89,21 +89,21 @@ export const editActions: CommandSpec[] = [
   },
   {
     id: "edit.deleteHoveredNativeTarget",
-    title: "Delete Hovered Atom or Bond",
+    title: "Delete Selection or Hovered Atom/Bond",
     icon: "select",
     source: "core",
     shortcut: "Backspace",
     category: "edit",
-    description: "Delete the hovered native atom or bond"
+    description: "Delete the selected object, or the hovered native atom or bond"
   },
   {
     id: "edit.forwardDeleteHoveredNativeTarget",
-    title: "Forward Delete Hovered Atom or Bond",
+    title: "Forward Delete Selection or Hovered Atom/Bond",
     icon: "select",
     source: "core",
     shortcut: "Delete",
     category: "edit",
-    description: "Delete the hovered native atom or bond"
+    description: "Delete the selected object, or the hovered native atom or bond"
   }
 ];
 
@@ -172,22 +172,23 @@ export const pageOrientationActions: CommandSpec[] = [
   }
 ];
 
-const textFontCommands = [
+export const textFontCommands = [
   { id: "text.font.system", title: "Font: System Sans", fontFamily: "Arial, Helvetica, sans-serif" },
   { id: "text.font.times", title: "Font: Times", fontFamily: "Times New Roman, Times, serif" },
   { id: "text.font.courier", title: "Font: Courier", fontFamily: "Courier New, Courier, monospace" },
   { id: "text.font.georgia", title: "Font: Georgia", fontFamily: "Georgia, serif" }
 ] as const;
 
-const textSizeCommands = [
+export const textSizeCommands = [
   { id: "text.size.10", title: "Size: 10 pt", fontSizePx: 13.333 },
   { id: "text.size.12", title: "Size: 12 pt", fontSizePx: 16 },
   { id: "text.size.14", title: "Size: 14 pt", fontSizePx: 18.667 },
   { id: "text.size.18", title: "Size: 18 pt", fontSizePx: 24 },
+  { id: "text.size.20", title: "Size: 20 pt", fontSizePx: 26.667 },
   { id: "text.size.24", title: "Size: 24 pt", fontSizePx: 32 }
 ] as const;
 
-const textColorCommands = [
+export const textColorCommands = [
   { id: "text.color.black", title: "Color: Black", color: "#111111" },
   { id: "text.color.blue", title: "Color: Blue", color: "#1f5fbf" },
   { id: "text.color.red", title: "Color: Red", color: "#b3261e" },
@@ -213,7 +214,7 @@ const textParagraphSpacingCommands = [
   { id: "text.paragraph.medium", title: "Paragraph Spacing: Medium", paragraphSpacingPx: 8 }
 ] as const;
 
-const textAlignmentCommands = [
+export const textAlignmentCommands = [
   { id: "text.align.left", title: "Align Text Left", textAlign: "left" },
   { id: "text.align.center", title: "Align Text Center", textAlign: "center" },
   { id: "text.align.right", title: "Align Text Right", textAlign: "right" },

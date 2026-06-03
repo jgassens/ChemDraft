@@ -6,8 +6,9 @@
       "source": "core",
       "defaultVisible": true,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 96, "height": 820, "minWidth": 96, "minHeight": 560 },
+      "preferredWindowSize": { "width": 1240, "height": 112, "minWidth": 860, "minHeight": 96 },
       "category": "core",
+      "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [
         {
           "id": "core.main.selection",
@@ -251,73 +252,13 @@
       "source": "core",
       "defaultVisible": false,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 176, "height": 620, "minWidth": 128, "minHeight": 360 },
+      "preferredWindowSize": { "width": 96, "height": 96, "minWidth": 96, "minHeight": 96 },
       "category": "core",
       "groups": [
         {
           "id": "core.text.tool",
           "items": [
             { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
-          ]
-        },
-        {
-          "id": "core.text.font",
-          "items": [
-            { "commandId": "text.font.system", "title": "Font: System Sans", "icon": "text", "category": "text" },
-            { "commandId": "text.font.times", "title": "Font: Times", "icon": "text", "category": "text" },
-            { "commandId": "text.font.courier", "title": "Font: Courier", "icon": "text", "category": "text" },
-            { "commandId": "text.font.georgia", "title": "Font: Georgia", "icon": "text", "category": "text" }
-          ]
-        },
-        {
-          "id": "core.text.size",
-          "items": [
-            { "commandId": "text.size.10", "title": "Size: 10 pt", "icon": "text", "category": "text" },
-            { "commandId": "text.size.12", "title": "Size: 12 pt", "icon": "text", "category": "text" },
-            { "commandId": "text.size.14", "title": "Size: 14 pt", "icon": "text", "category": "text" },
-            { "commandId": "text.size.18", "title": "Size: 18 pt", "icon": "text", "category": "text" },
-            { "commandId": "text.size.24", "title": "Size: 24 pt", "icon": "text", "category": "text" }
-          ]
-        },
-        {
-          "id": "core.text.color",
-          "items": [
-            { "commandId": "text.color.black", "title": "Color: Black", "icon": "style", "category": "text" },
-            { "commandId": "text.color.blue", "title": "Color: Blue", "icon": "style", "category": "text" },
-            { "commandId": "text.color.red", "title": "Color: Red", "icon": "style", "category": "text" },
-            { "commandId": "text.color.green", "title": "Color: Green", "icon": "style", "category": "text" },
-            { "commandId": "text.color.gray", "title": "Color: Gray", "icon": "style", "category": "text" }
-          ]
-        },
-        {
-          "id": "core.text.spacing",
-          "items": [
-            { "commandId": "text.spacing.tight", "title": "Letter Spacing: Tight", "icon": "align", "category": "text" },
-            { "commandId": "text.spacing.normal", "title": "Letter Spacing: Normal", "icon": "align", "category": "text" },
-            { "commandId": "text.spacing.wide", "title": "Letter Spacing: Wide", "icon": "align", "category": "text" },
-            { "commandId": "text.lineHeight.tight", "title": "Line Height: Tight", "icon": "align", "category": "text" },
-            { "commandId": "text.lineHeight.normal", "title": "Line Height: Normal", "icon": "align", "category": "text" },
-            { "commandId": "text.lineHeight.loose", "title": "Line Height: Loose", "icon": "align", "category": "text" }
-          ]
-        },
-        {
-          "id": "core.text.justification",
-          "items": [
-            { "commandId": "text.align.left", "title": "Align Text Left", "icon": "align", "category": "text" },
-            { "commandId": "text.align.center", "title": "Align Text Center", "icon": "align", "category": "text" },
-            { "commandId": "text.align.right", "title": "Align Text Right", "icon": "align", "category": "text" },
-            { "commandId": "text.align.justify", "title": "Justify Text", "icon": "align", "category": "text" }
-          ]
-        },
-        {
-          "id": "core.text.paragraph",
-          "items": [
-            { "commandId": "text.paragraph.none", "title": "Paragraph Spacing: None", "icon": "align", "category": "text" },
-            { "commandId": "text.paragraph.small", "title": "Paragraph Spacing: Small", "icon": "align", "category": "text" },
-            { "commandId": "text.paragraph.medium", "title": "Paragraph Spacing: Medium", "icon": "align", "category": "text" },
-            { "commandId": "text.bold", "title": "Bold Text", "icon": "text", "category": "text" },
-            { "commandId": "text.italic", "title": "Italic Text", "icon": "text", "category": "text" },
-            { "commandId": "text.underline", "title": "Underline Text", "icon": "text", "category": "text" }
           ]
         }
       ]

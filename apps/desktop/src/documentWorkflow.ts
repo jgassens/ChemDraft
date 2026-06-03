@@ -237,7 +237,8 @@ export function normalizeNativeAtomElementLabel(value: string): string {
     return "";
   }
 
-  return `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
+  const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
+  return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate : trimmed;
 }
 
 export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
@@ -280,8 +281,17 @@ export function nativeAtomValidationState(
       element: symbol,
       valenceUsed,
       formalCharge: effectiveFormalCharge,
-      valid: false,
-      invalidReason: `${symbol} is not a recognized element symbol.`
+      valid: true
+    };
+  }
+
+  if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    return {
+      atomId: atom.id,
+      element,
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: true
     };
   }
 
@@ -473,7 +483,7 @@ export function insertNativeSingleBondMolecule(
 export function nativeTextObjectSizeForText(
   text: string,
   style: Record<string, unknown> | Partial<NativeTextStyle> = {},
-  options: { width?: number; maxWidth?: number } = {}
+  options: { width?: number; height?: number; maxWidth?: number; maxHeight?: number } = {}
 ): { width: number; height: number } {
   const textStyle = nativeTextStyleFromObjectStyle(style);
   const paragraphs = normalizeTextLines(text);
@@ -492,10 +502,15 @@ export function nativeTextObjectSizeForText(
     count + wrappedNativeTextLineCount(line, textStyle, width - nativeTextBoxHorizontalPadding)
   ), 0);
   const paragraphSpacing = Math.max(0, paragraphs.length - 1) * textStyle.paragraphSpacingPx;
-  const height = clamp(
+  const naturalHeight = clamp(
     wrappedLineCount * lineHeightPx + paragraphSpacing + nativeTextBoxVerticalPadding,
     nativeTextObjectMinimumDimensions.height,
     Number.MAX_SAFE_INTEGER
+  );
+  const height = clamp(
+    options.height ?? naturalHeight,
+    nativeTextObjectMinimumDimensions.height,
+    Math.max(nativeTextObjectMinimumDimensions.height, options.maxHeight ?? Number.MAX_SAFE_INTEGER)
   );
 
   return {
@@ -770,10 +785,13 @@ export function updateNativeTextObjectText(
     return document;
   }
   const { object, page } = location;
-  const fixedWidth = object.style.textBoxSizingMode === "fixed-width";
+  const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
+  const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const size = nativeTextObjectSizeForText(text, object.style, {
     width: fixedWidth ? object.width : undefined,
-    maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x)
+    height: fixedSize ? object.height : undefined,
+    maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x),
+    maxHeight: Math.max(nativeTextObjectMinimumDimensions.height, page.height - object.y)
   });
 
   return applyPatch(
@@ -795,22 +813,26 @@ export function updateNativeTextObjectText(
 export function resizeNativeTextObjectBox(
   document: ChemDraftDocument,
   objectId: string,
-  frame: { x: number; width: number }
+  frame: { x?: number; y?: number; width?: number; height?: number }
 ): ChemDraftDocument {
   const location = findTextObjectLocation(document, objectId);
   if (!location) {
     return document;
   }
   const { object, page } = location;
-  const nextX = clamp(frame.x, 0, page.width - nativeTextObjectMinimumDimensions.width);
+  const nextX = clamp(frame.x ?? object.x, 0, page.width - nativeTextObjectMinimumDimensions.width);
+  const nextY = clamp(frame.y ?? object.y, 0, page.height - nativeTextObjectMinimumDimensions.height);
   const nextWidth = clamp(
-    frame.width,
+    frame.width ?? object.width,
     nativeTextObjectMinimumDimensions.width,
     Math.max(nativeTextObjectMinimumDimensions.width, page.width - nextX)
   );
+  const fixedHeight = frame.height !== undefined;
   const size = nativeTextObjectSizeForText(object.text, object.style, {
     width: nextWidth,
-    maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - nextX)
+    height: fixedHeight ? frame.height : undefined,
+    maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - nextX),
+    maxHeight: Math.max(nativeTextObjectMinimumDimensions.height, page.height - nextY)
   });
 
   return applyPatch(
@@ -820,11 +842,12 @@ export function resizeNativeTextObjectBox(
       objectId,
       changes: {
         x: nextX,
+        y: nextY,
         width: size.width,
         height: size.height,
         style: {
           ...object.style,
-          textBoxSizingMode: "fixed-width"
+          textBoxSizingMode: fixedHeight ? "fixed-size" : "fixed-width"
         }
       }
     },
@@ -846,10 +869,13 @@ export function updateNativeTextObjectStyle(
     ...nativeTextStyleFromObjectStyle(object.style),
     ...style
   });
-  const fixedWidth = object.style.textBoxSizingMode === "fixed-width";
+  const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
+  const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const size = nativeTextObjectSizeForText(object.text, nextStyle, {
     width: fixedWidth ? object.width : undefined,
-    maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x)
+    height: fixedSize ? object.height : undefined,
+    maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x),
+    maxHeight: Math.max(nativeTextObjectMinimumDimensions.height, page.height - object.y)
   });
 
   return applyPatch(
@@ -876,6 +902,21 @@ export function updateSelectedNativeTextObjectStyle(
 ): ChemDraftDocument {
   const selected = getSelectedTextObject(document);
   return selected ? updateNativeTextObjectStyle(document, selected.id, style) : document;
+}
+
+export function deleteSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {
+  const selectedIds = document.selection.objectIds.filter((objectId) =>
+    document.pages.some((page) => page.objects.some((object) => object.id === objectId))
+  );
+  if (selectedIds.length === 0) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    selectedIds.map((objectId) => ({ op: "removeObject", objectId })),
+    { now: phase4Timestamp }
+  );
 }
 
 export function applySingleBondToolAtPoint(
@@ -1800,6 +1841,76 @@ export function moveDocumentObject(
     },
     { now: phase4Timestamp }
   );
+}
+
+export function rotateDocumentObject(
+  document: ChemDraftDocument,
+  objectId: string,
+  angleDegrees: number
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const object = page?.objects.find((candidate) => candidate.id === objectId);
+  if (!page || !object || Math.abs(angleDegrees) < 0.05) {
+    return document;
+  }
+
+  if (object.type === "molecule" && object.atoms.length > 0) {
+    const center = objectCenter(object);
+    const angleRadians = (object.rotation + angleDegrees) * Math.PI / 180;
+    const atoms = object.atoms.map((atom) => ({
+      ...atom,
+      ...rotatePointAround(atom, center, angleRadians)
+    }));
+    const nextMolecule = normalizeNativeMoleculeGeometry({
+      ...object,
+      rotation: 0,
+      atoms
+    });
+
+    return applyPatch(
+      document,
+      { op: "updateObject", objectId, changes: nextMolecule },
+      { now: phase4Timestamp }
+    );
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: normalizeDegrees(object.rotation + angleDegrees)
+      }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+function objectCenter(object: Pick<DocumentObject, "x" | "y" | "width" | "height">): PagePoint {
+  return {
+    x: object.x + object.width / 2,
+    y: object.y + object.height / 2
+  };
+}
+
+function rotatePointAround(point: PagePoint, center: PagePoint, angleRadians: number): PagePoint {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const cos = Math.cos(angleRadians);
+  const sin = Math.sin(angleRadians);
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
+  };
+}
+
+function normalizeDegrees(angleDegrees: number): number {
+  let normalized = angleDegrees % 360;
+  if (normalized < 0) {
+    normalized += 360;
+  }
+  return Number(normalized.toFixed(3));
 }
 
 export function applyAnalysisToSelectedMolecule(

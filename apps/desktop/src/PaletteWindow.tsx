@@ -72,7 +72,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button")) {
+    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
       return;
     }
 
@@ -86,7 +86,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button")) {
+    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
       return;
     }
 
@@ -233,7 +233,15 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         </button>
         <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
       </div>
-      <ToolPalette groups={groups} activeTool="tool.select" mode="floating" title={toolset.title} onInvoke={invokeCommand} />
+      <ToolPalette
+        groups={groups}
+        activeTool="tool.select"
+        mode="floating"
+        orientation={toolset.gridLayout?.orientation ?? "vertical"}
+        title={toolset.title}
+        showMainStyleControls={toolset.id === "core.main"}
+        onInvoke={invokeCommand}
+      />
     </main>
   );
 }

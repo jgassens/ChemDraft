@@ -81,6 +81,7 @@ import {
   applySingleBondToolAtNativeAtom,
   createNativeSavePayload,
   createPhase4Document,
+  deleteSelectedDocumentObjects,
   exportPhase4Svg,
   findNativeMoleculeDeleteHit,
   getSelectedMolecule,
@@ -99,6 +100,7 @@ import {
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
   resizeNativeTextObjectBox,
+  rotateDocumentObject,
   selectDocumentObject,
   selectDocumentObjects,
   setDocumentPageOrientation,
@@ -207,7 +209,16 @@ type ObjectDragState = {
   bondTarget?: NativeBondOrderTarget;
   dragging: boolean;
 };
-type TextResizeEdge = "left" | "right";
+type ObjectRotateDragState = {
+  pointerId: number;
+  objectId: string;
+  startDocument: ChemDraftDocument;
+  centerPoint: ClientPoint;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  dragging: boolean;
+};
+type TextResizeEdge = "left" | "right" | "top" | "bottom";
 type TextResizeState = {
   pointerId: number;
   objectId: string;
@@ -216,7 +227,9 @@ type TextResizeState = {
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   startObjectX: number;
+  startObjectY: number;
   startObjectWidth: number;
+  startObjectHeight: number;
 };
 export type NativeMoleculeSelectionPart =
   | { objectId: string; kind: "atom"; atomId: string }
@@ -236,6 +249,9 @@ type AtomLabelEditState = {
   atomId: string;
   initialElement: string;
   draft: string;
+};
+type AtomLabelEditOptions = {
+  clearDraft?: boolean;
 };
 type SelectionMarqueeState = {
   pointerId: number;
@@ -290,6 +306,7 @@ export function MainWindow({
   const nativeBondEditDragRef = useRef<NativeBondEditDragState | null>(null);
   const nativePartDragRef = useRef<NativePartDragState | null>(null);
   const objectDragRef = useRef<ObjectDragState | null>(null);
+  const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
@@ -736,14 +753,31 @@ export function MainWindow({
   }, [nativePalette, toolsetRegistry]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
+    const currentDocument = documentRef.current;
     const target = hoveredNativeDeleteTargetRef.current
-      ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
+      ?? nativeDeleteTargetFromSelectionPart(currentDocument, selectedNativeMoleculePart);
     if (!target) {
-      setStatus("No hovered atom or bond");
+      const nextDocument = deleteSelectedDocumentObjects(currentDocument);
+      if (nextDocument === currentDocument) {
+        setStatus("No selected object, atom, or bond");
+        return;
+      }
+
+      const deletedCount = currentDocument.selection.objectIds.length;
+      commitDocumentChange(nextDocument);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setSelectedNativeMoleculePart(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      setObjectContextMenu(undefined);
+      setStatus(deletedCount === 1 ? "Deleted selected object" : `Deleted ${deletedCount} selected objects`);
       return;
     }
 
-    const currentDocument = documentRef.current;
     const nextDocument = applyNativeMoleculeDeleteTarget(currentDocument, target);
     if (nextDocument === currentDocument) {
       setStatus("No hovered atom or bond");
@@ -755,8 +789,11 @@ export function MainWindow({
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
     setStatus(target.kind === "atom"
       ? "Deleted carbon atom"
       : target.terminalAtomId ? "Deleted terminal carbon" : "Deleted carbon bond");
@@ -859,7 +896,7 @@ export function MainWindow({
     setStatus(charge > 0 ? "Placed positive charge on hovered atom" : "Placed negative charge on hovered atom");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
-  const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget): boolean => {
+  const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
       return false;
     }
@@ -882,7 +919,7 @@ export function MainWindow({
       objectId: target.objectId,
       atomId: target.atomId,
       initialElement: atom.element,
-      draft: atom.element
+      draft: options.clearDraft ? "" : atom.element
     });
     setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "atom", atomId: target.atomId });
     setHoveredNativeAtom(undefined);
@@ -894,7 +931,7 @@ export function MainWindow({
   const startHoveredAtomLabelEdit = useCallback((): boolean => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
-    return target?.kind === "atom" ? startAtomLabelEdit(target) : false;
+    return target?.kind === "atom" ? startAtomLabelEdit(target, { clearDraft: true }) : false;
   }, [selectedNativeMoleculePart, startAtomLabelEdit]);
 
   const updateAtomLabelDraft = useCallback((state: AtomLabelEditState, draft: string) => {
@@ -1019,7 +1056,7 @@ export function MainWindow({
 
     if (selected) {
       const changed = commitDocumentChange(updateNativeTextObjectStyle(currentDocument, selected.id, stylePatch));
-      setActiveTextEditObjectId(selected.id);
+      setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
       setActiveEditorObjectId(undefined);
       setStatus(changed ? "Updated selected text style" : "Selected text style unchanged");
       return true;
@@ -1218,6 +1255,14 @@ export function MainWindow({
         const result = activateDrawingToolCommand(activeToolState, tool);
         setActiveToolState(result.state);
         setStatus(result.status);
+      });
+    });
+
+    textToolbarActions.forEach((action) => {
+      register(action, () => {
+        if (!applyTextStyleCommand(action.id)) {
+          setStatus(`${action.title} unavailable`);
+        }
       });
     });
 
@@ -1445,7 +1490,7 @@ export function MainWindow({
   };
 
   const startWebPaletteDrag = useCallback((toolsetId: string, event: PointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
       return;
     }
 
@@ -1702,6 +1747,15 @@ export function MainWindow({
     replacePresentDocument(nextDocument);
   }, [replacePresentDocument]);
 
+  const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument =>
+    rotateDocumentObject(drag.startDocument, drag.objectId, rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point)),
+  []);
+
+  const previewObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
+  }, [objectRotateDocumentFromDrag, replacePresentDocument]);
+
   const previewNativeDoubleBondSideDrag = useCallback((drag: NativeBondEditDragState, point: ClientPoint) => {
     const selectedStartDocument = selectDocumentObject(drag.startDocument, drag.target.objectId);
     const nextDocument = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point);
@@ -1744,6 +1798,22 @@ export function MainWindow({
     return true;
   }, [installDocumentHistory, replacePresentDocument]);
 
+  const commitObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): boolean => {
+    const rotated = objectRotateDocumentFromDrag(drag, point);
+    if (rotated === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: rotated,
+      future: []
+    });
+    return true;
+  }, [installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
+
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
     moveNativeMoleculeParts(drag.startDocument, drag.target, {
       x: point.x - drag.startPoint.x,
@@ -1773,14 +1843,23 @@ export function MainWindow({
 
   const resizeTextDocumentFromDrag = useCallback((drag: TextResizeState, point: ClientPoint): ChemDraftDocument => {
     const dx = point.x - drag.startPoint.x;
+    const dy = point.y - drag.startPoint.y;
     const frame = drag.edge === "right"
       ? {
           x: drag.startObjectX,
           width: drag.startObjectWidth + dx
         }
-      : {
+      : drag.edge === "left" ? {
           x: drag.startObjectX + dx,
           width: drag.startObjectWidth - dx
+        }
+      : drag.edge === "bottom" ? {
+          y: drag.startObjectY,
+          height: drag.startObjectHeight + dy
+        }
+      : {
+          y: drag.startObjectY + dy,
+          height: drag.startObjectHeight - dy
         };
 
     return resizeNativeTextObjectBox(drag.startDocument, drag.objectId, frame);
@@ -1811,6 +1890,20 @@ export function MainWindow({
     const drag = objectDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectDragRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
+  const clearObjectRotateDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+    const drag = objectRotateDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      objectRotateDragRef.current = null;
+      const page = pageRef.current;
+      if (page?.hasPointerCapture(event.pointerId)) {
+        page.releasePointerCapture(event.pointerId);
+      }
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -1867,10 +1960,12 @@ export function MainWindow({
       startPoint: point,
       latestPoint: point,
       startObjectX: object.x,
-      startObjectWidth: object.width
+      startObjectY: object.y,
+      startObjectWidth: object.width,
+      startObjectHeight: object.height
     };
     setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(objectId);
+    setActiveTextEditObjectId((current) => current === objectId ? current : undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
@@ -1945,6 +2040,30 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event);
       if (point) {
         previewTextResize(textResize, point);
+      }
+      return;
+    }
+
+    const objectRotateDrag = objectRotateDragRef.current;
+    if (objectRotateDrag?.pointerId === event.pointerId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      objectRotateDrag.latestPoint = point;
+      if (!objectRotateDrag.dragging && clientPointDistance(objectRotateDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        objectRotateDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (objectRotateDrag.dragging) {
+        previewObjectRotateDrag(objectRotateDrag, point);
       }
       return;
     }
@@ -2028,6 +2147,7 @@ export function MainWindow({
     document,
     pagePointFromPointerEvent,
     previewObjectDrag,
+    previewObjectRotateDrag,
     previewNativePartDrag,
     previewTextResize,
     updateBondGrowthPreview
@@ -2041,6 +2161,20 @@ export function MainWindow({
       const changed = commitTextResize(textResize, point);
       clearTextResize(event);
       setStatus(changed ? "Resized text box" : "Text box size unchanged");
+      return;
+    }
+
+    const objectRotateDrag = objectRotateDragRef.current;
+    if (objectRotateDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? objectRotateDrag.latestPoint;
+      if (objectRotateDrag.dragging) {
+        const changed = commitObjectRotateDrag(objectRotateDrag, point);
+        const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
+        const label = object?.type === "text" ? "text box" : "selected molecule";
+        setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
+      }
+      clearObjectRotateDrag(event);
       return;
     }
 
@@ -2098,10 +2232,12 @@ export function MainWindow({
     activeToolState.activeKind,
     clearNativePartDrag,
     clearObjectDrag,
+    clearObjectRotateDrag,
     clearTextResize,
     commitNativePartDrag,
     commitTextResize,
     commitObjectDrag,
+    commitObjectRotateDrag,
     cycleNativeBondOrder,
     document.pages,
     pagePointFromPointerEvent,
@@ -2113,6 +2249,14 @@ export function MainWindow({
     if (textResize?.pointerId === event.pointerId) {
       replacePresentDocument(textResize.startDocument);
       clearTextResize(event);
+    }
+
+    const objectRotateDrag = objectRotateDragRef.current;
+    if (objectRotateDrag?.pointerId === event.pointerId) {
+      if (objectRotateDrag.dragging) {
+        replacePresentDocument(objectRotateDrag.startDocument);
+      }
+      clearObjectRotateDrag(event);
     }
 
     const nativePartDrag = nativePartDragRef.current;
@@ -2129,7 +2273,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearNativePartDrag, clearTextResize, replacePresentDocument]);
+  }, [clearNativePartDrag, clearObjectRotateDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -2183,7 +2327,7 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "molecule" && point) {
       if (nativeMoleculeHit?.kind === "atom") {
         event.stopPropagation();
-        startAtomLabelEdit({ objectId, ...nativeMoleculeHit });
+        startAtomLabelEdit({ objectId, ...nativeMoleculeHit }, { clearDraft: true });
         return;
       }
     }
@@ -2368,6 +2512,10 @@ export function MainWindow({
     setActiveEditorObjectId(object?.type === "molecule" ? object.id : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
   }, [
     activeToolState.activeCommandId,
     activeToolState.activeKind,
@@ -2382,6 +2530,54 @@ export function MainWindow({
     replacePresentDocument,
     selectedNativeMoleculePart,
     startAtomLabelEdit
+  ]);
+
+  const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+
+    const object = findDocumentObject(document, objectId);
+    const point = pagePointFromPointerEvent(event);
+    const canRotateObject =
+      object?.type === "text" ||
+      (object?.type === "molecule" && isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart));
+    if (!object || !point || !canRotateObject) {
+      return;
+    }
+
+    const selectedDocument = document.selection.objectIds.includes(objectId)
+      ? document
+      : selectDocumentObject(document, objectId);
+    replacePresentDocument(selectedDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    objectRotateDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      startDocument: selectedDocument,
+      centerPoint: documentObjectCenter(object),
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus(object.type === "text" ? "Rotate selected text box" : "Rotate selected molecule");
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    document,
+    pagePointFromPointerEvent,
+    replacePresentDocument,
+    selectedNativeMoleculePart
   ]);
 
   const handleObjectContextMenu = useCallback((objectId: string, event: ReactMouseEvent<HTMLDivElement>) => {
@@ -2494,6 +2690,30 @@ export function MainWindow({
       return;
     }
 
+    const objectRotateDrag = objectRotateDragRef.current;
+    if (objectRotateDrag?.pointerId === event.pointerId && objectRotateDrag.objectId === objectId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      objectRotateDrag.latestPoint = point;
+      if (!objectRotateDrag.dragging && clientPointDistance(objectRotateDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        objectRotateDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (objectRotateDrag.dragging) {
+        previewObjectRotateDrag(objectRotateDrag, point);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       const point = pagePointFromPointerEvent(event);
@@ -2559,6 +2779,7 @@ export function MainWindow({
     document,
     pagePointFromPointerEvent,
     previewObjectDrag,
+    previewObjectRotateDrag,
     previewNativeDoubleBondSideDrag,
     previewNativePartDrag,
     previewTextResize,
@@ -2614,6 +2835,20 @@ export function MainWindow({
       return;
     }
 
+    const objectRotateDrag = objectRotateDragRef.current;
+    if (objectRotateDrag?.pointerId === event.pointerId && objectRotateDrag.objectId === objectId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? objectRotateDrag.latestPoint;
+      if (objectRotateDrag.dragging) {
+        const changed = commitObjectRotateDrag(objectRotateDrag, point);
+        const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
+        const label = object?.type === "text" ? "text box" : "selected molecule";
+        setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
+      }
+      clearObjectRotateDrag(event);
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       event.stopPropagation();
@@ -2656,11 +2891,13 @@ export function MainWindow({
     clearNativeBondDrag,
     clearNativePartDrag,
     clearObjectDrag,
+    clearObjectRotateDrag,
     clearTextResize,
     commitNativeDoubleBondSideDrag,
     commitNativePartDrag,
     commitTextResize,
     commitObjectDrag,
+    commitObjectRotateDrag,
     cycleNativeBondOrder,
     document,
     pagePointFromPointerEvent
@@ -2683,11 +2920,17 @@ export function MainWindow({
       replacePresentDocument(nativePartDrag.startDocument);
     }
 
+    const objectRotateDrag = objectRotateDragRef.current;
+    if (objectRotateDrag?.pointerId === event.pointerId && objectRotateDrag.dragging) {
+      replacePresentDocument(objectRotateDrag.startDocument);
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
     }
     clearNativePartDrag(event);
+    clearObjectRotateDrag(event);
     clearObjectDrag(event);
     clearNativeBondEditDrag(event);
     clearNativeBondDrag(event);
@@ -2700,6 +2943,7 @@ export function MainWindow({
     clearNativeBondEditDrag,
     clearNativePartDrag,
     clearObjectDrag,
+    clearObjectRotateDrag,
     clearTextResize,
     replacePresentDocument
   ]);
@@ -2709,7 +2953,8 @@ export function MainWindow({
       nativeBondDragRef.current?.objectId === objectId ||
       nativeBondEditDragRef.current?.objectId === objectId ||
       nativePartDragRef.current?.objectId === objectId ||
-      objectDragRef.current?.objectId === objectId
+      objectDragRef.current?.objectId === objectId ||
+      objectRotateDragRef.current?.objectId === objectId
     ) {
       return;
     }
@@ -2770,7 +3015,10 @@ export function MainWindow({
                   groups={getToolsetCommandGroups(toolset.id, toolsetRegistry)}
                   activeTool={activeTool}
                   mode="floating"
+                  orientation={toolset.gridLayout?.orientation ?? "vertical"}
                   title={toolset.title}
+                  showMainStyleControls={toolset.id === "core.main"}
+                  currentTextStyle={selectedTextObject ? nativeTextStyleFromObjectStyle(selectedTextObject.style) : textStyleDefaults}
                   onInvoke={invoke}
                 />
               </section>
@@ -2848,6 +3096,7 @@ export function MainWindow({
                     onPointerUp={handleObjectPointerUp}
                     onPointerCancel={handleObjectPointerCancel}
                     onPointerLeave={handleObjectPointerLeave}
+                    onRotatePointerDown={handleObjectRotatePointerDown}
                     onContextMenu={handleObjectContextMenu}
                     onTextChange={updateTextObjectContent}
                     onTextResizeStart={startTextResize}
@@ -2892,6 +3141,30 @@ function clamp(value: number, min: number, max: number): number {
 
 function clientPointDistance(left: ClientPoint, right: ClientPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function documentObjectCenter(object: Pick<DocumentObject, "x" | "y" | "width" | "height">): ClientPoint {
+  return {
+    x: object.x + object.width / 2,
+    y: object.y + object.height / 2
+  };
+}
+
+function rotationDeltaDegrees(center: ClientPoint, start: ClientPoint, latest: ClientPoint): number {
+  const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+  const latestAngle = Math.atan2(latest.y - center.y, latest.x - center.x);
+  let delta = (latestAngle - startAngle) * 180 / Math.PI;
+  if (delta > 180) {
+    delta -= 360;
+  }
+  if (delta < -180) {
+    delta += 360;
+  }
+  return Number(delta.toFixed(3));
+}
+
+function capitalizeLabel(label: string): string {
+  return label.length > 0 ? `${label[0].toUpperCase()}${label.slice(1)}` : label;
 }
 
 function nativeMoleculeHitFromPointerTarget(
@@ -3656,7 +3929,7 @@ function normalizedRect(startPoint: ClientPoint, latestPoint: ClientPoint): {
   };
 }
 
-function selectionInSelectionRect(
+export function selectionInSelectionRect(
   objects: readonly DocumentObject[],
   startPoint: ClientPoint,
   latestPoint: ClientPoint
@@ -3667,7 +3940,17 @@ function selectionInSelectionRect(
 
   for (const object of objects) {
     if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
-      nativeSelection ??= nativeMoleculeSelectionInRect(object, rect);
+      const moleculeSelection = nativeMoleculeSelectionInRect(object, rect);
+      if (!moleculeSelection) {
+        continue;
+      }
+
+      if (nativeMoleculeSelectionCoversWholeObject(object, moleculeSelection)) {
+        objectIds.push(object.id);
+        continue;
+      }
+
+      nativeSelection ??= moleculeSelection;
       continue;
     }
 
@@ -3677,6 +3960,23 @@ function selectionInSelectionRect(
   }
 
   return { objectIds, nativeSelection };
+}
+
+function nativeMoleculeSelectionCoversWholeObject(
+  object: MoleculeObject,
+  selection: NativeMoleculeSelectionPart
+): boolean {
+  if (selection.kind === "atom") {
+    return object.atoms.length === 1 && object.bonds.length === 0;
+  }
+  if (selection.kind === "bond") {
+    return object.atoms.length === 0 && object.bonds.length === 1;
+  }
+
+  return (
+    selection.atomIds.length === object.atoms.length &&
+    selection.bondIds.length === object.bonds.length
+  );
 }
 
 function rectanglesOverlap(
@@ -3884,6 +4184,7 @@ function DocumentObjectView({
   onPointerUp,
   onPointerCancel,
   onPointerLeave,
+  onRotatePointerDown,
   onContextMenu,
   onTextChange,
   onTextResizeStart,
@@ -3909,6 +4210,7 @@ function DocumentObjectView({
   onPointerUp(objectId: string, event: PointerEvent<HTMLDivElement>): void;
   onPointerCancel(event: PointerEvent<HTMLDivElement>): void;
   onPointerLeave(objectId: string): void;
+  onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onContextMenu(objectId: string, event: ReactMouseEvent<HTMLDivElement>): void;
   onTextChange(objectId: string, text: string): void;
   onTextResizeStart(objectId: string, edge: TextResizeEdge, event: PointerEvent<HTMLButtonElement>): void;
@@ -3933,6 +4235,9 @@ function DocumentObjectView({
   };
   const handleObjectContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
     onContextMenu(object.id, event);
+  };
+  const handleRotatePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    onRotatePointerDown(object.id, event);
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     onTextChange(object.id, event.currentTarget.value);
@@ -3964,6 +4269,7 @@ function DocumentObjectView({
     if (isNativeMoleculeGraph(object)) {
       const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
       const atomLabels = object.atoms
+        .filter((atom) => atom.id !== editingAtomLabel?.atomId)
         .map((atom) => ({ atom, label: nativeAtomDisplayLabel(atom, object.bonds) }))
         .filter((entry): entry is { atom: MoleculeObject["atoms"][number]; label: string } =>
           entry.label !== undefined
@@ -4041,6 +4347,23 @@ function DocumentObjectView({
           onContextMenu={handleObjectContextMenu}
         >
           <svg className="molecule-glyph" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
+            {selected ? (
+              <g className="native-whole-selection" data-whole-molecule-selection="true">
+                {bondSegmentGroups.flatMap(({ bond, segments }) =>
+                  segments.map((segment) => (
+                    <line
+                      className="native-whole-selection-bond"
+                      data-selected-bond-id={bond.id}
+                      key={`whole-selection-bond-${segment.key}`}
+                      x1={segment.x1}
+                      y1={segment.y1}
+                      x2={segment.x2}
+                      y2={segment.y2}
+                    />
+                  ))
+                )}
+              </g>
+            ) : null}
             {bondSegmentGroups.map(({ bond, segments }) => (
               <g className="native-bond-layer" data-bond-layer-id={bond.id} key={`bond-layer-${bond.id}`}>
                 {segments.map((segment) => (
@@ -4179,6 +4502,20 @@ function DocumentObjectView({
                 r="8"
               />
             ))}
+            {selected ? (
+              <g className="native-whole-selection-atoms" data-whole-molecule-selected-atoms="true">
+                {object.atoms.map((atom) => (
+                  <circle
+                    className="native-whole-selection-atom"
+                    data-selected-atom-id={atom.id}
+                    cx={atom.x - object.x}
+                    cy={atom.y - object.y}
+                    key={`whole-selection-atom-${atom.id}`}
+                    r="8.5"
+                  />
+                ))}
+              </g>
+            ) : null}
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
@@ -4244,9 +4581,31 @@ function DocumentObjectView({
                   newAtomPoint={freeformPreview?.newAtomPoint ?? atom}
                   object={object}
                   targetAtom={object.atoms.find((candidate) => candidate.id === freeformPreview?.targetAtomId)}
-                />
-              ))}
+              />
+            ))}
           </svg>
+          {selected ? (
+            <button
+              type="button"
+              className="native-molecule-rotate-handle"
+              aria-label="Rotate selected molecule"
+              data-selection-rotate-handle="true"
+              title="Rotate selected molecule"
+              onPointerDown={handleRotatePointerDown}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  className="native-molecule-rotate-arc"
+                  d="M7.4 13.1a5.7 5.7 0 0 1 9.2-4.5"
+                />
+                <path
+                  className="native-molecule-rotate-arrow"
+                  d="M16.9 4.8v4.8h-4.8"
+                />
+                <circle className="native-molecule-rotate-center" cx="12" cy="12" r="1.6" />
+              </svg>
+            </button>
+          ) : null}
           {editingAtomLabel ? object.atoms
             .filter((atom) => atom.id === editingAtomLabel.atomId)
             .map((atom) => (
@@ -4258,12 +4617,14 @@ function DocumentObjectView({
                 autoFocus
                 className="native-atom-label-editor"
                 data-atom-label-editor="true"
+                data-atom-label-draft-empty={editingAtomLabel.draft.length === 0 ? "true" : undefined}
                 data-atom-id={atom.id}
                 key={`atom-label-editor-${atom.id}`}
                 spellCheck={false}
                 style={{
                   left: `${atom.x - object.x}px`,
                   top: `${atom.y - object.y}px`,
+                  width: `${Math.max(1, editingAtomLabel.draft.length + 0.6)}ch`,
                   fontFamily: drawingStyle.atomLabelFontFamily,
                   fontSize: `${drawingStyle.atomLabelFontSizePx}px`,
                   fontWeight: drawingStyle.atomLabelFontWeight
@@ -4364,7 +4725,43 @@ function DocumentObjectView({
               data-text-resize-edge="right"
               onPointerDown={handleTextResizeStart("right")}
             />
+            <button
+              type="button"
+              className="text-resize-handle text-resize-handle-top"
+              aria-label="Resize text box top"
+              data-text-resize-edge="top"
+              onPointerDown={handleTextResizeStart("top")}
+            />
+            <button
+              type="button"
+              className="text-resize-handle text-resize-handle-bottom"
+              aria-label="Resize text box bottom"
+              data-text-resize-edge="bottom"
+              onPointerDown={handleTextResizeStart("bottom")}
+            />
           </>
+        ) : null}
+        {selected && !editingText ? (
+          <button
+            type="button"
+            className="native-molecule-rotate-handle text-rotate-handle"
+            aria-label="Rotate selected text box"
+            data-selection-rotate-handle="true"
+            title="Rotate selected text box"
+            onPointerDown={handleRotatePointerDown}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                className="native-molecule-rotate-arc"
+                d="M7.4 13.1a5.7 5.7 0 0 1 9.2-4.5"
+              />
+              <path
+                className="native-molecule-rotate-arrow"
+                d="M16.9 4.8v4.8h-4.8"
+              />
+              <circle className="native-molecule-rotate-center" cx="12" cy="12" r="1.6" />
+            </svg>
+          </button>
         ) : null}
         {editingText ? (
           <textarea

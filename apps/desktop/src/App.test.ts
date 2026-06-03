@@ -43,6 +43,7 @@ import {
   SelectionMarqueeOverlay,
   nativeDeleteTargetFromSelectionPart,
   resolvePngCanvasSize,
+  selectionInSelectionRect,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
   shouldOpenMoleculeEditorFromObjectClick
@@ -133,6 +134,14 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('aria-label="Hide Main Toolbar"');
     expect(markup).toContain("Main");
     expect(markup).toContain("tool-palette");
+    expect(markup).toContain('data-tool-palette-orientation="horizontal"');
+    expect(markup).toContain('data-toolbar-style-controls="main"');
+    expect(markup).toContain('aria-label="Text font"');
+    expect(markup).toContain('aria-label="Text size"');
+    expect(markup).toContain('aria-label="Text color"');
+    expect(markup).toContain('aria-label="Text alignment"');
+    expect(markup).toContain('data-command-id="text.color.black"');
+    expect(markup).toContain('data-command-id="text.align.left"');
     expect(markup).toContain(`data-toolset-id="${DEFAULT_TOOLSET_ID}"`);
     expect(markup).not.toContain("app-shell");
     expect(markup).not.toContain("canvas-region");
@@ -193,6 +202,55 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("top:calc(30px * var(--page-scale))");
     expect(markup).toContain("width:calc(50px * var(--page-scale))");
     expect(markup).toContain("height:calc(60px * var(--page-scale))");
+  });
+
+  it("selects every whole native molecule inside a marquee instead of keeping only the first one", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Multi Marquee"), { x: 220, y: 240 });
+    const second = insertNativeSingleBondMolecule(first, { x: 320, y: 240 });
+    const molecules = second.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const bounds = molecules.reduce(
+      (rect, molecule) => ({
+        left: Math.min(rect.left, molecule.x),
+        top: Math.min(rect.top, molecule.y),
+        right: Math.max(rect.right, molecule.x + molecule.width),
+        bottom: Math.max(rect.bottom, molecule.y + molecule.height)
+      }),
+      { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY, right: 0, bottom: 0 }
+    );
+    const selection = selectionInSelectionRect(second.pages[0].objects, {
+      x: bounds.left - 4,
+      y: bounds.top - 4
+    }, {
+      x: bounds.right + 4,
+      y: bounds.bottom + 4
+    });
+
+    expect(selection.objectIds).toEqual(molecules.map((molecule) => molecule.id));
+    expect(selection.nativeSelection).toBeUndefined();
+  });
+
+  it("keeps a tight marquee over one native atom as a partial native selection", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Marquee"), { x: 220, y: 240 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const atom = molecule?.atoms.find((candidate) => candidate.id === "atom_001");
+    if (!molecule || !atom) {
+      throw new Error("Expected native molecule atom fixture.");
+    }
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: atom.x - 3,
+      y: atom.y - 3
+    }, {
+      x: atom.x + 3,
+      y: atom.y + 3
+    });
+
+    expect(selection.objectIds).toEqual([]);
+    expect(selection.nativeSelection).toEqual(
+      expect.objectContaining({
+        objectId: molecule.id
+      })
+    );
+    expect(selection.nativeSelection?.kind).not.toBe("molecule");
   });
 
   it("keeps command definitions available without embedding actions in the canvas", () => {
@@ -321,22 +379,9 @@ describe("ChemDraft desktop shell", () => {
 
   it("defines command-backed text toolbar actions", () => {
     expect(textToolbarActions.map((command) => command.id)).toEqual(
-      expect.arrayContaining([
-        "text.font.system",
-        "text.size.12",
-        "text.color.black",
-        "text.spacing.normal",
-        "text.lineHeight.normal",
-        "text.align.left",
-        "text.paragraph.none",
-        "text.bold",
-        "text.italic",
-        "text.underline"
-      ])
+      expect.arrayContaining(["text.font.system", "text.size.12", "text.size.20", "text.color.black", "text.align.left", "text.bold"])
     );
-    expect(getToolsetCommandGroups("core.text").flat().map((command) => command.id)).toEqual(
-      expect.arrayContaining(["tool.text", "text.font.system", "text.align.justify", "text.paragraph.medium"])
-    );
+    expect(getToolsetCommandGroups("core.text").flat().map((command) => command.id)).toEqual(["tool.text"]);
   });
 
   it("keeps unsupported chemistry tools disabled while native single bond is enabled", () => {
@@ -609,13 +654,18 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('stroke-width="2"');
     expect(markup).toContain('stroke-linecap="butt"');
     expect(markup).toContain("native-molecule-selected");
+    expect(markup).toContain("native-whole-selection-bond");
+    expect(markup).toContain("native-whole-selection-atom");
+    expect(markup).toContain('data-whole-molecule-selection="true"');
+    expect(markup).toContain('data-selection-rotate-handle="true"');
+    expect(markup).toContain("Rotate selected molecule");
     expect(markup).toContain("native-bond-hit-target");
     expect(markup).toContain("native-atom-hit-target");
     expect(markup).toContain("Molecule C2H6");
     expect(markup).not.toContain("adapter-backed");
   });
 
-  it("renders selected text objects with side resize handles", () => {
+  it("renders selected text objects with resize and rotate handles", () => {
     const document = insertNativeTextObject(
       createPhase4Document("Text Box Render"),
       { x: 160, y: 180 },
@@ -633,6 +683,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-text-sizing-mode="auto"');
     expect(markup).toContain('data-text-resize-edge="left"');
     expect(markup).toContain('data-text-resize-edge="right"');
+    expect(markup).toContain('data-text-resize-edge="top"');
+    expect(markup).toContain('data-text-resize-edge="bottom"');
+    expect(markup).toContain('aria-label="Rotate selected text box"');
+    expect(markup).toContain('data-selection-rotate-handle="true"');
     expect(markup).toContain("reaction note");
   });
 
