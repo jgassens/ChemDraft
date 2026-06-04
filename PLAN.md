@@ -254,6 +254,22 @@ The default UI direction is:
 
 Do not show fake molecule, reaction-arrow, product, mechanism, or placeholder chemistry objects in the document workspace.
 
+### 6.9.1 Design language: restrained technical minimalism
+
+ChemDraft's desktop UI should follow:
+
+```text
+Restrained technical minimalism: Metro-like canvas minimalism with Material-like interaction clarity.
+```
+
+The canvas should feel like a precision scientific drawing surface: flat, quiet, typographic, low-chrome, and content-first. Controls around it should use consistent spacing, predictable component states, and clear hover, active, focus, selected, and disabled feedback.
+
+For the current desktop shell, `apps/desktop/src/App.css` is the canonical design-token layer. Use CSS variables for app, canvas, panel, page, text, border, spacing, radius, control-size, accent, focus, hover, active, selected, disabled, and semantic danger states. Do not create a separate `ui-kit` token system unless another package actually consumes it and the canonical layer is documented.
+
+Use `#1d7f68` as the restrained accent, with derived shades allowed for readable active, selected, hover, and focus states. Red remains semantic for invalid, delete, and warning states. Style only ChemDraft-owned Ketcher host and wrapper chrome; do not patch vendored Ketcher internals or change Ketcher behavior.
+
+Design-language cleanups must remain visual-only unless explicitly scoped otherwise. Do not change molecule drawing behavior, bond creation behavior, selection logic, file formats, chemistry model logic, renderer math, command IDs, keyboard shortcuts, or tool behavior as part of a visual cleanup.
+
 ### 6.10 UI non-goals
 
 Do not use these as product direction:

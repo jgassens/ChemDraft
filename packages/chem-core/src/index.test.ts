@@ -396,6 +396,30 @@ describe("native document validation and serialization", () => {
     });
   });
 
+  it("accepts optional molecule transform state metadata", () => {
+    const molecule = {
+      ...moleculeObject(),
+      transform: {
+        scaleX: 2,
+        scaleY: 0.75,
+        rotationDegrees: 45
+      }
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      transform: {
+        scaleX: 2,
+        scaleY: 0.75,
+        rotationDegrees: 45
+      }
+    });
+  });
+
   it("reports validation issues for unsupported object shapes", () => {
     const document = createEmptyDocument({ now: timestamp });
     const result = validateDocument({

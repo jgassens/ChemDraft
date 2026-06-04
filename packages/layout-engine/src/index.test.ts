@@ -29,7 +29,7 @@ describe("layout-engine molecule growth planning", () => {
     ]));
   });
 
-  it("plans tetrahedral-style growth from the nearest eligible atom", () => {
+  it("plans 120-degree growth from the nearest eligible atom", () => {
     const plan = planBondExtension({
       ...baseInput,
       clickPoint: { x: 300, y: 220 }
@@ -38,21 +38,21 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan?.sourceAtomId).toBe("atom_002");
     expect(plan?.terminalAtomId).toBe("atom_002");
     expect(plan?.neighborAtomIds).toEqual(["atom_001"]);
-    expect(plan?.newAtomPoint.x).toBeCloseTo(266.705, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(295.411, 3);
-    expect(plan?.direction.x).toBeCloseTo(0.334, 3);
-    expect(plan?.direction.y).toBeCloseTo(0.943, 3);
+    expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.direction.x).toBeCloseTo(0.5, 3);
+    expect(plan?.direction.y).toBeCloseTo(0.866, 3);
   });
 
-  it("uses the click side to choose between the two tetrahedral candidates", () => {
+  it("uses the click side to choose between the two 120-degree candidates", () => {
     const plan = planBondExtension({
       ...baseInput,
       clickPoint: { x: 282, y: 290 }
     });
 
     expect(plan?.terminalAtomId).toBe("atom_002");
-    expect(plan?.newAtomPoint.x).toBeCloseTo(266.705, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(295.411, 3);
+    expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
   });
 
   it("lets subtle pointer movement steer terminal growth above or below the chain", () => {
@@ -86,17 +86,17 @@ describe("layout-engine molecule growth planning", () => {
     });
 
     expect(upwardCrowded?.sourceAtomId).toBe("atom_002");
-    expect(upwardCrowded?.newAtomPoint.x).toBeCloseTo(73.295, 3);
-    expect(upwardCrowded?.newAtomPoint.y).toBeCloseTo(175.411, 3);
+    expect(upwardCrowded?.newAtomPoint.x).toBeCloseTo(60, 3);
+    expect(upwardCrowded?.newAtomPoint.y).toBeCloseTo(169.282, 3);
   });
 
-  it("still avoids exact duplicate atom placement when steering is aligned", () => {
+  it("targets an existing atom at the guided endpoint instead of placing a duplicate", () => {
     const duplicateEndpoint = planBondExtension({
       ...baseInput,
       atoms: [
         { id: "atom_001", x: 180, y: 100 },
         { id: "atom_002", x: 100, y: 100 },
-        { id: "atom_duplicate_neighbor", x: 73.3, y: 175.4 }
+        { id: "atom_duplicate_neighbor", x: 60, y: 169.282 }
       ],
       bonds: [{ fromAtomId: "atom_001", toAtomId: "atom_002" }],
       objectBounds: { x: 72, y: 92, width: 108, height: 84 },
@@ -104,7 +104,9 @@ describe("layout-engine molecule growth planning", () => {
     });
 
     expect(duplicateEndpoint?.sourceAtomId).toBe("atom_002");
-    expect(duplicateEndpoint?.newAtomPoint.y).toBeLessThan(100);
+    expect(duplicateEndpoint?.targetAtomId).toBe("atom_duplicate_neighbor");
+    expect(duplicateEndpoint?.newAtomPoint.x).toBeCloseTo(60, 3);
+    expect(duplicateEndpoint?.newAtomPoint.y).toBeCloseTo(169.282, 3);
   });
 
   it("keeps inward clicks on an atom from creating duplicate bonds over the neighbor", () => {
@@ -114,8 +116,62 @@ describe("layout-engine molecule growth planning", () => {
     });
 
     expect(plan?.terminalAtomId).toBe("atom_002");
-    expect(plan?.newAtomPoint.x).toBeCloseTo(266.705, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(295.411, 3);
+    expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+  });
+
+  it("offers ring closure when the selected 120-degree endpoint lands on an existing atom", () => {
+    const bondLength = 80;
+    const source = { id: "atom_006", x: 340, y: 230.718 };
+    const closingDirection = { x: Math.cos(Math.PI / 3), y: Math.sin(Math.PI / 3) };
+    const outwardDirection = { x: Math.cos(-Math.PI / 3), y: Math.sin(-Math.PI / 3) };
+    const openCyclohexane = {
+      atoms: [
+        { id: "atom_001", x: 380, y: 300 },
+        { id: "atom_002", x: 340, y: 369.282 },
+        { id: "atom_003", x: 260, y: 369.282 },
+        { id: "atom_004", x: 220, y: 300 },
+        { id: "atom_005", x: 260, y: 230.718 },
+        source
+      ],
+      bonds: [
+        { fromAtomId: "atom_001", toAtomId: "atom_002" },
+        { fromAtomId: "atom_002", toAtomId: "atom_003" },
+        { fromAtomId: "atom_003", toAtomId: "atom_004" },
+        { fromAtomId: "atom_004", toAtomId: "atom_005" },
+        { fromAtomId: "atom_005", toAtomId: "atom_006" }
+      ],
+      bondLength,
+      hitRadius: 12,
+      maxBondsPerAtom: 4,
+      preferredAtomId: "atom_006",
+      pageBounds: baseInput.pageBounds
+    };
+
+    const closure = planBondExtension({
+      ...openCyclohexane,
+      clickPoint: {
+        x: source.x + closingDirection.x * 6,
+        y: source.y + closingDirection.y * 6
+      }
+    });
+    const outward = planBondExtension({
+      ...openCyclohexane,
+      clickPoint: {
+        x: source.x + outwardDirection.x * 6,
+        y: source.y + outwardDirection.y * 6
+      }
+    });
+
+    expect(closure).toMatchObject({
+      sourceAtomId: "atom_006",
+      targetAtomId: "atom_001",
+      newAtomPoint: { x: 380, y: 300 }
+    });
+    expect(outward?.sourceAtomId).toBe("atom_006");
+    expect(outward?.targetAtomId).toBeUndefined();
+    expect(outward?.newAtomPoint.x).toBeCloseTo(source.x + outwardDirection.x * bondLength, 3);
+    expect(outward?.newAtomPoint.y).toBeCloseTo(source.y + outwardDirection.y * bondLength, 3);
   });
 
   it("allows branching from non-terminal atoms while carbon valence is available", () => {
@@ -258,7 +314,7 @@ describe("layout-engine molecule growth planning", () => {
     });
 
     expect(plan?.newAtomPoint.x).toBe(816);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(295.411, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
   });
 
   it("plans free-angle growth at the default bond length before custom-length breakaway", () => {

@@ -18,10 +18,12 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
+  type MoleculeTransformState,
   type NativeTextStyle,
   type ObjectReorderPlacement,
   type PageOrientation,
   type PageSizePresetId,
+  type TextSpan,
   type TextObject
 } from "@chemdraft/chem-core";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
@@ -64,6 +66,7 @@ export type PagePoint = LayoutPoint;
 
 export interface NativeBondGrowthPreview {
   atomId: string;
+  targetAtomId?: string;
   direction: PagePoint;
   candidateDirections: PagePoint[];
   newAtomPoint: PagePoint;
@@ -99,6 +102,7 @@ export type NativeMoleculeDeleteHit =
 
 export type NativeMoleculeDeleteTarget = NativeMoleculeDeleteHit & { objectId: string };
 export type NativeBondOrderTarget = Extract<NativeMoleculeDeleteHit, { kind: "bond" }> & { objectId: string };
+export type NativeBondOrderValue = Extract<MoleculeBond["order"], "single" | "double" | "triple">;
 export type NativeMoleculePartReorderTarget =
   | { objectId: string; kind: "atom"; atomId: string }
   | { objectId: string; kind: "bond"; bondId: string }
@@ -106,6 +110,12 @@ export type NativeMoleculePartReorderTarget =
 export type NativeMoleculePartMoveTarget = NativeMoleculePartReorderTarget;
 export type NativeDoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
 export type NativeChargeValue = -1 | 1;
+
+const defaultNativeMoleculeTransform: MoleculeTransformState = {
+  scaleX: 1,
+  scaleY: 1,
+  rotationDegrees: 0
+};
 
 export const nativeSingleBondDimensions = {
   width: 48,
@@ -259,7 +269,7 @@ export function nativeAtomDisplayLabel(
   const implicitHydrogenCount = nativeImplicitHydrogenCount(element, valenceUsed);
   const formalCharge = atom.formalCharge;
 
-  if (element === "C" && valenceUsed > 0 && formalCharge === 0) {
+  if (element === "C" && valenceUsed > 0 && formalCharge === 0 && atom.labelVisible !== true) {
     return undefined;
   }
 
@@ -360,6 +370,7 @@ export function createAdapterFallbackMolecule(
     width: 190,
     height: 96,
     rotation: 0,
+    transform: defaultNativeMoleculeTransform,
     style: {
       source: "editor-adapter-fallback"
     },
@@ -443,6 +454,7 @@ export function createNativeSingleBondMolecule(
     width: geometry.width,
     height: geometry.height,
     rotation: 0,
+    transform: defaultNativeMoleculeTransform,
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
       source: "chemdraft-native-drawing",
@@ -619,6 +631,7 @@ export function createNativeMolfileMolecule(
     width: 0,
     height: 0,
     rotation: 0,
+    transform: defaultNativeMoleculeTransform,
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
       source: "clipboard-molfile"
@@ -896,6 +909,30 @@ export function updateNativeTextObjectStyle(
   );
 }
 
+export function updateNativeTextObjectScript(
+  document: ChemDraftDocument,
+  objectId: string,
+  script: TextSpan["script"]
+): ChemDraftDocument {
+  const location = findTextObjectLocation(document, objectId);
+  if (!location) {
+    return document;
+  }
+  const { object } = location;
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        spans: [{ text: object.text, script, style: {} }]
+      }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 export function updateSelectedNativeTextObjectStyle(
   document: ChemDraftDocument,
   style: Partial<NativeTextStyle>
@@ -1046,7 +1083,9 @@ export function applySingleBondToolAtNativeAtom(
     return document;
   }
 
-  const extended = extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint);
+  const extended = preview.targetAtomId
+    ? connectNativeCarbonAtoms(molecule, preview.atomId, preview.targetAtomId)
+    : extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint);
   if (!extended) {
     return document;
   }
@@ -1055,6 +1094,38 @@ export function applySingleBondToolAtNativeAtom(
     document,
     [
       { op: "updateObject", objectId: molecule.id, changes: extended },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+export function applyNativeCarbonylAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  steeringPoint?: PagePoint
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, steeringPoint);
+  if (!nextMolecule) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
       { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
@@ -1358,12 +1429,35 @@ export function applyNativeMoleculeBondOrderTarget(
   }
 
   const nextOrder = nextNativeBondOrder(molecule, bond);
-  if (nextOrder === bond.order) {
+  return isNativeBondOrderValue(nextOrder)
+    ? applyNativeMoleculeBondOrderValueTarget(document, target, nextOrder)
+    : document;
+}
+
+export function applyNativeMoleculeBondOrderValueTarget(
+  document: ChemDraftDocument,
+  target: NativeBondOrderTarget,
+  order: NativeBondOrderValue
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
+  if (!bond) {
+    return document;
+  }
+
+  if (order === bond.order || !canSetNativeBondOrder(molecule, bond, order)) {
     return document;
   }
 
   const bonds = molecule.bonds.map((candidate) =>
-    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, candidate, nextOrder) : candidate
+    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, candidate, order) : candidate
   );
   const nextMolecule = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
 
@@ -1430,12 +1524,17 @@ export function applyNativeAtomElementTarget(
 
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
   const normalizedElement = normalizeNativeAtomElementLabel(element);
-  if (!atom || normalizedElement.length === 0 || atom.element === normalizedElement) {
+  const labelVisible = normalizedElement === "C";
+  if (!atom || normalizedElement.length === 0) {
+    return document;
+  }
+
+  if (atom.element === normalizedElement && (atom.labelVisible === true) === labelVisible) {
     return document;
   }
 
   const atoms = molecule.atoms.map((candidate) =>
-    candidate.id === target.atomId ? { ...candidate, element: normalizedElement } : candidate
+    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible) : candidate
   );
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
 
@@ -1481,9 +1580,13 @@ export function previewNativeMoleculeBondGrowth(
   if (!extension) {
     return undefined;
   }
+  if (extension.targetAtomId && !canConnectNativeAtoms(molecule, extension.sourceAtomId, extension.targetAtomId)) {
+    return undefined;
+  }
 
   return {
     atomId: extension.sourceAtomId,
+    targetAtomId: extension.targetAtomId,
     direction: extension.direction,
     candidateDirections: nativeBondGrowthCandidateDirections(molecule, extension.sourceAtomId, extension.direction),
     newAtomPoint: extension.newAtomPoint,
@@ -1514,7 +1617,7 @@ function nativeBondGrowthCandidateDirections(
 
   const neighbor = neighborAtoms[0];
   const neighborAngle = Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x);
-  const targetAngle = 109.5 * Math.PI / 180;
+  const targetAngle = 120 * Math.PI / 180;
   const directions = [
     selectedDirection,
     directionFromAngle(neighborAngle + targetAngle),
@@ -1861,10 +1964,14 @@ export function rotateDocumentObject(
       ...atom,
       ...rotatePointAround(atom, center, angleRadians)
     }));
-    const nextMolecule = normalizeNativeMoleculeGeometry({
+    const transform = nativeMoleculeTransformState(object);
+    const nextMolecule = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
       ...object,
       rotation: 0,
       atoms
+    }), {
+      ...transform,
+      rotationDegrees: transform.rotationDegrees + angleDegrees
     });
 
     return applyPatch(
@@ -1885,6 +1992,73 @@ export function rotateDocumentObject(
     },
     { now: phase4Timestamp }
   );
+}
+
+export function resizeNativeMoleculeObject(
+  document: ChemDraftDocument,
+  objectId: string,
+  scale: { x: number; y: number }
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const molecule = page?.objects.find((object): object is MoleculeObject =>
+    object.id === objectId && object.type === "molecule"
+  );
+  if (!page || !molecule || molecule.atoms.length === 0) {
+    return document;
+  }
+
+  const scaleX = Number.isFinite(scale.x) ? scale.x : 1;
+  const scaleY = Number.isFinite(scale.y) ? scale.y : 1;
+  if (scaleX <= 0 || scaleY <= 0 || (Math.abs(scaleX - 1) < 0.001 && Math.abs(scaleY - 1) < 0.001)) {
+    return document;
+  }
+
+  const center = objectCenter(molecule);
+  const transform = nativeMoleculeTransformState(molecule);
+  const resized = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+    ...molecule,
+    atoms: molecule.atoms.map((atom) => ({
+      ...atom,
+      x: center.x + (atom.x - center.x) * scaleX,
+      y: center.y + (atom.y - center.y) * scaleY
+    }))
+  }), {
+    ...transform,
+    scaleX: transform.scaleX * scaleX,
+    scaleY: transform.scaleY * scaleY
+  });
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: resized },
+    { now: phase4Timestamp }
+  );
+}
+
+export function nativeMoleculeTransformState(molecule: MoleculeObject): MoleculeTransformState {
+  return {
+    scaleX: normalizeNativeMoleculeScale(molecule.transform?.scaleX ?? defaultNativeMoleculeTransform.scaleX),
+    scaleY: normalizeNativeMoleculeScale(molecule.transform?.scaleY ?? defaultNativeMoleculeTransform.scaleY),
+    rotationDegrees: normalizeDegrees(molecule.transform?.rotationDegrees ?? defaultNativeMoleculeTransform.rotationDegrees)
+  };
+}
+
+function withNativeMoleculeTransform(
+  molecule: MoleculeObject,
+  transform: MoleculeTransformState
+): MoleculeObject {
+  return {
+    ...molecule,
+    transform: {
+      scaleX: normalizeNativeMoleculeScale(transform.scaleX),
+      scaleY: normalizeNativeMoleculeScale(transform.scaleY),
+      rotationDegrees: normalizeDegrees(transform.rotationDegrees)
+    }
+  };
+}
+
+function normalizeNativeMoleculeScale(scale: number): number {
+  return Number((Number.isFinite(scale) && scale > 0 ? scale : 1).toFixed(4));
 }
 
 function objectCenter(object: Pick<DocumentObject, "x" | "y" | "width" | "height">): PagePoint {
@@ -2157,6 +2331,7 @@ function createClipboardTextStructureMolecule(
     width,
     height,
     rotation: 0,
+    transform: defaultNativeMoleculeTransform,
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
       source: "clipboard-chemical-text"
@@ -2284,7 +2459,9 @@ function extendNativeCarbonChain(
     return undefined;
   }
 
-  return extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint);
+  return preview.targetAtomId
+    ? connectNativeCarbonAtoms(molecule, preview.atomId, preview.targetAtomId)
+    : extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint);
 }
 
 function extendNativeCarbonGraph(
@@ -2317,6 +2494,93 @@ function extendNativeCarbonGraph(
   return refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
+function addNativeCarbonylToAtom(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  pageWidth: number,
+  pageHeight: number,
+  steeringPoint?: PagePoint
+): MoleculeObject | undefined {
+  const sourceAtom = molecule.atoms.find((atom) => atom.id === sourceAtomId);
+  if (!sourceAtom || nativeElementFromAtomLabel(sourceAtom.element) !== "C") {
+    return undefined;
+  }
+
+  const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
+  const nextCarbonValence = (valenceUsage.get(sourceAtomId) ?? 0) + nativeBondOrderValue.double;
+  if (sourceAtom.formalCharge !== 0 || nativeAtomFormalChargeForValence("C", nextCarbonValence) !== 0) {
+    return undefined;
+  }
+
+  const oxygenAtom: MoleculeAtom = {
+    id: nextIndexedId("atom", molecule.atoms.map((atom) => atom.id)),
+    element: "O",
+    x: 0,
+    y: 0,
+    formalCharge: 0
+  };
+  const oxygenPoint = carbonylOxygenPointForAtom(molecule, sourceAtomId, pageWidth, pageHeight, steeringPoint);
+  const newAtom = {
+    ...oxygenAtom,
+    x: oxygenPoint.x,
+    y: oxygenPoint.y
+  };
+  const newBond: MoleculeBond = {
+    id: nextIndexedId("bond", molecule.bonds.map((bond) => bond.id)),
+    fromAtomId: sourceAtomId,
+    toAtomId: newAtom.id,
+    order: "double"
+  };
+  const bonds = [
+    ...molecule.bonds,
+    nativeBondWithOrderAndDisplay(molecule, newBond, "double")
+  ];
+
+  return refreshNativeSingleBondGraph(molecule, [...molecule.atoms, newAtom], bonds);
+}
+
+function carbonylOxygenPointForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  pageWidth: number,
+  pageHeight: number,
+  steeringPoint?: PagePoint
+): PagePoint {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return { x: nativeBondLength, y: 0 };
+  }
+
+  const steeredDistance = steeringPoint ? distance(atom, steeringPoint) : 0;
+  const angle = steeredDistance > 0.01
+    ? Math.atan2((steeringPoint?.y ?? atom.y) - atom.y, (steeringPoint?.x ?? atom.x) - atom.x)
+    : largestOpenAngle(neighborAnglesForAtom(molecule, atomId)) ?? -Math.PI / 2;
+  const point = {
+    x: atom.x + Math.cos(angle) * nativeBondLength,
+    y: atom.y + Math.sin(angle) * nativeBondLength
+  };
+
+  return {
+    x: clamp(point.x, 0, pageWidth),
+    y: clamp(point.y, 0, pageHeight)
+  };
+}
+
+function neighborAnglesForAtom(molecule: MoleculeObject, atomId: string): number[] {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return [];
+  }
+
+  return molecule.bonds
+    .filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .map((bond) => molecule.atoms.find((candidate) =>
+      candidate.id === (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)
+    ))
+    .filter((candidate): candidate is MoleculeAtom => candidate !== undefined)
+    .map((neighbor) => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+}
+
 function connectNativeCarbonAtoms(
   molecule: MoleculeObject,
   sourceAtomId: string,
@@ -2337,6 +2601,21 @@ function connectNativeCarbonAtoms(
   ];
 
   return refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+}
+
+function nativeAtomWithElement(
+  atom: MoleculeAtom,
+  element: string,
+  labelVisible: boolean
+): MoleculeAtom {
+  const { labelVisible: _labelVisible, ...baseAtom } = atom;
+  return labelVisible
+    ? { ...baseAtom, element, labelVisible: true }
+    : { ...baseAtom, element };
+}
+
+function isNativeBondOrderValue(order: MoleculeBond["order"]): order is NativeBondOrderValue {
+  return order === "single" || order === "double" || order === "triple";
 }
 
 function nextNativeBondOrder(molecule: MoleculeObject, bond: MoleculeBond): MoleculeBond["order"] {

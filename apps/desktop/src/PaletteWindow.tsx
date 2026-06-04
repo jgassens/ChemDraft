@@ -1,13 +1,19 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { ToolPalette } from "./ToolPalette";
+import { allShellCommands } from "./commands";
+import { createPhase4Document } from "./documentWorkflow";
+import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDesktopToolsetRegistry, desktopToolsetRegistry, getToolsetCommandGroups } from "./toolsets";
 import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
   currentWindowLogicalPosition,
+  listenForToolsetActiveTool,
   loadToolsetLayoutState,
+  requestToolsetActiveTool,
   sendPaletteCommand,
   setCurrentWindowLogicalPosition,
+  setCurrentWindowLogicalSize,
   startPaletteWindowDrag,
   type ToolsetWindowPosition
 } from "./window-manager";
@@ -27,8 +33,14 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
   const animationFrameRef = useRef<number | undefined>(undefined);
   const [toolsetRegistry, setToolsetRegistry] = useState(() => desktopToolsetRegistry);
+  const [activeTool, setActiveTool] = useState("tool.select");
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
+  const shortcutRegistry = useMemo(
+    () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document())),
+    []
+  );
 
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
@@ -56,6 +68,51 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    const preferredSize = toolset.preferredWindowSize;
+    if (!preferredSize) {
+      return;
+    }
+
+    void setCurrentWindowLogicalSize({
+      width: preferredSize.width,
+      height: colorPickerOpen ? Math.max(preferredSize.height, 292) : preferredSize.height
+    }).catch(() => undefined);
+  }, [colorPickerOpen, toolset.preferredWindowSize]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetActiveTool((commandId) => {
+      setActiveTool(commandId);
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+        void requestToolsetActiveTool().catch(() => undefined);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const commandId = shortcutRegistry.resolve(event);
+      if (!commandId) {
+        return;
+      }
+
+      event.preventDefault();
+      void sendPaletteCommand(commandId).catch(() => undefined);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [shortcutRegistry]);
 
   const invokeCommand = (commandId: string) => {
     void sendPaletteCommand(commandId).catch(() => undefined);
@@ -94,7 +151,38 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
     beginPaletteWindowDrag(event.screenX, event.screenY);
   };
 
+  const startDragFromTitle = (event: PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    beginPaletteWindowDrag(event.screenX, event.screenY, event.pointerId);
+  };
+
+  const startMouseDragFromTitle = (event: ReactMouseEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    beginPaletteWindowDrag(event.screenX, event.screenY);
+  };
+
   const beginPaletteWindowDrag = (screenX: number, screenY: number, pointerId?: number) => {
+    void startPaletteWindowDrag().catch(() => undefined);
+
     dragRef.current = {
       pointerId,
       originX: screenX,
@@ -114,9 +202,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         drag.startY = position.y;
         movePaletteWindowToCurrentPointer(drag);
       })
-      .catch(() => {
-        void startPaletteWindowDrag().catch(() => undefined);
-      });
+      .catch(() => undefined);
   };
 
   const movePaletteWindow = (event: PointerEvent<HTMLElement>) => {
@@ -220,7 +306,18 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       onMouseMove={movePaletteWindowFromMouse}
       onMouseUp={stopPaletteWindowMouseDrag}
     >
-      <div className="palette-title">
+      <div
+        className="palette-title"
+        data-palette-title-drag-surface="true"
+        data-tauri-drag-region="true"
+        onPointerDown={startDragFromTitle}
+        onPointerMove={movePaletteWindow}
+        onPointerUp={stopPaletteWindowDrag}
+        onPointerCancel={stopPaletteWindowDrag}
+        onMouseDown={startMouseDragFromTitle}
+        onMouseMove={movePaletteWindowFromMouse}
+        onMouseUp={stopPaletteWindowMouseDrag}
+      >
         <button
           className="palette-close-button"
           type="button"
@@ -235,11 +332,13 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       </div>
       <ToolPalette
         groups={groups}
-        activeTool="tool.select"
+        activeTool={activeTool}
         mode="floating"
         orientation={toolset.gridLayout?.orientation ?? "vertical"}
         title={toolset.title}
         showMainStyleControls={toolset.id === "core.main"}
+        showTextStyleControls={toolset.id === "core.text"}
+        onColorPickerOpenChange={setColorPickerOpen}
         onInvoke={invokeCommand}
       />
     </main>

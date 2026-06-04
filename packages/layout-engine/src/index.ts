@@ -59,6 +59,9 @@ export interface BondExtensionPlanningInput {
   collisionRadius?: number;
 }
 
+const defaultTargetBondAngleDegrees = 120;
+const defaultTargetBondAngleToleranceDegrees = 6;
+
 export interface FreeformBondExtensionPlanningInput {
   atoms: readonly MoleculeLayoutAtom[];
   bonds: readonly MoleculeLayoutBond[];
@@ -131,22 +134,44 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
     neighbors,
     clickPoint: input.clickPoint,
     atoms: input.atoms,
+    bonds: input.bonds,
     bondLength: input.bondLength,
     pageBounds: input.pageBounds,
-    targetBondAngleDegrees: input.targetBondAngleDegrees ?? 109.5,
+    maxBondsPerAtom,
+    targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees,
     collisionRadius: input.collisionRadius ?? input.bondLength * 0.45
   });
+  const plannedNewAtomPoint = clampPointToBounds({
+    x: source.atom.x + direction.x * input.bondLength,
+    y: source.atom.y + direction.y * input.bondLength
+  }, input.pageBounds);
+  const targetAtom = guidedBondTargetAtom({
+    atoms: input.atoms,
+    bonds: input.bonds,
+    sourceAtom: source.atom,
+    neighbors,
+    plannedPoint: plannedNewAtomPoint,
+    bondLength: input.bondLength,
+    hitRadius: Math.min(input.hitRadius, input.bondLength * 0.3),
+    maxBondsPerAtom,
+    targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees
+  });
+  const newAtomPoint = targetAtom ? clampPointToBounds(targetAtom, input.pageBounds) : plannedNewAtomPoint;
+  const resolvedDirection = targetAtom
+    ? normalize({
+        x: targetAtom.x - source.atom.x,
+        y: targetAtom.y - source.atom.y
+      })
+    : direction;
 
   return {
     sourceAtomId: source.atom.id,
     terminalAtomId: source.atom.id,
     neighborAtomIds: neighbors.map((neighbor) => neighbor.id),
     neighborAtomId: neighbors[0]?.id,
-    newAtomPoint: clampPointToBounds({
-      x: source.atom.x + direction.x * input.bondLength,
-      y: source.atom.y + direction.y * input.bondLength
-    }, input.pageBounds),
-    direction,
+    targetAtomId: targetAtom?.id,
+    newAtomPoint,
+    direction: resolvedDirection,
     distanceToClick: source.distance
   };
 }
@@ -264,6 +289,65 @@ function nearestFreeformSnapTarget(input: {
     .map((atom) => ({ atom, distance: distance(atom, input.endPoint) }))
     .filter((hit) => hit.distance <= input.snapHitRadius)
     .sort((left, right) => left.distance - right.distance || left.atom.id.localeCompare(right.atom.id))[0]?.atom;
+}
+
+function guidedBondTargetAtom(input: {
+  atoms: readonly MoleculeLayoutAtom[];
+  bonds: readonly MoleculeLayoutBond[];
+  sourceAtom: MoleculeLayoutAtom;
+  neighbors: readonly MoleculeLayoutAtom[];
+  plannedPoint: LayoutPoint;
+  bondLength: number;
+  hitRadius: number;
+  maxBondsPerAtom: number;
+  targetBondAngleDegrees: number;
+}): MoleculeLayoutAtom | undefined {
+  if (input.neighbors.length === 0 || input.hitRadius < 0) {
+    return undefined;
+  }
+
+  const degrees = atomDegrees(input.atoms, input.bonds);
+  const sourceNeighborIds = new Set(input.neighbors.map((neighbor) => neighbor.id));
+  const targetAngle = degreesToRadians(input.targetBondAngleDegrees);
+  const angleTolerance = degreesToRadians(defaultTargetBondAngleToleranceDegrees);
+  const lengthTolerance = Math.max(input.hitRadius, input.bondLength * 0.12);
+
+  return input.atoms
+    .filter((atom) => atom.id !== input.sourceAtom.id)
+    .filter((atom) => !sourceNeighborIds.has(atom.id))
+    .filter((atom) => (degrees.get(atom.id) ?? 0) < input.maxBondsPerAtom)
+    .filter((atom) => !input.bonds.some((bond) =>
+      (bond.fromAtomId === input.sourceAtom.id && bond.toAtomId === atom.id) ||
+      (bond.fromAtomId === atom.id && bond.toAtomId === input.sourceAtom.id)
+    ))
+    .map((atom) => ({
+      atom,
+      plannedDistance: distance(atom, input.plannedPoint),
+      bondLengthError: Math.abs(distance(input.sourceAtom, atom) - input.bondLength),
+      angleError: nearestTargetAngleError(input.sourceAtom, input.neighbors, atom, targetAngle)
+    }))
+    .filter((candidate) =>
+      candidate.plannedDistance <= lengthTolerance &&
+      candidate.bondLengthError <= lengthTolerance &&
+      candidate.angleError <= angleTolerance
+    )
+    .sort((left, right) =>
+      left.plannedDistance - right.plannedDistance ||
+      left.angleError - right.angleError ||
+      left.atom.id.localeCompare(right.atom.id)
+    )[0]?.atom;
+}
+
+function nearestTargetAngleError(
+  sourceAtom: MoleculeLayoutAtom,
+  neighbors: readonly MoleculeLayoutAtom[],
+  targetAtom: MoleculeLayoutAtom,
+  targetAngle: number
+): number {
+  const targetDirectionAngle = angleBetweenPoints(sourceAtom, targetAtom);
+  return Math.min(...neighbors.map((neighbor) =>
+    Math.abs(angularDistance(targetDirectionAngle, angleBetweenPoints(sourceAtom, neighbor)) - targetAngle)
+  ));
 }
 
 export function findNearestAtomHit(input: AtomHitPlanningInput): AtomHit | undefined {
@@ -407,8 +491,10 @@ interface ExtensionDirectionInput {
   neighbors: readonly MoleculeLayoutAtom[];
   clickPoint: LayoutPoint;
   atoms: readonly MoleculeLayoutAtom[];
+  bonds: readonly MoleculeLayoutBond[];
   bondLength: number;
   pageBounds: LayoutBounds;
+  maxBondsPerAtom: number;
   targetBondAngleDegrees: number;
   collisionRadius: number;
 }
@@ -468,7 +554,19 @@ function scoreDirectionCandidate(
     y: input.sourceAtom.y + direction.y * input.bondLength
   };
   const nearestCollisionDistance = nearestOtherAtomDistance(input.atoms, input.sourceAtom.id, plannedPoint);
-  const duplicatePenalty = nearestCollisionDistance < input.bondLength * 0.25 ? 20 : 0;
+  const guidedTargetAtPlannedPoint = guidedBondTargetAtom({
+    atoms: input.atoms,
+    bonds: input.bonds,
+    sourceAtom: input.sourceAtom,
+    neighbors: input.neighbors,
+    plannedPoint,
+    bondLength: input.bondLength,
+    hitRadius: Math.min(input.collisionRadius, input.bondLength * 0.3),
+    maxBondsPerAtom: input.maxBondsPerAtom,
+    targetBondAngleDegrees: input.targetBondAngleDegrees
+  });
+  const duplicatePenalty =
+    nearestCollisionDistance < input.bondLength * 0.25 && guidedTargetAtPlannedPoint === undefined ? 20 : 0;
   const collisionPenalty =
     duplicatePenalty === 0 &&
     nearestCollisionDistance < input.collisionRadius &&

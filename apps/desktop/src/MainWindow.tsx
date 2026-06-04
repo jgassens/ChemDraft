@@ -24,7 +24,9 @@ import {
   type DocumentObject,
   type MoleculeObject,
   type NativeDrawingStyle,
-  type NativeTextStyle
+  type NativeTextStyle,
+  type TextObject,
+  type TextSpan
 } from "@chemdraft/chem-core";
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
@@ -54,6 +56,7 @@ import {
   editActions,
   pageOrientationActions,
   pageSizeActions,
+  textScriptForCommand,
   textStylePatchForCommand,
   textToolbarActions,
   toolbarCustomizationActions,
@@ -64,16 +67,19 @@ import {
   activateDrawingToolCommand,
   createActiveToolState,
   isDrawingToolCommand,
-  withStandaloneDrawingToolCommands
+  withStandaloneDrawingToolCommands,
+  type ActiveToolState
 } from "./drawingTools";
 import { clipboardPayloadFromDataTransfer, readClipboardPayload } from "./clipboard";
 import {
   applyClipboardPastePayload,
+  applyNativeCarbonylAtAtomTarget,
   applyNativeAtomElementTarget,
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
+  applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
   applyEditorSaveResultToSelectedMolecule,
   applyAnalysisToSelectedMolecule,
@@ -93,6 +99,7 @@ import {
   nativeChargeByAtomIdFromAssociations,
   nativeElementFromKeyboardKey,
   nativeMoleculeInvalidAtomStates,
+  nativeMoleculeTransformState,
   moveDocumentObject,
   moveNativeMoleculeParts,
   openNativeDocument,
@@ -100,18 +107,21 @@ import {
   previewNativeMoleculeFreeformBondGrowth,
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
+  resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   rotateDocumentObject,
   selectDocumentObject,
   selectDocumentObjects,
   setDocumentPageOrientation,
   setDocumentPageSize,
+  updateNativeTextObjectScript,
   updateNativeTextObjectStyle,
   updateNativeTextObjectText,
   type NativeMoleculeDeleteHit,
   type NativeDoubleBondSide,
   type NativeMoleculeDeleteTarget,
   type NativeBondOrderTarget,
+  type NativeBondOrderValue,
   type NativeChargeValue,
   type NativeSingleLetterElement
 } from "./documentWorkflow";
@@ -119,8 +129,11 @@ import { KetcherEditorHost } from "./KetcherEditorHost";
 import { ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
+  broadcastToolsetActiveTool,
+  focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
+  listenForToolsetActiveToolRequests,
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
@@ -216,8 +229,37 @@ type ObjectRotateDragState = {
   startDocument: ChemDraftDocument;
   centerPoint: ClientPoint;
   startPoint: ClientPoint;
+  startRotationDegrees: number;
   latestPoint: ClientPoint;
   dragging: boolean;
+};
+type ObjectRotateReadoutState = {
+  objectId: string;
+  degrees: number;
+};
+type MoleculeResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+type MoleculeResizeDragState = {
+  pointerId: number;
+  objectId: string;
+  corner: MoleculeResizeCorner;
+  startDocument: ChemDraftDocument;
+  centerPoint: ClientPoint;
+  startPoint: ClientPoint;
+  startCumulativeScale: MoleculeResizeScale;
+  latestPoint: ClientPoint;
+  latestScale: MoleculeResizeScale;
+  latestCumulativeScale: MoleculeResizeScale;
+  stretching: boolean;
+  dragging: boolean;
+};
+type MoleculeResizeReadoutState = {
+  objectId: string;
+  scaleXPercent: number;
+  scaleYPercent: number;
+};
+type MoleculeResizeScale = {
+  x: number;
+  y: number;
 };
 type TextResizeEdge = "left" | "right" | "top" | "bottom";
 type TextResizeState = {
@@ -245,6 +287,10 @@ type NativePartDragState = {
   latestPoint: ClientPoint;
   dragging: boolean;
 };
+export type NativeMoleculeSelectionDragIntent =
+  | { kind: "whole-object" }
+  | { kind: "native-part"; target: NativeMoleculeSelectionPart }
+  | { kind: "none" };
 type AtomLabelEditState = {
   objectId: string;
   atomId: string;
@@ -275,7 +321,10 @@ const RULER_THICKNESS = 32;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
+const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
+const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 45;
 const OBJECT_DRAG_THRESHOLD = 4;
+const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.bringForward", label: "Move Forward" },
@@ -308,7 +357,11 @@ export function MainWindow({
   const nativePartDragRef = useRef<NativePartDragState | null>(null);
   const objectDragRef = useRef<ObjectDragState | null>(null);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
+  const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
+  const moleculeResizeDragRef = useRef<MoleculeResizeDragState | null>(null);
+  const moleculeResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const textResizeRef = useRef<TextResizeState | null>(null);
+  const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
@@ -338,6 +391,8 @@ export function MainWindow({
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
+  const [objectRotateReadout, setObjectRotateReadout] = useState<ObjectRotateReadoutState | undefined>();
+  const [moleculeResizeReadout, setMoleculeResizeReadout] = useState<MoleculeResizeReadoutState | undefined>();
   const [viewport, setViewport] = useState(() =>
     createViewportState({ rulerUnit: rulerUnitForDocument(initialDocument) })
   );
@@ -352,15 +407,19 @@ export function MainWindow({
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
+  const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
+  const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   const viewportRef = useRef(viewport);
 
   documentRef.current = document;
   documentHistoryRef.current = documentHistory;
+  activeToolCommandIdRef.current = activeToolState.activeCommandId;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
+  const selectedTextScript = selectedTextObject ? textScriptForTextObject(selectedTextObject) : "normal";
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
   const bondToolActive = activeToolState.activeCommandId === "tool.bond";
@@ -523,6 +582,19 @@ export function MainWindow({
   useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  useEffect(() => () => {
+    if (objectRotateReadoutTimeoutRef.current !== undefined) {
+      window.clearTimeout(objectRotateReadoutTimeoutRef.current);
+    }
+    if (moleculeResizeReadoutTimeoutRef.current !== undefined) {
+      window.clearTimeout(moleculeResizeReadoutTimeoutRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    void broadcastToolsetActiveTool(activeToolState.activeCommandId).catch(() => undefined);
+  }, [activeToolState.activeCommandId]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -819,6 +891,32 @@ export function MainWindow({
     setStatus("Changed bond order");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
+  const setHoveredNativeBondOrder = useCallback((order: NativeBondOrderValue) => {
+    const currentDocument = documentRef.current;
+    const target = hoveredNativeDeleteTargetRef.current
+      ?? nativeDeleteTargetFromSelectionPart(currentDocument, selectedNativeMoleculePart);
+    if (!target || target.kind !== "bond") {
+      setStatus(`No hovered bond for ${order} bond`);
+      return;
+    }
+
+    const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
+    const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, order);
+    if (nextDocument === selectedDocument) {
+      setStatus(`Cannot set hovered bond to ${order}`);
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setStatus(`Set hovered bond to ${order}`);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+
   const setHoveredNativeAtomElement = useCallback((element: NativeSingleLetterElement) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -841,6 +939,35 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(`Set hovered atom to ${element}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
+
+  const addCarbonylToHoveredNativeAtom = useCallback(() => {
+    const target = hoveredNativeDeleteTargetRef.current
+      ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
+    if (!target || target.kind !== "atom") {
+      setStatus("No hovered carbon for C=O");
+      return;
+    }
+
+    const currentDocument = documentRef.current;
+    const steeringPoint = hoveredNativeAtomPointRef.current?.objectId === target.objectId
+      ? hoveredNativeAtomPointRef.current.point
+      : undefined;
+    const nextDocument = applyNativeCarbonylAtAtomTarget(currentDocument, target, steeringPoint);
+    if (nextDocument === currentDocument) {
+      setStatus("Cannot add C=O to hovered atom");
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setStatus("Added C=O to hovered carbon");
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const addSingleBondToHoveredNativeAtom = useCallback(() => {
     const target = hoveredNativeDeleteTargetRef.current
@@ -929,12 +1056,6 @@ export function MainWindow({
     return true;
   }, [replacePresentDocument]);
 
-  const startHoveredAtomLabelEdit = useCallback((): boolean => {
-    const target = hoveredNativeDeleteTargetRef.current
-      ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
-    return target?.kind === "atom" ? startAtomLabelEdit(target, { clearDraft: true }) : false;
-  }, [selectedNativeMoleculePart, startAtomLabelEdit]);
-
   const updateAtomLabelDraft = useCallback((state: AtomLabelEditState, draft: string) => {
     setActiveAtomLabelEdit((current) =>
       current && current.objectId === state.objectId && current.atomId === state.atomId
@@ -992,11 +1113,62 @@ export function MainWindow({
     };
   }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
 
+  const clearScheduledTextEditorFocus = useCallback(() => {
+    textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    textEditorFocusTimeoutsRef.current = [];
+  }, []);
+
+  const focusTextObjectEditor = useCallback((objectId: string) => {
+    clearScheduledTextEditorFocus();
+
+    const focusEditor = () => {
+      const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
+        `[data-object-id="${objectId}"] .text-object-editor`
+      );
+      if (!editor) {
+        return;
+      }
+
+      window.focus();
+      editor.focus({ preventScroll: true });
+      if (editor.value === "Text") {
+        editor.select();
+      }
+    };
+
+    const focusNativeSurfaceAndEditor = () => {
+      void focusCurrentWindowAndWebview().finally(focusEditor);
+      focusEditor();
+    };
+
+    focusNativeSurfaceAndEditor();
+    textEditorFocusTimeoutsRef.current = [0, 16, 80].map((delay) =>
+      window.setTimeout(focusNativeSurfaceAndEditor, delay)
+    );
+  }, [clearScheduledTextEditorFocus]);
+
+  useEffect(() => () => {
+    clearScheduledTextEditorFocus();
+  }, [clearScheduledTextEditorFocus]);
+
+  const restoreToolAfterTextPlacement = useCallback(() => {
+    const previousToolState = toolBeforeTextPlacementRef.current;
+    toolBeforeTextPlacementRef.current = undefined;
+    if (!previousToolState || previousToolState.activeCommandId === "tool.text") {
+      return;
+    }
+
+    activeToolCommandIdRef.current = previousToolState.activeCommandId;
+    setActiveToolState(previousToolState);
+    void broadcastToolsetActiveTool(previousToolState.activeCommandId).catch(() => undefined);
+  }, []);
+
   const applyTextDocumentAtPoint = useCallback((point: ClientPoint) => {
     const currentDocument = documentRef.current;
     const nextDocument = insertNativeTextObject(currentDocument, point, "Text", textStyleDefaults);
     const inserted = getSelectedTextObject(nextDocument);
     commitDocumentChange(nextDocument);
+    restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(inserted?.id);
     setActiveAtomLabelEdit(undefined);
@@ -1004,8 +1176,11 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Inserted text");
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, textStyleDefaults]);
+    if (inserted) {
+      focusTextObjectEditor(inserted.id);
+    }
+    setStatus("Inserted text - type to replace placeholder");
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, focusTextObjectEditor, restoreToolAfterTextPlacement, textStyleDefaults]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ReturnType<typeof inspectClipboardPayload>) => {
     const result = applyClipboardPastePayload(
@@ -1054,12 +1229,26 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
+    focusTextObjectEditor(objectId);
     setStatus("Editing text");
-  }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
+  }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
 
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     const currentDocument = documentRef.current;
     const selected = getSelectedTextObject(currentDocument);
+    const textScript = textScriptForCommand(commandId);
+    if (textScript) {
+      if (selected) {
+        const changed = commitDocumentChange(updateNativeTextObjectScript(currentDocument, selected.id, textScript));
+        setActiveEditorObjectId(undefined);
+        setStatus(changed ? "Updated selected text script" : "Selected text script unchanged");
+        return true;
+      }
+
+      setStatus("Select text before changing baseline script");
+      return true;
+    }
+
     const currentStyle = selected
       ? nativeTextStyleFromObjectStyle(selected.style)
       : textStyleDefaults;
@@ -1147,10 +1336,10 @@ export function MainWindow({
           await pasteClipboard();
         }
         if (action.id === "view.zoomOut") {
-          setViewport((current) => zoomViewportAtPoint(current, current.scale - 0.1, pageCenterPoint(current, activePage)));
+          setViewport((current) => zoomViewportAtPoint(current, current.scale / VIEW_ZOOM_COMMAND_FACTOR, pageCenterPoint(current, activePage)));
         }
         if (action.id === "view.zoomIn") {
-          setViewport((current) => zoomViewportAtPoint(current, current.scale + 0.1, pageCenterPoint(current, activePage)));
+          setViewport((current) => zoomViewportAtPoint(current, current.scale * VIEW_ZOOM_COMMAND_FACTOR, pageCenterPoint(current, activePage)));
         }
         if (action.id === "view.toggleToolPalette") {
           await toggleToolset(DEFAULT_TOOLSET_ID);
@@ -1196,6 +1385,26 @@ export function MainWindow({
       register(action, () => {
         if (action.id === "atom.addSingleBondToHoveredAtom") {
           addSingleBondToHoveredNativeAtom();
+          return;
+        }
+
+        if (action.id === "bond.setHoveredBondOrder.single") {
+          setHoveredNativeBondOrder("single");
+          return;
+        }
+
+        if (action.id === "bond.setHoveredBondOrder.double") {
+          setHoveredNativeBondOrder("double");
+          return;
+        }
+
+        if (action.id === "bond.setHoveredBondOrder.triple") {
+          setHoveredNativeBondOrder("triple");
+          return;
+        }
+
+        if (action.id === "atom.addCarbonylToHoveredAtom") {
+          addCarbonylToHoveredNativeAtom();
           return;
         }
 
@@ -1259,10 +1468,6 @@ export function MainWindow({
           return;
         }
 
-        if (tool.id === "tool.text" && startHoveredAtomLabelEdit()) {
-          return;
-        }
-
         if (applyTextStyleCommand(tool.id)) {
           return;
         }
@@ -1270,6 +1475,13 @@ export function MainWindow({
         if (!isDrawingToolCommand(tool.id)) {
           setStatus(`${tool.title} command routed`);
           return;
+        }
+
+        if (tool.id === "tool.text") {
+          toolBeforeTextPlacementRef.current =
+            activeToolState.activeCommandId === "tool.text" ? undefined : activeToolState;
+        } else {
+          toolBeforeTextPlacementRef.current = undefined;
         }
 
         const result = activateDrawingToolCommand(activeToolState, tool);
@@ -1340,6 +1552,7 @@ export function MainWindow({
   }, [
     activeToolState,
     addChargeToHoveredNativeAtom,
+    addCarbonylToHoveredNativeAtom,
     addSingleBondToHoveredNativeAtom,
     applyTextStyleCommand,
     assignHoveredNativeDeleteTarget,
@@ -1354,18 +1567,22 @@ export function MainWindow({
     resetDocumentHistory,
     restoreDocumentHistory,
     selectedNativeMoleculePart,
-    startHoveredAtomLabelEdit,
     setHoveredNativeAtomElement,
+    setHoveredNativeBondOrder,
     toggleToolset,
     toolCommandSpecs,
     toolsetRegistry
   ]);
 
   const invoke = useCallback((commandId: string) => {
+    if (applyTextStyleCommand(commandId)) {
+      return;
+    }
+
     void registry.invoke(commandId).catch(() => {
       setStatus("Command unavailable");
     });
-  }, [registry]);
+  }, [applyTextStyleCommand, registry]);
 
   invokeCommandRef.current = invoke;
 
@@ -1374,24 +1591,8 @@ export function MainWindow({
       return;
     }
 
-    const focusHandle = window.setTimeout(() => {
-      const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-        `[data-object-id="${activeTextEditObjectId}"] .text-object-editor`
-      );
-      if (!editor) {
-        return;
-      }
-
-      editor.focus();
-      if (editor.value === "Text") {
-        editor.select();
-      }
-    });
-
-    return () => {
-      window.clearTimeout(focusHandle);
-    };
-  }, [activeTextEditObjectId, document]);
+    focusTextObjectEditor(activeTextEditObjectId);
+  }, [activeTextEditObjectId, document, focusTextObjectEditor]);
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
@@ -1421,31 +1622,15 @@ export function MainWindow({
       }
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-        const target = hoveredNativeDeleteTargetRef.current;
-        if (target?.kind === "atom") {
-          if (event.key === "1") {
-            event.preventDefault();
-            invokeCommandRef.current("atom.addSingleBondToHoveredAtom");
-            return;
-          }
-
-          if (event.key === "+") {
-            event.preventDefault();
-            invokeCommandRef.current("atom.addPositiveChargeToHoveredAtom");
-            return;
-          }
-
-          if (event.key === "-") {
-            event.preventDefault();
-            invokeCommandRef.current("atom.addNegativeChargeToHoveredAtom");
-            return;
-          }
-        }
-
-        const element = nativeElementFromKeyboardKey(event.key);
-        if (element && target?.kind === "atom") {
+        const hoveredTargetCommandId = activeNativeTargetShortcutCommand(
+          documentRef.current,
+          selectedNativeMoleculePart,
+          hoveredNativeDeleteTargetRef.current,
+          event.key
+        );
+        if (hoveredTargetCommandId) {
           event.preventDefault();
-          invokeCommandRef.current(atomElementCommandId(element));
+          invokeCommandRef.current(hoveredTargetCommandId);
           return;
         }
       }
@@ -1463,7 +1648,7 @@ export function MainWindow({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [shortcutRegistry]);
+  }, [selectedNativeMoleculePart, shortcutRegistry]);
 
   useEffect(() => {
     if (!nativePalette) {
@@ -1487,6 +1672,7 @@ export function MainWindow({
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
+    let unlistenActiveToolRequest: (() => void) | undefined;
     void listenForToolsetCommands((commandId) => invokeCommandRef.current(commandId))
       .then((cleanup) => {
         unlisten = cleanup;
@@ -1503,10 +1689,18 @@ export function MainWindow({
       .catch(() => {
         setStatus("Toolset state bridge unavailable");
       });
+    void listenForToolsetActiveToolRequests(() => {
+      void broadcastToolsetActiveTool(activeToolCommandIdRef.current).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        unlistenActiveToolRequest = cleanup;
+      })
+      .catch(() => undefined);
 
     return () => {
       unlisten?.();
       unlistenState?.();
+      unlistenActiveToolRequest?.();
     };
   }, []);
 
@@ -1801,6 +1995,18 @@ export function MainWindow({
 
   const previewObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint) => {
     drag.latestPoint = point;
+    const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+    if (objectRotateReadoutTimeoutRef.current !== undefined) {
+      window.clearTimeout(objectRotateReadoutTimeoutRef.current);
+    }
+    setObjectRotateReadout({
+      objectId: drag.objectId,
+      degrees: cumulativeRotationReadoutDegrees(drag.startRotationDegrees, degrees)
+    });
+    objectRotateReadoutTimeoutRef.current = window.setTimeout(() => {
+      objectRotateReadoutTimeoutRef.current = undefined;
+      setObjectRotateReadout(undefined);
+    }, 1200);
     replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
   }, [objectRotateDocumentFromDrag, replacePresentDocument]);
 
@@ -1861,6 +2067,66 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
+
+  const showMoleculeResizeReadout = useCallback((objectId: string, scale: MoleculeResizeScale, hold = false) => {
+    if (moleculeResizeReadoutTimeoutRef.current !== undefined) {
+      window.clearTimeout(moleculeResizeReadoutTimeoutRef.current);
+      moleculeResizeReadoutTimeoutRef.current = undefined;
+    }
+
+    setMoleculeResizeReadout({
+      objectId,
+      scaleXPercent: moleculeResizeReadoutPercent(scale.x),
+      scaleYPercent: moleculeResizeReadoutPercent(scale.y)
+    });
+
+    if (hold) {
+      moleculeResizeReadoutTimeoutRef.current = window.setTimeout(() => {
+        moleculeResizeReadoutTimeoutRef.current = undefined;
+        setMoleculeResizeReadout(undefined);
+      }, 1200);
+    }
+  }, []);
+
+  const moleculeResizeDocumentFromDrag = useCallback((
+    drag: MoleculeResizeDragState,
+    point: ClientPoint,
+    stretching: boolean
+  ): ChemDraftDocument =>
+    resizeNativeMoleculeObject(
+      drag.startDocument,
+      drag.objectId,
+      moleculeResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching)
+    ),
+  []);
+
+  const previewMoleculeResize = useCallback((drag: MoleculeResizeDragState, point: ClientPoint, stretching: boolean) => {
+    drag.latestPoint = point;
+    drag.stretching = stretching;
+    drag.latestScale = moleculeResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching);
+    drag.latestCumulativeScale = cumulativeMoleculeResizeScale(drag.startCumulativeScale, drag.latestScale);
+    showMoleculeResizeReadout(drag.objectId, drag.latestCumulativeScale);
+    replacePresentDocument(resizeNativeMoleculeObject(drag.startDocument, drag.objectId, drag.latestScale));
+  }, [replacePresentDocument, showMoleculeResizeReadout]);
+
+  const commitMoleculeResize = useCallback((drag: MoleculeResizeDragState, point: ClientPoint): boolean => {
+    drag.latestScale = moleculeResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, drag.stretching);
+    drag.latestCumulativeScale = cumulativeMoleculeResizeScale(drag.startCumulativeScale, drag.latestScale);
+    const resized = moleculeResizeDocumentFromDrag(drag, point, drag.stretching);
+    showMoleculeResizeReadout(drag.objectId, drag.latestCumulativeScale, true);
+    if (resized === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: resized,
+      future: []
+    });
+    return true;
+  }, [installDocumentHistory, moleculeResizeDocumentFromDrag, replacePresentDocument, showMoleculeResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
     moveNativeMoleculeParts(drag.startDocument, drag.target, {
@@ -1958,6 +2224,20 @@ export function MainWindow({
     }
   }, []);
 
+  const clearMoleculeResizeDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+    const drag = moleculeResizeDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      moleculeResizeDragRef.current = null;
+      const page = pageRef.current;
+      if (page?.hasPointerCapture(event.pointerId)) {
+        page.releasePointerCapture(event.pointerId);
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
   const clearNativePartDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const drag = nativePartDragRef.current;
     if (drag?.pointerId === event.pointerId) {
@@ -2034,6 +2314,7 @@ export function MainWindow({
     }
 
     if (activeToolState.activeKind === "selection") {
+      event.preventDefault();
       selectionMarqueeRef.current = {
         pointerId: event.pointerId,
         startPoint: point,
@@ -2118,6 +2399,32 @@ export function MainWindow({
       return;
     }
 
+    const moleculeResizeDrag = moleculeResizeDragRef.current;
+    if (moleculeResizeDrag?.pointerId === event.pointerId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      moleculeResizeDrag.latestPoint = point;
+      if (!moleculeResizeDrag.dragging && clientPointDistance(moleculeResizeDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        moleculeResizeDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (moleculeResizeDrag.dragging) {
+        previewMoleculeResize(moleculeResizeDrag, point, event.shiftKey);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -2198,6 +2505,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     previewObjectDrag,
     previewObjectRotateDrag,
+    previewMoleculeResize,
     previewNativePartDrag,
     previewTextResize,
     updateBondGrowthPreview
@@ -2225,6 +2533,26 @@ export function MainWindow({
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
+      return;
+    }
+
+    const moleculeResizeDrag = moleculeResizeDragRef.current;
+    if (moleculeResizeDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? moleculeResizeDrag.latestPoint;
+      if (moleculeResizeDrag.dragging) {
+        moleculeResizeDrag.latestScale = moleculeResizeScaleFromDrag(
+          moleculeResizeDrag.centerPoint,
+          moleculeResizeDrag.startPoint,
+          point,
+          moleculeResizeDrag.stretching
+        );
+        const changed = commitMoleculeResize(moleculeResizeDrag, point);
+        setStatus(changed
+          ? moleculeResizeDrag.stretching ? "Stretched selected molecule" : "Resized selected molecule"
+          : "Molecule size unchanged");
+      }
+      clearMoleculeResizeDrag(event);
       return;
     }
 
@@ -2364,6 +2692,7 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "text") {
       event.stopPropagation();
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
+      restoreToolAfterTextPlacement();
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(objectId);
       setActiveAtomLabelEdit(undefined);
@@ -2383,26 +2712,41 @@ export function MainWindow({
     }
 
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
+      event.preventDefault();
       if (event.detail >= 2 && nativeMoleculeHit) {
         event.stopPropagation();
         replacePresentDocument((current) => selectDocumentObject(current, objectId));
         setActiveEditorObjectId(undefined);
-          setActiveTextEditObjectId(undefined);
-          setActiveAtomLabelEdit(undefined);
-          setHoveredNativeAtom(undefined);
-          setFreeformNativeBond(undefined);
-          setNativeDoubleBondSidePreview(undefined);
-          assignHoveredNativeDeleteTarget(undefined);
-          hoveredNativeAtomPointRef.current = undefined;
-          setSelectedNativeMoleculePart(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+        hoveredNativeAtomPointRef.current = undefined;
+        setSelectedNativeMoleculePart(undefined);
         setStatus("Selected molecule");
         return;
       }
 
-      const currentNativePart = selectedNativeMoleculePart?.objectId === objectId
-        ? selectedNativeMoleculePart
-        : undefined;
-      if (nativeMoleculeHit && currentNativePart && nativeSelectionContainsHit(currentNativePart, nativeMoleculeHit)) {
+      const dragIntent = nativeMoleculeSelectionDragIntent(document, objectId, selectedNativeMoleculePart, nativeMoleculeHit);
+      if (dragIntent.kind === "whole-object") {
+        event.stopPropagation();
+        objectDragRef.current = {
+          pointerId: event.pointerId,
+          objectId,
+          startDocument: document,
+          startPoint: point,
+          latestPoint: point,
+          startObjectX: object.x,
+          startObjectY: object.y,
+          dragging: false
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        return;
+      }
+
+      if (dragIntent.kind === "native-part") {
         event.stopPropagation();
         const selectedDocument = document.selection.objectIds.includes(objectId)
           ? document
@@ -2416,32 +2760,20 @@ export function MainWindow({
         setNativeDoubleBondSidePreview(undefined);
         assignHoveredNativeDeleteTarget(undefined);
         hoveredNativeAtomPointRef.current = undefined;
+        setSelectedNativeMoleculePart(dragIntent.target);
         nativePartDragRef.current = {
           pointerId: event.pointerId,
           objectId,
-          target: currentNativePart,
+          target: dragIntent.target,
           startDocument: selectedDocument,
           startPoint: point,
           latestPoint: point,
           dragging: false
         };
         (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
-        return;
-      }
-
-      if (nativeMoleculeHit && isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart)) {
-        event.stopPropagation();
-        objectDragRef.current = {
-          pointerId: event.pointerId,
-          objectId,
-          startDocument: document,
-          startPoint: point,
-          latestPoint: point,
-          startObjectX: object.x,
-          startObjectY: object.y,
-          dragging: false
-        };
-        event.currentTarget.setPointerCapture(event.pointerId);
+        setStatus(dragIntent.target.kind === "atom"
+          ? "Selected atom"
+          : dragIntent.target.kind === "bond" ? "Selected bond" : "Selected molecule parts");
         return;
       }
 
@@ -2469,6 +2801,7 @@ export function MainWindow({
     }
 
     if (shouldDragDocumentObject(object, activeToolState.activeKind)) {
+      event.preventDefault();
       event.stopPropagation();
       if (!shouldActivateDocumentObject(object, "selection")) {
         return;
@@ -2578,6 +2911,7 @@ export function MainWindow({
     document,
     pagePointFromPointerEvent,
     replacePresentDocument,
+    restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
     startAtomLabelEdit
   ]);
@@ -2616,11 +2950,78 @@ export function MainWindow({
       startDocument: selectedDocument,
       centerPoint: documentObjectCenter(object),
       startPoint: point,
+      startRotationDegrees: object.type === "molecule"
+        ? nativeMoleculeTransformState(object).rotationDegrees
+        : object.rotation,
       latestPoint: point,
       dragging: false
     };
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
     setStatus(object.type === "text" ? "Rotate selected text box" : "Rotate selected molecule");
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    document,
+    pagePointFromPointerEvent,
+    replacePresentDocument,
+    selectedNativeMoleculePart
+  ]);
+
+  const handleMoleculeResizePointerDown = useCallback((
+    objectId: string,
+    corner: MoleculeResizeCorner,
+    event: PointerEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+
+    const object = findDocumentObject(document, objectId);
+    const point = pagePointFromPointerEvent(event);
+    if (
+      object?.type !== "molecule" ||
+      object.atoms.length === 0 ||
+      !point ||
+      !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart)
+    ) {
+      return;
+    }
+
+    const selectedDocument = document.selection.objectIds.includes(objectId)
+      ? document
+      : selectDocumentObject(document, objectId);
+    replacePresentDocument(selectedDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    const transform = nativeMoleculeTransformState(object);
+    const startCumulativeScale = {
+      x: transform.scaleX,
+      y: transform.scaleY
+    };
+    moleculeResizeDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      corner,
+      startDocument: selectedDocument,
+      centerPoint: documentObjectCenter(object),
+      startPoint: point,
+      startCumulativeScale,
+      latestPoint: point,
+      latestScale: { x: 1, y: 1 },
+      latestCumulativeScale: startCumulativeScale,
+      stretching: event.shiftKey,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus("Resize selected molecule");
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
@@ -2764,6 +3165,32 @@ export function MainWindow({
       return;
     }
 
+    const moleculeResizeDrag = moleculeResizeDragRef.current;
+    if (moleculeResizeDrag?.pointerId === event.pointerId && moleculeResizeDrag.objectId === objectId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      moleculeResizeDrag.latestPoint = point;
+      if (!moleculeResizeDrag.dragging && clientPointDistance(moleculeResizeDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        moleculeResizeDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (moleculeResizeDrag.dragging) {
+        previewMoleculeResize(moleculeResizeDrag, point, event.shiftKey);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       const point = pagePointFromPointerEvent(event);
@@ -2830,6 +3257,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     previewObjectDrag,
     previewObjectRotateDrag,
+    previewMoleculeResize,
     previewNativeDoubleBondSideDrag,
     previewNativePartDrag,
     previewTextResize,
@@ -2899,6 +3327,26 @@ export function MainWindow({
       return;
     }
 
+    const moleculeResizeDrag = moleculeResizeDragRef.current;
+    if (moleculeResizeDrag?.pointerId === event.pointerId && moleculeResizeDrag.objectId === objectId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? moleculeResizeDrag.latestPoint;
+      if (moleculeResizeDrag.dragging) {
+        moleculeResizeDrag.latestScale = moleculeResizeScaleFromDrag(
+          moleculeResizeDrag.centerPoint,
+          moleculeResizeDrag.startPoint,
+          point,
+          moleculeResizeDrag.stretching
+        );
+        const changed = commitMoleculeResize(moleculeResizeDrag, point);
+        setStatus(changed
+          ? moleculeResizeDrag.stretching ? "Stretched selected molecule" : "Resized selected molecule"
+          : "Molecule size unchanged");
+      }
+      clearMoleculeResizeDrag(event);
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       event.stopPropagation();
@@ -2942,9 +3390,11 @@ export function MainWindow({
     clearNativePartDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
+    clearMoleculeResizeDrag,
     clearTextResize,
     commitNativeDoubleBondSideDrag,
     commitNativePartDrag,
+    commitMoleculeResize,
     commitTextResize,
     commitObjectDrag,
     commitObjectRotateDrag,
@@ -2975,12 +3425,19 @@ export function MainWindow({
       replacePresentDocument(objectRotateDrag.startDocument);
     }
 
+    const moleculeResizeDrag = moleculeResizeDragRef.current;
+    if (moleculeResizeDrag?.pointerId === event.pointerId && moleculeResizeDrag.dragging) {
+      replacePresentDocument(moleculeResizeDrag.startDocument);
+      setMoleculeResizeReadout(undefined);
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
     }
     clearNativePartDrag(event);
     clearObjectRotateDrag(event);
+    clearMoleculeResizeDrag(event);
     clearObjectDrag(event);
     clearNativeBondEditDrag(event);
     clearNativeBondDrag(event);
@@ -2992,6 +3449,7 @@ export function MainWindow({
     clearNativeBondDrag,
     clearNativeBondEditDrag,
     clearNativePartDrag,
+    clearMoleculeResizeDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
     clearTextResize,
@@ -3004,7 +3462,8 @@ export function MainWindow({
       nativeBondEditDragRef.current?.objectId === objectId ||
       nativePartDragRef.current?.objectId === objectId ||
       objectDragRef.current?.objectId === objectId ||
-      objectRotateDragRef.current?.objectId === objectId
+      objectRotateDragRef.current?.objectId === objectId ||
+      moleculeResizeDragRef.current?.objectId === objectId
     ) {
       return;
     }
@@ -3069,6 +3528,7 @@ export function MainWindow({
                   title={toolset.title}
                   showMainStyleControls={toolset.id === "core.main"}
                   currentTextStyle={selectedTextObject ? nativeTextStyleFromObjectStyle(selectedTextObject.style) : textStyleDefaults}
+                  currentTextScript={selectedTextScript}
                   onInvoke={invoke}
                 />
               </section>
@@ -3141,12 +3601,15 @@ export function MainWindow({
                     doubleBondSidePreview={
                       nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                     }
+                    rotateReadout={objectRotateReadout?.objectId === object.id ? objectRotateReadout : undefined}
+                    resizeReadout={moleculeResizeReadout?.objectId === object.id ? moleculeResizeReadout : undefined}
                     onPointerDown={handleObjectPointerDown}
                     onPointerMove={handleObjectPointerMove}
                     onPointerUp={handleObjectPointerUp}
                     onPointerCancel={handleObjectPointerCancel}
                     onPointerLeave={handleObjectPointerLeave}
                     onRotatePointerDown={handleObjectRotatePointerDown}
+                    onMoleculeResizePointerDown={handleMoleculeResizePointerDown}
                     onContextMenu={handleObjectContextMenu}
                     onTextChange={updateTextObjectContent}
                     onTextEditStart={startTextObjectEdit}
@@ -3202,17 +3665,98 @@ function documentObjectCenter(object: Pick<DocumentObject, "x" | "y" | "width" |
   };
 }
 
-function rotationDeltaDegrees(center: ClientPoint, start: ClientPoint, latest: ClientPoint): number {
+export function rotationDeltaDegrees(center: ClientPoint, start: ClientPoint, latest: ClientPoint): number {
   const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
   const latestAngle = Math.atan2(latest.y - center.y, latest.x - center.x);
-  let delta = (latestAngle - startAngle) * 180 / Math.PI;
-  if (delta > 180) {
-    delta -= 360;
+  let angularDelta = (latestAngle - startAngle) * 180 / Math.PI;
+  if (angularDelta > 180) {
+    angularDelta -= 360;
   }
-  if (delta < -180) {
-    delta += 360;
+  if (angularDelta < -180) {
+    angularDelta += 360;
   }
+
+  const radius = clientPointDistance(center, start);
+  if (radius <= 0.001) {
+    return Number(angularDelta.toFixed(3));
+  }
+
+  const tangent = {
+    x: -(start.y - center.y) / radius,
+    y: (start.x - center.x) / radius
+  };
+  const dragVector = {
+    x: latest.x - start.x,
+    y: latest.y - start.y
+  };
+  const tangentialDelta =
+    (dragVector.x * tangent.x + dragVector.y * tangent.y) * OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL;
+  const delta = Math.abs(tangentialDelta) > Math.abs(angularDelta) ? tangentialDelta : angularDelta;
+
   return Number(delta.toFixed(3));
+}
+
+export function rotationReadoutDegrees(angleDegrees: number): number {
+  const normalized = ((angleDegrees % 360) + 360) % 360;
+  const rounded = Math.round(normalized);
+  if (rounded === 0 && Math.abs(angleDegrees) >= 0.5) {
+    return 360;
+  }
+  return rounded === 360 ? 360 : rounded;
+}
+
+export function cumulativeRotationReadoutDegrees(startDegrees: number, deltaDegrees: number): number {
+  return rotationReadoutDegrees(startDegrees + deltaDegrees);
+}
+
+export function moleculeResizeScaleFromDrag(
+  center: ClientPoint,
+  start: ClientPoint,
+  latest: ClientPoint,
+  stretch: boolean
+): MoleculeResizeScale {
+  const startVector = {
+    x: start.x - center.x,
+    y: start.y - center.y
+  };
+  const latestVector = {
+    x: latest.x - center.x,
+    y: latest.y - center.y
+  };
+  const startLengthSquared = startVector.x * startVector.x + startVector.y * startVector.y;
+  if (startLengthSquared <= 0.001) {
+    return { x: 1, y: 1 };
+  }
+
+  if (!stretch) {
+    const projectedScale =
+      (latestVector.x * startVector.x + latestVector.y * startVector.y) / startLengthSquared;
+    const uniformScale = clampMoleculeResizeScale(projectedScale);
+    return { x: uniformScale, y: uniformScale };
+  }
+
+  return {
+    x: clampMoleculeResizeScale(Math.abs(startVector.x) <= 0.001 ? 1 : latestVector.x / startVector.x),
+    y: clampMoleculeResizeScale(Math.abs(startVector.y) <= 0.001 ? 1 : latestVector.y / startVector.y)
+  };
+}
+
+export function moleculeResizeReadoutPercent(scale: number): number {
+  return Math.round(scale * 100);
+}
+
+export function cumulativeMoleculeResizeScale(
+  startScale: MoleculeResizeScale,
+  deltaScale: MoleculeResizeScale
+): MoleculeResizeScale {
+  return {
+    x: Number((startScale.x * deltaScale.x).toFixed(4)),
+    y: Number((startScale.y * deltaScale.y).toFixed(4))
+  };
+}
+
+function clampMoleculeResizeScale(scale: number): number {
+  return Number(Math.max(MOLECULE_RESIZE_MIN_SCALE, scale).toFixed(4));
 }
 
 function capitalizeLabel(label: string): string {
@@ -3334,6 +3878,23 @@ interface NativeBondLineSegment {
   doubleBondSide?: NativeDoubleBondSide;
 }
 
+function isTerminalHeteroatomDoubleBond(
+  fromAtom: MoleculeObject["atoms"][number],
+  toAtom: MoleculeObject["atoms"][number],
+  object: MoleculeObject,
+  bond: MoleculeObject["bonds"][number]
+): boolean {
+  if (bond.order !== "double") {
+    return false;
+  }
+
+  return isTerminalHeteroatom(fromAtom, object) || isTerminalHeteroatom(toAtom, object);
+}
+
+function isTerminalHeteroatom(atom: MoleculeObject["atoms"][number], object: MoleculeObject): boolean {
+  return atom.element !== "C" && atom.element !== "H" && nativeAtomBondCount(object, atom.id) === 1;
+}
+
 function bondLineSegments(
   fromAtom: MoleculeObject["atoms"][number],
   toAtom: MoleculeObject["atoms"][number],
@@ -3372,6 +3933,28 @@ function bondLineSegments(
 
   if (bond.order === "double") {
     const doubleBondSide = bond.display?.doubleBondSide ?? "left";
+    if (isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
+      const offset = gap / 2;
+      return [
+        {
+          x1: x1 + normal.x * offset,
+          y1: y1 + normal.y * offset,
+          x2: x2 + normal.x * offset,
+          y2: y2 + normal.y * offset,
+          segment: "primary",
+          doubleBondSide
+        },
+        {
+          x1: x1 - normal.x * offset,
+          y1: y1 - normal.y * offset,
+          x2: x2 - normal.x * offset,
+          y2: y2 - normal.y * offset,
+          segment: "secondary",
+          doubleBondSide
+        }
+      ];
+    }
+
     const offset = doubleBondSide === "left" ? gap : -gap;
     const minimumSecondaryLength = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, trimmedLength);
     const inset = Math.min(
@@ -3669,6 +4252,56 @@ export function shouldOpenMoleculeEditorFromObjectClick(
   void activeToolKind;
   void clickCount;
   return false;
+}
+
+export function hoveredNativeTargetShortcutCommand(
+  target: NativeMoleculeDeleteTarget | undefined,
+  key: string
+): string | undefined {
+  if (target?.kind === "bond") {
+    if (key === "1") {
+      return "bond.setHoveredBondOrder.single";
+    }
+    if (key === "2") {
+      return "bond.setHoveredBondOrder.double";
+    }
+    if (key === "3") {
+      return "bond.setHoveredBondOrder.triple";
+    }
+    return undefined;
+  }
+
+  if (target?.kind !== "atom") {
+    return undefined;
+  }
+
+  if (key === "1") {
+    return "atom.addSingleBondToHoveredAtom";
+  }
+  if (key.toLowerCase() === "k") {
+    return "atom.addCarbonylToHoveredAtom";
+  }
+  if (key === "+") {
+    return "atom.addPositiveChargeToHoveredAtom";
+  }
+  if (key === "-") {
+    return "atom.addNegativeChargeToHoveredAtom";
+  }
+
+  const element = nativeElementFromKeyboardKey(key);
+  return element ? atomElementCommandId(element) : undefined;
+}
+
+export function activeNativeTargetShortcutCommand(
+  document: ChemDraftDocument,
+  selectedPart: NativeMoleculeSelectionPart | undefined,
+  hoveredTarget: NativeMoleculeDeleteTarget | undefined,
+  key: string
+): string | undefined {
+  return hoveredNativeTargetShortcutCommand(
+    hoveredTarget ?? nativeDeleteTargetFromSelectionPart(document, selectedPart),
+    key
+  );
 }
 
 export function nativeDeleteTargetFromSelectionPart(
@@ -4006,7 +4639,7 @@ export function selectionInSelectionRect(
       continue;
     }
 
-    if (rectanglesOverlap(rect, objectBounds(object))) {
+    if (rectangleContainsRect(rect, objectBounds(object))) {
       objectIds.push(object.id);
     }
   }
@@ -4031,15 +4664,15 @@ function nativeMoleculeSelectionCoversWholeObject(
   );
 }
 
-function rectanglesOverlap(
-  left: { x: number; y: number; width: number; height: number },
-  right: { x: number; y: number; width: number; height: number }
+function rectangleContainsRect(
+  outer: { x: number; y: number; width: number; height: number },
+  inner: { x: number; y: number; width: number; height: number }
 ): boolean {
   return (
-    left.x <= right.x + right.width &&
-    left.x + left.width >= right.x &&
-    left.y <= right.y + right.height &&
-    left.y + left.height >= right.y
+    inner.x >= outer.x &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y >= outer.y &&
+    inner.y + inner.height <= outer.y + outer.height
   );
 }
 
@@ -4154,6 +4787,32 @@ function nativeSelectionFromHit(
     : { objectId, kind: "bond", bondId: hit.bondId };
 }
 
+export function nativeMoleculeSelectionDragIntent(
+  document: ChemDraftDocument,
+  objectId: string,
+  selectedPart: NativeMoleculeSelectionPart | undefined,
+  hit: NativeMoleculeDeleteHit | undefined
+): NativeMoleculeSelectionDragIntent {
+  if (!hit) {
+    return { kind: "none" };
+  }
+
+  if (isWholeNativeMoleculeSelected(document, objectId, selectedPart)) {
+    return { kind: "whole-object" };
+  }
+
+  const currentPart = selectedPart?.objectId === objectId ? selectedPart : undefined;
+  if (currentPart && nativeSelectionContainsHit(currentPart, hit)) {
+    return { kind: "native-part", target: currentPart };
+  }
+
+  if (hit.kind === "atom") {
+    return { kind: "native-part", target: nativeSelectionFromHit(objectId, hit) };
+  }
+
+  return { kind: "none" };
+}
+
 function nativeSelectionIncludesAtom(part: NativeMoleculeSelectionPart | undefined, atomId: string): boolean {
   if (part?.kind === "atom") {
     return part.atomId === atomId;
@@ -4231,12 +4890,15 @@ function DocumentObjectView({
   deleteTarget,
   freeformPreview,
   doubleBondSidePreview,
+  rotateReadout,
+  resizeReadout,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onPointerCancel,
   onPointerLeave,
   onRotatePointerDown,
+  onMoleculeResizePointerDown,
   onContextMenu,
   onTextChange,
   onTextEditStart,
@@ -4259,12 +4921,15 @@ function DocumentObjectView({
   deleteTarget?: NativeMoleculeDeleteTarget;
   freeformPreview?: FreeformNativeBondPreview;
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
+  rotateReadout?: ObjectRotateReadoutState;
+  resizeReadout?: MoleculeResizeReadoutState;
   onPointerDown(objectId: string, event: PointerEvent<HTMLDivElement>): void;
   onPointerMove(objectId: string, event: PointerEvent<HTMLDivElement>): void;
   onPointerUp(objectId: string, event: PointerEvent<HTMLDivElement>): void;
   onPointerCancel(event: PointerEvent<HTMLDivElement>): void;
   onPointerLeave(objectId: string): void;
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
+  onMoleculeResizePointerDown(objectId: string, corner: MoleculeResizeCorner, event: PointerEvent<HTMLButtonElement>): void;
   onContextMenu(objectId: string, event: ReactMouseEvent<HTMLDivElement>): void;
   onTextChange(objectId: string, text: string): void;
   onTextEditStart(objectId: string): void;
@@ -4312,6 +4977,9 @@ function DocumentObjectView({
   };
   const handleRotatePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     onRotatePointerDown(object.id, event);
+  };
+  const handleMoleculeResizePointerDown = (corner: MoleculeResizeCorner) => (event: PointerEvent<HTMLButtonElement>) => {
+    onMoleculeResizePointerDown(object.id, corner, event);
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     onTextChange(object.id, event.currentTarget.value);
@@ -4423,6 +5091,7 @@ function DocumentObjectView({
         if (!fromAtom || !toAtom) {
           return [];
         }
+
         const displayedBond = doubleBondSidePreview?.bondId === bond.id && bond.order === "double"
           ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: doubleBondSidePreview.side } }
           : bond;
@@ -4440,8 +5109,85 @@ function DocumentObjectView({
           bond: displayedBond,
           key: `${bond.id}-${segmentIndex}`
         }));
+
         return [{ bond: displayedBond, segments }];
       });
+      const wholeNativeMoleculeSelected = selected && selectedPart?.objectId !== object.id;
+      const selectedBondIds = new Set(
+        wholeNativeMoleculeSelected
+          ? object.bonds.map((bond) => bond.id)
+          : object.bonds
+              .filter((bond) => nativeSelectionIncludesBond(selectedPart, bond.id))
+              .map((bond) => bond.id)
+      );
+      const selectedAtomIds = new Set(
+        wholeNativeMoleculeSelected
+          ? object.atoms.map((atom) => atom.id)
+          : object.atoms
+              .filter((atom) => nativeSelectionIncludesAtom(selectedPart, atom.id))
+              .map((atom) => atom.id)
+      );
+      object.bonds
+        .filter((bond) => selectedBondIds.has(bond.id))
+        .forEach((bond) => {
+          selectedAtomIds.add(bond.fromAtomId);
+          selectedAtomIds.add(bond.toAtomId);
+        });
+      const selectionBlob = selectedBondIds.size > 0 || selectedAtomIds.size > 0 ? (
+        <g
+          className={[
+            "native-molecule-selection-blob",
+            selectedBondIds.size > 0 ? "native-bond-selection-connectors" : "",
+            wholeNativeMoleculeSelected ? "native-whole-selection" : ""
+          ].filter(Boolean).join(" ")}
+          data-selection-blob="true"
+          data-bond-selection-connectors={selectedBondIds.size > 0 ? "true" : undefined}
+          data-whole-molecule-selection={wholeNativeMoleculeSelected ? "true" : undefined}
+        >
+          {object.bonds.flatMap((bond) => {
+            if (!selectedBondIds.has(bond.id)) {
+              return [];
+            }
+
+            const fromAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+            const toAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+            if (!fromAtom || !toAtom) {
+              return [];
+            }
+
+            return [
+              <line
+                className={[
+                  "native-selection-blob-bond",
+                  "native-bond-selection-connector",
+                  wholeNativeMoleculeSelected ? "native-whole-selection-bond" : ""
+                ].filter(Boolean).join(" ")}
+                data-selected-bond-id={bond.id}
+                key={`selection-blob-bond-${bond.id}`}
+                x1={fromAtom.x - object.x}
+                y1={fromAtom.y - object.y}
+                x2={toAtom.x - object.x}
+                y2={toAtom.y - object.y}
+              />
+            ];
+          })}
+          {object.atoms
+            .filter((atom) => selectedAtomIds.has(atom.id))
+            .map((atom) => (
+              <circle
+                className={[
+                  "native-selection-blob-atom",
+                  wholeNativeMoleculeSelected ? "native-whole-selection-atom" : "native-atom-selected"
+                ].filter(Boolean).join(" ")}
+                data-selected-atom-id={atom.id}
+                cx={atom.x - object.x}
+                cy={atom.y - object.y}
+                key={`selection-blob-atom-${atom.id}`}
+                r="8.8"
+              />
+            ))}
+        </g>
+      ) : null;
       return (
         <div
           className={[
@@ -4484,23 +5230,6 @@ function DocumentObjectView({
           onContextMenu={handleObjectContextMenu}
         >
           <svg className="molecule-glyph" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
-            {selected ? (
-              <g className="native-whole-selection" data-whole-molecule-selection="true">
-                {bondSegmentGroups.flatMap(({ bond, segments }) =>
-                  segments.map((segment) => (
-                    <line
-                      className="native-whole-selection-bond"
-                      data-selected-bond-id={bond.id}
-                      key={`whole-selection-bond-${segment.key}`}
-                      x1={segment.x1}
-                      y1={segment.y1}
-                      x2={segment.x2}
-                      y2={segment.y2}
-                    />
-                  ))
-                )}
-              </g>
-            ) : null}
             {bondSegmentGroups.map(({ bond, segments }) => (
               <g className="native-bond-layer" data-bond-layer-id={bond.id} key={`bond-layer-${bond.id}`}>
                 {segments.map((segment) => (
@@ -4600,6 +5329,7 @@ function DocumentObjectView({
                   />
                 );
               })}
+            {selectionBlob}
             {atomLabels
               .map(({ atom, label }) => (
                 <g
@@ -4639,20 +5369,6 @@ function DocumentObjectView({
                 r="8"
               />
             ))}
-            {selected ? (
-              <g className="native-whole-selection-atoms" data-whole-molecule-selected-atoms="true">
-                {object.atoms.map((atom) => (
-                  <circle
-                    className="native-whole-selection-atom"
-                    data-selected-atom-id={atom.id}
-                    cx={atom.x - object.x}
-                    cy={atom.y - object.y}
-                    key={`whole-selection-atom-${atom.id}`}
-                    r="8.5"
-                  />
-                ))}
-              </g>
-            ) : null}
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
@@ -4675,17 +5391,6 @@ function DocumentObjectView({
                     !
                   </text>
                 </g>
-              ))}
-            {object.atoms
-              .filter((atom) => nativeSelectionIncludesAtom(selectedPart, atom.id))
-              .map((atom) => (
-                <circle
-                  className="native-atom-selected"
-                  cx={atom.x - object.x}
-                  cy={atom.y - object.y}
-                  key={`selected-${atom.id}`}
-                  r="8"
-                />
               ))}
             {object.atoms
               .filter((atom) => deleteTarget?.kind === "atom" && atom.id === deleteTarget.atomId)
@@ -4722,6 +5427,17 @@ function DocumentObjectView({
             ))}
           </svg>
           {selected ? (
+            <>
+              <MoleculeResizeHandles onResizeStart={handleMoleculeResizePointerDown} />
+              {resizeReadout ? (
+                <MoleculeResizeReadout
+                  scaleXPercent={resizeReadout.scaleXPercent}
+                  scaleYPercent={resizeReadout.scaleYPercent}
+                />
+              ) : null}
+            </>
+          ) : null}
+          {selected ? (
             <button
               type="button"
               className="native-molecule-rotate-handle"
@@ -4730,17 +5446,10 @@ function DocumentObjectView({
               title="Rotate selected molecule"
               onPointerDown={handleRotatePointerDown}
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  className="native-molecule-rotate-arc"
-                  d="M7.4 13.1a5.7 5.7 0 0 1 9.2-4.5"
-                />
-                <path
-                  className="native-molecule-rotate-arrow"
-                  d="M16.9 4.8v4.8h-4.8"
-                />
-                <circle className="native-molecule-rotate-center" cx="12" cy="12" r="1.6" />
-              </svg>
+              <RotateSelectionIcon />
+              {rotateReadout ? (
+                <RotateSelectionReadout degrees={rotateReadout.degrees} />
+              ) : null}
             </button>
           ) : null}
           {editingAtomLabel ? object.atoms
@@ -4888,17 +5597,10 @@ function DocumentObjectView({
             title="Rotate selected text box"
             onPointerDown={handleRotatePointerDown}
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                className="native-molecule-rotate-arc"
-                d="M7.4 13.1a5.7 5.7 0 0 1 9.2-4.5"
-              />
-              <path
-                className="native-molecule-rotate-arrow"
-                d="M16.9 4.8v4.8h-4.8"
-              />
-              <circle className="native-molecule-rotate-center" cx="12" cy="12" r="1.6" />
-            </svg>
+            <RotateSelectionIcon />
+            {rotateReadout ? (
+              <RotateSelectionReadout degrees={rotateReadout.degrees} />
+            ) : null}
           </button>
         ) : null}
         {editingText ? (
@@ -4919,9 +5621,10 @@ function DocumentObjectView({
             }}
             onKeyDown={handleTextKeyDown}
             onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
           />
         ) : (
-          <span className="text-object-content">{object.text}</span>
+          <TextObjectContent object={object} />
         )}
       </div>
     );
@@ -4941,6 +5644,119 @@ function DocumentObjectView({
     >
       {object.type}
     </div>
+  );
+}
+
+function TextObjectContent({ object }: { object: TextObject }) {
+  return (
+    <span className="text-object-content">
+      {textObjectSpansForRendering(object).map((span, index) => (
+        <span
+          className="text-object-run"
+          data-text-script={span.script}
+          key={`${span.script}-${index}-${span.text}`}
+        >
+          {span.text}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function textObjectSpansForRendering(object: TextObject): TextSpan[] {
+  const spans = object.spans.filter((span) => span.text.length > 0);
+  if (spans.length > 0 && spans.map((span) => span.text).join("") === object.text) {
+    return spans;
+  }
+
+  return [{ text: object.text, script: "normal", style: {} }];
+}
+
+function textScriptForTextObject(object: TextObject): TextSpan["script"] {
+  const scripts = new Set(
+    textObjectSpansForRendering(object)
+      .filter((span) => span.text.length > 0)
+      .map((span) => span.script)
+  );
+
+  return scripts.size === 1 ? [...scripts][0] ?? "normal" : "normal";
+}
+
+function MoleculeResizeHandles({
+  onResizeStart
+}: {
+  onResizeStart(corner: MoleculeResizeCorner): (event: PointerEvent<HTMLButtonElement>) => void;
+}) {
+  const corners: MoleculeResizeCorner[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
+
+  return (
+    <>
+      {corners.map((corner) => (
+        <button
+          aria-label={`Resize molecule ${corner.replace("-", " ")}`}
+          className={`native-molecule-resize-handle native-molecule-resize-${corner}`}
+          data-molecule-resize-corner={corner}
+          key={corner}
+          title="Resize molecule"
+          type="button"
+          onPointerDown={onResizeStart(corner)}
+        />
+      ))}
+    </>
+  );
+}
+
+function MoleculeResizeReadout({
+  scaleXPercent,
+  scaleYPercent
+}: {
+  scaleXPercent: number;
+  scaleYPercent: number;
+}) {
+  return (
+    <span
+      className="native-molecule-resize-readout"
+      data-molecule-resize-readout="true"
+      aria-label={`Molecule scale X ${scaleXPercent} percent Y ${scaleYPercent} percent`}
+    >
+      X {scaleXPercent}% Y {scaleYPercent}%
+    </span>
+  );
+}
+
+function RotateSelectionIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" data-rotate-icon="double-headed">
+      <path
+        className="native-molecule-rotate-arc"
+        d="M7 8.9a6.9 6.9 0 0 1 10.2-1.3"
+      />
+      <path
+        className="native-molecule-rotate-arrow"
+        d="M17.4 4.6l0.4 4.1-4.1-0.3"
+      />
+      <path
+        className="native-molecule-rotate-arc"
+        d="M17 15.1a6.9 6.9 0 0 1-10.2 1.3"
+      />
+      <path
+        className="native-molecule-rotate-arrow"
+        d="M6.6 19.4l-0.4-4.1 4.1 0.3"
+      />
+    </svg>
+  );
+}
+
+function RotateSelectionReadout({ degrees }: { degrees: number }) {
+  return (
+    <span
+      className="native-molecule-rotate-readout"
+      data-rotate-readout="true"
+      aria-label={`Rotation ${degrees} degrees`}
+    >
+      {degrees}
+      <span aria-hidden="true">°</span>
+    </span>
   );
 }
 

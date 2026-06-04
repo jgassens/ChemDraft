@@ -262,6 +262,10 @@ pub fn run() {
                 }
             }
 
+            if let Err(error) = focus_main_document_window_impl(app) {
+                eprintln!("Could not focus ChemDraft document window: {error}");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -271,6 +275,7 @@ pub fn run() {
             toggle_toolset_window,
             list_toolset_window_states,
             load_toolset_customization_state,
+            focus_main_document_window,
             route_toolset_command,
             read_clipboard_payload,
             open_tool_palette,
@@ -310,6 +315,45 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     window.show().map_err(|error| error.to_string())?;
     window.center().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
+}
+
+fn focus_main_document_window_impl<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    let window = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Main document window is not available.".to_string())?;
+
+    window
+        .set_focusable(true)
+        .map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    focus_native_document_window(&window)?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    Ok(window)
+}
+
+#[cfg(target_os = "macos")]
+fn focus_native_document_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+    let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
+        return Err("Could not access native ChemDraft document window.".to_string());
+    };
+
+    ns_window.makeMainWindow();
+    ns_window.makeKeyWindow();
+    ns_window.makeKeyAndOrderFront(None);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn focus_native_document_window<R: Runtime>(
+    _window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    Ok(())
 }
 
 fn create_main_window<R: Runtime>(
@@ -423,11 +467,17 @@ fn load_toolset_customization_state(
 }
 
 #[tauri::command]
+fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
+    focus_main_document_window_impl(&app).map(|_| ())
+}
+
+#[tauri::command]
 fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
     if command_id.trim().is_empty() {
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
+    focus_main_document_window_impl(&app)?;
     emit_command_to_main(&app, command_id.trim())
 }
 
@@ -923,7 +973,7 @@ fn ensure_toolset_window<R: Runtime>(
     )
     .accept_first_mouse(true)
     .focusable(false)
-    .resizable(false)
+    .resizable(true)
     .decorations(false)
     .shadow(false)
     .skip_taskbar(true)
@@ -990,7 +1040,9 @@ fn configure_toolset_utility_window<R: Runtime>(
     );
     collection_behavior.remove(NSWindowCollectionBehavior::CanJoinAllApplications);
     ns_window.setCollectionBehavior(collection_behavior);
-    ns_window.orderFront(None);
+    window
+        .set_focusable(false)
+        .map_err(|error| error.to_string())?;
 
     Ok(())
 }

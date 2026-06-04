@@ -61,7 +61,7 @@ export const coreDrawingToolDefinitions = [
     kind: "bond",
     category: "structure",
     icon: "bond",
-    defaultShortcut: "B"
+    defaultShortcut: "M"
   },
   {
     commandId: "tool.wedgeBond",
@@ -215,7 +215,6 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "mechanism",
-    defaultShortcut: "M",
     disabledReason: EDITOR_ADAPTER_UNAVAILABLE
   },
   {

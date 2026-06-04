@@ -43,6 +43,18 @@ function moleculeObject(): MoleculeObject {
   };
 }
 
+function svgLineNumberAttribute(lineMarkup: string, attribute: "x1" | "y1" | "x2" | "y2"): number {
+  const match = lineMarkup.match(new RegExp(`${attribute}="([^"]+)"`));
+  return Number(match?.[1]);
+}
+
+function svgLineLength(lineMarkup: string): number {
+  return Math.hypot(
+    svgLineNumberAttribute(lineMarkup, "x2") - svgLineNumberAttribute(lineMarkup, "x1"),
+    svgLineNumberAttribute(lineMarkup, "y2") - svgLineNumberAttribute(lineMarkup, "y1")
+  );
+}
+
 describe("exportDocumentToSvg", () => {
   it("exports the Phase 4 native document subset as SVG", () => {
     const document = applyPatch(
@@ -211,6 +223,51 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain(">91%</tspan>");
   });
 
+  it("exports native text script spans", () => {
+    const textObject = {
+      id: "text_script_export_001",
+      type: "text",
+      x: 144,
+      y: 188,
+      width: 120,
+      height: 42,
+      rotation: 0,
+      style: {
+        fontFamily: "Arial, Helvetica, sans-serif",
+        fontSizePx: 20,
+        color: "#111111",
+        letterSpacingPx: 0,
+        lineHeight: 1.2,
+        paragraphSpacingPx: 0,
+        textAlign: "left",
+        fontWeight: 400,
+        fontStyle: "normal",
+        textDecoration: "none"
+      },
+      text: "H2O",
+      spans: [
+        { text: "H", script: "normal", style: {} },
+        { text: "2", script: "subscript", style: {} },
+        { text: "O", script: "normal", style: {} }
+      ]
+    } satisfies TextObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Text Script Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: textObject },
+      { now: timestamp }
+    );
+
+    const result = exportDocumentToSvg(document);
+
+    expect(result.warnings).toEqual([]);
+    expect(result.contents).toContain('data-object-id="text_script_export_001"');
+    expect(result.contents).toContain('baseline-shift="sub"');
+    expect(result.contents).toContain('font-size="72%"');
+    expect(result.contents).toContain(">H</tspan>");
+    expect(result.contents).toContain(">2</tspan>");
+    expect(result.contents).toContain(">O</tspan>");
+  });
+
   it("exports condensed atom labels with numeric subscripts", () => {
     const methaneMolecule = {
       ...moleculeObject(),
@@ -335,6 +392,51 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain('data-double-bond-side="right"');
     expect(result.contents).toContain('stroke-width="8"');
     expect(result.contents).toContain('stroke-width="2"');
+  });
+
+  it("exports terminal heteroatom double bonds as centered equal-length pairs", () => {
+    const styledMolecule = {
+      ...moleculeObject(),
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        source: "chemdraft-native-drawing"
+      },
+      structure: "C=O",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "O", x: 142, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_001",
+          fromAtomId: "atom_001",
+          toAtomId: "atom_002",
+          order: "double",
+          display: { doubleBondSide: "left" }
+        }
+      ]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Carbonyl Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: styledMolecule },
+      { now: timestamp }
+    );
+
+    const result = exportDocumentToSvg(document);
+    const carbonylLineMarkups = result.contents.match(
+      /<line data-bond-id="bond_001" data-bond-order="double" data-bond-segment="(?:primary|secondary)"[^>]*stroke-width="2"[^>]*>/g
+    ) ?? [];
+    const primaryLineMarkup = carbonylLineMarkups.find((line) => line.includes('data-bond-segment="primary"')) ?? "";
+    const secondaryLineMarkup = carbonylLineMarkups.find((line) => line.includes('data-bond-segment="secondary"')) ?? "";
+
+    expect(result.contents).toContain('data-structure="C=O"');
+    expect(carbonylLineMarkups).toHaveLength(2);
+    expect(primaryLineMarkup).not.toBe("");
+    expect(secondaryLineMarkup).not.toBe("");
+    expect(svgLineLength(primaryLineMarkup)).toBeCloseTo(svgLineLength(secondaryLineMarkup), 3);
+    expect(svgLineNumberAttribute(primaryLineMarkup, "x1")).toBeCloseTo(svgLineNumberAttribute(secondaryLineMarkup, "x1"), 3);
+    expect(svgLineNumberAttribute(primaryLineMarkup, "x2")).toBeCloseTo(svgLineNumberAttribute(secondaryLineMarkup, "x2"), 3);
+    expect(Math.abs(svgLineNumberAttribute(primaryLineMarkup, "y1") - svgLineNumberAttribute(secondaryLineMarkup, "y1"))).toBeGreaterThan(0);
   });
 
   it("exports molecule drawing order as explicit layers for over-under crossings", () => {

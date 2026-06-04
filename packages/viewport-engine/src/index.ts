@@ -84,7 +84,7 @@ export const centimeterRulerUnit: RulerUnitState = {
 
 export function createViewportState(options: ViewportOptions = {}): ViewportState {
   const minZoom = options.minZoom ?? 0.5;
-  const maxZoom = options.maxZoom ?? 2;
+  const maxZoom = options.maxZoom ?? 8.5;
 
   return {
     scale: clamp(options.scale ?? 1, minZoom, maxZoom),

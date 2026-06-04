@@ -1,11 +1,18 @@
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
 export const TOOLSET_WINDOW_STATE_EVENT = "chemdraft://toolset-window-state";
+export const TOOLSET_ACTIVE_TOOL_EVENT = "chemdraft://toolset-active-tool";
+export const TOOLSET_ACTIVE_TOOL_REQUEST_EVENT = "chemdraft://toolset-active-tool-request";
 export const DEFAULT_TOOLSET_ID = "core.main";
 
 export interface ToolsetWindowPosition {
   x: number;
   y: number;
+}
+
+export interface ToolsetWindowSize {
+  width: number;
+  height: number;
 }
 
 export interface ToolsetWindowState {
@@ -22,6 +29,7 @@ export interface ToolsetCommandPayload {
 }
 
 export type PaletteCommandPayload = ToolsetCommandPayload;
+export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 
 type Unlisten = () => void;
 
@@ -40,6 +48,10 @@ export function createPaletteCommandPayload(commandId: string): PaletteCommandPa
 
 export function createToolsetCommandPayload(commandId: string): ToolsetCommandPayload {
   return { commandId };
+}
+
+export function createToolsetActiveToolPayload(commandId: string): ToolsetActiveToolPayload {
+  return createToolsetCommandPayload(commandId);
 }
 
 export function createToolsetWindowStatePayload(
@@ -115,6 +127,27 @@ export async function routeToolsetCommand(commandId: string): Promise<void> {
   await invoke("route_toolset_command", createToolsetCommandPayload(commandId) as unknown as Record<string, unknown>);
 }
 
+export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
+  const payload = createToolsetActiveToolPayload(commandId);
+  dispatchDomToolsetEvent(TOOLSET_ACTIVE_TOOL_EVENT, payload);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetActiveToolPayload>(TOOLSET_ACTIVE_TOOL_EVENT, payload);
+}
+
+export async function requestToolsetActiveTool(): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, {});
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
+}
+
 export async function startPaletteWindowDrag(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
@@ -145,6 +178,33 @@ export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPos
 
   const { getCurrentWindow, LogicalPosition } = await import("@tauri-apps/api/window");
   await getCurrentWindow().setPosition(new LogicalPosition(position.x, position.y));
+}
+
+export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
+}
+
+export async function focusCurrentWindowAndWebview(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const [{ invoke }, { getCurrentWindow }, { getCurrentWebview }] = await Promise.all([
+    import("@tauri-apps/api/core"),
+    import("@tauri-apps/api/window"),
+    import("@tauri-apps/api/webview")
+  ]);
+
+  await invoke("focus_main_document_window").catch(() => undefined);
+  await Promise.allSettled([
+    getCurrentWindow().setFocus(),
+    getCurrentWebview().setFocus()
+  ]);
 }
 
 export async function listenForPaletteCommands(handler: (commandId: string) => void): Promise<Unlisten> {
@@ -178,6 +238,24 @@ export async function listenForToolsetCommands(handler: (commandId: string) => v
   };
 }
 
+export async function listenForToolsetActiveTool(handler: (commandId: string) => void): Promise<Unlisten> {
+  return listenForToolsetCommandPayload(TOOLSET_ACTIVE_TOOL_EVENT, handler);
+}
+
+export async function listenForToolsetActiveToolRequests(handler: () => void): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => handler());
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => handler());
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
 function dedupeAdjacentCommands(handler: (commandId: string) => void): (commandId: string) => void {
   let lastCommandId: string | undefined;
   let lastCommandAt = 0;
@@ -195,14 +273,46 @@ function dedupeAdjacentCommands(handler: (commandId: string) => void): (commandI
 }
 
 function listenForDomToolsetCommands(handler: (commandId: string) => void): Unlisten {
+  return listenForDomToolsetCommandPayload(DOM_COMMAND_EVENT, handler);
+}
+
+function dispatchDomToolsetEvent(eventName: string, payload: unknown): void {
+  window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+}
+
+function listenForDomToolsetEvent(eventName: string, handler: (event: CustomEvent<unknown>) => void): Unlisten {
   const listener = (event: Event) => {
-    const payload = (event as CustomEvent<Partial<ToolsetCommandPayload>>).detail;
+    handler(event as CustomEvent<unknown>);
+  };
+  window.addEventListener(eventName, listener);
+  return () => window.removeEventListener(eventName, listener);
+}
+
+function listenForDomToolsetCommandPayload(eventName: string, handler: (commandId: string) => void): Unlisten {
+  return listenForDomToolsetEvent(eventName, (event) => {
+    const payload = event.detail as Partial<ToolsetCommandPayload> | undefined;
     if (typeof payload?.commandId === "string") {
       handler(payload.commandId);
     }
+  });
+}
+
+async function listenForToolsetCommandPayload(eventName: string, handler: (commandId: string) => void): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetCommandPayload(eventName, handler);
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<ToolsetCommandPayload>(eventName, (event) => {
+    if (typeof event.payload?.commandId === "string") {
+      handler(event.payload.commandId);
+    }
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
   };
-  window.addEventListener(DOM_COMMAND_EVENT, listener);
-  return () => window.removeEventListener(DOM_COMMAND_EVENT, listener);
 }
 
 export async function listenForToolsetWindowStates(handler: (state: ToolsetWindowState) => void): Promise<Unlisten> {

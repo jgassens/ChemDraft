@@ -3,7 +3,8 @@ import {
   findPageSizePreset,
   type ChemDraftDocument,
   type MoleculeObject,
-  type NativeTextStyle
+  type NativeTextStyle,
+  type TextSpan
 } from "@chemdraft/chem-core";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
@@ -70,6 +71,41 @@ export const editActions: CommandSpec[] = [
     shortcut: "1",
     category: "edit",
     description: "Grow a native single bond from the hovered atom"
+  },
+  {
+    id: "bond.setHoveredBondOrder.single",
+    title: "Set Hovered Bond to Single",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Set the hovered native bond to a single bond"
+  },
+  {
+    id: "bond.setHoveredBondOrder.double",
+    title: "Set Hovered Bond to Double",
+    icon: "bond",
+    source: "core",
+    shortcut: "2",
+    category: "edit",
+    description: "Set the hovered native bond to a double bond"
+  },
+  {
+    id: "bond.setHoveredBondOrder.triple",
+    title: "Set Hovered Bond to Triple",
+    icon: "bond",
+    source: "core",
+    shortcut: "3",
+    category: "edit",
+    description: "Set the hovered native bond to a triple bond"
+  },
+  {
+    id: "atom.addCarbonylToHoveredAtom",
+    title: "Add Carbonyl to Hovered Carbon",
+    icon: "bond",
+    source: "core",
+    shortcut: "K",
+    category: "edit",
+    description: "Grow a neutral C=O from the hovered native carbon atom"
   },
   {
     id: "atom.addPositiveChargeToHoveredAtom",
@@ -190,25 +226,63 @@ export const textSizeCommands = [
 
 export const textColorCommands = [
   { id: "text.color.black", title: "Color: Black", color: "#111111" },
+  { id: "text.color.white", title: "Color: White", color: "#ffffff" },
   { id: "text.color.blue", title: "Color: Blue", color: "#1f5fbf" },
   { id: "text.color.red", title: "Color: Red", color: "#b3261e" },
   { id: "text.color.green", title: "Color: Green", color: "#1d7f68" },
-  { id: "text.color.gray", title: "Color: Gray", color: "#52616b" }
+  { id: "text.color.gray", title: "Color: Gray", color: "#52616b" },
+  { id: "text.color.cyan", title: "Color: Cyan", color: "#087ea4" },
+  { id: "text.color.magenta", title: "Color: Magenta", color: "#9b287b" },
+  { id: "text.color.yellow", title: "Color: Yellow", color: "#d9a400" },
+  { id: "text.color.orange", title: "Color: Orange", color: "#c75c12" },
+  { id: "text.color.purple", title: "Color: Purple", color: "#6046a8" }
 ] as const;
 
-const textLetterSpacingCommands = [
+export const customTextColorCommandPrefix = "text.color.custom.";
+
+export function textCustomColorCommandId(color: string): string {
+  return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
+}
+
+export function textColorForCommand(commandId: string): string | undefined {
+  const color = textColorCommands.find((command) => command.id === commandId);
+  if (color) {
+    return color.color;
+  }
+
+  const customColor = commandId.startsWith(customTextColorCommandPrefix)
+    ? `#${commandId.slice(customTextColorCommandPrefix.length)}`
+    : undefined;
+
+  return normalizeHexColor(customColor);
+}
+
+export function normalizeHexColor(color: string | undefined): string | undefined {
+  const normalized = color?.trim().replace(/^#/, "").toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (/^[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
+  }
+
+  return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
+}
+
+export const textLetterSpacingCommands = [
   { id: "text.spacing.tight", title: "Letter Spacing: Tight", letterSpacingPx: -0.4 },
   { id: "text.spacing.normal", title: "Letter Spacing: Normal", letterSpacingPx: 0 },
   { id: "text.spacing.wide", title: "Letter Spacing: Wide", letterSpacingPx: 0.8 }
 ] as const;
 
-const textLineHeightCommands = [
+export const textLineHeightCommands = [
   { id: "text.lineHeight.tight", title: "Line Height: Tight", lineHeight: 1 },
   { id: "text.lineHeight.normal", title: "Line Height: Normal", lineHeight: 1.2 },
   { id: "text.lineHeight.loose", title: "Line Height: Loose", lineHeight: 1.55 }
 ] as const;
 
-const textParagraphSpacingCommands = [
+export const textParagraphSpacingCommands = [
   { id: "text.paragraph.none", title: "Paragraph Spacing: None", paragraphSpacingPx: 0 },
   { id: "text.paragraph.small", title: "Paragraph Spacing: Small", paragraphSpacingPx: 4 },
   { id: "text.paragraph.medium", title: "Paragraph Spacing: Medium", paragraphSpacingPx: 8 }
@@ -221,6 +295,12 @@ export const textAlignmentCommands = [
   { id: "text.align.justify", title: "Justify Text", textAlign: "justify" }
 ] as const satisfies readonly { id: string; title: string; textAlign: NativeTextStyle["textAlign"] }[];
 
+export const textScriptCommands = [
+  { id: "text.script.normal", title: "Baseline Text", script: "normal" },
+  { id: "text.script.subscript", title: "Subscript Text", script: "subscript" },
+  { id: "text.script.superscript", title: "Superscript Text", script: "superscript" }
+] as const satisfies readonly { id: string; title: string; script: TextSpan["script"] }[];
+
 export const textToolbarActions: CommandSpec[] = [
   ...textFontCommands.map(({ id, title }) => ({ id, title, icon: "text", source: "core", category: "text" } satisfies CommandSpec)),
   ...textSizeCommands.map(({ id, title }) => ({ id, title, icon: "text", source: "core", category: "text" } satisfies CommandSpec)),
@@ -231,8 +311,13 @@ export const textToolbarActions: CommandSpec[] = [
   ...textAlignmentCommands.map(({ id, title }) => ({ id, title, icon: "align", source: "core", category: "text" } satisfies CommandSpec)),
   { id: "text.bold", title: "Bold Text", icon: "text", source: "core", category: "text" },
   { id: "text.italic", title: "Italic Text", icon: "text", source: "core", category: "text" },
-  { id: "text.underline", title: "Underline Text", icon: "text", source: "core", category: "text" }
+  { id: "text.underline", title: "Underline Text", icon: "text", source: "core", category: "text" },
+  ...textScriptCommands.map(({ id, title }) => ({ id, title, icon: "text", source: "core", category: "text" } satisfies CommandSpec))
 ];
+
+export function textScriptForCommand(commandId: string): TextSpan["script"] | undefined {
+  return textScriptCommands.find((command) => command.id === commandId)?.script;
+}
 
 export function textStylePatchForCommand(
   commandId: string,
@@ -248,9 +333,9 @@ export function textStylePatchForCommand(
     return { fontSizePx: size.fontSizePx };
   }
 
-  const color = textColorCommands.find((command) => command.id === commandId);
+  const color = textColorForCommand(commandId);
   if (color) {
-    return { color: color.color };
+    return { color };
   }
 
   const spacing = textLetterSpacingCommands.find((command) => command.id === commandId);

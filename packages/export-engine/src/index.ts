@@ -9,7 +9,8 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   type NativeDrawingStyle,
-  type TextObject
+  type TextObject,
+  type TextSpan
 } from "@chemdraft/chem-core";
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
@@ -131,6 +132,7 @@ function renderNativeMoleculeGraph(object: MoleculeObject, layerIndex: number): 
     const segments = bondLineSegments(
       fromAtom,
       toAtom,
+      object,
       bond,
       drawingStyle,
       labelByAtomId.get(fromAtom.id),
@@ -195,6 +197,7 @@ interface BondLineSegment {
 function bondLineSegments(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
+  object: MoleculeObject,
   bond: MoleculeBond,
   drawingStyle: NativeDrawingStyle,
   fromLabel?: string,
@@ -219,6 +222,28 @@ function bondLineSegments(
 
   if (bond.order === "double") {
     const doubleBondSide = bond.display?.doubleBondSide ?? "left";
+    if (isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
+      const offset = gap / 2;
+      return [
+        {
+          x1: x1 + normal.x * offset,
+          y1: y1 + normal.y * offset,
+          x2: x2 + normal.x * offset,
+          y2: y2 + normal.y * offset,
+          segment: "primary",
+          doubleBondSide
+        },
+        {
+          x1: x1 - normal.x * offset,
+          y1: y1 - normal.y * offset,
+          x2: x2 - normal.x * offset,
+          y2: y2 - normal.y * offset,
+          segment: "secondary",
+          doubleBondSide
+        }
+      ];
+    }
+
     const offset = doubleBondSide === "left" ? gap : -gap;
     const inset = Math.min(drawingStyle.doubleBondInsetPx, Math.max(0, trimmedLength / 2 - 1));
     return [
@@ -245,6 +270,27 @@ function bondLineSegments(
   }
 
   return [{ x1, y1, x2, y2, segment: "primary" }];
+}
+
+function isTerminalHeteroatomDoubleBond(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: MoleculeBond
+): boolean {
+  if (bond.order !== "double") {
+    return false;
+  }
+
+  return isTerminalHeteroatom(fromAtom, object) || isTerminalHeteroatom(toAtom, object);
+}
+
+function isTerminalHeteroatom(atom: MoleculeAtom, object: MoleculeObject): boolean {
+  return atom.element !== "C" && atom.element !== "H" && atomBondCount(object, atom.id) === 1;
+}
+
+function atomBondCount(object: MoleculeObject, atomId: string): number {
+  return object.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
 }
 
 function bondKnockoutLineSegment(
@@ -491,7 +537,7 @@ function atomDisplayLabel(atom: MoleculeAtom, bonds: readonly MoleculeBond[]): s
     }
     return sum + (bond.order === "triple" ? 3 : bond.order === "double" ? 2 : 1);
   }, 0);
-  if (atom.element === "C" && valence > 0 && atom.formalCharge === 0) {
+  if (atom.element === "C" && valence > 0 && atom.formalCharge === 0 && atom.labelVisible !== true) {
     return undefined;
   }
 
@@ -588,7 +634,7 @@ function formatNumber(value: number): string {
 
 function renderTextObject(object: TextObject, layerIndex: number): string {
   const textStyle = nativeTextStyleFromObjectStyle(object.style);
-  const lines = object.text.split(/\r?\n/);
+  const lines = textObjectSpanLines(object);
   const textAnchor = textStyle.textAlign === "center"
     ? "middle"
     : textStyle.textAlign === "right"
@@ -601,9 +647,7 @@ function renderTextObject(object: TextObject, layerIndex: number): string {
       : object.x;
   const y = object.y + textStyle.fontSizePx;
   const tspans = lines.length > 0
-    ? lines.map((line, index) =>
-        `<tspan x="${formatNumber(x)}"${index === 0 ? "" : ` dy="${formatNumber(textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx)}"`}>${escapeXml(line)}</tspan>`
-      ).join("")
+    ? lines.map((line, index) => renderTextSpanLine(line, index, x, textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx)).join("")
     : `<tspan x="${formatNumber(x)}"></tspan>`;
 
   return [
@@ -611,6 +655,53 @@ function renderTextObject(object: TextObject, layerIndex: number): string {
     tspans,
     "</text>"
   ].join("");
+}
+
+function renderTextSpanLine(
+  line: TextSpan[],
+  lineIndex: number,
+  x: number,
+  lineAdvancePx: number
+): string {
+  if (line.length === 0) {
+    return `<tspan x="${formatNumber(x)}"${lineIndex === 0 ? "" : ` dy="${formatNumber(lineAdvancePx)}"`}></tspan>`;
+  }
+
+  return line.map((span, spanIndex) => {
+    const positionAttributes = spanIndex === 0
+      ? ` x="${formatNumber(x)}"${lineIndex === 0 ? "" : ` dy="${formatNumber(lineAdvancePx)}"`}`
+      : "";
+    const scriptAttributes = span.script === "normal"
+      ? ""
+      : ` baseline-shift="${span.script === "superscript" ? "super" : "sub"}" font-size="72%"`;
+
+    return `<tspan${positionAttributes}${scriptAttributes}>${escapeXml(span.text)}</tspan>`;
+  }).join("");
+}
+
+function textObjectSpanLines(object: TextObject): TextSpan[][] {
+  const spans = textObjectSpansForExport(object);
+  return spans.reduce<TextSpan[][]>((lines, span) => {
+    const parts = span.text.split(/\r?\n/);
+    parts.forEach((part, index) => {
+      if (index > 0) {
+        lines.push([]);
+      }
+      if (part.length > 0) {
+        lines[lines.length - 1].push({ ...span, text: part });
+      }
+    });
+    return lines;
+  }, [[]]);
+}
+
+function textObjectSpansForExport(object: TextObject): TextSpan[] {
+  const spans = object.spans.filter((span) => span.text.length > 0);
+  if (spans.length > 0 && spans.map((span) => span.text).join("") === object.text) {
+    return spans;
+  }
+
+  return [{ text: object.text, script: "normal", style: {} }];
 }
 
 function renderChargeMarkObject(object: ElectronMarkObject, layerIndex: number): string {

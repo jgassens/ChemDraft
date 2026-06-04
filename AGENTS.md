@@ -294,6 +294,26 @@ Do not show molecule, reaction, arrow, product, or mechanism placeholders unless
 
 Do not show molecule, reaction, mechanism, arrow, product, or analysis objects unless they are backed by `chem-core` document objects, produced by the active editor adapter and explicitly represented as adapter-backed temporary state, or clearly marked as disabled/unavailable development placeholders. Prefer "EditorAdapter not connected" or "No selected structure" over fake chemistry content.
 
+### 5.16.1 Design language rules
+
+Use this design-language phrase in documentation when describing the direction:
+
+```text
+Restrained technical minimalism: Metro-like canvas minimalism with Material-like interaction clarity.
+```
+
+ChemDraft should feel like a precision scientific drawing tool, not a consumer note-taking app. The canvas should be flat, quiet, typographic, low-chrome, and content-first. Surrounding controls should have consistent spacing, predictable component states, and clear hover, active, focus, selected, and disabled feedback.
+
+For the current desktop shell, `apps/desktop/src/App.css` is the canonical design-token layer. Do not create separate `App.css` and `ui-kit` token systems that can drift. Export or expand `ui-kit` design tokens only when another package actually needs them, and document which layer is canonical.
+
+Use `#1d7f68` as the restrained accent, with derived shades allowed when contrast requires readable active, selected, hover, or focus states. Red remains semantic for invalid, delete, and warning states.
+
+Style only ChemDraft-owned Ketcher host and wrapper chrome. Do not patch vendored Ketcher internals or change Ketcher behavior as part of visual cleanup.
+
+Design-language cleanup work must not change molecule drawing behavior, bond creation behavior, selection logic, file formats, chemistry model logic, renderer math, command IDs, keyboard shortcuts, or tool behavior except for visual state styling such as selected, hover, focus, disabled, and active affordances.
+
+Tests for design-language work should be focused and non-brittle: token-shape checks, render smoke tests, and existing layout or behavior tests. Do not add pixel-perfect tests unless the repo already has that convention.
+
 ### 5.17 Phase closeout and current boundary
 
 Do not consider Phase 4 complete if it only displays visual placeholders.

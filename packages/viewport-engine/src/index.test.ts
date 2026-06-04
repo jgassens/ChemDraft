@@ -47,6 +47,14 @@ describe("viewport engine", () => {
     expect(zoomViewportBy(viewport, 0.01, { x: 0, y: 0 }).scale).toBe(0.5);
   });
 
+  it("allows high default zoom for close structure inspection", () => {
+    const viewport = createViewportState({ scale: 8.33 });
+
+    expect(viewport.scale).toBe(8.33);
+    expect(viewport.maxZoom).toBe(8.5);
+    expect(zoomViewportBy(viewport, 2, { x: 0, y: 0 }).scale).toBe(8.5);
+  });
+
   it("exposes ruler CSS variables from viewport state", () => {
     const viewport = createViewportState({ scale: 1.25 });
 

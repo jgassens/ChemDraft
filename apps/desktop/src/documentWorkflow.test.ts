@@ -9,9 +9,11 @@ import {
   applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultToSelectedObject,
   applyFreeformSingleBondToolAtPoint,
+  applyNativeCarbonylAtAtomTarget,
   applyNativeAtomElementTarget,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
+  applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
@@ -41,6 +43,7 @@ import {
   nativeElementFromKeyboardKey,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
+  nativeMoleculeTransformState,
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
@@ -51,7 +54,9 @@ import {
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
   rotateDocumentObject,
+  resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
+  updateNativeTextObjectScript,
   updateNativeTextObjectStyle,
   updateNativeTextObjectText
 } from "./documentWorkflow";
@@ -80,15 +85,15 @@ function growFromAtom(document: ChemDraftDocument, atomId: string, angleDegrees:
 
 function growHexaneChain(document: ChemDraftDocument): ChemDraftDocument {
   return [
-    ["atom_002", -70.5],
+    ["atom_002", -60],
     ["atom_003", 0],
-    ["atom_004", 70.5],
+    ["atom_004", 60],
     ["atom_005", 0]
   ].reduce((current, [atomId, angle]) => growFromAtom(current, String(atomId), Number(angle)), document);
 }
 
 function growHeptaneChain(document: ChemDraftDocument): ChemDraftDocument {
-  return growFromAtom(growHexaneChain(document), "atom_006", -70.5);
+  return growFromAtom(growHexaneChain(document), "atom_006", -60);
 }
 
 function atomDegreeMap(molecule: MoleculeObject): ReadonlyMap<string, number> {
@@ -195,6 +200,27 @@ function cycleNativeBondOrder(document: ChemDraftDocument, bondId: string): Chem
     toAtomId: bond.toAtomId,
     distanceToPointer: 0
   });
+}
+
+function setNativeBondOrder(
+  document: ChemDraftDocument,
+  bondId: string,
+  order: "double" | "triple"
+): ChemDraftDocument {
+  const molecule = selectedMolecule(document);
+  const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+  if (!bond) {
+    throw new Error(`Expected bond "${bondId}".`);
+  }
+
+  return applyNativeMoleculeBondOrderValueTarget(document, {
+    objectId: molecule.id,
+    kind: "bond",
+    bondId: bond.id,
+    fromAtomId: bond.fromAtomId,
+    toAtomId: bond.toAtomId,
+    distanceToPointer: 0
+  }, order);
 }
 
 function attachExplicitHydrogen(
@@ -484,6 +510,36 @@ describe("Phase 4 document workflow", () => {
     expect(moved.selection.objectIds).toEqual([molecule.id]);
   });
 
+  it("moves one native atom and stretches its connected bond", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Drag Stretch"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const atom1 = molecule.atoms.find((atom) => atom.id === "atom_001");
+    const atom2 = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!atom1 || !atom2) {
+      throw new Error("Expected single-bond atom fixture.");
+    }
+
+    const moved = moveNativeMoleculeParts(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002"
+    }, { x: 38, y: -26 });
+    const movedMolecule = selectedMolecule(moved);
+    const movedAtom1 = movedMolecule.atoms.find((atom) => atom.id === "atom_001");
+    const movedAtom2 = movedMolecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!movedAtom1 || !movedAtom2) {
+      throw new Error("Expected moved single-bond atom fixture.");
+    }
+
+    expect(movedAtom1).toMatchObject({ x: atom1.x, y: atom1.y });
+    expect(movedAtom2).toMatchObject({ x: atom2.x + 38, y: atom2.y - 26 });
+    expect(pointDistance(movedAtom1, movedAtom2)).toBeGreaterThan(pointDistance(atom1, atom2));
+    expect(movedMolecule.bonds).toEqual(molecule.bonds);
+    expect(movedMolecule.structure).toBe(molecule.structure);
+    expect(movedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(moved.selection.objectIds).toEqual([molecule.id]);
+  });
+
   it("moves a native molecule object without detaching atoms from page coordinates", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Move Fixture"), { x: 200, y: 220 });
     const molecule = selectedMolecule(document);
@@ -515,6 +571,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(rotatedMolecule.id).toBe(molecule.id);
     expect(rotatedMolecule.rotation).toBe(0);
+    expect(nativeMoleculeTransformState(rotatedMolecule).rotationDegrees).toBe(90);
     expect(rotatedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
     expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
     expect(rotatedMolecule.structure).toBe(molecule.structure);
@@ -526,6 +583,109 @@ describe("Phase 4 document workflow", () => {
       expect(rotatedAtom?.y).toBeCloseTo(center.y + (atom.x - center.x), 3);
       expect(pointDistance(atom, center)).toBeCloseTo(pointDistance(rotatedAtom ?? atom, center), 3);
     });
+  });
+
+  it("resizes a selected native molecule symmetrically without changing chemical identity", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Resize Molecule Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const center = {
+      x: molecule.x + molecule.width / 2,
+      y: molecule.y + molecule.height / 2
+    };
+    const resized = resizeNativeMoleculeObject(document, molecule.id, { x: 1.5, y: 1.5 });
+    const resizedMolecule = selectedMolecule(resized);
+
+    expect(resizedMolecule.id).toBe(molecule.id);
+    expect(resizedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(resizedMolecule.bonds).toEqual(molecule.bonds);
+    expect(resizedMolecule.structure).toBe(molecule.structure);
+    expect(resizedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(nativeMoleculeTransformState(resizedMolecule)).toEqual({
+      scaleX: 1.5,
+      scaleY: 1.5,
+      rotationDegrees: 0
+    });
+    expect(resized.selection.objectIds).toEqual([molecule.id]);
+    molecule.atoms.forEach((atom, index) => {
+      const resizedAtom = resizedMolecule.atoms[index];
+      expect(resizedAtom?.x).toBeCloseTo(center.x + (atom.x - center.x) * 1.5, 3);
+      expect(resizedAtom?.y).toBeCloseTo(center.y + (atom.y - center.y) * 1.5, 3);
+    });
+  });
+
+  it("stretches a selected native molecule independently on X and Y without changing bonds", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Stretch Molecule Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const center = {
+      x: molecule.x + molecule.width / 2,
+      y: molecule.y + molecule.height / 2
+    };
+    const stretched = resizeNativeMoleculeObject(document, molecule.id, { x: 1.75, y: 0.6 });
+    const stretchedMolecule = selectedMolecule(stretched);
+
+    expect(stretchedMolecule.bonds).toEqual(molecule.bonds);
+    expect(stretchedMolecule.structure).toBe(molecule.structure);
+    expect(nativeMoleculeTransformState(stretchedMolecule)).toEqual({
+      scaleX: 1.75,
+      scaleY: 0.6,
+      rotationDegrees: 0
+    });
+    molecule.atoms.forEach((atom, index) => {
+      const stretchedAtom = stretchedMolecule.atoms[index];
+      expect(stretchedAtom?.x).toBeCloseTo(center.x + (atom.x - center.x) * 1.75, 3);
+      expect(stretchedAtom?.y).toBeCloseTo(center.y + (atom.y - center.y) * 0.6, 3);
+    });
+  });
+
+  it("keeps native molecule transform readouts cumulative across repeated operations", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Cumulative Transform Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const firstResize = resizeNativeMoleculeObject(document, molecule.id, { x: 2, y: 2 });
+    const firstMolecule = selectedMolecule(firstResize);
+    expect(nativeMoleculeTransformState(firstMolecule)).toEqual({
+      scaleX: 2,
+      scaleY: 2,
+      rotationDegrees: 0
+    });
+
+    const secondResize = resizeNativeMoleculeObject(firstResize, molecule.id, { x: 1.5, y: 0.5 });
+    const secondMolecule = selectedMolecule(secondResize);
+    expect(nativeMoleculeTransformState(secondMolecule)).toEqual({
+      scaleX: 3,
+      scaleY: 1,
+      rotationDegrees: 0
+    });
+
+    const firstRotate = rotateDocumentObject(secondResize, molecule.id, 45);
+    const firstRotatedMolecule = selectedMolecule(firstRotate);
+    expect(nativeMoleculeTransformState(firstRotatedMolecule)).toEqual({
+      scaleX: 3,
+      scaleY: 1,
+      rotationDegrees: 45
+    });
+
+    const secondRotate = rotateDocumentObject(firstRotate, molecule.id, 30);
+    const secondRotatedMolecule = selectedMolecule(secondRotate);
+    expect(nativeMoleculeTransformState(secondRotatedMolecule)).toEqual({
+      scaleX: 3,
+      scaleY: 1,
+      rotationDegrees: 75
+    });
+    expect(secondRotatedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(secondRotatedMolecule.bonds).toEqual(molecule.bonds);
+    expect(secondRotatedMolecule.structure).toBe(molecule.structure);
   });
 
   it("rotates selected text boxes in the page plane", () => {
@@ -554,8 +714,8 @@ describe("Phase 4 document workflow", () => {
     const extended = growFromAtom(withBond, "atom_002", 0);
     const secondAtomX = 200 + nativeBondLengthPx / 2;
     const expectedThirdAtom = {
-      x: secondAtomX + Math.cos(70.5 * Math.PI / 180) * nativeBondLengthPx,
-      y: 220 + Math.sin(70.5 * Math.PI / 180) * nativeBondLengthPx
+      x: secondAtomX + Math.cos(60 * Math.PI / 180) * nativeBondLengthPx,
+      y: 220 + Math.sin(60 * Math.PI / 180) * nativeBondLengthPx
     };
 
     expect(extended.pages[0].objects).toHaveLength(1);
@@ -638,9 +798,9 @@ describe("Phase 4 document workflow", () => {
 
   it("lets the ghost terminal direction commit when it points into soft-crowded geometry", () => {
     const document = [
-      ["atom_002", -70.5],
+      ["atom_002", -60],
       ["atom_003", 0],
-      ["atom_004", 70.5]
+      ["atom_004", 60]
     ].reduce(
       (current, [atomId, angle]) => growFromAtom(current, String(atomId), Number(angle)),
       insertNativeSingleBondMolecule(createPhase4Document("Crowded Ghost Direction"), { x: 240, y: 260 })
@@ -653,7 +813,7 @@ describe("Phase 4 document workflow", () => {
     }
 
     const neighborAngle = Math.atan2(neighborAtom.y - terminalAtom.y, neighborAtom.x - terminalAtom.x);
-    const ghostAngle = neighborAngle + 109.5 * Math.PI / 180;
+    const ghostAngle = neighborAngle + 120 * Math.PI / 180;
     const clickPoint = {
       x: terminalAtom.x + Math.cos(ghostAngle) * nativeAtomHitRadiusPx * 0.65,
       y: terminalAtom.y + Math.sin(ghostAngle) * nativeAtomHitRadiusPx * 0.65
@@ -759,7 +919,7 @@ describe("Phase 4 document workflow", () => {
       growFromAtom(
         insertNativeSingleBondMolecule(createPhase4Document("Freeform Connect"), { x: 220, y: 260 }),
         "atom_002",
-        -70.5
+        -60
       ),
       "atom_003",
       0
@@ -812,6 +972,67 @@ describe("Phase 4 document workflow", () => {
     });
     expect(nextMolecule.structure).toBe("CCCC");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C4H10", atomCount: 4, bondCount: 3 });
+  });
+
+  it("lets guided 120-degree growth close cyclohexane or grow away from the ring", () => {
+    const openRing = [
+      ["atom_002", 60],
+      ["atom_003", 120],
+      ["atom_004", 180],
+      ["atom_005", 240]
+    ].reduce(
+      (current, [atomId, angle]) => growFromAtom(current, String(atomId), Number(angle)),
+      insertNativeSingleBondMolecule(createPhase4Document("Guided Cyclohexane"), { x: 300, y: 300 })
+    );
+    const molecule = selectedMolecule(openRing);
+    const firstAtom = molecule.atoms.find((atom) => atom.id === "atom_001");
+    const terminalAtom = molecule.atoms.find((atom) => atom.id === "atom_006");
+    if (!firstAtom || !terminalAtom) {
+      throw new Error("Expected open cyclohexane terminal atoms.");
+    }
+
+    const steerDistance = nativeAtomHitRadiusPx * 0.65;
+    const closingAngle = Math.atan2(firstAtom.y - terminalAtom.y, firstAtom.x - terminalAtom.x);
+    const outwardAngle = Math.PI;
+    const closingPoint = {
+      x: terminalAtom.x + Math.cos(closingAngle) * steerDistance,
+      y: terminalAtom.y + Math.sin(closingAngle) * steerDistance
+    };
+    const outwardPoint = {
+      x: terminalAtom.x + Math.cos(outwardAngle) * steerDistance,
+      y: terminalAtom.y + Math.sin(outwardAngle) * steerDistance
+    };
+    const closingPreview = previewNativeMoleculeBondGrowth(
+      molecule,
+      closingPoint,
+      openRing.pages[0].width,
+      openRing.pages[0].height
+    );
+    const outwardPreview = previewNativeMoleculeBondGrowth(
+      molecule,
+      outwardPoint,
+      openRing.pages[0].width,
+      openRing.pages[0].height
+    );
+    const closed = applySingleBondToolAtPoint(openRing, closingPoint);
+    const grownAway = applySingleBondToolAtPoint(openRing, outwardPoint);
+    const closedMolecule = selectedMolecule(closed);
+    const grownAwayMolecule = selectedMolecule(grownAway);
+
+    expect(closingPreview).toMatchObject({ atomId: "atom_006", targetAtomId: "atom_001" });
+    expect(outwardPreview?.targetAtomId).toBeUndefined();
+    expect(closedMolecule.atoms).toHaveLength(6);
+    expect(closedMolecule.bonds).toHaveLength(6);
+    expect(closedMolecule.bonds.at(-1)).toMatchObject({
+      fromAtomId: "atom_006",
+      toAtomId: "atom_001",
+      order: "single"
+    });
+    expect(closedMolecule.structure).toBe("C1CCCCC1");
+    expect(closedMolecule.chemistry).toMatchObject({ formula: "C6H12", atomCount: 6, bondCount: 6 });
+    expectNoDuplicateAtomPositions(closedMolecule);
+    expect(grownAwayMolecule.atoms).toHaveLength(7);
+    expect(grownAwayMolecule.bonds).toHaveLength(6);
   });
 
   it("builds cyclopentane as a closed freeform ring without deleting bonds", () => {
@@ -949,7 +1170,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("freeform-grows over-valent atoms with warnings but still rejects too-short drags", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Freeform Rejects"), { x: 300, y: 300 })
     );
@@ -999,6 +1220,26 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(document).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ element: "C" });
   });
 
+  it("makes hovered carbon labels explicit with implicit hydrogens when pressing C", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Explicit Carbon"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const explicitCarbon = applyNativeAtomElementTarget(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    }, "C");
+    const nextMolecule = selectedMolecule(explicitCarbon);
+    const atom = nextMolecule.atoms.find((candidate) => candidate.id === "atom_001");
+    if (!atom) {
+      throw new Error("Expected explicit carbon atom.");
+    }
+
+    expect(atom).toMatchObject({ element: "C", labelVisible: true });
+    expect(nativeAtomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
+    expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
+  });
+
   it("labels isolated neutral common atoms with implicit hydrogens", () => {
     expect(nativeAtomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
     expect(nativeAtomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
@@ -1006,7 +1247,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Valence Reject"), { x: 300, y: 300 })
     );
@@ -1050,6 +1291,23 @@ describe("Phase 4 document workflow", () => {
       chemistry: { formula: "C2H6", atomCount: 2, bondCount: 1 }
     });
     expect(selectedMolecule(singleBond).bonds[0].display).toBeUndefined();
+  });
+
+  it("sets hovered bond order directly from numeric keys", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Direct Bond Orders"), { x: 200, y: 220 });
+    const doubleBond = setNativeBondOrder(document, "bond_001", "double");
+    const tripleBond = setNativeBondOrder(doubleBond, "bond_001", "triple");
+
+    expect(selectedMolecule(doubleBond)).toMatchObject({
+      structure: "C=C",
+      bonds: [{ id: "bond_001", order: "double", display: { doubleBondSide: "left" } }],
+      chemistry: { formula: "C2H4", atomCount: 2, bondCount: 1 }
+    });
+    expect(selectedMolecule(tripleBond)).toMatchObject({
+      structure: "C#C",
+      bonds: [{ id: "bond_001", order: "triple" }],
+      chemistry: { formula: "C2H2", atomCount: 2, bondCount: 1 }
+    });
   });
 
   it("moves the secondary line side of a double bond without changing chemistry", () => {
@@ -1149,6 +1407,43 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(ketone).structure).toContain("=O");
     expect(selectedMolecule(ketone).chemistry).toMatchObject({ formula: "C3H6O", atomCount: 4, bondCount: 3 });
     expect(capped).toEqual(ketone);
+  });
+
+  it("adds a carbonyl from a hovered carbon with K without over-valencing carbon", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Carbonyl Key"), { x: 240, y: 260 });
+    const molecule = selectedMolecule(document);
+    const carbon = molecule.atoms.find((atom) => atom.id === "atom_001");
+    if (!carbon) {
+      throw new Error("Expected carbonyl source atom.");
+    }
+
+    const carbonyl = applyNativeCarbonylAtAtomTarget(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: carbon.id,
+      distanceToPointer: 0
+    }, {
+      x: carbon.x,
+      y: carbon.y - nativeAtomHitRadiusPx
+    });
+    const carbonylMolecule = selectedMolecule(carbonyl);
+    const oxygen = carbonylMolecule.atoms.find((atom) => atom.element === "O");
+    const carbonylBond = carbonylMolecule.bonds.find((bond) =>
+      bond.order === "double" && bond.fromAtomId === carbon.id && bond.toAtomId === oxygen?.id
+    );
+    const secondAttempt = applyNativeCarbonylAtAtomTarget(carbonyl, {
+      objectId: carbonylMolecule.id,
+      kind: "atom",
+      atomId: carbon.id,
+      distanceToPointer: 0
+    });
+
+    expect(oxygen).toBeDefined();
+    expect(carbonylBond).toMatchObject({ order: "double" });
+    expect(oxygen?.y).toBeLessThan(carbon.y);
+    expect(carbonylMolecule.structure).toContain("=O");
+    expect(carbonylMolecule.chemistry).toMatchObject({ formula: "C2H4O", atomCount: 3, bondCount: 2 });
+    expect(secondAttempt).toEqual(carbonyl);
   });
 
   it("builds furan-like ring valence with oxygen and two double bonds", () => {
@@ -1300,6 +1595,24 @@ describe("Phase 4 document workflow", () => {
         fontWeight: 700
       }
     });
+    expect(molecule?.atoms).toHaveLength(2);
+    expect(molecule?.bonds).toHaveLength(1);
+  });
+
+  it("updates native text script spans without changing chemistry objects", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Text Script"), { x: 300, y: 300 });
+    const withText = insertNativeTextObject(document, { x: 120, y: 140 }, "H2O");
+    const textObject = getSelectedTextObject(withText);
+    if (!textObject) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+
+    const scripted = updateNativeTextObjectScript(withText, textObject.id, "subscript");
+    const molecule = scripted.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const scriptedText = getSelectedTextObject(scripted);
+
+    expect(scriptedText?.spans).toEqual([{ text: "H2O", script: "subscript", style: {} }]);
+    expect(scriptedText?.text).toBe("H2O");
     expect(molecule?.atoms).toHaveLength(2);
     expect(molecule?.bonds).toHaveLength(1);
   });
@@ -1788,7 +2101,7 @@ describe("Phase 4 document workflow", () => {
       growFromAtom(
         insertNativeSingleBondMolecule(createPhase4Document("Delete Atom"), { x: 220, y: 260 }),
         "atom_002",
-        -70.5
+        -60
       ),
       "atom_003",
       0
@@ -1814,7 +2127,7 @@ describe("Phase 4 document workflow", () => {
     const propane = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Delete Terminal Bond"), { x: 220, y: 260 }),
       "atom_002",
-      -70.5
+      -60
     );
     const molecule = selectedMolecule(propane);
     const deleted = applyNativeMoleculeDeleteTarget(propane, {
@@ -1839,7 +2152,7 @@ describe("Phase 4 document workflow", () => {
       growFromAtom(
         insertNativeSingleBondMolecule(createPhase4Document("Delete Middle Bond"), { x: 220, y: 260 }),
         "atom_002",
-        -70.5
+        -60
       ),
       "atom_003",
       0
@@ -1946,8 +2259,8 @@ describe("Phase 4 document workflow", () => {
   it("builds neopentane around a tetravalent center without rejecting the fourth carbon bond", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Neopentane"), { x: 300, y: 300 });
     const withThreeBranches = [
-      -109.5,
-      109.5,
+      -120,
+      120,
       180
     ].reduce((current, angle) => growFromAtom(current, "atom_001", angle), document);
     const molecule = selectedMolecule(withThreeBranches);
@@ -1973,7 +2286,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("deletes neopentane's central carbon into neutral methane fragments", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Delete Neopentane Center"), { x: 300, y: 300 })
     );
@@ -1999,7 +2312,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("marks neutral tetravalent nitrogen invalid until the user resolves the charge", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Tetravalent Nitrogen"), { x: 300, y: 300 })
     );
@@ -2036,7 +2349,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("places and moves charge marks that resolve nearby hypervalent atoms only while close", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Movable Charge Resolution"), { x: 300, y: 300 })
     );
@@ -2101,7 +2414,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("places atom-targeted charges into an open space that resolves matching hypervalence", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Atom Target Charge"), { x: 300, y: 300 })
     );
@@ -2168,7 +2481,7 @@ describe("Phase 4 document workflow", () => {
   });
 
   it("uses negative charge marks to resolve neutral tetravalent boron", () => {
-    const neopentane = [-109.5, 109.5, 180].reduce(
+    const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Boron Charge Resolution"), { x: 300, y: 300 })
     );
@@ -2206,7 +2519,7 @@ describe("Phase 4 document workflow", () => {
       insertNativeSingleBondMolecule(createPhase4Document("3-methyl-4-tert-butylheptane"), { x: 320, y: 420 })
     );
     const withMethyl = growFromAtom(heptane, "atom_003", 240);
-    const withTertButylStem = growFromAtom(withMethyl, "atom_004", -70.5);
+    const withTertButylStem = growFromAtom(withMethyl, "atom_004", -60);
     const tertButylCenterId = selectedMolecule(withTertButylStem).atoms.at(-1)?.id;
     if (!tertButylCenterId) {
       throw new Error("Expected tert-butyl branch center.");

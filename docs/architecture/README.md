@@ -7,6 +7,7 @@ The native document model belongs in `packages/chem-core`. Compatibility formats
 Key architecture notes:
 
 - `composited-page-editor-model.md`
+- `design-language.md`
 - `editor-adapter-hardening.md`
 - `toolbars-and-toolsets.md`
 - `viewport-and-rulers.md`
