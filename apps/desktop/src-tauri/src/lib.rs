@@ -41,6 +41,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setOrientation.landscape",
     "view.toggleRulers",
     "view.toggleCrosshairs",
+    "structure.cleanup2d",
     "chemistry.validateSelection",
 ];
 
@@ -742,6 +743,18 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 ],
             )?,
             &view_menu,
+            &Submenu::with_items(
+                app,
+                "Structure",
+                true,
+                &[&MenuItem::with_id(
+                    app,
+                    "structure.cleanup2d",
+                    "Clean up Structure 2D",
+                    true,
+                    Some("CmdOrCtrl+Shift+K"),
+                )?],
+            )?,
             &Submenu::with_items(
                 app,
                 "Analyze",
@@ -1608,6 +1621,11 @@ mod tests {
             expect_true(is_routed_menu_command(command_id));
         }
         expect_false(is_routed_menu_command("page.setSize.custom"));
+    }
+
+    #[test]
+    fn structure_menu_commands_are_routed() {
+        expect_true(is_routed_menu_command("structure.cleanup2d"));
     }
 
     #[test]

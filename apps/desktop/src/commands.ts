@@ -22,6 +22,7 @@ export interface CommandSpec extends CommandDefinition {
   icon: IconName;
   assetName?: ToolbarAssetName;
   shortcut?: string;
+  shortcutLabel?: string;
   disabledReason?: string;
 }
 
@@ -61,6 +62,8 @@ export const drawerActions: CommandSpec[] = [
   { id: "view.toggleInspector", title: "Toggle Inspector", icon: "inspector", source: "core" },
   { id: "view.togglePlugins", title: "Toggle Plugins", icon: "plugin", source: "core" }
 ];
+
+export const structureCleanupCommandId = "structure.cleanup2d";
 
 export const editActions: CommandSpec[] = [
   {

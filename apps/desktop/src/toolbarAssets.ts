@@ -42,6 +42,7 @@ export const toolbarAssetNames = [
   "Custom_Shape",
   "Custom_Shape2",
   "Custom_Square_Bracket",
+  "Custom_Structure_Cleanup",
   "Custom_Symbol",
   "Custom_Text",
   "Custom_Tools",

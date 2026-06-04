@@ -81,6 +81,7 @@ function toolsetItemToCommandSpec(item: DesktopToolsetDefinition["groups"][numbe
     icon: item.icon ?? "palette",
     assetName: item.assetName,
     shortcut: item.shortcutDisplay,
+    shortcutLabel: compactMacShortcutLabel(item.shortcutDisplay),
     defaultShortcut: item.shortcutDisplay,
     disabledReason: item.disabledReason,
     category: item.category,
@@ -88,6 +89,29 @@ function toolsetItemToCommandSpec(item: DesktopToolsetDefinition["groups"][numbe
     source: item.commandId.startsWith("plugin.") ? "plugin" : "core",
     enabled: item.disabledReason ? false : true
   };
+}
+
+function compactMacShortcutLabel(shortcut: string | undefined): string | undefined {
+  if (!shortcut) {
+    return undefined;
+  }
+
+  const trimmed = shortcut.trim();
+  if (!trimmed.includes("+") || trimmed === "+") {
+    return trimmed;
+  }
+
+  const parts = trimmed.split("+").map((part) => part.trim()).filter((part) => part.length > 0);
+  const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
+  const key = parts.find((part) => !["cmd", "command", "ctrl", "control", "shift", "alt", "option", "meta"].includes(part.toLowerCase()));
+  const modifierLabel = [
+    lowerParts.has("cmd") || lowerParts.has("command") || lowerParts.has("meta") ? "⌘" : "",
+    lowerParts.has("shift") ? "⇧" : "",
+    lowerParts.has("alt") || lowerParts.has("option") ? "⌥" : "",
+    lowerParts.has("ctrl") || lowerParts.has("control") ? "⌃" : ""
+  ].join("");
+
+  return modifierLabel.length > 0 && key ? `${modifierLabel}${key}` : trimmed;
 }
 
 function dedupeCommands(commands: CommandSpec[]): CommandSpec[] {

@@ -1365,6 +1365,12 @@ textarea:focus-visible,
   outline: none;
 }
 
+.native-molecule-transform-frame {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+}
+
 .native-molecule-rotate-handle {
   position: absolute;
   top: -34px;

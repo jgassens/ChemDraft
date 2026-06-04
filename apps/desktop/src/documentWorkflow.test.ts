@@ -17,6 +17,7 @@ import {
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
+  cleanUpSelectedNativeMolecule2d,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
   createPhase4Document,
@@ -53,7 +54,9 @@ import {
   nativeTextObjectSizeForText,
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
+  resizeNativeMoleculeParts,
   rotateDocumentObject,
+  rotateNativeMoleculeParts,
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   updateNativeTextObjectScript,
@@ -147,6 +150,35 @@ function expectNoDuplicateAtomPositions(molecule: MoleculeObject): void {
 
 function pointDistance(left: { x: number; y: number }, right: { x: number; y: number }): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function moleculeAtom(molecule: MoleculeObject, atomId: string): { x: number; y: number } {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    throw new Error(`Expected atom "${atomId}".`);
+  }
+
+  return atom;
+}
+
+function moleculeBondLength(molecule: MoleculeObject, bondId: string): number {
+  const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+  if (!bond) {
+    throw new Error(`Expected bond "${bondId}".`);
+  }
+
+  return pointDistance(moleculeAtom(molecule, bond.fromAtomId), moleculeAtom(molecule, bond.toAtomId));
+}
+
+function moleculeAngleDegrees(molecule: MoleculeObject, leftAtomId: string, centerAtomId: string, rightAtomId: string): number {
+  const left = moleculeAtom(molecule, leftAtomId);
+  const center = moleculeAtom(molecule, centerAtomId);
+  const right = moleculeAtom(molecule, rightAtomId);
+  const leftAngle = Math.atan2(left.y - center.y, left.x - center.x);
+  const rightAngle = Math.atan2(right.y - center.y, right.x - center.x);
+  const delta = Math.abs(((rightAngle - leftAngle) * 180 / Math.PI + 540) % 360 - 180);
+
+  return delta;
 }
 
 function cyclopentaneVerticesFromBond(
@@ -617,6 +649,79 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
+  it("resizes selected native molecule fragments without breaking bonds", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Resize Fragment Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const atom1 = moleculeAtom(molecule, "atom_001");
+    const atom2 = moleculeAtom(molecule, "atom_002");
+    const atom3 = moleculeAtom(molecule, "atom_003");
+    const resized = resizeNativeMoleculeParts(document, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "bond_002"
+    }, { x: 2, y: 0.6 });
+    const resizedMolecule = selectedMolecule(resized);
+
+    expect(resizedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(resizedMolecule.bonds).toEqual(molecule.bonds);
+    expect(resizedMolecule.structure).toBe(molecule.structure);
+    expect(resizedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(moleculeAtom(resizedMolecule, "atom_001")).toEqual(atom1);
+    expect(pointDistance(moleculeAtom(resizedMolecule, "atom_002"), atom2)).toBeGreaterThan(0);
+    expect(pointDistance(moleculeAtom(resizedMolecule, "atom_003"), atom3)).toBeGreaterThan(0);
+    expect(moleculeBondLength(resizedMolecule, "bond_001")).not.toBeCloseTo(nativeBondLengthPx, 2);
+    expect(moleculeBondLength(resizedMolecule, "bond_002")).not.toBeCloseTo(nativeBondLengthPx, 2);
+
+    const cleaned = cleanUpSelectedNativeMolecule2d(resized);
+    const cleanedMolecule = selectedMolecule(cleaned);
+    expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
+    expect(cleanedMolecule.structure).toBe(molecule.structure);
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
+  it("rotates selected native molecule fragments without breaking bonds", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Rotate Fragment Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const atom1 = moleculeAtom(molecule, "atom_001");
+    const atom2 = moleculeAtom(molecule, "atom_002");
+    const atom3 = moleculeAtom(molecule, "atom_003");
+    const rotated = rotateNativeMoleculeParts(document, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "bond_002"
+    }, 90);
+    const rotatedMolecule = selectedMolecule(rotated);
+
+    expect(rotatedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
+    expect(rotatedMolecule.structure).toBe(molecule.structure);
+    expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(moleculeAtom(rotatedMolecule, "atom_001")).toEqual(atom1);
+    expect(pointDistance(moleculeAtom(rotatedMolecule, "atom_002"), atom2)).toBeGreaterThan(0);
+    expect(pointDistance(moleculeAtom(rotatedMolecule, "atom_003"), atom3)).toBeGreaterThan(0);
+    expect(moleculeBondLength(rotatedMolecule, "bond_001")).not.toBeCloseTo(nativeBondLengthPx, 2);
+
+    const cleaned = cleanUpSelectedNativeMolecule2d(rotated);
+    const cleanedMolecule = selectedMolecule(cleaned);
+    expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
+    expect(cleanedMolecule.structure).toBe(molecule.structure);
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
   it("stretches a selected native molecule independently on X and Y without changing bonds", () => {
     const document = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Stretch Molecule Fixture"), { x: 200, y: 220 }),
@@ -642,6 +747,158 @@ describe("Phase 4 document workflow", () => {
       const stretchedAtom = stretchedMolecule.atoms[index];
       expect(stretchedAtom?.x).toBeCloseTo(center.x + (atom.x - center.x) * 1.75, 3);
       expect(stretchedAtom?.y).toBeCloseTo(center.y + (atom.y - center.y) * 0.6, 3);
+    });
+  });
+
+  it("cleans up a stretched native carbon chain to 120-degree 2D geometry", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Chain Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const stretched = resizeNativeMoleculeObject(document, molecule.id, { x: 2.2, y: 0.35 });
+    const stretchedMolecule = selectedMolecule(stretched);
+    const cleaned = cleanUpSelectedNativeMolecule2d(stretched);
+    const cleanedMolecule = selectedMolecule(cleaned);
+
+    expect(cleanedMolecule.id).toBe(molecule.id);
+    expect(cleanedMolecule.atoms.map((atom) => atom.id)).toEqual(stretchedMolecule.atoms.map((atom) => atom.id));
+    expect(cleanedMolecule.bonds).toEqual(stretchedMolecule.bonds);
+    expect(cleanedMolecule.structure).toBe(stretchedMolecule.structure);
+    expect(cleanedMolecule.chemistry).toEqual(stretchedMolecule.chemistry);
+    expect(cleaned.selection.objectIds).toEqual([molecule.id]);
+    expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
+      scaleX: 1,
+      scaleY: 1,
+      rotationDegrees: 0
+    });
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
+  it("cleans up sp1 native geometry as linear while preserving chemistry", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Alkyne Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const alkyne = applyNativeMoleculeBondOrderValueTarget(document, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "bond_002",
+      fromAtomId: "atom_002",
+      toAtomId: "atom_003",
+      distanceToPointer: 0
+    }, "triple");
+    const stretched = resizeNativeMoleculeObject(alkyne, molecule.id, { x: 1.7, y: 0.45 });
+    const cleaned = cleanUpSelectedNativeMolecule2d(stretched);
+    const cleanedMolecule = selectedMolecule(cleaned);
+
+    expect(cleanedMolecule.bonds.find((bond) => bond.id === "bond_002")?.order).toBe("triple");
+    expect(cleanedMolecule.structure).toBe(selectedMolecule(stretched).structure);
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
+  });
+
+  it("cleans up a distorted cyclohexane ring as a regular 2D ring", () => {
+    const openRing = [
+      ["atom_002", 60],
+      ["atom_003", 120],
+      ["atom_004", 180],
+      ["atom_005", 240]
+    ].reduce(
+      (current, [atomId, angle]) => growFromAtom(current, String(atomId), Number(angle)),
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Cyclohexane"), { x: 300, y: 300 })
+    );
+    const ring = selectedMolecule(openRing);
+    const firstAtom = moleculeAtom(ring, "atom_001");
+    const terminalAtom = moleculeAtom(ring, "atom_006");
+    const closingAngle = Math.atan2(firstAtom.y - terminalAtom.y, firstAtom.x - terminalAtom.x);
+    const closingPoint = {
+      x: terminalAtom.x + Math.cos(closingAngle) * nativeAtomHitRadiusPx * 0.65,
+      y: terminalAtom.y + Math.sin(closingAngle) * nativeAtomHitRadiusPx * 0.65
+    };
+    const closedRing = applySingleBondToolAtPoint(openRing, closingPoint);
+    const closedMolecule = selectedMolecule(closedRing);
+    const distorted = resizeNativeMoleculeObject(closedRing, closedMolecule.id, { x: 1.9, y: 0.55 });
+    const cleaned = cleanUpSelectedNativeMolecule2d(distorted);
+    const cleanedMolecule = selectedMolecule(cleaned);
+
+    expect(cleanedMolecule.atoms.map((atom) => atom.id)).toEqual(closedMolecule.atoms.map((atom) => atom.id));
+    expect(cleanedMolecule.bonds).toEqual(closedMolecule.bonds);
+    expect(cleanedMolecule.structure).toBe("C1CCCCC1");
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
+    expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
+      scaleX: 1,
+      scaleY: 1,
+      rotationDegrees: 0
+    });
+  });
+
+  it("cleans up a distorted cyclohexene ring as a regular 2D ring", () => {
+    const openRing = [
+      ["atom_002", 60],
+      ["atom_003", 120],
+      ["atom_004", 180],
+      ["atom_005", 240]
+    ].reduce(
+      (current, [atomId, angle]) => growFromAtom(current, String(atomId), Number(angle)),
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Cyclohexene"), { x: 300, y: 300 })
+    );
+    const ring = selectedMolecule(openRing);
+    const firstAtom = moleculeAtom(ring, "atom_001");
+    const terminalAtom = moleculeAtom(ring, "atom_006");
+    const closingAngle = Math.atan2(firstAtom.y - terminalAtom.y, firstAtom.x - terminalAtom.x);
+    const closingPoint = {
+      x: terminalAtom.x + Math.cos(closingAngle) * nativeAtomHitRadiusPx * 0.65,
+      y: terminalAtom.y + Math.sin(closingAngle) * nativeAtomHitRadiusPx * 0.65
+    };
+    const closedRing = applySingleBondToolAtPoint(openRing, closingPoint);
+    const closedMolecule = selectedMolecule(closedRing);
+    const cyclohexene = applyNativeMoleculeBondOrderValueTarget(closedRing, {
+      objectId: closedMolecule.id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    }, "double");
+    const distorted = rotateNativeMoleculeParts(
+      resizeNativeMoleculeParts(cyclohexene, {
+        objectId: closedMolecule.id,
+        kind: "bond",
+        bondId: "bond_001"
+      }, { x: 4.19, y: 4.19 }),
+      {
+        objectId: closedMolecule.id,
+        kind: "bond",
+        bondId: "bond_001"
+      },
+      -48
+    );
+    const cleaned = cleanUpSelectedNativeMolecule2d(distorted);
+    const cleanedMolecule = selectedMolecule(cleaned);
+
+    expect(cleanedMolecule.atoms.map((atom) => atom.id)).toEqual(closedMolecule.atoms.map((atom) => atom.id));
+    expect(cleanedMolecule.bonds).toEqual(selectedMolecule(cyclohexene).bonds);
+    expect(cleanedMolecule.structure).toBe("C1=CCCCC1");
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
+    expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
+      scaleX: 1,
+      scaleY: 1,
+      rotationDegrees: 0
     });
   });
 

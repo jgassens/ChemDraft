@@ -18,6 +18,7 @@ import {
   pageOrientationActions,
   pageSizeActions,
   paletteGroups,
+  structureCleanupCommandId,
   textCustomColorCommandId,
   textStylePatchForCommand,
   textToolbarActions,
@@ -394,6 +395,7 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "2" })).toBe("bond.setHoveredBondOrder.double");
     expect(registry.resolve({ key: "3" })).toBe("bond.setHoveredBondOrder.triple");
     expect(registry.resolve({ key: "k" })).toBe("atom.addCarbonylToHoveredAtom");
+    expect(registry.resolve({ key: "k", metaKey: true, shiftKey: true })).toBe(structureCleanupCommandId);
     expect(registry.resolve({ key: "+" })).toBe("tool.plus");
     expect(registry.resolve({ key: "-" })).toBe("tool.minus");
     expect(registry.resolve({ key: "o" })).toBeUndefined();
@@ -560,6 +562,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.select",
       "tool.text",
       "tool.bond",
+      structureCleanupCommandId,
       "tool.plus",
       "tool.minus",
       "layout.bringToFront",
@@ -571,6 +574,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(paletteGroups.flat().find((command) => command.id === "tool.bond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.text")).toMatchObject({ enabled: true });
+    expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.plus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
     expect(disabledTools.length).toBeGreaterThan(30);
@@ -861,6 +865,7 @@ describe("ChemDraft desktop shell", () => {
     expect(toolCommands.some((command) => command.assetName === "Custom_Bond_Wedge")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Arrow_Equilibrium")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Flip_Horizontal")).toBe(true);
+    expect(toolCommands.some((command) => command.assetName === "Custom_Structure_Cleanup")).toBe(true);
   });
 
   it("keeps functional metadata on asset-backed palette commands", () => {
@@ -874,6 +879,27 @@ describe("ChemDraft desktop shell", () => {
       title: "Solid Wedge Bond",
       category: "structure"
     });
+    expect(assetCommands.find((command) => command.assetName === "Custom_Structure_Cleanup")).toMatchObject({
+      id: structureCleanupCommandId,
+      title: "Clean up Structure 2D",
+      shortcut: "Shift+Cmd+K",
+      shortcutLabel: "⌘⇧K",
+      category: "structure"
+    });
+  });
+
+  it("places cleanup in the main toolbar chrome cluster instead of a vague disabled options button", () => {
+    const mainGroups = getToolsetCommandGroups("core.main");
+    const styleGroupIds = mainGroups.at(-1)?.map((command) => command.id) ?? [];
+
+    expect(styleGroupIds).toEqual([
+      "style.color",
+      "tool.settings",
+      structureCleanupCommandId,
+      "tool.templateGrid"
+    ]);
+    expect(styleGroupIds).not.toContain("tool.toolOptions");
+    expect(mainGroups.flat().filter((command) => command.id === structureCleanupCommandId)).toHaveLength(1);
   });
 
   it("routes palette events as command ids only", () => {

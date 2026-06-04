@@ -788,7 +788,8 @@ export function CommandIconButton({
   const disabled = command.enabled === false;
   const activeState = active && !disabled;
   const shortcut = command.shortcut ?? command.defaultShortcut;
-  const shortcutText = shortcut ? ` (${shortcut})` : "";
+  const shortcutLabel = command.shortcutLabel ?? shortcut;
+  const shortcutText = shortcutLabel ? ` (${shortcutLabel})` : "";
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
 
   return (
@@ -809,7 +810,7 @@ export function CommandIconButton({
       ) : (
         <Icon name={command.icon} />
       )}
-      {showShortcut && shortcut ? <span className="shortcut">{shortcut}</span> : null}
+      {showShortcut && shortcutLabel ? <span className="shortcut">{shortcutLabel}</span> : null}
     </button>
   );
 }

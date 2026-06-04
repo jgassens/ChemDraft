@@ -63,6 +63,10 @@ export interface ClipboardPasteResult {
 }
 
 export type PagePoint = LayoutPoint;
+export type PageRect = PagePoint & {
+  width: number;
+  height: number;
+};
 
 export interface NativeBondGrowthPreview {
   atomId: string;
@@ -1872,6 +1876,33 @@ export function moveNativeMoleculeParts(
   );
 }
 
+export function nativeMoleculePartBounds(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget
+): PageRect | undefined {
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  if (targetAtomIds.size === 0) {
+    return undefined;
+  }
+
+  const targetAtoms = molecule.atoms.filter((atom) => targetAtomIds.has(atom.id));
+  if (targetAtoms.length === 0) {
+    return undefined;
+  }
+
+  const minX = Math.min(...targetAtoms.map((atom) => atom.x));
+  const maxX = Math.max(...targetAtoms.map((atom) => atom.x));
+  const minY = Math.min(...targetAtoms.map((atom) => atom.y));
+  const maxY = Math.max(...targetAtoms.map((atom) => atom.y));
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY
+  };
+}
+
 export function moveDocumentObject(
   document: ChemDraftDocument,
   objectId: string,
@@ -1946,6 +1977,41 @@ export function moveDocumentObject(
   );
 }
 
+export function rotateNativeMoleculeParts(
+  document: ChemDraftDocument,
+  target: NativeMoleculePartMoveTarget,
+  angleDegrees: number
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === target.objectId));
+  const molecule = page?.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!page || !molecule || Math.abs(angleDegrees) < 0.05) {
+    return document;
+  }
+
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  const bounds = nativeMoleculePartBounds(molecule, target);
+  if (targetAtomIds.size === 0 || !bounds) {
+    return document;
+  }
+
+  const center = objectCenter(bounds);
+  const angleRadians = angleDegrees * Math.PI / 180;
+  const rotated = normalizeNativeMoleculeGeometry({
+    ...molecule,
+    atoms: molecule.atoms.map((atom) => targetAtomIds.has(atom.id)
+      ? { ...atom, ...rotatePointAround(atom, center, angleRadians) }
+      : atom)
+  });
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: rotated },
+    { now: phase4Timestamp }
+  );
+}
+
 export function rotateDocumentObject(
   document: ChemDraftDocument,
   objectId: string,
@@ -1994,6 +2060,50 @@ export function rotateDocumentObject(
   );
 }
 
+export function resizeNativeMoleculeParts(
+  document: ChemDraftDocument,
+  target: NativeMoleculePartMoveTarget,
+  scale: { x: number; y: number }
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === target.objectId));
+  const molecule = page?.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!page || !molecule || molecule.atoms.length === 0) {
+    return document;
+  }
+
+  const scaleX = Number.isFinite(scale.x) ? scale.x : 1;
+  const scaleY = Number.isFinite(scale.y) ? scale.y : 1;
+  if (scaleX <= 0 || scaleY <= 0 || (Math.abs(scaleX - 1) < 0.001 && Math.abs(scaleY - 1) < 0.001)) {
+    return document;
+  }
+
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  const bounds = nativeMoleculePartBounds(molecule, target);
+  if (targetAtomIds.size === 0 || !bounds) {
+    return document;
+  }
+
+  const center = objectCenter(bounds);
+  const resized = normalizeNativeMoleculeGeometry({
+    ...molecule,
+    atoms: molecule.atoms.map((atom) => targetAtomIds.has(atom.id)
+      ? {
+          ...atom,
+          x: center.x + (atom.x - center.x) * scaleX,
+          y: center.y + (atom.y - center.y) * scaleY
+        }
+      : atom)
+  });
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: resized },
+    { now: phase4Timestamp }
+  );
+}
+
 export function resizeNativeMoleculeObject(
   document: ChemDraftDocument,
   objectId: string,
@@ -2035,6 +2145,24 @@ export function resizeNativeMoleculeObject(
   );
 }
 
+export function cleanUpSelectedNativeMolecule2d(document: ChemDraftDocument): ChemDraftDocument {
+  const molecule = getSelectedMolecule(document);
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const cleaned = cleanUpNativeMoleculeGeometry2d(molecule);
+  if (!nativeMoleculeGeometryOrTransformChanged(molecule, cleaned)) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: cleaned },
+    { now: phase4Timestamp }
+  );
+}
+
 export function nativeMoleculeTransformState(molecule: MoleculeObject): MoleculeTransformState {
   return {
     scaleX: normalizeNativeMoleculeScale(molecule.transform?.scaleX ?? defaultNativeMoleculeTransform.scaleX),
@@ -2055,6 +2183,444 @@ function withNativeMoleculeTransform(
       rotationDegrees: normalizeDegrees(transform.rotationDegrees)
     }
   };
+}
+
+function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObject {
+  if (molecule.atoms.length <= 1 || molecule.bonds.length === 0) {
+    return withNativeMoleculeTransform(normalizeNativeMoleculeGeometry(molecule), defaultNativeMoleculeTransform);
+  }
+
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const adjacency = nativeAdjacency(molecule.atoms, molecule.bonds);
+  const bondByAtomPair = nativeBondByAtomPair(molecule.bonds);
+  const nextAtomPoints = new Map<string, PagePoint>();
+
+  nativeComponents(molecule.atoms, adjacency).forEach((componentIds) => {
+    const componentAtomSet = new Set(componentIds);
+    const componentAtoms = componentIds
+      .map((atomId) => atomById.get(atomId))
+      .filter((atom): atom is MoleculeAtom => atom !== undefined);
+    const componentCenter = averagePagePoint(componentAtoms);
+    const layout = cleanUpNativeMoleculeComponent2d({
+      componentAtoms,
+      componentAtomSet,
+      atomById,
+      adjacency,
+      bondByAtomPair
+    });
+    const layoutCenter = averagePagePoint([...layout.values()]);
+
+    layout.forEach((point, atomId) => {
+      nextAtomPoints.set(atomId, {
+        x: roundGeometryCoordinate(componentCenter.x + point.x - layoutCenter.x),
+        y: roundGeometryCoordinate(componentCenter.y + point.y - layoutCenter.y)
+      });
+    });
+  });
+
+  const atoms = molecule.atoms.map((atom) => {
+    const point = nextAtomPoints.get(atom.id);
+    return point ? { ...atom, ...point } : atom;
+  });
+
+  return withNativeMoleculeTransform(
+    normalizeNativeMoleculeGeometry({
+      ...molecule,
+      atoms
+    }),
+    defaultNativeMoleculeTransform
+  );
+}
+
+function cleanUpNativeMoleculeComponent2d(input: {
+  componentAtoms: readonly MoleculeAtom[];
+  componentAtomSet: ReadonlySet<string>;
+  atomById: ReadonlyMap<string, MoleculeAtom>;
+  adjacency: ReadonlyMap<string, readonly string[]>;
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>;
+}): ReadonlyMap<string, PagePoint> {
+  const placed = new Map<string, PagePoint>();
+  const cyclePath = cleanUpSimpleCyclePath(input.componentAtoms, input.adjacency);
+
+  if (cyclePath) {
+    placeRegularCycle(cyclePath, input.atomById, placed);
+    const cycleAtomSet = new Set(cyclePath);
+    cyclePath.forEach((atomId) => {
+      const atomPoint = placed.get(atomId);
+      if (!atomPoint) {
+        return;
+      }
+
+      const branchIds = (input.adjacency.get(atomId) ?? [])
+        .filter((neighborId) => input.componentAtomSet.has(neighborId) && !cycleAtomSet.has(neighborId));
+      const branchAngles = assignAnglesToNeighbors({
+        atomId,
+        neighborIds: branchIds,
+        candidateAngles: branchAnglesAroundPreferred(Math.atan2(atomPoint.y, atomPoint.x), branchIds.length),
+        atomById: input.atomById
+      });
+
+      branchIds.forEach((branchId, index) => {
+        layoutNativeCleanupSubtree({
+          atomId: branchId,
+          parentAtomId: atomId,
+          directionAngle: branchAngles[index] ?? Math.atan2(atomPoint.y, atomPoint.x),
+          componentAtomSet: input.componentAtomSet,
+          atomById: input.atomById,
+          adjacency: input.adjacency,
+          bondByAtomPair: input.bondByAtomPair,
+          placed
+        });
+      });
+    });
+
+    return placed;
+  }
+
+  const rootPath = longestNativePath(input.componentAtoms, input.adjacency);
+  const rootAtomId = rootPath[0] ?? input.componentAtoms[0]?.id;
+  if (!rootAtomId) {
+    return placed;
+  }
+
+  placed.set(rootAtomId, { x: 0, y: 0 });
+  const rootNeighborIds = orderedCleanupNeighbors({
+    atomId: rootAtomId,
+    parentAtomId: undefined,
+    preferredFirstNeighborId: rootPath[1],
+    componentAtomSet: input.componentAtomSet,
+    adjacency: input.adjacency
+  });
+  const rootAngles = cleanupRootNeighborAngles(rootAtomId, rootNeighborIds, input.atomById, input.bondByAtomPair);
+
+  rootNeighborIds.forEach((neighborId, index) => {
+    layoutNativeCleanupSubtree({
+      atomId: neighborId,
+      parentAtomId: rootAtomId,
+      directionAngle: rootAngles[index] ?? 0,
+      componentAtomSet: input.componentAtomSet,
+      atomById: input.atomById,
+      adjacency: input.adjacency,
+      bondByAtomPair: input.bondByAtomPair,
+      placed
+    });
+  });
+
+  return placed;
+}
+
+function layoutNativeCleanupSubtree(input: {
+  atomId: string;
+  parentAtomId: string;
+  directionAngle: number;
+  componentAtomSet: ReadonlySet<string>;
+  atomById: ReadonlyMap<string, MoleculeAtom>;
+  adjacency: ReadonlyMap<string, readonly string[]>;
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>;
+  placed: Map<string, PagePoint>;
+}): void {
+  if (input.placed.has(input.atomId)) {
+    return;
+  }
+
+  const parentPoint = input.placed.get(input.parentAtomId);
+  if (!parentPoint) {
+    return;
+  }
+
+  input.placed.set(input.atomId, {
+    x: parentPoint.x + Math.cos(input.directionAngle) * nativeBondLength,
+    y: parentPoint.y + Math.sin(input.directionAngle) * nativeBondLength
+  });
+
+  const childIds = orderedCleanupNeighbors({
+    atomId: input.atomId,
+    parentAtomId: input.parentAtomId,
+    componentAtomSet: input.componentAtomSet,
+    adjacency: input.adjacency
+  }).filter((neighborId) => !input.placed.has(neighborId));
+  const childAngles = cleanupChildAngles(
+    input.atomId,
+    input.parentAtomId,
+    childIds,
+    input.atomById,
+    input.bondByAtomPair
+  );
+
+  childIds.forEach((childId, index) => {
+    layoutNativeCleanupSubtree({
+      ...input,
+      atomId: childId,
+      parentAtomId: input.atomId,
+      directionAngle: childAngles[index] ?? input.directionAngle
+    });
+  });
+}
+
+function cleanUpSimpleCyclePath(
+  atoms: readonly MoleculeAtom[],
+  adjacency: ReadonlyMap<string, readonly string[]>
+): readonly string[] | undefined {
+  const cycleAtomIds = findSingleCycleAtomIds(atoms, adjacency);
+  if (!cycleAtomIds || cycleAtomIds.length < 3) {
+    return undefined;
+  }
+
+  const cycleAtomSet = new Set(cycleAtomIds);
+  const cycleAdjacency = new Map(cycleAtomIds.map((atomId) => [
+    atomId,
+    (adjacency.get(atomId) ?? []).filter((neighborId) => cycleAtomSet.has(neighborId)).sort()
+  ]));
+  if ([...cycleAdjacency.values()].some((neighbors) => neighbors.length !== 2)) {
+    return undefined;
+  }
+
+  const startAtomId = [...cycleAtomIds].sort()[0];
+  const firstNeighborId = cycleAdjacency.get(startAtomId)?.[0];
+  if (!firstNeighborId) {
+    return undefined;
+  }
+
+  const cyclePath = [startAtomId];
+  let previousAtomId = startAtomId;
+  let currentAtomId = firstNeighborId;
+  while (currentAtomId !== startAtomId) {
+    cyclePath.push(currentAtomId);
+    const nextAtomId = (cycleAdjacency.get(currentAtomId) ?? []).find((neighborId) => neighborId !== previousAtomId);
+    if (!nextAtomId || cyclePath.length > cycleAtomIds.length) {
+      return undefined;
+    }
+
+    previousAtomId = currentAtomId;
+    currentAtomId = nextAtomId;
+  }
+
+  return cyclePath.length === cycleAtomIds.length ? cyclePath : undefined;
+}
+
+function placeRegularCycle(
+  cyclePath: readonly string[],
+  atomById: ReadonlyMap<string, MoleculeAtom>,
+  placed: Map<string, PagePoint>
+): void {
+  const size = cyclePath.length;
+  const firstAtom = atomById.get(cyclePath[0]);
+  const secondAtom = atomById.get(cyclePath[1]);
+  const existingFirstBondAngle = firstAtom && secondAtom
+    ? Math.atan2(secondAtom.y - firstAtom.y, secondAtom.x - firstAtom.x)
+    : 0;
+  const step = Math.PI * 2 / size;
+  const radius = nativeBondLength / (2 * Math.sin(Math.PI / size));
+  const theta0 = existingFirstBondAngle - step / 2 - Math.PI / 2;
+
+  cyclePath.forEach((atomId, index) => {
+    const theta = theta0 + index * step;
+    placed.set(atomId, {
+      x: Math.cos(theta) * radius,
+      y: Math.sin(theta) * radius
+    });
+  });
+}
+
+function cleanupRootNeighborAngles(
+  atomId: string,
+  neighborIds: readonly string[],
+  atomById: ReadonlyMap<string, MoleculeAtom>,
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>
+): readonly number[] {
+  const atom = atomById.get(atomId);
+  if (!atom || neighborIds.length === 0) {
+    return [];
+  }
+
+  const firstNeighbor = atomById.get(neighborIds[0]);
+  const anchorAngle = firstNeighbor ? Math.atan2(firstNeighbor.y - atom.y, firstNeighbor.x - atom.x) : 0;
+  const idealAngle = idealNativeCleanupAngleRadians(atomId, bondByAtomPair);
+
+  if (neighborIds.length === 1) {
+    return [anchorAngle];
+  }
+
+  if (neighborIds.length === 2) {
+    const secondAngle = chooseCandidateAngle(
+      existingNeighborAngle(atomId, neighborIds[1], atomById),
+      idealAngle === Math.PI
+        ? [anchorAngle + Math.PI]
+        : [anchorAngle + idealAngle, anchorAngle - idealAngle]
+    );
+    return [anchorAngle, secondAngle];
+  }
+
+  const candidates = Array.from({ length: neighborIds.length }, (_, index) =>
+    anchorAngle + index * Math.PI * 2 / neighborIds.length
+  );
+  return assignAnglesToNeighbors({ atomId, neighborIds, candidateAngles: candidates, atomById });
+}
+
+function cleanupChildAngles(
+  atomId: string,
+  parentAtomId: string,
+  childIds: readonly string[],
+  atomById: ReadonlyMap<string, MoleculeAtom>,
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>
+): readonly number[] {
+  if (childIds.length === 0) {
+    return [];
+  }
+
+  const atomPoint = atomById.get(atomId);
+  const parentPoint = atomById.get(parentAtomId);
+  if (!atomPoint || !parentPoint) {
+    return childIds.map(() => 0);
+  }
+
+  const incomingAngle = Math.atan2(parentPoint.y - atomPoint.y, parentPoint.x - atomPoint.x);
+  const idealAngle = idealNativeCleanupAngleRadians(atomId, bondByAtomPair);
+  if (childIds.length === 1) {
+    const candidates = idealAngle === Math.PI
+      ? [incomingAngle + Math.PI]
+      : [incomingAngle + idealAngle, incomingAngle - idealAngle];
+    return [chooseCandidateAngle(existingNeighborAngle(atomId, childIds[0], atomById), candidates)];
+  }
+
+  if (childIds.length === 2 && idealAngle !== Math.PI) {
+    const candidates = [incomingAngle + idealAngle, incomingAngle - idealAngle];
+    return assignAnglesToNeighbors({ atomId, neighborIds: childIds, candidateAngles: candidates, atomById });
+  }
+
+  const forwardAngle = incomingAngle + Math.PI;
+  const candidates = branchAnglesAroundPreferred(forwardAngle, childIds.length);
+  return assignAnglesToNeighbors({ atomId, neighborIds: childIds, candidateAngles: candidates, atomById });
+}
+
+function orderedCleanupNeighbors(input: {
+  atomId: string;
+  parentAtomId?: string;
+  preferredFirstNeighborId?: string;
+  componentAtomSet: ReadonlySet<string>;
+  adjacency: ReadonlyMap<string, readonly string[]>;
+}): readonly string[] {
+  const neighbors = (input.adjacency.get(input.atomId) ?? [])
+    .filter((neighborId) => neighborId !== input.parentAtomId && input.componentAtomSet.has(neighborId))
+    .sort();
+
+  if (!input.preferredFirstNeighborId || !neighbors.includes(input.preferredFirstNeighborId)) {
+    return neighbors;
+  }
+
+  return [
+    input.preferredFirstNeighborId,
+    ...neighbors.filter((neighborId) => neighborId !== input.preferredFirstNeighborId)
+  ];
+}
+
+function idealNativeCleanupAngleRadians(
+  atomId: string,
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>
+): number {
+  const connectedBonds = [...bondByAtomPair.values()].filter((bond) =>
+    bond.fromAtomId === atomId || bond.toAtomId === atomId
+  );
+
+  return connectedBonds.some((bond) => bond.order === "triple") ? Math.PI : 2 * Math.PI / 3;
+}
+
+function branchAnglesAroundPreferred(preferredAngle: number, count: number): readonly number[] {
+  if (count <= 0) {
+    return [];
+  }
+  if (count === 1) {
+    return [preferredAngle];
+  }
+  if (count === 2) {
+    return [preferredAngle - Math.PI / 3, preferredAngle + Math.PI / 3];
+  }
+
+  return Array.from({ length: count }, (_, index) =>
+    preferredAngle + (index - (count - 1) / 2) * Math.PI * 2 / count
+  );
+}
+
+function assignAnglesToNeighbors(input: {
+  atomId: string;
+  neighborIds: readonly string[];
+  candidateAngles: readonly number[];
+  atomById: ReadonlyMap<string, MoleculeAtom>;
+}): readonly number[] {
+  const remainingCandidates = [...input.candidateAngles];
+  return input.neighborIds.map((neighborId) => {
+    const existingAngle = existingNeighborAngle(input.atomId, neighborId, input.atomById);
+    if (remainingCandidates.length === 0) {
+      return existingAngle ?? 0;
+    }
+
+    const bestIndex = remainingCandidates.reduce((best, candidate, index) => {
+      if (existingAngle === undefined) {
+        return best;
+      }
+      return angularDistance(candidate, existingAngle) < angularDistance(remainingCandidates[best] ?? candidate, existingAngle)
+        ? index
+        : best;
+    }, 0);
+    const [angle] = remainingCandidates.splice(bestIndex, 1);
+    return angle ?? existingAngle ?? 0;
+  });
+}
+
+function chooseCandidateAngle(existingAngle: number | undefined, candidateAngles: readonly number[]): number {
+  if (candidateAngles.length === 0) {
+    return existingAngle ?? 0;
+  }
+  if (existingAngle === undefined) {
+    return candidateAngles[0] ?? 0;
+  }
+
+  return candidateAngles.reduce((best, candidate) =>
+    angularDistance(candidate, existingAngle) < angularDistance(best, existingAngle) ? candidate : best,
+    candidateAngles[0] ?? 0
+  );
+}
+
+function existingNeighborAngle(
+  atomId: string,
+  neighborId: string,
+  atomById: ReadonlyMap<string, MoleculeAtom>
+): number | undefined {
+  const atom = atomById.get(atomId);
+  const neighbor = atomById.get(neighborId);
+  return atom && neighbor ? Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x) : undefined;
+}
+
+function averagePagePoint(points: readonly PagePoint[]): PagePoint {
+  if (points.length === 0) {
+    return { x: 0, y: 0 };
+  }
+
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+  };
+}
+
+function nativeMoleculeGeometryOrTransformChanged(before: MoleculeObject, after: MoleculeObject): boolean {
+  const beforeTransform = nativeMoleculeTransformState(before);
+  const afterTransform = nativeMoleculeTransformState(after);
+  if (
+    Math.abs(beforeTransform.scaleX - afterTransform.scaleX) > 0.001 ||
+    Math.abs(beforeTransform.scaleY - afterTransform.scaleY) > 0.001 ||
+    Math.abs(beforeTransform.rotationDegrees - afterTransform.rotationDegrees) > 0.001
+  ) {
+    return true;
+  }
+
+  return before.atoms.some((atom, index) => {
+    const nextAtom = after.atoms[index];
+    return !nextAtom || Math.abs(atom.x - nextAtom.x) > 0.001 || Math.abs(atom.y - nextAtom.y) > 0.001;
+  });
+}
+
+function roundGeometryCoordinate(value: number): number {
+  return Number(value.toFixed(3));
 }
 
 function normalizeNativeMoleculeScale(scale: number): number {
