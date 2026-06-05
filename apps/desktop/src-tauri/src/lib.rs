@@ -10,7 +10,7 @@ use tauri::{
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
     NSFloatingWindowLevel, NSPasteboard, NSWindow, NSWindowAnimationBehavior,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -478,7 +478,6 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
-    focus_main_document_window_impl(&app)?;
     emit_command_to_main(&app, command_id.trim())
 }
 
@@ -1039,7 +1038,7 @@ fn configure_toolset_utility_window<R: Runtime>(
         | NSWindowStyleMask::UtilityWindow
         | NSWindowStyleMask::NonactivatingPanel;
     ns_window.setStyleMask(style);
-    ns_window.setLevel(NSFloatingWindowLevel);
+    ns_window.setLevel(toolset_utility_window_level());
     ns_window.setHidesOnDeactivate(true);
     ns_window.setCanHide(true);
     ns_window.setAnimationBehavior(NSWindowAnimationBehavior::UtilityWindow);
@@ -1056,8 +1055,14 @@ fn configure_toolset_utility_window<R: Runtime>(
     window
         .set_focusable(false)
         .map_err(|error| error.to_string())?;
+    ns_window.orderFront(None);
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn toolset_utility_window_level() -> NSWindowLevel {
+    NSFloatingWindowLevel
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1538,6 +1543,12 @@ mod tests {
         expect_eq(154.0, main.y);
         expect_true(structure.x > main.x);
         expect_true(structure.y > main.y);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn toolset_utility_windows_float_above_document_windows() {
+        expect_true(toolset_utility_window_level() > objc2_app_kit::NSNormalWindowLevel);
     }
 
     #[test]

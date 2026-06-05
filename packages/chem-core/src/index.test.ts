@@ -381,7 +381,7 @@ describe("native document validation and serialization", () => {
           fromAtomId: "atom_001",
           toAtomId: "atom_002",
           order: "double",
-          display: { doubleBondSide: "right" }
+          display: { doubleBondSide: "right", bondStyle: "dashed" }
         }
       ]
     } satisfies MoleculeObject;
@@ -392,7 +392,7 @@ describe("native document validation and serialization", () => {
     );
 
     expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
-      bonds: [{ id: "bond_001", display: { doubleBondSide: "right" } }]
+      bonds: [{ id: "bond_001", display: { doubleBondSide: "right", bondStyle: "dashed" } }]
     });
   });
 

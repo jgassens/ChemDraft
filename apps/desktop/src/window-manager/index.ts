@@ -1,8 +1,12 @@
+import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
 export const TOOLSET_WINDOW_STATE_EVENT = "chemdraft://toolset-window-state";
 export const TOOLSET_ACTIVE_TOOL_EVENT = "chemdraft://toolset-active-tool";
 export const TOOLSET_ACTIVE_TOOL_REQUEST_EVENT = "chemdraft://toolset-active-tool-request";
+export const TOOLSET_TEXT_STYLE_EVENT = "chemdraft://toolset-text-style";
+export const TOOLSET_TEXT_STYLE_REQUEST_EVENT = "chemdraft://toolset-text-style-request";
 export const DEFAULT_TOOLSET_ID = "core.main";
 
 export interface ToolsetWindowPosition {
@@ -31,6 +35,11 @@ export interface ToolsetCommandPayload {
 export type PaletteCommandPayload = ToolsetCommandPayload;
 export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 
+export interface ToolsetTextStylePayload {
+  currentTextStyle: NativeTextStyle;
+  currentTextScript: TextSpan["script"];
+}
+
 type Unlisten = () => void;
 
 export function isDesktopRuntime(): boolean {
@@ -52,6 +61,13 @@ export function createToolsetCommandPayload(commandId: string): ToolsetCommandPa
 
 export function createToolsetActiveToolPayload(commandId: string): ToolsetActiveToolPayload {
   return createToolsetCommandPayload(commandId);
+}
+
+export function createToolsetTextStylePayload(
+  currentTextStyle: NativeTextStyle,
+  currentTextScript: TextSpan["script"] = "normal"
+): ToolsetTextStylePayload {
+  return { currentTextStyle, currentTextScript };
 }
 
 export function createToolsetWindowStatePayload(
@@ -123,8 +139,13 @@ export async function sendPaletteCommand(commandId: string): Promise<void> {
 }
 
 export async function routeToolsetCommand(commandId: string): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("route_toolset_command", createToolsetCommandPayload(commandId) as unknown as Record<string, unknown>);
+  const payload = createToolsetCommandPayload(commandId);
+  const [{ invoke }, { emit }] = await Promise.all([
+    import("@tauri-apps/api/core"),
+    import("@tauri-apps/api/event")
+  ]);
+  await emit<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, payload).catch(() => undefined);
+  await invoke("route_toolset_command", payload as unknown as Record<string, unknown>);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
@@ -146,6 +167,26 @@ export async function requestToolsetActiveTool(): Promise<void> {
 
   const { emit } = await import("@tauri-apps/api/event");
   await emit(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
+}
+
+export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_TEXT_STYLE_EVENT, payload);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, payload);
+}
+
+export async function requestToolsetTextStyle(): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_TEXT_STYLE_REQUEST_EVENT, {});
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
 }
 
 export async function startPaletteWindowDrag(): Promise<void> {
@@ -218,23 +259,26 @@ export async function listenForToolsetCommands(handler: (commandId: string) => v
     return unlistenDom;
   }
 
-  const [{ getCurrentWindow }, { getCurrentWebview }] = await Promise.all([
+  const [{ getCurrentWindow }, { getCurrentWebview }, { listen }] = await Promise.all([
     import("@tauri-apps/api/window"),
-    import("@tauri-apps/api/webview")
+    import("@tauri-apps/api/webview"),
+    import("@tauri-apps/api/event")
   ]);
   const onTauriCommand = (event: { payload?: Partial<ToolsetCommandPayload> }) => {
     if (typeof event.payload?.commandId === "string") {
       routedHandler(event.payload.commandId);
     }
   };
-  const [unlistenWindow, unlistenWebview] = await Promise.all([
+  const [unlistenWindow, unlistenWebview, unlistenGlobal] = await Promise.all([
     getCurrentWindow().listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand),
-    getCurrentWebview().listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand)
+    getCurrentWebview().listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand),
+    listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand)
   ]);
   return () => {
     unlistenDom();
     unlistenWindow();
     unlistenWebview();
+    unlistenGlobal();
   };
 }
 
@@ -250,6 +294,43 @@ export async function listenForToolsetActiveToolRequests(handler: () => void): P
 
   const { listen } = await import("@tauri-apps/api/event");
   const unlistenTauri = await listen(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => handler());
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+export async function listenForToolsetTextStyle(handler: (payload: ToolsetTextStylePayload) => void): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(TOOLSET_TEXT_STYLE_EVENT, (event) => {
+    const payload = event.detail;
+    if (isToolsetTextStylePayload(payload)) {
+      handler(payload);
+    }
+  });
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, (event) => {
+    if (isToolsetTextStylePayload(event.payload)) {
+      handler(event.payload);
+    }
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+export async function listenForToolsetTextStyleRequests(handler: () => void): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(TOOLSET_TEXT_STYLE_REQUEST_EVENT, () => handler());
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen(TOOLSET_TEXT_STYLE_REQUEST_EVENT, () => handler());
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -313,6 +394,23 @@ async function listenForToolsetCommandPayload(eventName: string, handler: (comma
     unlistenDom();
     unlistenTauri();
   };
+}
+
+function isToolsetTextStylePayload(payload: unknown): payload is ToolsetTextStylePayload {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+
+  const candidate = payload as Partial<ToolsetTextStylePayload>;
+  return (
+    typeof candidate.currentTextStyle === "object" &&
+    candidate.currentTextStyle !== null &&
+    (
+      candidate.currentTextScript === "normal" ||
+      candidate.currentTextScript === "subscript" ||
+      candidate.currentTextScript === "superscript"
+    )
+  );
 }
 
 export async function listenForToolsetWindowStates(handler: (state: ToolsetWindowState) => void): Promise<Unlisten> {

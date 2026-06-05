@@ -5,18 +5,24 @@ import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
   applyChargeToolAtNativeAtom,
+  applyColorToDocumentObjects,
+  applyColorToNativeMoleculePart,
+  applyToolbarColorToSelection,
   applyAnalysisToSelectedMolecule,
   applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultToSelectedObject,
   applyFreeformSingleBondToolAtPoint,
+  applyNativeBondDisplayStyleTarget,
   applyNativeCarbonylAtAtomTarget,
   applyNativeAtomElementTarget,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
+  applyNativeTemplateToolAtTarget,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
+  cleanUpNativeMolecules2d,
   cleanUpSelectedNativeMolecule2d,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
@@ -30,6 +36,7 @@ import {
   insertNativeTextObject,
   insertNativeMolfileMolecule,
   insertNativeSingleBondMolecule,
+  insertNativeTemplateMolecule,
   getSelectedTextObject,
   nativeAtomHitRadiusPx,
   nativeAtomDisplayLabel,
@@ -40,8 +47,10 @@ import {
   nativeChargeMarkCenter,
   nativeChargeMarkSizePx,
   nativeChargePlacementPointForAtom,
+  nativeBondStyleForToolCommand,
   nativeElementFromAtomLabel,
   nativeElementFromKeyboardKey,
+  nativeTemplateForToolCommand,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
   nativeMoleculeTransformState,
@@ -54,13 +63,16 @@ import {
   nativeTextObjectSizeForText,
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
+  resolveToolbarColorSelection,
   resizeNativeMoleculeParts,
   rotateDocumentObject,
   rotateNativeMoleculeParts,
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   updateNativeTextObjectScript,
+  updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
+  updateNativeTextObjectStyleRange,
   updateNativeTextObjectText
 } from "./documentWorkflow";
 
@@ -68,6 +80,16 @@ function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
   const molecule = getSelectedMolecule(document);
   if (!molecule) {
     throw new Error("Expected selected molecule.");
+  }
+  return molecule;
+}
+
+function moleculeById(document: ChemDraftDocument, objectId: string): MoleculeObject {
+  const molecule = document.pages
+    .flatMap((page) => page.objects)
+    .find((object): object is MoleculeObject => object.id === objectId && object.type === "molecule");
+  if (!molecule) {
+    throw new Error(`Expected molecule "${objectId}".`);
   }
   return molecule;
 }
@@ -152,7 +174,7 @@ function pointDistance(left: { x: number; y: number }, right: { x: number; y: nu
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
-function moleculeAtom(molecule: MoleculeObject, atomId: string): { x: number; y: number } {
+function moleculeAtom(molecule: MoleculeObject, atomId: string): MoleculeObject["atoms"][number] {
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
     throw new Error(`Expected atom "${atomId}".`);
@@ -168,6 +190,52 @@ function moleculeBondLength(molecule: MoleculeObject, bondId: string): number {
   }
 
   return pointDistance(moleculeAtom(molecule, bond.fromAtomId), moleculeAtom(molecule, bond.toAtomId));
+}
+
+function moleculeBond(molecule: MoleculeObject, bondId: string): MoleculeObject["bonds"][number] {
+  const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+  if (!bond) {
+    throw new Error(`Expected bond "${bondId}".`);
+  }
+
+  return bond;
+}
+
+function moleculeBondTarget(molecule: MoleculeObject, bondId: string) {
+  const bond = moleculeBond(molecule, bondId);
+  return {
+    objectId: molecule.id,
+    kind: "bond" as const,
+    bondId: bond.id,
+    fromAtomId: bond.fromAtomId,
+    toAtomId: bond.toAtomId,
+    distanceToPointer: 0
+  };
+}
+
+function moleculeAtomTarget(molecule: MoleculeObject, atomId: string) {
+  const atom = moleculeAtom(molecule, atomId);
+  return {
+    objectId: molecule.id,
+    kind: "atom" as const,
+    atomId: atom.id,
+    distanceToPointer: 0
+  };
+}
+
+function moleculeBondMidpoint(molecule: MoleculeObject, bondId: string): { x: number; y: number } {
+  const bond = moleculeBond(molecule, bondId);
+  const fromAtom = moleculeAtom(molecule, bond.fromAtomId);
+  const toAtom = moleculeAtom(molecule, bond.toAtomId);
+
+  return {
+    x: (fromAtom.x + toAtom.x) / 2,
+    y: (fromAtom.y + toAtom.y) / 2
+  };
+}
+
+function atomDegree(molecule: MoleculeObject, atomId: string): number {
+  return molecule.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
 }
 
 function moleculeAngleDegrees(molecule: MoleculeObject, leftAtomId: string, centerAtomId: string, rightAtomId: string): number {
@@ -779,6 +847,72 @@ describe("Phase 4 document workflow", () => {
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
 
+  it("cleans up every selected native molecule instead of only the first selected structure", () => {
+    let document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Multi-Selection Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const firstMoleculeId = selectedMolecule(document).id;
+
+    document = growFromAtom(
+      insertNativeSingleBondMolecule(document, { x: 360, y: 320 }),
+      "atom_002",
+      60
+    );
+    const secondMoleculeId = selectedMolecule(document).id;
+
+    const distorted = applyPatches(
+      resizeNativeMoleculeObject(
+        resizeNativeMoleculeObject(document, firstMoleculeId, { x: 2.4, y: 0.35 }),
+        secondMoleculeId,
+        { x: 0.45, y: 2.2 }
+      ),
+      [{ op: "setSelection", pageId: document.pages[0].id, objectIds: [firstMoleculeId, secondMoleculeId] }]
+    );
+    const cleaned = cleanUpSelectedNativeMolecule2d(distorted);
+    const firstCleaned = moleculeById(cleaned, firstMoleculeId);
+    const secondCleaned = moleculeById(cleaned, secondMoleculeId);
+
+    expect(cleaned.selection.objectIds).toEqual([firstMoleculeId, secondMoleculeId]);
+    [firstCleaned, secondCleaned].forEach((molecule) => {
+      expect(nativeMoleculeTransformState(molecule)).toEqual({
+        scaleX: 1,
+        scaleY: 1,
+        rotationDegrees: 0
+      });
+      molecule.bonds.forEach((bond) => {
+        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      });
+      expect(moleculeAngleDegrees(molecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+    });
+  });
+
+  it("cleans up a selected fragment owner even when object selection is empty", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Fragment Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(document);
+    const distorted = applyPatches(
+      resizeNativeMoleculeObject(document, molecule.id, { x: 2.1, y: 0.4 }),
+      [{ op: "setSelection", pageId: document.pages[0].id, objectIds: [] }]
+    );
+    const cleaned = cleanUpNativeMolecules2d(distorted, [molecule.id]);
+    const cleanedMolecule = moleculeById(cleaned, molecule.id);
+
+    expect(cleaned.selection.objectIds).toEqual([]);
+    expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
+      scaleX: 1,
+      scaleY: 1,
+      rotationDegrees: 0
+    });
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+  });
+
   it("cleans up sp1 native geometry as linear while preserving chemistry", () => {
     const document = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Cleanup Alkyne Fixture"), { x: 200, y: 220 }),
@@ -800,6 +934,27 @@ describe("Phase 4 document workflow", () => {
 
     expect(cleanedMolecule.bonds.find((bond) => bond.id === "bond_002")?.order).toBe("triple");
     expect(cleanedMolecule.structure).toBe(selectedMolecule(stretched).structure);
+    cleanedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+    });
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
+  });
+
+  it("cleans up allene central sp native geometry as linear", () => {
+    const document = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Cleanup Allene Fixture"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const firstDouble = setNativeBondOrder(document, "bond_001", "double");
+    const allene = setNativeBondOrder(firstDouble, "bond_002", "double");
+    const stretched = resizeNativeMoleculeObject(allene, selectedMolecule(allene).id, { x: 1.45, y: 0.5 });
+    const cleaned = cleanUpSelectedNativeMolecule2d(stretched);
+    const cleanedMolecule = selectedMolecule(cleaned);
+
+    expect(cleanedMolecule.structure).toBe("C=C=C");
+    expect(cleanedMolecule.chemistry?.formula).toBe("C3H4");
+    expect(cleanedMolecule.bonds).toEqual(selectedMolecule(allene).bonds);
     cleanedMolecule.bonds.forEach((bond) => {
       expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
     });
@@ -1865,13 +2020,188 @@ describe("Phase 4 document workflow", () => {
     }
 
     const scripted = updateNativeTextObjectScript(withText, textObject.id, "subscript");
+    const typed = updateNativeTextObjectText(scripted, textObject.id, "H2SO4");
     const molecule = scripted.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
     const scriptedText = getSelectedTextObject(scripted);
+    const typedText = getSelectedTextObject(typed);
 
     expect(scriptedText?.spans).toEqual([{ text: "H2O", script: "subscript", style: {} }]);
+    expect(typedText?.spans).toEqual([{ text: "H2SO4", script: "subscript", style: {} }]);
     expect(scriptedText?.text).toBe("H2O");
     expect(molecule?.atoms).toHaveLength(2);
     expect(molecule?.bonds).toHaveLength(1);
+  });
+
+  it("updates only the selected text range and preserves mixed spans while typing", () => {
+    const withText = insertNativeTextObject(createPhase4Document("Text Range Style"), { x: 120, y: 140 }, "H2SO4");
+    const textObject = getSelectedTextObject(withText);
+    if (!textObject) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+
+    const scripted = updateNativeTextObjectScriptRange(withText, textObject.id, { start: 1, end: 2 }, "subscript");
+    const colored = updateNativeTextObjectStyleRange(scripted, textObject.id, { start: 3, end: 4 }, { color: "#b3261e" });
+    const typed = updateNativeTextObjectText(colored, textObject.id, "H2SO4+");
+    const updated = getSelectedTextObject(typed);
+
+    expect(updated?.spans).toEqual([
+      { text: "H", script: "normal", style: {} },
+      { text: "2", script: "subscript", style: {} },
+      { text: "S", script: "normal", style: {} },
+      { text: "O", script: "normal", style: { color: "#b3261e" } },
+      { text: "4+", script: "normal", style: {} }
+    ]);
+  });
+
+  it("applies a selected color to selected molecule drawing and selected text", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Selected Color"),
+      { x: 300, y: 300 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withText = insertNativeTextObject(withMolecule, { x: 120, y: 140 }, "label");
+    const textObject = getSelectedTextObject(withText);
+    if (!textObject) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+
+    const selected = applyPatches(withText, [{
+      op: "setSelection",
+      pageId: withText.pages[0].id,
+      objectIds: [molecule.id, textObject.id]
+    }]);
+    const colored = applyColorToDocumentObjects(selected, "#1f5fbf");
+    const coloredMolecule = moleculeById(colored, molecule.id);
+    const coloredText = colored.pages[0].objects.find((object): object is TextObject => object.id === textObject.id && object.type === "text");
+
+    expect(coloredMolecule.style).toMatchObject({
+      bondColor: "#1f5fbf",
+      atomLabelColor: "#1f5fbf"
+    });
+    expect(coloredText?.style).toMatchObject({ color: "#1f5fbf" });
+    expect(colored.selection.objectIds).toEqual([molecule.id, textObject.id]);
+  });
+
+  it("applies selected colors to native molecule atom labels and bonds without recoloring the whole molecule", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Selected Part Color"),
+      { x: 300, y: 300 }
+    );
+    const molecule = selectedMolecule(document);
+    const atomId = molecule.atoms[0]?.id;
+    const bondId = molecule.bonds[0]?.id;
+    if (!atomId || !bondId) {
+      throw new Error("Expected native molecule atom and bond.");
+    }
+
+    const atomColored = applyColorToNativeMoleculePart(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId
+    }, "#c75c12");
+    const bondColored = applyColorToNativeMoleculePart(atomColored, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId
+    }, "#b3261e");
+    const coloredMolecule = selectedMolecule(bondColored);
+
+    expect(coloredMolecule.style).toMatchObject({
+      atomLabelColors: { [atomId]: "#c75c12" },
+      bondColors: { [bondId]: "#b3261e" }
+    });
+    expect(coloredMolecule.style.bondColor).toBe(molecule.style.bondColor);
+    expect(coloredMolecule.style.atomLabelColor).toBe(molecule.style.atomLabelColor);
+  });
+
+  it("applies toolbar colors to a selected molecule object", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Toolbar Molecule Color"),
+      { x: 300, y: 300 }
+    );
+    const molecule = selectedMolecule(document);
+    const result = applyToolbarColorToSelection(document, "#b3261e", {
+      objectIds: [molecule.id]
+    });
+    const coloredMolecule = moleculeById(result.document, molecule.id);
+
+    expect(result.targetedSelection).toBe(true);
+    expect(result.changed).toBe(true);
+    expect(coloredMolecule.style).toMatchObject({
+      bondColor: "#b3261e",
+      atomLabelColor: "#b3261e"
+    });
+  });
+
+  it("applies toolbar colors to a selected native molecule fragment", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Toolbar Fragment Color"),
+      { x: 300, y: 300 }
+    );
+    const molecule = selectedMolecule(document);
+    const atomId = molecule.atoms[0]?.id;
+    const bondId = molecule.bonds[0]?.id;
+    if (!atomId || !bondId) {
+      throw new Error("Expected native molecule atom and bond.");
+    }
+
+    const result = applyToolbarColorToSelection(document, "#c75c12", {
+      objectIds: [],
+      moleculePart: { objectId: molecule.id, kind: "parts", atomIds: [atomId], bondIds: [bondId] }
+    });
+    const coloredMolecule = moleculeById(result.document, molecule.id);
+
+    expect(result.targetedSelection).toBe(true);
+    expect(result.changed).toBe(true);
+    expect(coloredMolecule.style).toMatchObject({
+      atomLabelColors: { [atomId]: "#c75c12" },
+      bondColors: { [bondId]: "#c75c12" }
+    });
+    expect(coloredMolecule.style.bondColor).toBe(molecule.style.bondColor);
+  });
+
+  it("applies toolbar colors to a selected text range only", () => {
+    const document = insertNativeTextObject(
+      createPhase4Document("Toolbar Text Range Color"),
+      { x: 120, y: 140 },
+      "H2O"
+    );
+    const textObject = getSelectedTextObject(document);
+    if (!textObject) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+
+    const result = applyToolbarColorToSelection(document, "#1f5fbf", {
+      objectIds: [],
+      textRange: { objectId: textObject.id, range: { start: 1, end: 2 } }
+    });
+    const coloredText = result.document.pages[0].objects.find(
+      (object): object is TextObject => object.id === textObject.id && object.type === "text"
+    );
+
+    expect(result.targetedSelection).toBe(true);
+    expect(result.changed).toBe(true);
+    expect(coloredText?.style.color).toBe(textObject.style.color);
+    expect(coloredText?.spans).toEqual([
+      { text: "H", script: "normal", style: {} },
+      { text: "2", script: "normal", style: { color: "#1f5fbf" } },
+      { text: "O", script: "normal", style: {} }
+    ]);
+  });
+
+  it("resolves toolbar color fallback selections only while targets still exist", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Toolbar Fallback Color"),
+      { x: 300, y: 300 }
+    );
+    const molecule = selectedMolecule(document);
+    const fallback = { objectIds: [molecule.id] };
+
+    expect(resolveToolbarColorSelection(document, { objectIds: [] }, fallback)).toEqual(fallback);
+
+    const deleted = applyPatches(document, [{ op: "removeObject", objectId: molecule.id }]);
+    expect(resolveToolbarColorSelection(deleted, { objectIds: [] }, fallback)).toEqual({ objectIds: [] });
+    expect(resolveToolbarColorSelection(document, { objectIds: [] })).toEqual({ objectIds: [] });
   });
 
   it("pastes ordinary clipboard text as an editable text object", () => {
@@ -2807,6 +3137,183 @@ describe("Phase 4 document workflow", () => {
     expect(next.pages[0].objects).toHaveLength(2);
     expect(next.pages[0].objects.map((object) => object.id)).toEqual(["mol_bond_001", "mol_bond_002"]);
     expect(next.selection.objectIds).toEqual(["mol_bond_002"]);
+  });
+
+  it("maps native stereobond and template toolbar commands onto owned drawing behavior", () => {
+    expect(nativeBondStyleForToolCommand("tool.bond")).toBe("solid");
+    expect(nativeBondStyleForToolCommand("tool.wedgeBond")).toBe("wedge");
+    expect(nativeBondStyleForToolCommand("tool.hashedBond")).toBe("hashed");
+    expect(nativeBondStyleForToolCommand("tool.dashedBond")).toBe("dashed");
+    expect(nativeBondStyleForToolCommand("tool.boldBond")).toBe("bold");
+    expect(nativeTemplateForToolCommand("tool.cyclopentane")).toBe("cyclopentane");
+    expect(nativeTemplateForToolCommand("tool.cyclohexane")).toBe("cyclohexane");
+    expect(nativeTemplateForToolCommand("tool.benzene")).toBe("benzene");
+    expect(nativeTemplateForToolCommand("tool.chairCyclohexaneA")).toBe("chairCyclohexaneA");
+    expect(nativeTemplateForToolCommand("tool.chairCyclohexaneB")).toBe("chairCyclohexaneB");
+  });
+
+  it("preserves styled bond display metadata when placing and restyling native bonds", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Wedge Bond"),
+      { x: 200, y: 220 },
+      { bondStyle: "wedge" }
+    );
+    const molecule = selectedMolecule(document);
+
+    expect(molecule.bonds[0].display?.bondStyle).toBe("wedge");
+
+    const bond = molecule.bonds[0];
+    const dashed = applyNativeBondDisplayStyleTarget(document, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: bond.id,
+      fromAtomId: bond.fromAtomId,
+      toAtomId: bond.toAtomId,
+      distanceToPointer: 0
+    }, "dashed");
+
+    expect(selectedMolecule(dashed).bonds[0].display?.bondStyle).toBe("dashed");
+  });
+
+  it("applies styled bond metadata to freeform native bond growth", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Hashed Growth"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const sourceAtom = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!sourceAtom) {
+      throw new Error("Expected source atom.");
+    }
+
+    const next = applyFreeformSingleBondToolAtPoint(
+      document,
+      molecule.id,
+      sourceAtom.id,
+      { x: sourceAtom.x + nativeBondLengthPx, y: sourceAtom.y },
+      { forceCustomLength: true, bondStyle: "hashed" }
+    );
+    const grown = selectedMolecule(next);
+
+    expect(grown.bonds).toHaveLength(2);
+    expect(grown.bonds[1].display?.bondStyle).toBe("hashed");
+  });
+
+  it("inserts native ring and chair templates as real molecule graphs", () => {
+    const cyclopentane = selectedMolecule(insertNativeTemplateMolecule(
+      createPhase4Document("Cyclopentane Template"),
+      { x: 260, y: 260 },
+      "cyclopentane"
+    ));
+    const cyclohexane = selectedMolecule(insertNativeTemplateMolecule(
+      createPhase4Document("Cyclohexane Template"),
+      { x: 260, y: 260 },
+      "cyclohexane"
+    ));
+    const benzene = selectedMolecule(insertNativeTemplateMolecule(
+      createPhase4Document("Benzene Template"),
+      { x: 260, y: 260 },
+      "benzene"
+    ));
+    const chair = selectedMolecule(insertNativeTemplateMolecule(
+      createPhase4Document("Chair Template"),
+      { x: 260, y: 260 },
+      "chairCyclohexaneA"
+    ));
+
+    expect(cyclopentane.atoms).toHaveLength(5);
+    expect(cyclopentane.bonds).toHaveLength(5);
+    expect(cyclopentane.chemistry?.formula).toBe("C5H10");
+    expect(cyclohexane.atoms).toHaveLength(6);
+    expect(cyclohexane.bonds).toHaveLength(6);
+    expect(cyclohexane.chemistry?.formula).toBe("C6H12");
+    expect(benzene.atoms).toHaveLength(6);
+    expect(benzene.bonds.filter((bond) => bond.order === "double")).toHaveLength(3);
+    expect(benzene.chemistry?.formula).toBe("C6H6");
+    expect(chair.bonds).toHaveLength(6);
+    expect(new Set(chair.atoms.map((atom) => Number(atom.y.toFixed(2)))).size).toBeGreaterThan(2);
+  });
+
+  it("fuses benzene template bond clicks into naphthalene and anthracene graphs", () => {
+    let document = insertNativeTemplateMolecule(
+      createPhase4Document("Anthracene Template Stress"),
+      { x: 360, y: 320 },
+      "benzene"
+    );
+    const benzene = selectedMolecule(document);
+
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(benzene, "bond_001"),
+      moleculeBondMidpoint(benzene, "bond_001"),
+      "benzene"
+    );
+    const naphthalene = selectedMolecule(document);
+
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    expect(naphthalene.atoms).toHaveLength(10);
+    expect(naphthalene.bonds).toHaveLength(11);
+    expect(naphthalene.chemistry).toMatchObject({ formula: "C10H8", atomCount: 10, bondCount: 11 });
+    naphthalene.bonds.forEach((bond) => {
+      expect(moleculeBondLength(naphthalene, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+    });
+    expectNoDuplicateAtomPositions(naphthalene);
+
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(naphthalene, "bond_009"),
+      moleculeBondMidpoint(naphthalene, "bond_009"),
+      "benzene"
+    );
+    const anthracene = selectedMolecule(document);
+
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    expect(anthracene.atoms).toHaveLength(14);
+    expect(anthracene.bonds).toHaveLength(16);
+    expect(anthracene.chemistry).toMatchObject({ formula: "C14H10", atomCount: 14, bondCount: 16 });
+    anthracene.bonds.forEach((bond) => {
+      expect(moleculeBondLength(anthracene, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+    });
+    expectNoDuplicateAtomPositions(anthracene);
+  });
+
+  it("fuses cyclohexane template bond clicks and creates spiro rings from atom clicks", () => {
+    let document = insertNativeTemplateMolecule(
+      createPhase4Document("Cyclohexane Template Fusion"),
+      { x: 360, y: 320 },
+      "cyclohexane"
+    );
+    const cyclohexane = selectedMolecule(document);
+
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(cyclohexane, "bond_001"),
+      moleculeBondMidpoint(cyclohexane, "bond_001"),
+      "cyclohexane"
+    );
+    const fusedCyclohexane = selectedMolecule(document);
+
+    expect(fusedCyclohexane.atoms).toHaveLength(10);
+    expect(fusedCyclohexane.bonds).toHaveLength(11);
+    expect(fusedCyclohexane.chemistry).toMatchObject({ formula: "C10H18", atomCount: 10, bondCount: 11 });
+    expect(atomDegree(fusedCyclohexane, "atom_001")).toBe(3);
+    expect(atomDegree(fusedCyclohexane, "atom_002")).toBe(3);
+    expectNoDuplicateAtomPositions(fusedCyclohexane);
+
+    const spiroDocument = applyNativeTemplateToolAtTarget(
+      insertNativeTemplateMolecule(
+        createPhase4Document("Cyclohexane Spiro Template"),
+        { x: 360, y: 320 },
+        "cyclohexane"
+      ),
+      moleculeAtomTarget(cyclohexane, "atom_001"),
+      moleculeAtom(cyclohexane, "atom_001"),
+      "cyclohexane"
+    );
+    const spiroCyclohexane = selectedMolecule(spiroDocument);
+
+    expect(spiroCyclohexane.atoms).toHaveLength(11);
+    expect(spiroCyclohexane.bonds).toHaveLength(12);
+    expect(spiroCyclohexane.chemistry).toMatchObject({ formula: "C11H20", atomCount: 11, bondCount: 12 });
+    expect(atomDegree(spiroCyclohexane, "atom_001")).toBe(4);
+    expectNoDuplicateAtomPositions(spiroCyclohexane);
   });
 
   it("exports the Phase 4 subset as SVG", () => {

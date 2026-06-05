@@ -119,7 +119,9 @@ describe("exportDocumentToSvg", () => {
       ...moleculeObject(),
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
-        source: "chemdraft-native-drawing"
+        source: "chemdraft-native-drawing",
+        bondColors: { bond_001: "#b3261e" },
+        atomLabelColors: { atom_002: "#c75c12" }
       },
       structure: "CO",
       atoms: [
@@ -138,12 +140,54 @@ describe("exportDocumentToSvg", () => {
 
     expect(result.contents).toContain('data-style-preset-id="chemdraft.synthetic"');
     expect(result.contents).toContain('stroke-width="2"');
+    expect(result.contents).toContain('stroke="#b3261e"');
     expect(result.contents).toContain('stroke-linecap="butt"');
     expect(result.contents).toContain('font-family="Arial, Helvetica, sans-serif"');
+    expect(result.contents).toContain('fill="#c75c12"');
     expect(result.contents).toContain('data-atom-label="OH"');
     expect(result.contents).toContain('data-atom-label-run="normal"');
     expect(result.contents).toContain(">OH</text>");
     expect(result.contents).toContain("<rect");
+  });
+
+  it("exports native stereobond display styles as SVG geometry", () => {
+    const styledMolecule = {
+      ...moleculeObject(),
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        source: "chemdraft-native-drawing"
+      },
+      structure: "CCCCC",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 160, y: 160, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 200, y: 160, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: 240, y: 160, formalCharge: 0 },
+        { id: "atom_005", element: "C", x: 280, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } },
+        { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single", display: { bondStyle: "hashed" } },
+        { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single", display: { bondStyle: "dashed" } },
+        { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single", display: { bondStyle: "bold" } }
+      ]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Stereobond Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: styledMolecule },
+      { now: timestamp }
+    );
+
+    const result = exportDocumentToSvg(document);
+
+    expect(result.contents).toContain("<polygon");
+    expect(result.contents).toContain('data-bond-style="wedge"');
+    expect(result.contents).toContain('data-bond-style="hashed"');
+    expect(result.contents).toContain('data-bond-hash-index="0"');
+    expect(result.contents).toContain('data-bond-style="dashed"');
+    expect(result.contents).toContain("stroke-dasharray");
+    expect(result.contents).toContain('data-bond-style="bold"');
+    expect(result.contents).toContain('stroke-width="4.8"');
   });
 
   it("exports native charge marks without falling back to placeholder text", () => {
@@ -248,7 +292,7 @@ describe("exportDocumentToSvg", () => {
       spans: [
         { text: "H", script: "normal", style: {} },
         { text: "2", script: "subscript", style: {} },
-        { text: "O", script: "normal", style: {} }
+        { text: "O", script: "normal", style: { color: "#1f5fbf" } }
       ]
     } satisfies TextObject;
     const document = applyPatch(
@@ -263,6 +307,7 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain('data-object-id="text_script_export_001"');
     expect(result.contents).toContain('baseline-shift="sub"');
     expect(result.contents).toContain('font-size="72%"');
+    expect(result.contents).toContain('fill="#1f5fbf"');
     expect(result.contents).toContain(">H</tspan>");
     expect(result.contents).toContain(">2</tspan>");
     expect(result.contents).toContain(">O</tspan>");

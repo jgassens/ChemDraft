@@ -68,32 +68,28 @@ export const coreDrawingToolDefinitions = [
     title: "Solid Wedge Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "bond"
   },
   {
     commandId: "tool.hashedBond",
     title: "Hashed Wedge Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "bond"
   },
   {
     commandId: "tool.dashedBond",
     title: "Dashed Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "bond"
   },
   {
     commandId: "tool.boldBond",
     title: "Bold Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "bond"
   },
   {
     commandId: "tool.chain",
@@ -118,40 +114,35 @@ export const coreDrawingToolDefinitions = [
     kind: "ring",
     category: "structure",
     icon: "ring",
-    defaultShortcut: "R",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    defaultShortcut: "R"
   },
   {
     commandId: "tool.cyclohexane",
     title: "Cyclohexane Template",
     kind: "ring",
     category: "structure",
-    icon: "ring",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "ring"
   },
   {
     commandId: "tool.benzene",
     title: "Benzene Template",
     kind: "ring",
     category: "structure",
-    icon: "ring",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "ring"
   },
   {
     commandId: "tool.chairCyclohexaneA",
     title: "Chair Cyclohexane Template A",
     kind: "ring",
     category: "structure",
-    icon: "ring",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "ring"
   },
   {
     commandId: "tool.chairCyclohexaneB",
     title: "Chair Cyclohexane Template B",
     kind: "ring",
     category: "structure",
-    icon: "ring",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "ring"
   },
   {
     commandId: "tool.text",

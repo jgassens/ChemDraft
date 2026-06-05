@@ -85,9 +85,9 @@ describe("Phase 7 drawing tool activation", () => {
   });
 
   it("keeps unavailable tools from changing the active tool", () => {
-    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.wedgeBond");
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.chain");
     if (!command) {
-      throw new Error("Expected tool.wedgeBond to be registered by the toolset manifest.");
+      throw new Error("Expected tool.chain to be registered by the toolset manifest.");
     }
 
     const current = createActiveToolState();
@@ -97,7 +97,7 @@ describe("Phase 7 drawing tool activation", () => {
     expect(result.status).toContain("unavailable until an EditorAdapter is connected");
     expect(result.state.activeCommandId).toBe("tool.select");
     expect(result.state.activeKind).toBe("selection");
-    expect(result.state.lastCommandId).toBe("tool.wedgeBond");
+    expect(result.state.lastCommandId).toBe("tool.chain");
   });
 
   it("ignores non-toolset plugin commands instead of making them active tools", () => {

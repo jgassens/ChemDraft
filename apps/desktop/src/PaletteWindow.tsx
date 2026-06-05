@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
+import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
 import { ToolPalette } from "./ToolPalette";
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
@@ -9,8 +10,10 @@ import {
   closeToolsetWindow,
   currentWindowLogicalPosition,
   listenForToolsetActiveTool,
+  listenForToolsetTextStyle,
   loadToolsetLayoutState,
   requestToolsetActiveTool,
+  requestToolsetTextStyle,
   sendPaletteCommand,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
@@ -35,6 +38,8 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   const [toolsetRegistry, setToolsetRegistry] = useState(() => desktopToolsetRegistry);
   const [activeTool, setActiveTool] = useState("tool.select");
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
   const shortcutRegistry = useMemo(
@@ -89,6 +94,23 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       .then((cleanup) => {
         unlisten = cleanup;
         void requestToolsetActiveTool().catch(() => undefined);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetTextStyle((payload) => {
+      setCurrentTextStyle(payload.currentTextStyle);
+      setCurrentTextScript(payload.currentTextScript);
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+        void requestToolsetTextStyle().catch(() => undefined);
       })
       .catch(() => undefined);
 
@@ -338,6 +360,8 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         title={toolset.title}
         showMainStyleControls={toolset.id === "core.main"}
         showTextStyleControls={toolset.id === "core.text"}
+        currentTextStyle={currentTextStyle}
+        currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}
         onInvoke={invokeCommand}
       />

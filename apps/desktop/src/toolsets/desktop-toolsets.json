@@ -23,16 +23,16 @@
           "id": "core.main.structure",
           "items": [
             { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "M", "category": "structure" },
-            { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.boldBond", "title": "Bold Bond", "icon": "bond", "assetName": "Custom_Bond_Bold", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
+            { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "category": "structure" },
+            { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "category": "structure" },
+            { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "category": "structure" },
+            { "commandId": "tool.boldBond", "title": "Bold Bond", "icon": "bond", "assetName": "Custom_Bond_Bold", "category": "structure" },
             { "commandId": "tool.chain", "title": "Chain Tool", "icon": "chain", "assetName": "Custom_Draw_Line", "shortcutDisplay": "C", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.cyclopentane", "title": "Cyclopentane Template", "icon": "ring", "assetName": "Custom_Cyclopentane", "shortcutDisplay": "R", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.cyclohexane", "title": "Cyclohexane Template", "icon": "ring", "assetName": "Custom_Cyclohexane", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.benzene", "title": "Benzene Template", "icon": "ring", "assetName": "Custom_Benzene", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.chairCyclohexaneA", "title": "Chair Cyclohexane Template A", "icon": "ring", "assetName": "Custom_Chair1", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.chairCyclohexaneB", "title": "Chair Cyclohexane Template B", "icon": "ring", "assetName": "Custom_Chair2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" }
+            { "commandId": "tool.cyclopentane", "title": "Cyclopentane Template", "icon": "ring", "assetName": "Custom_Cyclopentane", "shortcutDisplay": "R", "category": "structure" },
+            { "commandId": "tool.cyclohexane", "title": "Cyclohexane Template", "icon": "ring", "assetName": "Custom_Cyclohexane", "category": "structure" },
+            { "commandId": "tool.benzene", "title": "Benzene Template", "icon": "ring", "assetName": "Custom_Benzene", "category": "structure" },
+            { "commandId": "tool.chairCyclohexaneA", "title": "Chair Cyclohexane Template A", "icon": "ring", "assetName": "Custom_Chair1", "category": "structure" },
+            { "commandId": "tool.chairCyclohexaneB", "title": "Chair Cyclohexane Template B", "icon": "ring", "assetName": "Custom_Chair2", "category": "structure" }
           ]
         },
         {
@@ -114,16 +114,16 @@
           "items": [
             { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "M", "category": "structure" },
             { "commandId": "structure.cleanup2d", "title": "Clean up Structure 2D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "shortcutDisplay": "Shift+Cmd+K", "category": "structure" },
-            { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.boldBond", "title": "Bold Bond", "icon": "bond", "assetName": "Custom_Bond_Bold", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
+            { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "category": "structure" },
+            { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "category": "structure" },
+            { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "category": "structure" },
+            { "commandId": "tool.boldBond", "title": "Bold Bond", "icon": "bond", "assetName": "Custom_Bond_Bold", "category": "structure" },
             { "commandId": "tool.chain", "title": "Chain Tool", "icon": "chain", "assetName": "Custom_Draw_Line", "shortcutDisplay": "C", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.cyclopentane", "title": "Cyclopentane Template", "icon": "ring", "assetName": "Custom_Cyclopentane", "shortcutDisplay": "R", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.cyclohexane", "title": "Cyclohexane Template", "icon": "ring", "assetName": "Custom_Cyclohexane", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.benzene", "title": "Benzene Template", "icon": "ring", "assetName": "Custom_Benzene", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.chairCyclohexaneA", "title": "Chair Cyclohexane Template A", "icon": "ring", "assetName": "Custom_Chair1", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
-            { "commandId": "tool.chairCyclohexaneB", "title": "Chair Cyclohexane Template B", "icon": "ring", "assetName": "Custom_Chair2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" }
+            { "commandId": "tool.cyclopentane", "title": "Cyclopentane Template", "icon": "ring", "assetName": "Custom_Cyclopentane", "shortcutDisplay": "R", "category": "structure" },
+            { "commandId": "tool.cyclohexane", "title": "Cyclohexane Template", "icon": "ring", "assetName": "Custom_Cyclohexane", "category": "structure" },
+            { "commandId": "tool.benzene", "title": "Benzene Template", "icon": "ring", "assetName": "Custom_Benzene", "category": "structure" },
+            { "commandId": "tool.chairCyclohexaneA", "title": "Chair Cyclohexane Template A", "icon": "ring", "assetName": "Custom_Chair1", "category": "structure" },
+            { "commandId": "tool.chairCyclohexaneB", "title": "Chair Cyclohexane Template B", "icon": "ring", "assetName": "Custom_Chair2", "category": "structure" }
           ]
         }
       ]

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  DefaultNativeTextStyle,
   applyPatch,
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
@@ -35,6 +36,7 @@ import {
   createPhase4Document,
   insertAdapterFallbackMolecule,
   insertNativeSingleBondMolecule,
+  insertNativeTemplateMolecule,
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
@@ -53,6 +55,7 @@ import {
   moleculeResizeReadoutPercent,
   moleculeResizeScaleFromDrag,
   nativeDeleteTargetFromSelectionPart,
+  nativeMoleculeSelectionHasVisibleTargets,
   nativeMoleculeSelectionDragIntent,
   resolvePngCanvasSize,
   rotationDeltaDegrees,
@@ -69,10 +72,13 @@ import {
   DEFAULT_TOOLSET_ID,
   TOOLSET_ACTIVE_TOOL_EVENT,
   TOOLSET_ACTIVE_TOOL_REQUEST_EVENT,
+  TOOLSET_TEXT_STYLE_EVENT,
+  TOOLSET_TEXT_STYLE_REQUEST_EVENT,
   TOOLSET_WINDOW_STATE_EVENT,
   createPaletteCommandPayload,
   createToolsetActiveToolPayload,
   createToolsetCommandPayload,
+  createToolsetTextStylePayload,
   createToolsetWindowStatePayload
 } from "./window-manager";
 import {
@@ -219,6 +225,12 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("app-shell");
     expect(markup).not.toContain("canvas-region");
     expect(markup).not.toContain("utility-drawer");
+    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 70px max-content;");
+    expect(appCss).toContain("grid-template-columns: 170px 70px auto;");
+    expect(appCss).toContain("appearance: none;");
+    expect(appCss).toContain("linear-gradient(45deg, transparent 50%, var(--cd-text-secondary) 50%)");
+    expect(appCss).toContain("min-width: 70px;");
+    expect(appCss).toContain("font-variant-numeric: tabular-nums;");
   });
 
   it("keeps every non-canvas panel out of the document window by default", () => {
@@ -548,6 +560,33 @@ describe("ChemDraft desktop shell", () => {
     expect(normalizeHexColor("#abc")).toBe("#aabbcc");
     expect(textStylePatchForCommand("text.color.magenta")).toEqual({ color: "#9b287b" });
     expect(textStylePatchForCommand(textCustomColorCommandId("#A0B1C2"))).toEqual({ color: "#a0b1c2" });
+    expect(appCss).toContain(".toolbar-color-swatch:hover,\n.toolbar-color-swatch.active");
+    expect(appCss).toContain("background: var(--swatch-color);");
+  });
+
+  it("renders mutually exclusive text toolbar active states from current style", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ToolPalette, {
+        groups: [],
+        mode: "floating",
+        orientation: "horizontal",
+        showMainStyleControls: true,
+        currentTextStyle: {
+          ...DefaultNativeTextStyle,
+          color: "#1f5fbf",
+          textAlign: "right"
+        },
+        currentTextScript: "superscript",
+        onInvoke: () => undefined
+      })
+    );
+
+    expect(buttonMarkupForCommand(markup, "text.color.blue")).toContain("active");
+    expect(buttonMarkupForCommand(markup, "text.color.green")).not.toContain("active");
+    expect(buttonMarkupForCommand(markup, "text.align.right")).toContain("active");
+    expect(buttonMarkupForCommand(markup, "text.align.left")).not.toContain("active");
+    expect(buttonMarkupForCommand(markup, "text.script.superscript")).toContain("active");
+    expect(buttonMarkupForCommand(markup, "text.script.subscript")).not.toContain("active");
   });
 
   it("converts picker colors across RGB, CMYK, and HEX", () => {
@@ -562,6 +601,15 @@ describe("ChemDraft desktop shell", () => {
       "tool.select",
       "tool.text",
       "tool.bond",
+      "tool.wedgeBond",
+      "tool.hashedBond",
+      "tool.dashedBond",
+      "tool.boldBond",
+      "tool.cyclopentane",
+      "tool.cyclohexane",
+      "tool.benzene",
+      "tool.chairCyclohexaneA",
+      "tool.chairCyclohexaneB",
       structureCleanupCommandId,
       "tool.plus",
       "tool.minus",
@@ -577,7 +625,9 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.plus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
-    expect(disabledTools.length).toBeGreaterThan(30);
+    expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
+    expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
+    expect(disabledTools.length).toBeGreaterThan(20);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
 
@@ -724,7 +774,7 @@ describe("ChemDraft desktop shell", () => {
     expect(boldIndex).toBeGreaterThan(fontIndex);
     expect(appCss).toContain("--cd-main-toolbar-style-width: 344px;");
     expect(appCss).toContain("grid-template-columns: max-content minmax(0, 1fr) max-content;");
-    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 62px max-content;");
+    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 70px max-content;");
     expect(appCss).toContain("justify-self: end;");
     expect(appCss).toContain(".tool-palette.floating.horizontal.main-style-palette");
     expect(appCss).toContain("max-height: 64px;");
@@ -840,11 +890,26 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps disabled placeholder tools from pretending to perform chemistry", () => {
     const disabledTools = getToolsetCommandSpecs().filter((command) => command.enabled === false);
+    const enabledNativeStructureTools = [
+      "tool.bond",
+      "tool.wedgeBond",
+      "tool.hashedBond",
+      "tool.dashedBond",
+      "tool.boldBond",
+      "tool.cyclopentane",
+      "tool.cyclohexane",
+      "tool.benzene",
+      "tool.chairCyclohexaneA",
+      "tool.chairCyclohexaneB"
+    ];
 
-    expect(disabledTools.length).toBeGreaterThan(30);
+    expect(disabledTools.length).toBeGreaterThan(20);
     expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
-    expect(disabledTools.some((command) => command.id === "tool.wedgeBond")).toBe(true);
-    expect(disabledTools.some((command) => command.id === "tool.bond")).toBe(false);
+    enabledNativeStructureTools.forEach((commandId) => {
+      expect(disabledTools.some((command) => command.id === commandId)).toBe(false);
+    });
+    expect(disabledTools.some((command) => command.id === "tool.chain")).toBe(true);
+    expect(disabledTools.some((command) => command.id === "tool.reactionArrow")).toBe(true);
   });
 
   it("exposes active tool state without rendering fake chemistry", () => {
@@ -866,6 +931,49 @@ describe("ChemDraft desktop shell", () => {
     expect(toolCommands.some((command) => command.assetName === "Custom_Arrow_Equilibrium")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Flip_Horizontal")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Structure_Cleanup")).toBe(true);
+  });
+
+  it("keeps toolbar shortcuts in delayed hover tooltips instead of visible icon badges", () => {
+    const bondCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.bond");
+    const cleanupCommand = getToolsetCommandSpecs().find((command) => command.id === structureCleanupCommandId);
+    if (!bondCommand || !cleanupCommand) {
+      throw new Error("Expected toolbar commands.");
+    }
+
+    const markup = renderToStaticMarkup(
+      createElement(ToolPalette, {
+        groups: [[bondCommand, cleanupCommand]],
+        mode: "floating",
+        orientation: "horizontal",
+        onInvoke: () => undefined
+      })
+    );
+    const bondMarkup = buttonMarkupForCommand(markup, "tool.bond");
+    const cleanupMarkup = buttonMarkupForCommand(markup, structureCleanupCommandId);
+    const verticalMarkup = renderToStaticMarkup(
+      createElement(ToolPalette, { groups: [[bondCommand]], onInvoke: () => undefined })
+    );
+    const verticalBondMarkup = buttonMarkupForCommand(verticalMarkup, "tool.bond");
+
+    expect(bondMarkup).toContain('data-command-id="tool.bond"');
+    expect(bondMarkup).toContain('data-shortcut-label="M"');
+    expect(bondMarkup).toContain('data-tooltip="Single Bond (M)"');
+    expect(bondMarkup).toContain('class="tool-tooltip"');
+    expect(bondMarkup).toContain(">Single Bond (M)</span>");
+    expect(bondMarkup).not.toContain('title="Single Bond (M)"');
+    expect(verticalBondMarkup).toContain('title="Single Bond (M)"');
+    expect(bondMarkup).not.toContain("with-shortcut");
+    expect(markup).not.toContain('class="shortcut"');
+    expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
+    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⌘⇧K)"');
+    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⌘⇧K)</span>");
+    expect(appCss).toContain(".tool-tooltip");
+    expect(appCss).toContain(".icon-button:hover .tool-tooltip");
+    expect(appCss).toContain(".tool-palette.horizontal .tool-tooltip");
+    expect(appCss).toContain(".tool-palette.vertical .tool-tooltip");
+    expect(appCss).toContain("display: none;");
+    expect(appCss).toContain("transition-delay: 450ms;");
+    expect(appCss).toContain('.icon-button[data-command-id="structure.cleanup2d"] .tool-icon-image');
   });
 
   it("keeps functional metadata on asset-backed palette commands", () => {
@@ -906,6 +1014,18 @@ describe("ChemDraft desktop shell", () => {
     expect(createPaletteCommandPayload("tool.select")).toEqual({ commandId: "tool.select" });
     expect(Object.keys(createPaletteCommandPayload("tool.select"))).toEqual(["commandId"]);
     expect(createToolsetActiveToolPayload("tool.text")).toEqual({ commandId: "tool.text" });
+    expect(createToolsetTextStylePayload({
+      ...DefaultNativeTextStyle,
+      color: "#1f5fbf",
+      textAlign: "right"
+    }, "superscript")).toEqual({
+      currentTextStyle: {
+        ...DefaultNativeTextStyle,
+        color: "#1f5fbf",
+        textAlign: "right"
+      },
+      currentTextScript: "superscript"
+    });
     expect(createToolsetCommandPayload("plugin.fixture.toolset.ping")).toEqual({
       commandId: "plugin.fixture.toolset.ping"
     });
@@ -914,6 +1034,8 @@ describe("ChemDraft desktop shell", () => {
   it("keeps native toolset window state events narrow and serializable", () => {
     expect(TOOLSET_ACTIVE_TOOL_EVENT).toBe("chemdraft://toolset-active-tool");
     expect(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT).toBe("chemdraft://toolset-active-tool-request");
+    expect(TOOLSET_TEXT_STYLE_EVENT).toBe("chemdraft://toolset-text-style");
+    expect(TOOLSET_TEXT_STYLE_REQUEST_EVENT).toBe("chemdraft://toolset-text-style-request");
     expect(TOOLSET_WINDOW_STATE_EVENT).toBe("chemdraft://toolset-window-state");
     expect(createToolsetWindowStatePayload("core.structure", true, false, { x: 120, y: 180 })).toEqual({
       toolsetId: "core.structure",
@@ -1008,6 +1130,24 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("adapter-backed");
   });
 
+  it("hides molecule transform handles when the bond tool is active", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Bond Tool Selection Chrome"), { x: 200, y: 220 });
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialActiveToolCommandId: "tool.bond",
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-active-tool-kind="bond"');
+    expect(markup).toContain("native-single-bond");
+    expect(markup).not.toContain("native-molecule-selection-blob");
+    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain("data-molecule-resize-corner");
+  });
+
   it("keeps selected labeled atoms visibly highlighted above label backgrounds", () => {
     const carbon = insertNativeSingleBondMolecule(createPhase4Document("Labeled Atom Highlight"), { x: 200, y: 220 });
     const oxygen = applyNativeAtomElementTarget(carbon, {
@@ -1054,6 +1194,28 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-selection-blob="true"');
     expect(markup).not.toContain("native-bond-selection-connector");
     expect(markup).not.toContain('data-bond-selection-connectors="true"');
+    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain("data-molecule-transform-frame");
+    expect(markup).not.toContain("data-molecule-resize-corner");
+  });
+
+  it("does not treat stale native molecule fragment targets as visible selections", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Stale Native Part"), { x: 200, y: 220 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected native molecule fixture.");
+    }
+
+    expect(nativeMoleculeSelectionHasVisibleTargets(molecule, false, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "missing_bond"
+    })).toBe(false);
+    expect(nativeMoleculeSelectionHasVisibleTargets(molecule, false, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_001"
+    })).toBe(true);
   });
 
   it("renders selected text objects with resize and rotate handles", () => {
@@ -1098,7 +1260,7 @@ describe("ChemDraft desktop shell", () => {
       changes: {
         spans: [
           { text: "x", script: "normal", style: {} },
-          { text: "2", script: "superscript", style: {} }
+          { text: "2", script: "superscript", style: { color: "#b3261e" } }
         ]
       }
     });
@@ -1112,6 +1274,72 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain('data-text-script="normal"');
     expect(markup).toContain('data-text-script="superscript"');
+    expect(markup).toContain('style="color:#b3261e"');
+  });
+
+  it("renders native molecule part colors for selected-style atom labels and bonds", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Molecule Part Color Render"),
+      { x: 220, y: 240 }
+    );
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const atomId = molecule?.atoms[0]?.id;
+    const bondId = molecule?.bonds[0]?.id;
+    if (!molecule || !atomId || !bondId) {
+      throw new Error("Expected native molecule fixture.");
+    }
+    const nitrogen = applyNativeAtomElementTarget(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId,
+      distanceToPointer: 0
+    }, "N");
+    const colored = applyPatch(nitrogen, {
+      op: "updateObject",
+      objectId: molecule.id,
+      changes: {
+        style: {
+          ...molecule.style,
+          atomLabelColors: { [atomId]: "#c75c12" },
+          bondColors: { [bondId]: "#b3261e" }
+        }
+      }
+    });
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: colored,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('stroke="#b3261e"');
+    expect(markup).toContain('fill="#c75c12"');
+    expect(markup).toContain('data-atom-label="NH2"');
+    expect(appCss).not.toMatch(/\\.native-bond-line\\s*{[^}]*stroke\\s*:/);
+    expect(appCss).not.toMatch(/\\.native-atom-label\\s*{[^}]*fill\\s*:/);
+  });
+
+  it("renders native styled bonds and template molecules on the ChemDraft canvas", () => {
+    const wedgeDocument = insertNativeSingleBondMolecule(
+      createPhase4Document("Styled Bond Render"),
+      { x: 200, y: 220 },
+      { bondStyle: "wedge" }
+    );
+    const document = insertNativeTemplateMolecule(wedgeDocument, { x: 360, y: 260 }, "benzene");
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("<polygon");
+    expect(markup).toContain('data-bond-style="wedge"');
+    expect(markup).toContain('data-atom-count="6"');
+    expect(markup).toContain('data-bond-count="6"');
+    expect(markup).toContain("bond_001:double");
   });
 
   it("renders invalid-valence markers for over-coordinated native atoms", () => {

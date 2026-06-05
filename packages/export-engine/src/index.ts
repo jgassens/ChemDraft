@@ -150,9 +150,7 @@ function renderNativeMoleculeGraph(object: MoleculeObject, layerIndex: number): 
           ]
         : [];
     }),
-    ...segments.map((segment) =>
-      `    <line data-bond-id="${escapeXml(segment.bond.id)}" data-bond-order="${segment.bond.order}" data-bond-segment="${segment.segment}"${segment.doubleBondSide ? ` data-double-bond-side="${segment.doubleBondSide}"` : ""} x1="${formatNumber(segment.x1)}" y1="${formatNumber(segment.y1)}" x2="${formatNumber(segment.x2)}" y2="${formatNumber(segment.y2)}" stroke="${escapeXml(drawingStyle.bondColor)}" stroke-width="${drawingStyle.bondStrokeWidthPx}" stroke-linecap="${drawingStyle.bondLineCap}" />`
-    ),
+    ...segments.flatMap((segment) => renderNativeBondSegment(segment, object, drawingStyle)),
     "  </g>"
   ].join("\n  "));
   const labelBackgrounds = object.atoms.flatMap((atom) => {
@@ -172,7 +170,7 @@ function renderNativeMoleculeGraph(object: MoleculeObject, layerIndex: number): 
     }
 
     return [
-      `  <g data-atom-label="${escapeXml(label)}" transform="translate(${formatNumber(atom.x)} ${formatNumber(atom.y)})" font-family="${escapeXml(drawingStyle.atomLabelFontFamily)}" font-size="${drawingStyle.atomLabelFontSizePx}" font-weight="${drawingStyle.atomLabelFontWeight}" fill="${escapeXml(drawingStyle.atomLabelColor)}">${renderAtomLabelRuns(label, drawingStyle)}</g>`
+      `  <g data-atom-label="${escapeXml(label)}" transform="translate(${formatNumber(atom.x)} ${formatNumber(atom.y)})" font-family="${escapeXml(drawingStyle.atomLabelFontFamily)}" font-size="${drawingStyle.atomLabelFontSizePx}" font-weight="${drawingStyle.atomLabelFontWeight}" fill="${escapeXml(nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle))}">${renderAtomLabelRuns(label, drawingStyle)}</g>`
     ];
   });
 
@@ -270,6 +268,122 @@ function bondLineSegments(
   }
 
   return [{ x1, y1, x2, y2, segment: "primary" }];
+}
+
+function renderNativeBondSegment(
+  segment: BondLineSegment & { bond: MoleculeBond },
+  object: MoleculeObject,
+  drawingStyle: NativeDrawingStyle
+): string[] {
+  const bondStyle = segment.bond.display?.bondStyle;
+  const styleAttribute = bondStyle ? ` data-bond-style="${bondStyle}"` : "";
+  const commonAttributes = `data-bond-id="${escapeXml(segment.bond.id)}" data-bond-order="${segment.bond.order}" data-bond-segment="${segment.segment}"${styleAttribute}${segment.doubleBondSide ? ` data-double-bond-side="${segment.doubleBondSide}"` : ""}`;
+  const stroke = escapeXml(nativeMoleculeBondColor(object, segment.bond.id, drawingStyle));
+
+  if (bondStyle === "wedge" && segment.segment === "primary") {
+    return [
+      `    <polygon ${commonAttributes} points="${nativeWedgePolygonPoints(segment, drawingStyle)}" fill="${stroke}" />`
+    ];
+  }
+
+  if (bondStyle === "hashed" && segment.segment === "primary") {
+    return nativeHashedWedgeSegments(segment, drawingStyle).map((hash, index) =>
+      `    <line ${commonAttributes} data-bond-hash-index="${index}" x1="${formatNumber(hash.x1)}" y1="${formatNumber(hash.y1)}" x2="${formatNumber(hash.x2)}" y2="${formatNumber(hash.y2)}" stroke="${stroke}" stroke-width="${drawingStyle.bondStrokeWidthPx}" stroke-linecap="butt" />`
+    );
+  }
+
+  const strokeWidth = bondStyle === "bold"
+    ? drawingStyle.bondStrokeWidthPx * 2.4
+    : drawingStyle.bondStrokeWidthPx;
+  const lineCap = bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap;
+  const dashArray = bondStyle === "dashed"
+    ? ` stroke-dasharray="${nativeDashedBondDashArray(drawingStyle)}"`
+    : "";
+
+  return [
+    `    <line ${commonAttributes} x1="${formatNumber(segment.x1)}" y1="${formatNumber(segment.y1)}" x2="${formatNumber(segment.x2)}" y2="${formatNumber(segment.y2)}" stroke="${stroke}" stroke-width="${formatNumber(strokeWidth)}" stroke-linecap="${lineCap}"${dashArray} />`
+  ];
+}
+
+function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
+  const dash = Math.max(3, drawingStyle.bondStrokeWidthPx * 2.2);
+  const gap = Math.max(3, drawingStyle.bondStrokeWidthPx * 1.8);
+  return `${formatNumber(dash)} ${formatNumber(gap)}`;
+}
+
+function nativeWedgeWidth(drawingStyle: NativeDrawingStyle): number {
+  return Math.max(8, drawingStyle.bondStrokeWidthPx * 5.2);
+}
+
+function nativeWedgePolygonPoints(
+  segment: Pick<BondLineSegment, "x1" | "y1" | "x2" | "y2">,
+  drawingStyle: NativeDrawingStyle
+): string {
+  const geometry = nativeSegmentVectorGeometry(segment);
+  if (!geometry) {
+    return `${formatNumber(segment.x1)},${formatNumber(segment.y1)} ${formatNumber(segment.x2)},${formatNumber(segment.y2)}`;
+  }
+
+  const halfWidth = nativeWedgeWidth(drawingStyle) / 2;
+  const wideLeft = {
+    x: segment.x2 + geometry.normal.x * halfWidth,
+    y: segment.y2 + geometry.normal.y * halfWidth
+  };
+  const wideRight = {
+    x: segment.x2 - geometry.normal.x * halfWidth,
+    y: segment.y2 - geometry.normal.y * halfWidth
+  };
+
+  return [
+    `${formatNumber(segment.x1)},${formatNumber(segment.y1)}`,
+    `${formatNumber(wideLeft.x)},${formatNumber(wideLeft.y)}`,
+    `${formatNumber(wideRight.x)},${formatNumber(wideRight.y)}`
+  ].join(" ");
+}
+
+function nativeHashedWedgeSegments(
+  segment: Pick<BondLineSegment, "x1" | "y1" | "x2" | "y2">,
+  drawingStyle: NativeDrawingStyle
+): Pick<BondLineSegment, "x1" | "y1" | "x2" | "y2">[] {
+  const geometry = nativeSegmentVectorGeometry(segment);
+  if (!geometry) {
+    return [];
+  }
+
+  const hashCount = Math.max(5, Math.min(9, Math.round(geometry.length / 9)));
+  const maxWidth = nativeWedgeWidth(drawingStyle);
+  return Array.from({ length: hashCount }, (_, index) => {
+    const t = (index + 1) / (hashCount + 1);
+    const center = {
+      x: segment.x1 + geometry.unit.x * geometry.length * t,
+      y: segment.y1 + geometry.unit.y * geometry.length * t
+    };
+    const halfWidth = maxWidth * t / 2;
+    return {
+      x1: center.x + geometry.normal.x * halfWidth,
+      y1: center.y + geometry.normal.y * halfWidth,
+      x2: center.x - geometry.normal.x * halfWidth,
+      y2: center.y - geometry.normal.y * halfWidth
+    };
+  });
+}
+
+function nativeSegmentVectorGeometry(
+  segment: Pick<BondLineSegment, "x1" | "y1" | "x2" | "y2">
+): { length: number; unit: { x: number; y: number }; normal: { x: number; y: number } } | undefined {
+  const dx = segment.x2 - segment.x1;
+  const dy = segment.y2 - segment.y1;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return undefined;
+  }
+
+  const unit = { x: dx / length, y: dy / length };
+  return {
+    length,
+    unit,
+    normal: { x: -unit.y, y: unit.x }
+  };
 }
 
 function isTerminalHeteroatomDoubleBond(
@@ -674,8 +788,9 @@ function renderTextSpanLine(
     const scriptAttributes = span.script === "normal"
       ? ""
       : ` baseline-shift="${span.script === "superscript" ? "super" : "sub"}" font-size="72%"`;
+    const styleAttributes = textSpanSvgAttributes(span);
 
-    return `<tspan${positionAttributes}${scriptAttributes}>${escapeXml(span.text)}</tspan>`;
+    return `<tspan${positionAttributes}${scriptAttributes}${styleAttributes}>${escapeXml(span.text)}</tspan>`;
   }).join("");
 }
 
@@ -702,6 +817,74 @@ function textObjectSpansForExport(object: TextObject): TextSpan[] {
   }
 
   return [{ text: object.text, script: "normal", style: {} }];
+}
+
+function textSpanSvgAttributes(span: TextSpan): string {
+  const attributes: string[] = [];
+  const color = metadataString(span.style.color);
+  const fontFamily = metadataString(span.style.fontFamily);
+  const fontSizePx = metadataNumber(span.style.fontSizePx);
+  const fontWeight = metadataNumber(span.style.fontWeight);
+  const fontStyle = metadataString(span.style.fontStyle);
+  const textDecoration = metadataString(span.style.textDecoration);
+  const letterSpacingPx = metadataNumber(span.style.letterSpacingPx);
+
+  if (color) {
+    attributes.push(`fill="${escapeXml(color)}"`);
+  }
+  if (fontFamily) {
+    attributes.push(`font-family="${escapeXml(fontFamily)}"`);
+  }
+  if (fontSizePx !== undefined && span.script === "normal") {
+    attributes.push(`font-size="${formatNumber(fontSizePx)}"`);
+  }
+  if (fontWeight !== undefined) {
+    attributes.push(`font-weight="${formatNumber(fontWeight)}"`);
+  }
+  if (fontStyle === "italic" || fontStyle === "normal") {
+    attributes.push(`font-style="${fontStyle}"`);
+  }
+  if (textDecoration) {
+    attributes.push(`text-decoration="${escapeXml(textDecoration)}"`);
+  }
+  if (letterSpacingPx !== undefined) {
+    attributes.push(`letter-spacing="${formatNumber(letterSpacingPx)}"`);
+  }
+
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}
+
+function nativeMoleculeBondColor(
+  object: MoleculeObject,
+  bondId: string,
+  drawingStyle: NativeDrawingStyle
+): string {
+  return styleColorMapValue(object.style.bondColors, bondId) ?? drawingStyle.bondColor;
+}
+
+function nativeMoleculeAtomLabelColor(
+  object: MoleculeObject,
+  atomId: string,
+  drawingStyle: NativeDrawingStyle
+): string {
+  return styleColorMapValue(object.style.atomLabelColors, atomId) ?? drawingStyle.atomLabelColor;
+}
+
+function styleColorMapValue(value: unknown, id: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const color = (value as Record<string, unknown>)[id];
+  return typeof color === "string" ? color : undefined;
+}
+
+function metadataString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function metadataNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function renderChargeMarkObject(object: ElectronMarkObject, layerIndex: number): string {

@@ -1,4 +1,13 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode
+} from "react";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 import {
@@ -80,8 +89,8 @@ export function ToolPalette({
               key={tool.id}
               command={tool}
               active={tool.enabled !== false && activeTool === tool.id}
+              nativeTitleFallback={orientation !== "horizontal"}
               onInvoke={onInvoke}
-              showShortcut
             />
           ))}
         </div>
@@ -127,44 +136,22 @@ function MainToolbarStyleControls({
       <div className="toolbar-style-row toolbar-style-row-primary">
         <div className="toolbar-swatch-group" role="group" aria-label="Text color">
           {mainToolbarTextColorCommands.map((command) => (
-            <button
-              type="button"
-              className={[
-                "toolbar-color-swatch",
-                normalizeHexColor(command.color) === currentColor ? "active" : ""
-              ].filter(Boolean).join(" ")}
+            <ToolbarColorSwatchButton
+              active={normalizeHexColor(command.color) === currentColor}
+              command={command}
               key={command.id}
-              title={command.title}
-              aria-label={command.title}
-              aria-pressed={normalizeHexColor(command.color) === currentColor}
-              data-command-id={command.id}
-              data-palette-control="true"
-              style={{ "--swatch-color": command.color } as CSSProperties}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => onInvoke(command.id)}
+              onInvoke={onInvoke}
             />
           ))}
         </div>
         <div className="toolbar-align-group" role="group" aria-label="Text alignment">
           {textAlignmentCommands.map((command) => (
-            <button
-              type="button"
-              className={["toolbar-align-button", textAlign === command.textAlign ? "active" : ""].filter(Boolean).join(" ")}
+            <ToolbarAlignButton
+              active={textAlign === command.textAlign}
+              command={command}
               key={command.id}
-              title={command.title}
-              aria-label={command.title}
-              aria-pressed={textAlign === command.textAlign}
-              data-command-id={command.id}
-              data-palette-control="true"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => onInvoke(command.id)}
-            >
-              <span className={`toolbar-align-glyph toolbar-align-${command.textAlign}`} aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </span>
-            </button>
+              onInvoke={onInvoke}
+            />
           ))}
         </div>
       </div>
@@ -337,24 +324,12 @@ function TextToolbarStyleControls({
         </div>
         <div className="toolbar-align-group" role="group" aria-label="Text alignment">
           {textAlignmentCommands.map((command) => (
-            <button
-              type="button"
-              className={["toolbar-align-button", textAlign === command.textAlign ? "active" : ""].filter(Boolean).join(" ")}
+            <ToolbarAlignButton
+              active={textAlign === command.textAlign}
+              command={command}
               key={command.id}
-              title={command.title}
-              aria-label={command.title}
-              aria-pressed={textAlign === command.textAlign}
-              data-command-id={command.id}
-              data-palette-control="true"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => onInvoke(command.id)}
-            >
-              <span className={`toolbar-align-glyph toolbar-align-${command.textAlign}`} aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </span>
-            </button>
+              onInvoke={onInvoke}
+            />
           ))}
         </div>
       </div>
@@ -541,16 +516,11 @@ function ColorPickerControl({
             <div className="color-preset-panel" role="tabpanel" aria-label="Preset colors">
               <div className="color-preset-grid">
                 {textColorCommands.map((command) => (
-                  <button
-                    type="button"
-                    className={["color-preset-swatch", normalizeHexColor(command.color) === normalizedCurrentColor ? "active" : ""].filter(Boolean).join(" ")}
+                  <ColorPresetSwatchButton
+                    active={normalizeHexColor(command.color) === normalizedCurrentColor}
+                    command={command}
                     key={command.id}
-                    title={command.title}
-                    aria-label={command.title}
-                    aria-pressed={normalizeHexColor(command.color) === normalizedCurrentColor}
-                    data-command-id={command.id}
-                    style={{ "--swatch-color": command.color } as CSSProperties}
-                    onClick={() => applyPresetColor(command)}
+                    onApply={applyPresetColor}
                   />
                 ))}
               </div>
@@ -630,6 +600,8 @@ function ToolbarTextButton({
   label: string;
   onInvoke: (commandId: string) => void;
 }) {
+  const invokeHandlers = usePaletteButtonInvoke(commandId, onInvoke);
+
   return (
     <button
       type="button"
@@ -639,12 +611,132 @@ function ToolbarTextButton({
       aria-pressed={active}
       data-command-id={commandId}
       data-palette-control="true"
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={() => onInvoke(commandId)}
+      {...invokeHandlers}
     >
       {children}
     </button>
   );
+}
+
+function ToolbarColorSwatchButton({
+  active,
+  command,
+  onInvoke
+}: {
+  active: boolean;
+  command: typeof textColorCommands[number];
+  onInvoke: (commandId: string) => void;
+}) {
+  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
+
+  return (
+    <button
+      type="button"
+      className={["toolbar-color-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
+      title={command.title}
+      aria-label={command.title}
+      aria-pressed={active}
+      data-command-id={command.id}
+      data-palette-control="true"
+      style={{ "--swatch-color": command.color } as CSSProperties}
+      {...invokeHandlers}
+    />
+  );
+}
+
+function ColorPresetSwatchButton({
+  active,
+  command,
+  onApply
+}: {
+  active: boolean;
+  command: typeof textColorCommands[number];
+  onApply: (command: typeof textColorCommands[number]) => void;
+}) {
+  const invokeHandlers = usePaletteButtonInvoke(command.id, () => onApply(command));
+
+  return (
+    <button
+      type="button"
+      className={["color-preset-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
+      title={command.title}
+      aria-label={command.title}
+      aria-pressed={active}
+      data-command-id={command.id}
+      style={{ "--swatch-color": command.color } as CSSProperties}
+      {...invokeHandlers}
+    />
+  );
+}
+
+function ToolbarAlignButton({
+  active,
+  command,
+  onInvoke
+}: {
+  active: boolean;
+  command: typeof textAlignmentCommands[number];
+  onInvoke: (commandId: string) => void;
+}) {
+  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
+
+  return (
+    <button
+      type="button"
+      className={["toolbar-align-button", active ? "active" : ""].filter(Boolean).join(" ")}
+      title={command.title}
+      aria-label={command.title}
+      aria-pressed={active}
+      data-command-id={command.id}
+      data-palette-control="true"
+      {...invokeHandlers}
+    >
+      <span className={`toolbar-align-glyph toolbar-align-${command.textAlign}`} aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </button>
+  );
+}
+
+function usePaletteButtonInvoke(
+  commandId: string,
+  onInvoke: (commandId: string) => void,
+  disabled = false
+) {
+  const pointerInvokedRef = useRef(false);
+
+  return {
+    onPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+      event.stopPropagation();
+      if (disabled || event.button !== 0) {
+        return;
+      }
+
+      pointerInvokedRef.current = true;
+      onInvoke(commandId);
+    },
+    onMouseDown(event: ReactMouseEvent<HTMLButtonElement>) {
+      event.stopPropagation();
+      if (pointerInvokedRef.current || disabled || event.button !== 0) {
+        return;
+      }
+
+      pointerInvokedRef.current = true;
+      onInvoke(commandId);
+    },
+    onClick() {
+      if (pointerInvokedRef.current) {
+        pointerInvokedRef.current = false;
+        return;
+      }
+
+      if (!disabled) {
+        onInvoke(commandId);
+      }
+    }
+  };
 }
 
 function ScriptGlyph({ script }: { script: TextSpan["script"] }) {
@@ -775,14 +867,14 @@ function closestParagraphSpacingCommandId(paragraphSpacingPx: number | undefined
 export function CommandIconButton({
   command,
   active = false,
+  nativeTitleFallback = true,
   separated = false,
-  showShortcut = false,
   onInvoke
 }: {
   command: CommandSpec;
   active?: boolean;
+  nativeTitleFallback?: boolean;
   separated?: boolean;
-  showShortcut?: boolean;
   onInvoke: (commandId: string) => void;
 }) {
   const disabled = command.enabled === false;
@@ -791,26 +883,35 @@ export function CommandIconButton({
   const shortcutLabel = command.shortcutLabel ?? shortcut;
   const shortcutText = shortcutLabel ? ` (${shortcutLabel})` : "";
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
+  const tooltipText = `${command.title}${shortcutText}${stateText}`;
+  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
 
   return (
     <button
       type="button"
-      className={["icon-button", activeState ? "active" : "", separated ? "separated" : ""].filter(Boolean).join(" ")}
-      title={`${command.title}${shortcutText}${stateText}`}
-      aria-label={`${command.title}${shortcutText}${stateText}`}
+      className={[
+        "icon-button",
+        activeState ? "active" : "",
+        separated ? "separated" : "",
+        command.id === "structure.cleanup2d" ? "structure-cleanup-button" : ""
+      ].filter(Boolean).join(" ")}
+      title={nativeTitleFallback ? tooltipText : undefined}
+      aria-label={tooltipText}
       aria-pressed={activeState || undefined}
       disabled={disabled}
       data-active={activeState ? "true" : undefined}
       data-command-id={command.id}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={() => onInvoke(command.id)}
+      data-shortcut-label={shortcutLabel}
+      data-toolbar-asset={command.assetName}
+      data-tooltip={tooltipText}
+      {...invokeHandlers}
     >
       {command.assetName ? (
         <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
       ) : (
         <Icon name={command.icon} />
       )}
-      {showShortcut && shortcutLabel ? <span className="shortcut">{shortcutLabel}</span> : null}
+      <span className="tool-tooltip" aria-hidden="true">{tooltipText}</span>
     </button>
   );
 }
