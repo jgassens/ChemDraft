@@ -442,6 +442,8 @@ export function MainWindow({
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
   const placementMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectRotateMachineRef = useRef<InteractionState>(initialInteractionState());
+  const objectDragMachineRef = useRef<InteractionState>(initialInteractionState());
+  const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
@@ -2955,7 +2957,9 @@ export function MainWindow({
         return;
       }
       groupTransform.latestPoint = point;
-      if (!groupTransform.dragging && clientPointDistance(groupTransform.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      groupTransformMachineRef.current = interactionReducer(groupTransformMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      const nowDragging = groupTransformMachineRef.current.phase === "dragging";
+      if (!groupTransform.dragging && nowDragging) {
         groupTransform.dragging = true;
       }
       if (groupTransform.dragging) {
@@ -3038,7 +3042,9 @@ export function MainWindow({
       }
 
       objectDrag.latestPoint = point;
-      if (!objectDrag.dragging && clientPointDistance(objectDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      objectDragMachineRef.current = interactionReducer(objectDragMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      const nowDragging = objectDragMachineRef.current.phase === "dragging";
+      if (!objectDrag.dragging && nowDragging) {
         objectDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -3047,7 +3053,6 @@ export function MainWindow({
         setSelectedNativeMoleculePart(undefined);
         assignHoveredNativeDeleteTarget(undefined);
       }
-
       if (objectDrag.dragging) {
         previewObjectDrag(objectDrag, point);
       }
@@ -3142,6 +3147,7 @@ export function MainWindow({
     if (groupTransform?.pointerId === event.pointerId) {
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? groupTransform.latestPoint;
+      groupTransformMachineRef.current = initialInteractionState();
       if (groupTransform.dragging) {
         const next = groupTransformDocument(groupTransform, point, event.shiftKey);
         if (next !== groupTransform.startDocument) {
@@ -3212,6 +3218,7 @@ export function MainWindow({
     if (objectDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? objectDrag.latestPoint;
+      objectDragMachineRef.current = initialInteractionState();
       if (objectDrag.dragging) {
         const changed = commitObjectDrag(objectDrag, point);
         setStatus(changed ? "Moved selected object" : "Object did not move");
@@ -3520,6 +3527,7 @@ export function MainWindow({
           latestPoint: point,
           dragging: false
         };
+        objectDragMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-move" });
         (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
         setStatus(dragIntent.target.kind === "atom"
           ? "Selected atom"

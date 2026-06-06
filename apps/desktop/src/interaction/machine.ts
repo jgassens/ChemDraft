@@ -30,6 +30,8 @@ export type DragKind =
   | "text-resize"
   | "object-rotate"
   | "molecule-resize"
+  | "group-resize"
+  | "group-rotate"
   | "object-move"
   | "native-part"
   | "freeform-bond"
@@ -80,6 +82,8 @@ export const DRAG_THRESHOLDS: Record<DragKind, number> = {
   "text-resize": 0,
   "object-rotate": 4,
   "molecule-resize": 4,
+  "group-resize": 4,
+  "group-rotate": 4,
   "object-move": 4,
   "native-part": 4,
   "freeform-bond": 6,
