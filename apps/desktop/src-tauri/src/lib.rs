@@ -306,6 +306,7 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     window
         .set_decorations(true)
         .map_err(|error| error.to_string())?;
+    configure_document_webview(&window)?;
     window
         .set_focusable(true)
         .map_err(|error| error.to_string())?;
@@ -316,6 +317,22 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     window.show().map_err(|error| error.to_string())?;
     window.center().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_document_webview<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    window
+        .with_webview(|webview| unsafe {
+            let view: &objc2_web_kit::WKWebView = &*webview.inner().cast();
+            view.setAllowsMagnification(false);
+            view.setMagnification(1.0);
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_document_webview<R: Runtime>(_window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    Ok(())
 }
 
 fn focus_main_document_window_impl<R: Runtime>(
@@ -474,11 +491,18 @@ fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
-    if command_id.trim().is_empty() {
+    let command_id = command_id.trim();
+    if command_id.is_empty() {
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
-    emit_command_to_main(&app, command_id.trim())
+    emit_command_to_main(&app, command_id)?;
+    if let Err(error) = focus_main_document_window_impl(&app) {
+        eprintln!(
+            "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -984,7 +1008,7 @@ fn ensure_toolset_window<R: Runtime>(
         size.min_height.unwrap_or(size.height),
     )
     .accept_first_mouse(true)
-    .focusable(false)
+    .focusable(toolset_window_focusable())
     .resizable(true)
     .decorations(false)
     .shadow(false)
@@ -1039,8 +1063,10 @@ fn configure_toolset_utility_window<R: Runtime>(
         | NSWindowStyleMask::NonactivatingPanel;
     ns_window.setStyleMask(style);
     ns_window.setLevel(toolset_utility_window_level());
-    ns_window.setHidesOnDeactivate(true);
+    ns_window.setHidesOnDeactivate(toolset_window_hides_on_deactivate());
     ns_window.setCanHide(true);
+    ns_window.setIgnoresMouseEvents(false);
+    ns_window.setAcceptsMouseMovedEvents(true);
     ns_window.setAnimationBehavior(NSWindowAnimationBehavior::UtilityWindow);
 
     let mut collection_behavior = ns_window.collectionBehavior();
@@ -1053,16 +1079,25 @@ fn configure_toolset_utility_window<R: Runtime>(
     collection_behavior.remove(NSWindowCollectionBehavior::CanJoinAllApplications);
     ns_window.setCollectionBehavior(collection_behavior);
     window
-        .set_focusable(false)
+        .set_focusable(toolset_window_focusable())
         .map_err(|error| error.to_string())?;
     ns_window.orderFront(None);
 
     Ok(())
 }
 
+fn toolset_window_focusable() -> bool {
+    false
+}
+
 #[cfg(target_os = "macos")]
 fn toolset_utility_window_level() -> NSWindowLevel {
     NSFloatingWindowLevel
+}
+
+#[cfg(target_os = "macos")]
+fn toolset_window_hides_on_deactivate() -> bool {
+    true
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1545,10 +1580,21 @@ mod tests {
         expect_true(structure.y > main.y);
     }
 
+    #[test]
+    fn toolset_windows_do_not_take_focus_from_document_window() {
+        expect_false(toolset_window_focusable());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn toolset_utility_windows_float_above_document_windows() {
         expect_true(toolset_utility_window_level() > objc2_app_kit::NSNormalWindowLevel);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn toolset_utility_windows_hide_when_app_deactivates() {
+        expect_true(toolset_window_hides_on_deactivate());
     }
 
     #[test]

@@ -721,28 +721,53 @@ function nativeChairCyclohexaneGeometry(
   center: PagePoint,
   reflected: boolean
 ): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } {
-  const angles = [30, 0, -30, 210, 180, 150].map((angle) => angle * Math.PI / 180);
-  const points = angles.reduce<PagePoint[]>((positions, angle) => {
-    const previous = positions[positions.length - 1] ?? { x: 0, y: 0 };
-    positions.push({
-      x: previous.x + Math.cos(angle) * nativeBondLength,
-      y: previous.y + Math.sin(angle) * nativeBondLength * (reflected ? -1 : 1)
-    });
-    return positions;
-  }, [{ x: 0, y: 0 }]).slice(0, 6);
-  const centroid = points.reduce<PagePoint>(
-    (sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }),
-    { x: 0, y: 0 }
-  );
-  const atoms = points.map((point, index) => ({
+  const atoms = nativeChairCyclohexaneBasePoints(reflected).map((point, index) => ({
     id: `atom_${String(index + 1).padStart(3, "0")}`,
     element: "C",
-    x: center.x + point.x - centroid.x,
-    y: center.y + point.y - centroid.y,
+    ...offsetPoint(center, point),
     formalCharge: 0
   }));
 
   return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
+}
+
+function nativeChairCyclohexaneBasePoints(reflected: boolean): PagePoint[] {
+  const points: PagePoint[] = [{ x: 0, y: 0 }];
+
+  nativeChairCyclohexaneDirections(reflected).slice(0, -1).forEach((degrees) => {
+    const previous = points[points.length - 1] ?? { x: 0, y: 0 };
+    const radians = degrees * Math.PI / 180;
+    points.push({
+      x: previous.x + Math.cos(radians) * nativeBondLength,
+      y: previous.y + Math.sin(radians) * nativeBondLength
+    });
+  });
+
+  const center = centroidOfPoints(points);
+  return points.map((point) => ({
+    x: roundGeometryCoordinate(point.x - center.x),
+    y: roundGeometryCoordinate(point.y - center.y)
+  }));
+}
+
+function nativeChairCyclohexaneDirections(reflected: boolean): readonly number[] {
+  return reflected
+    ? [120, -15, 15, -60, 165, -165]
+    : [60, -15, 15, -120, 165, -165];
+}
+
+function rotateVector(point: PagePoint, angleRadians: number): PagePoint {
+  return {
+    x: point.x * Math.cos(angleRadians) - point.y * Math.sin(angleRadians),
+    y: point.x * Math.sin(angleRadians) + point.y * Math.cos(angleRadians)
+  };
+}
+
+function offsetPoint(origin: PagePoint, offset: PagePoint): PagePoint {
+  return {
+    x: origin.x + offset.x,
+    y: origin.y + offset.y
+  };
 }
 
 function nativeRingBonds(
@@ -797,6 +822,17 @@ function fuseNativeTemplateRingToBond(
     return undefined;
   }
 
+  if (isNativeChairTemplate(templateId)) {
+    return fuseNativeChairTemplateToBond(
+      molecule,
+      targetBond,
+      fromAtom,
+      toAtom,
+      point,
+      templateId === "chairCyclohexaneB"
+    );
+  }
+
   const vertices = nativeRingVerticesForSharedBond(molecule, fromAtom, toAtom, point, size);
   if (!vertices) {
     return undefined;
@@ -810,23 +846,40 @@ function fuseNativeTemplateRingToBond(
     y: vertex.y,
     formalCharge: 0
   } satisfies MoleculeAtom));
+  const ringAtoms = [fromAtom, toAtom, ...newAtoms];
   const ringAtomIds = [fromAtom.id, toAtom.id, ...newAtoms.map((atom) => atom.id)];
+  const ringCenter = centroidOfPoints(vertices);
+  const sharedBondContributesPi = templateId === "benzene"
+    ? sharedBondContributesAromaticPi(molecule, targetBond)
+    : undefined;
   const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), size - 1);
   const newBonds = ringAtomIds.slice(1).map((fromAtomId, index) => {
     const toAtomId = ringAtomIds[index + 2] ?? ringAtomIds[0];
+    const ringBondIndex = index + 1;
+    const sourceAtom = ringAtoms[ringBondIndex] ?? ringAtoms[0] ?? fromAtom;
+    const destinationAtom = ringAtoms[ringBondIndex + 1] ?? ringAtoms[0] ?? toAtom;
     return {
       id: newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((bond) => bond.id)),
       fromAtomId,
       toAtomId,
-      ...nativeTemplateRingBondDisplay(templateId, index + 1, ringAtomIds.length)
+      ...nativeTemplateRingBondDisplay(
+        templateId,
+        ringBondIndex,
+        ringAtomIds.length,
+        sourceAtom,
+        destinationAtom,
+        ringCenter,
+        sharedBondContributesPi
+      )
     } satisfies MoleculeBond;
   });
 
-  return refreshNativeSingleBondGraph(
+  const fused = refreshNativeSingleBondGraph(
     molecule,
     [...molecule.atoms, ...newAtoms],
     [...molecule.bonds, ...newBonds]
   );
+  return templateId === "benzene" ? normalizeNativeAromaticTemplateBonds(fused) : fused;
 }
 
 function attachNativeTemplateRingToAtom(
@@ -839,6 +892,15 @@ function attachNativeTemplateRingToAtom(
   const sharedAtom = molecule.atoms.find((atom) => atom.id === atomId);
   if (!sharedAtom || size < 3) {
     return undefined;
+  }
+
+  if (isNativeChairTemplate(templateId)) {
+    return attachNativeChairTemplateToAtom(
+      molecule,
+      sharedAtom,
+      point,
+      templateId === "chairCyclohexaneB"
+    );
   }
 
   const vertices = nativeRingVerticesForSharedAtom(molecule, sharedAtom, point, size);
@@ -854,23 +916,270 @@ function attachNativeTemplateRingToAtom(
     y: vertex.y,
     formalCharge: 0
   } satisfies MoleculeAtom));
+  const ringAtoms = [sharedAtom, ...newAtoms];
   const ringAtomIds = [sharedAtom.id, ...newAtoms.map((atom) => atom.id)];
+  const ringCenter = centroidOfPoints(vertices);
   const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), size);
   const newBonds = ringAtomIds.map((fromAtomId, index) => {
     const toAtomId = ringAtomIds[(index + 1) % ringAtomIds.length] ?? sharedAtom.id;
+    const sourceAtom = ringAtoms[index] ?? sharedAtom;
+    const destinationAtom = ringAtoms[(index + 1) % ringAtoms.length] ?? sharedAtom;
     return {
       id: newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((bond) => bond.id)),
       fromAtomId,
       toAtomId,
-      ...nativeTemplateRingBondDisplay(templateId, index, ringAtomIds.length)
+      ...nativeTemplateRingBondDisplay(
+        templateId,
+        index,
+        ringAtomIds.length,
+        sourceAtom,
+        destinationAtom,
+        ringCenter
+      )
     } satisfies MoleculeBond;
   });
+
+  const attached = refreshNativeSingleBondGraph(
+    molecule,
+    [...molecule.atoms, ...newAtoms],
+    [...molecule.bonds, ...newBonds]
+  );
+  return templateId === "benzene" ? normalizeNativeAromaticTemplateBonds(attached) : attached;
+}
+
+function isNativeChairTemplate(templateId: NativeMoleculeTemplateId): boolean {
+  return templateId === "chairCyclohexaneA" || templateId === "chairCyclohexaneB";
+}
+
+function fuseNativeChairTemplateToBond(
+  molecule: MoleculeObject,
+  targetBond: MoleculeBond,
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  point: PagePoint,
+  reflected: boolean
+): MoleculeObject | undefined {
+  const dx = toAtom.x - fromAtom.x;
+  const dy = toAtom.y - fromAtom.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return undefined;
+  }
+
+  const basePoints = nativeChairCyclohexaneBasePoints(reflected);
+  const normal = { x: -dy / length, y: dx / length };
+  const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
+  const desiredSide = nativeTemplateSideForBond(molecule, fromAtom, toAtom, point, normal);
+  const candidates: Array<{
+    points: PagePoint[];
+    sharedFromIndex: number;
+    sharedToIndex: number;
+    score: number;
+  }> = [];
+
+  basePoints.forEach((sourcePoint, edgeIndex) => {
+    const nextIndex = (edgeIndex + 1) % basePoints.length;
+    const nextPoint = basePoints[nextIndex] ?? sourcePoint;
+
+    [false, true].forEach((reverse) => {
+      const sourceFrom = reverse ? nextPoint : sourcePoint;
+      const sourceTo = reverse ? sourcePoint : nextPoint;
+      const points = transformNativeTemplatePointsForAnchoredSegment(
+        basePoints,
+        sourceFrom,
+        sourceTo,
+        fromAtom,
+        toAtom
+      );
+      if (!points) {
+        return;
+      }
+
+      const sharedFromIndex = reverse ? nextIndex : edgeIndex;
+      const sharedToIndex = reverse ? edgeIndex : nextIndex;
+      const newPoints = points.filter((_, index) => index !== sharedFromIndex && index !== sharedToIndex);
+      const chairCenter = centroidOfPoints(points);
+      const sideScore = (chairCenter.x - midpoint.x) * normal.x + (chairCenter.y - midpoint.y) * normal.y;
+      const sidePenalty = sideScore * desiredSide >= 0 ? 0 : 1000;
+      const crowding = nativeChairTemplateCrowding(molecule, newPoints, new Set([fromAtom.id, toAtom.id]));
+
+      candidates.push({
+        points,
+        sharedFromIndex,
+        sharedToIndex,
+        score: sidePenalty + crowding
+      });
+    });
+  });
+
+  const candidate = candidates.sort((left, right) => left.score - right.score)[0];
+  if (!candidate) {
+    return undefined;
+  }
+
+  const newBaseIndices = candidate.points
+    .map((_, index) => index)
+    .filter((index) => index !== candidate.sharedFromIndex && index !== candidate.sharedToIndex);
+  const nextAtomIds = nextIndexedIds("atom", molecule.atoms.map((atom) => atom.id), newBaseIndices.length);
+  const atomIdByBaseIndex = new Map<number, string>([
+    [candidate.sharedFromIndex, fromAtom.id],
+    [candidate.sharedToIndex, toAtom.id]
+  ]);
+  const newAtoms = newBaseIndices.map((baseIndex, index) => {
+    const pointForAtom = candidate.points[baseIndex] ?? fromAtom;
+    const id = nextAtomIds[index] ?? nextIndexedId("atom", molecule.atoms.map((atom) => atom.id));
+    atomIdByBaseIndex.set(baseIndex, id);
+    return {
+      id,
+      element: "C",
+      x: pointForAtom.x,
+      y: pointForAtom.y,
+      formalCharge: 0
+    } satisfies MoleculeAtom;
+  });
+  const newBondEdges = candidate.points
+    .map((_, index) => [index, (index + 1) % candidate.points.length] as const)
+    .filter(([fromIndex, toIndex]) => (
+      !nativeChairTemplateEdgeIsShared(fromIndex, toIndex, candidate.sharedFromIndex, candidate.sharedToIndex)
+    ));
+  const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), newBondEdges.length);
+  const newBonds = newBondEdges.map(([fromIndex, toIndex], index) => ({
+    id: newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((bond) => bond.id)),
+    fromAtomId: atomIdByBaseIndex.get(fromIndex) ?? fromAtom.id,
+    toAtomId: atomIdByBaseIndex.get(toIndex) ?? toAtom.id,
+    order: "single"
+  } satisfies MoleculeBond));
 
   return refreshNativeSingleBondGraph(
     molecule,
     [...molecule.atoms, ...newAtoms],
     [...molecule.bonds, ...newBonds]
   );
+}
+
+function attachNativeChairTemplateToAtom(
+  molecule: MoleculeObject,
+  sharedAtom: MoleculeAtom,
+  point: PagePoint,
+  reflected: boolean
+): MoleculeObject | undefined {
+  const basePoints = nativeChairCyclohexaneBasePoints(reflected);
+  const desiredDirection = nativeTemplateDirectionForAtom(molecule, sharedAtom, point);
+  const candidates = basePoints.map((basePoint, sharedIndex) => {
+    const centerVector = { x: -basePoint.x, y: -basePoint.y };
+    const sourceDirection = Math.atan2(centerVector.y, centerVector.x);
+    const rotation = desiredDirection - sourceDirection;
+    const points = basePoints.map((pointForAtom) => {
+      const relativePoint = {
+        x: pointForAtom.x - basePoint.x,
+        y: pointForAtom.y - basePoint.y
+      };
+      const rotatedPoint = rotateVector(relativePoint, rotation);
+      return {
+        x: roundGeometryCoordinate(sharedAtom.x + rotatedPoint.x),
+        y: roundGeometryCoordinate(sharedAtom.y + rotatedPoint.y)
+      };
+    });
+    const newPoints = points.filter((_, index) => index !== sharedIndex);
+
+    return {
+      points,
+      sharedIndex,
+      score: nativeChairTemplateCrowding(molecule, newPoints, new Set([sharedAtom.id]))
+    };
+  });
+  const candidate = candidates.sort((left, right) => left.score - right.score)[0];
+  if (!candidate) {
+    return undefined;
+  }
+
+  const newBaseIndices = candidate.points.map((_, index) => index).filter((index) => index !== candidate.sharedIndex);
+  const nextAtomIds = nextIndexedIds("atom", molecule.atoms.map((atom) => atom.id), newBaseIndices.length);
+  const atomIdByBaseIndex = new Map<number, string>([[candidate.sharedIndex, sharedAtom.id]]);
+  const newAtoms = newBaseIndices.map((baseIndex, index) => {
+    const pointForAtom = candidate.points[baseIndex] ?? sharedAtom;
+    const id = nextAtomIds[index] ?? nextIndexedId("atom", molecule.atoms.map((atom) => atom.id));
+    atomIdByBaseIndex.set(baseIndex, id);
+    return {
+      id,
+      element: "C",
+      x: pointForAtom.x,
+      y: pointForAtom.y,
+      formalCharge: 0
+    } satisfies MoleculeAtom;
+  });
+  const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), candidate.points.length);
+  const newBonds = candidate.points.map((_, index) => ({
+    id: newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((bond) => bond.id)),
+    fromAtomId: atomIdByBaseIndex.get(index) ?? sharedAtom.id,
+    toAtomId: atomIdByBaseIndex.get((index + 1) % candidate.points.length) ?? sharedAtom.id,
+    order: "single"
+  } satisfies MoleculeBond));
+
+  return refreshNativeSingleBondGraph(
+    molecule,
+    [...molecule.atoms, ...newAtoms],
+    [...molecule.bonds, ...newBonds]
+  );
+}
+
+function transformNativeTemplatePointsForAnchoredSegment(
+  points: readonly PagePoint[],
+  sourceFrom: PagePoint,
+  sourceTo: PagePoint,
+  destinationFrom: PagePoint,
+  destinationTo: PagePoint
+): PagePoint[] | undefined {
+  const sourceVector = { x: sourceTo.x - sourceFrom.x, y: sourceTo.y - sourceFrom.y };
+  const destinationVector = {
+    x: destinationTo.x - destinationFrom.x,
+    y: destinationTo.y - destinationFrom.y
+  };
+  const sourceLength = Math.hypot(sourceVector.x, sourceVector.y);
+  const destinationLength = Math.hypot(destinationVector.x, destinationVector.y);
+  if (sourceLength === 0 || destinationLength === 0) {
+    return undefined;
+  }
+
+  const scale = destinationLength / sourceLength;
+  const rotation = Math.atan2(destinationVector.y, destinationVector.x) -
+    Math.atan2(sourceVector.y, sourceVector.x);
+
+  return points.map((point) => {
+    const scaledPoint = {
+      x: (point.x - sourceFrom.x) * scale,
+      y: (point.y - sourceFrom.y) * scale
+    };
+    const rotatedPoint = rotateVector(scaledPoint, rotation);
+    return {
+      x: roundGeometryCoordinate(destinationFrom.x + rotatedPoint.x),
+      y: roundGeometryCoordinate(destinationFrom.y + rotatedPoint.y)
+    };
+  });
+}
+
+function nativeChairTemplateEdgeIsShared(
+  fromIndex: number,
+  toIndex: number,
+  sharedFromIndex: number,
+  sharedToIndex: number
+): boolean {
+  return (fromIndex === sharedFromIndex && toIndex === sharedToIndex) ||
+    (fromIndex === sharedToIndex && toIndex === sharedFromIndex);
+}
+
+function nativeChairTemplateCrowding(
+  molecule: MoleculeObject,
+  points: readonly PagePoint[],
+  excludedAtomIds: ReadonlySet<string>
+): number {
+  return molecule.atoms
+    .filter((atom) => !excludedAtomIds.has(atom.id))
+    .reduce((score, atom) => (
+      score + points.reduce((sum, point) => (
+        sum + 1 / Math.max(nativeBondLength * 0.25, distance(atom, point))
+      ), 0)
+    ), 0);
 }
 
 function nativeTemplateRingSize(templateId: NativeMoleculeTemplateId): number {
@@ -880,18 +1189,293 @@ function nativeTemplateRingSize(templateId: NativeMoleculeTemplateId): number {
 function nativeTemplateRingBondDisplay(
   templateId: NativeMoleculeTemplateId,
   ringBondIndex: number,
-  ringSize: number
+  ringSize: number,
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  ringCenter: PagePoint,
+  sharedBondContributesPi?: boolean
 ): Pick<MoleculeBond, "order" | "display"> {
   if (templateId !== "benzene") {
     return { order: "single" };
   }
 
-  const adjacentToSharedAtom = ringBondIndex === 0 || ringBondIndex === ringSize - 1;
-  if (adjacentToSharedAtom || ringBondIndex % 2 === 1) {
+  if (!nativeBenzeneRingBondIsDouble(ringBondIndex, ringSize, sharedBondContributesPi)) {
     return { order: "single" };
   }
 
-  return { order: "double" };
+  return {
+    order: "double",
+    display: { doubleBondSide: doubleBondSideTowardPoint(fromAtom, toAtom, ringCenter) }
+  };
+}
+
+function nativeBenzeneRingBondIsDouble(
+  ringBondIndex: number,
+  ringSize: number,
+  sharedBondContributesPi?: boolean
+): boolean {
+  if (ringSize !== 6) {
+    return false;
+  }
+
+  if (sharedBondContributesPi === true) {
+    return ringBondIndex === 2 || ringBondIndex === 4;
+  }
+
+  if (sharedBondContributesPi === false) {
+    return ringBondIndex === 1 || ringBondIndex === 3 || ringBondIndex === 5;
+  }
+
+  return ringBondIndex % 2 === 0;
+}
+
+function sharedBondContributesAromaticPi(molecule: MoleculeObject, targetBond: MoleculeBond): boolean {
+  if (targetBond.order === "double") {
+    return true;
+  }
+
+  return [targetBond.fromAtomId, targetBond.toAtomId].every((atomId) =>
+    molecule.bonds.some((bond) =>
+      bond.id !== targetBond.id &&
+      bond.order === "double" &&
+      (bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    )
+  );
+}
+
+interface NativeAromaticRingCycle {
+  atomIds: string[];
+  bondIds: string[];
+  center: PagePoint;
+}
+
+interface NativeAromaticMatching {
+  bondIds: string[];
+  matchedAtoms: number;
+  existingDoubleBonds: number;
+}
+
+function normalizeNativeAromaticTemplateBonds(molecule: MoleculeObject): MoleculeObject {
+  const allCycles = findNativeSixMemberCarbonRingCycles(molecule);
+  const aromaticCycles = allCycles.filter((cycle) =>
+    cycle.bondIds.filter((bondId) =>
+      molecule.bonds.some((bond) => bond.id === bondId && bond.order === "double")
+    ).length >= 2
+  );
+
+  if (aromaticCycles.length === 0) {
+    return molecule;
+  }
+
+  const allCycleMembership = bondCycleMembership(allCycles);
+  const aromaticCycleMembership = bondCycleMembership(aromaticCycles);
+  const aromaticAtomIds = new Set(aromaticCycles.flatMap((cycle) => cycle.atomIds));
+  const aromaticBondIds = new Set(aromaticCycles.flatMap((cycle) => cycle.bondIds));
+  const candidateBondIds = [...aromaticBondIds].filter((bondId) => {
+    const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+    if (!bond || !aromaticAtomIds.has(bond.fromAtomId) || !aromaticAtomIds.has(bond.toAtomId)) {
+      return false;
+    }
+
+    const aromaticMembership = aromaticCycleMembership.get(bondId) ?? 0;
+    const totalMembership = allCycleMembership.get(bondId) ?? 0;
+    return aromaticMembership === 1 && totalMembership === aromaticMembership;
+  });
+  const doubleBondIds = new Set(chooseNativeAromaticDoubleBondIds(molecule, aromaticAtomIds, candidateBondIds));
+  if (doubleBondIds.size === 0) {
+    return molecule;
+  }
+
+  const nextBonds = molecule.bonds.map((bond) => {
+    if (!aromaticBondIds.has(bond.id)) {
+      return bond;
+    }
+
+    if (!doubleBondIds.has(bond.id)) {
+      return nativeBondWithOrderAndDoubleSide(bond, "single");
+    }
+
+    const ring = aromaticCycles.find((cycle) => cycle.bondIds.includes(bond.id));
+    const fromAtom = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
+    const toAtom = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
+    const side = ring && fromAtom && toAtom
+      ? doubleBondSideTowardPoint(fromAtom, toAtom, ring.center)
+      : bond.display?.doubleBondSide;
+    return nativeBondWithOrderAndDoubleSide(bond, "double", side);
+  });
+
+  if (nextBonds.every((bond, index) => bond === molecule.bonds[index])) {
+    return molecule;
+  }
+
+  return refreshNativeSingleBondGraph(molecule, molecule.atoms, nextBonds);
+}
+
+function findNativeSixMemberCarbonRingCycles(molecule: MoleculeObject): NativeAromaticRingCycle[] {
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const carbonAtomIds = new Set(molecule.atoms.filter((atom) => atom.element === "C").map((atom) => atom.id));
+  const adjacency = new Map<string, { atomId: string; bondId: string }[]>();
+  molecule.bonds.forEach((bond) => {
+    if (!carbonAtomIds.has(bond.fromAtomId) || !carbonAtomIds.has(bond.toAtomId)) {
+      return;
+    }
+
+    adjacency.set(bond.fromAtomId, [
+      ...(adjacency.get(bond.fromAtomId) ?? []),
+      { atomId: bond.toAtomId, bondId: bond.id }
+    ]);
+    adjacency.set(bond.toAtomId, [
+      ...(adjacency.get(bond.toAtomId) ?? []),
+      { atomId: bond.fromAtomId, bondId: bond.id }
+    ]);
+  });
+
+  const cycles = new Map<string, NativeAromaticRingCycle>();
+  const visit = (startAtomId: string, atomId: string, atomIds: string[], bondIds: string[]) => {
+    if (atomIds.length === 6) {
+      const closingBond = (adjacency.get(atomId) ?? []).find((edge) => edge.atomId === startAtomId);
+      if (!closingBond) {
+        return;
+      }
+
+      const cycleBondIds = [...bondIds, closingBond.bondId];
+      const key = canonicalNativeRingCycleKey(cycleBondIds);
+      if (!cycles.has(key)) {
+        const cycleAtomIds = [...atomIds];
+        cycles.set(key, {
+          atomIds: cycleAtomIds,
+          bondIds: cycleBondIds,
+          center: centroidOfPoints(cycleAtomIds.map((id) => atomById.get(id)).filter((atom): atom is MoleculeAtom => Boolean(atom)))
+        });
+      }
+      return;
+    }
+
+    (adjacency.get(atomId) ?? []).forEach((edge) => {
+      if (edge.atomId === startAtomId || atomIds.includes(edge.atomId)) {
+        return;
+      }
+
+      visit(startAtomId, edge.atomId, [...atomIds, edge.atomId], [...bondIds, edge.bondId]);
+    });
+  };
+
+  [...carbonAtomIds].forEach((atomId) => {
+    visit(atomId, atomId, [atomId], []);
+  });
+
+  return [...cycles.values()];
+}
+
+function canonicalNativeRingCycleKey(bondIds: readonly string[]): string {
+  return [...bondIds].sort().join("|");
+}
+
+function bondCycleMembership(cycles: readonly NativeAromaticRingCycle[]): Map<string, number> {
+  return cycles.reduce((membership, cycle) => {
+    cycle.bondIds.forEach((bondId) => {
+      membership.set(bondId, (membership.get(bondId) ?? 0) + 1);
+    });
+    return membership;
+  }, new Map<string, number>());
+}
+
+function chooseNativeAromaticDoubleBondIds(
+  molecule: MoleculeObject,
+  aromaticAtomIds: ReadonlySet<string>,
+  candidateBondIds: readonly string[]
+): string[] {
+  const candidateBonds = candidateBondIds
+    .map((bondId) => molecule.bonds.find((bond) => bond.id === bondId))
+    .filter((bond): bond is MoleculeBond => Boolean(bond))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const candidateByAtom = new Map<string, MoleculeBond[]>();
+  candidateBonds.forEach((bond) => {
+    candidateByAtom.set(bond.fromAtomId, [...(candidateByAtom.get(bond.fromAtomId) ?? []), bond]);
+    candidateByAtom.set(bond.toAtomId, [...(candidateByAtom.get(bond.toAtomId) ?? []), bond]);
+  });
+
+  const memo = new Map<string, NativeAromaticMatching>();
+  const bestForAtoms = (unmatchedAtomIds: readonly string[]): NativeAromaticMatching => {
+    const key = [...unmatchedAtomIds].sort().join("|");
+    const cached = memo.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    if (unmatchedAtomIds.length === 0) {
+      return { bondIds: [], matchedAtoms: 0, existingDoubleBonds: 0 };
+    }
+
+    const unmatched = new Set(unmatchedAtomIds);
+    const atomId = [...unmatched].sort()[0] ?? unmatchedAtomIds[0];
+    let best: NativeAromaticMatching = bestForAtoms(unmatchedAtomIds.filter((id) => id !== atomId));
+    const incidentBonds = (candidateByAtom.get(atomId) ?? []).filter((bond) => {
+      const otherAtomId = bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId;
+      return aromaticAtomIds.has(otherAtomId) && unmatched.has(otherAtomId);
+    });
+
+    incidentBonds.forEach((bond) => {
+      const otherAtomId = bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId;
+      const next = bestForAtoms(unmatchedAtomIds.filter((id) => id !== atomId && id !== otherAtomId));
+      const candidate: NativeAromaticMatching = {
+        bondIds: [bond.id, ...next.bondIds],
+        matchedAtoms: next.matchedAtoms + 2,
+        existingDoubleBonds: next.existingDoubleBonds + (bond.order === "double" ? 1 : 0)
+      };
+      if (nativeAromaticMatchingIsBetter(candidate, best)) {
+        best = candidate;
+      }
+    });
+
+    memo.set(key, best);
+    return best;
+  };
+
+  return bestForAtoms([...aromaticAtomIds]).bondIds;
+}
+
+function nativeAromaticMatchingIsBetter(candidate: NativeAromaticMatching, current: NativeAromaticMatching): boolean {
+  if (candidate.matchedAtoms !== current.matchedAtoms) {
+    return candidate.matchedAtoms > current.matchedAtoms;
+  }
+  if (candidate.bondIds.length !== current.bondIds.length) {
+    return candidate.bondIds.length > current.bondIds.length;
+  }
+  if (candidate.existingDoubleBonds !== current.existingDoubleBonds) {
+    return candidate.existingDoubleBonds > current.existingDoubleBonds;
+  }
+  return candidate.bondIds.join("|") < current.bondIds.join("|");
+}
+
+function nativeBondWithOrderAndDoubleSide(
+  bond: MoleculeBond,
+  order: MoleculeBond["order"],
+  doubleBondSide?: NativeDoubleBondSide
+): MoleculeBond {
+  const display = { ...(bond.display ?? {}) };
+  if (doubleBondSide) {
+    display.doubleBondSide = doubleBondSide;
+  } else {
+    delete display.doubleBondSide;
+  }
+
+  return {
+    ...bond,
+    order,
+    display: Object.keys(display).length > 0 ? display : undefined
+  };
+}
+
+function centroidOfPoints(points: readonly PagePoint[]): PagePoint {
+  if (points.length === 0) {
+    return { x: 0, y: 0 };
+  }
+
+  return points.reduce<PagePoint>(
+    (sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }),
+    { x: 0, y: 0 }
+  );
 }
 
 function nativeRingVerticesForSharedBond(
@@ -2790,6 +3374,24 @@ export function selectDocumentObjects(
   );
 }
 
+export function selectAllDocumentObjects(document: ChemDraftDocument, pageId: string): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page || page.objects.length === 0) {
+    return document;
+  }
+
+  const objectIds = page.objects.map((object) => object.id);
+  if (
+    document.selection.pageId === page.id &&
+    document.selection.objectIds.length === objectIds.length &&
+    document.selection.objectIds.every((objectId, index) => objectId === objectIds[index])
+  ) {
+    return document;
+  }
+
+  return selectDocumentObjects(document, page.id, objectIds);
+}
+
 export function reorderSelectedDocumentObject(
   document: ChemDraftDocument,
   placement: ObjectReorderPlacement
@@ -3077,6 +3679,42 @@ export function rotateDocumentObject(
   );
 }
 
+export function rotateNativeMoleculeObjectAroundPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  center: PagePoint,
+  angleDegrees: number
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const molecule = page?.objects.find((candidate): candidate is MoleculeObject =>
+    candidate.id === objectId && candidate.type === "molecule"
+  );
+  if (!page || !molecule || molecule.atoms.length === 0 || Math.abs(angleDegrees) < 0.05) {
+    return document;
+  }
+
+  const angleRadians = (molecule.rotation + angleDegrees) * Math.PI / 180;
+  const atoms = molecule.atoms.map((atom) => ({
+    ...atom,
+    ...rotatePointAround(atom, center, angleRadians)
+  }));
+  const transform = nativeMoleculeTransformState(molecule);
+  const nextMolecule = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+    ...molecule,
+    rotation: 0,
+    atoms
+  }), {
+    ...transform,
+    rotationDegrees: transform.rotationDegrees + angleDegrees
+  });
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
 export function resizeNativeMoleculeParts(
   document: ChemDraftDocument,
   target: NativeMoleculePartMoveTarget,
@@ -3248,9 +3886,13 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
       adjacency,
       bondByAtomPair
     });
-    const layoutCenter = averagePagePoint([...layout.values()]);
+    const componentBonds = molecule.bonds.filter((bond) => componentAtomSet.has(bond.fromAtomId) && componentAtomSet.has(bond.toAtomId));
+    const adjustedLayout = componentBonds.length > componentAtoms.length
+      ? relaxNativeCleanupBondLengths(layout, componentBonds)
+      : layout;
+    const layoutCenter = averagePagePoint([...adjustedLayout.values()]);
 
-    layout.forEach((point, atomId) => {
+    adjustedLayout.forEach((point, atomId) => {
       nextAtomPoints.set(atomId, {
         x: roundGeometryCoordinate(componentCenter.x + point.x - layoutCenter.x),
         y: roundGeometryCoordinate(componentCenter.y + point.y - layoutCenter.y)
@@ -3395,6 +4037,92 @@ function layoutNativeCleanupSubtree(input: {
       directionAngle: childAngles[index] ?? input.directionAngle
     });
   });
+}
+
+function relaxNativeCleanupBondLengths(
+  layout: ReadonlyMap<string, PagePoint>,
+  bonds: readonly MoleculeBond[]
+): ReadonlyMap<string, PagePoint> {
+  const points = new Map([...layout.entries()].map(([atomId, point]) => [atomId, { ...point }]));
+  const bondedAtomPairs = new Set(bonds.map((bond) => atomPairKey(bond.fromAtomId, bond.toAtomId)));
+  const relaxation = 0.45;
+  const separationRelaxation = 0.36;
+  const minimumNonBondedDistance = nativeBondLength * 0.31;
+
+  for (let iteration = 0; iteration < 180; iteration += 1) {
+    let maxError = 0;
+
+    bonds.forEach((bond) => {
+      const from = points.get(bond.fromAtomId);
+      const to = points.get(bond.toAtomId);
+      if (!from || !to) {
+        return;
+      }
+
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const length = Math.hypot(dx, dy);
+      if (length <= 0.001) {
+        return;
+      }
+
+      const error = length - nativeBondLength;
+      maxError = Math.max(maxError, Math.abs(error));
+      const adjustment = error * relaxation / 2;
+      const ux = dx / length;
+      const uy = dy / length;
+
+      from.x += ux * adjustment;
+      from.y += uy * adjustment;
+      to.x -= ux * adjustment;
+      to.y -= uy * adjustment;
+    });
+
+    const atomPoints = [...points.entries()].sort(([leftAtomId], [rightAtomId]) => leftAtomId.localeCompare(rightAtomId));
+    for (let leftIndex = 0; leftIndex < atomPoints.length; leftIndex += 1) {
+      const [leftAtomId, left] = atomPoints[leftIndex];
+      for (let rightIndex = leftIndex + 1; rightIndex < atomPoints.length; rightIndex += 1) {
+        const [rightAtomId, right] = atomPoints[rightIndex];
+        if (bondedAtomPairs.has(atomPairKey(leftAtomId, rightAtomId))) {
+          continue;
+        }
+
+        let dx = right.x - left.x;
+        let dy = right.y - left.y;
+        let length = Math.hypot(dx, dy);
+        if (length >= minimumNonBondedDistance) {
+          continue;
+        }
+
+        if (length <= 0.001) {
+          const deterministicAngle = (leftIndex * 31 + rightIndex * 17) * Math.PI / 180;
+          dx = Math.cos(deterministicAngle);
+          dy = Math.sin(deterministicAngle);
+          length = 1;
+        }
+
+        const error = minimumNonBondedDistance - length;
+        maxError = Math.max(maxError, error);
+        const adjustment = error * separationRelaxation / 2;
+        const ux = dx / length;
+        const uy = dy / length;
+
+        left.x -= ux * adjustment;
+        left.y -= uy * adjustment;
+        right.x += ux * adjustment;
+        right.y += uy * adjustment;
+      }
+    }
+
+    if (maxError < 0.002) {
+      break;
+    }
+  }
+
+  return new Map([...points.entries()].map(([atomId, point]) => [atomId, {
+    x: roundGeometryCoordinate(point.x),
+    y: roundGeometryCoordinate(point.y)
+  }]));
 }
 
 function cleanUpSimpleCyclePath(

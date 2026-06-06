@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -36,6 +37,7 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   || command.id === "text.color.green"
   || command.id === "text.color.gray"
 ));
+const TOOLTIP_DELAY_MS = 1000;
 
 export function ToolPalette({
   groups,
@@ -62,6 +64,12 @@ export function ToolPalette({
   onColorPickerOpenChange?: (open: boolean) => void;
   onInvoke: (commandId: string) => void;
 }) {
+  const {
+    visibleTooltipId,
+    requestTooltip,
+    clearTooltip
+  } = usePaletteTooltipState();
+
   return (
     <aside
       className={[
@@ -73,6 +81,7 @@ export function ToolPalette({
       ].filter(Boolean).join(" ")}
       aria-label={title}
       data-tool-palette-orientation={orientation}
+      data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
     >
       {mode === "floating" ? (
         <span
@@ -82,17 +91,23 @@ export function ToolPalette({
           data-tauri-drag-region="true"
         />
       ) : null}
-      {groups.map((group) => (
+      {groups.map((group, groupIndex) => (
         <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
-          {group.map((tool) => (
-            <CommandIconButton
-              key={tool.id}
-              command={tool}
-              active={tool.enabled !== false && activeTool === tool.id}
-              nativeTitleFallback={orientation !== "horizontal"}
-              onInvoke={onInvoke}
-            />
-          ))}
+          {group.map((tool, toolIndex) => {
+            const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+            return (
+              <CommandIconButton
+                key={tool.id}
+                command={tool}
+                active={tool.enabled !== false && activeTool === tool.id}
+                tooltipId={tooltipId}
+                tooltipVisible={visibleTooltipId === tooltipId}
+                onTooltipEnter={() => requestTooltip(tooltipId)}
+                onTooltipLeave={() => clearTooltip(tooltipId)}
+                onInvoke={onInvoke}
+              />
+            );
+          })}
         </div>
       ))}
       {showMainStyleControls ? (
@@ -112,6 +127,93 @@ export function ToolPalette({
       ) : null}
     </aside>
   );
+}
+
+function usePaletteTooltipState() {
+  const [visibleTooltipId, setVisibleTooltipId] = useState<string | undefined>();
+  const pendingTooltipRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const clearPendingTooltip = useCallback(() => {
+    if (pendingTooltipRef.current !== undefined) {
+      clearTimeout(pendingTooltipRef.current);
+      pendingTooltipRef.current = undefined;
+    }
+  }, []);
+
+  const requestTooltip = useCallback((tooltipId: string) => {
+    clearPendingTooltip();
+    setVisibleTooltipId(undefined);
+    pendingTooltipRef.current = setTimeout(() => {
+      pendingTooltipRef.current = undefined;
+      setVisibleTooltipId(tooltipId);
+    }, TOOLTIP_DELAY_MS);
+  }, [clearPendingTooltip]);
+
+  const clearTooltip = useCallback((tooltipId?: string) => {
+    clearPendingTooltip();
+    setVisibleTooltipId((current) => (
+      tooltipId && current !== tooltipId ? current : undefined
+    ));
+  }, [clearPendingTooltip]);
+
+  useEffect(() => {
+    if (!visibleTooltipId) {
+      return undefined;
+    }
+
+    const clearWhenPointerLeavesOwner = (event: MouseEvent | PointerEvent) => {
+      const target = event.target;
+      const targetElement = target instanceof Element
+        ? target
+        : target instanceof Node
+          ? target.parentElement
+          : undefined;
+      const ownerElement = targetElement?.closest<HTMLElement>("[data-tooltip-owner-id]");
+
+      if (ownerElement?.dataset.tooltipOwnerId !== visibleTooltipId) {
+        clearTooltip(visibleTooltipId);
+      }
+    };
+
+    const clearVisibleTooltip = () => {
+      clearTooltip(visibleTooltipId);
+    };
+
+    document.addEventListener("mousemove", clearWhenPointerLeavesOwner, true);
+    document.addEventListener("pointermove", clearWhenPointerLeavesOwner, true);
+    document.addEventListener("mouseleave", clearVisibleTooltip, true);
+    document.addEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
+    window.addEventListener("blur", clearVisibleTooltip);
+
+    return () => {
+      document.removeEventListener("mousemove", clearWhenPointerLeavesOwner, true);
+      document.removeEventListener("pointermove", clearWhenPointerLeavesOwner, true);
+      document.removeEventListener("mouseleave", clearVisibleTooltip, true);
+      document.removeEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
+      window.removeEventListener("blur", clearVisibleTooltip);
+    };
+  }, [visibleTooltipId, clearTooltip]);
+
+  useEffect(() => {
+    const clearPendingOnBlur = () => {
+      clearTooltip();
+    };
+
+    window.addEventListener("blur", clearPendingOnBlur);
+    return () => {
+      window.removeEventListener("blur", clearPendingOnBlur);
+    };
+  }, [clearTooltip]);
+
+  useEffect(() => () => {
+    clearPendingTooltip();
+  }, [clearPendingTooltip]);
+
+  return {
+    visibleTooltipId,
+    requestTooltip,
+    clearTooltip
+  };
 }
 
 function MainToolbarStyleControls({
@@ -867,13 +969,19 @@ function closestParagraphSpacingCommandId(paragraphSpacingPx: number | undefined
 export function CommandIconButton({
   command,
   active = false,
-  nativeTitleFallback = true,
+  tooltipId,
+  tooltipVisible,
+  onTooltipEnter,
+  onTooltipLeave,
   separated = false,
   onInvoke
 }: {
   command: CommandSpec;
   active?: boolean;
-  nativeTitleFallback?: boolean;
+  tooltipId?: string;
+  tooltipVisible?: boolean;
+  onTooltipEnter?: () => void;
+  onTooltipLeave?: () => void;
   separated?: boolean;
   onInvoke: (commandId: string) => void;
 }) {
@@ -887,31 +995,43 @@ export function CommandIconButton({
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
 
   return (
-    <button
-      type="button"
-      className={[
-        "icon-button",
-        activeState ? "active" : "",
-        separated ? "separated" : "",
-        command.id === "structure.cleanup2d" ? "structure-cleanup-button" : ""
-      ].filter(Boolean).join(" ")}
-      title={nativeTitleFallback ? tooltipText : undefined}
-      aria-label={tooltipText}
-      aria-pressed={activeState || undefined}
-      disabled={disabled}
-      data-active={activeState ? "true" : undefined}
-      data-command-id={command.id}
-      data-shortcut-label={shortcutLabel}
-      data-toolbar-asset={command.assetName}
-      data-tooltip={tooltipText}
-      {...invokeHandlers}
+    <span
+      className={["icon-button-shell", separated ? "separated" : ""].filter(Boolean).join(" ")}
+      data-command-tooltip-owner={command.id}
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={tooltipVisible ? "true" : undefined}
+      onBlur={() => onTooltipLeave?.()}
+      onPointerCancel={() => onTooltipLeave?.()}
+      onPointerDownCapture={() => onTooltipLeave?.()}
+      onPointerEnter={() => onTooltipEnter?.()}
+      onPointerLeave={() => onTooltipLeave?.()}
+      onMouseEnter={() => onTooltipEnter?.()}
+      onMouseLeave={() => onTooltipLeave?.()}
     >
-      {command.assetName ? (
-        <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
-      ) : (
-        <Icon name={command.icon} />
-      )}
-      <span className="tool-tooltip" aria-hidden="true">{tooltipText}</span>
-    </button>
+      <button
+        type="button"
+        className={[
+          "icon-button",
+          activeState ? "active" : "",
+          command.id === "structure.cleanup2d" ? "structure-cleanup-button" : ""
+        ].filter(Boolean).join(" ")}
+        aria-label={tooltipText}
+        aria-pressed={activeState || undefined}
+        disabled={disabled}
+        data-active={activeState ? "true" : undefined}
+        data-command-id={command.id}
+        data-shortcut-label={shortcutLabel}
+        data-toolbar-asset={command.assetName}
+        data-tooltip={tooltipText}
+        {...invokeHandlers}
+      >
+        {command.assetName ? (
+          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        ) : (
+          <Icon name={command.icon} />
+        )}
+        <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
+      </button>
+    </span>
   );
 }

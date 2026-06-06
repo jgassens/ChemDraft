@@ -9,8 +9,7 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type WheelEvent
+  type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import {
   DefaultNativeTextStyle,
@@ -96,7 +95,6 @@ import {
   cleanUpNativeMolecules2d,
   deleteSelectedDocumentObjects,
   exportPhase4Svg,
-  findNativeMoleculeDeleteHit,
   getSelectedMolecule,
   getSelectedTextObject,
   insertNativeTextObject,
@@ -122,6 +120,8 @@ import {
   resolveToolbarColorSelection,
   rotateNativeMoleculeParts,
   rotateDocumentObject,
+  rotateNativeMoleculeObjectAroundPoint,
+  selectAllDocumentObjects,
   selectDocumentObject,
   selectDocumentObjects,
   setDocumentPageOrientation,
@@ -144,6 +144,7 @@ import {
   type NativeSingleLetterElement
 } from "./documentWorkflow";
 import { KetcherEditorHost } from "./KetcherEditorHost";
+import { initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
 import { ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
@@ -172,6 +173,15 @@ import {
   type DesktopToolsetRegistry
 } from "./toolsets";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { clientToPage, pageToClient } from "./interaction/camera";
+import {
+  nativeMoleculeCanvasHoverTarget,
+  nativeMoleculeHitFromPointerTarget
+} from "./interaction/hitTest";
+
+// Re-exported so existing tests can keep importing it from "./MainWindow" while the
+// implementation lives in the pure, separately-tested interaction layer.
+export { nativeMoleculeCanvasHoverTarget };
 
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
@@ -219,6 +229,18 @@ type NativeBondDragState = {
   latestPoint: ClientPoint;
   dragging: boolean;
   freeformUnlocked: boolean;
+};
+type NativePlacementDragState = {
+  pointerId: number;
+  kind: "single-bond" | "template";
+  startDocument: ChemDraftDocument;
+  placementDocument: ChemDraftDocument;
+  objectId: string;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  bondStyle?: NativeBondDisplayStyle;
+  templateId?: NativeMoleculeTemplateId;
+  dragging: boolean;
 };
 type NativeBondEditDragState = {
   pointerId: number;
@@ -386,6 +408,7 @@ export function MainWindow({
   const pageRef = useRef<HTMLDivElement | null>(null);
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
   const nativeBondDragRef = useRef<NativeBondDragState | null>(null);
+  const nativePlacementDragRef = useRef<NativePlacementDragState | null>(null);
   const nativeBondEditDragRef = useRef<NativeBondEditDragState | null>(null);
   const nativePartDragRef = useRef<NativePartDragState | null>(null);
   const objectDragRef = useRef<ObjectDragState | null>(null);
@@ -396,8 +419,11 @@ export function MainWindow({
   const textResizeRef = useRef<TextResizeState | null>(null);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
+  const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
+  const placementMachineRef = useRef<InteractionState>(initialInteractionState());
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
+  const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
   const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
   const [documentHistory, setDocumentHistory] = useState(() =>
     createDocumentHistory(initialDocument ?? createPhase4Document())
@@ -852,10 +878,7 @@ export function MainWindow({
     }
 
     const pageRect = page.getBoundingClientRect();
-    const focalPagePoint = {
-      x: (clientPoint.x - pageRect.left) / currentScale,
-      y: (clientPoint.y - pageRect.top) / currentScale
-    };
+    const focalPagePoint = clientToPage(clientPoint, { pageRect, scale: currentScale });
 
     setViewport((current) => {
       const next = setViewportScale(current, nextScale);
@@ -871,55 +894,80 @@ export function MainWindow({
       }
 
       const nextPageRect = nextPage.getBoundingClientRect();
-      const nextClientPoint = {
-        x: nextPageRect.left + focalPagePoint.x * viewportRef.current.scale,
-        y: nextPageRect.top + focalPagePoint.y * viewportRef.current.scale
-      };
+      const nextClientPoint = pageToClient(focalPagePoint, {
+        pageRect: nextPageRect,
+        scale: viewportRef.current.scale
+      });
 
       nextCanvas.scrollLeft += nextClientPoint.x - clientPoint.x;
       nextCanvas.scrollTop += nextClientPoint.y - clientPoint.y;
     });
   }, []);
 
-  const handleCanvasWheel = useCallback((event: WheelEvent<HTMLElement>) => {
-    if (!event.ctrlKey && !event.metaKey) {
-      return;
+  const zoomCanvasFromWheelEvent = useCallback((event: Pick<globalThis.WheelEvent, "clientX" | "clientY" | "ctrlKey" | "deltaY" | "metaKey">) => {
+    if (!shouldUseViewportWheelZoom(event)) {
+      return false;
     }
 
-    event.preventDefault();
     zoomCanvasAtClientPoint(viewportRef.current.scale * wheelDeltaToZoomFactor(event.deltaY), {
       x: event.clientX,
       y: event.clientY
     });
+    return true;
   }, [zoomCanvasAtClientPoint]);
 
+  // Bind zoom gestures directly to the canvas element. Earlier this lived on
+  // `window` behind an `eventIsInsideCanvas` guard that relied on `event.target`
+  // (unreliable for WebKit gesture events) and a stale pointer-tracking ref, which
+  // silently rejected valid trackpad pinches. Listening on the canvas makes every
+  // event in-scope by construction, so no guard is needed.
   useEffect(() => {
     const canvas = canvasRegionRef.current;
     if (!canvas) {
       return undefined;
     }
 
+    const handleNativeWheel = (event: globalThis.WheelEvent) => {
+      if (!zoomCanvasFromWheelEvent(event)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
     const handleGestureStart = (event: Event) => {
       event.preventDefault();
+      event.stopPropagation();
       gestureStartScaleRef.current = viewportRef.current.scale;
     };
     const handleGestureChange = (event: Event) => {
       const gesture = event as WebKitGestureEvent;
       event.preventDefault();
+      event.stopPropagation();
       zoomCanvasAtClientPoint(
         gestureStartScaleRef.current * (gesture.scale ?? 1),
-        clientPointFromGesture(gesture, canvas)
+        clientPointFromGesture(gesture, canvas, lastCanvasPointerClientPointRef.current)
       );
     };
+    const handleGestureEnd = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      gestureStartScaleRef.current = viewportRef.current.scale;
+    };
+    const listenerOptions = { capture: true, passive: false } as AddEventListenerOptions;
 
-    canvas.addEventListener("gesturestart", handleGestureStart, { passive: false });
-    canvas.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    canvas.addEventListener("wheel", handleNativeWheel, listenerOptions);
+    canvas.addEventListener("gesturestart", handleGestureStart, listenerOptions);
+    canvas.addEventListener("gesturechange", handleGestureChange, listenerOptions);
+    canvas.addEventListener("gestureend", handleGestureEnd, listenerOptions);
 
     return () => {
-      canvas.removeEventListener("gesturestart", handleGestureStart);
-      canvas.removeEventListener("gesturechange", handleGestureChange);
+      canvas.removeEventListener("wheel", handleNativeWheel, listenerOptions);
+      canvas.removeEventListener("gesturestart", handleGestureStart, listenerOptions);
+      canvas.removeEventListener("gesturechange", handleGestureChange, listenerOptions);
+      canvas.removeEventListener("gestureend", handleGestureEnd, listenerOptions);
     };
-  }, [zoomCanvasAtClientPoint]);
+  }, [zoomCanvasAtClientPoint, zoomCanvasFromWheelEvent]);
 
   const toggleToolset = useCallback(async (toolsetId: string) => {
     if (!toolsetRegistry.get(toolsetId)) {
@@ -1165,6 +1213,34 @@ export function MainWindow({
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
     setStatus(changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+
+  const selectAllCanvasObjects = useCallback(() => {
+    const currentDocument = documentRef.current;
+    const page = currentDocument.pages[0];
+    if (!page || page.objects.length === 0) {
+      setStatus("No canvas objects to select");
+      return;
+    }
+
+    const pageId = page.id;
+    const changed = replacePresentDocument((current) => selectAllDocumentObjects(current, pageId));
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
+    toolBeforeTextPlacementRef.current = undefined;
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    setStatus(changed
+      ? page.objects.length === 1 ? "Selected 1 canvas object" : `Selected ${page.objects.length} canvas objects`
+      : "All canvas objects already selected");
+  }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
 
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
@@ -1541,6 +1617,9 @@ export function MainWindow({
         if (action.id === "edit.redo") {
           restoreDocumentHistory("redo");
         }
+        if (action.id === "edit.selectAll") {
+          selectAllCanvasObjects();
+        }
         if (action.id === "document.open") {
           fileInputRef.current?.click();
         }
@@ -1789,6 +1868,7 @@ export function MainWindow({
     quickActions,
     resetDocumentHistory,
     restoreDocumentHistory,
+    selectAllCanvasObjects,
     selectedNativeMoleculePart,
     setHoveredNativeAtomElement,
     setHoveredNativeBondOrder,
@@ -2022,18 +2102,18 @@ export function MainWindow({
     }
   }, []);
 
-  const pagePointFromPointerEvent = useCallback((event: { clientX: number; clientY: number }): ClientPoint | undefined => {
+  const pagePointFromClientPoint = useCallback((clientPoint: ClientPoint): ClientPoint | undefined => {
     const page = pageRef.current;
     if (!page) {
       return undefined;
     }
 
     const rect = page.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) / viewportRef.current.scale,
-      y: (event.clientY - rect.top) / viewportRef.current.scale
-    };
+    return pagePointFromRenderedPageRect(rect, viewportRef.current.scale, clientPoint);
   }, []);
+
+  const pagePointFromPointerEvent = useCallback((event: { clientX: number; clientY: number }): ClientPoint | undefined =>
+    pagePointFromClientPoint({ x: event.clientX, y: event.clientY }), [pagePointFromClientPoint]);
 
   const applySingleBondDocumentAtPoint = useCallback((
     sourceDocument: ChemDraftDocument,
@@ -2073,6 +2153,46 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+
+  const startNativePlacementDrag = useCallback((
+    event: PointerEvent<HTMLDivElement>,
+    point: ClientPoint,
+    placement: { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle } | { kind: "template"; templateId: NativeMoleculeTemplateId }
+  ): boolean => {
+    const startDocument = documentRef.current;
+    const placementDocument = placement.kind === "template"
+      ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
+      : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+    const objectId = placementDocument.selection.objectIds[0];
+    if (placementDocument === startDocument || !objectId || findDocumentObject(startDocument, objectId)) {
+      return false;
+    }
+
+    nativePlacementDragRef.current = {
+      pointerId: event.pointerId,
+      kind: placement.kind,
+      startDocument,
+      placementDocument,
+      objectId,
+      startPoint: point,
+      latestPoint: point,
+      bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
+      templateId: placement.kind === "template" ? placement.templateId : undefined,
+      dragging: false
+    };
+    placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
+    replacePresentDocument(placementDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setHoveredNativeAtom(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    return true;
+  }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
 
   const applyNativeBondDisplayStyleDocumentTarget = useCallback((
     target: NativeBondOrderTarget,
@@ -2174,50 +2294,62 @@ export function MainWindow({
     } : undefined);
   }, [bondToolActive]);
 
-  const updateNativeDeleteTarget = useCallback((
+  const updateNativeCanvasHover = useCallback((
     sourceDocument: ChemDraftDocument,
-    objectId: string,
     point: ClientPoint | undefined,
     eventTarget?: EventTarget | null
   ) => {
     if (!point) {
+      setHoveredNativeAtom(undefined);
+      setNativeDoubleBondSidePreview(undefined);
       assignHoveredNativeDeleteTarget(undefined);
       return;
     }
 
-    const object = findDocumentObject(sourceDocument, objectId);
-    if (object?.type !== "molecule") {
-      assignHoveredNativeDeleteTarget(undefined);
-      return;
-    }
+    const target = nativeMoleculeCanvasHoverTarget(sourceDocument, point, eventTarget);
+    assignHoveredNativeDeleteTarget(target);
+    hoveredNativeAtomPointRef.current = target?.kind === "atom"
+      ? { objectId: target.objectId, point }
+      : undefined;
 
-    const hit = nativeMoleculeHitFromPointerTarget(object, point, eventTarget);
-    assignHoveredNativeDeleteTarget(hit ? { objectId, ...hit } : undefined);
-    hoveredNativeAtomPointRef.current = hit?.kind === "atom" ? { objectId, point } : undefined;
-  }, [assignHoveredNativeDeleteTarget]);
-
-  const updateNativeDoubleBondSidePreview = useCallback((
-    sourceDocument: ChemDraftDocument,
-    objectId: string,
-    point: ClientPoint | undefined,
-    eventTarget?: EventTarget | null
-  ) => {
-    if (activeToolState.activeCommandId !== "tool.bond" || !point) {
+    if (activeToolState.activeCommandId === "tool.bond" && target) {
+      const object = findDocumentObject(sourceDocument, target.objectId);
+      setNativeDoubleBondSidePreview(object?.type === "molecule"
+        ? nativeDoubleBondSidePreviewFromHit(target.objectId, object, target, point)
+        : undefined);
+    } else {
       setNativeDoubleBondSidePreview(undefined);
+    }
+
+    if (bondToolActive) {
+      updateBondGrowthPreview(sourceDocument, point);
       return;
     }
 
-    const object = findDocumentObject(sourceDocument, objectId);
-    if (object?.type !== "molecule") {
-      setNativeDoubleBondSidePreview(undefined);
-      return;
-    }
+    setHoveredNativeAtom(undefined);
+  }, [
+    activeToolState.activeCommandId,
+    assignHoveredNativeDeleteTarget,
+    bondToolActive,
+	    updateBondGrowthPreview
+	  ]);
 
-    const hit = nativeMoleculeHitFromPointerTarget(object, point, eventTarget);
-    setNativeDoubleBondSidePreview(hit
-      ? nativeDoubleBondSidePreviewFromHit(objectId, object, hit, point)
-      : undefined);
-  }, [activeToolState.activeCommandId]);
+  useEffect(() => {
+    const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
+      const clientPoint = { x: event.clientX, y: event.clientY };
+      const canvas = canvasRegionRef.current;
+      if (canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect())) {
+        lastCanvasPointerClientPointRef.current = clientPoint;
+      }
+    };
+
+    window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
+    window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
+      window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
+    };
+  }, []);
 
   const updateFreeformBondPreview = useCallback((
     sourceDocument: ChemDraftDocument,
@@ -2277,6 +2409,49 @@ export function MainWindow({
       }
     }
   }, []);
+
+  const clearNativePlacementDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const drag = nativePlacementDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      nativePlacementDragRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
+  const nativePlacementDocumentFromDrag = useCallback((
+    drag: NativePlacementDragState,
+    point: ClientPoint
+  ): ChemDraftDocument => rotateNativeMoleculeObjectAroundPoint(
+    drag.placementDocument,
+    drag.objectId,
+    drag.startPoint,
+    nativePlacementRotationDegrees(drag.startPoint, point)
+  ), []);
+
+  const previewNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    replacePresentDocument(nativePlacementDocumentFromDrag(drag, point));
+  }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
+
+  const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint): boolean => {
+    const placed = drag.dragging
+      ? nativePlacementDocumentFromDrag(drag, point)
+      : drag.placementDocument;
+    if (placed === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: placed,
+      future: []
+    });
+    return true;
+  }, [installDocumentHistory, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     const nextDocument = moveDocumentObject(drag.startDocument, drag.objectId, {
@@ -2620,6 +2795,7 @@ export function MainWindow({
         latestPoint: point,
         dragging: false
       };
+      marqueeMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "marquee" });
       setSelectedNativeMoleculePart(undefined);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -2640,7 +2816,9 @@ export function MainWindow({
     if (activeNativeTemplateId) {
       event.preventDefault();
       event.stopPropagation();
-      applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId);
+      if (!startNativePlacementDrag(event, point, { kind: "template", templateId: activeNativeTemplateId })) {
+        applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId);
+      }
       return;
     }
 
@@ -2652,7 +2830,11 @@ export function MainWindow({
     }
 
     if (activeNativeBondToolStyle) {
-      applySingleBondDocumentAtPoint(document, point, activeNativeBondDisplayStyle);
+      event.preventDefault();
+      event.stopPropagation();
+      if (!startNativePlacementDrag(event, point, { kind: "single-bond", bondStyle: activeNativeBondDisplayStyle })) {
+        applySingleBondDocumentAtPoint(document, point, activeNativeBondDisplayStyle);
+      }
     }
   }, [
     activeChargeToolValue,
@@ -2665,7 +2847,8 @@ export function MainWindow({
     applySingleBondDocumentAtPoint,
     applyTextDocumentAtPoint,
     document,
-    pagePointFromPointerEvent
+    pagePointFromPointerEvent,
+    startNativePlacementDrag
   ]);
 
   const handlePageContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
@@ -2788,6 +2971,35 @@ export function MainWindow({
       return;
     }
 
+    const nativePlacementDrag = nativePlacementDragRef.current;
+    if (nativePlacementDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      nativePlacementDrag.latestPoint = point;
+      placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      const nowDragging = placementMachineRef.current.phase === "dragging";
+      if (!nativePlacementDrag.dragging && nowDragging) {
+        nativePlacementDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (nativePlacementDrag.dragging) {
+        previewNativePlacementDrag(nativePlacementDrag, point);
+      }
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -2796,33 +3008,23 @@ export function MainWindow({
       }
 
       marquee.latestPoint = point;
-      if (!marquee.dragging && clientPointDistance(marquee.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
-        marquee.dragging = true;
-      }
+      marqueeMachineRef.current = interactionReducer(marqueeMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      marquee.dragging = marqueeMachineRef.current.phase === "dragging";
       setSelectionMarquee(marquee.dragging ? { ...marquee } : undefined);
       return;
     }
 
-    assignHoveredNativeDeleteTarget(undefined);
-
-    if (!bondToolActive) {
-      setNativeDoubleBondSidePreview(undefined);
-      return;
-    }
-
-    setNativeDoubleBondSidePreview(undefined);
-    updateBondGrowthPreview(document, pagePointFromPointerEvent(event));
+    updateNativeCanvasHover(document, pagePointFromPointerEvent(event), event.target);
   }, [
-    assignHoveredNativeDeleteTarget,
-    bondToolActive,
     document,
     pagePointFromPointerEvent,
     previewObjectDrag,
     previewObjectRotateDrag,
     previewMoleculeResize,
     previewNativePartDrag,
+    previewNativePlacementDrag,
     previewTextResize,
-    updateBondGrowthPreview
+    updateNativeCanvasHover
   ]);
 
   const handlePagePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
@@ -2904,6 +3106,19 @@ export function MainWindow({
       return;
     }
 
+    const nativePlacementDrag = nativePlacementDragRef.current;
+    if (nativePlacementDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
+      const changed = commitNativePlacementDrag(nativePlacementDrag, point);
+      const label = nativePlacementStatusLabel(nativePlacementDrag);
+      setStatus(changed
+        ? nativePlacementDrag.dragging ? `Inserted rotated ${label}` : `Inserted ${label}`
+        : `${capitalizeLabel(label)} not placed`);
+      clearNativePlacementDrag(event);
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (!marquee || marquee.pointerId !== event.pointerId) {
       return;
@@ -2912,7 +3127,8 @@ export function MainWindow({
     event.stopPropagation();
     const point = pagePointFromPointerEvent(event) ?? marquee.latestPoint;
     marquee.latestPoint = point;
-    const selection = marquee.dragging
+    const wasDragging = marqueeMachineRef.current.phase === "dragging";
+    const selection = wasDragging
       ? selectionInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
       : { objectIds: [], nativeSelection: undefined };
     replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, selection.objectIds));
@@ -2931,7 +3147,9 @@ export function MainWindow({
     clearNativePartDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
+    clearNativePlacementDrag,
     clearTextResize,
+    commitNativePlacementDrag,
     commitNativePartDrag,
     commitTextResize,
     commitObjectDrag,
@@ -2963,18 +3181,30 @@ export function MainWindow({
       clearNativePartDrag(event);
     }
 
+    const nativePlacementDrag = nativePlacementDragRef.current;
+    if (nativePlacementDrag?.pointerId === event.pointerId) {
+      placementMachineRef.current = initialInteractionState();
+      replacePresentDocument(nativePlacementDrag.startDocument);
+      clearNativePlacementDrag(event);
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
+      marqueeMachineRef.current = initialInteractionState();
       selectionMarqueeRef.current = null;
       setSelectionMarquee(undefined);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearNativePartDrag, clearObjectRotateDrag, clearTextResize, replacePresentDocument]);
+  }, [clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
+      return;
+    }
+
+    if (nativePlacementDragRef.current) {
       return;
     }
 
@@ -3064,6 +3294,36 @@ export function MainWindow({
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(undefined);
         setStatus("Selected molecule");
+        return;
+      }
+
+      if (event.shiftKey && nativeMoleculeHit) {
+        event.stopPropagation();
+        const nextSelectedNativePart = nativeSelectionWithHitToggled(
+          selectedNativeMoleculePart?.objectId === objectId ? selectedNativeMoleculePart : undefined,
+          objectId,
+          nativeMoleculeHit
+        );
+        let nextDocument = selectDocumentObjects(document, document.pages[0].id, []);
+        if (nextSelectedNativePart) {
+          nextDocument = document.selection.objectIds.includes(objectId)
+            ? document
+            : selectDocumentObject(document, objectId);
+        }
+        replacePresentDocument(nextDocument);
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget({ objectId, ...nativeMoleculeHit });
+        hoveredNativeAtomPointRef.current = nativeMoleculeHit.kind === "atom" ? { objectId, point } : undefined;
+        setSelectedNativeMoleculePart(nextSelectedNativePart);
+        setStatus(selectionStatusLabel({
+          objectIds: nextSelectedNativePart ? [objectId] : [],
+          nativeSelection: nextSelectedNativePart
+        }));
         return;
       }
 
@@ -3605,24 +3865,9 @@ export function MainWindow({
       return;
     }
 
-    const point = pagePointFromPointerEvent(event);
-    updateNativeDeleteTarget(document, objectId, point, event.target);
-    updateNativeDoubleBondSidePreview(document, objectId, point, event.target);
-
-    if (!bondToolActive) {
-      return;
-    }
-
-    const object = findDocumentObject(document, objectId);
-    if (object?.type !== "molecule") {
-      setHoveredNativeAtom(undefined);
-      return;
-    }
-
-    updateBondGrowthPreview(document, point);
+    updateNativeCanvasHover(document, pagePointFromPointerEvent(event), event.target);
   }, [
     assignHoveredNativeDeleteTarget,
-    bondToolActive,
     document,
     pagePointFromPointerEvent,
     previewObjectDrag,
@@ -3631,10 +3876,8 @@ export function MainWindow({
     previewNativeDoubleBondSideDrag,
     previewNativePartDrag,
     previewTextResize,
-    updateBondGrowthPreview,
     updateFreeformBondPreview,
-    updateNativeDoubleBondSidePreview,
-    updateNativeDeleteTarget
+    updateNativeCanvasHover
   ]);
 
   const handleObjectPointerUp = useCallback((objectId: string, event: PointerEvent<HTMLDivElement>) => {
@@ -3912,7 +4155,6 @@ export function MainWindow({
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           data-zoom-surface="document"
-          onWheel={handleCanvasWheel}
         >
           {rulersVisible ? (
             <DocumentRulers
@@ -4074,6 +4316,16 @@ export function rotationDeltaDegrees(center: ClientPoint, start: ClientPoint, la
   return Number(delta.toFixed(3));
 }
 
+export function nativePlacementRotationDegrees(start: ClientPoint, latest: ClientPoint): number {
+  const dx = latest.x - start.x;
+  const dy = latest.y - start.y;
+  if (Math.hypot(dx, dy) <= 0.001) {
+    return 0;
+  }
+
+  return Number((Math.atan2(dy, dx) * 180 / Math.PI).toFixed(3));
+}
+
 export function rotationReadoutDegrees(angleDegrees: number): number {
   const normalized = ((angleDegrees % 360) + 360) % 360;
   const rounded = Math.round(normalized);
@@ -4158,6 +4410,12 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
   return "single bond";
 }
 
+function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  return drag.kind === "template" && drag.templateId
+    ? `${nativeTemplateStatusLabel(drag.templateId)} template`
+    : `${nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
+}
+
 function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string {
   switch (templateId) {
     case "cyclopentane":
@@ -4191,63 +4449,6 @@ function nativeTemplateStatusForApplication(
   return target.kind === "bond"
     ? `Fused ${nativeTemplateStatusLabel(templateId)} template`
     : `Made spiro ${nativeTemplateStatusLabel(templateId)} template`;
-}
-
-function nativeMoleculeHitFromPointerTarget(
-  molecule: MoleculeObject,
-  point: ClientPoint,
-  eventTarget?: EventTarget | null
-): NativeMoleculeDeleteHit | undefined {
-  const atomId = pointerHitTargetAttribute(eventTarget, "atom", "data-atom-id");
-  if (atomId) {
-    const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-    if (atom) {
-      return {
-        kind: "atom",
-        atomId: atom.id,
-        distanceToPointer: clientPointDistance(atom, point)
-      };
-    }
-  }
-
-  const bondId = pointerHitTargetAttribute(eventTarget, "bond", "data-bond-id");
-  if (bondId) {
-    const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
-    const fromAtom = bond ? molecule.atoms.find((atom) => atom.id === bond.fromAtomId) : undefined;
-    const toAtom = bond ? molecule.atoms.find((atom) => atom.id === bond.toAtomId) : undefined;
-    if (bond && fromAtom && toAtom) {
-      const modelHit = findNativeMoleculeDeleteHit(molecule, point);
-      if (modelHit?.kind === "bond" && modelHit.bondId === bond.id) {
-        return modelHit;
-      }
-
-      const fromDegree = nativeAtomBondCount(molecule, fromAtom.id);
-      const toDegree = nativeAtomBondCount(molecule, toAtom.id);
-      return {
-        kind: "bond",
-        bondId: bond.id,
-        fromAtomId: fromAtom.id,
-        toAtomId: toAtom.id,
-        terminalAtomId: fromDegree === 1 ? fromAtom.id : toDegree === 1 ? toAtom.id : undefined,
-        distanceToPointer: 0
-      };
-    }
-  }
-
-  return findNativeMoleculeDeleteHit(molecule, point);
-}
-
-function pointerHitTargetAttribute(
-  eventTarget: EventTarget | null | undefined,
-  hitTarget: "atom" | "bond",
-  attribute: string
-): string | undefined {
-  if (typeof Element === "undefined" || !(eventTarget instanceof Element)) {
-    return undefined;
-  }
-
-  const target = eventTarget.closest(`[data-hit-target="${hitTarget}"]`);
-  return target?.getAttribute(attribute) ?? undefined;
 }
 
 function nativeAtomBondCount(molecule: MoleculeObject, atomId: string): number {
@@ -4896,16 +5097,45 @@ function defaultToolsetPosition(toolsetId: string, registry: DesktopToolsetRegis
   return { x: 34 + index * 18, y: 116 + index * 18 };
 }
 
-function clientPointFromGesture(event: WebKitGestureEvent, element: HTMLElement): ClientPoint {
-  if (typeof event.clientX === "number" && typeof event.clientY === "number") {
-    return { x: event.clientX, y: event.clientY };
-  }
-
+function clientPointFromElementCenter(element: HTMLElement): ClientPoint {
   const rect = element.getBoundingClientRect();
   return {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2
   };
+}
+
+function clientPointFromGesture(
+  event: WebKitGestureEvent,
+  element: HTMLElement,
+  fallback?: ClientPoint
+): ClientPoint {
+  if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+    return { x: event.clientX, y: event.clientY };
+  }
+
+  return fallback ?? clientPointFromElementCenter(element);
+}
+
+export function shouldUseViewportWheelZoom(event: Pick<globalThis.WheelEvent, "ctrlKey" | "deltaY" | "metaKey">): boolean {
+  return Number.isFinite(event.deltaY) && event.deltaY !== 0 && (event.ctrlKey || event.metaKey);
+}
+
+export function pagePointFromRenderedPageRect(
+  rect: Pick<DOMRect, "left" | "top">,
+  scale: number,
+  clientPoint: ClientPoint
+): ClientPoint {
+  // The page-coordinate conversion lives in the camera module (single source of truth);
+  // this thin wrapper preserves the existing call sites and test imports.
+  return clientToPage(clientPoint, { pageRect: rect, scale });
+}
+
+function clientPointIsInsideRect(
+  point: ClientPoint,
+  rect: Pick<DOMRect, "bottom" | "left" | "right" | "top">
+): boolean {
+  return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
 }
 
 function pageCenterPoint(
@@ -5348,6 +5578,62 @@ function nativeSelectionFromHit(
     : { objectId, kind: "bond", bondId: hit.bondId };
 }
 
+function nativeSelectionAtomIds(part: NativeMoleculeSelectionPart | undefined): string[] {
+  if (part?.kind === "atom") {
+    return [part.atomId];
+  }
+
+  return part?.kind === "parts" ? [...part.atomIds] : [];
+}
+
+function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): string[] {
+  if (part?.kind === "bond") {
+    return [part.bondId];
+  }
+
+  return part?.kind === "parts" ? [...part.bondIds] : [];
+}
+
+function toggledSelectionIds(ids: readonly string[], id: string): string[] {
+  return ids.includes(id)
+    ? ids.filter((candidate) => candidate !== id)
+    : [...ids, id];
+}
+
+function nativeSelectionFromIds(
+  objectId: string,
+  atomIds: readonly string[],
+  bondIds: readonly string[]
+): NativeMoleculeSelectionPart | undefined {
+  if (atomIds.length === 0 && bondIds.length === 0) {
+    return undefined;
+  }
+
+  if (atomIds.length === 1 && bondIds.length === 0) {
+    return { objectId, kind: "atom", atomId: atomIds[0] };
+  }
+
+  if (atomIds.length === 0 && bondIds.length === 1) {
+    return { objectId, kind: "bond", bondId: bondIds[0] };
+  }
+
+  return { objectId, kind: "parts", atomIds: [...atomIds], bondIds: [...bondIds] };
+}
+
+export function nativeSelectionWithHitToggled(
+  currentPart: NativeMoleculeSelectionPart | undefined,
+  objectId: string,
+  hit: NativeMoleculeDeleteHit
+): NativeMoleculeSelectionPart | undefined {
+  const compatibleCurrentPart = currentPart?.objectId === objectId ? currentPart : undefined;
+  const atomIds = nativeSelectionAtomIds(compatibleCurrentPart);
+  const bondIds = nativeSelectionBondIds(compatibleCurrentPart);
+
+  return hit.kind === "atom"
+    ? nativeSelectionFromIds(objectId, toggledSelectionIds(atomIds, hit.atomId), bondIds)
+    : nativeSelectionFromIds(objectId, atomIds, toggledSelectionIds(bondIds, hit.bondId));
+}
+
 export function nativeMoleculeSelectionDragIntent(
   document: ChemDraftDocument,
   objectId: string,
@@ -5749,10 +6035,10 @@ function DocumentObjectView({
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
       const transformFrameStyle = transformFrame ? {
-        left: `${transformFrame.x}px`,
-        top: `${transformFrame.y}px`,
-        width: `${transformFrame.width}px`,
-        height: `${transformFrame.height}px`
+        left: `calc(${transformFrame.x}px * var(--page-scale))`,
+        top: `calc(${transformFrame.y}px * var(--page-scale))`,
+        width: `calc(${transformFrame.width}px * var(--page-scale))`,
+        height: `calc(${transformFrame.height}px * var(--page-scale))`
       } as CSSProperties : undefined;
       const selectionBlob = selectedBondIds.size > 0 || selectedAtomIds.size > 0 ? (
         <g
@@ -6139,11 +6425,11 @@ function DocumentObjectView({
                 key={`atom-label-editor-${atom.id}`}
                 spellCheck={false}
                 style={{
-                  left: `${atom.x - object.x}px`,
-                  top: `${atom.y - object.y}px`,
+                  left: `calc(${atom.x - object.x}px * var(--page-scale))`,
+                  top: `calc(${atom.y - object.y}px * var(--page-scale))`,
                   width: `${Math.max(1, editingAtomLabel.draft.length + 0.6)}ch`,
                   fontFamily: drawingStyle.atomLabelFontFamily,
-                  fontSize: `${drawingStyle.atomLabelFontSizePx}px`,
+                  fontSize: `calc(${drawingStyle.atomLabelFontSizePx}px * var(--page-scale))`,
                   fontWeight: drawingStyle.atomLabelFontWeight
                 }}
                 value={editingAtomLabel.draft}
@@ -6203,13 +6489,13 @@ function DocumentObjectView({
     const textStyle = nativeTextStyleFromObjectStyle(object.style);
     const objectTextScript = textScriptForTextObject(object);
     const textCss = {
-      fontFamily: textStyle.fontFamily,
-      fontSize: `${textStyle.fontSizePx}px`,
       color: textStyle.color,
-      letterSpacing: `${textStyle.letterSpacingPx}px`,
-      lineHeight: textStyle.lineHeight,
-      textAlign: textStyle.textAlign,
+      fontFamily: textStyle.fontFamily,
       fontWeight: textStyle.fontWeight,
+      fontSize: `calc(${textStyle.fontSizePx}px * var(--page-scale))`,
+      lineHeight: textStyle.lineHeight,
+      letterSpacing: `calc(${textStyle.letterSpacingPx}px * var(--page-scale))`,
+      textAlign: textStyle.textAlign,
       fontStyle: textStyle.fontStyle,
       textDecoration: textStyle.textDecoration
     } as CSSProperties;
@@ -6218,10 +6504,10 @@ function DocumentObjectView({
       color: "transparent",
       caretColor: textStyle.color,
       ...(objectTextScript === "normal" ? {} : {
-        fontSize: `${textStyle.fontSizePx * 0.72}px`,
+        fontSize: `calc(${textStyle.fontSizePx * 0.72}px * var(--page-scale))`,
         lineHeight: Math.max(1, textStyle.lineHeight),
-        paddingTop: objectTextScript === "subscript" ? `${textStyle.fontSizePx * 0.3}px` : 0,
-        paddingBottom: objectTextScript === "superscript" ? `${textStyle.fontSizePx * 0.28}px` : 0
+        paddingTop: objectTextScript === "subscript" ? `calc(${textStyle.fontSizePx * 0.3}px * var(--page-scale))` : 0,
+        paddingBottom: objectTextScript === "superscript" ? `calc(${textStyle.fontSizePx * 0.28}px * var(--page-scale))` : 0
       })
     } as CSSProperties;
 
@@ -6447,10 +6733,10 @@ function textSpanCss(span: TextSpan): CSSProperties | undefined {
     css.fontFamily = fontFamily;
   }
   if (fontSizePx !== undefined) {
-    css.fontSize = `${fontSizePx}px`;
+    css.fontSize = `calc(${fontSizePx}px * var(--page-scale))`;
   }
   if (letterSpacingPx !== undefined) {
-    css.letterSpacing = `${letterSpacingPx}px`;
+    css.letterSpacing = `calc(${letterSpacingPx}px * var(--page-scale))`;
   }
   if (fontWeight !== undefined) {
     css.fontWeight = fontWeight;

@@ -66,9 +66,11 @@ import {
   resolveToolbarColorSelection,
   resizeNativeMoleculeParts,
   rotateDocumentObject,
+  rotateNativeMoleculeObjectAroundPoint,
   rotateNativeMoleculeParts,
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
+  selectAllDocumentObjects,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
@@ -192,6 +194,46 @@ function moleculeBondLength(molecule: MoleculeObject, bondId: string): number {
   return pointDistance(moleculeAtom(molecule, bond.fromAtomId), moleculeAtom(molecule, bond.toAtomId));
 }
 
+function expectChairCyclohexaneSilhouette(molecule: MoleculeObject): void {
+  molecule.bonds.forEach((bond) => {
+    expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+  });
+
+  expectMoleculeHasChairCyclohexaneRing(molecule);
+}
+
+function expectMoleculeHasChairCyclohexaneRing(molecule: MoleculeObject): void {
+  expect(testSixMemberCarbonRings(molecule).some((ring) => isChairCyclohexaneRing(molecule, ring))).toBe(true);
+}
+
+function isChairCyclohexaneRing(molecule: MoleculeObject, ring: TestRingCycle): boolean {
+  const turns = ringTurnAngles(molecule, ring);
+  const expectedTurns = [30, 30, 75, 75, 135, 135];
+
+  return expectedTurns.every((expectedTurn, index) => {
+    const turn = turns[index];
+    return turn !== undefined && Math.abs(turn - expectedTurn) < 2;
+  });
+}
+
+function ringTurnAngles(molecule: MoleculeObject, ring: TestRingCycle): number[] {
+  const directions = ring.atomIds.map((atomId, index) => {
+    const nextAtomId = ring.atomIds[(index + 1) % ring.atomIds.length] ?? atomId;
+    const atom = moleculeAtom(molecule, atomId);
+    const nextAtom = moleculeAtom(molecule, nextAtomId);
+    return Math.atan2(nextAtom.y - atom.y, nextAtom.x - atom.x) * 180 / Math.PI;
+  });
+
+  return directions
+    .map((direction, index) => Math.abs(normalizeSignedDegrees((directions[(index + 1) % directions.length] ?? direction) - direction)))
+    .sort((left, right) => left - right);
+}
+
+function normalizeSignedDegrees(angle: number): number {
+  const normalized = ((angle % 360) + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
 function moleculeBond(molecule: MoleculeObject, bondId: string): MoleculeObject["bonds"][number] {
   const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
   if (!bond) {
@@ -199,6 +241,113 @@ function moleculeBond(molecule: MoleculeObject, bondId: string): MoleculeObject[
   }
 
   return bond;
+}
+
+function pointCentroid(points: readonly { x: number; y: number }[]): { x: number; y: number } {
+  return points.reduce(
+    (sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }),
+    { x: 0, y: 0 }
+  );
+}
+
+function expectedDoubleBondSideTowardPoint(
+  molecule: MoleculeObject,
+  bondId: string,
+  point: { x: number; y: number }
+): "left" | "right" {
+  const bond = moleculeBond(molecule, bondId);
+  const fromAtom = moleculeAtom(molecule, bond.fromAtomId);
+  const toAtom = moleculeAtom(molecule, bond.toAtomId);
+  const dx = toAtom.x - fromAtom.x;
+  const dy = toAtom.y - fromAtom.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return "left";
+  }
+
+  const normal = { x: -dy / length, y: dx / length };
+  const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
+  const score = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
+  return score >= 0 ? "left" : "right";
+}
+
+function expectDoubleBondInsideRing(
+  molecule: MoleculeObject,
+  bondId: string,
+  ringAtomIds: readonly string[]
+): void {
+  const ringCenter = pointCentroid(ringAtomIds.map((atomId) => moleculeAtom(molecule, atomId)));
+  const bond = moleculeBond(molecule, bondId);
+
+  expect(bond.order).toBe("double");
+  expect(bond.display?.doubleBondSide).toBe(expectedDoubleBondSideTowardPoint(molecule, bondId, ringCenter));
+}
+
+interface TestRingCycle {
+  atomIds: string[];
+  bondIds: string[];
+}
+
+function testSixMemberCarbonRings(molecule: MoleculeObject): TestRingCycle[] {
+  const carbonAtomIds = new Set(molecule.atoms.filter((atom) => atom.element === "C").map((atom) => atom.id));
+  const adjacency = new Map<string, { atomId: string; bondId: string }[]>();
+  molecule.bonds.forEach((bond) => {
+    if (!carbonAtomIds.has(bond.fromAtomId) || !carbonAtomIds.has(bond.toAtomId)) {
+      return;
+    }
+
+    adjacency.set(bond.fromAtomId, [
+      ...(adjacency.get(bond.fromAtomId) ?? []),
+      { atomId: bond.toAtomId, bondId: bond.id }
+    ]);
+    adjacency.set(bond.toAtomId, [
+      ...(adjacency.get(bond.toAtomId) ?? []),
+      { atomId: bond.fromAtomId, bondId: bond.id }
+    ]);
+  });
+
+  const rings = new Map<string, TestRingCycle>();
+  const visit = (startAtomId: string, atomId: string, atomIds: string[], bondIds: string[]) => {
+    if (atomIds.length === 6) {
+      const closingBond = (adjacency.get(atomId) ?? []).find((edge) => edge.atomId === startAtomId);
+      if (closingBond) {
+        const nextBondIds = [...bondIds, closingBond.bondId];
+        const key = [...nextBondIds].sort().join("|");
+        rings.set(key, { atomIds, bondIds: nextBondIds });
+      }
+      return;
+    }
+
+    (adjacency.get(atomId) ?? []).forEach((edge) => {
+      if (edge.atomId === startAtomId || atomIds.includes(edge.atomId)) {
+        return;
+      }
+
+      visit(startAtomId, edge.atomId, [...atomIds, edge.atomId], [...bondIds, edge.bondId]);
+    });
+  };
+
+  [...carbonAtomIds].forEach((atomId) => {
+    visit(atomId, atomId, [atomId], []);
+  });
+
+  return [...rings.values()];
+}
+
+function expectAromaticDoubleBondsAreInternalPerimeterBonds(molecule: MoleculeObject): void {
+  const rings = testSixMemberCarbonRings(molecule);
+  const bondMembership = new Map<string, TestRingCycle[]>();
+  rings.forEach((ring) => {
+    ring.bondIds.forEach((bondId) => {
+      bondMembership.set(bondId, [...(bondMembership.get(bondId) ?? []), ring]);
+    });
+  });
+
+  molecule.bonds.filter((bond) => bond.order === "double").forEach((bond) => {
+    const owningRings = bondMembership.get(bond.id) ?? [];
+    expect(owningRings).toHaveLength(1);
+    expectDoubleBondInsideRing(molecule, bond.id, owningRings[0]?.atomIds ?? []);
+  });
 }
 
 function moleculeBondTarget(molecule: MoleculeObject, bondId: string) {
@@ -234,8 +383,64 @@ function moleculeBondMidpoint(molecule: MoleculeObject, bondId: string): { x: nu
   };
 }
 
+function rightmostSixMemberRingPerimeterBondId(molecule: MoleculeObject): string {
+  const rings = testSixMemberCarbonRings(molecule);
+  const membership = new Map<string, number>();
+  rings.forEach((ring) => {
+    ring.bondIds.forEach((bondId) => {
+      membership.set(bondId, (membership.get(bondId) ?? 0) + 1);
+    });
+  });
+
+  const perimeterBonds = molecule.bonds
+    .filter((bond) => membership.get(bond.id) === 1)
+    .map((bond) => ({ bond, midpoint: moleculeBondMidpoint(molecule, bond.id) }))
+    .sort((a, b) => b.midpoint.x - a.midpoint.x || a.bond.id.localeCompare(b.bond.id));
+  const bondId = perimeterBonds[0]?.bond.id;
+  if (!bondId) {
+    throw new Error("Expected at least one six-membered ring perimeter bond");
+  }
+
+  return bondId;
+}
+
 function atomDegree(molecule: MoleculeObject, atomId: string): number {
   return molecule.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
+}
+
+function expectUsableNativeMoleculeGraph(
+  molecule: MoleculeObject,
+  context = molecule.id,
+  options: { minimumAtomDistancePx?: number } = {}
+): void {
+  const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
+  const minimumAtomDistancePx = options.minimumAtomDistancePx ?? 0.5;
+
+  expect(molecule.atoms.length).toBeGreaterThan(0);
+  expect(molecule.bonds.length).toBeGreaterThan(0);
+  expect(molecule.atoms.every((atom) =>
+    atom.id.length > 0 &&
+    atom.element.length > 0 &&
+    Number.isFinite(atom.x) &&
+    Number.isFinite(atom.y)
+  )).toBe(true);
+  expect(molecule.bonds.every((bond) =>
+    bond.id.length > 0 &&
+    bond.fromAtomId !== bond.toAtomId &&
+    atomIds.has(bond.fromAtomId) &&
+    atomIds.has(bond.toAtomId)
+  )).toBe(true);
+  expect(molecule.structure.length).toBeGreaterThan(0);
+  expect(molecule.chemistry?.atomCount).toBe(molecule.atoms.length);
+  expect(molecule.chemistry?.bondCount).toBe(molecule.bonds.length);
+  molecule.atoms.forEach((atom, index) => {
+    molecule.atoms.slice(index + 1).forEach((otherAtom) => {
+      expect(
+        Math.hypot(atom.x - otherAtom.x, atom.y - otherAtom.y),
+        `${context} ${molecule.id} ${atom.id}/${otherAtom.id}`
+      ).toBeGreaterThan(minimumAtomDistancePx);
+    });
+  });
 }
 
 function moleculeAngleDegrees(molecule: MoleculeObject, leftAtomId: string, centerAtomId: string, rightAtomId: string): number {
@@ -473,6 +678,21 @@ describe("Phase 4 document workflow", () => {
     expect(withBond.selection.objectIds).toEqual(["mol_bond_001"]);
   });
 
+  it("selects all canvas objects on the active page", () => {
+    const blank = createPhase4Document("Select All Fixture");
+    const withBond = insertNativeSingleBondMolecule(blank, { x: 200, y: 220 });
+    const withText = insertNativeTextObject(withBond, { x: 280, y: 260 }, "note");
+    const selected = selectAllDocumentObjects(withText, withText.pages[0].id);
+    const objectIds = withText.pages[0].objects.map((object) => object.id);
+
+    expect(selectAllDocumentObjects(blank, blank.pages[0].id)).toBe(blank);
+    expect(selected.selection).toEqual({
+      pageId: withText.pages[0].id,
+      objectIds
+    });
+    expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
   it("reorders the selected document object for layer controls", () => {
     const first = insertNativeSingleBondMolecule(createPhase4Document("Layer Fixture"), { x: 200, y: 220 });
     const second = insertNativeSingleBondMolecule(first, { x: 230, y: 220 });
@@ -682,6 +902,51 @@ describe("Phase 4 document workflow", () => {
       expect(rotatedAtom?.x).toBeCloseTo(center.x - (atom.y - center.y), 3);
       expect(rotatedAtom?.y).toBeCloseTo(center.y + (atom.x - center.x), 3);
       expect(pointDistance(atom, center)).toBeCloseTo(pointDistance(rotatedAtom ?? atom, center), 3);
+    });
+  });
+
+  it("keeps a freshly placed single bond chemically intact when rotated before placement commit", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Rotated Bond Placement"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const center = {
+      x: ((molecule.atoms[0]?.x ?? 0) + (molecule.atoms[1]?.x ?? 0)) / 2,
+      y: ((molecule.atoms[0]?.y ?? 0) + (molecule.atoms[1]?.y ?? 0)) / 2
+    };
+    const rotated = rotateNativeMoleculeObjectAroundPoint(document, molecule.id, center, 90);
+    const rotatedMolecule = selectedMolecule(rotated);
+
+    expect(rotatedMolecule.atoms).toHaveLength(2);
+    expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
+    expect(rotatedMolecule.structure).toBe(molecule.structure);
+    expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(nativeMoleculeTransformState(rotatedMolecule).rotationDegrees).toBe(90);
+    expect(rotatedMolecule.atoms[0]?.x).toBeCloseTo(center.x, 3);
+    expect(rotatedMolecule.atoms[0]?.y).toBeCloseTo(center.y - nativeBondLengthPx / 2, 3);
+    expect(rotatedMolecule.atoms[1]?.x).toBeCloseTo(center.x, 3);
+    expect(rotatedMolecule.atoms[1]?.y).toBeCloseTo(center.y + nativeBondLengthPx / 2, 3);
+  });
+
+  it("keeps a freshly placed ring template chemically intact when rotated before placement commit", () => {
+    const document = insertNativeTemplateMolecule(
+      createPhase4Document("Rotated Template Placement"),
+      { x: 260, y: 260 },
+      "cyclohexane"
+    );
+    const molecule = selectedMolecule(document);
+    const rotated = rotateNativeMoleculeObjectAroundPoint(document, molecule.id, { x: 260, y: 260 }, 30);
+    const rotatedMolecule = selectedMolecule(rotated);
+
+    expect(rotatedMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
+    expect(rotatedMolecule.structure).toBe(molecule.structure);
+    expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
+    expect(nativeMoleculeTransformState(rotatedMolecule).rotationDegrees).toBe(30);
+    expect(rotatedMolecule.atoms.some((atom, index) =>
+      Math.abs(atom.x - (molecule.atoms[index]?.x ?? atom.x)) > 0.1 ||
+      Math.abs(atom.y - (molecule.atoms[index]?.y ?? atom.y)) > 0.1
+    )).toBe(true);
+    rotatedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(rotatedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
     });
   });
 
@@ -3217,6 +3482,11 @@ describe("Phase 4 document workflow", () => {
       { x: 260, y: 260 },
       "chairCyclohexaneA"
     ));
+    const alternateChair = selectedMolecule(insertNativeTemplateMolecule(
+      createPhase4Document("Alternate Chair Template"),
+      { x: 260, y: 260 },
+      "chairCyclohexaneB"
+    ));
 
     expect(cyclopentane.atoms).toHaveLength(5);
     expect(cyclopentane.bonds).toHaveLength(5);
@@ -3227,8 +3497,13 @@ describe("Phase 4 document workflow", () => {
     expect(benzene.atoms).toHaveLength(6);
     expect(benzene.bonds.filter((bond) => bond.order === "double")).toHaveLength(3);
     expect(benzene.chemistry?.formula).toBe("C6H6");
+    expectAromaticDoubleBondsAreInternalPerimeterBonds(benzene);
     expect(chair.bonds).toHaveLength(6);
-    expect(new Set(chair.atoms.map((atom) => Number(atom.y.toFixed(2)))).size).toBeGreaterThan(2);
+    expect(chair.chemistry?.formula).toBe("C6H12");
+    expect(alternateChair.bonds).toHaveLength(6);
+    expect(alternateChair.chemistry?.formula).toBe("C6H12");
+    expectChairCyclohexaneSilhouette(chair);
+    expectChairCyclohexaneSilhouette(alternateChair);
   });
 
   it("fuses benzene template bond clicks into naphthalene and anthracene graphs", () => {
@@ -3250,16 +3525,20 @@ describe("Phase 4 document workflow", () => {
     expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
     expect(naphthalene.atoms).toHaveLength(10);
     expect(naphthalene.bonds).toHaveLength(11);
+    expect(naphthalene.bonds.filter((bond) => bond.order === "double")).toHaveLength(5);
     expect(naphthalene.chemistry).toMatchObject({ formula: "C10H8", atomCount: 10, bondCount: 11 });
     naphthalene.bonds.forEach((bond) => {
       expect(moleculeBondLength(naphthalene, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
+    expect(moleculeBond(naphthalene, "bond_001").order).toBe("single");
+    expectAromaticDoubleBondsAreInternalPerimeterBonds(naphthalene);
     expectNoDuplicateAtomPositions(naphthalene);
 
+    const naphthaleneExtensionBondId = rightmostSixMemberRingPerimeterBondId(naphthalene);
     document = applyNativeTemplateToolAtTarget(
       document,
-      moleculeBondTarget(naphthalene, "bond_009"),
-      moleculeBondMidpoint(naphthalene, "bond_009"),
+      moleculeBondTarget(naphthalene, naphthaleneExtensionBondId),
+      moleculeBondMidpoint(naphthalene, naphthaleneExtensionBondId),
       "benzene"
     );
     const anthracene = selectedMolecule(document);
@@ -3267,11 +3546,62 @@ describe("Phase 4 document workflow", () => {
     expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
     expect(anthracene.atoms).toHaveLength(14);
     expect(anthracene.bonds).toHaveLength(16);
+    expect(anthracene.bonds.filter((bond) => bond.order === "double")).toHaveLength(7);
     expect(anthracene.chemistry).toMatchObject({ formula: "C14H10", atomCount: 14, bondCount: 16 });
     anthracene.bonds.forEach((bond) => {
       expect(moleculeBondLength(anthracene, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
+    expect(moleculeBond(anthracene, naphthaleneExtensionBondId).order).toBe("single");
+    expectAromaticDoubleBondsAreInternalPerimeterBonds(anthracene);
     expectNoDuplicateAtomPositions(anthracene);
+
+    const anthraceneExtensionBondId = rightmostSixMemberRingPerimeterBondId(anthracene);
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(anthracene, anthraceneExtensionBondId),
+      moleculeBondMidpoint(anthracene, anthraceneExtensionBondId),
+      "benzene"
+    );
+    const tetracene = selectedMolecule(document);
+
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    expect(tetracene.atoms).toHaveLength(18);
+    expect(tetracene.bonds).toHaveLength(21);
+    expect(tetracene.bonds.filter((bond) => bond.order === "double")).toHaveLength(9);
+    expect(tetracene.chemistry).toMatchObject({ formula: "C18H12", atomCount: 18, bondCount: 21 });
+    expect(moleculeBond(tetracene, anthraceneExtensionBondId).order).toBe("single");
+    expectAromaticDoubleBondsAreInternalPerimeterBonds(tetracene);
+    expectNoDuplicateAtomPositions(tetracene);
+  });
+
+  it("fuses benzene onto saturated cyclohexane as an aromatic ring with internal double bonds", () => {
+    let document = insertNativeTemplateMolecule(
+      createPhase4Document("Benzene Fused Cyclohexane"),
+      { x: 360, y: 320 },
+      "cyclohexane"
+    );
+    const cyclohexane = selectedMolecule(document);
+
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(cyclohexane, "bond_001"),
+      moleculeBondMidpoint(cyclohexane, "bond_001"),
+      "benzene"
+    );
+    const fused = selectedMolecule(document);
+    const benzeneRingAtomIds = ["atom_001", "atom_002", "atom_007", "atom_008", "atom_009", "atom_010"];
+
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    expect(fused.atoms).toHaveLength(10);
+    expect(fused.bonds).toHaveLength(11);
+    expect(fused.bonds.filter((bond) => bond.order === "double")).toHaveLength(3);
+    expect(moleculeBond(fused, "bond_001").order).toBe("single");
+    expect(fused.chemistry).toMatchObject({ formula: "C10H12", atomCount: 10, bondCount: 11 });
+    expectAromaticDoubleBondsAreInternalPerimeterBonds(fused);
+    fused.bonds.filter((bond) => bond.order === "double").forEach((bond) => {
+      expectDoubleBondInsideRing(fused, bond.id, benzeneRingAtomIds);
+    });
+    expectNoDuplicateAtomPositions(fused);
   });
 
   it("fuses cyclohexane template bond clicks and creates spiro rings from atom clicks", () => {
@@ -3314,6 +3644,164 @@ describe("Phase 4 document workflow", () => {
     expect(spiroCyclohexane.chemistry).toMatchObject({ formula: "C11H20", atomCount: 11, bondCount: 12 });
     expect(atomDegree(spiroCyclohexane, "atom_001")).toBe(4);
     expectNoDuplicateAtomPositions(spiroCyclohexane);
+  });
+
+  it("applies chair templates to bond and atom targets as chair silhouettes", () => {
+    let fusedDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Chair Template Fusion"),
+      { x: 360, y: 320 },
+      "cyclohexane"
+    );
+    const baseCyclohexane = selectedMolecule(fusedDocument);
+
+    fusedDocument = applyNativeTemplateToolAtTarget(
+      fusedDocument,
+      moleculeBondTarget(baseCyclohexane, "bond_001"),
+      moleculeBondMidpoint(baseCyclohexane, "bond_001"),
+      "chairCyclohexaneA"
+    );
+    const fusedChair = selectedMolecule(fusedDocument);
+
+    expect(fusedChair.atoms).toHaveLength(10);
+    expect(fusedChair.bonds).toHaveLength(11);
+    expect(fusedChair.chemistry).toMatchObject({ formula: "C10H18", atomCount: 10, bondCount: 11 });
+    expect(atomDegree(fusedChair, "atom_001")).toBe(3);
+    expect(atomDegree(fusedChair, "atom_002")).toBe(3);
+    expectMoleculeHasChairCyclohexaneRing(fusedChair);
+    expectNoDuplicateAtomPositions(fusedChair);
+
+    let spiroDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Chair Template Spiro"),
+      { x: 360, y: 320 },
+      "cyclohexane"
+    );
+    const spiroBase = selectedMolecule(spiroDocument);
+
+    spiroDocument = applyNativeTemplateToolAtTarget(
+      spiroDocument,
+      moleculeAtomTarget(spiroBase, "atom_001"),
+      moleculeAtom(spiroBase, "atom_001"),
+      "chairCyclohexaneB"
+    );
+    const spiroChair = selectedMolecule(spiroDocument);
+
+    expect(spiroChair.atoms).toHaveLength(11);
+    expect(spiroChair.bonds).toHaveLength(12);
+    expect(spiroChair.chemistry).toMatchObject({ formula: "C11H20", atomCount: 11, bondCount: 12 });
+    expect(atomDegree(spiroChair, "atom_001")).toBe(4);
+    expectMoleculeHasChairCyclohexaneRing(spiroChair);
+    expectNoDuplicateAtomPositions(spiroChair);
+  });
+
+  it("stress-tests 100 mixed native drawing, transform, color, and cleanup workflows", () => {
+    const baseTemplates = ["cyclohexane", "benzene", "chairCyclohexaneA", "chairCyclohexaneB"] as const;
+    const fusedTemplates = ["benzene", "chairCyclohexaneA", "chairCyclohexaneB", "cyclohexane"] as const;
+    const colors = ["#1d7f68", "#b3261e", "#1f5fbf", "#c75c12", "#4f5f68"] as const;
+
+    Array.from({ length: 100 }, (_, index) => {
+      let document = insertNativeTemplateMolecule(
+        createPhase4Document(`Native UX Stress ${index + 1}`),
+        { x: 300 + index % 5 * 12, y: 300 + index % 4 * 10 },
+        baseTemplates[index % baseTemplates.length]
+      );
+      let molecule = selectedMolecule(document);
+      const fusedBondId = molecule.bonds[index % molecule.bonds.length]?.id ?? "bond_001";
+
+      document = applyNativeTemplateToolAtTarget(
+        document,
+        moleculeBondTarget(molecule, fusedBondId),
+        moleculeBondMidpoint(molecule, fusedBondId),
+        fusedTemplates[index % fusedTemplates.length]
+      );
+      molecule = selectedMolecule(document);
+
+      const spiroAtom = molecule.atoms.find((atom) => atomDegree(molecule, atom.id) < 4);
+      if (spiroAtom && index % 3 === 0) {
+        document = applyNativeTemplateToolAtTarget(
+          document,
+          moleculeAtomTarget(molecule, spiroAtom.id),
+          moleculeAtom(molecule, spiroAtom.id),
+          fusedTemplates[(index + 1) % fusedTemplates.length]
+        );
+        molecule = selectedMolecule(document);
+      }
+
+      const editableBond = molecule.bonds[index % molecule.bonds.length];
+      if (editableBond && index % 4 === 0) {
+        document = applyNativeMoleculeBondOrderValueTarget(document, {
+          objectId: molecule.id,
+          kind: "bond",
+          bondId: editableBond.id,
+          fromAtomId: editableBond.fromAtomId,
+          toAtomId: editableBond.toAtomId,
+          distanceToPointer: 0
+        }, index % 8 === 0 ? "double" : "single");
+        molecule = selectedMolecule(document);
+      }
+
+      document = resizeNativeMoleculeObject(document, molecule.id, {
+        x: 0.7 + index % 5 * 0.22,
+        y: 0.65 + index % 7 * 0.16
+      });
+      molecule = selectedMolecule(document);
+      document = rotateNativeMoleculeObjectAroundPoint(
+        document,
+        molecule.id,
+        { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 },
+        (index % 12) * 17 - 90
+      );
+      molecule = selectedMolecule(document);
+
+      const fragmentBond = molecule.bonds[(index + 1) % molecule.bonds.length];
+      if (fragmentBond) {
+        document = rotateNativeMoleculeParts(document, {
+          objectId: molecule.id,
+          kind: "bond",
+          bondId: fragmentBond.id
+        }, (index % 9) * 11 - 44);
+        document = resizeNativeMoleculeParts(document, {
+          objectId: molecule.id,
+          kind: "bond",
+          bondId: fragmentBond.id
+        }, {
+          x: 0.85 + index % 4 * 0.18,
+          y: 0.75 + index % 3 * 0.22
+        });
+        molecule = selectedMolecule(document);
+      }
+
+      const objectColor = applyToolbarColorToSelection(document, colors[index % colors.length], {
+        objectIds: [molecule.id]
+      });
+      expect(objectColor.changed).toBe(true);
+      document = objectColor.document;
+      molecule = selectedMolecule(document);
+
+      const atomId = molecule.atoms[index % molecule.atoms.length]?.id;
+      const bondId = molecule.bonds[index % molecule.bonds.length]?.id;
+      if (atomId && bondId) {
+        const partColor = applyToolbarColorToSelection(document, colors[(index + 2) % colors.length], {
+          objectIds: [],
+          moleculePart: { objectId: molecule.id, kind: "parts", atomIds: [atomId], bondIds: [bondId] }
+        });
+        expect(partColor.changed).toBe(true);
+        document = partColor.document;
+        molecule = selectedMolecule(document);
+      }
+
+      if (index % 2 === 0) {
+        document = cleanUpSelectedNativeMolecule2d(document);
+        molecule = selectedMolecule(document);
+        molecule.bonds.forEach((bond) => {
+          expect(moleculeBondLength(molecule, bond.id), `stress case ${index + 1} bond ${bond.id}`).toBeCloseTo(nativeBondLengthPx, 2);
+        });
+      }
+
+      expectUsableNativeMoleculeGraph(molecule, `stress case ${index + 1}`, {
+        minimumAtomDistancePx: index % 2 === 0 ? nativeBondLengthPx * 0.25 : 0.5
+      });
+      return molecule;
+    });
   });
 
   it("exports the Phase 4 subset as SVG", () => {

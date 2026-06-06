@@ -310,6 +310,9 @@ textarea:focus-visible,
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   background: var(--cd-bg-canvas);
+  /* Claim trackpad pinch/zoom gestures for the editor instead of letting WebKit
+     treat them as page zoom before our gesture handlers run. */
+  touch-action: none;
 }
 
 .tool-palette {
@@ -977,12 +980,25 @@ textarea:focus-visible,
   border-bottom: 0;
 }
 
-.icon-button {
+.icon-button-shell {
   position: relative;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
   width: 28px;
   height: 28px;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-palette .icon-button-shell {
+  width: 24px;
+  height: 24px;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--cd-radius-control);
@@ -1048,16 +1064,20 @@ textarea:focus-visible,
   opacity: 0.72;
 }
 
+.icon-button:disabled {
+  pointer-events: none;
+}
+
 .icon-button:disabled .tool-icon-image {
   filter: grayscale(1);
   opacity: 0.38;
 }
 
-.icon-button.separated {
+.icon-button-shell.separated {
   margin-left: 8px;
 }
 
-.icon-button.separated::before {
+.icon-button-shell.separated::before {
   position: absolute;
   left: -6px;
   width: 1px;
@@ -1072,7 +1092,8 @@ textarea:focus-visible,
   top: calc(100% + 7px);
   left: 50%;
   min-height: 20px;
-  max-width: 260px;
+  width: max-content;
+  max-width: 220px;
   padding: 4px 7px;
   border: 1px solid var(--cd-border-strong);
   border-radius: var(--cd-radius-control);
@@ -1083,19 +1104,19 @@ textarea:focus-visible,
   font-weight: 600;
   line-height: 1.1;
   opacity: 0;
+  overflow-wrap: anywhere;
   pointer-events: none;
   text-align: center;
   transform: translate(-50%, -2px);
   transition: opacity 90ms ease, transform 90ms ease, visibility 0s linear 90ms;
   visibility: hidden;
-  white-space: nowrap;
+  white-space: normal;
 }
 
-.icon-button:hover .tool-tooltip,
-.icon-button:focus-visible .tool-tooltip {
+.icon-button-shell[data-tooltip-visible="true"] .tool-tooltip {
   opacity: 1;
   transform: translate(-50%, 0);
-  transition-delay: 450ms;
+  transition: opacity 90ms ease, transform 90ms ease;
   visibility: visible;
 }
 
@@ -1106,42 +1127,43 @@ textarea:focus-visible,
   transform: translate(-50%, 2px);
 }
 
-.tool-palette.horizontal .icon-button:hover .tool-tooltip,
-.tool-palette.horizontal .icon-button:focus-visible .tool-tooltip,
-.tool-palette.floating.horizontal .icon-button:hover .tool-tooltip,
-.tool-palette.floating.horizontal .icon-button:focus-visible .tool-tooltip {
+.tool-palette.horizontal .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip,
+.tool-palette.floating.horizontal .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip {
   transform: translate(-50%, 0);
 }
 
-.tool-palette.horizontal .tool-group:first-of-type .icon-button:first-child .tool-tooltip,
-.tool-palette.floating.horizontal .tool-group:first-of-type .icon-button:first-child .tool-tooltip {
+.tool-palette.horizontal .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip,
+.tool-palette.floating.horizontal .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip {
   left: 0;
   transform: translate(0, 2px);
 }
 
-.tool-palette.horizontal .tool-group:first-of-type .icon-button:first-child:hover .tool-tooltip,
-.tool-palette.horizontal .tool-group:first-of-type .icon-button:first-child:focus-visible .tool-tooltip,
-.tool-palette.floating.horizontal .tool-group:first-of-type .icon-button:first-child:hover .tool-tooltip,
-.tool-palette.floating.horizontal .tool-group:first-of-type .icon-button:first-child:focus-visible .tool-tooltip {
+.tool-palette.horizontal .tool-group:first-of-type .icon-button-shell:first-child[data-tooltip-visible="true"] .tool-tooltip,
+.tool-palette.floating.horizontal .tool-group:first-of-type .icon-button-shell:first-child[data-tooltip-visible="true"] .tool-tooltip {
   transform: translate(0, 0);
 }
 
-.tool-palette.horizontal .tool-group:last-of-type .icon-button:last-child .tool-tooltip,
-.tool-palette.floating.horizontal .tool-group:last-of-type .icon-button:last-child .tool-tooltip {
+.tool-palette.horizontal .tool-group:last-of-type .icon-button-shell:last-child .tool-tooltip,
+.tool-palette.floating.horizontal .tool-group:last-of-type .icon-button-shell:last-child .tool-tooltip {
   right: 0;
   left: auto;
   transform: translate(0, 2px);
 }
 
-.tool-palette.horizontal .tool-group:last-of-type .icon-button:last-child:hover .tool-tooltip,
-.tool-palette.horizontal .tool-group:last-of-type .icon-button:last-child:focus-visible .tool-tooltip,
-.tool-palette.floating.horizontal .tool-group:last-of-type .icon-button:last-child:hover .tool-tooltip,
-.tool-palette.floating.horizontal .tool-group:last-of-type .icon-button:last-child:focus-visible .tool-tooltip {
+.tool-palette.horizontal .tool-group:last-of-type .icon-button-shell:last-child[data-tooltip-visible="true"] .tool-tooltip,
+.tool-palette.floating.horizontal .tool-group:last-of-type .icon-button-shell:last-child[data-tooltip-visible="true"] .tool-tooltip {
   transform: translate(0, 0);
 }
 
 .tool-palette.vertical .tool-tooltip {
-  display: none;
+  top: 50%;
+  bottom: auto;
+  left: calc(100% + 7px);
+  transform: translate(2px, -50%);
+}
+
+.tool-palette.vertical .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip {
+  transform: translate(0, -50%);
 }
 
 .document-rulers-overlay {
@@ -1216,6 +1238,9 @@ textarea:focus-visible,
   min-width: max(900px, calc((var(--page-layout-width) * var(--page-scale)) + 136px));
   min-height: max(1180px, calc((var(--page-layout-height) * var(--page-scale)) + 120px));
   padding: 44px 68px 76px;
+  /* The content under the pointer during a pinch must also opt out of native
+     touch gestures so the editor's zoom handlers stay in control. */
+  touch-action: none;
 }
 
 .canvas-region.rulers-visible .page-stage {
@@ -1359,7 +1384,7 @@ textarea:focus-visible,
   border: 0;
   border-radius: 0;
   background: transparent;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .molecule-glyph {
@@ -1367,7 +1392,7 @@ textarea:focus-visible,
   width: 100%;
   height: 100%;
   overflow: visible;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .native-bond-line {
@@ -1377,7 +1402,8 @@ textarea:focus-visible,
 
 .native-bond-hit-target {
   fill: none;
-  stroke: transparent;
+  stroke: var(--cd-accent);
+  stroke-opacity: 0;
   stroke-width: 14;
   pointer-events: stroke;
   vector-effect: non-scaling-stroke;
@@ -1422,10 +1448,25 @@ textarea:focus-visible,
 }
 
 .native-atom-hit-target {
-  fill: transparent;
-  stroke: transparent;
+  fill: var(--cd-bg-selected);
+  stroke: var(--cd-accent);
+  opacity: 0;
   pointer-events: all;
   vector-effect: non-scaling-stroke;
+}
+
+.native-atom-hit-target:hover {
+  fill: var(--cd-bg-selected);
+  stroke: var(--cd-accent);
+  stroke-width: 1.4;
+  opacity: 1;
+}
+
+.native-bond-hit-target:hover {
+  stroke: var(--cd-accent);
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-opacity: 0.32;
 }
 
 .native-bond-knockout {
@@ -1445,7 +1486,8 @@ textarea:focus-visible,
 }
 
 .native-bond-selected-hit-target {
-  fill: transparent;
+  fill: var(--cd-accent);
+  opacity: 0;
   stroke: none;
   pointer-events: all;
 }

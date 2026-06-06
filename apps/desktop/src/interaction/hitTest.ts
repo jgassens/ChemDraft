@@ -1,0 +1,117 @@
+/**
+ * The single hit-test entry point. One geometric pick, reused by both hover and
+ * selection, so the two can never disagree about what is under the pointer.
+ *
+ * Previously hit-testing was split between a DOM-attribute path (which trusted
+ * `data-atom-id`/`data-bond-id` and could highlight a stale/re-stacked SVG node, and
+ * reported `distanceToPointer: 0` for DOM-hinted bonds which corrupted the cross-object
+ * sort) and a model-space fallback. Now the geometric model hit is always the source of
+ * truth and the DOM hint is demoted to a near-tie tiebreaker.
+ *
+ * These functions are pure (the rendered-element hint is read from an already-resolved
+ * `EventTarget`, never from live layout), so they unit-test in the node environment.
+ */
+
+import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import {
+  findNativeMoleculeDeleteHit,
+  type NativeMoleculeDeleteHit,
+  type NativeMoleculeDeleteTarget
+} from "../documentWorkflow";
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/** A resolved hit on a molecule part (atom or bond), tagged with its owning object. */
+export type InteractionTarget = NativeMoleculeDeleteTarget;
+
+// Page-space tolerance (px) within which a DOM hint may win a near-tie. The atom hit
+// radius is 8px, so 2px keeps the tiebreak well inside the rendered glyph.
+const HOVER_DOM_TIEBREAK_PX = 2;
+
+function distance(left: Point, right: Point): number {
+  return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function pointerHitTargetAttribute(
+  eventTarget: EventTarget | null | undefined,
+  hitTarget: "atom" | "bond",
+  attribute: string
+): string | undefined {
+  if (typeof Element === "undefined" || !(eventTarget instanceof Element)) {
+    return undefined;
+  }
+
+  const target = eventTarget.closest(`[data-hit-target="${hitTarget}"]`);
+  return target?.getAttribute(attribute) ?? undefined;
+}
+
+export function nativeMoleculeHitFromPointerTarget(
+  molecule: MoleculeObject,
+  point: Point,
+  eventTarget?: EventTarget | null
+): NativeMoleculeDeleteHit | undefined {
+  // The geometric model hit (nearest atom, else nearest bond, each gated by its hit
+  // radius) is the source of truth and always reports real distances, so the
+  // cross-object sort in nativeMoleculeCanvasHoverTarget stays correct.
+  const modelHit = findNativeMoleculeDeleteHit(molecule, point);
+
+  // The DOM tells us which glyph the pointer is literally over — a strong intent
+  // signal, but only used to break a near-tie in favour of that atom. It must never
+  // override a geometrically-closer pick. Bonds rely entirely on the model hit now.
+  const atomId = pointerHitTargetAttribute(eventTarget, "atom", "data-atom-id");
+  if (atomId && (modelHit?.kind !== "atom" || modelHit.atomId !== atomId)) {
+    const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+    if (atom) {
+      const atomDistance = distance(atom, point);
+      if (!modelHit || atomDistance <= modelHit.distanceToPointer + HOVER_DOM_TIEBREAK_PX) {
+        return { kind: "atom", atomId: atom.id, distanceToPointer: atomDistance };
+      }
+    }
+  }
+
+  return modelHit;
+}
+
+export function nativeMoleculeCanvasHoverTarget(
+  document: ChemDraftDocument,
+  point: Point,
+  eventTarget?: EventTarget | null
+): NativeMoleculeDeleteTarget | undefined {
+  const page = document.pages[0];
+  const candidates = page.objects
+    .map((object, layerIndex) => {
+      if (object.type !== "molecule") {
+        return undefined;
+      }
+
+      const hit = nativeMoleculeHitFromPointerTarget(object, point, eventTarget);
+      return hit ? { object, hit, layerIndex } : undefined;
+    })
+    .filter((entry): entry is { object: MoleculeObject; hit: NativeMoleculeDeleteHit; layerIndex: number } =>
+      entry !== undefined
+    )
+    .sort((left, right) =>
+      right.layerIndex - left.layerIndex ||
+      left.hit.distanceToPointer - right.hit.distanceToPointer ||
+      left.object.id.localeCompare(right.object.id)
+    );
+  const target = candidates[0];
+
+  return target ? { objectId: target.object.id, ...target.hit } : undefined;
+}
+
+/**
+ * The clean public name for the single hit-test. Returns the molecule part (atom/bond)
+ * under the given page-space point, or `undefined` when the pointer is over empty space.
+ * Both the hover preview and the selection-on-press path go through this.
+ */
+export function hitTestDocument(
+  document: ChemDraftDocument,
+  point: Point,
+  eventTarget?: EventTarget | null
+): InteractionTarget | undefined {
+  return nativeMoleculeCanvasHoverTarget(document, point, eventTarget);
+}

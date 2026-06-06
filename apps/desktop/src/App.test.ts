@@ -54,16 +54,21 @@ import {
   hoveredNativeTargetShortcutCommand,
   moleculeResizeReadoutPercent,
   moleculeResizeScaleFromDrag,
+  nativePlacementRotationDegrees,
   nativeDeleteTargetFromSelectionPart,
+  nativeMoleculeCanvasHoverTarget,
   nativeMoleculeSelectionHasVisibleTargets,
   nativeMoleculeSelectionDragIntent,
+  nativeSelectionWithHitToggled,
+  pagePointFromRenderedPageRect,
   resolvePngCanvasSize,
   rotationDeltaDegrees,
   rotationReadoutDegrees,
   selectionInSelectionRect,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
-  shouldOpenMoleculeEditorFromObjectClick
+  shouldOpenMoleculeEditorFromObjectClick,
+  shouldUseViewportWheelZoom
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { ToolPalette, cmykToRgbColor, hexToRgbColor, rgbToCmykColor, rgbToHexColor } from "./ToolPalette";
@@ -114,6 +119,7 @@ function buttonMarkupForCommand(markup: string, commandId: string): string {
 }
 
 const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
+const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
@@ -188,6 +194,43 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("tool-palette");
     expect(markup).not.toContain("drawer-rail");
     expect(markup).not.toContain("statusbar");
+  });
+
+  it("keeps viewport zoom reserved for trackpad pinch and command-style wheel gestures", () => {
+    expect(shouldUseViewportWheelZoom({ ctrlKey: true, metaKey: false, deltaY: -42 } as globalThis.WheelEvent)).toBe(true);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: true, deltaY: 42 } as globalThis.WheelEvent)).toBe(true);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: false, deltaY: 42 } as globalThis.WheelEvent)).toBe(false);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: true, metaKey: false, deltaY: 0 } as globalThis.WheelEvent)).toBe(false);
+  });
+
+  it("resolves native molecule hover targets from page geometry instead of fragile SVG event targets", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Hover Target"), { x: 200, y: 220 });
+    const document = insertNativeSingleBondMolecule(first, { x: 200, y: 220 });
+
+    expect(nativeMoleculeCanvasHoverTarget(document, { x: 200, y: 220 })).toMatchObject({
+      objectId: "mol_bond_002",
+      kind: "bond",
+      bondId: "bond_001"
+    });
+    expect(nativeMoleculeCanvasHoverTarget(document, { x: 200 - nativeBondLengthPx / 2, y: 220 })).toMatchObject({
+      objectId: "mol_bond_002",
+      kind: "atom",
+      atomId: "atom_001"
+    });
+    expect(nativeMoleculeCanvasHoverTarget(document, { x: 24, y: 24 })).toBeUndefined();
+  });
+
+  it("converts captured window hover coordinates through the rendered page rectangle", () => {
+    expect(pagePointFromRenderedPageRect(
+      { left: 120, top: 80 },
+      2,
+      { x: 340, y: 300 }
+    )).toEqual({ x: 110, y: 110 });
+    expect(pagePointFromRenderedPageRect(
+      { left: 120, top: 80 },
+      0,
+      { x: 340, y: 300 }
+    )).toEqual({ x: 220, y: 220 });
   });
 
   it("renders the native palette route as an independent palette-only surface", () => {
@@ -368,6 +411,103 @@ describe("ChemDraft desktop shell", () => {
     expect(selection.nativeSelection?.kind).not.toBe("molecule");
   });
 
+  it("toggles discontiguous native molecule atoms and bonds with selection hits", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Shift Part Selection"), { x: 220, y: 240 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected native molecule fixture.");
+    }
+    const atomHit = {
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    } as const;
+    const secondAtomHit = {
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    } as const;
+    const bondHit = {
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    } as const;
+
+    const first = nativeSelectionWithHitToggled(undefined, molecule.id, atomHit);
+    const second = nativeSelectionWithHitToggled(first, molecule.id, secondAtomHit);
+    const third = nativeSelectionWithHitToggled(second, molecule.id, bondHit);
+    const fourth = nativeSelectionWithHitToggled(third, molecule.id, atomHit);
+
+    expect(first).toEqual({ objectId: molecule.id, kind: "atom", atomId: "atom_001" });
+    expect(second).toEqual({
+      objectId: molecule.id,
+      kind: "parts",
+      atomIds: ["atom_001", "atom_002"],
+      bondIds: []
+    });
+    expect(third).toEqual({
+      objectId: molecule.id,
+      kind: "parts",
+      atomIds: ["atom_001", "atom_002"],
+      bondIds: ["bond_001"]
+    });
+    expect(fourth).toEqual({
+      objectId: molecule.id,
+      kind: "parts",
+      atomIds: ["atom_002"],
+      bondIds: ["bond_001"]
+    });
+  });
+
+  it("clears a native molecule part selection when the last hit is toggled off", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Shift Clear Part Selection"), { x: 220, y: 240 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected native molecule fixture.");
+    }
+    const atomSelection = {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_001"
+    } as const;
+    const atomHit = {
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    } as const;
+
+    expect(nativeSelectionWithHitToggled(atomSelection, molecule.id, atomHit)).toBeUndefined();
+  });
+
+  it("starts a new native molecule part selection when the toggled hit belongs to another molecule", () => {
+    const firstDocument = insertNativeSingleBondMolecule(createPhase4Document("Shift Cross Molecule"), { x: 220, y: 240 });
+    const document = insertNativeSingleBondMolecule(firstDocument, { x: 320, y: 240 });
+    const molecules = document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    if (molecules.length < 2) {
+      throw new Error("Expected two native molecule fixtures.");
+    }
+    const previousSelection = {
+      objectId: molecules[0].id,
+      kind: "atom",
+      atomId: "atom_001"
+    } as const;
+    const bondHit = {
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    } as const;
+
+    expect(nativeSelectionWithHitToggled(previousSelection, molecules[1].id, bondHit)).toEqual({
+      objectId: molecules[1].id,
+      kind: "bond",
+      bondId: "bond_001"
+    });
+  });
+
   it("keeps command definitions available without embedding actions in the canvas", () => {
     const document = createPhase4Document();
     const commands = allShellCommands(document);
@@ -399,6 +539,7 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "v" })).toBe("tool.select");
     expect(registry.resolve({ key: "r", metaKey: true })).toBe("view.toggleRulers");
     expect(registry.resolve({ key: "r", metaKey: true, shiftKey: true })).toBe("view.toggleCrosshairs");
+    expect(registry.resolve({ key: "a", metaKey: true })).toBe("edit.selectAll");
     expect(registry.resolve({ key: "v", metaKey: true })).toBe("clipboard.paste");
     expect(registry.resolve({ key: "m" })).toBe("tool.bond");
     expect(registry.resolve({ key: "b" })).toBeUndefined();
@@ -665,6 +806,16 @@ describe("ChemDraft desktop shell", () => {
     expect(rotationDeltaDegrees(center, start, { x: 8, y: -20 })).toBe(360);
     expect(rotationDeltaDegrees(center, start, { x: 16, y: -20 })).toBe(720);
     expect(rotationDeltaDegrees(center, start, { x: -8, y: -20 })).toBe(-360);
+  });
+
+  it("uses the placement click point as the rotation origin for fresh bonds and templates", () => {
+    const start = { x: 120, y: 160 };
+
+    expect(nativePlacementRotationDegrees(start, { x: 160, y: 160 })).toBe(0);
+    expect(nativePlacementRotationDegrees(start, { x: 120, y: 200 })).toBe(90);
+    expect(nativePlacementRotationDegrees(start, { x: 80, y: 160 })).toBe(180);
+    expect(nativePlacementRotationDegrees(start, { x: 120, y: 120 })).toBe(-90);
+    expect(nativePlacementRotationDegrees(start, start)).toBe(0);
   });
 
   it("normalizes the rotate drag readout to a readable 0-360 degree value", () => {
@@ -961,19 +1112,29 @@ describe("ChemDraft desktop shell", () => {
     expect(bondMarkup).toContain('class="tool-tooltip"');
     expect(bondMarkup).toContain(">Single Bond (M)</span>");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');
-    expect(verticalBondMarkup).toContain('title="Single Bond (M)"');
+    expect(verticalBondMarkup).not.toContain('title="Single Bond (M)"');
     expect(bondMarkup).not.toContain("with-shortcut");
     expect(markup).not.toContain('class="shortcut"');
+    expect(markup).toContain('class="icon-button-shell"');
+    expect(markup).toContain('data-tooltip-delay-ms="1000"');
+    expect(markup).toContain('data-tooltip-owner-id="');
+    expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
     expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⌘⇧K)"');
     expect(cleanupMarkup).toContain(">Clean up Structure 2D (⌘⇧K)</span>");
     expect(appCss).toContain(".tool-tooltip");
-    expect(appCss).toContain(".icon-button:hover .tool-tooltip");
+    expect(appCss).not.toContain("@keyframes cd-tooltip-auto-hide");
+    expect(appCss).not.toContain(".icon-button-shell:hover .tool-tooltip");
+    expect(appCss).toContain('.icon-button-shell[data-tooltip-visible="true"] .tool-tooltip');
     expect(appCss).toContain(".tool-palette.horizontal .tool-tooltip");
     expect(appCss).toContain(".tool-palette.vertical .tool-tooltip");
-    expect(appCss).toContain("display: none;");
-    expect(appCss).toContain("transition-delay: 450ms;");
+    expect(appCss).not.toContain("animation: cd-tooltip-auto-hide");
+    expect(appCss).not.toContain("transition-delay: 450ms;");
+    expect(appCss).toContain("white-space: normal;");
+    expect(appCss).toContain("overflow-wrap: anywhere;");
     expect(appCss).toContain('.icon-button[data-command-id="structure.cleanup2d"] .tool-icon-image');
+    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 1000");
+    expect(toolPaletteSource).not.toContain("setTimeout(clearVisibleTooltip, 3200)");
   });
 
   it("keeps functional metadata on asset-backed palette commands", () => {
