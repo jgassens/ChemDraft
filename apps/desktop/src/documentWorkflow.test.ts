@@ -66,10 +66,14 @@ import {
   resolveToolbarColorSelection,
   resizeNativeMoleculeParts,
   rotateDocumentObject,
+  rotateDocumentObjectsAroundPoint,
   rotateNativeMoleculeObjectAroundPoint,
   rotateNativeMoleculeParts,
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
+  moveDocumentObjects,
+  scaleDocumentObjectsAroundPoint,
+  selectionBounds,
   selectAllDocumentObjects,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
@@ -4038,3 +4042,88 @@ describe("Phase 4 document workflow", () => {
 function lengthPrefixedClipboardMolfile(lines: readonly string[]): string {
   return lines.map((line) => `\0${String.fromCharCode(line.length)}${line}`).join("");
 }
+
+describe("group transforms (multi-object selection)", () => {
+  const moleculeAtomTotal = (document: ChemDraftDocument) =>
+    document.pages[0].objects.reduce(
+      (total, object) => total + (object.type === "molecule" ? object.atoms.length : 0),
+      0
+    );
+
+  const twoMolecules = () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Group"), { x: 200, y: 200 });
+    const document = insertNativeSingleBondMolecule(first, { x: 360, y: 320 });
+    const [m1, m2] = document.pages[0].objects;
+    return { document, ids: [m1.id, m2.id], m1, m2 };
+  };
+
+  it("computes the union bounding box and center of the selection", () => {
+    const { document, ids, m1, m2 } = twoMolecules();
+    const bounds = selectionBounds(document.pages[0].objects, ids);
+    expect(bounds).toBeDefined();
+    expect(bounds!.x).toBeCloseTo(Math.min(m1.x, m2.x));
+    expect(bounds!.y).toBeCloseTo(Math.min(m1.y, m2.y));
+    expect(bounds!.x + bounds!.width).toBeCloseTo(Math.max(m1.x + m1.width, m2.x + m2.width));
+    expect(bounds!.centerX).toBeCloseTo(bounds!.x + bounds!.width / 2);
+    expect(bounds!.centerY).toBeCloseTo(bounds!.y + bounds!.height / 2);
+  });
+
+  it("moves the whole selection by one delta, preserving relative offsets and identity", () => {
+    const { document, ids, m1, m2 } = twoMolecules();
+    const atomsBefore = moleculeAtomTotal(document);
+    const moved = moveDocumentObjects(document, ids, 40, -25);
+    const n1 = moved.pages[0].objects.find((object) => object.id === m1.id)!;
+    const n2 = moved.pages[0].objects.find((object) => object.id === m2.id)!;
+    expect(n1.x - m1.x).toBeCloseTo(40);
+    expect(n1.y - m1.y).toBeCloseTo(-25);
+    expect(n2.x - m2.x).toBeCloseTo(40);
+    expect(n2.y - m2.y).toBeCloseTo(-25);
+    expect(n2.x - n1.x).toBeCloseTo(m2.x - m1.x); // relative layout unchanged
+    expect(moleculeAtomTotal(moved)).toBe(atomsBefore);
+  });
+
+  it("rotates the selection 180° about the group center: members reverse and move, identity preserved", () => {
+    const { document, ids, m1 } = twoMolecules();
+    const mol1 = m1 as MoleculeObject;
+    const [a0, a1] = mol1.atoms;
+    const beforeVector = { x: a1.x - a0.x, y: a1.y - a0.y };
+    const beforeObjCenter = { x: m1.x + m1.width / 2, y: m1.y + m1.height / 2 };
+    const bounds = selectionBounds(document.pages[0].objects, ids)!;
+    const atomsBefore = moleculeAtomTotal(document);
+
+    const rotated = rotateDocumentObjectsAroundPoint(document, ids, { x: bounds.centerX, y: bounds.centerY }, 180);
+    const obj1 = rotated.pages[0].objects.find((object) => object.id === m1.id) as MoleculeObject;
+    const r0 = obj1.atoms.find((atom) => atom.id === a0.id)!;
+    const r1 = obj1.atoms.find((atom) => atom.id === a1.id)!;
+
+    // 180° rigid rotation reverses every internal vector (frame-independent).
+    expect(r1.x - r0.x).toBeCloseTo(-beforeVector.x, 1);
+    expect(r1.y - r0.y).toBeCloseTo(-beforeVector.y, 1);
+    // Rotating about the GROUP center (not each molecule's own) moves the member.
+    const afterObjCenter = { x: obj1.x + obj1.width / 2, y: obj1.y + obj1.height / 2 };
+    expect(Math.hypot(afterObjCenter.x - beforeObjCenter.x, afterObjCenter.y - beforeObjCenter.y)).toBeGreaterThan(20);
+    expect(moleculeAtomTotal(rotated)).toBe(atomsBefore);
+  });
+
+  it("scales the selection about the group center: internal vectors double, union grows, identity preserved", () => {
+    const { document, ids, m1 } = twoMolecules();
+    const mol1 = m1 as MoleculeObject;
+    const [a0, a1] = mol1.atoms;
+    const beforeVector = { x: a1.x - a0.x, y: a1.y - a0.y };
+    const before = selectionBounds(document.pages[0].objects, ids)!;
+    const atomsBefore = moleculeAtomTotal(document);
+
+    const scaled = scaleDocumentObjectsAroundPoint(document, ids, { x: before.centerX, y: before.centerY }, 2, 2);
+    const obj1 = scaled.pages[0].objects.find((object) => object.id === m1.id) as MoleculeObject;
+    const s0 = obj1.atoms.find((atom) => atom.id === a0.id)!;
+    const s1 = obj1.atoms.find((atom) => atom.id === a1.id)!;
+
+    // Scale by 2 doubles every internal vector (frame-independent).
+    expect(s1.x - s0.x).toBeCloseTo(2 * beforeVector.x, 1);
+    expect(s1.y - s0.y).toBeCloseTo(2 * beforeVector.y, 1);
+    const after = selectionBounds(scaled.pages[0].objects, ids)!;
+    expect(after.width).toBeGreaterThan(before.width * 1.5);
+    expect(after.height).toBeGreaterThan(before.height * 1.5);
+    expect(moleculeAtomTotal(scaled)).toBe(atomsBefore);
+  });
+});

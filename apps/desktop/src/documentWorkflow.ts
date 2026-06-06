@@ -3800,6 +3800,281 @@ export function resizeNativeMoleculeObject(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Group transforms — move/rotate/scale a *set* of selected objects as one rigid
+// group about a common center. Coordinates (and, for scale, sizes) change only;
+// connectivity, bond order, charge, and stereo are preserved. Each helper fans
+// out to per-object transforms about the shared center, reusing the single-object
+// molecule transforms. (AGENTS.md §6.8 names layout-engine as the long-term home;
+// kept here beside the single-object versions for now.)
+// ---------------------------------------------------------------------------
+
+export interface SelectionBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+}
+
+/** Union axis-aligned bounding box (and center) of the selected objects, in page coords. */
+export function selectionBounds(
+  objects: readonly DocumentObject[],
+  ids: readonly string[]
+): SelectionBounds | undefined {
+  const set = new Set(ids);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let count = 0;
+  for (const object of objects) {
+    if (!set.has(object.id)) {
+      continue;
+    }
+    minX = Math.min(minX, object.x);
+    minY = Math.min(minY, object.y);
+    maxX = Math.max(maxX, object.x + object.width);
+    maxY = Math.max(maxY, object.y + object.height);
+    count += 1;
+  }
+  if (count === 0) {
+    return undefined;
+  }
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2
+  };
+}
+
+/** Translate one object by a delta (no per-object clamping — the group clamps as a whole). */
+function translateDocumentObjectBy(
+  document: ChemDraftDocument,
+  objectId: string,
+  dx: number,
+  dy: number
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const object = page?.objects.find((candidate) => candidate.id === objectId);
+  if (!page || !object || (dx === 0 && dy === 0)) {
+    return document;
+  }
+
+  const nextX = object.x + dx;
+  const nextY = object.y + dy;
+
+  if (object.type === "molecule") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
+  if (object.type === "electron-mark" && object.markKind === "charge") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          anchor: {
+            ...object.anchor,
+            kind: "point",
+            point: { x: nextX + object.width / 2, y: nextY + object.height / 2 }
+          }
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
+  return applyPatch(
+    document,
+    { op: "moveObject", objectId, x: nextX, y: nextY },
+    { now: phase4Timestamp }
+  );
+}
+
+/** Move every object in `ids` by the same delta, clamped so the group bbox stays on the page. */
+export function moveDocumentObjects(
+  document: ChemDraftDocument,
+  ids: readonly string[],
+  dx: number,
+  dy: number
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const bounds = selectionBounds(page.objects, ids);
+  if (!bounds) {
+    return document;
+  }
+
+  const cdx = clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width)));
+  const cdy = clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)));
+  if (Math.abs(cdx) < 1e-6 && Math.abs(cdy) < 1e-6) {
+    return document;
+  }
+
+  const set = new Set(ids);
+  let next = document;
+  for (const object of page.objects) {
+    if (set.has(object.id)) {
+      next = translateDocumentObjectBy(next, object.id, cdx, cdy);
+    }
+  }
+  return next;
+}
+
+/** Scale a molecule's atoms about an arbitrary external `center` (group-scale building block). */
+function scaleNativeMoleculeObjectAroundPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  center: PagePoint,
+  scaleX: number,
+  scaleY: number
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const molecule = page?.objects.find((candidate): candidate is MoleculeObject =>
+    candidate.id === objectId && candidate.type === "molecule"
+  );
+  if (!page || !molecule || molecule.atoms.length === 0) {
+    return document;
+  }
+
+  const transform = nativeMoleculeTransformState(molecule);
+  const resized = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+    ...molecule,
+    atoms: molecule.atoms.map((atom) => ({
+      ...atom,
+      x: center.x + (atom.x - center.x) * scaleX,
+      y: center.y + (atom.y - center.y) * scaleY
+    }))
+  }), {
+    ...transform,
+    scaleX: transform.scaleX * scaleX,
+    scaleY: transform.scaleY * scaleY
+  });
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: resized },
+    { now: phase4Timestamp }
+  );
+}
+
+/** Reposition a non-molecule object's center about `center`, applying rotation/scale to its own box. */
+function transformOtherObjectAroundPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  center: PagePoint,
+  options: { degrees?: number; scaleX?: number; scaleY?: number }
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const object = page?.objects.find((candidate) => candidate.id === objectId);
+  if (!page || !object) {
+    return document;
+  }
+
+  const degrees = options.degrees ?? 0;
+  const scaleX = options.scaleX ?? 1;
+  const scaleY = options.scaleY ?? 1;
+  const oldCenter = objectCenter(object);
+  const scaledCenter = {
+    x: center.x + (oldCenter.x - center.x) * scaleX,
+    y: center.y + (oldCenter.y - center.y) * scaleY
+  };
+  const newCenter = Math.abs(degrees) >= 0.05
+    ? rotatePointAround(scaledCenter, center, degrees * Math.PI / 180)
+    : scaledCenter;
+  const nextWidth = object.width * scaleX;
+  const nextHeight = object.height * scaleY;
+  const nextX = newCenter.x - nextWidth / 2;
+  const nextY = newCenter.y - nextHeight / 2;
+
+  const changes: Record<string, unknown> = {
+    x: nextX,
+    y: nextY,
+    width: nextWidth,
+    height: nextHeight,
+    rotation: normalizeDegrees(object.rotation + degrees)
+  };
+  if (object.type === "electron-mark" && object.markKind === "charge") {
+    changes.anchor = { ...object.anchor, kind: "point", point: { x: newCenter.x, y: newCenter.y } };
+  }
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: changes as Partial<DocumentObject> },
+    { now: phase4Timestamp }
+  );
+}
+
+/** Rotate every object in `ids` about the shared `center` by `degrees`. */
+export function rotateDocumentObjectsAroundPoint(
+  document: ChemDraftDocument,
+  ids: readonly string[],
+  center: PagePoint,
+  degrees: number
+): ChemDraftDocument {
+  if (Math.abs(degrees) < 0.05) {
+    return document;
+  }
+  const page = firstPage(document);
+  const set = new Set(ids);
+  let next = document;
+  for (const object of page.objects) {
+    if (!set.has(object.id)) {
+      continue;
+    }
+    next = object.type === "molecule"
+      ? rotateNativeMoleculeObjectAroundPoint(next, object.id, center, degrees)
+      : transformOtherObjectAroundPoint(next, object.id, center, { degrees });
+  }
+  return next;
+}
+
+/** Scale every object in `ids` about the shared `center` by `scaleX`/`scaleY`. */
+export function scaleDocumentObjectsAroundPoint(
+  document: ChemDraftDocument,
+  ids: readonly string[],
+  center: PagePoint,
+  scaleX: number,
+  scaleY: number
+): ChemDraftDocument {
+  const sx = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1;
+  const sy = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1;
+  if (Math.abs(sx - 1) < 0.001 && Math.abs(sy - 1) < 0.001) {
+    return document;
+  }
+  const page = firstPage(document);
+  const set = new Set(ids);
+  let next = document;
+  for (const object of page.objects) {
+    if (!set.has(object.id)) {
+      continue;
+    }
+    next = object.type === "molecule"
+      ? scaleNativeMoleculeObjectAroundPoint(next, object.id, center, sx, sy)
+      : transformOtherObjectAroundPoint(next, object.id, center, { scaleX: sx, scaleY: sy });
+  }
+  return next;
+}
+
 export function cleanUpSelectedNativeMolecule2d(document: ChemDraftDocument): ChemDraftDocument {
   return cleanUpNativeMolecules2d(document, document.selection.objectIds);
 }

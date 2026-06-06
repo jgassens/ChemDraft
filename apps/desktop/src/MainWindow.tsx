@@ -108,6 +108,11 @@ import {
   nativeMoleculeTransformState,
   nativeTemplateForToolCommand,
   moveDocumentObject,
+  moveDocumentObjects,
+  selectionBounds,
+  type SelectionBounds,
+  rotateDocumentObjectsAroundPoint,
+  scaleDocumentObjectsAroundPoint,
   moveNativeMoleculeParts,
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
@@ -265,6 +270,9 @@ type ObjectDragState = {
   startObjectX: number;
   startObjectY: number;
   bondTarget?: NativeBondOrderTarget;
+  // When the grabbed object is part of a multi-object selection, the whole set moves
+  // together by the pointer delta (group move). Undefined ⇒ single-object move.
+  groupObjectIds?: readonly string[];
   dragging: boolean;
 };
 type ObjectRotateDragState = {
@@ -306,6 +314,17 @@ type MoleculeResizeReadoutState = {
 type MoleculeResizeScale = {
   x: number;
   y: number;
+};
+// One drag that rotates or scales a whole multi-object selection about its shared center.
+type GroupTransformDragState = {
+  pointerId: number;
+  mode: "rotate" | "resize";
+  objectIds: readonly string[];
+  startDocument: ChemDraftDocument;
+  center: ClientPoint;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  dragging: boolean;
 };
 type MoleculeTransformFrame = {
   x: number;
@@ -416,11 +435,13 @@ export function MainWindow({
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const moleculeResizeDragRef = useRef<MoleculeResizeDragState | null>(null);
   const moleculeResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
+  const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
   const placementMachineRef = useRef<InteractionState>(initialInteractionState());
+  const objectRotateMachineRef = useRef<InteractionState>(initialInteractionState());
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
@@ -2453,13 +2474,20 @@ export function MainWindow({
     return true;
   }, [installDocumentHistory, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
+  const objectDragDocument = useCallback((drag: ObjectDragState, point: ClientPoint): ChemDraftDocument => {
+    const dx = point.x - drag.startPoint.x;
+    const dy = point.y - drag.startPoint.y;
+    return drag.groupObjectIds && drag.groupObjectIds.length > 1
+      ? moveDocumentObjects(drag.startDocument, drag.groupObjectIds, dx, dy)
+      : moveDocumentObject(drag.startDocument, drag.objectId, {
+          x: drag.startObjectX + dx,
+          y: drag.startObjectY + dy
+        });
+  }, []);
+
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
-    const nextDocument = moveDocumentObject(drag.startDocument, drag.objectId, {
-      x: drag.startObjectX + point.x - drag.startPoint.x,
-      y: drag.startObjectY + point.y - drag.startPoint.y
-    });
-    replacePresentDocument(nextDocument);
-  }, [replacePresentDocument]);
+    replacePresentDocument(objectDragDocument(drag, point));
+  }, [objectDragDocument, replacePresentDocument]);
 
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
@@ -2509,10 +2537,7 @@ export function MainWindow({
   }, [installDocumentHistory, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
-    const moved = moveDocumentObject(drag.startDocument, drag.objectId, {
-      x: drag.startObjectX + point.x - drag.startPoint.x,
-      y: drag.startObjectY + point.y - drag.startPoint.y
-    });
+    const moved = objectDragDocument(drag, point);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -2525,7 +2550,7 @@ export function MainWindow({
       future: []
     });
     return true;
-  }, [installDocumentHistory, replacePresentDocument]);
+  }, [installDocumentHistory, objectDragDocument, replacePresentDocument]);
 
   const commitObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): boolean => {
     const rotated = objectRotateDocumentFromDrag(drag, point);
@@ -2776,6 +2801,70 @@ export function MainWindow({
     pageRef.current?.setPointerCapture(event.pointerId);
   }, [assignHoveredNativeDeleteTarget, pagePointFromPointerEvent]);
 
+  // Rotate or scale the whole selected group about its shared center, reusing the same
+  // angle/scale math as the single-object transforms but fanning out to every member.
+  const groupTransformDocument = useCallback((
+    drag: GroupTransformDragState,
+    point: ClientPoint,
+    stretch = false
+  ): ChemDraftDocument => {
+    if (drag.mode === "rotate") {
+      const degrees = rotationDeltaDegrees(drag.center, drag.startPoint, point);
+      return rotateDocumentObjectsAroundPoint(drag.startDocument, drag.objectIds, drag.center, degrees);
+    }
+    const scale = moleculeResizeScaleFromDrag(drag.center, drag.startPoint, point, stretch);
+    return scaleDocumentObjectsAroundPoint(drag.startDocument, drag.objectIds, drag.center, scale.x, scale.y);
+  }, []);
+
+  const handleGroupTransformPointerDown = useCallback((
+    mode: "rotate" | "resize",
+    event: PointerEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+    const ids = document.selection.objectIds;
+    const point = pagePointFromPointerEvent(event);
+    const bounds = ids.length > 1 ? selectionBounds(document.pages[0].objects, ids) : undefined;
+    if (!point || !bounds) {
+      return;
+    }
+
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    groupTransformDragRef.current = {
+      pointerId: event.pointerId,
+      mode,
+      objectIds: [...ids],
+      startDocument: document,
+      center: { x: bounds.centerX, y: bounds.centerY },
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus(mode === "rotate" ? "Rotate selected group" : "Resize selected group");
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    document,
+    pagePointFromPointerEvent
+  ]);
+
+  const handleGroupRotatePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) =>
+    handleGroupTransformPointerDown("rotate", event), [handleGroupTransformPointerDown]);
+  const handleGroupResizePointerDown = useCallback((_corner: MoleculeResizeCorner) =>
+    (event: PointerEvent<HTMLButtonElement>) => handleGroupTransformPointerDown("resize", event),
+  [handleGroupTransformPointerDown]);
+
   const handlePagePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.defaultPrevented) {
       return;
@@ -2858,6 +2947,23 @@ export function MainWindow({
   }, []);
 
   const handlePagePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const groupTransform = groupTransformDragRef.current;
+    if (groupTransform?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+      groupTransform.latestPoint = point;
+      if (!groupTransform.dragging && clientPointDistance(groupTransform.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        groupTransform.dragging = true;
+      }
+      if (groupTransform.dragging) {
+        replacePresentDocument(groupTransformDocument(groupTransform, point, event.shiftKey));
+      }
+      return;
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -2876,7 +2982,9 @@ export function MainWindow({
       }
 
       objectRotateDrag.latestPoint = point;
-      if (!objectRotateDrag.dragging && clientPointDistance(objectRotateDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      objectRotateMachineRef.current = interactionReducer(objectRotateMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      const nowDragging = objectRotateMachineRef.current.phase === "dragging";
+      if (!objectRotateDrag.dragging && nowDragging) {
         objectRotateDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -3017,6 +3125,7 @@ export function MainWindow({
     updateNativeCanvasHover(document, pagePointFromPointerEvent(event), event.target);
   }, [
     document,
+    groupTransformDocument,
     pagePointFromPointerEvent,
     previewObjectDrag,
     previewObjectRotateDrag,
@@ -3024,10 +3133,34 @@ export function MainWindow({
     previewNativePartDrag,
     previewNativePlacementDrag,
     previewTextResize,
+    replacePresentDocument,
     updateNativeCanvasHover
   ]);
 
   const handlePagePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const groupTransform = groupTransformDragRef.current;
+    if (groupTransform?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? groupTransform.latestPoint;
+      if (groupTransform.dragging) {
+        const next = groupTransformDocument(groupTransform, point, event.shiftKey);
+        if (next !== groupTransform.startDocument) {
+          const currentHistory = documentHistoryRef.current;
+          installDocumentHistory({
+            past: [...currentHistory.past, groupTransform.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+            present: next,
+            future: []
+          });
+        }
+        setStatus(groupTransform.mode === "rotate" ? "Rotated selection" : "Resized selection");
+      }
+      groupTransformDragRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -3156,11 +3289,24 @@ export function MainWindow({
     commitObjectRotateDrag,
     cycleNativeBondOrder,
     document.pages,
+    groupTransformDocument,
+    installDocumentHistory,
     pagePointFromPointerEvent,
     replacePresentDocument
   ]);
 
   const handlePagePointerCancel = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const groupTransform = groupTransformDragRef.current;
+    if (groupTransform?.pointerId === event.pointerId) {
+      if (groupTransform.dragging) {
+        replacePresentDocument(groupTransform.startDocument);
+      }
+      groupTransformDragRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId) {
       replacePresentDocument(textResize.startDocument);
@@ -3169,6 +3315,7 @@ export function MainWindow({
 
     const objectRotateDrag = objectRotateDragRef.current;
     if (objectRotateDrag?.pointerId === event.pointerId) {
+      objectRotateMachineRef.current = initialInteractionState();
       if (objectRotateDrag.dragging) {
         replacePresentDocument(objectRotateDrag.startDocument);
       }
@@ -3330,6 +3477,10 @@ export function MainWindow({
       const dragIntent = nativeMoleculeSelectionDragIntent(document, objectId, selectedNativeMoleculePart, nativeMoleculeHit);
       if (dragIntent.kind === "whole-object") {
         event.stopPropagation();
+        const groupObjectIds = document.selection.objectIds.length > 1 &&
+          document.selection.objectIds.includes(objectId)
+          ? [...document.selection.objectIds]
+          : undefined;
         objectDragRef.current = {
           pointerId: event.pointerId,
           objectId,
@@ -3338,6 +3489,7 @@ export function MainWindow({
           latestPoint: point,
           startObjectX: object.x,
           startObjectY: object.y,
+          groupObjectIds,
           dragging: false
         };
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -3570,6 +3722,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
+    objectRotateMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-rotate" });
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
     setStatus(
       object.type === "text"
@@ -3779,7 +3932,9 @@ export function MainWindow({
       }
 
       objectRotateDrag.latestPoint = point;
-      if (!objectRotateDrag.dragging && clientPointDistance(objectRotateDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      objectRotateMachineRef.current = interactionReducer(objectRotateMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      const nowDragging = objectRotateMachineRef.current.phase === "dragging";
+      if (!objectRotateDrag.dragging && nowDragging) {
         objectRotateDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -4189,6 +4344,15 @@ export function MainWindow({
                     latestPoint={selectionMarquee.latestPoint}
                   />
                 ) : null}
+                {(() => {
+                  const groupSelectionActive = activeToolState.activeKind === "selection" &&
+                    document.selection.objectIds.length > 1 &&
+                    !selectedNativeMoleculePart;
+                  const groupSelectionBounds = groupSelectionActive
+                    ? selectionBounds(document.pages[0].objects, document.selection.objectIds)
+                    : undefined;
+                  return (
+                  <>
                 {document.pages[0].objects.map((object, layerIndex) => {
                   const selectionChromeActive = activeToolState.activeKind === "selection";
                   const selectedPart = selectionChromeActive && selectedNativeMoleculePart?.objectId === object.id
@@ -4197,8 +4361,12 @@ export function MainWindow({
                   const selected = selectionChromeActive &&
                     document.selection.objectIds.includes(object.id) &&
                     selectedPart === undefined;
+                  // While a multi-selection group is active, individual members defer their
+                  // own resize/rotate handles to the single group overlay.
+                  const inGroupSelection = groupSelectionBounds !== undefined &&
+                    document.selection.objectIds.includes(object.id);
                   const objectRenderKey = object.type === "molecule"
-                    ? `${object.id}:${selected ? "selected" : "idle"}:${nativeSelectionRenderKey(selectedPart)}`
+                    ? `${object.id}:${selected ? "selected" : "idle"}:${inGroupSelection ? "grouped" : "solo"}:${nativeSelectionRenderKey(selectedPart)}`
                     : object.id;
 
                   return (
@@ -4209,6 +4377,7 @@ export function MainWindow({
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
                       selected={selected}
+                      inGroupSelection={inGroupSelection}
                       selectedPart={selectedPart}
                       editingText={activeTextEditObjectId === object.id}
                       editingAtomLabel={activeAtomLabelEdit?.objectId === object.id ? activeAtomLabelEdit : undefined}
@@ -4240,6 +4409,16 @@ export function MainWindow({
                     />
                   );
                 })}
+                {groupSelectionBounds ? (
+                  <GroupSelectionOverlay
+                    bounds={groupSelectionBounds}
+                    onRotateStart={handleGroupRotatePointerDown}
+                    onResizeStart={handleGroupResizePointerDown}
+                  />
+                ) : null}
+                  </>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -5290,6 +5469,44 @@ export function SelectionMarqueeOverlay({
   );
 }
 
+// One bounding box + rotate/resize handles around a multi-object selection, so the
+// whole group can be rotated or scaled as one. Reuses the per-molecule handle classes.
+function GroupSelectionOverlay({
+  bounds,
+  onRotateStart,
+  onResizeStart
+}: {
+  bounds: SelectionBounds;
+  onRotateStart(event: PointerEvent<HTMLButtonElement>): void;
+  onResizeStart(corner: MoleculeResizeCorner): (event: PointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <div
+      className="native-molecule-transform-frame group-selection-frame"
+      data-group-selection="true"
+      style={{
+        left: `calc(${bounds.x}px * var(--page-scale))`,
+        top: `calc(${bounds.y}px * var(--page-scale))`,
+        width: `calc(${bounds.width}px * var(--page-scale))`,
+        height: `calc(${bounds.height}px * var(--page-scale))`
+      }}
+    >
+      <MoleculeResizeHandles targetLabel="selected group" onResizeStart={onResizeStart} />
+      <button
+        type="button"
+        className="native-molecule-rotate-handle"
+        aria-label="Rotate selected group"
+        data-selection-rotate-handle="true"
+        data-group-rotate-handle="true"
+        title="Rotate selected group"
+        onPointerDown={onRotateStart}
+      >
+        <RotateSelectionIcon />
+      </button>
+    </div>
+  );
+}
+
 export function ObjectLayerContextMenu({
   objectId,
   objectIndex,
@@ -5764,6 +5981,7 @@ function DocumentObjectView({
   pageWidth,
   pageHeight,
   selected,
+  inGroupSelection,
   selectedPart,
   editingText,
   editingAtomLabel,
@@ -5796,6 +6014,7 @@ function DocumentObjectView({
   pageWidth: number;
   pageHeight: number;
   selected: boolean;
+  inGroupSelection: boolean;
   selectedPart?: NativeMoleculeSelectionPart;
   editingText: boolean;
   editingAtomLabel?: AtomLabelEditState;
@@ -6030,7 +6249,7 @@ function DocumentObjectView({
       const selectedFragmentBounds = selectedPart && hasVisibleSelectionTargets
         ? nativeMoleculePartBounds(object, selectedPart)
         : undefined;
-      const transformFrame = hasVisibleSelectionTargets && (selected || selectedFragmentBounds)
+      const transformFrame = hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
         ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
@@ -6526,7 +6745,7 @@ function DocumentObjectView({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
-        {selected || editingText ? (
+        {(selected && !inGroupSelection) || editingText ? (
           <>
             <button
               type="button"
@@ -6558,7 +6777,7 @@ function DocumentObjectView({
             />
           </>
         ) : null}
-        {selected && !editingText ? (
+        {selected && !inGroupSelection && !editingText ? (
           <button
             type="button"
             className="native-molecule-rotate-handle text-rotate-handle"

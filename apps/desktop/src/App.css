@@ -1502,6 +1502,12 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+/* Bounding box around a multi-object selection (group rotate/resize chrome). */
+.group-selection-frame {
+  border: 1.5px dashed var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+}
+
 .native-molecule-rotate-handle {
   position: absolute;
   top: -34px;

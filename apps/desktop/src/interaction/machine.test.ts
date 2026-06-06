@@ -142,6 +142,39 @@ describe("interaction machine", () => {
     expect(state.phase).toBe("idle");
   });
 
+  it("handles the exact object-rotate gesture sequence from press to threshold to release", () => {
+    const objectTarget: InteractionTarget = { kind: "object", objectId: "test-object" };
+
+    // 1. pointerDown on object handle
+    let state = interactionReducer(initialInteractionState(), {
+      type: "pointerDown",
+      pointerId: 1,
+      world: { x: 0, y: 0 },
+      target: objectTarget,
+      dragKind: "object-rotate"
+    });
+    expect(state.phase).toBe("pressing");
+    expect(state.dragKind).toBe("object-rotate");
+
+    // 2. move < 4px stays pressing
+    state = move(state, 3, empty);
+    expect(state.phase).toBe("pressing");
+
+    // 3. move >= 4px transitions to dragging
+    state = move(state, 4, empty);
+    expect(state.phase).toBe("dragging");
+    expect(state.dragKind).toBe("object-rotate");
+
+    // 4. pointerUp returns to idle
+    state = interactionReducer(state, {
+      type: "pointerUp",
+      pointerId: 1,
+      world: { x: 4, y: 0 },
+      target: empty
+    });
+    expect(state.phase).toBe("idle");
+  });
+
   it("starts a move from an object", () => {
 
     const drag = move(
