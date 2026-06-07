@@ -6,6 +6,7 @@ import {
   inchesToCssPx,
   mmToCssPx,
   stylePresetToObjectStyle,
+  type DocumentObject,
   type ElectronMarkObject,
   type MoleculeObject,
   type TextObject
@@ -432,10 +433,9 @@ describe("exportDocumentToSvg", () => {
 
     const result = exportDocumentToSvg(document);
 
-    expect(result.contents.match(/data-bond-id="bond_001"/g) ?? []).toHaveLength(4);
+    expect(result.contents.match(/data-bond-id="bond_001"/g) ?? []).toHaveLength(2);
     expect(result.contents).toContain('data-bond-segment="secondary"');
     expect(result.contents).toContain('data-double-bond-side="right"');
-    expect(result.contents).toContain('stroke-width="8"');
     expect(result.contents).toContain('stroke-width="2"');
   });
 
@@ -533,9 +533,10 @@ describe("exportDocumentToSvg", () => {
     expect(backObjectIndex).toBeLessThan(frontObjectIndex);
     expect(result.contents).toContain('data-object-id="mol_back" data-layer-index="0"');
     expect(result.contents).toContain('data-object-id="mol_front" data-layer-index="1"');
-    expect(frontObjectMarkup.indexOf('stroke-width="8"')).toBeLessThan(
-      frontObjectMarkup.indexOf('stroke-width="2"')
-    );
+    expect((result.contents.match(/data-bond-id="back_bond_001"/g) ?? []).length).toBe(2);
+    expect((frontObjectMarkup.match(/data-bond-id="front_bond_001"/g) ?? []).length).toBe(1);
+    expect(result.contents).not.toContain('native-crossing-hit-target');
+    expect(result.contents).not.toContain('stroke-width="8"');
   });
 
   it("exports later bonds over earlier crossing bonds inside one native molecule", () => {
@@ -573,12 +574,9 @@ describe("exportDocumentToSvg", () => {
     expect(backLayerIndex).toBeGreaterThan(-1);
     expect(frontLayerIndex).toBeGreaterThan(-1);
     expect(backLayerIndex).toBeLessThan(frontLayerIndex);
-    expect(backLayerMarkup.indexOf('stroke-width="8"')).toBeLessThan(
-      backLayerMarkup.indexOf('stroke-width="2"')
-    );
-    expect(frontLayerMarkup.indexOf('stroke-width="8"')).toBeLessThan(
-      frontLayerMarkup.indexOf('stroke-width="2"')
-    );
+    expect((backLayerMarkup.match(/data-bond-id="bond_back"/g) ?? []).length).toBe(2);
+    expect((frontLayerMarkup.match(/data-bond-id="bond_front"/g) ?? []).length).toBe(1);
+    expect(result.contents).not.toContain('stroke-width="8"');
   });
 
   it("does not export over-under gaps at shared atom bond junctions", () => {
@@ -609,12 +607,94 @@ describe("exportDocumentToSvg", () => {
     );
 
     const result = exportDocumentToSvg(document);
-    const upKnockout = result.contents.match(/<line data-bond-id="bond_up"[^>]*stroke-width="8"[^>]*>/)?.[0] ?? "";
     const upLine = result.contents.match(/<line data-bond-id="bond_up"[^>]*stroke-width="2"[^>]*>/)?.[0] ?? "";
 
     expect(upLine).toContain('x1="180"');
     expect(upLine).toContain('y1="180"');
-    expect(upKnockout).not.toContain('x1="180"');
-    expect(upKnockout).not.toContain('y1="180"');
+    expect(result.contents).not.toContain('stroke-width="8"');
+  });
+
+  it("exports mixed object types in the planner's page order", () => {
+    const objects: DocumentObject[] = [
+      {
+        ...moleculeObject(),
+        id: "mol_ordered",
+        structure: "CC",
+        chemistry: {
+          atomCount: 2,
+          bondCount: 1,
+          totalCharge: 0,
+          radicalCount: 0,
+          isotopeLabels: [],
+          stereochemistry: [],
+          warnings: []
+        }
+      },
+      {
+        id: "text_ordered",
+        type: "text",
+        x: 220,
+        y: 160,
+        width: 80,
+        height: 32,
+        rotation: 0,
+        style: {},
+        text: "note",
+        spans: []
+      },
+      {
+        id: "charge_ordered",
+        type: "electron-mark",
+        x: 320,
+        y: 160,
+        width: 18,
+        height: 18,
+        rotation: 0,
+        style: {},
+        markKind: "charge",
+        anchor: { kind: "point", point: { x: 329, y: 169 } },
+        charge: 1
+      },
+      {
+        id: "arrow_ordered",
+        type: "reaction-arrow",
+        x: 360,
+        y: 160,
+        width: 72,
+        height: 22,
+        rotation: 0,
+        style: {},
+        arrowKind: "forward",
+        start: { kind: "point", point: { x: 360, y: 171 } },
+        end: { kind: "point", point: { x: 432, y: 171 } },
+        labels: []
+      },
+      {
+        id: "graphic_ordered",
+        type: "graphic",
+        x: 460,
+        y: 160,
+        width: 42,
+        height: 24,
+        rotation: 0,
+        style: {},
+        graphicKind: "rect",
+        data: {}
+      }
+    ];
+    const document = objects.reduce(
+      (current, object) => applyPatch(
+        current,
+        { op: "addObject", pageId: "page_001", object },
+        { now: timestamp }
+      ),
+      createEmptyDocument({ title: "Mixed Order Export", now: timestamp })
+    );
+
+    const result = exportDocumentToSvg(document);
+    const indexes = objects.map((object) => result.contents.indexOf(`data-object-id="${object.id}"`));
+
+    expect(indexes.every((index) => index > -1)).toBe(true);
+    expect(indexes).toEqual([...indexes].sort((left, right) => left - right));
   });
 });

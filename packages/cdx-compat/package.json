@@ -8,5 +8,12 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     }
+  },
+  "dependencies": {
+    "@chemdraft/chem-core": "workspace:*",
+    "fast-xml-parser": "^5.8.0"
+  },
+  "devDependencies": {
+    "@chemdraft/fixtures": "workspace:*"
   }
 }

@@ -645,8 +645,12 @@ describe("Phase 4 document workflow", () => {
     const reopened = openNativeDocument(payload.contents);
 
     expect(payload.filename).toBe("Round-Trip.chemdraft");
-    expect(payload.mimeType).toBe("application/vnd.chemdraft+json");
-    expect(reopened).toEqual(document);
+    expect(payload.mimeType).toBe("chemical/x-cdxml");
+    expect(payload.contents).toContain("<CDXML");
+    expect(payload.warnings).toEqual([]);
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.warnings).toEqual([]);
+    expect(reopened.document).toEqual(document);
   });
 
   it("creates and inserts a real native single-bond molecule through document patches", () => {
@@ -711,7 +715,7 @@ describe("Phase 4 document workflow", () => {
     expect(front.selection.objectIds).toEqual([selectedId]);
   });
 
-  it("reorders selected native molecule atom and bond parts without changing chemical identity", () => {
+  it("does not rewrite native molecule atom or bond parts for visual depth", () => {
     const base = createPhase4Document("Internal Depth Fixture");
     const molecule = {
       id: "mol_depth",
@@ -754,8 +758,8 @@ describe("Phase 4 document workflow", () => {
     }, "back");
 
     expect(selectedMolecule(document).bonds.map((bond) => bond.id)).toEqual(["bond_left", "bond_bridge", "bond_right"]);
-    expect(selectedMolecule(atomForward).bonds.map((bond) => bond.id)).toEqual(["bond_right", "bond_left", "bond_bridge"]);
-    expect(selectedMolecule(bondBackward).bonds.map((bond) => bond.id)).toEqual(["bond_bridge", "bond_right", "bond_left"]);
+    expect(selectedMolecule(atomForward).bonds.map((bond) => bond.id)).toEqual(["bond_left", "bond_bridge", "bond_right"]);
+    expect(selectedMolecule(bondBackward).bonds.map((bond) => bond.id)).toEqual(["bond_left", "bond_bridge", "bond_right"]);
     expect(selectedMolecule(bondBackward).atoms.map((atom) => atom.id)).toEqual(
       selectedMolecule(document).atoms.map((atom) => atom.id)
     );
@@ -3840,8 +3844,8 @@ describe("Phase 4 document workflow", () => {
     expect(result.contents).toContain('data-structure="CCC"');
     expect(result.contents).toContain('data-atom-count="3"');
     expect(result.contents).toContain('data-bond-count="2"');
-    expect(result.contents.match(/data-bond-id="/g)?.length).toBe(4);
-    expect(result.contents.match(/stroke="#ffffff"/g)?.length).toBe(2);
+    expect(result.contents.match(/data-bond-id="/g)?.length).toBe(2);
+    expect(result.contents.match(/stroke="#ffffff"/g)?.length ?? 0).toBe(0);
     expect(result.contents.match(/stroke="#000000"/g)?.length).toBe(2);
   });
 

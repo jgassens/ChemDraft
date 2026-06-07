@@ -1,5 +1,11 @@
 # Agent Instructions for ChemDraft
 
+**Current Build**: 6.6.23.12-codex
+
+> [!IMPORTANT]
+> **Agent Instruction:** Every time you finish a slice of work or make significant changes, you MUST update the `**Current Build**` stamp above AND the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx` (in the viewport's bottom right corner).
+> The version format is `[month].[day].[hour].[minute]-[agent_name]` (e.g. `6.6.7.42-antigravity`). This helps the user track if their local build is stale.
+
 This file governs how AI coding agents, Codex, and human contributors should work in this repository.
 
 ChemDraft is a lightweight, open-source chemical drawing application with a plugin architecture. The core app must stay small, stable, testable, legally clean, and focused on drawing workflows.

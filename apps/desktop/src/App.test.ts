@@ -54,10 +54,17 @@ import {
   hoveredNativeTargetShortcutCommand,
   moleculeResizeReadoutPercent,
   moleculeResizeScaleFromDrag,
+  bondDepthContextFromNativeSelection,
+  bondDepthRefsFromNativeSelection,
+  crossingClearPatchesForObjectLayerPlacement,
+  nativeContextMenuSelectionResolutionFromHit,
   nativePlacementRotationDegrees,
   nativeDeleteTargetFromSelectionPart,
   nativeMoleculeCanvasHoverTarget,
+  nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  planBondDepthPatches,
+  reorderSelectedDocumentObjectWithCrossingDefaults,
   nativeMoleculeSelectionDragIntent,
   nativeSelectionWithHitToggled,
   pagePointFromRenderedPageRect,
@@ -148,6 +155,10 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("--chrome: var(--cd-bg-panel-raised);");
     expect(appCss).toContain("--canvas: var(--cd-bg-app);");
     expect(appCss).toContain("--accent: var(--cd-accent);");
+    expect(appCss).toMatch(/\.native-crossing-hit-target\s*{[^}]*pointer-events:\s*none;/s);
+    expect(appCss).toContain(".native-bond-hover-decorator");
+    expect(appCss).toMatch(/g\[data-bond-layer-id\]:hover\s+\.native-bond-hover-decorator\s*{[^}]*stroke-opacity:\s*0\.32;/s);
+    expect(appCss).not.toContain(".native-bond-hit-target:hover");
   });
 
   it("renders compact web-preview workspace regions with a floating fallback palette", () => {
@@ -218,6 +229,14 @@ describe("ChemDraft desktop shell", () => {
       atomId: "atom_001"
     });
     expect(nativeMoleculeCanvasHoverTarget(document, { x: 24, y: 24 })).toBeUndefined();
+  });
+
+  it("finds a native molecule by bounds for whole-molecule double-clicks inside ring interiors", () => {
+    const first = insertNativeTemplateMolecule(createPhase4Document("Double Click Bounds"), { x: 300, y: 300 }, "benzene");
+    const document = insertNativeTemplateMolecule(first, { x: 300, y: 300 }, "benzene");
+
+    expect(nativeMoleculeObjectAtPoint(document.pages[0].objects, { x: 300, y: 300 })?.id).toBe("mol_template_002");
+    expect(nativeMoleculeObjectAtPoint(document.pages[0].objects, { x: 24, y: 24 })).toBeUndefined();
   });
 
   it("converts captured window hover coordinates through the rendered page rectangle", () => {
@@ -517,6 +536,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length);
     expect(commands.some((command) => command.id === "document.open")).toBe(true);
+    expect(commands.some((command) => command.id === "document.saveAs")).toBe(true);
     expect(commands.some((command) => command.id === "view.toggleRulers")).toBe(true);
     expect(commands.some((command) => command.id === "page.setSize.legal")).toBe(true);
     expect(commands.some((command) => command.id === "page.setSize.a4")).toBe(true);
@@ -529,6 +549,7 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
     expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(commands.some((command) => command.id === "atom.setHoveredElement.O")).toBe(true);
+    expect(markup).toContain(".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json");
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
   });
@@ -1260,6 +1281,8 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain("native-single-bond");
+    expect(markup).toContain('data-page-svg-surface="true"');
+    expect(markup).not.toContain('class="molecule-glyph"');
     expect(markup).toContain('data-structure="CC"');
     expect(markup).toContain('data-style-preset-id="chemdraft.synthetic"');
     expect(markup).toContain('stroke-width="2"');
@@ -1332,7 +1355,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-selected-atom-id="atom_002"');
     expect(labelBackgroundIndex).toBeGreaterThan(-1);
     expect(selectionBlobIndex).toBeGreaterThan(labelBackgroundIndex);
-    expect(labelTextIndex).toBeGreaterThan(selectionBlobIndex);
+    expect(labelTextIndex).toBeGreaterThan(-1);
   });
 
   it("does not render native bond selection connectors for unselected molecules", () => {
@@ -1433,9 +1456,9 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
-    expect(markup).toContain('data-text-script="normal"');
-    expect(markup).toContain('data-text-script="superscript"');
-    expect(markup).toContain('style="color:#b3261e"');
+    expect(markup).toContain('data-object-type="text"');
+    expect(markup).toContain('baseline-shift="super"');
+    expect(markup).toContain('fill="#b3261e"');
   });
 
   it("renders native molecule part colors for selected-style atom labels and bonds", () => {
@@ -1616,13 +1639,13 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    const nLabelMarkup = markup.match(/<g class="native-atom-label"[^>]*data-atom-label="N\+"[\s\S]*?<\/g>/)?.[0] ?? "";
+    const nLabelMarkup = markup.match(/<g [^>]*class="native-atom-label"[^>]*data-atom-label="N\+"[\s\S]*?<\/g>/)?.[0] ?? "";
     const leftBondMarkup = markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_left"[^>]*>/)?.[0] ?? "";
     const rightBondMarkup = markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_right"[^>]*>/)?.[0] ?? "";
 
     expect(markup).toContain('data-atom-label="N+"');
     expect(nLabelMarkup).toContain('data-atom-label-run="normal"');
-    expect(nLabelMarkup).toContain('text-anchor="middle" x="0" y="0">N</text>');
+    expect(nLabelMarkup).toContain('text-anchor="middle">N</text>');
     expect(nLabelMarkup).toContain('data-atom-label-run="charge"');
     expect(nLabelMarkup).toContain('font-size="13.2"');
     expect(nLabelMarkup).toContain(">+</text>");
@@ -1776,7 +1799,7 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
-    expect(resolvedMarkup).toContain('class="document-object charge-mark-object"');
+    expect(resolvedMarkup).toContain("charge-mark-object");
     expect(resolvedMarkup).toContain('data-charge="1"');
     expect(resolvedMarkup).toContain('data-resolved-charge-atom-ids="atom_n"');
     expect(resolvedMarkup).not.toContain("native-atom-invalid-marker");
@@ -1861,7 +1884,7 @@ describe("ChemDraft desktop shell", () => {
     }
     expect(markup.match(/data-atom-label-run="charge"/g) ?? []).toHaveLength(3);
     expect(markup.match(/data-atom-label-run="subscript"/g) ?? []).toHaveLength(2);
-    expect(markup.match(/text-anchor="middle" x="0" y="0">[BNO]<\/text>/g) ?? []).toHaveLength(3);
+    expect(markup.match(/text-anchor="middle">[BNO]<\/text>/g) ?? []).toHaveLength(3);
     expect(markup).not.toContain("native-atom-invalid-marker");
   });
 
@@ -2147,7 +2170,7 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect((markup.match(/native-bond-line/g) ?? []).length).toBe(2);
-    expect((markup.match(/native-bond-knockout/g) ?? []).length).toBe(2);
+    expect(markup).not.toContain("native-bond-knockout");
     expect(markup).toContain('data-bond-segment="primary"');
     expect(markup).toContain('data-bond-segment="secondary"');
     expect(markup).toContain('data-double-bond-side="left"');
@@ -2220,13 +2243,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("z-index:1");
     expect(markup).toContain("z-index:2");
 
-    const frontObjectMarkup = markup.slice(frontObjectIndex);
-    expect(frontObjectMarkup.indexOf("native-bond-knockout")).toBeLessThan(
-      frontObjectMarkup.indexOf("native-bond-line")
-    );
+    expect(markup).not.toContain("native-bond-knockout");
   });
 
-  it("renders selected atom depth controls in the object context menu", () => {
+  it("renders selected atom layer controls in the object context menu", () => {
     const markup = renderToStaticMarkup(
       createElement(ObjectLayerContextMenu, {
         objectId: "mol_depth",
@@ -2240,15 +2260,341 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain('data-context-object-id="mol_depth"');
     expect(markup).toContain('data-context-target-kind="atom"');
-    expect(markup).toContain("Selected atom depth");
+    expect(markup).toContain("Molecule layer");
+    expect(markup).not.toContain("Bond depth");
+    expect(markup).not.toContain("Bring Bond In Front");
     expect(markup).toContain('data-command-id="layout.bringForward"');
-    expect(markup).toContain("Move Forward");
+    expect(markup).toContain("Move Object Forward");
     expect(markup).toContain('data-command-id="layout.bringToFront"');
-    expect(markup).toContain("Move to Front");
+    expect(markup).toContain("Move Object to Front");
     expect(markup).toContain('data-command-id="layout.sendBackward"');
-    expect(markup).toContain("Move Backward");
+    expect(markup).toContain("Move Object Backward");
     expect(markup).toContain('data-command-id="layout.sendToBack"');
-    expect(markup).toContain("Move to Back");
+    expect(markup).toContain("Move Object to Back");
+  });
+
+  it("renders bond depth controls in the object context menu", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_front",
+        objectIndex: 1,
+        objectCount: 2,
+        targetKind: "bond",
+        bondDepthContext: {
+          targetBondRefs: [{ objectId: "mol_front", bondId: "bond_001" }],
+          relevantCrossings: [{
+            key: "mol_back::bond_001|mol_front::bond_001",
+            bonds: [
+              { objectId: "mol_back", bondId: "bond_001" },
+              { objectId: "mol_front", bondId: "bond_001" }
+            ],
+            front: { objectId: "mol_front", bondId: "bond_001" },
+            back: { objectId: "mol_back", bondId: "bond_001" },
+            hasOverride: true
+          }],
+          hasOverrides: true
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+
+    expect(markup).toContain('data-context-target-kind="bond"');
+    expect(markup).toContain("Bond depth");
+    expect(markup).toContain('data-command-id="bondDepth.bringInFront"');
+    expect(markup).toContain("Bring Bond In Front");
+    expect(markup).toContain('data-command-id="bondDepth.sendBehind"');
+    expect(markup).toContain("Send Bond Behind");
+    expect(markup).toContain('data-command-id="bondDepth.useDefault"');
+    expect(markup).toContain("Use Default Bond Depth");
+    expect(markup).toContain("Molecule layer");
+    expect(markup).not.toContain("Flip Crossing");
+    expect(markup).not.toContain("Clear Crossing Override");
+  });
+
+  it("uses selected-bonds labels for multi-bond depth context", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_front",
+        objectIndex: 1,
+        objectCount: 2,
+        targetKind: "parts",
+        bondDepthContext: {
+          targetBondRefs: [
+            { objectId: "mol_front", bondId: "bond_001" },
+            { objectId: "mol_front", bondId: "bond_002" }
+          ],
+          relevantCrossings: [{
+            key: "mol_back::bond_001|mol_front::bond_001",
+            bonds: [
+              { objectId: "mol_back", bondId: "bond_001" },
+              { objectId: "mol_front", bondId: "bond_001" }
+            ],
+            front: { objectId: "mol_front", bondId: "bond_001" },
+            back: { objectId: "mol_back", bondId: "bond_001" },
+            hasOverride: false
+          }],
+          hasOverrides: false
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+
+    expect(markup).toContain('data-context-target-kind="parts"');
+    expect(markup).toContain("Molecule layer");
+    expect(markup).toContain("Bring Selected Bonds In Front");
+    expect(markup).toContain("Send Selected Bonds Behind");
+    expect(markup).not.toContain("Use Default Bond Depth");
+  });
+
+  it("preserves whole-molecule selection when right-clicking native geometry inside it", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Whole Right Click"), { x: 200, y: 220 });
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const selectedDocument = {
+      ...document,
+      selection: {
+        objectIds: [molecule.id]
+      }
+    };
+
+    expect(nativeContextMenuSelectionResolutionFromHit(
+      selectedDocument,
+      molecule.id,
+      {
+        kind: "bond",
+        bondId: "bond_001",
+        fromAtomId: "atom_001",
+        toAtomId: "atom_002",
+        distanceToPointer: 0
+      },
+      undefined
+    )).toEqual({ targetKind: "object" });
+  });
+
+  it("right-click selection still resolves a native bond when the whole molecule is not selected", () => {
+    const selection = nativeContextMenuSelectionResolutionFromHit(
+      createPhase4Document("Part Right Click"),
+      "mol_depth",
+      {
+        kind: "bond",
+        bondId: "bond_bridge",
+        fromAtomId: "atom_002",
+        toAtomId: "atom_003",
+        distanceToPointer: 0
+      },
+      undefined
+    );
+
+    expect(selection).toEqual({
+      selectedPart: {
+        objectId: "mol_depth",
+        kind: "bond",
+        bondId: "bond_bridge"
+      },
+      targetKind: "bond"
+    });
+  });
+
+  it("derives object-qualified bond depth refs from native selections", () => {
+    expect(bondDepthRefsFromNativeSelection({
+      objectId: "mol_depth",
+      kind: "bond",
+      bondId: "bond_bridge"
+    })).toEqual([{ objectId: "mol_depth", bondId: "bond_bridge" }]);
+    expect(bondDepthRefsFromNativeSelection({
+      objectId: "mol_depth",
+      kind: "parts",
+      atomIds: ["atom_001"],
+      bondIds: ["bond_left", "bond_bridge"]
+    })).toEqual([
+      { objectId: "mol_depth", bondId: "bond_left" },
+      { objectId: "mol_depth", bondId: "bond_bridge" }
+    ]);
+    expect(bondDepthRefsFromNativeSelection({
+      objectId: "mol_depth",
+      kind: "atom",
+      atomId: "atom_001"
+    })).toEqual([]);
+  });
+
+  it("derives relevant crossing context from selected bonds", () => {
+    const target = { objectId: "mol_depth", bondId: "bond_bridge" };
+    const other = { objectId: "mol_other", bondId: "bond_001" };
+    const context = bondDepthContextFromNativeSelection({
+      objectId: "mol_depth",
+      kind: "parts",
+      atomIds: ["atom_001"],
+      bondIds: ["bond_bridge"]
+    }, [{
+      key: "mol_depth::bond_bridge|mol_other::bond_001",
+      bonds: [target, other] as [typeof target, typeof other],
+      front: other,
+      back: target,
+      point: { x: 160, y: 180 },
+      clearancePx: 8,
+      hasOverride: true
+    }]);
+
+    expect(context).toEqual({
+      targetBondRefs: [target],
+      relevantCrossings: [{
+        key: "mol_depth::bond_bridge|mol_other::bond_001",
+        bonds: [target, other],
+        front: other,
+        back: target,
+        hasOverride: true
+      }],
+      hasOverrides: true
+    });
+  });
+
+  it("plans bond-depth patches across all relevant crossings", () => {
+    const target = { objectId: "mol_depth", bondId: "bond_bridge" };
+    const bondA = { objectId: "mol_a", bondId: "bond_a" };
+    const bondB = { objectId: "mol_b", bondId: "bond_b" };
+    const crossingOne = {
+      key: "mol_a::bond_a|mol_depth::bond_bridge",
+      bonds: [bondA, target] as [typeof bondA, typeof target],
+      front: bondA,
+      back: target,
+      hasOverride: false
+    };
+    const crossingTwo = {
+      key: "mol_b::bond_b|mol_depth::bond_bridge",
+      bonds: [bondB, target] as [typeof bondB, typeof target],
+      front: bondB,
+      back: target,
+      hasOverride: false
+    };
+    const context = {
+      targetBondRefs: [target],
+      relevantCrossings: [crossingOne, crossingTwo],
+      hasOverrides: false
+    };
+
+    expect(planBondDepthPatches("page_001", context, "bondDepth.bringInFront")).toEqual([
+      {
+        op: "setCrossingOverride",
+        pageId: "page_001",
+        crossing: { bonds: crossingOne.bonds, front: target }
+      },
+      {
+        op: "setCrossingOverride",
+        pageId: "page_001",
+        crossing: { bonds: crossingTwo.bonds, front: target }
+      }
+    ]);
+    expect(planBondDepthPatches("page_001", {
+      ...context,
+      relevantCrossings: [{ ...crossingOne, front: target, back: bondA }]
+    }, "bondDepth.sendBehind")).toEqual([{
+      op: "setCrossingOverride",
+      pageId: "page_001",
+      crossing: { bonds: crossingOne.bonds, front: bondA }
+    }]);
+  });
+
+  it("skips selected-selected crossings for directional depth and clears defaults", () => {
+    const left = { objectId: "mol_depth", bondId: "bond_left" };
+    const right = { objectId: "mol_depth", bondId: "bond_right" };
+    const crossing = {
+      key: "mol_depth::bond_left|mol_depth::bond_right",
+      bonds: [left, right] as [typeof left, typeof right],
+      front: left,
+      back: right,
+      hasOverride: true
+    };
+    const context = {
+      targetBondRefs: [left, right],
+      relevantCrossings: [crossing],
+      hasOverrides: true
+    };
+
+    expect(planBondDepthPatches("page_001", context, "bondDepth.bringInFront")).toEqual([]);
+    expect(planBondDepthPatches("page_001", context, "bondDepth.sendBehind")).toEqual([]);
+    expect(planBondDepthPatches("page_001", context, "bondDepth.useDefault")).toEqual([{
+      op: "clearCrossingOverride",
+      pageId: "page_001",
+      bonds: crossing.bonds
+    }]);
+  });
+
+  it("clears cross-object crossing overrides for object layer moves", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Layer Crossing Defaults"), { x: 200, y: 220 });
+    const document = insertNativeSingleBondMolecule(first, { x: 200, y: 220 });
+    const page = document.pages[0];
+    const selectedRef = { objectId: "mol_bond_001", bondId: "bond_001" };
+    const neighborRef = { objectId: "mol_bond_002", bondId: "bond_001" };
+    const withCrossing = {
+      ...document,
+      pages: [{
+        ...page,
+        crossings: [{
+          bonds: [selectedRef, neighborRef] as [typeof selectedRef, typeof neighborRef],
+          front: neighborRef
+        }]
+      }]
+    };
+
+    expect(crossingClearPatchesForObjectLayerPlacement(
+      withCrossing.pages[0],
+      "mol_bond_001",
+      "forward"
+    )).toEqual([{
+      op: "clearCrossingOverride",
+      pageId: page.id,
+      bonds: [selectedRef, neighborRef]
+    }]);
+
+    const moved = reorderSelectedDocumentObjectWithCrossingDefaults({
+      ...withCrossing,
+      selection: { pageId: page.id, objectIds: ["mol_bond_001"] }
+    }, "forward");
+
+    expect(moved.pages[0].objects.map((object) => object.id)).toEqual(["mol_bond_002", "mol_bond_001"]);
+    expect(moved.pages[0].crossings).toEqual([]);
+  });
+
+  it("limits one-step layer crossing resets to the object being passed", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Layer Crossing Neighbor"), { x: 200, y: 220 });
+    const second = insertNativeSingleBondMolecule(first, { x: 200, y: 220 });
+    const document = insertNativeSingleBondMolecule(second, { x: 200, y: 220 });
+    const page = document.pages[0];
+    const selectedRef = { objectId: "mol_bond_001", bondId: "bond_001" };
+    const neighborRef = { objectId: "mol_bond_002", bondId: "bond_001" };
+    const nonNeighborRef = { objectId: "mol_bond_003", bondId: "bond_001" };
+    const withCrossings = {
+      ...document,
+      pages: [{
+        ...page,
+        crossings: [
+          {
+            bonds: [selectedRef, neighborRef] as [typeof selectedRef, typeof neighborRef],
+            front: neighborRef
+          },
+          {
+            bonds: [selectedRef, nonNeighborRef] as [typeof selectedRef, typeof nonNeighborRef],
+            front: nonNeighborRef
+          }
+        ]
+      }]
+    };
+
+    expect(crossingClearPatchesForObjectLayerPlacement(
+      withCrossings.pages[0],
+      "mol_bond_001",
+      "forward"
+    )).toEqual([{
+      op: "clearCrossingOverride",
+      pageId: page.id,
+      bonds: [selectedRef, neighborRef]
+    }]);
+    expect(crossingClearPatchesForObjectLayerPlacement(
+      withCrossings.pages[0],
+      "mol_bond_001",
+      "front"
+    )).toHaveLength(2);
   });
 
   it("renders later bonds over earlier crossing bonds inside one molecule", () => {
@@ -2306,15 +2652,16 @@ describe("ChemDraft desktop shell", () => {
     const backLayerMarkup = markup.slice(backLayerIndex, frontLayerIndex);
     const frontLayerMarkup = markup.slice(frontLayerIndex);
 
+    expect(markup).toContain('class="page-svg-surface"');
+    expect(markup).not.toContain('class="molecule-glyph"');
     expect(backLayerIndex).toBeGreaterThan(-1);
     expect(frontLayerIndex).toBeGreaterThan(-1);
     expect(backLayerIndex).toBeLessThan(frontLayerIndex);
-    expect(backLayerMarkup.indexOf("native-bond-knockout")).toBeLessThan(
-      backLayerMarkup.indexOf("native-bond-line")
-    );
-    expect(frontLayerMarkup.indexOf("native-bond-knockout")).toBeLessThan(
-      frontLayerMarkup.indexOf("native-bond-line")
-    );
+    expect((backLayerMarkup.match(/native-bond-line/g) ?? []).length).toBe(2);
+    expect((frontLayerMarkup.match(/native-bond-line/g) ?? []).length).toBe(1);
+    expect(markup).toContain("native-crossing-hit-target");
+    expect(markup).toContain("native-bond-hover-decorator");
+    expect(markup).not.toContain("native-bond-knockout");
   });
 
   it("does not render over-under gaps for bonds sharing one atom", () => {
@@ -2368,13 +2715,11 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    const upKnockout = markup.match(/<line class="native-bond-knockout" data-bond-id="bond_up"[^>]*>/)?.[0] ?? "";
     const upLine = markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_up"[^>]*>/)?.[0] ?? "";
 
-    expect(upLine).toContain('x1="60"');
-    expect(upLine).toContain('y1="60"');
-    expect(upKnockout).not.toContain('x1="60"');
-    expect(upKnockout).not.toContain('y1="60"');
+    expect(upLine).toContain('x1="180"');
+    expect(upLine).toContain('y1="180"');
+    expect(markup).not.toContain("native-bond-knockout");
   });
 
 

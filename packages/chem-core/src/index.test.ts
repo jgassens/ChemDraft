@@ -24,6 +24,7 @@ import {
   undo,
   validateDocument,
   type AnnotationObject,
+  type CrossingOverride,
   type MoleculeObject
 } from "./index";
 
@@ -114,7 +115,8 @@ describe("createEmptyDocument", () => {
             sourceWidth: 8.5,
             sourceHeight: 11
           },
-          objects: []
+          objects: [],
+          crossings: []
         }
       ],
       selection: {
@@ -126,6 +128,164 @@ describe("createEmptyDocument", () => {
         warnings: []
       }
     });
+  });
+});
+
+describe("page crossing overrides", () => {
+  function crossingMolecule(id: string, bondId = "bond_001"): MoleculeObject {
+    return {
+      ...moleculeObject(id),
+      structure: "CC",
+      atoms: [
+        { id: "atom_001", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 160, y: 100, formalCharge: 0 }
+      ],
+      bonds: [{ id: bondId, fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    };
+  }
+
+  function documentWithCrossingMolecules() {
+    return applyPatches(
+      createEmptyDocument({ now: timestamp }),
+      [
+        { op: "addObject", pageId: "page_001", object: crossingMolecule("mol_back", "bond_back") },
+        { op: "addObject", pageId: "page_001", object: crossingMolecule("mol_front", "bond_front") }
+      ],
+      { now: timestamp }
+    );
+  }
+
+  it("defaults page crossings for old and new documents without bumping the schema", () => {
+    const document = createEmptyDocument({ now: timestamp });
+    expect(document.schema).toBe(DocumentSchemaVersion);
+    expect(document.pages[0].crossings).toEqual([]);
+
+    const serialized = JSON.parse(serializeDocument(document)) as { pages: Array<Record<string, unknown>> };
+    delete serialized.pages[0].crossings;
+
+    expect(deserializeDocument(JSON.stringify(serialized)).pages[0].crossings).toEqual([]);
+  });
+
+  it("sets, canonicalizes, replaces, and clears crossing overrides", () => {
+    const document = documentWithCrossingMolecules();
+    const crossing: CrossingOverride = {
+      bonds: [
+        { objectId: "mol_front", bondId: "bond_front" },
+        { objectId: "mol_back", bondId: "bond_back" }
+      ],
+      front: { objectId: "mol_front", bondId: "bond_front" },
+      clearancePx: 12
+    };
+
+    const withCrossing = applyPatch(document, {
+      op: "setCrossingOverride",
+      pageId: "page_001",
+      crossing
+    }, { now: timestamp });
+
+    expect(withCrossing.pages[0].crossings).toEqual([{
+      bonds: [
+        { objectId: "mol_back", bondId: "bond_back" },
+        { objectId: "mol_front", bondId: "bond_front" }
+      ],
+      front: { objectId: "mol_front", bondId: "bond_front" },
+      clearancePx: 12
+    }]);
+
+    const flipped = applyPatch(withCrossing, {
+      op: "setCrossingOverride",
+      pageId: "page_001",
+      crossing: {
+        ...crossing,
+        front: { objectId: "mol_back", bondId: "bond_back" }
+      }
+    }, { now: timestamp });
+
+    expect(flipped.pages[0].crossings).toHaveLength(1);
+    expect(flipped.pages[0].crossings[0].front).toEqual({ objectId: "mol_back", bondId: "bond_back" });
+
+    const cleared = applyPatch(flipped, {
+      op: "clearCrossingOverride",
+      pageId: "page_001",
+      bonds: [
+        { objectId: "mol_front", bondId: "bond_front" },
+        { objectId: "mol_back", bondId: "bond_back" }
+      ]
+    }, { now: timestamp });
+
+    expect(cleared.pages[0].crossings).toEqual([]);
+  });
+
+  it("rejects crossing overrides with invalid fronts or missing bonds", () => {
+    const document = documentWithCrossingMolecules();
+
+    expect(() => applyPatch(document, {
+      op: "setCrossingOverride",
+      pageId: "page_001",
+      crossing: {
+        bonds: [
+          { objectId: "mol_front", bondId: "bond_front" },
+          { objectId: "mol_back", bondId: "bond_back" }
+        ],
+        front: { objectId: "mol_missing", bondId: "bond_missing" }
+      }
+    }, { now: timestamp })).toThrow(DocumentPatchError);
+
+    expect(() => applyPatch(document, {
+      op: "setCrossingOverride",
+      pageId: "page_001",
+      crossing: {
+        bonds: [
+          { objectId: "mol_front", bondId: "bond_missing" },
+          { objectId: "mol_back", bondId: "bond_back" }
+        ],
+        front: { objectId: "mol_back", bondId: "bond_back" }
+      }
+    }, { now: timestamp })).toThrow(DocumentPatchError);
+  });
+
+  it("prunes crossing overrides when referenced objects or bond identities change", () => {
+    const document = applyPatch(documentWithCrossingMolecules(), {
+      op: "setCrossingOverride",
+      pageId: "page_001",
+      crossing: {
+        bonds: [
+          { objectId: "mol_front", bondId: "bond_front" },
+          { objectId: "mol_back", bondId: "bond_back" }
+        ],
+        front: { objectId: "mol_front", bondId: "bond_front" }
+      }
+    }, { now: timestamp });
+
+    expect(applyPatch(document, { op: "removeObject", objectId: "mol_front" }, { now: timestamp }).pages[0].crossings).toEqual([]);
+
+    const moved = applyPatch(document, {
+      op: "updateObject",
+      objectId: "mol_front",
+      changes: {
+        atoms: [
+          { id: "atom_001", element: "C", x: 110, y: 120, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 170, y: 120, formalCharge: 0 }
+        ]
+      }
+    }, { now: timestamp });
+    expect(moved.pages[0].crossings).toHaveLength(1);
+
+    const changedEndpoint = applyPatch(document, {
+      op: "updateObject",
+      objectId: "mol_front",
+      changes: {
+        bonds: [{ id: "bond_front", fromAtomId: "atom_002", toAtomId: "atom_001", order: "single" }]
+      }
+    }, { now: timestamp });
+    expect(changedEndpoint.pages[0].crossings).toEqual([]);
+
+    const replacedGraph = applyPatch(document, {
+      op: "updateObject",
+      objectId: "mol_front",
+      changes: { structure: "CCC" }
+    }, { now: timestamp });
+    expect(replacedGraph.pages[0].crossings).toEqual([]);
   });
 });
 

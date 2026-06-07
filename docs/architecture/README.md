@@ -7,6 +7,8 @@ The native document model belongs in `packages/chem-core`. Compatibility formats
 Key architecture notes:
 
 - `composited-page-editor-model.md`
+- `over-under-crossing-model.md`
+- `save-open-and-file-format.md`
 - `design-language.md`
 - `editor-adapter-hardening.md`
 - `toolbars-and-toolsets.md`

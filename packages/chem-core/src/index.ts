@@ -7,6 +7,8 @@ export {
   ChemicalMetadataSchema,
   CompatibilityMetadataSchema,
   CompatibilityWarningSchema,
+  BondRefSchema,
+  CrossingOverrideSchema,
   DocumentObjectSchema,
   DocumentPageSchema,
   DocumentSchemaVersion,
@@ -44,6 +46,8 @@ export {
   type ChemicalMetadata,
   type CompatibilityMetadata,
   type CompatibilityWarning,
+  type BondRef,
+  type CrossingOverride,
   type DocumentObject,
   type DocumentPage,
   type DocumentSchemaVersion as DocumentSchemaVersionType,
@@ -146,3 +150,18 @@ export {
   type NativeTextFontStyle,
   type NativeTextStyle
 } from "./styles";
+
+export {
+  diffChemicalIdentity,
+  snapshotChemicalIdentity,
+  type CanonicalChemicalIdentity,
+  type IdentityVerdict,
+  type IsotopeRadicalSource,
+  type MoleculeGraphIdentity,
+  type MoleculeIdentityDiff,
+  type MoleculeIdentitySnapshot,
+  type SnapshotIdentityOptions,
+  type StereoMarkerDiff,
+  type StereoMarkerFingerprint,
+  type StereoMarkerStyle
+} from "./identity";

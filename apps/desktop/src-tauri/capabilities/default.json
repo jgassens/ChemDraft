@@ -37,6 +37,21 @@
     "allow-focus-tool-palette",
     "allow-toggle-tool-palette",
     "allow-tool-palette-state",
-    "allow-route-palette-command"
+    "allow-route-palette-command",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-confirm",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$TEMP/**" }
+      ]
+    }
   ]
 }

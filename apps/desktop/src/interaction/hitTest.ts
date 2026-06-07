@@ -31,6 +31,15 @@ export type InteractionTarget = NativeMoleculeDeleteTarget;
 // radius is 8px, so 2px keeps the tiebreak well inside the rendered glyph.
 const HOVER_DOM_TIEBREAK_PX = 2;
 
+// Cross-object pick order is geometry-first: the part nearest the pointer wins, and the
+// stacking layer only breaks a near-tie. Without this band, a clearly-nearer atom on a
+// lower layer was losing to a farther atom on the top-most molecule, so overlapping
+// molecules (e.g. a threaded rotaxane) became impossible to target by proximity. The band
+// is sub-pixel — large enough to absorb float jitter at near-coincident hits (where the
+// visually top-most part is the right pick), small enough that a real proximity difference
+// always wins.
+const LAYER_TIE_EPSILON_PX = 0.5;
+
 function distance(left: Point, right: Point): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
@@ -48,6 +57,19 @@ function pointerHitTargetAttribute(
   return target?.getAttribute(attribute) ?? undefined;
 }
 
+// The owning molecule of the DOM node under the pointer, read from the nearest
+// `data-object-id` ancestor (the molecule wrapper). Atom/bond ids are molecule-local and
+// repeat across molecules, so a `data-atom-id="atom_001"` hint is only meaningful inside the
+// molecule that actually rendered it. Returns undefined when no owner can be resolved (node
+// environment, or a synthetic element with no wrapper), in which case the caller does not
+// restrict the hint.
+function pointerHitOwnerObjectId(eventTarget: EventTarget | null | undefined): string | undefined {
+  if (typeof Element === "undefined" || !(eventTarget instanceof Element)) {
+    return undefined;
+  }
+  return eventTarget.closest("[data-object-id]")?.getAttribute("data-object-id") ?? undefined;
+}
+
 export function nativeMoleculeHitFromPointerTarget(
   molecule: MoleculeObject,
   point: Point,
@@ -61,7 +83,14 @@ export function nativeMoleculeHitFromPointerTarget(
   // The DOM tells us which glyph the pointer is literally over — a strong intent
   // signal, but only used to break a near-tie in favour of that atom. It must never
   // override a geometrically-closer pick. Bonds rely entirely on the model hit now.
-  const atomId = pointerHitTargetAttribute(eventTarget, "atom", "data-atom-id");
+  // The hint is also scoped to its owning molecule: in the page-wide candidate loop this
+  // function runs for every molecule with the same event target, and molecule-local ids
+  // like `atom_001` repeat, so an unscoped hint could be applied inside the wrong molecule.
+  const hintOwnerObjectId = pointerHitOwnerObjectId(eventTarget);
+  const hintAppliesToThisMolecule = hintOwnerObjectId === undefined || hintOwnerObjectId === molecule.id;
+  const atomId = hintAppliesToThisMolecule
+    ? pointerHitTargetAttribute(eventTarget, "atom", "data-atom-id")
+    : undefined;
   if (atomId && (modelHit?.kind !== "atom" || modelHit.atomId !== atomId)) {
     const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
     if (atom) {
@@ -93,11 +122,15 @@ export function nativeMoleculeCanvasHoverTarget(
     .filter((entry): entry is { object: MoleculeObject; hit: NativeMoleculeDeleteHit; layerIndex: number } =>
       entry !== undefined
     )
-    .sort((left, right) =>
-      right.layerIndex - left.layerIndex ||
-      left.hit.distanceToPointer - right.hit.distanceToPointer ||
-      left.object.id.localeCompare(right.object.id)
-    );
+    .sort((left, right) => {
+      const byDistance = left.hit.distanceToPointer - right.hit.distanceToPointer;
+      if (Math.abs(byDistance) > LAYER_TIE_EPSILON_PX) {
+        // A clearly-nearer part wins regardless of stacking order.
+        return byDistance;
+      }
+      // Near-coincident hits: defer to the top-most layer, then a stable id order.
+      return right.layerIndex - left.layerIndex || left.object.id.localeCompare(right.object.id);
+    });
   const target = candidates[0];
 
   return target ? { objectId: target.object.id, ...target.hit } : undefined;

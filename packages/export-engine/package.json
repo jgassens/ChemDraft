@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@chemdraft/chem-core": "workspace:*"
+    "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/layout-engine": "workspace:*"
   },
   "exports": {
     ".": {

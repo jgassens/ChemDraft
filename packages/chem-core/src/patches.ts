@@ -3,8 +3,13 @@ import {
   DocumentObjectSchema,
   PageLayoutSchema,
   type AnnotationObject,
+  type BondRef,
   type ChemDraftDocument,
+  type CrossingOverride,
   type DocumentObject,
+  type DocumentPage,
+  type MoleculeBond,
+  type MoleculeObject,
   type PageLayout
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
@@ -19,6 +24,8 @@ export type DocumentPatch =
   | { op: "updatePageLayout"; pageId: string; layout: PageLayout }
   | { op: "moveObject"; objectId: string; x: number; y: number }
   | { op: "reorderObject"; objectId: string; placement: ObjectReorderPlacement }
+  | { op: "setCrossingOverride"; pageId: string; crossing: CrossingOverride }
+  | { op: "clearCrossingOverride"; pageId: string; bonds: [BondRef, BondRef] }
   | { op: "setSelection"; pageId?: string; objectIds: string[] }
   | { op: "addAnnotation"; pageId: string; annotation: AnnotationObject }
   | { op: "removeAnnotation"; annotationId: string };
@@ -59,6 +66,12 @@ export function applyPatch(
       break;
     case "reorderObject":
       reorderObject(next, patch.objectId, patch.placement);
+      break;
+    case "setCrossingOverride":
+      setCrossingOverride(next, patch.pageId, patch.crossing);
+      break;
+    case "clearCrossingOverride":
+      clearCrossingOverride(next, patch.pageId, patch.bonds);
       break;
     case "setSelection":
       setSelection(next, patch.pageId, patch.objectIds);
@@ -106,6 +119,7 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
 
   location.page.objects.splice(location.objectIndex, 1);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
+  pruneCrossings(location.page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === objectId));
 }
 
 function reorderObject(
@@ -183,6 +197,7 @@ function updateObject(
 
   const updated = DocumentObjectSchema.parse({ ...location.object, ...changes, id: objectId });
   location.page.objects[location.objectIndex] = updated;
+  pruneCrossingsAfterObjectUpdate(location.page, location.object, updated);
 }
 
 function removeAnnotation(document: ChemDraftDocument, annotationId: string): void {
@@ -196,6 +211,135 @@ function removeAnnotation(document: ChemDraftDocument, annotationId: string): vo
   }
 
   location.page.objects.splice(location.objectIndex, 1);
+}
+
+function setCrossingOverride(
+  document: ChemDraftDocument,
+  pageId: string,
+  crossing: CrossingOverride
+): void {
+  const page = findPage(document, pageId, "set crossing override");
+  const canonical = canonicalCrossingOverride(crossing);
+  if (!canonical.bonds.every((ref) => crossingBondExists(page, ref))) {
+    throw new DocumentPatchError("Cannot set crossing override: referenced bond does not exist on the page.");
+  }
+
+  const key = crossingPairKey(canonical.bonds);
+  const existingIndex = page.crossings.findIndex((candidate) => crossingPairKey(candidate.bonds) === key);
+  if (existingIndex >= 0) {
+    page.crossings[existingIndex] = canonical;
+  } else {
+    page.crossings.push(canonical);
+  }
+}
+
+function clearCrossingOverride(
+  document: ChemDraftDocument,
+  pageId: string,
+  bonds: [BondRef, BondRef]
+): void {
+  const page = findPage(document, pageId, "clear crossing override");
+  const key = crossingPairKey(canonicalBondRefs(bonds));
+  page.crossings = page.crossings.filter((crossing) => crossingPairKey(crossing.bonds) !== key);
+}
+
+function canonicalCrossingOverride(crossing: CrossingOverride): CrossingOverride {
+  const bonds = canonicalBondRefs(crossing.bonds);
+  const frontKey = bondRefKey(crossing.front);
+  const front = bonds.find((ref) => bondRefKey(ref) === frontKey);
+  if (!front) {
+    throw new DocumentPatchError("Cannot set crossing override: front bond must be one of the crossing bonds.");
+  }
+  return {
+    ...crossing,
+    bonds,
+    front
+  };
+}
+
+function canonicalBondRefs(bonds: [BondRef, BondRef]): [BondRef, BondRef] {
+  const [left, right] = bonds.map((ref) => ({ ...ref })).sort((a, b) => bondRefKey(a).localeCompare(bondRefKey(b)));
+  if (!left || !right || bondRefKey(left) === bondRefKey(right)) {
+    throw new DocumentPatchError("Crossing override must reference two distinct bonds.");
+  }
+  return [left, right];
+}
+
+function crossingPairKey(bonds: [BondRef, BondRef]): string {
+  return canonicalBondRefs(bonds).map(bondRefKey).join("|");
+}
+
+function bondRefKey(ref: BondRef): string {
+  return `${ref.objectId}::${ref.bondId}`;
+}
+
+function findPage(
+  document: ChemDraftDocument,
+  pageId: string,
+  action: string
+): DocumentPage {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page) {
+    throw new DocumentPatchError(`Cannot ${action}: page "${pageId}" does not exist.`);
+  }
+  return page;
+}
+
+function crossingBondExists(page: DocumentPage, ref: BondRef): boolean {
+  const object = page.objects.find((candidate): candidate is MoleculeObject =>
+    candidate.type === "molecule" && candidate.id === ref.objectId
+  );
+  return object?.bonds.some((bond) => bond.id === ref.bondId) === true;
+}
+
+function pruneCrossings(
+  page: DocumentPage,
+  keep: (crossing: CrossingOverride) => boolean
+): void {
+  page.crossings = page.crossings.filter(keep);
+}
+
+function pruneCrossingsAfterObjectUpdate(
+  page: DocumentPage,
+  previous: DocumentObject,
+  updated: DocumentObject
+): void {
+  if (previous.type !== "molecule" && updated.type !== "molecule") {
+    return;
+  }
+  if (previous.type !== "molecule" || updated.type !== "molecule") {
+    pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === updated.id));
+    return;
+  }
+
+  if (previous.structure !== updated.structure || previous.structureFormat !== updated.structureFormat) {
+    pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === updated.id));
+    return;
+  }
+
+  pruneCrossings(page, (crossing) =>
+    crossing.bonds.every((ref) =>
+      ref.objectId !== updated.id || moleculeBondIdentityIsStable(previous, updated, ref.bondId)
+    )
+  );
+}
+
+function moleculeBondIdentityIsStable(
+  previous: MoleculeObject,
+  updated: MoleculeObject,
+  bondId: string
+): boolean {
+  const previousBond = previous.bonds.find((bond) => bond.id === bondId);
+  const updatedBond = updated.bonds.find((bond) => bond.id === bondId);
+  return previousBond !== undefined &&
+    updatedBond !== undefined &&
+    sameBondIdentity(previousBond, updatedBond);
+}
+
+function sameBondIdentity(previous: MoleculeBond, updated: MoleculeBond): boolean {
+  return previous.fromAtomId === updated.fromAtomId &&
+    previous.toAtomId === updated.toAtomId &&
+    previous.order === updated.order;
 }
 
 function findObject(

@@ -26,6 +26,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
     "document.save",
+    "document.saveAs",
     "clipboard.paste",
     "export.svg",
     "export.png",
@@ -158,6 +159,8 @@ struct ToolsetCustomizationOverride {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
         .on_menu_event(|app, event| {
             let command_id = event.id().as_ref();
@@ -741,6 +744,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
                     &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
                     &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
+                    &MenuItem::with_id(app, "document.saveAs", "Save As...", true, Some("CmdOrCtrl+Shift+S"))?,
                     &PredefinedMenuItem::separator(app)?,
                     &page_setup_menu,
                     &PredefinedMenuItem::separator(app)?,

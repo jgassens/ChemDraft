@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  ChemDraftSyntheticStylePreset,
+  createEmptyDocument,
+  stylePresetToObjectStyle,
+  type DocumentObject,
+  type DocumentPage,
+  type MoleculeObject
+} from "@chemdraft/chem-core";
+import {
   atomDegrees,
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
   planBondExtension,
+  planPageSvgRender,
   planFreeformBondExtension,
-  type BondExtensionPlanningInput
+  type BondExtensionPlanningInput,
+  type PageSvgElementFragment,
+  type PageSvgFragment
 } from "./index";
 
 const baseInput = {
@@ -424,5 +435,451 @@ describe("layout-engine molecule growth planning", () => {
       pageBounds: baseInput.pageBounds,
       minimumBondLength: 12
     })).toBeUndefined();
+  });
+});
+
+const timestamp = "2026-06-06T00:00:00.000Z";
+
+function pageWithObjects(objects: DocumentObject[]): DocumentPage {
+  const page = createEmptyDocument({ now: timestamp }).pages[0];
+  return {
+    ...page,
+    objects
+  };
+}
+
+function moleculeObject(overrides: Partial<MoleculeObject> = {}): MoleculeObject {
+  return {
+    id: "mol_001",
+    type: "molecule",
+    x: 120,
+    y: 120,
+    width: 120,
+    height: 120,
+    rotation: 0,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "chemdraft-native-drawing"
+    },
+    structureFormat: "smiles",
+    structure: "CC",
+    atoms: [
+      { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+      { id: "atom_002", element: "C", x: 220, y: 180, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }
+    ],
+    chemistry: {
+      formula: "C2H6",
+      atomCount: 2,
+      bondCount: 1,
+      totalCharge: 0,
+      radicalCount: 0,
+      isotopeLabels: [],
+      stereochemistry: [],
+      warnings: []
+    },
+    superatoms: [],
+    rGroups: [],
+    ...overrides
+  };
+}
+
+function elementFragments(fragment: PageSvgFragment): PageSvgElementFragment[] {
+  if (fragment.kind === "text") {
+    return [];
+  }
+
+  return [fragment, ...fragment.children.flatMap(elementFragments)];
+}
+
+function topLevelObjectRuns(fragments: readonly PageSvgElementFragment[]): string[] {
+  return fragments.reduce<string[]>((runs, fragment) => {
+    const objectId = String(fragment.attrs["data-object-id"] ?? "");
+    if (objectId && runs[runs.length - 1] !== objectId) {
+      runs.push(objectId);
+    }
+    return runs;
+  }, []);
+}
+
+function visiblePrimitiveSignature(
+  fragments: readonly PageSvgFragment[],
+  inheritedAttrs: Record<string, unknown> = {}
+): string[] {
+  return fragments.flatMap((fragment) => {
+    if (fragment.kind === "text") {
+      return [];
+    }
+
+    const attrs = { ...inheritedAttrs, ...fragment.attrs };
+    const className = String(attrs.class ?? "");
+    const current = fragment.tag !== "g" &&
+      className !== "native-bond-hit-target" &&
+      className !== "native-bond-hover-decorator" &&
+      className !== "native-atom-hit-target" &&
+      className !== "native-crossing-hit-target"
+      ? [[
+          fragment.tag,
+          attrs["data-object-id"],
+          attrs["data-object-type"],
+          attrs["data-bond-id"],
+          attrs["data-bond-layer-id"],
+          attrs.class,
+          attrs.x1,
+          attrs.y1,
+          attrs.x2,
+          attrs.y2,
+          attrs.x,
+          attrs.y,
+          attrs["text-anchor"]
+        ].filter((value) => value !== undefined && value !== "").join("|")]
+      : [];
+
+    return [
+      ...current,
+      ...visiblePrimitiveSignature(fragment.children, attrs)
+    ];
+  });
+}
+
+describe("layout-engine page SVG planner", () => {
+  it("produces one globally ordered fragment stream for multiple molecules", () => {
+    const page = pageWithObjects([
+      moleculeObject({ id: "mol_back" }),
+      moleculeObject({ id: "mol_front" })
+    ]);
+
+    const plan = planPageSvgRender(page);
+
+    expect(topLevelObjectRuns(plan.fragments)).toEqual(["mol_back", "mol_front"]);
+    expect(plan.fragments.map((fragment) => fragment.key)).not.toContain("object-mol_back");
+    expect(plan.fragments.map((fragment) => fragment.key)).not.toContain("object-mol_front");
+    expect(plan.fragments.every((fragment) => fragment.attrs["data-object-id"] !== undefined)).toBe(true);
+    expect(plan.fragments.filter((fragment) => fragment.attrs["data-bond-layer-id"] === "bond_001")).toHaveLength(2);
+  });
+
+  it("keeps later bonds over earlier crossing bonds inside one molecule", () => {
+    const crossingMolecule = moleculeObject({
+      id: "mol_crossing",
+      structure: "CC.CC",
+      atoms: [
+        { id: "atom_back_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+        { id: "atom_back_002", element: "C", x: 220, y: 180, formalCharge: 0 },
+        { id: "atom_front_001", element: "C", x: 180, y: 140, formalCharge: 0 },
+        { id: "atom_front_002", element: "C", x: 180, y: 220, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_back", fromAtomId: "atom_back_001", toAtomId: "atom_back_002", order: "single" },
+        { id: "bond_front", fromAtomId: "atom_front_001", toAtomId: "atom_front_002", order: "single" }
+      ]
+    });
+
+    const plan = planPageSvgRender(pageWithObjects([crossingMolecule]));
+    const elements = plan.fragments.flatMap(elementFragments);
+    const bondLayers = plan.fragments
+      .filter((child) => child.attrs["data-bond-layer-id"]);
+    const backLines = elements.filter((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "bond_back"
+    );
+    const frontLines = elements.filter((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "bond_front"
+    );
+
+    expect(bondLayers.map((child) => child.attrs["data-bond-layer-id"])).toEqual(["bond_back", "bond_front"]);
+    expect(plan.crossings).toHaveLength(1);
+    expect(plan.crossings[0].front).toEqual({ objectId: "mol_crossing", bondId: "bond_front" });
+    expect(backLines).toHaveLength(2);
+    expect(frontLines).toHaveLength(1);
+    expect(elements.some((fragment) => fragment.attrs.class === "native-bond-knockout")).toBe(false);
+  });
+
+  it("does not plan a false whole-junction gap for bonds sharing one atom", () => {
+    const geminalMolecule = moleculeObject({
+      id: "mol_geminal",
+      structure: "CC(C)C",
+      atoms: [
+        { id: "atom_center", element: "C", x: 180, y: 180, formalCharge: 0 },
+        { id: "atom_left", element: "C", x: 140, y: 180, formalCharge: 0 },
+        { id: "atom_up", element: "C", x: 200, y: 140, formalCharge: 0 },
+        { id: "atom_right", element: "C", x: 220, y: 165, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_left", fromAtomId: "atom_left", toAtomId: "atom_center", order: "single" },
+        { id: "bond_up", fromAtomId: "atom_center", toAtomId: "atom_up", order: "single" },
+        { id: "bond_right", fromAtomId: "atom_center", toAtomId: "atom_right", order: "single" }
+      ]
+    });
+
+    const plan = planPageSvgRender(pageWithObjects([geminalMolecule]));
+    const elements = plan.fragments.flatMap(elementFragments);
+    const upLine = elements.find((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "bond_up"
+    );
+    const upKnockout = elements.find((fragment) =>
+      fragment.attrs.class === "native-bond-knockout" && fragment.attrs["data-bond-id"] === "bond_up"
+    );
+
+    expect(plan.crossings).toHaveLength(0);
+    expect(upLine).toMatchObject({ attrs: { x1: 180, y1: 180 } });
+    expect(upKnockout).toBeUndefined();
+  });
+
+  it("resolves cross-object crossings with the later object as the default front bond", () => {
+    const back = moleculeObject({
+      id: "mol_back",
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 220, y: 180, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const front = moleculeObject({
+      id: "mol_front",
+      atoms: [
+        { id: "atom_001", element: "C", x: 180, y: 140, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 220, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+
+    const plan = planPageSvgRender(pageWithObjects([back, front]));
+    const elements = plan.fragments.flatMap(elementFragments);
+    const backFragment = plan.fragments.find((fragment) =>
+      fragment.attrs["data-object-id"] === "mol_back" && fragment.attrs["data-bond-layer-id"] === "bond_001"
+    );
+    const backLines = backFragment ? elementFragments(backFragment).filter((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "bond_001"
+    ) : [];
+    const crossingHit = elements.find((fragment) => fragment.attrs.class === "native-crossing-hit-target");
+    const backHoverDecorators = backFragment ? elementFragments(backFragment).filter((fragment) =>
+      fragment.attrs.class === "native-bond-hover-decorator" && fragment.attrs["data-bond-id"] === "bond_001"
+    ) : [];
+
+    expect(plan.crossings).toHaveLength(1);
+    expect(plan.crossings[0]).toMatchObject({
+      front: { objectId: "mol_front", bondId: "bond_001" },
+      back: { objectId: "mol_back", bondId: "bond_001" },
+      point: { x: 180, y: 180 }
+    });
+    expect(backLines).toHaveLength(2);
+    expect(crossingHit).toMatchObject({
+      attrs: {
+        "data-hit-target": "crossing",
+        "data-crossing-key": "mol_back::bond_001|mol_front::bond_001",
+        cx: 180,
+        cy: 180
+      }
+    });
+    expect(backHoverDecorators).toHaveLength(2);
+  });
+
+  it("uses explicit crossing overrides to flip the local gap", () => {
+    const back = moleculeObject({
+      id: "mol_back",
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 220, y: 180, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const front = moleculeObject({
+      id: "mol_front",
+      atoms: [
+        { id: "atom_001", element: "C", x: 180, y: 140, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 220, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const crossings: DocumentPage["crossings"] = [{
+      bonds: [
+        { objectId: "mol_back", bondId: "bond_001" },
+        { objectId: "mol_front", bondId: "bond_001" }
+      ],
+      front: { objectId: "mol_back", bondId: "bond_001" }
+    }];
+    const page = {
+      ...pageWithObjects([back, front]),
+      crossings
+    };
+
+    const plan = planPageSvgRender(page);
+    const frontFragment = plan.fragments.find((fragment) =>
+      fragment.attrs["data-object-id"] === "mol_front" && fragment.attrs["data-bond-layer-id"] === "bond_001"
+    );
+    const frontMoleculeLines = frontFragment ? elementFragments(frontFragment).filter((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "bond_001"
+    ) : [];
+
+    expect(plan.crossings[0]).toMatchObject({
+      front: { objectId: "mol_back", bondId: "bond_001" },
+      back: { objectId: "mol_front", bondId: "bond_001" },
+      hasOverride: true
+    });
+    expect(frontMoleculeLines).toHaveLength(2);
+  });
+
+  it("ignores endpoint touches instead of creating spurious crossing gaps", () => {
+    const horizontal = moleculeObject({
+      id: "mol_horizontal",
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 180, formalCharge: 0 }
+      ]
+    });
+    const vertical = moleculeObject({
+      id: "mol_vertical",
+      atoms: [
+        { id: "atom_001", element: "C", x: 180, y: 180, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 220, formalCharge: 0 }
+      ]
+    });
+
+    expect(planPageSvgRender(pageWithObjects([horizontal, vertical])).crossings).toHaveLength(0);
+  });
+
+  it("preserves mixed object order across text, charge marks, arrows, and graphics", () => {
+    const page = pageWithObjects([
+      {
+        id: "text_001",
+        type: "text",
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 40,
+        rotation: 0,
+        style: {},
+        text: "hello",
+        spans: []
+      },
+      {
+        id: "charge_001",
+        type: "electron-mark",
+        x: 130,
+        y: 20,
+        width: 24,
+        height: 24,
+        rotation: 0,
+        style: {},
+        markKind: "charge",
+        anchor: { kind: "point", point: { x: 142, y: 32 } },
+        charge: -1
+      },
+      {
+        id: "arrow_001",
+        type: "reaction-arrow",
+        x: 170,
+        y: 20,
+        width: 80,
+        height: 24,
+        rotation: 0,
+        style: {},
+        arrowKind: "forward",
+        start: { kind: "point", point: { x: 170, y: 32 } },
+        end: { kind: "point", point: { x: 250, y: 32 } },
+        labels: []
+      },
+      {
+        id: "graphic_001",
+        type: "graphic",
+        x: 270,
+        y: 20,
+        width: 60,
+        height: 30,
+        rotation: 0,
+        style: {},
+        graphicKind: "rect",
+        data: {}
+      }
+    ]);
+
+    const plan = planPageSvgRender(page);
+
+    expect(topLevelObjectRuns(plan.fragments)).toEqual([
+      "text_001",
+      "charge_001",
+      "arrow_001",
+      "graphic_001"
+    ]);
+    expect(plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001")).toHaveLength(2);
+  });
+
+  it("keeps the visible primitive stream stable while flattening object wrappers", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_snapshot",
+        structure: "CC",
+        atoms: [
+          { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+          { id: "atom_002", element: "O", x: 164, y: 160, formalCharge: -1 }
+        ],
+        bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double", display: { doubleBondSide: "left" } }]
+      }),
+      {
+        id: "text_snapshot",
+        type: "text",
+        x: 220,
+        y: 160,
+        width: 80,
+        height: 32,
+        rotation: 0,
+        style: {},
+        text: "N+",
+        spans: []
+      },
+      {
+        id: "charge_snapshot",
+        type: "electron-mark",
+        x: 320,
+        y: 160,
+        width: 18,
+        height: 18,
+        rotation: 0,
+        style: {},
+        markKind: "charge",
+        anchor: { kind: "point", point: { x: 329, y: 169 } },
+        charge: 1
+      }
+    ]);
+
+    expect(visiblePrimitiveSignature(planPageSvgRender(page).fragments)).toMatchInlineSnapshot(`
+      [
+        "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|162.4|157|162.4",
+        "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|157.6|157|157.6",
+        "rect|mol_snapshot|molecule|native-atom-label-background|157.35|143.936",
+        "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
+        "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
+        "text|text_snapshot|text|220|178|start",
+        "tspan|text_snapshot|text|220|178|start",
+        "text|charge_snapshot|electron-mark|329|169|middle",
+      ]
+    `);
+  });
+
+  it("resolves native drawing styles per object", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_red",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondColors: { bond_001: "#ff0000" }
+        }
+      }),
+      moleculeObject({
+        id: "mol_blue",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondColors: { bond_001: "#0000ff" }
+        }
+      })
+    ]);
+
+    const lineStrokes = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => String(fragment.attrs.class).includes("native-bond-line"))
+      .map((fragment) => fragment.attrs.stroke);
+
+    expect(lineStrokes).toEqual(["#ff0000", "#0000ff"]);
   });
 });

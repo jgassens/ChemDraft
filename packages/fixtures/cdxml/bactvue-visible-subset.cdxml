@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <t id="conditions" p="120 84">DIPEA, DMSO</t>
+    <graphic id="arrow1" GraphicType="Line" ArrowType="FullHead" BoundingBox="156 96 252 96" Start="156 96" End="252 96"/>
+    <fragment id="f_stereo_display">
+      <n id="s1" p="168 168"/>
+      <n id="s2" p="204 168"/>
+      <n id="s3" p="168 204"/>
+      <n id="s4" p="204 204"/>
+      <n id="s5" p="186 240"/>
+      <b id="sb1" B="s1" E="s2" Order="1" Display="WedgeBegin"/>
+      <b id="sb2" B="s1" E="s3" Order="1" Display="WedgedHashBegin"/>
+      <b id="sb3" B="s2" E="s4" Order="1" Display="Dash"/>
+      <b id="sb4" B="s3" E="s5" Order="1" Display="Bold"/>
+    </fragment>
+    <fragment id="f_back">
+      <n id="c1" p="168 300"/>
+      <n id="c2" p="240 372"/>
+      <b id="b_back" B="c1" E="c2" Order="1" Z="1" CrossingBonds="b_front"/>
+    </fragment>
+    <fragment id="f_front">
+      <n id="c3" p="168 372"/>
+      <n id="c4" p="240 300"/>
+      <b id="b_front" B="c3" E="c4" Order="1" Z="2" Display="Bold" CrossingBonds="b_back"/>
+    </fragment>
+    <graphic id="g_crossing" BoundingBox="198 330 210 342" GraphicType="Bracket" BracketType="Round" LipSize="60"/>
+    <bracketedgroup id="bg_crossing" BracketedObjectIDs="c1 c2">
+      <bracketattachment id="ba_crossing" GraphicID="g_crossing">
+        <crossingbond id="cb_crossing" BondID="b_back" InnerAtomID="c1"/>
+      </bracketattachment>
+    </bracketedgroup>
+  </page>
+</CDXML>

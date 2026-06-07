@@ -122,6 +122,44 @@ export const MoleculeBondSchema = z
   })
   .strict();
 
+export const BondRefSchema = z
+  .object({
+    objectId: IdSchema,
+    bondId: IdSchema
+  })
+  .strict();
+
+function bondRefKey(ref: z.infer<typeof BondRefSchema>): string {
+  return `${ref.objectId}::${ref.bondId}`;
+}
+
+export const CrossingOverrideSchema = z
+  .object({
+    bonds: z.tuple([BondRefSchema, BondRefSchema]),
+    front: BondRefSchema,
+    clearancePx: z.number().finite().positive().optional()
+  })
+  .strict()
+  .superRefine((crossing, context) => {
+    const [left, right] = crossing.bonds;
+    if (bondRefKey(left) === bondRefKey(right)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["bonds"],
+        message: "Crossing override must reference two distinct bonds."
+      });
+    }
+
+    const frontKey = bondRefKey(crossing.front);
+    if (frontKey !== bondRefKey(left) && frontKey !== bondRefKey(right)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["front"],
+        message: "Crossing override front bond must be one of the crossing bonds."
+      });
+    }
+  });
+
 export const MoleculeTransformStateSchema = z
   .object({
     scaleX: z.number().finite().positive().default(1),
@@ -301,7 +339,8 @@ export const DocumentPageSchema = z
       .strict()
       .default({ top: 72, right: 72, bottom: 72, left: 72 }),
     layout: PageLayoutSchema,
-    objects: z.array(DocumentObjectSchema)
+    objects: z.array(DocumentObjectSchema),
+    crossings: z.array(CrossingOverrideSchema).default([])
   })
   .strict()
   .superRefine((page, context) => {
@@ -352,6 +391,8 @@ export type RGroupDisplay = z.infer<typeof RGroupDisplaySchema>;
 export type MoleculeAtom = z.infer<typeof MoleculeAtomSchema>;
 export type MoleculeBondDisplay = z.infer<typeof MoleculeBondDisplaySchema>;
 export type MoleculeBond = z.infer<typeof MoleculeBondSchema>;
+export type BondRef = z.infer<typeof BondRefSchema>;
+export type CrossingOverride = z.infer<typeof CrossingOverrideSchema>;
 export type MoleculeTransformState = z.infer<typeof MoleculeTransformStateSchema>;
 export type MoleculeObject = z.infer<typeof MoleculeObjectSchema>;
 export type ReactionComponent = z.infer<typeof ReactionComponentSchema>;

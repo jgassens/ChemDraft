@@ -37,6 +37,7 @@ export function createQuickActions(
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
     { id: "document.save", title: "Save Native Document", icon: "save", shortcut: "Cmd+S", source: "core" },
+    { id: "document.saveAs", title: "Save Native Document As", icon: "save", shortcut: "Shift+Cmd+S", source: "core" },
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },

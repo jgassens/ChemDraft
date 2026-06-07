@@ -4,9 +4,7 @@ import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
   createPageLayout,
-  deserializeDocument,
   pageMarginFromLayout,
-  serializeDocument,
   nativeTextStyleFromObjectStyle,
   stylePresetToObjectStyle,
   textStyleToObjectStyle,
@@ -26,6 +24,13 @@ import {
   type TextSpan,
   type TextObject
 } from "@chemdraft/chem-core";
+import {
+  exportDocumentToCdxml,
+  openChemDraftPayload,
+  sha256Utf8Hex,
+  type ChemDraftOpenResult,
+  type CompatibilityConversionWarning
+} from "@chemdraft/cdx-compat";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { exportDocumentToSvg, type SvgExportResult } from "@chemdraft/export-engine";
@@ -49,8 +54,10 @@ export const phase4Timestamp = "2026-05-29T00:00:00.000Z";
 
 export interface NativeSavePayload {
   filename: string;
-  mimeType: "application/vnd.chemdraft+json";
+  mimeType: "chemical/x-cdxml";
   contents: string;
+  warnings: CompatibilityConversionWarning[];
+  payloadHash: string;
 }
 
 export interface ClipboardPasteResult {
@@ -3413,33 +3420,9 @@ export function reorderNativeMoleculeParts(
   target: NativeMoleculePartReorderTarget,
   placement: ObjectReorderPlacement
 ): ChemDraftDocument {
-  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === target.objectId));
-  const molecule = page?.objects.find((object): object is MoleculeObject =>
-    object.id === target.objectId && object.type === "molecule"
-  );
-  if (!molecule || molecule.bonds.length < 2) {
-    return document;
-  }
-
-  const targetBondIds = nativeMoleculePartBondIds(molecule, target);
-  if (targetBondIds.size === 0 || targetBondIds.size === molecule.bonds.length) {
-    return document;
-  }
-
-  const reorderedBonds = reorderMoleculeBonds(molecule.bonds, targetBondIds, placement);
-  if (reorderedBonds.every((bond, index) => bond.id === molecule.bonds[index]?.id)) {
-    return document;
-  }
-
-  return applyPatch(
-    document,
-    {
-      op: "updateObject",
-      objectId: molecule.id,
-      changes: { bonds: reorderedBonds }
-    },
-    { now: phase4Timestamp }
-  );
+  void target;
+  void placement;
+  return document;
 }
 
 export function moveNativeMoleculeParts(
@@ -4765,15 +4748,18 @@ export function applyEditorSaveResultToSelectedMolecule(
 }
 
 export function createNativeSavePayload(document: ChemDraftDocument): NativeSavePayload {
+  const result = exportDocumentToCdxml(document);
   return {
     filename: `${sanitizeFilename(document.title.replace(/\.chemdraft$/i, ""))}.chemdraft`,
-    mimeType: "application/vnd.chemdraft+json",
-    contents: serializeDocument(document)
+    mimeType: "chemical/x-cdxml",
+    contents: result.contents,
+    warnings: result.warnings,
+    payloadHash: sha256Utf8Hex(result.contents)
   };
 }
 
-export function openNativeDocument(contents: string): ChemDraftDocument {
-  return deserializeDocument(contents);
+export function openNativeDocument(contents: string): ChemDraftOpenResult {
+  return openChemDraftPayload(contents);
 }
 
 export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageSizePresetId): ChemDraftDocument {

@@ -1,4 +1,5 @@
 import {
+  createElement,
   useCallback,
   useEffect,
   useMemo,
@@ -13,20 +14,25 @@ import {
 } from "react";
 import {
   DefaultNativeTextStyle,
+  applyPatches,
   createDocumentHistory,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   redo as redoDocumentHistory,
   undo as undoDocumentHistory,
+  type BondRef,
   type ChemDraftDocument,
   type DocumentHistory,
   type DocumentObject,
+  type DocumentPatch,
   type MoleculeObject,
   type NativeDrawingStyle,
   type NativeTextStyle,
+  type ObjectReorderPlacement,
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
   buildCrosshairTicks,
@@ -44,6 +50,15 @@ import {
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
+import {
+  bondRefKey,
+  planPageSvgRender,
+  type PageSvgAttributeValue,
+  type PageSvgElementFragment,
+  type PageSvgFragment,
+  type PageSvgRenderPlan,
+  type ResolvedBondCrossing
+} from "@chemdraft/layout-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
@@ -117,7 +132,6 @@ import {
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
-  reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
   resizeNativeMoleculeParts,
   resizeNativeMoleculeObject,
@@ -191,6 +205,8 @@ export { nativeMoleculeCanvasHoverTarget };
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
 type ClientPoint = { x: number; y: number };
+type ObjectPointerEvent = PointerEvent<Element>;
+type ObjectMouseEvent = ReactMouseEvent<Element>;
 type PaletteDragState = {
   toolsetId: string;
   pointerId: number;
@@ -345,6 +361,16 @@ type TextResizeState = {
   startObjectWidth: number;
   startObjectHeight: number;
 };
+type NativeFileState = {
+  path?: string;
+  dirty: boolean;
+  lastSavedPayloadHash?: string;
+};
+type ResolvedOpenDocument = {
+  document: ChemDraftDocument;
+  source: ReturnType<typeof openNativeDocument>["source"];
+  statusSourceLabel?: string;
+};
 export type NativeMoleculeSelectionPart =
   | { objectId: string; kind: "atom"; atomId: string }
   | { objectId: string; kind: "bond"; bondId: string }
@@ -381,9 +407,17 @@ type SelectionMarqueeState = {
 type ObjectContextMenuState = {
   objectId: string;
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
+  bondDepthContext?: BondDepthContext;
   x: number;
   y: number;
 };
+type BondDepthMenuCrossing = Pick<ResolvedBondCrossing, "key" | "bonds" | "front" | "back" | "hasOverride">;
+export type BondDepthCommandId = "bondDepth.bringInFront" | "bondDepth.sendBehind" | "bondDepth.useDefault";
+export interface BondDepthContext {
+  targetBondRefs: BondRef[];
+  relevantCrossings: BondDepthMenuCrossing[];
+  hasOverrides: boolean;
+}
 type LayerContextMenuItem = {
   commandId: string;
   label: string;
@@ -399,10 +433,10 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
-  { commandId: "layout.bringForward", label: "Move Forward" },
-  { commandId: "layout.bringToFront", label: "Move to Front" },
-  { commandId: "layout.sendBackward", label: "Move Backward" },
-  { commandId: "layout.sendToBack", label: "Move to Back" }
+  { commandId: "layout.bringForward", label: "Move Object Forward" },
+  { commandId: "layout.bringToFront", label: "Move Object to Front" },
+  { commandId: "layout.sendBackward", label: "Move Object Backward" },
+  { commandId: "layout.sendToBack", label: "Move Object to Back" }
 ];
 
 export interface MainWindowProps {
@@ -452,6 +486,7 @@ export function MainWindow({
     createDocumentHistory(initialDocument ?? createPhase4Document())
   );
   const document = documentHistory.present;
+  const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
@@ -490,6 +525,7 @@ export function MainWindow({
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
+  const fileStateRef = useRef<NativeFileState>(fileState);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
@@ -499,6 +535,7 @@ export function MainWindow({
 
   documentRef.current = document;
   documentHistoryRef.current = documentHistory;
+  fileStateRef.current = fileState;
   activeToolCommandIdRef.current = activeToolState.activeCommandId;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
 
@@ -561,6 +598,30 @@ export function MainWindow({
   const bondToolActive = activeNativeBondToolStyle !== undefined;
   const activeChargeToolValue = chargeValueForToolCommand(activeToolState.activeCommandId);
   const activePage = document.pages[0];
+  const plannedDisplayPage = useMemo(() => {
+    if (!nativeDoubleBondSidePreview) {
+      return activePage;
+    }
+
+    return {
+      ...activePage,
+      objects: activePage.objects.map((object) => {
+        if (object.type !== "molecule" || object.id !== nativeDoubleBondSidePreview.objectId) {
+          return object;
+        }
+
+        return {
+          ...object,
+          bonds: object.bonds.map((bond) => (
+            bond.id === nativeDoubleBondSidePreview.bondId && bond.order === "double"
+              ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: nativeDoubleBondSidePreview.side } }
+              : bond
+          ))
+        };
+      })
+    };
+  }, [activePage, nativeDoubleBondSidePreview]);
+  const pageSvgRenderPlan = useMemo(() => planPageSvgRender(plannedDisplayPage), [plannedDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
@@ -653,11 +714,13 @@ export function MainWindow({
     updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
   }, [updateToolbarStyleTargetSnapshot]);
-  const resetDocumentHistory = useCallback((nextDocument: ChemDraftDocument) => {
+  const resetDocumentHistory = useCallback((nextDocument: ChemDraftDocument, nextFileState: NativeFileState = { dirty: false }) => {
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
     installDocumentHistory(createDocumentHistory(nextDocument));
+    fileStateRef.current = nextFileState;
+    setFileState(nextFileState);
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
@@ -691,6 +754,11 @@ export function MainWindow({
       past: [...currentHistory.past, currentHistory.present].slice(-DOCUMENT_HISTORY_LIMIT),
       present: nextDocument,
       future: []
+    });
+    setFileState((current) => {
+      const nextFileState = { ...current, dirty: true };
+      fileStateRef.current = nextFileState;
+      return nextFileState;
     });
     return true;
   }, [installDocumentHistory]);
@@ -1599,6 +1667,11 @@ export function MainWindow({
     }
 
     installDocumentHistory(nextHistory);
+    setFileState((current) => {
+      const nextFileState = { ...current, dirty: true };
+      fileStateRef.current = nextFileState;
+      return nextFileState;
+    });
     if (nextHistory.present.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
@@ -1611,6 +1684,101 @@ export function MainWindow({
     setLastAnalysis(null);
     setStatus(direction === "undo" ? "Undid last document change" : "Redid document change");
   }, [assignHoveredNativeDeleteTarget, installDocumentHistory]);
+
+  const clearDocumentInteractionState = useCallback(() => {
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveTextSelection(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setLastAnalysis(null);
+  }, [assignHoveredNativeDeleteTarget]);
+
+  const openDocumentContents = useCallback((
+    contents: string,
+    displayName: string,
+    path?: string
+  ) => {
+    const opened = openNativeDocument(contents);
+    const resolvedOpen = resolveOpenResultDocument(opened);
+    if (!resolvedOpen) {
+      throw new Error(formatOpenFailure(opened.warnings));
+    }
+    resetDocumentHistory(resolvedOpen.document, {
+      path,
+      dirty: false,
+      lastSavedPayloadHash: sha256Utf8Hex(contents)
+    });
+    clearDocumentInteractionState();
+    setStatus(formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel));
+  }, [clearDocumentInteractionState, resetDocumentHistory]);
+
+  const openDocumentFromNativePicker = useCallback(async () => {
+    if (!isDesktopRuntime()) {
+      fileInputRef.current?.click();
+      return;
+    }
+
+    const path = await pickNativeOpenPath();
+    if (!path) {
+      setStatus("Open canceled");
+      return;
+    }
+
+    try {
+      const contents = await readNativeTextFile(path);
+      openDocumentContents(contents, nativePathBasename(path), path);
+    } catch (error) {
+      setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [openDocumentContents]);
+
+  const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
+    const payload = createNativeSavePayload(documentRef.current);
+
+    if (!isDesktopRuntime()) {
+      downloadText(payload.filename, payload.contents, payload.mimeType);
+      setFileState((current) => {
+        const nextFileState = {
+          ...current,
+          dirty: false,
+          lastSavedPayloadHash: payload.payloadHash
+        };
+        fileStateRef.current = nextFileState;
+        return nextFileState;
+      });
+      setStatus(formatSaveStatus(payload.filename, payload.warnings));
+      return;
+    }
+
+    let path = forceSaveAs ? undefined : fileStateRef.current.path;
+    if (!path) {
+      path = await pickNativeSavePath(fileStateRef.current.path ?? payload.filename);
+    }
+    if (!path) {
+      setStatus("Save canceled");
+      return;
+    }
+
+    const finalPath = ensureChemDraftFileExtension(path);
+    try {
+      await writeNativeTextFile(finalPath, payload.contents);
+      const nextFileState = {
+        path: finalPath,
+        dirty: false,
+        lastSavedPayloadHash: payload.payloadHash
+      };
+      fileStateRef.current = nextFileState;
+      setFileState(nextFileState);
+      setStatus(formatSaveStatus(nativePathBasename(finalPath), payload.warnings));
+    } catch (error) {
+      setStatus(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, []);
 
   const registry = useMemo(() => {
     const commandRegistry = new CommandRegistry();
@@ -1644,12 +1812,13 @@ export function MainWindow({
           selectAllCanvasObjects();
         }
         if (action.id === "document.open") {
-          fileInputRef.current?.click();
+          await openDocumentFromNativePicker();
         }
         if (action.id === "document.save") {
-          const payload = createNativeSavePayload(document);
-          downloadText(payload.filename, payload.contents, payload.mimeType);
-          setStatus(`Saved ${payload.filename}`);
+          await saveCurrentDocument(false);
+        }
+        if (action.id === "document.saveAs") {
+          await saveCurrentDocument(true);
         }
         if (action.id === "clipboard.paste") {
           await pasteClipboard();
@@ -1751,14 +1920,9 @@ export function MainWindow({
               ? "back"
               : "backward";
         const changed = commitDocumentChange((current) =>
-          selectedNativeMoleculePart
-            ? reorderNativeMoleculeParts(current, selectedNativeMoleculePart, placement)
-            : reorderSelectedDocumentObject(current, placement)
+          reorderSelectedDocumentObjectWithCrossingDefaults(current, placement)
         );
-        const partSelected = selectedNativeMoleculePart !== undefined;
-        setStatus(changed
-          ? partSelected ? `${action.title} selected molecule part` : action.title
-          : partSelected ? "Selected molecule part cannot move layers" : "No selected object");
+        setStatus(changed ? action.title : "No selected object");
       });
     });
 
@@ -1887,10 +2051,12 @@ export function MainWindow({
     document,
     layerActions,
     nativePalette,
+    openDocumentFromNativePicker,
     pasteClipboard,
     quickActions,
     resetDocumentHistory,
     restoreDocumentHistory,
+    saveCurrentDocument,
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
     setHoveredNativeAtomElement,
@@ -2068,16 +2234,7 @@ export function MainWindow({
     void file
       .text()
       .then((contents) => {
-        const opened = openNativeDocument(contents);
-        resetDocumentHistory(opened);
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
-        setFreeformNativeBond(undefined);
-        setLastAnalysis(null);
-        setStatus(`Opened ${file.name}`);
+        openDocumentContents(contents, file.name);
       })
       .catch((error: unknown) => {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -2178,7 +2335,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const startNativePlacementDrag = useCallback((
-    event: PointerEvent<HTMLDivElement>,
+    event: ObjectPointerEvent,
     point: ClientPoint,
     placement: { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle } | { kind: "template"; templateId: NativeMoleculeTemplateId }
   ): boolean => {
@@ -2412,7 +2569,7 @@ export function MainWindow({
     } : undefined);
   }, []);
 
-  const clearNativeBondDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const clearNativeBondDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativeBondDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       nativeBondDragRef.current = null;
@@ -2423,7 +2580,7 @@ export function MainWindow({
     }
   }, []);
 
-  const clearNativeBondEditDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const clearNativeBondEditDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativeBondEditDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       nativeBondEditDragRef.current = null;
@@ -2433,7 +2590,7 @@ export function MainWindow({
     }
   }, []);
 
-  const clearNativePlacementDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const clearNativePlacementDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativePlacementDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       nativePlacementDragRef.current = null;
@@ -2701,7 +2858,7 @@ export function MainWindow({
     return true;
   }, [installDocumentHistory, replacePresentDocument, resizeTextDocumentFromDrag]);
 
-  const clearObjectDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const clearObjectDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectDragRef.current = null;
@@ -2711,7 +2868,7 @@ export function MainWindow({
     }
   }, []);
 
-  const clearObjectRotateDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+  const clearObjectRotateDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectRotateDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectRotateDragRef.current = null;
@@ -2725,7 +2882,7 @@ export function MainWindow({
     }
   }, []);
 
-  const clearMoleculeResizeDrag = useCallback((event: PointerEvent<HTMLElement>) => {
+  const clearMoleculeResizeDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = moleculeResizeDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       moleculeResizeDragRef.current = null;
@@ -2739,7 +2896,7 @@ export function MainWindow({
     }
   }, []);
 
-  const clearNativePartDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const clearNativePartDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativePartDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       nativePartDragRef.current = null;
@@ -2753,7 +2910,7 @@ export function MainWindow({
     }
   }, []);
 
-  const clearTextResize = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const clearTextResize = useCallback((event: ObjectPointerEvent) => {
     const drag = textResizeRef.current;
     if (drag?.pointerId === event.pointerId) {
       textResizeRef.current = null;
@@ -2852,6 +3009,13 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
+    groupTransformMachineRef.current = interactionReducer(initialInteractionState(), {
+      type: "pointerDown",
+      pointerId: event.pointerId,
+      world: point,
+      target: { kind: "empty" },
+      dragKind: mode === "rotate" ? "group-rotate" : "group-resize"
+    });
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
     setStatus(mode === "rotate" ? "Rotate selected group" : "Resize selected group");
   }, [
@@ -2867,7 +3031,7 @@ export function MainWindow({
     (event: PointerEvent<HTMLButtonElement>) => handleGroupTransformPointerDown("resize", event),
   [handleGroupTransformPointerDown]);
 
-  const handlePagePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const handlePagePointerDown = useCallback((event: ObjectPointerEvent) => {
     if (event.button !== 0 || event.defaultPrevented) {
       return;
     }
@@ -2879,6 +3043,25 @@ export function MainWindow({
     }
 
     if (activeToolState.activeKind === "selection") {
+      if (event.detail >= 2) {
+        const object = nativeMoleculeObjectAtPoint(document.pages[0].objects, point);
+        if (object) {
+          event.preventDefault();
+          event.stopPropagation();
+          replacePresentDocument((current) => selectDocumentObject(current, object.id));
+          setSelectedNativeMoleculePart(undefined);
+          setActiveEditorObjectId(undefined);
+          setActiveTextEditObjectId(undefined);
+          setActiveAtomLabelEdit(undefined);
+          setHoveredNativeAtom(undefined);
+          setFreeformNativeBond(undefined);
+          setNativeDoubleBondSidePreview(undefined);
+          assignHoveredNativeDeleteTarget(undefined);
+          setStatus("Selected molecule");
+          return;
+        }
+      }
+
       event.preventDefault();
       selectionMarqueeRef.current = {
         pointerId: event.pointerId,
@@ -2942,13 +3125,13 @@ export function MainWindow({
     startNativePlacementDrag
   ]);
 
-  const handlePageContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+  const handlePageContextMenu = useCallback((event: ObjectMouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
   }, []);
 
-  const handlePagePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const handlePagePointerMove = useCallback((event: ObjectPointerEvent) => {
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -3142,7 +3325,7 @@ export function MainWindow({
     updateNativeCanvasHover
   ]);
 
-  const handlePagePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const handlePagePointerUp = useCallback((event: ObjectPointerEvent) => {
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -3302,13 +3485,14 @@ export function MainWindow({
     replacePresentDocument
   ]);
 
-  const handlePagePointerCancel = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       if (groupTransform.dragging) {
         replacePresentDocument(groupTransform.startDocument);
       }
       groupTransformDragRef.current = null;
+      groupTransformMachineRef.current = initialInteractionState();
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -3370,13 +3554,33 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
   }, []);
 
-  const handleObjectPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerDown = useCallback((objectId: string, event: ObjectPointerEvent) => {
     if (event.button !== 0) {
       return;
     }
 
-    const object = findDocumentObject(document, objectId);
     const point = pagePointFromPointerEvent(event);
+    // Slice 1b: resolve the press by geometry, not by whichever overlapping wrapper the
+    // browser happened to deliver the event to. A molecule's rectangular wrapper otherwise
+    // swallows a press meant for a molecule beneath it (the rotaxane-overlap bug: hover
+    // highlights the lower atom in red but the press selects nothing). This mirrors the hover
+    // hit path so click and hover can never disagree. We only re-target among molecules — a
+    // press the DOM delivered to a non-molecule object (text, charge mark) is never hijacked —
+    // and we move pointer capture to the resolved molecule's wrapper so every drag/up handler
+    // (all keyed by objectId) stays consistent with the re-targeted object.
+    let captureElement: Element = event.currentTarget;
+    if (point && findDocumentObject(document, objectId)?.type === "molecule") {
+      const resolved = nativeMoleculeCanvasHoverTarget(document, point, event.target);
+      if (resolved && resolved.objectId !== objectId) {
+        objectId = resolved.objectId;
+        const resolvedWrapper = pageRef.current?.querySelector(`[data-object-id="${CSS.escape(objectId)}"]`);
+        if (resolvedWrapper) {
+          captureElement = resolvedWrapper;
+        }
+      }
+    }
+
+    const object = findDocumentObject(document, objectId);
     const chargeMarkActive = object?.type === "electron-mark" && object.markKind === "charge";
     const nativeMoleculeHit = object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(object, point, event.target)
@@ -3435,7 +3639,7 @@ export function MainWindow({
 
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
       event.preventDefault();
-      if (event.detail >= 2 && nativeMoleculeHit) {
+      if (object.type === "molecule" && event.detail >= 2) {
         event.stopPropagation();
         replacePresentDocument((current) => selectDocumentObject(current, objectId));
         setActiveEditorObjectId(undefined);
@@ -3499,7 +3703,7 @@ export function MainWindow({
           groupObjectIds,
           dragging: false
         };
-        event.currentTarget.setPointerCapture(event.pointerId);
+        captureElement.setPointerCapture(event.pointerId);
         return;
       }
 
@@ -3588,7 +3792,7 @@ export function MainWindow({
           bondTarget: nativeMoleculeHit?.kind === "bond" ? { objectId, ...nativeMoleculeHit } : undefined,
           dragging: false
         };
-        event.currentTarget.setPointerCapture(event.pointerId);
+        captureElement.setPointerCapture(event.pointerId);
       }
       return;
     }
@@ -3605,7 +3809,7 @@ export function MainWindow({
           latestPoint: point,
           dragging: false
         };
-        event.currentTarget.setPointerCapture(event.pointerId);
+        captureElement.setPointerCapture(event.pointerId);
         return;
       }
     }
@@ -3633,7 +3837,7 @@ export function MainWindow({
         dragging: false,
         freeformUnlocked: false
       };
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureElement.setPointerCapture(event.pointerId);
       setHoveredNativeAtom({
         objectId,
         atomId: preview.atomId,
@@ -3822,36 +4026,57 @@ export function MainWindow({
     selectedNativeMoleculePart
   ]);
 
-  const handleObjectContextMenu = useCallback((objectId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleObjectContextMenu = useCallback((objectId: string, event: ObjectMouseEvent) => {
     const currentDocument = documentRef.current;
-    const object = findDocumentObject(currentDocument, objectId);
     const point = pagePointFromPointerEvent(event);
-    const nativeMoleculeHit = object?.type === "molecule" && point
+    const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
+
+    // Resolve by geometry before crossing actions, so a right-click at a weave still acts
+    // on the atom/bond under the pointer. Crossing state is secondary menu context.
+    const resolvedNativeHit = point
+      ? nativeMoleculeCanvasHoverTarget(currentDocument, point, event.target)
+      : undefined;
+    let nativeMoleculeHit: NativeMoleculeDeleteHit | undefined;
+    if (resolvedNativeHit) {
+      objectId = resolvedNativeHit.objectId;
+      nativeMoleculeHit = resolvedNativeHit.kind === "atom"
+        ? {
+            kind: "atom",
+            atomId: resolvedNativeHit.atomId,
+            distanceToPointer: resolvedNativeHit.distanceToPointer
+          }
+        : {
+            kind: "bond",
+            bondId: resolvedNativeHit.bondId,
+            fromAtomId: resolvedNativeHit.fromAtomId,
+            toAtomId: resolvedNativeHit.toAtomId,
+            distanceToPointer: resolvedNativeHit.distanceToPointer
+          };
+    } else if (crossingHit) {
+      objectId = crossingHit.front.objectId;
+    }
+    const object = findDocumentObject(currentDocument, objectId);
+    nativeMoleculeHit ??= object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(object, point, event.target)
       : undefined;
     let nextSelectedNativePart: NativeMoleculeSelectionPart | undefined;
     let targetKind: ObjectContextMenuState["targetKind"] = "object";
 
-    if (object?.type === "molecule" && !nativeMoleculeHit) {
+    if (object?.type === "molecule" && nativeMoleculeHit) {
+      const selectionResolution = nativeContextMenuSelectionResolutionFromHit(
+        currentDocument,
+        objectId,
+        nativeMoleculeHit,
+        selectedNativeMoleculePart
+      );
+      nextSelectedNativePart = selectionResolution.selectedPart;
+      targetKind = selectionResolution.targetKind;
+    } else if (object?.type === "molecule" && !nativeMoleculeHit) {
       return;
     }
 
     if (!object || !shouldActivateDocumentObject(object, "selection")) {
       return;
-    }
-
-    if (object.type === "molecule" && nativeMoleculeHit) {
-      const currentPart = selectedNativeMoleculePart?.objectId === objectId ? selectedNativeMoleculePart : undefined;
-      if (currentPart && nativeSelectionContainsHit(currentPart, nativeMoleculeHit)) {
-        nextSelectedNativePart = currentPart;
-        targetKind = currentPart.kind;
-      } else if (isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart)) {
-        nextSelectedNativePart = undefined;
-        targetKind = "object";
-      } else {
-        nextSelectedNativePart = nativeSelectionFromHit(objectId, nativeMoleculeHit);
-        targetKind = nextSelectedNativePart.kind;
-      }
     }
 
     event.preventDefault();
@@ -3867,18 +4092,22 @@ export function MainWindow({
     setObjectContextMenu({
       objectId,
       targetKind,
+      bondDepthContext: bondDepthContextFromNativeSelection(nextSelectedNativePart, pageSvgRenderPlan.crossings),
       x: event.clientX,
       y: event.clientY
     });
-    setStatus(targetKind === "object" ? "Layer options for selected object" : "Layer options for selected molecule part");
+    setStatus(crossingHit && targetKind !== "object"
+        ? "Layer and bond depth options for selected molecule part"
+        : targetKind === "object" ? "Layer options for selected object" : "Layer options for selected molecule part");
   }, [
     assignHoveredNativeDeleteTarget,
     pagePointFromPointerEvent,
+    pageSvgRenderPlan.crossings,
     replacePresentDocument,
     selectedNativeMoleculePart
   ]);
 
-  const handleObjectPointerMove = useCallback((objectId: string, event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId && textResize.objectId === objectId) {
@@ -4043,7 +4272,7 @@ export function MainWindow({
     updateNativeCanvasHover
   ]);
 
-  const handleObjectPointerUp = useCallback((objectId: string, event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerUp = useCallback((objectId: string, event: ObjectPointerEvent) => {
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId && textResize.objectId === objectId) {
       event.stopPropagation();
@@ -4179,7 +4408,7 @@ export function MainWindow({
     pagePointFromPointerEvent
   ]);
 
-  const handleObjectPointerCancel = useCallback((event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerCancel = useCallback((event: ObjectPointerEvent) => {
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId) {
       replacePresentDocument(textResize.startDocument);
@@ -4267,7 +4496,7 @@ export function MainWindow({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".chemdraft,application/json,application/vnd.chemdraft+json"
+        accept=".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
         className="native-file-input"
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
@@ -4346,6 +4575,18 @@ export function MainWindow({
                     verticalTicks={verticalCrosshairTicks}
                   />
                 ) : null}
+                <PageSvgSurface
+                  ariaLabel={document.title}
+                  pageHeight={activePage.height}
+                  pageWidth={activePage.width}
+                  plan={pageSvgRenderPlan}
+                  onContextMenu={handleObjectContextMenu}
+                  onPointerCancel={handleObjectPointerCancel}
+                  onPointerDown={handleObjectPointerDown}
+                  onPointerLeave={handleObjectPointerLeave}
+                  onPointerMove={handleObjectPointerMove}
+                  onPointerUp={handleObjectPointerUp}
+                />
                 {selectionMarquee ? (
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
@@ -4439,6 +4680,9 @@ export function MainWindow({
             onStatus={setStatus}
           />
         ) : null}
+        <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
+          Build 6.6.23.12-codex
+        </div>
       </section>
       {objectContextMenu ? (
         <ObjectLayerContextMenu
@@ -4446,9 +4690,19 @@ export function MainWindow({
           objectIndex={activePage.objects.findIndex((object) => object.id === objectContextMenu.objectId)}
           objectCount={activePage.objects.length}
           targetKind={objectContextMenu.targetKind}
+          bondDepthContext={objectContextMenu.bondDepthContext}
           position={{ x: objectContextMenu.x, y: objectContextMenu.y }}
           onInvoke={(commandId) => {
+            const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (isBondDepthCommandId(commandId) && menu?.bondDepthContext) {
+              const changed = commitDocumentChange((current) => {
+                const patches = planBondDepthPatches(current.pages[0].id, menu.bondDepthContext, commandId);
+                return patches.length > 0 ? applyPatches(current, patches) : current;
+              });
+              setStatus(changed ? bondDepthStatusForCommand(commandId) : "Bond depth unchanged");
+              return;
+            }
             invoke(commandId);
           }}
         />
@@ -4463,6 +4717,20 @@ function clamp(value: number, min: number, max: number): number {
 
 function clientPointDistance(left: ClientPoint, right: ClientPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function findNearestCrossingHit(
+  crossings: readonly ResolvedBondCrossing[],
+  point: ClientPoint,
+  hitRadius = 10
+): ResolvedBondCrossing | undefined {
+  return crossings
+    .map((crossing) => ({
+      crossing,
+      distance: clientPointDistance(point, crossing.point)
+    }))
+    .filter((candidate) => candidate.distance <= hitRadius)
+    .sort((left, right) => left.distance - right.distance || left.crossing.key.localeCompare(right.crossing.key))[0]?.crossing;
 }
 
 function documentObjectCenter(object: Pick<DocumentObject, "x" | "y" | "width" | "height">): ClientPoint {
@@ -4803,34 +5071,6 @@ function bondLineSegments(
   }
 
   return [{ x1, y1, x2, y2, segment: "primary" }];
-}
-
-function bondKnockoutLineSegment(
-  segment: Pick<NativeBondLineSegment, "x1" | "y1" | "x2" | "y2">,
-  drawingStyle: NativeDrawingStyle
-): Pick<NativeBondLineSegment, "x1" | "y1" | "x2" | "y2"> | undefined {
-  const dx = segment.x2 - segment.x1;
-  const dy = segment.y2 - segment.y1;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return undefined;
-  }
-
-  const endpointInset = Math.min(
-    drawingStyle.bondStrokeWidthPx + drawingStyle.bondOverlapClearancePx,
-    Math.max(0, length / 2 - 0.5)
-  );
-  if (endpointInset <= 0) {
-    return undefined;
-  }
-
-  const unit = { x: dx / length, y: dy / length };
-  return {
-    x1: segment.x1 + unit.x * endpointInset,
-    y1: segment.y1 + unit.y * endpointInset,
-    x2: segment.x2 - unit.x * endpointInset,
-    y2: segment.y2 - unit.y * endpointInset
-  };
 }
 
 function nativeBondDisplayStyle(bond: MoleculeObject["bonds"][number]): NativeBondDisplayStyle | undefined {
@@ -5520,6 +5760,7 @@ export function ObjectLayerContextMenu({
   objectIndex,
   objectCount,
   targetKind,
+  bondDepthContext,
   position,
   onInvoke
 }: {
@@ -5527,10 +5768,13 @@ export function ObjectLayerContextMenu({
   objectIndex: number;
   objectCount: number;
   targetKind: ObjectContextMenuState["targetKind"];
+  bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
   position: ClientPoint;
   onInvoke(commandId: string): void;
 }) {
   const layerLabel = contextMenuLayerLabel(targetKind, objectIndex, objectCount);
+  const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
+  const hasMultipleBondTargets = (bondDepthContext?.targetBondRefs.length ?? 0) > 1;
 
   return (
     <div
@@ -5546,6 +5790,41 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {hasBondDepthContext ? (
+        <>
+          <div className="object-context-menu-title">Bond depth</div>
+          <button
+            type="button"
+            role="menuitem"
+            className="object-context-menu-item"
+            data-command-id="bondDepth.bringInFront"
+            onClick={() => onInvoke("bondDepth.bringInFront")}
+          >
+            {hasMultipleBondTargets ? "Bring Selected Bonds In Front" : "Bring Bond In Front"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="object-context-menu-item"
+            data-command-id="bondDepth.sendBehind"
+            onClick={() => onInvoke("bondDepth.sendBehind")}
+          >
+            {hasMultipleBondTargets ? "Send Selected Bonds Behind" : "Send Bond Behind"}
+          </button>
+          {bondDepthContext?.hasOverrides ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="object-context-menu-item"
+              data-command-id="bondDepth.useDefault"
+              onClick={() => onInvoke("bondDepth.useDefault")}
+            >
+              Use Default Bond Depth
+            </button>
+          ) : null}
+          <div className="object-context-menu-separator" role="separator" />
+        </>
+      ) : null}
       <div className="object-context-menu-title">{layerLabel}</div>
       {layerContextMenuItems.map((item) => (
         <button
@@ -5568,14 +5847,8 @@ function contextMenuLayerLabel(
   objectIndex: number,
   objectCount: number
 ): string {
-  if (targetKind === "atom") {
-    return "Selected atom depth";
-  }
-  if (targetKind === "bond") {
-    return "Selected bond depth";
-  }
-  if (targetKind === "parts") {
-    return "Selected parts depth";
+  if (targetKind === "atom" || targetKind === "bond" || targetKind === "parts") {
+    return "Molecule layer";
   }
 
   return objectIndex >= 0 ? `Layer ${objectIndex + 1} of ${objectCount}` : "Layer options";
@@ -5666,6 +5939,33 @@ function objectBounds(object: DocumentObject): { x: number; y: number; width: nu
     width: object.width,
     height: object.height
   };
+}
+
+function pointInsideObjectBounds(
+  point: ClientPoint,
+  object: DocumentObject,
+  paddingPx = 0
+): boolean {
+  const bounds = objectBounds(object);
+  return (
+    point.x >= bounds.x - paddingPx &&
+    point.x <= bounds.x + bounds.width + paddingPx &&
+    point.y >= bounds.y - paddingPx &&
+    point.y <= bounds.y + bounds.height + paddingPx
+  );
+}
+
+export function nativeMoleculeObjectAtPoint(
+  objects: readonly DocumentObject[],
+  point: ClientPoint
+): MoleculeObject | undefined {
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    const object = objects[index];
+    if (object.type === "molecule" && isNativeMoleculeGraph(object) && pointInsideObjectBounds(point, object, 4)) {
+      return object;
+    }
+  }
+  return undefined;
 }
 
 function moleculeTransformFrameForSelection(
@@ -5794,13 +6094,44 @@ function segmentsIntersect(a: ClientPoint, b: ClientPoint, c: ClientPoint, d: Cl
   return t >= 0 && t <= 1 && u >= 0 && u <= 1;
 }
 
-function nativeSelectionFromHit(
+export function nativeSelectionFromHit(
   objectId: string,
   hit: NativeMoleculeDeleteHit
 ): NativeMoleculeSelectionPart {
   return hit.kind === "atom"
     ? { objectId, kind: "atom", atomId: hit.atomId }
     : { objectId, kind: "bond", bondId: hit.bondId };
+}
+
+export function nativeContextMenuSelectionFromHit(
+  objectId: string,
+  hit: NativeMoleculeDeleteHit,
+  currentPart: NativeMoleculeSelectionPart | undefined
+): NativeMoleculeSelectionPart {
+  const compatibleCurrentPart = currentPart?.objectId === objectId ? currentPart : undefined;
+  return compatibleCurrentPart && nativeSelectionContainsHit(compatibleCurrentPart, hit)
+    ? compatibleCurrentPart
+    : nativeSelectionFromHit(objectId, hit);
+}
+
+export function nativeContextMenuSelectionResolutionFromHit(
+  document: ChemDraftDocument,
+  objectId: string,
+  hit: NativeMoleculeDeleteHit,
+  currentPart: NativeMoleculeSelectionPart | undefined
+): {
+  selectedPart?: NativeMoleculeSelectionPart;
+  targetKind: "object" | NativeMoleculeSelectionPart["kind"];
+} {
+  if (isWholeNativeMoleculeSelected(document, objectId, currentPart)) {
+    return { targetKind: "object" };
+  }
+
+  const selectedPart = nativeContextMenuSelectionFromHit(objectId, hit, currentPart);
+  return {
+    selectedPart,
+    targetKind: selectedPart.kind
+  };
 }
 
 function nativeSelectionAtomIds(part: NativeMoleculeSelectionPart | undefined): string[] {
@@ -5817,6 +6148,199 @@ function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): 
   }
 
   return part?.kind === "parts" ? [...part.bondIds] : [];
+}
+
+export function bondDepthRefsFromNativeSelection(part: NativeMoleculeSelectionPart | undefined): BondRef[] {
+  return nativeSelectionBondIds(part).map((bondId) => ({
+    objectId: part?.objectId ?? "",
+    bondId
+  })).filter((ref) => ref.objectId.length > 0);
+}
+
+export function bondDepthContextFromNativeSelection(
+  part: NativeMoleculeSelectionPart | undefined,
+  crossings: readonly ResolvedBondCrossing[]
+): BondDepthContext | undefined {
+  const targetBondRefs = uniqueBondRefs(bondDepthRefsFromNativeSelection(part));
+  if (targetBondRefs.length === 0) {
+    return undefined;
+  }
+
+  const relevantCrossings = crossings
+    .filter((crossing) => crossing.bonds.some((ref) => bondRefInSet(ref, targetBondRefs)))
+    .map(menuCrossingFromResolved);
+  if (relevantCrossings.length === 0) {
+    return undefined;
+  }
+
+  return {
+    targetBondRefs,
+    relevantCrossings,
+    hasOverrides: relevantCrossings.some((crossing) => crossing.hasOverride)
+  };
+}
+
+export function planBondDepthPatches(
+  pageId: string,
+  context: BondDepthContext | undefined,
+  commandId: BondDepthCommandId
+): DocumentPatch[] {
+  if (!context) {
+    return [];
+  }
+
+  if (commandId === "bondDepth.useDefault") {
+    return context.relevantCrossings
+      .filter((crossing) => crossing.hasOverride)
+      .map((crossing) => ({
+        op: "clearCrossingOverride",
+        pageId,
+        bonds: crossing.bonds
+      }));
+  }
+
+  return context.relevantCrossings.flatMap((crossing) => {
+    const crossingTargets = crossing.bonds.filter((ref) => bondRefInSet(ref, context.targetBondRefs));
+    if (crossingTargets.length !== 1) {
+      return [];
+    }
+
+    const target = crossingTargets[0];
+    if (commandId === "bondDepth.bringInFront") {
+      return sameBondRef(crossing.front, target)
+        ? []
+        : [{
+            op: "setCrossingOverride",
+            pageId,
+            crossing: { bonds: crossing.bonds, front: target }
+          }];
+    }
+
+    const other = crossing.bonds.find((ref) => !sameBondRef(ref, target));
+    return other && sameBondRef(crossing.front, target)
+      ? [{
+          op: "setCrossingOverride",
+          pageId,
+          crossing: { bonds: crossing.bonds, front: other }
+        }]
+      : [];
+  });
+}
+
+function isBondDepthCommandId(commandId: string): commandId is BondDepthCommandId {
+  return commandId === "bondDepth.bringInFront" ||
+    commandId === "bondDepth.sendBehind" ||
+    commandId === "bondDepth.useDefault";
+}
+
+export function crossingClearPatchesForObjectLayerPlacement(
+  page: ChemDraftDocument["pages"][number],
+  objectId: string,
+  placement: ObjectReorderPlacement
+): DocumentPatch[] {
+  const affectedObjectIds = objectLayerPlacementAffectedObjectIds(page.objects, objectId, placement);
+  if (affectedObjectIds.length === 0) {
+    return [];
+  }
+
+  const affected = new Set(affectedObjectIds);
+  return page.crossings
+    .filter((crossing) => crossingTouchesObjectAndAffectedObject(crossing.bonds, objectId, affected))
+    .map((crossing) => ({
+      op: "clearCrossingOverride",
+      pageId: page.id,
+      bonds: crossing.bonds
+    }));
+}
+
+export function reorderSelectedDocumentObjectWithCrossingDefaults(
+  document: ChemDraftDocument,
+  placement: ObjectReorderPlacement
+): ChemDraftDocument {
+  const objectId = document.selection.objectIds[0];
+  if (!objectId) {
+    return document;
+  }
+
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  if (!page) {
+    return document;
+  }
+
+  const crossingPatches = crossingClearPatchesForObjectLayerPlacement(page, objectId, placement);
+  const reordered = reorderSelectedDocumentObject(document, placement);
+  return crossingPatches.length > 0 ? applyPatches(reordered, crossingPatches) : reordered;
+}
+
+function objectLayerPlacementAffectedObjectIds(
+  objects: readonly DocumentObject[],
+  objectId: string,
+  placement: ObjectReorderPlacement
+): string[] {
+  const objectIndex = objects.findIndex((object) => object.id === objectId);
+  if (objectIndex < 0) {
+    return [];
+  }
+
+  if (placement === "front" || placement === "back") {
+    return objects.filter((object) => object.id !== objectId).map((object) => object.id);
+  }
+
+  if (placement === "forward") {
+    return objectIndex < objects.length - 1 ? [objects[objectIndex + 1].id] : [];
+  }
+
+  return objectIndex > 0 ? [objects[objectIndex - 1].id] : [];
+}
+
+function crossingTouchesObjectAndAffectedObject(
+  bonds: readonly [BondRef, BondRef],
+  objectId: string,
+  affectedObjectIds: ReadonlySet<string>
+): boolean {
+  const selectedBond = bonds.find((bond) => bond.objectId === objectId);
+  const otherBond = bonds.find((bond) => bond.objectId !== objectId);
+  return selectedBond !== undefined && otherBond !== undefined && affectedObjectIds.has(otherBond.objectId);
+}
+
+function bondDepthStatusForCommand(commandId: BondDepthCommandId): string {
+  if (commandId === "bondDepth.bringInFront") {
+    return "Brought bond depth forward";
+  }
+  if (commandId === "bondDepth.sendBehind") {
+    return "Sent bond depth behind";
+  }
+  return "Restored default bond depth";
+}
+
+function menuCrossingFromResolved(crossing: ResolvedBondCrossing): BondDepthMenuCrossing {
+  return {
+    key: crossing.key,
+    bonds: crossing.bonds,
+    front: crossing.front,
+    back: crossing.back,
+    hasOverride: crossing.hasOverride
+  };
+}
+
+function uniqueBondRefs(refs: readonly BondRef[]): BondRef[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = bondRefKey(ref);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function bondRefInSet(ref: BondRef, refs: readonly BondRef[]): boolean {
+  return refs.some((candidate) => sameBondRef(candidate, ref));
+}
+
+function sameBondRef(left: BondRef, right: BondRef): boolean {
+  return left.objectId === right.objectId && left.bondId === right.bondId;
 }
 
 function toggledSelectionIds(ids: readonly string[], id: string): string[] {
@@ -5983,6 +6507,111 @@ function selectionStatusLabel(selection: {
   return "No selection";
 }
 
+function PageSvgSurface({
+  ariaLabel,
+  pageHeight,
+  pageWidth,
+  plan,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  onPointerLeave,
+  onContextMenu
+}: {
+  ariaLabel: string;
+  pageHeight: number;
+  pageWidth: number;
+  plan: PageSvgRenderPlan;
+  onPointerDown(objectId: string, event: ObjectPointerEvent): void;
+  onPointerMove(objectId: string, event: ObjectPointerEvent): void;
+  onPointerUp(objectId: string, event: ObjectPointerEvent): void;
+  onPointerCancel(event: ObjectPointerEvent): void;
+  onPointerLeave(objectId: string): void;
+  onContextMenu(objectId: string, event: ObjectMouseEvent): void;
+}) {
+  return (
+    <svg
+      aria-label={`${ariaLabel} page drawing`}
+      className="page-svg-surface"
+      data-page-svg-surface="true"
+      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+    >
+      {plan.fragments.map((fragment) => renderPageSvgFragment(fragment, {
+        onContextMenu,
+        onPointerCancel,
+        onPointerDown,
+        onPointerLeave,
+        onPointerMove,
+        onPointerUp
+      }))}
+    </svg>
+  );
+}
+
+function renderPageSvgFragment(
+  fragment: PageSvgFragment,
+  handlers: {
+    onPointerDown(objectId: string, event: ObjectPointerEvent): void;
+    onPointerMove(objectId: string, event: ObjectPointerEvent): void;
+    onPointerUp(objectId: string, event: ObjectPointerEvent): void;
+    onPointerCancel(event: ObjectPointerEvent): void;
+    onPointerLeave(objectId: string): void;
+    onContextMenu(objectId: string, event: ObjectMouseEvent): void;
+  }
+): ReturnType<typeof createElement> | string {
+  if (fragment.kind === "text") {
+    return fragment.text;
+  }
+
+  const objectId = typeof fragment.attrs["data-object-id"] === "string"
+    ? fragment.attrs["data-object-id"]
+    : undefined;
+  const props = reactSvgProps(fragment.attrs);
+  if (objectId) {
+    Object.assign(props, {
+      onContextMenu: (event: ObjectMouseEvent) => handlers.onContextMenu(objectId, event),
+      onPointerCancel: (event: ObjectPointerEvent) => handlers.onPointerCancel(event),
+      onPointerDown: (event: ObjectPointerEvent) => handlers.onPointerDown(objectId, event),
+      onPointerLeave: () => handlers.onPointerLeave(objectId),
+      onPointerMove: (event: ObjectPointerEvent) => handlers.onPointerMove(objectId, event),
+      onPointerUp: (event: ObjectPointerEvent) => handlers.onPointerUp(objectId, event)
+    });
+  }
+
+  return createElement(
+    fragment.tag,
+    { ...props, key: fragment.key },
+    ...fragment.children.map((child) => renderPageSvgFragment(child, handlers))
+  );
+}
+
+function reactSvgProps(attrs: Record<string, PageSvgAttributeValue>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(attrs)
+      .filter(([, value]) => value !== undefined && value !== false && value !== "")
+      .map(([key, value]) => [reactSvgAttributeName(key), value])
+  );
+}
+
+function reactSvgAttributeName(name: string): string {
+  return {
+    class: "className",
+    "baseline-shift": "baselineShift",
+    "dominant-baseline": "dominantBaseline",
+    "font-family": "fontFamily",
+    "font-size": "fontSize",
+    "font-style": "fontStyle",
+    "font-weight": "fontWeight",
+    "letter-spacing": "letterSpacing",
+    "stroke-dasharray": "strokeDasharray",
+    "stroke-linecap": "strokeLinecap",
+    "stroke-width": "strokeWidth",
+    "text-anchor": "textAnchor",
+    "text-decoration": "textDecoration"
+  }[name] ?? name;
+}
+
 function DocumentObjectView({
   object,
   layerIndex,
@@ -6033,14 +6662,14 @@ function DocumentObjectView({
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
   rotateReadout?: ObjectRotateReadoutState;
   resizeReadout?: MoleculeResizeReadoutState;
-  onPointerDown(objectId: string, event: PointerEvent<HTMLDivElement>): void;
-  onPointerMove(objectId: string, event: PointerEvent<HTMLDivElement>): void;
-  onPointerUp(objectId: string, event: PointerEvent<HTMLDivElement>): void;
-  onPointerCancel(event: PointerEvent<HTMLDivElement>): void;
+  onPointerDown(objectId: string, event: ObjectPointerEvent): void;
+  onPointerMove(objectId: string, event: ObjectPointerEvent): void;
+  onPointerUp(objectId: string, event: ObjectPointerEvent): void;
+  onPointerCancel(event: ObjectPointerEvent): void;
   onPointerLeave(objectId: string): void;
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onMoleculeResizePointerDown(objectId: string, corner: MoleculeResizeCorner, event: PointerEvent<HTMLButtonElement>): void;
-  onContextMenu(objectId: string, event: ReactMouseEvent<HTMLDivElement>): void;
+  onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
   onTextEditStart(objectId: string): void;
   onTextEditFinish(): void;
@@ -6068,22 +6697,22 @@ function DocumentObjectView({
     }
   }, [editingText, object]);
 
-  const handleObjectPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerDown = (event: ObjectPointerEvent) => {
     onPointerDown(object.id, event);
   };
-  const handleObjectPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerMove = (event: ObjectPointerEvent) => {
     onPointerMove(object.id, event);
   };
-  const handleObjectPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerUp = (event: ObjectPointerEvent) => {
     onPointerUp(object.id, event);
   };
-  const handleObjectPointerCancel = (event: PointerEvent<HTMLDivElement>) => {
+  const handleObjectPointerCancel = (event: ObjectPointerEvent) => {
     onPointerCancel(event);
   };
   const handleObjectPointerLeave = () => {
     onPointerLeave(object.id);
   };
-  const handleObjectContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleObjectContextMenu = (event: ObjectMouseEvent) => {
     onContextMenu(object.id, event);
   };
   const handleRotatePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
@@ -6158,7 +6787,7 @@ function DocumentObjectView({
       });
     }
   };
-  const handleTextDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleTextDoubleClick = (event: ObjectMouseEvent) => {
     if (object.type !== "text") {
       return;
     }
@@ -6186,52 +6815,18 @@ function DocumentObjectView({
     top: `${(object.y / pageHeight) * 100}%`,
     width: `${(object.width / pageWidth) * 100}%`,
     height: `${(object.height / pageHeight) * 100}%`,
-    zIndex: layerIndex + 1,
+    zIndex: layerIndex + 20,
     transform: `rotate(${object.rotation}deg)`
   } as CSSProperties;
 
   if (object.type === "molecule") {
     if (isNativeMoleculeGraph(object)) {
       const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
-      const atomLabels = object.atoms
-        .filter((atom) => atom.id !== editingAtomLabel?.atomId)
-        .map((atom) => ({ atom, label: nativeAtomDisplayLabel(atom, object.bonds) }))
-        .filter((entry): entry is { atom: MoleculeObject["atoms"][number]; label: string } =>
-          entry.label !== undefined
-        );
-      const labelByAtomId = new Map(atomLabels.map(({ atom, label }) => [atom.id, label]));
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object, chargeByAtomId);
       const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
       const resolvedChargeAtomIds = [...(chargeByAtomId?.entries() ?? [])]
         .filter(([, charge]) => charge !== 0)
         .map(([atomId]) => atomId);
-      const bondSegmentGroups = object.bonds.flatMap((bond) => {
-        const fromAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
-        const toAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
-        if (!fromAtom || !toAtom) {
-          return [];
-        }
-
-        const displayedBond = doubleBondSidePreview?.bondId === bond.id && bond.order === "double"
-          ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: doubleBondSidePreview.side } }
-          : bond;
-
-        const segments = bondLineSegments(
-          fromAtom,
-          toAtom,
-          object,
-          displayedBond,
-          drawingStyle,
-          labelByAtomId.get(fromAtom.id),
-          labelByAtomId.get(toAtom.id)
-        ).map((segment, segmentIndex) => ({
-          ...segment,
-          bond: displayedBond,
-          key: `${bond.id}-${segmentIndex}`
-        }));
-
-        return [{ bond: displayedBond, segments }];
-      });
       const wholeNativeMoleculeSelected = selected && selectedPart?.objectId !== object.id;
       const selectedBondIds = new Set(
         wholeNativeMoleculeSelected
@@ -6326,6 +6921,7 @@ function DocumentObjectView({
         <div
           className={[
             "document-object",
+            "document-object-overlay",
             "molecule-object",
             "native-molecule-object",
             moleculeDrawingPrimitive(object) === "single-bond" ? "native-single-bond" : "native-carbon-chain",
@@ -6363,191 +6959,8 @@ function DocumentObjectView({
           onPointerLeave={handleObjectPointerLeave}
           onContextMenu={handleObjectContextMenu}
         >
-          <svg className="molecule-glyph" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
-            {bondSegmentGroups.map(({ bond, segments }) => (
-              <g className="native-bond-layer" data-bond-layer-id={bond.id} key={`bond-layer-${bond.id}`}>
-                {segments.map((segment) => (
-                  <line
-                    className="native-bond-hit-target"
-                    data-hit-target="bond"
-                    data-bond-id={segment.bond.id}
-                    key={`bond-hit-${segment.key}`}
-                    x1={segment.x1}
-                    y1={segment.y1}
-                    x2={segment.x2}
-                    y2={segment.y2}
-                  />
-                ))}
-                {segments.flatMap((segment) => {
-                  const knockout = bondKnockoutLineSegment(segment, drawingStyle);
-                  return knockout
-                    ? [
-                        <line
-                          className="native-bond-knockout"
-                          data-bond-id={segment.bond.id}
-                          data-bond-order={segment.bond.order}
-                          data-bond-segment={segment.segment}
-                          data-double-bond-side={segment.doubleBondSide}
-                          key={`knockout-${segment.key}`}
-                          x1={knockout.x1}
-                          y1={knockout.y1}
-                          x2={knockout.x2}
-                          y2={knockout.y2}
-                          stroke={drawingStyle.atomLabelBackgroundColor}
-                          strokeWidth={drawingStyle.bondStrokeWidthPx + drawingStyle.bondOverlapClearancePx}
-                          strokeLinecap={drawingStyle.bondLineCap}
-                        />
-                      ]
-                    : [];
-                })}
-                {segments.map((segment) => {
-                  const bondStyle = nativeBondDisplayStyle(segment.bond);
-                  const className = [
-                    "native-bond-line",
-                    `native-bond-${segment.bond.order}`,
-                    bondStyle ? `native-bond-style-${bondStyle}` : "",
-                    deleteTarget?.kind === "bond" && deleteTarget.bondId === segment.bond.id ? "native-bond-delete-hover" : "",
-                    nativeSelectionIncludesBond(selectedPart, segment.bond.id) ? "native-bond-selected" : ""
-                  ].filter(Boolean).join(" ");
-                  const stroke = nativeMoleculeBondColor(object, segment.bond.id, drawingStyle);
-                  const strokeWidth = nativeBondStrokeWidth(segment.bond, drawingStyle);
-                  const commonAttributes = {
-                    className,
-                    "data-bond-id": segment.bond.id,
-                    "data-bond-order": segment.bond.order,
-                    "data-bond-segment": segment.segment,
-                    "data-bond-style": bondStyle,
-                    "data-double-bond-side": segment.doubleBondSide
-                  };
-
-                  if (bondStyle === "wedge" && segment.segment === "primary") {
-                    return (
-                      <polygon
-                        {...commonAttributes}
-                        key={`bond-${segment.key}`}
-                        points={nativeWedgePolygonPoints(segment, drawingStyle)}
-                        fill={stroke}
-                        stroke="none"
-                      />
-                    );
-                  }
-
-                  if (bondStyle === "hashed" && segment.segment === "primary") {
-                    return (
-                      <g {...commonAttributes} key={`bond-${segment.key}`}>
-                        {nativeHashedWedgeSegments(segment, drawingStyle).map((hash, index) => (
-                          <line
-                            className="native-bond-hash"
-                            key={`bond-hash-${segment.key}-${index}`}
-                            x1={hash.x1}
-                            y1={hash.y1}
-                            x2={hash.x2}
-                            y2={hash.y2}
-                            stroke={stroke}
-                            strokeWidth={drawingStyle.bondStrokeWidthPx}
-                            strokeLinecap="butt"
-                          />
-                        ))}
-                      </g>
-                    );
-                  }
-
-                  return (
-                    <line
-                      {...commonAttributes}
-                      key={`bond-${segment.key}`}
-                      x1={segment.x1}
-                      y1={segment.y1}
-                      x2={segment.x2}
-                      y2={segment.y2}
-                      stroke={stroke}
-                      strokeWidth={strokeWidth}
-                      strokeLinecap={bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap}
-                      strokeDasharray={bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined}
-                    />
-                  );
-                })}
-                {segments
-                  .filter((segment) => nativeSelectionIncludesBond(selectedPart, segment.bond.id))
-                  .map((segment) => {
-                    const x = Math.min(segment.x1, segment.x2) - 9;
-                    const y = Math.min(segment.y1, segment.y2) - 9;
-                    const width = Math.abs(segment.x2 - segment.x1) + 18;
-                    const height = Math.abs(segment.y2 - segment.y1) + 18;
-                    return (
-                      <rect
-                        className="native-bond-selected-hit-target"
-                        data-hit-target="bond"
-                        data-bond-id={segment.bond.id}
-                        key={`selected-hit-${segment.key}`}
-                        x={x}
-                        y={y}
-                        width={width}
-                        height={height}
-                        onPointerDown={(event) => handleObjectPointerDown(event as unknown as PointerEvent<HTMLDivElement>)}
-                        onPointerMove={(event) => handleObjectPointerMove(event as unknown as PointerEvent<HTMLDivElement>)}
-                        onPointerUp={(event) => handleObjectPointerUp(event as unknown as PointerEvent<HTMLDivElement>)}
-                        onPointerCancel={(event) => handleObjectPointerCancel(event as unknown as PointerEvent<HTMLDivElement>)}
-                      />
-                    );
-                  })}
-              </g>
-            ))}
-            {atomLabels
-              .map(({ atom, label }) => {
-                const box = atomLabelBox(atom, object, label, drawingStyle);
-                return (
-                  <rect
-                    className="native-atom-label-background"
-                    key={`label-background-${atom.id}`}
-                    x={box.x}
-                    y={box.y}
-                    width={box.width}
-                    height={box.height}
-                    fill={drawingStyle.atomLabelBackgroundColor}
-                  />
-                );
-              })}
+          <svg className="native-molecule-overlay" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
             {selectionBlob}
-            {atomLabels
-              .map(({ atom, label }) => (
-                <g
-                  className="native-atom-label"
-                  key={`label-${atom.id}`}
-                  data-atom-label={label}
-                  transform={`translate(${atom.x - object.x} ${atom.y - object.y})`}
-                  fill={nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle)}
-                  fontFamily={drawingStyle.atomLabelFontFamily}
-                  fontSize={drawingStyle.atomLabelFontSizePx}
-                  fontWeight={drawingStyle.atomLabelFontWeight}
-                >
-                  {atomLabelLayout(label, drawingStyle).runs.map((run, index) => (
-                    <text
-                      className="native-atom-label-run"
-                      data-atom-label-run={run.script === "superscript" ? "charge" : run.script}
-                      dominantBaseline="central"
-                      fontSize={atomLabelRunFontSize(run.script, drawingStyle)}
-                      key={`${run.script}-${index}-${run.text}`}
-                      textAnchor={run.textAnchor}
-                      x={run.x}
-                      y={run.y}
-                    >
-                      {run.text}
-                    </text>
-                  ))}
-                </g>
-              ))}
-            {object.atoms.map((atom) => (
-              <circle
-                className="native-atom-hit-target"
-                data-hit-target="atom"
-                data-atom-id={atom.id}
-                cx={atom.x - object.x}
-                cy={atom.y - object.y}
-                key={`atom-hit-${atom.id}`}
-                r="8"
-              />
-            ))}
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
@@ -6672,7 +7085,7 @@ function DocumentObjectView({
 
     return (
       <div
-        className={["document-object", "molecule-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        className={["document-object", "document-object-overlay", "molecule-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
         style={style}
         data-object-id={object.id}
         data-layer-index={layerIndex}
@@ -6683,11 +7096,7 @@ function DocumentObjectView({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
         onDoubleClick={handleTextDoubleClick}
-      >
-        <span className="object-primary">{object.structure}</span>
-        <span className="object-secondary">{object.chemistry?.formula ?? object.structureFormat}</span>
-        {object.chemistry ? <span className="object-tertiary">{formatChemistrySummary(object.chemistry)}</span> : null}
-      </div>
+      />
     );
   }
 
@@ -6695,7 +7104,7 @@ function DocumentObjectView({
     const charge = object.charge === -1 ? -1 : 1;
     return (
       <div
-        className={["document-object", "charge-mark-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        className={["document-object", "document-object-overlay", "charge-mark-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
         style={style}
         data-object-id={object.id}
         data-layer-index={layerIndex}
@@ -6706,9 +7115,7 @@ function DocumentObjectView({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-      >
-        {charge > 0 ? "+" : "-"}
-      </div>
+      />
     );
   }
 
@@ -6740,7 +7147,7 @@ function DocumentObjectView({
 
     return (
       <div
-        className={["document-object", "text-object", editingText ? "editing" : "", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        className={["document-object", "document-object-overlay", "text-object", editingText ? "editing" : "", selected ? "selected" : ""].filter(Boolean).join(" ")}
         style={{ ...style, ...textCss }}
         data-object-id={object.id}
         data-layer-index={layerIndex}
@@ -6830,16 +7237,14 @@ function DocumentObjectView({
               }}
             />
           </>
-        ) : (
-          <TextObjectContent object={object} />
-        )}
+        ) : null}
       </div>
     );
   }
 
   return (
     <div
-      className={["document-object", "generic-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+      className={["document-object", "document-object-overlay", "generic-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
       style={style}
       data-object-id={object.id}
       data-layer-index={layerIndex}
@@ -6848,9 +7253,7 @@ function DocumentObjectView({
       onPointerUp={handleObjectPointerUp}
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
-    >
-      {object.type}
-    </div>
+    />
   );
 }
 
@@ -7249,6 +7652,112 @@ function NativeFreeformBondPreview({
       ) : null}
     </g>
   );
+}
+
+function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>): ResolvedOpenDocument | undefined {
+  if (result.document) {
+    return { document: result.document, source: result.source };
+  }
+  if (!result.conflict) {
+    return undefined;
+  }
+
+  if (result.conflict.visibleDocument) {
+    const importVisible = window.confirm(
+      "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset? Choose Cancel to restore the embedded ChemDraft document instead."
+    );
+    return importVisible
+      ? {
+          document: result.conflict.visibleDocument,
+          source: "external-cdxml",
+          statusSourceLabel: "edited visible CDXML subset"
+        }
+      : {
+          document: result.conflict.embeddedDocument,
+          source: "native-payload",
+          statusSourceLabel: "embedded ChemDraft document"
+        };
+  }
+
+  const restoreEmbedded = window.confirm(
+    "This file's visible CDXML was modified outside ChemDraft, but ChemDraft could not import a visible subset. Restore the embedded ChemDraft document?"
+  );
+  return restoreEmbedded
+    ? {
+        document: result.conflict.embeddedDocument,
+        source: "native-payload",
+        statusSourceLabel: "embedded ChemDraft document"
+      }
+    : undefined;
+}
+
+function formatSaveStatus(filename: string, warnings: readonly { code: string; message: string }[]): string {
+  return warnings.length > 0
+    ? `Saved ${filename} with ${warnings.length} compatibility warning(s)`
+    : `Saved ${filename}`;
+}
+
+function formatOpenStatus(
+  filename: string,
+  source: ReturnType<typeof openNativeDocument>["source"],
+  warnings: readonly { code: string; message: string }[],
+  statusSourceLabel?: string
+): string {
+  const sourceLabel = statusSourceLabel ?? (
+    source === "legacy-json"
+      ? "legacy ChemDraft JSON"
+      : source === "external-cdxml"
+        ? "external CDXML subset"
+        : "ChemDraft CDXML envelope"
+  );
+  return warnings.length > 0
+    ? `Opened ${filename} as ${sourceLabel} with ${warnings.length} warning(s)`
+    : `Opened ${filename} as ${sourceLabel}`;
+}
+
+function formatOpenFailure(warnings: readonly { code: string; message: string }[]): string {
+  if (warnings.length === 0) {
+    return "Open failed without a compatibility warning.";
+  }
+  return warnings.map((warning) => warning.message).join(" ");
+}
+
+async function pickNativeOpenPath(): Promise<string | undefined> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    title: "Open ChemDraft or CDXML Document",
+    multiple: false,
+    fileAccessMode: "scoped"
+  });
+  return typeof selected === "string" ? selected : undefined;
+}
+
+async function pickNativeSavePath(defaultPath: string): Promise<string | undefined> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const selected = await save({
+    title: "Save ChemDraft Document",
+    defaultPath,
+    filters: [{ name: "ChemDraft", extensions: ["chemdraft"] }]
+  });
+  return selected ?? undefined;
+}
+
+async function readNativeTextFile(path: string): Promise<string> {
+  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+  return readTextFile(path);
+}
+
+async function writeNativeTextFile(path: string, contents: string): Promise<void> {
+  const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+  await writeTextFile(path, contents);
+}
+
+function ensureChemDraftFileExtension(path: string): string {
+  return /\.(chemdraft|cdxml)$/i.test(path) ? path : `${path}.chemdraft`;
+}
+
+function nativePathBasename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
 function downloadText(filename: string, contents: string, mimeType: string): void {

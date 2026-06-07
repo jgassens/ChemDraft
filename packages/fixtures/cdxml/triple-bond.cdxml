@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <fragment id="f1">
+      <n id="a1" p="96 96"/>
+      <n id="a2" p="132 96" Element="7"/>
+      <b id="b1" B="a1" E="a2" Order="3"/>
+    </fragment>
+  </page>
+</CDXML>
