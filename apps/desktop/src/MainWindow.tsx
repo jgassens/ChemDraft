@@ -194,6 +194,7 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
+  hitToleranceForScale,
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeHitFromPointerTarget
 } from "./interaction/hitTest";
@@ -2486,7 +2487,12 @@ export function MainWindow({
       return;
     }
 
-    const target = nativeMoleculeCanvasHoverTarget(sourceDocument, point, eventTarget);
+    const target = nativeMoleculeCanvasHoverTarget(
+      sourceDocument,
+      point,
+      eventTarget,
+      hitToleranceForScale(viewportRef.current.scale)
+    );
     assignHoveredNativeDeleteTarget(target);
     hoveredNativeAtomPointRef.current = target?.kind === "atom"
       ? { objectId: target.objectId, point }
@@ -3570,7 +3576,12 @@ export function MainWindow({
     // (all keyed by objectId) stays consistent with the re-targeted object.
     let captureElement: Element = event.currentTarget;
     if (point && findDocumentObject(document, objectId)?.type === "molecule") {
-      const resolved = nativeMoleculeCanvasHoverTarget(document, point, event.target);
+      const resolved = nativeMoleculeCanvasHoverTarget(
+        document,
+        point,
+        event.target,
+        hitToleranceForScale(viewportRef.current.scale)
+      );
       if (resolved && resolved.objectId !== objectId) {
         objectId = resolved.objectId;
         const resolvedWrapper = pageRef.current?.querySelector(`[data-object-id="${CSS.escape(objectId)}"]`);
@@ -3583,7 +3594,12 @@ export function MainWindow({
     const object = findDocumentObject(document, objectId);
     const chargeMarkActive = object?.type === "electron-mark" && object.markKind === "charge";
     const nativeMoleculeHit = object?.type === "molecule" && point
-      ? nativeMoleculeHitFromPointerTarget(object, point, event.target)
+      ? nativeMoleculeHitFromPointerTarget(
+          object,
+          point,
+          event.target,
+          hitToleranceForScale(viewportRef.current.scale)
+        )
       : undefined;
 
     if (activeChargeToolValue && point && !chargeMarkActive) {
@@ -4034,7 +4050,12 @@ export function MainWindow({
     // Resolve by geometry before crossing actions, so a right-click at a weave still acts
     // on the atom/bond under the pointer. Crossing state is secondary menu context.
     const resolvedNativeHit = point
-      ? nativeMoleculeCanvasHoverTarget(currentDocument, point, event.target)
+      ? nativeMoleculeCanvasHoverTarget(
+          currentDocument,
+          point,
+          event.target,
+          hitToleranceForScale(viewportRef.current.scale)
+        )
       : undefined;
     let nativeMoleculeHit: NativeMoleculeDeleteHit | undefined;
     if (resolvedNativeHit) {
@@ -4057,7 +4078,12 @@ export function MainWindow({
     }
     const object = findDocumentObject(currentDocument, objectId);
     nativeMoleculeHit ??= object?.type === "molecule" && point
-      ? nativeMoleculeHitFromPointerTarget(object, point, event.target)
+      ? nativeMoleculeHitFromPointerTarget(
+          object,
+          point,
+          event.target,
+          hitToleranceForScale(viewportRef.current.scale)
+        )
       : undefined;
     let nextSelectedNativePart: NativeMoleculeSelectionPart | undefined;
     let targetKind: ObjectContextMenuState["targetKind"] = "object";

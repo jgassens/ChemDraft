@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
 import { createPhase4Document, insertNativeSingleBondMolecule } from "../documentWorkflow";
-import { hitTestDocument } from "./hitTest";
+import { bondHitRadiusForScale, hitToleranceForScale, hitTestDocument } from "./hitTest";
 
 function singleBondMolecule() {
   const document = insertNativeSingleBondMolecule(createPhase4Document("hit-test"), { x: 200, y: 220 });
@@ -132,17 +132,16 @@ describe("hitTestDocument (geometric source of truth)", () => {
 });
 
 // ---------------------------------------------------------------------------------------
-// CHARACTERIZATION: pin TODAY's behavior before the bond-tolerance refactor. The bond
-// assertions here document the *brittleness* (zoom-dependent bond tolerance); they are the
-// tests that will legitimately flip in step 2/3 when bond tolerance becomes screen-stable.
-// The atom and provenance assertions document behavior we intend to PRESERVE.
+// CHARACTERIZATION: the DEFAULT (no-tolerance) path is the programmatic / keyboard / test
+// path and stays page-space forever, so these document behavior we PRESERVE. The pointer
+// path (which passes a scale-derived tolerance) is exercised separately below.
 // See docs/architecture/pointer-picking-hardening.md.
 // ---------------------------------------------------------------------------------------
-describe("hitTestDocument zoom-derived tolerance (characterization)", () => {
-  // A pointer held a constant 6px off the bond is selectable when zoomed IN but not when
-  // zoomed out, because the model bond radius is a fixed 4 page-units (= 4*scale screen px).
-  // This is exactly the "lights up but won't click" / "marquee instead of bond" report.
-  // STEP 2/3 WILL CHANGE THIS: a constant screen offset should resolve consistently.
+describe("hitTestDocument default (no-tolerance) path is page-space", () => {
+  // With no tolerance supplied, the model bond radius is a fixed 4 page-units. A pointer
+  // held a constant 6px off the bond would therefore be selectable only when zoomed in.
+  // This is the brittleness the POINTER path fixes (see the screen-stable suite below);
+  // the default path keeps these fixed radii for programmatic callers.
   const BOND_SCREEN_OFFSET_PX = 6;
 
   it.each(SUPPORTED_ZOOMS)(
@@ -192,5 +191,57 @@ describe("hitTestDocument zoom-derived tolerance (characterization)", () => {
     const first = hitTestDocument(document, point);
     const second = hitTestDocument(document, point);
     expect(second).toEqual(first);
+  });
+});
+
+// The step-2 fix: when the pointer path supplies a scale-derived tolerance, a constant
+// on-screen bond offset resolves consistently across zooms instead of depending on it.
+describe("hitTestDocument pointer path is screen-stable for bonds (step 2)", () => {
+  // 4px off the bond midpoint, on screen. This is comfortably inside the screen tolerance
+  // at every supported zoom (even at 0.5×, where the bond-length ceiling tightens the band),
+  // so the pointer path selects the bond consistently — unlike the page-space default path.
+  const BOND_SCREEN_OFFSET_PX = 4;
+
+  it.each(SUPPORTED_ZOOMS)(
+    "selects the bond 4px off-axis at zoom %sx via the pointer tolerance",
+    (scale) => {
+      const { document, molecule } = singleBondMolecule();
+      const { midpoint, perpendicular } = bondFrame(molecule);
+      const point = atScreenOffset(midpoint, perpendicular, BOND_SCREEN_OFFSET_PX, scale);
+
+      const hit = hitTestDocument(document, point, undefined, hitToleranceForScale(scale));
+      expect(hit?.kind).toBe("bond");
+    }
+  );
+
+  it("rescues a zoomed-out bond the page-space default path misses", () => {
+    // At 0.5× a 4px-off bond is a miss on the fixed page-space radius (4px-off becomes 8
+    // page-units, > radius 4) but a hit once the pointer supplies the screen tolerance.
+    const { document, molecule } = singleBondMolecule();
+    const { midpoint, perpendicular } = bondFrame(molecule);
+    const point = atScreenOffset(midpoint, perpendicular, BOND_SCREEN_OFFSET_PX, 0.5);
+
+    expect(hitTestDocument(document, point)).toBeUndefined();
+    expect(hitTestDocument(document, point, undefined, hitToleranceForScale(0.5))?.kind).toBe("bond");
+  });
+
+  it("clamps the page-space radius to a flat screen tolerance band", () => {
+    // bondLengthPx = 22 → ceiling = 9.9 page-units.
+    expect(bondHitRadiusForScale(1)).toBeCloseTo(8); // 8 / 1
+    expect(bondHitRadiusForScale(8.5)).toBeCloseTo(1); // 8 / 8.5 ≈ 0.94 → min-page floor
+    expect(bondHitRadiusForScale(0.5)).toBeCloseTo(9.9); // 8 / 0.5 = 16 → bond-length ceiling
+    // Degenerate scales fall back to a sane radius rather than NaN/Infinity.
+    expect(Number.isFinite(bondHitRadiusForScale(0))).toBe(true);
+    expect(Number.isFinite(bondHitRadiusForScale(Number.NaN))).toBe(true);
+  });
+
+  it("keeps the effective on-screen tolerance in a comfortable, flat band", () => {
+    // The whole point: effective screen tolerance (radius × scale) stays roughly constant
+    // and never collapses, instead of legacy's 2px (0.5×) … 34px (8.5×) swing.
+    for (const scale of SUPPORTED_ZOOMS) {
+      const screenTolerance = bondHitRadiusForScale(scale) * scale;
+      expect(screenTolerance).toBeGreaterThanOrEqual(4);
+      expect(screenTolerance).toBeLessThanOrEqual(9);
+    }
   });
 });

@@ -2713,9 +2713,21 @@ export function findNativeMoleculeAtomHit(
   };
 }
 
+/**
+ * Tolerances (page-space px) for a single hit-test. Both default to the legacy fixed
+ * radii, so non-pointer callers (keyboard commands, programmatic hits, tests) are
+ * unaffected. The pointer path supplies a scale-derived `bondHitRadius` so the on-screen
+ * bond target stays a constant size at any zoom — see hitTest.ts `bondHitRadiusForScale`.
+ */
+export interface NativeMoleculeHitTolerance {
+  atomHitRadius?: number;
+  bondHitRadius?: number;
+}
+
 export function findNativeMoleculeDeleteHit(
   molecule: MoleculeObject,
-  point: PagePoint
+  point: PagePoint,
+  tolerance?: NativeMoleculeHitTolerance
 ): NativeMoleculeDeleteHit | undefined {
   if (!isEditableNativeMoleculeGraph(molecule)) {
     return undefined;
@@ -2724,7 +2736,7 @@ export function findNativeMoleculeDeleteHit(
   const atomHit = findNearestAtomAtPoint({
     atoms: molecule.atoms,
     point,
-    hitRadius: atomHitRadius
+    hitRadius: tolerance?.atomHitRadius ?? atomHitRadius
   });
   if (atomHit) {
     return {
@@ -2738,7 +2750,7 @@ export function findNativeMoleculeDeleteHit(
     atoms: molecule.atoms,
     bonds: molecule.bonds,
     point,
-    hitRadius: bondHitRadius
+    hitRadius: tolerance?.bondHitRadius ?? bondHitRadius
   });
   if (!bondHit?.bondId) {
     return undefined;

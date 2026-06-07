@@ -15,8 +15,10 @@
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import {
   findNativeMoleculeDeleteHit,
+  nativeBondLengthPx,
   type NativeMoleculeDeleteHit,
-  type NativeMoleculeDeleteTarget
+  type NativeMoleculeDeleteTarget,
+  type NativeMoleculeHitTolerance
 } from "../documentWorkflow";
 
 export interface Point {
@@ -30,6 +32,28 @@ export type InteractionTarget = NativeMoleculeDeleteTarget;
 // Page-space tolerance (px) within which a DOM hint may win a near-tie. The atom hit
 // radius is 8px, so 2px keeps the tiebreak well inside the rendered glyph.
 const HOVER_DOM_TIEBREAK_PX = 2;
+
+// Bond pick tolerance expressed in SCREEN pixels, so the on-screen target stays a constant
+// size at any zoom. The pointer path converts it to page-space (÷ scale) and clamps it:
+//   - max: a fraction of bond length, so a zoomed-out click can't span to the wrong bond;
+//   - min: a degenerate guard for extreme zoom-in (within 0.5×–8.5× the screen term wins).
+// Atom tolerance is intentionally NOT screen-based this pass (see the hardening plan).
+export const BOND_HIT_SCREEN_PX = 8;
+const BOND_HIT_MIN_PAGE_PX = 1;
+const BOND_HIT_MAX_PAGE_FRACTION = 0.45;
+
+/** Page-space bond hit radius for the current camera scale, clamped as described above. */
+export function bondHitRadiusForScale(scale: number): number {
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const fromScreen = BOND_HIT_SCREEN_PX / safeScale;
+  const ceiling = nativeBondLengthPx * BOND_HIT_MAX_PAGE_FRACTION;
+  return Math.min(Math.max(fromScreen, BOND_HIT_MIN_PAGE_PX), ceiling);
+}
+
+/** The hit tolerances for the current camera scale (pointer path). */
+export function hitToleranceForScale(scale: number): NativeMoleculeHitTolerance {
+  return { bondHitRadius: bondHitRadiusForScale(scale) };
+}
 
 // Cross-object pick order is geometry-first: the part nearest the pointer wins, and the
 // stacking layer only breaks a near-tie. Without this band, a clearly-nearer atom on a
@@ -73,12 +97,13 @@ function pointerHitOwnerObjectId(eventTarget: EventTarget | null | undefined): s
 export function nativeMoleculeHitFromPointerTarget(
   molecule: MoleculeObject,
   point: Point,
-  eventTarget?: EventTarget | null
+  eventTarget?: EventTarget | null,
+  tolerance?: NativeMoleculeHitTolerance
 ): NativeMoleculeDeleteHit | undefined {
   // The geometric model hit (nearest atom, else nearest bond, each gated by its hit
   // radius) is the source of truth and always reports real distances, so the
   // cross-object sort in nativeMoleculeCanvasHoverTarget stays correct.
-  const modelHit = findNativeMoleculeDeleteHit(molecule, point);
+  const modelHit = findNativeMoleculeDeleteHit(molecule, point, tolerance);
 
   // The DOM tells us which glyph the pointer is literally over — a strong intent
   // signal, but only used to break a near-tie in favour of that atom. It must never
@@ -107,7 +132,8 @@ export function nativeMoleculeHitFromPointerTarget(
 export function nativeMoleculeCanvasHoverTarget(
   document: ChemDraftDocument,
   point: Point,
-  eventTarget?: EventTarget | null
+  eventTarget?: EventTarget | null,
+  tolerance?: NativeMoleculeHitTolerance
 ): NativeMoleculeDeleteTarget | undefined {
   const page = document.pages[0];
   const candidates = page.objects
@@ -116,7 +142,7 @@ export function nativeMoleculeCanvasHoverTarget(
         return undefined;
       }
 
-      const hit = nativeMoleculeHitFromPointerTarget(object, point, eventTarget);
+      const hit = nativeMoleculeHitFromPointerTarget(object, point, eventTarget, tolerance);
       return hit ? { object, hit, layerIndex } : undefined;
     })
     .filter((entry): entry is { object: MoleculeObject; hit: NativeMoleculeDeleteHit; layerIndex: number } =>
@@ -144,7 +170,8 @@ export function nativeMoleculeCanvasHoverTarget(
 export function hitTestDocument(
   document: ChemDraftDocument,
   point: Point,
-  eventTarget?: EventTarget | null
+  eventTarget?: EventTarget | null,
+  tolerance?: NativeMoleculeHitTolerance
 ): InteractionTarget | undefined {
-  return nativeMoleculeCanvasHoverTarget(document, point, eventTarget);
+  return nativeMoleculeCanvasHoverTarget(document, point, eventTarget, tolerance);
 }

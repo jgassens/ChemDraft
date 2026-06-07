@@ -1,6 +1,6 @@
 # Pointer Picking Hardening
 
-Status: **In progress** — step 1 done. Branch: `codex/chemdraft-worktree-cleanup`.
+Status: **In progress** — steps 1–2 done. Branch: `codex/chemdraft-worktree-cleanup`.
 
 Tracking doc for hardening atom/bond hover, left-click, and right-click picking.
 Reviewed three ways (Claude investigation, Codex narrowing, ChatGPT Pro green-light).
@@ -117,13 +117,28 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Files: `apps/desktop/src/interaction/hitTest.test.ts`,
   `apps/desktop/src/interaction/hitTest.dom.test.ts`.
 
-### 2. Screen-px bond tolerance (desktop layer only)
-- [ ] Add `BOND_HIT_SCREEN_PX` + clamp helper in the interaction/desktop layer.
-- [ ] Add options param to `findNativeMoleculeDeleteHit` for `bondHitRadius`.
-- [ ] Thread resolved tolerance through the resolver chain.
-- [ ] `layout-engine` untouched; atom tolerance untouched.
-- Files: `apps/desktop/src/documentWorkflow.ts` (`findNativeMoleculeDeleteHit`, ~line 2716),
-  `apps/desktop/src/interaction/hitTest.ts`, call sites in `MainWindow.tsx`.
+### 2. Screen-px bond tolerance (desktop layer only) — DONE
+- [x] Added `BOND_HIT_SCREEN_PX` (=8) + `bondHitRadiusForScale` / `hitToleranceForScale`
+      in `hitTest.ts`. Clamp: floor `1` page-px, ceiling `0.45 × bondLength` (9.9 at the
+      22px default). Effective screen tolerance lands in a flat ~5–8.5px band across
+      0.5×–8.5× (vs legacy 2–34px).
+- [x] Added `NativeMoleculeHitTolerance` options param to `findNativeMoleculeDeleteHit`;
+      both radii default to the legacy fixed values, so keyboard/programmatic/test callers
+      are unaffected.
+- [x] Threaded `tolerance` through `nativeMoleculeHitFromPointerTarget` →
+      `nativeMoleculeCanvasHoverTarget` → `hitTestDocument`, and wired
+      `hitToleranceForScale(viewportRef.current.scale)` into all five **pointer** call sites
+      in `MainWindow.tsx` (hover, pointer-down re-resolve + per-object hit, context-menu
+      re-resolve + per-object hit).
+- [x] `layout-engine` untouched; atom tolerance untouched.
+- [x] Tests: pointer path is screen-stable (4px-off bond hits at every zoom; rescues the
+      0.5× bond the default path misses); clamp band asserted. 28 hit-test + 215
+      documentWorkflow/App assertions green; tsc clean.
+- NOTE: only the model tolerance is screen-stable so far. The DOM **catcher** is still the
+  legacy non-scaling 14px stroke, so at high zoom an accepted hit can still out-reach the
+  catcher and route to the marquee path — **step 3** closes that.
+- Files: `apps/desktop/src/documentWorkflow.ts` (`findNativeMoleculeDeleteHit` ~2716),
+  `apps/desktop/src/interaction/hitTest.ts`, `apps/desktop/src/MainWindow.tsx`.
 
 ### 3. Bond DOM catcher = routing superset
 - [ ] Derive the non-scaling bond hit stroke width from `BOND_HIT_SCREEN_PX` (+ margin).
