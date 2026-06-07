@@ -1476,6 +1476,9 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
+/* Transparent atom pointer catcher. The visible hover highlight is rendered from the
+   resolver result (.native-atom-hover), not from CSS :hover, so the highlight and the
+   click target can never disagree (invariant #2). */
 .native-atom-hit-target {
   fill: var(--cd-bg-selected);
   stroke: var(--cd-accent);
@@ -1484,13 +1487,8 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
-.native-atom-hit-target:hover {
-  fill: var(--cd-bg-selected);
-  stroke: var(--cd-accent);
-  stroke-width: 1.4;
-  opacity: 1;
-}
-
+/* Retired CSS :hover bond highlight. The element is still emitted but is inert; bond hover
+   is now drawn from the resolver result (.native-bond-hover) so it matches the click. */
 .native-bond-hover-decorator {
   stroke: var(--cd-accent);
   stroke-width: 10;
@@ -1501,11 +1499,15 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
-g[data-bond-layer-id]:hover .native-bond-hover-decorator {
+/* Neutral bond hover, driven by the resolver (mirrors the retired decorator's look). */
+.native-bond-hover {
   stroke: var(--cd-accent);
   stroke-width: 10;
   stroke-linecap: round;
   stroke-opacity: 0.32;
+  fill: none;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
 }
 
 .native-bond-knockout {

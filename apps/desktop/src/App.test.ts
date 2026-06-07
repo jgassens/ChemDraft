@@ -157,8 +157,14 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("--accent: var(--cd-accent);");
     expect(appCss).toMatch(/\.native-crossing-hit-target\s*{[^}]*pointer-events:\s*none;/s);
     expect(appCss).toContain(".native-bond-hover-decorator");
-    expect(appCss).toMatch(/g\[data-bond-layer-id\]:hover\s+\.native-bond-hover-decorator\s*{[^}]*stroke-opacity:\s*0\.32;/s);
+    // The bond highlight is no longer driven by CSS :hover (a second opinion that used the
+    // DOM catcher's geometry); it is rendered from the resolver result so it matches the
+    // click target. The old :hover decorator rule must be gone, and the new resolver-driven
+    // class must exist.
+    expect(appCss).not.toMatch(/g\[data-bond-layer-id\]:hover/);
+    expect(appCss).toMatch(/\.native-bond-hover\s*{[^}]*stroke-opacity:\s*0\.32;/s);
     expect(appCss).not.toContain(".native-bond-hit-target:hover");
+    expect(appCss).not.toContain(".native-atom-hit-target:hover");
   });
 
   it("renders compact web-preview workspace regions with a floating fallback palette", () => {

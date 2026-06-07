@@ -1,6 +1,11 @@
 # Pointer Picking Hardening
 
-Status: **In progress** — steps 1–3 done. Branch: `codex/chemdraft-worktree-cleanup`.
+Status: **In progress** — steps 1–4 done (manual-verification milestone). Branch:
+`codex/chemdraft-worktree-cleanup`.
+
+> **Ready to test in the Tauri app.** Steps 2–4 together make bond/atom picking
+> self-consistent: screen-stable tolerance, no marquee fall-through, and a hover highlight
+> that matches what a click selects. See "Manual verification" below.
 
 Tracking doc for hardening atom/bond hover, left-click, and right-click picking.
 Reviewed three ways (Claude investigation, Codex narrowing, ChatGPT Pro green-light).
@@ -153,14 +158,22 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Files: `apps/desktop/src/interaction/hitTest.ts`, `apps/desktop/src/MainWindow.tsx`
   (`pageCssVars`), `apps/desktop/src/App.css` (`.native-bond-hit-target`).
 
-### 4. One highlight from the resolver; split hover semantics
-- [ ] Render bond hover from the resolver result (not CSS `:hover`).
-- [ ] Retire CSS `:hover` highlight styling (keep transparent catchers).
-- [ ] Neutral selection hover renders neutral; destructive red reserved for active
-      delete/erase operations.
-- Files: `apps/desktop/src/App.css` (`.native-atom-hit-target:hover` ~1484,
-  `g[data-bond-layer-id]:hover ...` ~1501, `.native-*-delete-hover` ~1513/1750),
-  `apps/desktop/src/MainWindow.tsx` (hover rendering ~6868).
+### 4. One highlight from the resolver; split hover semantics — DONE
+- [x] Bond hover is now drawn from the resolver result (`deleteTarget.kind === "bond"`) as a
+      `.native-bond-hover` line in the molecule overlay, matching the click target
+      (invariant #2). Replaces the CSS `:hover` decorator.
+- [x] Retired both CSS `:hover` highlights (`.native-atom-hit-target:hover` and
+      `g[data-bond-layer-id]:hover .native-bond-hover-decorator`). The catcher/decorator
+      elements remain (inert) so routing and the layout-engine render plan are unchanged.
+- [x] Split hover styling: neutral by default (`.native-atom-hover` / `.native-bond-hover`),
+      destructive red (`.native-*-delete-hover`) only when `hoverDestructive` — wired to
+      `activeCommandId === "tool.eraser"`. (Eraser is currently disabled, so hover is neutral
+      in practice; the danger path is wired and ready.) Fixes the old "atoms always render
+      danger-red on hover" overload.
+- [x] Updated `App.test.ts` CSS assertions: no `g[data-bond-layer-id]:hover` rule;
+      `.native-bond-hover` exists; no atom/bond hit-target `:hover`.
+- Files: `apps/desktop/src/App.css`, `apps/desktop/src/MainWindow.tsx`
+  (`DocumentObjectView` hover rendering + `hoverDestructive` prop), `apps/desktop/src/App.test.ts`.
 
 ### 5. Extend resolver: tolerance in / provenance out
 - [ ] Add `source` to the hit type; populate in `nativeMoleculeHitFromPointerTarget`.
@@ -189,8 +202,25 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 - Targeted `pnpm vitest run` slices for the hit-test + interaction files.
 - `pnpm lint`.
-- Manual `./run-app` pass: hover/select atoms and bonds at 0.5×, 1×, 4×, 8.5×, plus an
-  overlapping-molecule (rotaxane) right-click check.
+
+### Manual verification (steps 2–4) — do this in the Tauri app
+
+Run the app and draw a few bonds / a small ring. At **0.5×, 1×, 4×, and 8.5×** zoom:
+
+1. **Bond click is zoom-stable.** Hover a hair off a bond and click. It should select the
+   bond consistently at every zoom — not "works at 1× but dead when zoomed out," and not
+   "starts a marquee when zoomed in."
+2. **Highlight matches the click.** Wherever a bond/atom lights up on hover, a click there
+   selects it. No band where it highlights but clicking does nothing (and vice-versa).
+3. **Hover is neutral, not red.** Hovering atoms/bonds in the select tool shows a neutral
+   accent highlight, not the old danger-red.
+4. **No wrong-bond grabs when zoomed out.** At 0.5×, clicking between two close bonds should
+   not jump to a far one (the bond-length ceiling guards this).
+5. **Overlapping molecules.** With two overlapping structures, hover/click/right-click should
+   target the part nearest the pointer, and right-click should act on that same part.
+
+Known intentional edge: at 0.5× the tolerance is slightly tighter (~5px) than at 1×–8.5×
+(~8px) to avoid wrong-bond grabs — expected, not a bug.
 
 ## Out of scope (this pass)
 

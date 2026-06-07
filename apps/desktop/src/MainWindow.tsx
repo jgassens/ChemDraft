@@ -4663,6 +4663,7 @@ export function MainWindow({
                       chargeByAtomId={object.type === "molecule" ? chargeResolutionByMoleculeId.get(object.id) : undefined}
                       growthPreview={hoveredNativeAtom?.objectId === object.id ? hoveredNativeAtom : undefined}
                       deleteTarget={hoveredNativeDeleteTarget?.objectId === object.id ? hoveredNativeDeleteTarget : undefined}
+                      hoverDestructive={activeToolState.activeCommandId === "tool.eraser"}
                       freeformPreview={freeformNativeBond?.objectId === object.id ? freeformNativeBond : undefined}
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
@@ -6655,6 +6656,7 @@ function DocumentObjectView({
   chargeByAtomId,
   growthPreview,
   deleteTarget,
+  hoverDestructive,
   freeformPreview,
   doubleBondSidePreview,
   rotateReadout,
@@ -6688,6 +6690,7 @@ function DocumentObjectView({
   chargeByAtomId?: ReadonlyMap<string, number>;
   growthPreview?: HoveredNativeAtom;
   deleteTarget?: NativeMoleculeDeleteTarget;
+  hoverDestructive: boolean;
   freeformPreview?: FreeformNativeBondPreview;
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
   rotateReadout?: ObjectRotateReadoutState;
@@ -7018,13 +7021,33 @@ function DocumentObjectView({
               .filter((atom) => deleteTarget?.kind === "atom" && atom.id === deleteTarget.atomId)
               .map((atom) => (
                 <circle
-                  className="native-atom-delete-hover"
+                  className={hoverDestructive ? "native-atom-delete-hover" : "native-atom-hover"}
                   cx={atom.x - object.x}
                   cy={atom.y - object.y}
-                  key={`delete-${atom.id}`}
+                  key={`hover-${atom.id}`}
                   r="8"
                 />
               ))}
+            {/* Bond hover, drawn from the resolver result so it matches the click target
+                (invariant #2) instead of the old CSS :hover decorator. */}
+            {deleteTarget?.kind === "bond"
+              ? [deleteTarget].flatMap((target) => {
+                  const from = object.atoms.find((atom) => atom.id === target.fromAtomId);
+                  const to = object.atoms.find((atom) => atom.id === target.toAtomId);
+                  return from && to
+                    ? [
+                        <line
+                          className={hoverDestructive ? "native-bond-delete-hover" : "native-bond-hover"}
+                          key={`hover-${target.bondId}`}
+                          x1={from.x - object.x}
+                          y1={from.y - object.y}
+                          x2={to.x - object.x}
+                          y2={to.y - object.y}
+                        />
+                      ]
+                    : [];
+                })
+              : null}
             {object.atoms
               .filter((atom) => atom.id === growthPreview?.atomId && atom.id !== freeformPreview?.atomId)
               .map((atom) => (
