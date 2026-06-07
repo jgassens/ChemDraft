@@ -55,6 +55,27 @@ export function hitToleranceForScale(scale: number): NativeMoleculeHitTolerance 
   return { bondHitRadius: bondHitRadiusForScale(scale) };
 }
 
+// The transparent DOM stroke that catches bond pointer events (`.native-bond-hit-target`).
+// It exists only to ROUTE the event to the molecule; the resolver decides identity. Per
+// invariant #1 it must be a superset of the model tolerance at every supported zoom, so an
+// accepted hit never falls through to the page/marquee path. The catcher is non-scaling
+// (constant screen px), so its half-width must cover the largest effective on-screen model
+// tolerance (≈ 8.5px at 8.5×). 10px half-width clears that with margin. Injected into CSS as
+// `--bond-hit-stroke-px` so this stays the single source of truth (no re-typed magic number).
+export const BOND_HIT_CATCHER_HALF_WIDTH_PX = 10;
+export const BOND_HIT_CATCHER_STROKE_PX = BOND_HIT_CATCHER_HALF_WIDTH_PX * 2;
+
+/** The largest effective on-screen bond tolerance the model can accept across [minZoom, maxZoom]. */
+export function maxModelBondScreenTolerancePx(minZoom: number, maxZoom: number): number {
+  // bondHitRadiusForScale(s) * s is piecewise; sample the endpoints and the clamp breakpoints.
+  const breakpoints = [minZoom, maxZoom, BOND_HIT_SCREEN_PX / nativeBondLengthPx / BOND_HIT_MAX_PAGE_FRACTION, BOND_HIT_SCREEN_PX];
+  return Math.max(
+    ...breakpoints
+      .filter((scale) => scale >= minZoom && scale <= maxZoom)
+      .map((scale) => bondHitRadiusForScale(scale) * scale)
+  );
+}
+
 // Cross-object pick order is geometry-first: the part nearest the pointer wins, and the
 // stacking layer only breaks a near-tie. Without this band, a clearly-nearer atom on a
 // lower layer was losing to a farther atom on the top-most molecule, so overlapping

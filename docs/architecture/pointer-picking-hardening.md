@@ -1,6 +1,6 @@
 # Pointer Picking Hardening
 
-Status: **In progress** — steps 1–2 done. Branch: `codex/chemdraft-worktree-cleanup`.
+Status: **In progress** — steps 1–3 done. Branch: `codex/chemdraft-worktree-cleanup`.
 
 Tracking doc for hardening atom/bond hover, left-click, and right-click picking.
 Reviewed three ways (Claude investigation, Codex narrowing, ChatGPT Pro green-light).
@@ -140,11 +140,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Files: `apps/desktop/src/documentWorkflow.ts` (`findNativeMoleculeDeleteHit` ~2716),
   `apps/desktop/src/interaction/hitTest.ts`, `apps/desktop/src/MainWindow.tsx`.
 
-### 3. Bond DOM catcher = routing superset
-- [ ] Derive the non-scaling bond hit stroke width from `BOND_HIT_SCREEN_PX` (+ margin).
-- [ ] Confirm catcher ≥ model tolerance at all zooms; resolver still decides identity.
-- Files: `apps/desktop/src/App.css` (`.native-bond-hit-target`, ~line 1425),
-  bond hit-target emission in `packages/layout-engine/src/index.ts` (~line 1308).
+### 3. Bond DOM catcher = routing superset — DONE
+- [x] Single source of truth `BOND_HIT_CATCHER_STROKE_PX` (=20, half-width 10) in
+      `hitTest.ts`, injected as the `--bond-hit-stroke-px` CSS var via `pageCssVars`, and
+      consumed by `.native-bond-hit-target { stroke-width: var(--bond-hit-stroke-px, 20) }`.
+      Replaces the re-typed magic `14`.
+- [x] Routing-superset assertion (invariant #1): `maxModelBondScreenTolerancePx(0.5, 8.5)`
+      = 8.5px ≤ catcher half-width 10px; resolver still decides identity. Tested.
+- NOTE: catcher widening means the CSS `:hover` bond decorator now lights over a slightly
+  WIDER band than the model selects — a temporary highlight/click mismatch that **step 4**
+  removes by driving hover from the resolver result and retiring CSS `:hover`.
+- Files: `apps/desktop/src/interaction/hitTest.ts`, `apps/desktop/src/MainWindow.tsx`
+  (`pageCssVars`), `apps/desktop/src/App.css` (`.native-bond-hit-target`).
 
 ### 4. One highlight from the resolver; split hover semantics
 - [ ] Render bond hover from the resolver result (not CSS `:hover`).

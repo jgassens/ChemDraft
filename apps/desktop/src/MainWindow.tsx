@@ -194,6 +194,7 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
+  BOND_HIT_CATCHER_STROKE_PX,
   hitToleranceForScale,
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeHitFromPointerTarget
@@ -635,7 +636,10 @@ export function MainWindow({
     () =>
       ({
         "--page-layout-width": `${activePage.width}px`,
-        "--page-layout-height": `${activePage.height}px`
+        "--page-layout-height": `${activePage.height}px`,
+        // Bond pointer catcher width — single source of truth in hitTest.ts so the DOM
+        // catcher stays a routing superset of the model tolerance (invariant #1).
+        "--bond-hit-stroke-px": `${BOND_HIT_CATCHER_STROKE_PX}`
       }) as CSSProperties,
     [activePage.height, activePage.width]
   );

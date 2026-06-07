@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
 import { createPhase4Document, insertNativeSingleBondMolecule } from "../documentWorkflow";
-import { bondHitRadiusForScale, hitToleranceForScale, hitTestDocument } from "./hitTest";
+import {
+  BOND_HIT_CATCHER_HALF_WIDTH_PX,
+  bondHitRadiusForScale,
+  hitToleranceForScale,
+  hitTestDocument,
+  maxModelBondScreenTolerancePx
+} from "./hitTest";
 
 function singleBondMolecule() {
   const document = insertNativeSingleBondMolecule(createPhase4Document("hit-test"), { x: 200, y: 220 });
@@ -242,6 +248,25 @@ describe("hitTestDocument pointer path is screen-stable for bonds (step 2)", () 
       const screenTolerance = bondHitRadiusForScale(scale) * scale;
       expect(screenTolerance).toBeGreaterThanOrEqual(4);
       expect(screenTolerance).toBeLessThanOrEqual(9);
+    }
+  });
+});
+
+// Invariant #1 (step 3): the DOM bond catcher must contain every model-accepted bond hit
+// across the whole supported zoom range, so an accepted hit never falls through to the page
+// marquee path. The catcher is non-scaling, so its half-width must cover the LARGEST
+// effective on-screen model tolerance.
+describe("bond DOM catcher is a routing superset of the model (invariant #1)", () => {
+  it("catcher half-width covers the max model screen tolerance over 0.5×–8.5×", () => {
+    const maxModel = maxModelBondScreenTolerancePx(0.5, 8.5);
+    expect(maxModel).toBeLessThanOrEqual(BOND_HIT_CATCHER_HALF_WIDTH_PX);
+    // And the max is the value we expect (8.5px at 8.5×), guarding the breakpoint sampling.
+    expect(maxModel).toBeCloseTo(8.5);
+  });
+
+  it("holds with margin at every supported sample zoom", () => {
+    for (const scale of SUPPORTED_ZOOMS) {
+      expect(bondHitRadiusForScale(scale) * scale).toBeLessThanOrEqual(BOND_HIT_CATCHER_HALF_WIDTH_PX);
     }
   });
 });

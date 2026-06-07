@@ -1426,7 +1426,10 @@ textarea:focus-visible,
   fill: none;
   stroke: var(--cd-accent);
   stroke-opacity: 0;
-  stroke-width: 14;
+  /* Routing superset of the model bond tolerance; width is the single source of truth in
+     hitTest.ts (BOND_HIT_CATCHER_STROKE_PX), injected as --bond-hit-stroke-px. Non-scaling
+     so it is a constant on-screen width at any zoom (invariant #1). */
+  stroke-width: var(--bond-hit-stroke-px, 20);
   pointer-events: stroke;
   vector-effect: non-scaling-stroke;
 }
