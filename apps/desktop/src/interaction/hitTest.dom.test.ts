@@ -28,6 +28,17 @@ function atomHitElement(atomId: string): Element {
   return element;
 }
 
+/** A stand-in for the bond SVG node the browser reports as `event.target`. */
+function bondHitElement(bondId: string, objectId: string): Element {
+  const wrapper = document.createElement("div");
+  wrapper.setAttribute("data-object-id", objectId);
+  const hit = document.createElement("div");
+  hit.setAttribute("data-hit-target", "bond");
+  hit.setAttribute("data-bond-id", bondId);
+  wrapper.appendChild(hit);
+  return hit;
+}
+
 /** Same hit node, but wrapped in the molecule wrapper that owns it (carries data-object-id). */
 function ownedAtomHitElement(atomId: string, objectId: string): Element {
   const wrapper = document.createElement("div");
@@ -85,5 +96,35 @@ describe("hitTestDocument DOM-hint tiebreaker", () => {
       kind: "atom",
       atomId: a0.id
     });
+  });
+});
+
+// Invariant #5 (docs/architecture/pointer-picking-hardening.md): bonds are ALWAYS
+// model-derived. A bond DOM target may route the event to the molecule, but it must never
+// manufacture or shift bond identity — the geometric model hit is the sole authority for
+// bonds. Pinned now so the step-5 provenance work cannot reintroduce a bond DOM fallback.
+describe("hitTestDocument bonds are never DOM-derived (invariant #5)", () => {
+  it("ignores a bond DOM hint where the model finds no bond (no manufactured hit)", () => {
+    const { doc, molecule } = singleBondMolecule();
+    const bondId = molecule.bonds[0].id;
+    // A point well clear of every atom and bond: the model rejects it outright.
+    const empty = { x: 24, y: 24 };
+
+    expect(hitTestDocument(doc, empty)).toBeUndefined();
+    // Even with the browser reporting the bond's hit node as the event target, the result
+    // stays undefined — the DOM cannot fabricate a bond hit the model did not find.
+    expect(hitTestDocument(doc, empty, bondHitElement(bondId, molecule.id))).toBeUndefined();
+  });
+
+  it("does not let a bond DOM hint change which part the model picked", () => {
+    const { doc, molecule } = singleBondMolecule();
+    const a0 = molecule.atoms[0];
+    const bondId = molecule.bonds[0].id;
+
+    // Pointer sits exactly on a0 (a clear atom winner). A bond DOM target must not flip it.
+    const withoutHint = hitTestDocument(doc, { x: a0.x, y: a0.y });
+    const withBondHint = hitTestDocument(doc, { x: a0.x, y: a0.y }, bondHitElement(bondId, molecule.id));
+    expect(withBondHint).toEqual(withoutHint);
+    expect(withBondHint).toMatchObject({ kind: "atom", atomId: a0.id });
   });
 });

@@ -1,6 +1,6 @@
 # Pointer Picking Hardening
 
-Status: **Planned** — not started. Branch: `codex/chemdraft-worktree-cleanup`.
+Status: **In progress** — step 1 done. Branch: `codex/chemdraft-worktree-cleanup`.
 
 Tracking doc for hardening atom/bond hover, left-click, and right-click picking.
 Reviewed three ways (Claude investigation, Codex narrowing, ChatGPT Pro green-light).
@@ -99,13 +99,21 @@ Extend the **existing** entry point, do not invent a new one.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
-### 1. Characterization tests (no behavior change)
-- [ ] Zoom-parameterized cases @ 0.5× / 1× / 4× / 8.5× for atom hit, bond hit, near-miss.
-- [ ] Hover vs. left-click vs. context-menu resolve the same pixel to the same target.
-- [ ] Overlapping-molecule ordering (extend existing rotaxane case across zooms).
-- [ ] Hard assertion: every bond result has `source === "model"` (invariant #5).
-- [ ] Routing assertion: a synthetic catcher of the proposed size contains every
-      model-accepted point (invariant #1).
+### 1. Characterization tests (no behavior change) — DONE
+- [x] Zoom-parameterized cases @ 0.5× / 1× / 4× / 8.5× for bond + atom tolerance, pinning
+      today's page-space (zoom-dependent) behavior. The bond cases are the ones that will
+      legitimately flip in step 2/3; atom cases are the preserve-as-is guard.
+- [x] Determinism: same page point → identical target.
+- [x] Behavioral pin of invariant #5: a bond DOM hint cannot manufacture or shift a bond
+      hit (`bonds are never DOM-derived`). The literal `source === "model"` assertion lands
+      with the provenance field in **step 5**.
+- [x] Overlapping-molecule ordering — covered by the existing rotaxane/layer-vs-distance
+      tests; ordering is zoom-invariant in page space, so no per-zoom variant is needed.
+- [~] Hover vs. left-click vs. context-menu agreement — deferred to **step 5**: the three
+      already share one resolver at the unit level; a meaningful cross-handler test needs the
+      MainWindow harness and the extracted resolver.
+- [~] Routing-superset assertion (invariant #1) — deferred to **step 3**: it needs the
+      `BOND_HIT_SCREEN_PX` catcher constant, which is introduced in step 2.
 - Files: `apps/desktop/src/interaction/hitTest.test.ts`,
   `apps/desktop/src/interaction/hitTest.dom.test.ts`.
 
