@@ -434,6 +434,36 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 45;
 const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
+// Whole-molecule double-click is normally read from the browser's `event.detail` click
+// counter. That counter is unreliable when the first press mutates the DOM/selection under
+// the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
+// handler and the first click selects a part, so the second press never reaches detail 2).
+// We OR `event.detail` with a self-tracked detector keyed on wall-clock time and SCREEN
+// distance (zoom-independent), shared by the page and object selection handlers.
+const DOUBLE_PRESS_MS = 400;
+const DOUBLE_PRESS_SCREEN_PX = 6;
+
+export interface SelectionPressSample {
+  time: number;
+  x: number;
+  y: number;
+}
+
+/** True when `current` is a second press close in time and SCREEN distance to `previous`. */
+export function isSelectionDoublePress(
+  previous: SelectionPressSample | undefined,
+  current: SelectionPressSample,
+  windowMs: number = DOUBLE_PRESS_MS,
+  radiusPx: number = DOUBLE_PRESS_SCREEN_PX
+): boolean {
+  if (!previous) {
+    return false;
+  }
+  return (
+    current.time - previous.time <= windowMs &&
+    Math.hypot(current.x - previous.x, current.y - previous.y) <= radiusPx
+  );
+}
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.bringForward", label: "Move Object Forward" },
   { commandId: "layout.bringToFront", label: "Move Object to Front" },
@@ -534,6 +564,10 @@ export function MainWindow({
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   const viewportRef = useRef(viewport);
+  // Shared across the page and object selection handlers so a whole-molecule double-click is
+  // detected regardless of which handler each of the two presses routes to (see
+  // isSelectionDoublePress).
+  const lastSelectionPressRef = useRef<SelectionPressSample | undefined>(undefined);
 
   documentRef.current = document;
   documentHistoryRef.current = documentHistory;
@@ -3053,7 +3087,10 @@ export function MainWindow({
     }
 
     if (activeToolState.activeKind === "selection") {
-      if (event.detail >= 2) {
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY };
+      const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+      lastSelectionPressRef.current = press;
+      if (doublePress) {
         const object = nativeMoleculeObjectAtPoint(document.pages[0].objects, point);
         if (object) {
           event.preventDefault();
@@ -3659,7 +3696,10 @@ export function MainWindow({
 
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
       event.preventDefault();
-      if (object.type === "molecule" && event.detail >= 2) {
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY };
+      const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+      lastSelectionPressRef.current = press;
+      if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
         replacePresentDocument((current) => selectDocumentObject(current, objectId));
         setActiveEditorObjectId(undefined);

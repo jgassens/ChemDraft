@@ -63,6 +63,7 @@ import {
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  isSelectionDoublePress,
   planBondDepthPatches,
   reorderSelectedDocumentObjectWithCrossingDefaults,
   nativeMoleculeSelectionDragIntent,
@@ -243,6 +244,23 @@ describe("ChemDraft desktop shell", () => {
 
     expect(nativeMoleculeObjectAtPoint(document.pages[0].objects, { x: 300, y: 300 })?.id).toBe("mol_template_002");
     expect(nativeMoleculeObjectAtPoint(document.pages[0].objects, { x: 24, y: 24 })).toBeUndefined();
+  });
+
+  it("detects a whole-molecule double-press independent of browser event.detail (zoom regression)", () => {
+    // The whole-molecule double-click must not depend solely on event.detail, which can fail
+    // to reach 2 at low zoom when the first press selects a part and reroutes/remounts the
+    // target. The self-tracked detector uses wall-clock time + SCREEN distance so it works
+    // regardless of zoom or which handler each press routed to.
+    const first = { time: 1_000, x: 200, y: 220 };
+
+    // Second press soon after, at (nearly) the same screen point → double-press.
+    expect(isSelectionDoublePress(first, { time: 1_180, x: 203, y: 222 })).toBe(true);
+    // Too slow → not a double-press (two deliberate single clicks).
+    expect(isSelectionDoublePress(first, { time: 1_600, x: 200, y: 220 })).toBe(false);
+    // Too far on screen → not a double-press (distinct targets).
+    expect(isSelectionDoublePress(first, { time: 1_100, x: 240, y: 220 })).toBe(false);
+    // No prior press → never a double-press.
+    expect(isSelectionDoublePress(undefined, first)).toBe(false);
   });
 
   it("converts captured window hover coordinates through the rendered page rectangle", () => {

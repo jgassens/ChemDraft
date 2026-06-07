@@ -183,6 +183,26 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   (`handleObjectPointerDown` ~3535, `handleObjectContextMenu` ~4007,
   `updateNativeCanvasHover` ~2474).
 
+### Regression fix — low-zoom whole-molecule double-click
+
+Reported during manual verification: at ≤0.5× (and 0.25×), double-clicking a molecule no
+longer selected the whole molecule; fine at ≥1×.
+
+- **Root cause:** there are two double-click paths — a reliable bounds-based one in the page
+  handler (`nativeMoleculeObjectAtPoint`, fires on empty-canvas clicks) and a
+  `event.detail >= 2` one in the object handler (fires on molecule-catcher clicks). Step 3's
+  wider bond catcher (14→20px) reroutes low-zoom double-clicks (a tiny molecule is blanketed
+  by the 20px catcher) from the reliable page path to the object path, whose native
+  `event.detail` counter is fragile when the first press selects a part. At 1× the molecule
+  is large enough that clicks still reach the page path.
+- **Fix:** detect the double-press ourselves with `isSelectionDoublePress` — wall-clock time
+  (≤400ms) + **screen** distance (≤6px, zoom-independent) — shared via `lastSelectionPressRef`
+  across both handlers and OR-ed with `event.detail`. Whole-molecule double-click now works
+  regardless of which handler each press routes to or whether the first press mutated
+  selection.
+- Files: `apps/desktop/src/MainWindow.tsx` (`isSelectionDoublePress`, `lastSelectionPressRef`,
+  both selection handlers), test in `apps/desktop/src/App.test.ts`.
+
 ### 6. Narrow cleanup (only after behavior is pinned)
 - [ ] Extract `clearTransientInteractionChrome()` for the repeated editor/hover/preview
       reset block. **Not** a broad `applySelection()` god function.
