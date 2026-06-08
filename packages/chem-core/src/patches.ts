@@ -312,11 +312,12 @@ function pruneCrossingsAfterObjectUpdate(
     return;
   }
 
-  if (previous.structure !== updated.structure || previous.structureFormat !== updated.structureFormat) {
-    pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === updated.id));
-    return;
-  }
-
+  // Keep a crossing override as long as each of its bonds still exists with the same identity
+  // (endpoints + order). This is the single, granular source of truth: it preserves overrides
+  // through edits that change the SMILES string but not the bond graph — e.g. changing a
+  // carbon to oxygen (which previously cleared all overrides and made a rotaxane pop in front)
+  // — while still pruning when a bond is genuinely deleted, re-topologised, or the molecule is
+  // replaced wholesale (its bonds get new ids → not stable → pruned).
   pruneCrossings(page, (crossing) =>
     crossing.bonds.every((ref) =>
       ref.objectId !== updated.id || moleculeBondIdentityIsStable(previous, updated, ref.bondId)

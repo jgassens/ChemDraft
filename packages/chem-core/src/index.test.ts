@@ -280,12 +280,15 @@ describe("page crossing overrides", () => {
     }, { now: timestamp });
     expect(changedEndpoint.pages[0].crossings).toEqual([]);
 
-    const replacedGraph = applyPatch(document, {
+    // A structure-string change that does NOT alter the bond graph (e.g. relabelling a carbon
+    // to oxygen) keeps the override — each bond's identity is still stable. Previously this
+    // cleared every override and made a threaded rotaxane pop back in front.
+    const relabelled = applyPatch(document, {
       op: "updateObject",
       objectId: "mol_front",
       changes: { structure: "CCC" }
     }, { now: timestamp });
-    expect(replacedGraph.pages[0].crossings).toEqual([]);
+    expect(relabelled.pages[0].crossings).toHaveLength(1);
   });
 });
 
