@@ -234,6 +234,14 @@ if [ -e "$TAURI_OUTPUT_BUNDLE" ]; then
   rm -rf "$TAURI_OUTPUT_BUNDLE"
 fi
 
+# Force Tauri to re-embed the freshly built frontend. `tauri::generate_context!()` in
+# src-tauri/src/lib.rs bakes the built `dist/` into the binary at COMPILE time. cargo's
+# incremental build can relink the binary (updating its mtime) while reusing a cached lib.rs
+# object that still embeds STALE frontend assets whenever only the frontend changed and no Rust
+# source did. Bumping lib.rs's mtime forces that crate — and the asset embed — to recompile, so
+# `./run-app` always launches the current frontend.
+touch "$APP_DIR/src-tauri/src/lib.rs"
+
 node_modules/.bin/tauri build --bundles app
 set_bundle_display_name "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_DISPLAY_NAME"
 stage_run_app_bundle
