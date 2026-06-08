@@ -3,6 +3,8 @@ import type { MoleculeObject } from "@chemdraft/chem-core";
 
 import {
   createPhase4Document,
+  findNativeMoleculeDeleteHit,
+  findNativeMoleculeTemplateHit,
   insertNativeSingleBondMolecule,
   type NativeMoleculeDeleteTarget
 } from "../documentWorkflow";
@@ -13,6 +15,7 @@ import {
   hitToleranceForScale,
   hitTestDocument,
   maxModelBondScreenTolerancePx,
+  nativeMoleculeTemplateHoverTarget,
   type TemplateHoverSample
 } from "./hitTest";
 
@@ -274,6 +277,53 @@ describe("bond DOM catcher is a routing superset of the model (invariant #1)", (
     for (const scale of SUPPORTED_ZOOMS) {
       expect(bondHitRadiusForScale(scale) * scale).toBeLessThanOrEqual(BOND_HIT_CATCHER_HALF_WIDTH_PX);
     }
+  });
+});
+
+// Stage B: the template resolver is bond-preferring ALONG edges (so a ring tool fuses without
+// a pixel-perfect mid-bond click) yet keeps a small spiro target at each vertex. The generic
+// delete hit stays atom-first — proven by contrast at the same point.
+describe("findNativeMoleculeTemplateHit (bond-preferring along edges)", () => {
+  it("keeps the atom (spiro) right at the vertex", () => {
+    const { molecule } = singleBondMolecule();
+    const v = molecule.atoms[0];
+    expect(findNativeMoleculeTemplateHit(molecule, { x: v.x, y: v.y }))
+      .toMatchObject({ kind: "atom", atomId: v.id });
+  });
+
+  it("keeps the atom (spiro) just off the vertex, perpendicular to the bond", () => {
+    const { molecule } = singleBondMolecule();
+    const { a0, perpendicular } = bondFrame(molecule);
+    const point = { x: a0.x + perpendicular.x * 3, y: a0.y + perpendicular.y * 3 };
+    expect(findNativeMoleculeTemplateHit(molecule, point)).toMatchObject({ kind: "atom", atomId: a0.id });
+  });
+
+  it("prefers the bond along the edge near a vertex, where the delete hit would spiro", () => {
+    const { molecule } = singleBondMolecule();
+    const { a0, along } = bondFrame(molecule);
+    // 8px inboard along the bond: inside the 8px atom radius (so delete picks the atom) but
+    // past the ~6.6px vertex cap (so the template fuses).
+    const point = { x: a0.x + along.x * 8, y: a0.y + along.y * 8 };
+    expect(findNativeMoleculeDeleteHit(molecule, point)).toMatchObject({ kind: "atom", atomId: a0.id });
+    expect(findNativeMoleculeTemplateHit(molecule, point)).toMatchObject({ kind: "bond", bondId: "bond_001" });
+  });
+
+  it("prefers the bond at mid-edge", () => {
+    const { molecule } = singleBondMolecule();
+    const { midpoint } = bondFrame(molecule);
+    expect(findNativeMoleculeTemplateHit(molecule, midpoint)).toMatchObject({ kind: "bond", bondId: "bond_001" });
+  });
+
+  it("returns undefined over empty space", () => {
+    const { molecule } = singleBondMolecule();
+    expect(findNativeMoleculeTemplateHit(molecule, { x: 24, y: 24 })).toBeUndefined();
+  });
+
+  it("nativeMoleculeTemplateHoverTarget tags the owning molecule", () => {
+    const { document, molecule } = singleBondMolecule();
+    const { midpoint } = bondFrame(molecule);
+    expect(nativeMoleculeTemplateHoverTarget(document, midpoint))
+      .toMatchObject({ objectId: molecule.id, kind: "bond", bondId: "bond_001" });
   });
 });
 

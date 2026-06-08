@@ -199,6 +199,7 @@ import {
   hitToleranceForScale,
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeHitFromPointerTarget,
+  nativeMoleculeTemplateHoverTarget,
   type TemplateHoverSample
 } from "./interaction/hitTest";
 
@@ -2556,12 +2557,21 @@ export function MainWindow({
       return;
     }
 
-    const target = nativeMoleculeCanvasHoverTarget(
-      sourceDocument,
-      point,
-      eventTarget,
-      hitToleranceForScale(viewportRef.current.scale)
-    );
+    // Ring/template tools resolve the hover with the bond-preferring template resolver (purely
+    // geometric) so the highlight matches what a click will fuse/attach. Every other tool keeps
+    // the generic atom-first hover (with its DOM tiebreak) unchanged.
+    const target = activeNativeTemplateId
+      ? nativeMoleculeTemplateHoverTarget(
+          sourceDocument,
+          point,
+          hitToleranceForScale(viewportRef.current.scale)
+        )
+      : nativeMoleculeCanvasHoverTarget(
+          sourceDocument,
+          point,
+          eventTarget,
+          hitToleranceForScale(viewportRef.current.scale)
+        );
     assignHoveredNativeDeleteTarget(target);
     hoveredNativeAtomPointRef.current = target?.kind === "atom"
       ? { objectId: target.objectId, point }
@@ -3175,8 +3185,7 @@ export function MainWindow({
         document,
         { pagePoint: point, toolCommandId: activeToolState.activeCommandId, templateId: activeNativeTemplateId },
         templateHoverTargetRef.current,
-        viewportRef.current.scale,
-        event.target
+        viewportRef.current.scale
       );
       if (templateTarget) {
         applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId, templateTarget);
@@ -3722,8 +3731,7 @@ export function MainWindow({
         document,
         { pagePoint: point, toolCommandId: activeToolState.activeCommandId, templateId: activeNativeTemplateId },
         templateHoverTargetRef.current,
-        viewportRef.current.scale,
-        event.target
+        viewportRef.current.scale
       );
       applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId, templateTarget);
       return;

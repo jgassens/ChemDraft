@@ -2784,6 +2784,96 @@ export function findNativeMoleculeDeleteHit(
   };
 }
 
+// Within this along-bond distance of an endpoint the ATOM wins (spiro); beyond it the BOND
+// wins (fusion). This carves a small spiro target out of each vertex while letting the fuse
+// band cover the rest of every edge, so a ring tool no longer needs a pixel-perfect mid-bond
+// click — yet hovering the vertex glyph (or just off it) still resolves to the atom.
+const nativeTemplateVertexCapPx = nativeBondLength * 0.3;
+
+// True when the pointer projects onto the interior span of the bond (past the vertex cap at
+// either end), i.e. the pointer is genuinely "on the edge" rather than "on the vertex".
+function nativeTemplatePointIsOnBondSpan(
+  molecule: MoleculeObject,
+  bondHit: { fromAtomId: string; toAtomId: string },
+  point: PagePoint
+): boolean {
+  const from = molecule.atoms.find((atom) => atom.id === bondHit.fromAtomId);
+  const to = molecule.atoms.find((atom) => atom.id === bondHit.toAtomId);
+  if (!from || !to) {
+    return false;
+  }
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) {
+    return false;
+  }
+  const t = Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared));
+  const alongFromNearerEndpoint = Math.min(t, 1 - t) * Math.sqrt(lengthSquared);
+  return alongFromNearerEndpoint >= nativeTemplateVertexCapPx;
+}
+
+/**
+ * Template-tool variant of {@link findNativeMoleculeDeleteHit}. Unlike the atom-first delete
+ * hit, this is BOND-preferring along edges: when the pointer sits over a bond's interior span
+ * it returns that bond (fusion) even if a vertex is also within the atom radius — fixing the
+ * "magical spot" where a near-vertex hover spiro'd instead of fusing. The vertex cap keeps a
+ * small atom (spiro) target at each vertex. Purely geometric (no DOM hint), so the highlight
+ * this paints and the click that commits it can never disagree. Delete/eraser is untouched.
+ */
+export function findNativeMoleculeTemplateHit(
+  molecule: MoleculeObject,
+  point: PagePoint,
+  tolerance?: NativeMoleculeHitTolerance
+): NativeMoleculeDeleteHit | undefined {
+  if (!isEditableNativeMoleculeGraph(molecule)) {
+    return undefined;
+  }
+
+  const atomHit = findNearestAtomAtPoint({
+    atoms: molecule.atoms,
+    point,
+    hitRadius: tolerance?.atomHitRadius ?? atomHitRadius
+  });
+  const bondHit = findNearestBondHit({
+    atoms: molecule.atoms,
+    bonds: molecule.bonds,
+    point,
+    hitRadius: tolerance?.bondHitRadius ?? bondHitRadius
+  });
+
+  const bondCandidate = bondHit?.bondId !== undefined ? bondHit : undefined;
+  const preferBond = bondCandidate !== undefined
+    && (!atomHit || nativeTemplatePointIsOnBondSpan(molecule, bondCandidate, point));
+  if (preferBond && bondCandidate?.bondId) {
+    return {
+      kind: "bond",
+      bondId: bondCandidate.bondId,
+      fromAtomId: bondCandidate.fromAtomId,
+      toAtomId: bondCandidate.toAtomId,
+      terminalAtomId: bondCandidate.nearestTerminalAtomId,
+      distanceToPointer: bondCandidate.distance
+    };
+  }
+
+  if (atomHit) {
+    return { kind: "atom", atomId: atomHit.atomId, distanceToPointer: atomHit.distance };
+  }
+
+  if (bondCandidate?.bondId) {
+    return {
+      kind: "bond",
+      bondId: bondCandidate.bondId,
+      fromAtomId: bondCandidate.fromAtomId,
+      toAtomId: bondCandidate.toAtomId,
+      terminalAtomId: bondCandidate.nearestTerminalAtomId,
+      distanceToPointer: bondCandidate.distance
+    };
+  }
+
+  return undefined;
+}
+
 export function applyNativeMoleculeDeleteTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget

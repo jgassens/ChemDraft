@@ -15,6 +15,7 @@
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import {
   findNativeMoleculeDeleteHit,
+  findNativeMoleculeTemplateHit,
   nativeBondLengthPx,
   type NativeMoleculeDeleteHit,
   type NativeMoleculeDeleteTarget,
@@ -185,6 +186,42 @@ export function nativeMoleculeCanvasHoverTarget(
   return target ? { objectId: target.object.id, ...target.hit } : undefined;
 }
 
+/**
+ * Template-tool counterpart to {@link nativeMoleculeCanvasHoverTarget}: resolves the molecule
+ * part a ring/template tool should act on, bond-preferring along edges (see
+ * findNativeMoleculeTemplateHit). It is purely geometric — no DOM atom hint — so it never
+ * flips a bond back to an atom, and the highlight it paints equals the click it commits.
+ * Cross-object ordering matches the generic hover: nearest part wins, top layer breaks ties.
+ */
+export function nativeMoleculeTemplateHoverTarget(
+  document: ChemDraftDocument,
+  point: Point,
+  tolerance?: NativeMoleculeHitTolerance
+): NativeMoleculeDeleteTarget | undefined {
+  const page = document.pages[0];
+  const candidates = page.objects
+    .map((object, layerIndex) => {
+      if (object.type !== "molecule") {
+        return undefined;
+      }
+      const hit = findNativeMoleculeTemplateHit(object, point, tolerance);
+      return hit ? { object, hit, layerIndex } : undefined;
+    })
+    .filter((entry): entry is { object: MoleculeObject; hit: NativeMoleculeDeleteHit; layerIndex: number } =>
+      entry !== undefined
+    )
+    .sort((left, right) => {
+      const byDistance = left.hit.distanceToPointer - right.hit.distanceToPointer;
+      if (Math.abs(byDistance) > LAYER_TIE_EPSILON_PX) {
+        return byDistance;
+      }
+      return right.layerIndex - left.layerIndex || left.object.id.localeCompare(right.object.id);
+    });
+  const target = candidates[0];
+
+  return target ? { objectId: target.object.id, ...target.hit } : undefined;
+}
+
 // Screen-space slack (px) within which a press may reuse the last template hover target.
 // A click is normally preceded by a pointermove to the same spot, so the press point and
 // the last hover point are within a pixel or two; this rejects a hover left somewhere else
@@ -225,16 +262,15 @@ export function templateTargetStillExists(
  * (what the highlight is painting) so click and highlight can never disagree, but only when
  * that hover is not stale: same tool command AND template id, the press is within
  * `TEMPLATE_HOVER_REUSE_SCREEN_PX` of where we hovered, and the target still exists. When
- * the hover is stale or absent it falls back to a fresh geometric resolve — the same one
- * that paints the highlight — never the per-object DOM-tiebreak recompute that can flip a
- * bond into an atom at press time.
+ * the hover is stale or absent it falls back to a fresh resolve via the same bond-preferring
+ * template resolver that paints the highlight — never the per-object DOM-tiebreak recompute
+ * that can flip a bond into an atom at press time.
  */
 export function currentTemplateTargetFromHoverOrHit(
   document: ChemDraftDocument,
   press: { pagePoint: Point; toolCommandId: string; templateId: string },
   hover: TemplateHoverSample | undefined,
-  scale: number,
-  eventTarget?: EventTarget | null
+  scale: number
 ): NativeMoleculeDeleteTarget | undefined {
   const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
   if (
@@ -247,7 +283,7 @@ export function currentTemplateTargetFromHoverOrHit(
     return hover.target;
   }
 
-  return nativeMoleculeCanvasHoverTarget(document, press.pagePoint, eventTarget, hitToleranceForScale(scale));
+  return nativeMoleculeTemplateHoverTarget(document, press.pagePoint, hitToleranceForScale(scale));
 }
 
 /**
