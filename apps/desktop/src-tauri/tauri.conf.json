@@ -31,8 +31,6 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png"],
-    "macOS": {
-      "signingIdentity": "-"
-    }
+    "macOS": {}
   }
 }

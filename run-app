@@ -157,9 +157,24 @@ stage_run_app_bundle() {
   mv "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_BUNDLE"
 }
 
+strip_bundle_detritus() {
+  local bundle="$1"
+
+  # This repo lives under ~/Documents, which macOS syncs via the iCloud File Provider. That
+  # provider stamps com.apple.FinderInfo / com.apple.fileprovider.fpfs xattrs onto freshly
+  # built files (including the .app bundle), and codesign then refuses to sign with:
+  #   "resource fork, Finder information, or similar detritus not allowed".
+  # Stripping all extended attributes immediately before signing avoids that. (The real
+  # long-term fix is to keep the checkout outside an iCloud-synced folder.)
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$bundle" 2>/dev/null || true
+  fi
+}
+
 resign_local_bundle() {
   local bundle="$1"
 
+  strip_bundle_detritus "$bundle"
   if command -v codesign >/dev/null 2>&1; then
     codesign --force --deep --sign - "$bundle" >/dev/null
   fi
