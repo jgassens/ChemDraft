@@ -3683,6 +3683,60 @@ describe("Phase 4 document workflow", () => {
     expect(Math.sign(newCentroidY - midpoint.y)).toBe(Math.sign(midpoint.y - centroid.y));
   });
 
+  it("closes a fused ring onto an existing rim atom instead of duplicating it", () => {
+    let document = insertNativeTemplateMolecule(createPhase4Document("Closure Snap"), { x: 400, y: 360 }, "benzene");
+    const central = selectedMolecule(document);
+
+    // First outer ring on a central bond — open space, so nothing snaps (plain naphthalene).
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(central, "bond_001"),
+      moleculeBondMidpoint(central, "bond_001"),
+      "benzene"
+    );
+    const afterFirst = selectedMolecule(document);
+    expect(afterFirst.atoms).toHaveLength(10);
+
+    // Second outer ring on the ADJACENT central bond. One of its proposed vertices lands on the
+    // first outer ring's rim atom, so closure must reuse it: 6 + 4 + 3 = 13 atoms, not 14.
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: moleculeBondMidpoint(afterFirst, "bond_002"), target: moleculeBondTarget(afterFirst, "bond_002") },
+      "benzene"
+    );
+    expect(plan?.kind).toBe("fused-closure");
+    expect(plan?.addedAtomIds).toHaveLength(3);
+
+    const closed = selectedMolecule(applyNativeTemplatePlacementPlan(document, plan!));
+    expect(closed.atoms).toHaveLength(13);
+    expectNoDuplicateAtomPositions(closed);
+    // The reused rim atom now belongs to both outer rings (degree 3), never duplicated.
+    closed.atoms.forEach((atom) => expect(atomDegree(closed, atom.id)).toBeLessThanOrEqual(3));
+  });
+
+  it("builds coronene by fusing six benzene rings around a central ring", () => {
+    let document = insertNativeTemplateMolecule(createPhase4Document("Coronene"), { x: 400, y: 360 }, "benzene");
+
+    for (let bondIndex = 1; bondIndex <= 6; bondIndex += 1) {
+      const central = selectedMolecule(document);
+      const bondId = `bond_00${bondIndex}`;
+      document = applyNativeTemplateToolAtTarget(
+        document,
+        moleculeBondTarget(central, bondId),
+        moleculeBondMidpoint(central, bondId),
+        "benzene"
+      );
+    }
+
+    const coronene = selectedMolecule(document);
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    // Naive (non-merging) fusion would leave 6 + 6*4 = 30 atoms with six duplicated rim pairs;
+    // closure reuses the rim atoms to give coronene's 24 carbons.
+    expect(coronene.atoms).toHaveLength(24);
+    expectNoDuplicateAtomPositions(coronene);
+    coronene.atoms.forEach((atom) => expect(atomDegree(coronene, atom.id)).toBeLessThanOrEqual(3));
+  });
+
   it("fuses benzene onto saturated cyclohexane as an aromatic ring with internal double bonds", () => {
     let document = insertNativeTemplateMolecule(
       createPhase4Document("Benzene Fused Cyclohexane"),

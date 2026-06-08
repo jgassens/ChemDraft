@@ -688,13 +688,22 @@ export function planNativeTemplatePlacement(
 
     const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
     const existingBondIds = new Set(molecule.bonds.map((bond) => bond.id));
+    const addedAtomIds = nextMolecule.atoms.filter((atom) => !existingAtomIds.has(atom.id)).map((atom) => atom.id);
+    const addedBondIds = nextMolecule.bonds.filter((bond) => !existingBondIds.has(bond.id)).map((bond) => bond.id);
+    // A bond fusion that added fewer atoms than the ring contributes in open space reused at
+    // least one existing atom — i.e. it closed onto a neighbouring ring (Stage D). Atom targets
+    // are always spiro attachment.
+    const fusedNewAtoms = nativeTemplateRingSize(templateId) - 2;
+    const kind = target.kind === "atom"
+      ? "attach-atom"
+      : addedAtomIds.length < fusedNewAtoms ? "fused-closure" : "fuse-bond";
     return {
-      kind: target.kind === "bond" ? "fuse-bond" : "attach-atom",
+      kind,
       templateId,
       molecule: nextMolecule,
       objectId: molecule.id,
-      addedAtomIds: nextMolecule.atoms.filter((atom) => !existingAtomIds.has(atom.id)).map((atom) => atom.id),
-      addedBondIds: nextMolecule.bonds.filter((bond) => !existingBondIds.has(bond.id)).map((bond) => bond.id)
+      addedAtomIds,
+      addedBondIds
     };
   }
 
@@ -926,41 +935,91 @@ function fuseNativeTemplateRingToBond(
     return undefined;
   }
 
-  const nextAtomIds = nextIndexedIds("atom", molecule.atoms.map((atom) => atom.id), size - 2);
-  const newAtoms = vertices.slice(2).map((vertex, index) => ({
-    id: nextAtomIds[index] ?? nextIndexedId("atom", molecule.atoms.map((atom) => atom.id)),
-    element: "C",
-    x: vertex.x,
-    y: vertex.y,
-    formalCharge: 0
-  } satisfies MoleculeAtom));
-  const ringAtoms = [fromAtom, toAtom, ...newAtoms];
-  const ringAtomIds = [fromAtom.id, toAtom.id, ...newAtoms.map((atom) => atom.id)];
+  // Closure-aware vertex resolution: a proposed ring vertex that lands on an existing atom
+  // (a neighbouring ring's rim atom, when closing a fused polycycle like coronene) is REUSED
+  // instead of duplicated. The snap radius is below the test floor for distinct atoms
+  // (0.25*bondLength), so a plain fusion — whose new vertices sit in open space — never snaps
+  // and is byte-identical to before. Only genuine closures take the merge/guard path.
+  const sharedAtomIds = new Set([fromAtom.id, toAtom.id]);
+  const resolvedSlots: Array<{ id: string } | { vertex: PagePoint }> = [];
+  const reusedAtomIds = new Set<string>();
+  let closedOntoExisting = false;
+  for (const vertex of vertices.slice(2)) {
+    const snapped = nearestExistingAtomWithin(molecule, vertex, nativeTemplateClosureSnapPx);
+    if (snapped) {
+      // A vertex snapping onto a shared atom, or onto an atom already used by this ring, is a
+      // degenerate placement (it would collapse the ring) — reject rather than corrupt the graph.
+      if (sharedAtomIds.has(snapped.id) || reusedAtomIds.has(snapped.id)) {
+        return undefined;
+      }
+      reusedAtomIds.add(snapped.id);
+      resolvedSlots.push({ id: snapped.id });
+      closedOntoExisting = true;
+    } else {
+      resolvedSlots.push({ vertex });
+    }
+  }
+
+  const newVertexCount = resolvedSlots.filter((slot): slot is { vertex: PagePoint } => "vertex" in slot).length;
+  const newAtomIds = nextIndexedIds("atom", molecule.atoms.map((atom) => atom.id), newVertexCount);
+  const newAtoms: MoleculeAtom[] = [];
+  const ringAtomIds: string[] = [fromAtom.id, toAtom.id];
+  for (const slot of resolvedSlots) {
+    if ("id" in slot) {
+      ringAtomIds.push(slot.id);
+      continue;
+    }
+    const id = newAtomIds[newAtoms.length] ?? nextIndexedId("atom", [...molecule.atoms.map((atom) => atom.id), ...newAtoms.map((atom) => atom.id)]);
+    newAtoms.push({ id, element: "C", x: slot.vertex.x, y: slot.vertex.y, formalCharge: 0 } satisfies MoleculeAtom);
+    ringAtomIds.push(id);
+  }
+
+  const atomById = new Map<string, MoleculeAtom>(molecule.atoms.map((atom) => [atom.id, atom]));
+  newAtoms.forEach((atom) => atomById.set(atom.id, atom));
+  const ringAtoms = ringAtomIds.map((id) => atomById.get(id) ?? fromAtom);
   const ringCenter = centroidOfPoints(vertices);
   const sharedBondContributesPi = templateId === "benzene"
     ? sharedBondContributesAromaticPi(molecule, targetBond)
     : undefined;
-  const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), size - 1);
-  const newBonds = ringAtomIds.slice(1).map((fromAtomId, index) => {
-    const toAtomId = ringAtomIds[index + 2] ?? ringAtomIds[0];
-    const ringBondIndex = index + 1;
-    const sourceAtom = ringAtoms[ringBondIndex] ?? ringAtoms[0] ?? fromAtom;
-    const destinationAtom = ringAtoms[ringBondIndex + 1] ?? ringAtoms[0] ?? toAtom;
-    return {
-      id: newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((bond) => bond.id)),
+
+  // Build the ring's edges (skipping the shared edge 0, which is the target bond). An edge that
+  // already exists between two atoms — the shared edge, or a rim bond contributed by an adjacent
+  // ring during closure — is reused, never duplicated. Only the missing edges get new bonds, and
+  // the ring-bond index is preserved so aromatic double-bond placement is unchanged for a plain
+  // fusion.
+  const newBonds: MoleculeBond[] = [];
+  for (let ringBondIndex = 1; ringBondIndex < size; ringBondIndex += 1) {
+    const fromAtomId = ringAtomIds[ringBondIndex];
+    const toAtomId = ringAtomIds[(ringBondIndex + 1) % size] ?? ringAtomIds[0];
+    if (fromAtomId === toAtomId || nativeBondExistsBetween(molecule, fromAtomId, toAtomId)) {
+      continue;
+    }
+    newBonds.push({
+      id: "",
       fromAtomId,
       toAtomId,
       ...nativeTemplateRingBondDisplay(
         templateId,
         ringBondIndex,
-        ringAtomIds.length,
-        sourceAtom,
-        destinationAtom,
+        size,
+        ringAtoms[ringBondIndex] ?? ringAtoms[0] ?? fromAtom,
+        ringAtoms[(ringBondIndex + 1) % size] ?? ringAtoms[0] ?? toAtom,
         ringCenter,
         sharedBondContributesPi
       )
-    } satisfies MoleculeBond;
+    } satisfies MoleculeBond);
+  }
+  const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), newBonds.length);
+  newBonds.forEach((bond, index) => {
+    bond.id = newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((candidate) => candidate.id));
   });
+
+  // Guard the closure (only when a vertex actually snapped, so plain fusion is untouched): on the
+  // single-bond skeleton — BEFORE aromatic normalization, which can otherwise make a fused
+  // junction look invalid — no existing carbon may exceed degree 3 for a ring-template closure.
+  if (closedOntoExisting && nativeClosureExceedsDegreeCap(molecule, newBonds)) {
+    return undefined;
+  }
 
   const fused = refreshNativeSingleBondGraph(
     molecule,
@@ -968,6 +1027,51 @@ function fuseNativeTemplateRingToBond(
     [...molecule.bonds, ...newBonds]
   );
   return templateId === "benzene" ? normalizeNativeAromaticTemplateBonds(fused) : fused;
+}
+
+// Closure snap radius. Kept below the minimum distance between two distinct atoms the suite
+// guarantees (0.25*bondLength), so a plain fusion (vertices in open space) never snaps and only
+// a true closure — whose proposed vertices land essentially on an existing atom — merges.
+const nativeTemplateClosureSnapPx = nativeBondLength * 0.2;
+
+function nearestExistingAtomWithin(
+  molecule: MoleculeObject,
+  point: PagePoint,
+  tolerance: number
+): MoleculeAtom | undefined {
+  let best: MoleculeAtom | undefined;
+  let bestDistance = tolerance;
+  for (const atom of molecule.atoms) {
+    const candidateDistance = Math.hypot(atom.x - point.x, atom.y - point.y);
+    if (candidateDistance <= bestDistance) {
+      best = atom;
+      bestDistance = candidateDistance;
+    }
+  }
+  return best;
+}
+
+function nativeBondExistsBetween(molecule: MoleculeObject, fromAtomId: string, toAtomId: string): boolean {
+  return molecule.bonds.some((bond) =>
+    (bond.fromAtomId === fromAtomId && bond.toAtomId === toAtomId)
+    || (bond.fromAtomId === toAtomId && bond.toAtomId === fromAtomId)
+  );
+}
+
+// True when adding `newBonds` would push any pre-existing carbon past degree 3 on the single-bond
+// skeleton — the signature of a bad closure merge (e.g. snapping that folds the ring onto itself).
+function nativeClosureExceedsDegreeCap(molecule: MoleculeObject, newBonds: readonly MoleculeBond[]): boolean {
+  const degree = new Map<string, number>();
+  const bump = (atomId: string) => degree.set(atomId, (degree.get(atomId) ?? 0) + 1);
+  molecule.bonds.forEach((bond) => {
+    bump(bond.fromAtomId);
+    bump(bond.toAtomId);
+  });
+  newBonds.forEach((bond) => {
+    bump(bond.fromAtomId);
+    bump(bond.toAtomId);
+  });
+  return molecule.atoms.some((atom) => (degree.get(atom.id) ?? 0) > 3);
 }
 
 function attachNativeTemplateRingToAtom(
