@@ -1,7 +1,7 @@
 # Pointer Picking Hardening
 
-Status: **In progress** — steps 1–4 done (manual-verification milestone). Branch:
-`codex/chemdraft-worktree-cleanup`.
+Status: **Complete** — steps 1–6 done (deferred: state-machine completion + single pointer
+surface). Branch: `codex/chemdraft-worktree-cleanup`.
 
 > **Ready to test in the Tauri app.** Steps 2–4 together make bond/atom picking
 > self-consistent: screen-stable tolerance, no marquee fall-through, and a hover highlight
@@ -175,13 +175,20 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Files: `apps/desktop/src/App.css`, `apps/desktop/src/MainWindow.tsx`
   (`DocumentObjectView` hover rendering + `hoverDestructive` prop), `apps/desktop/src/App.test.ts`.
 
-### 5. Extend resolver: tolerance in / provenance out
-- [ ] Add `source` to the hit type; populate in `nativeMoleculeHitFromPointerTarget`.
-- [ ] Make hover, left-click, right-click consume the same result consistently.
-- [ ] Delete any remaining divergent fallback paths.
-- Files: `apps/desktop/src/interaction/hitTest.ts`, `MainWindow.tsx`
-  (`handleObjectPointerDown` ~3535, `handleObjectContextMenu` ~4007,
-  `updateNativeCanvasHover` ~2474).
+### 5. Extend resolver: tolerance in / provenance out — DONE
+- [x] Added `NativeHitProvenance = "model" | "atom-dom-tiebreak"` and an optional `source` on
+      `NativeMoleculeDeleteHit` (documentWorkflow.ts). Populated in
+      `nativeMoleculeHitFromPointerTarget`: the geometric pick is tagged `model`, the DOM
+      near-miss rescue `atom-dom-tiebreak`. Propagates through `nativeMoleculeCanvasHoverTarget`.
+- [x] Invariant #5 now directly testable and tested: a bond hit is always `source: "model"`
+      (swept around a bond in hitTest.test.ts); the rescue is `atom-dom-tiebreak`
+      (hitTest.dom.test.ts).
+- [x] Hover, left-click, and right-click already share the one resolver
+      (`nativeMoleculeCanvasHoverTarget` / `nativeMoleculeHitFromPointerTarget`) with the same
+      scale-derived tolerance; the old divergent DOM-bond fallback was already removed. No
+      remaining fallback assigns bond identity.
+- Files: `apps/desktop/src/documentWorkflow.ts`, `apps/desktop/src/interaction/hitTest.ts`,
+  `hitTest.test.ts`, `hitTest.dom.test.ts`.
 
 ### Regression fix — low-zoom whole-molecule double-click
 
@@ -225,7 +232,16 @@ Reported in the next verification pass:
     on a transform handle, add the hook there next.
 - Files: `apps/desktop/src/MainWindow.tsx`, tests in `apps/desktop/src/App.test.ts`.
 
-### 6. Narrow cleanup (only after behavior is pinned)
+### 6. Narrow cleanup — DONE
+- [x] Extracted `clearTransientInteractionChrome()` (MainWindow.tsx) — clears editor / hover /
+      preview chrome (7 idempotent setters) without touching selection or document. Replaced the
+      8 copy-pasted full-clear blocks with one call each (only contiguous full-7 runs were
+      collapsed; partial/interleaved resets left as-is to avoid any behavior change). 469 tests
+      pass; tsc clean.
+- [x] Deferred as planned: finishing the interaction state-machine migration and the single
+      full-page pointer surface — picking now feels solid without them.
+
+#### Original step-6 notes
 - [ ] Extract `clearTransientInteractionChrome()` for the repeated editor/hover/preview
       reset block. **Not** a broad `applySelection()` god function.
 - [ ] Defer: interaction state-machine completion, single full-page pointer surface.

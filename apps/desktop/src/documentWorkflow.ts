@@ -131,11 +131,20 @@ export interface NativeFreeformBondGrowthOptions extends NativeBondToolOptions {
   forceCustomLength?: boolean;
 }
 
+/**
+ * Where a resolved pointer hit came from. `model` = pure geometric hit (the source of
+ * truth); `atom-dom-tiebreak` = an atom adopted from the DOM element under the pointer to
+ * rescue a near-miss. Bonds are ALWAYS `model` (invariant: the DOM never assigns bond
+ * identity). Absent on non-pointer hits (keyboard/programmatic), which don't track it.
+ */
+export type NativeHitProvenance = "model" | "atom-dom-tiebreak";
+
 export type NativeMoleculeDeleteHit =
   | {
       kind: "atom";
       atomId: string;
       distanceToPointer: number;
+      source?: NativeHitProvenance;
     }
   | {
       kind: "bond";
@@ -144,6 +153,7 @@ export type NativeMoleculeDeleteHit =
       toAtomId: string;
       terminalAtomId?: string;
       distanceToPointer: number;
+      source?: NativeHitProvenance;
     };
 
 export type NativeMoleculeDeleteTarget = NativeMoleculeDeleteHit & { objectId: string };

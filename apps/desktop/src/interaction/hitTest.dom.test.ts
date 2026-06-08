@@ -74,10 +74,12 @@ describe("hitTestDocument DOM-hint tiebreaker", () => {
 
     // With no DOM target geometry finds nothing here...
     expect(hitTestDocument(doc, justOutside)).toBeUndefined();
-    // ...but the pointer is literally over a0's rendered element, so the DOM hint adopts it.
+    // ...but the pointer is literally over a0's rendered element, so the DOM hint adopts it,
+    // tagged with its provenance so it is distinguishable from a pure geometric pick.
     expect(hitTestDocument(doc, justOutside, atomHitElement(a0.id))).toMatchObject({
       kind: "atom",
-      atomId: a0.id
+      atomId: a0.id,
+      source: "atom-dom-tiebreak"
     });
   });
 

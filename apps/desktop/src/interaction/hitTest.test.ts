@@ -270,3 +270,33 @@ describe("bond DOM catcher is a routing superset of the model (invariant #1)", (
     }
   });
 });
+
+// Step 5: provenance. Every resolved hit is tagged with where it came from, and the key
+// invariant (#5) is that a bond hit is ALWAYS model-derived — the DOM never assigns bond
+// identity. See docs/architecture/pointer-picking-hardening.md.
+describe("hit provenance (invariant #5)", () => {
+  it("tags geometric atom and bond hits as model", () => {
+    const { document, molecule } = singleBondMolecule();
+    const atom = molecule.atoms[0];
+    expect(hitTestDocument(document, { x: atom.x, y: atom.y })?.source).toBe("model");
+
+    const { midpoint, perpendicular } = bondFrame(molecule);
+    const bondHit = hitTestDocument(document, atScreenOffset(midpoint, perpendicular, 2, 1));
+    expect(bondHit?.kind).toBe("bond");
+    expect(bondHit?.source).toBe("model");
+  });
+
+  it("never yields a bond hit that is not model-derived (swept around the bond)", () => {
+    const { document, molecule } = singleBondMolecule();
+    const { midpoint, perpendicular, along } = bondFrame(molecule);
+    for (const t of [-0.4, -0.1, 0, 0.1, 0.4]) {
+      for (const d of [0, 1, 2, 3, 5]) {
+        const base = { x: midpoint.x + along.x * t * 12, y: midpoint.y + along.y * t * 12 };
+        const hit = hitTestDocument(document, atScreenOffset(base, perpendicular, d, 1));
+        if (hit?.kind === "bond") {
+          expect(hit.source).toBe("model");
+        }
+      }
+    }
+  });
+});

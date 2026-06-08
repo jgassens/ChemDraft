@@ -742,6 +742,20 @@ export function MainWindow({
     }
     setHoveredNativeDeleteTarget(target);
   }, []);
+  // Clears the transient interaction "chrome" — open editors, hover highlights, and in-flight
+  // previews — without touching the selection or document. Many interaction entry points reset
+  // exactly this set before starting a new gesture; collapsing it here removes the copy-pasted
+  // block where a missed setter would otherwise strand a stale editor/highlight. Every setter
+  // is an idempotent clear, so calling it is always safe.
+  const clearTransientInteractionChrome = useCallback(() => {
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+  }, [assignHoveredNativeDeleteTarget]);
   const updateToolbarStyleTargetSnapshot = useCallback((
     nextDocument: ChemDraftDocument,
     moleculePart: NativeMoleculeSelectionPart | undefined = selectedNativeMoleculePart
@@ -3109,13 +3123,7 @@ export function MainWindow({
           event.stopPropagation();
           replacePresentDocument((current) => selectDocumentObject(current, object.id));
           setSelectedNativeMoleculePart(undefined);
-          setActiveEditorObjectId(undefined);
-          setActiveTextEditObjectId(undefined);
-          setActiveAtomLabelEdit(undefined);
-          setHoveredNativeAtom(undefined);
-          setFreeformNativeBond(undefined);
-          setNativeDoubleBondSidePreview(undefined);
-          assignHoveredNativeDeleteTarget(undefined);
+          clearTransientInteractionChrome();
           setStatus("Selected molecule");
           return;
         }
@@ -3130,13 +3138,7 @@ export function MainWindow({
       };
       marqueeMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "marquee" });
       setSelectedNativeMoleculePart(undefined);
-      setActiveEditorObjectId(undefined);
-      setActiveTextEditObjectId(undefined);
-      setActiveAtomLabelEdit(undefined);
-      setHoveredNativeAtom(undefined);
-      setFreeformNativeBond(undefined);
-      setNativeDoubleBondSidePreview(undefined);
-      assignHoveredNativeDeleteTarget(undefined);
+      clearTransientInteractionChrome();
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -3311,13 +3313,7 @@ export function MainWindow({
       nativePartDrag.latestPoint = point;
       if (!nativePartDrag.dragging && clientPointDistance(nativePartDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
         nativePartDrag.dragging = true;
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
+        clearTransientInteractionChrome();
       }
 
       if (nativePartDrag.dragging) {
@@ -3714,13 +3710,7 @@ export function MainWindow({
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
         replacePresentDocument((current) => selectDocumentObject(current, objectId));
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
+        clearTransientInteractionChrome();
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(undefined);
         setStatus("Selected molecule");
@@ -3785,13 +3775,7 @@ export function MainWindow({
           ? document
           : selectDocumentObject(document, objectId);
         replacePresentDocument(selectedDocument);
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
+        clearTransientInteractionChrome();
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(dragIntent.target);
         nativePartDragRef.current = {
@@ -3974,13 +3958,7 @@ export function MainWindow({
     }
     replacePresentDocument((current) => selectDocumentObject(current, objectId));
     setSelectedNativeMoleculePart(undefined);
-    setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(undefined);
-    setActiveAtomLabelEdit(undefined);
-    setHoveredNativeAtom(undefined);
-    setFreeformNativeBond(undefined);
-    setNativeDoubleBondSidePreview(undefined);
-    assignHoveredNativeDeleteTarget(undefined);
+    clearTransientInteractionChrome();
     setStatus("Selected molecule");
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
@@ -4265,13 +4243,7 @@ export function MainWindow({
       nativePartDrag.latestPoint = point;
       if (!nativePartDrag.dragging && clientPointDistance(nativePartDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
         nativePartDrag.dragging = true;
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
+        clearTransientInteractionChrome();
       }
 
       if (nativePartDrag.dragging) {
@@ -4409,13 +4381,7 @@ export function MainWindow({
       if (editDrag.dragging) {
         const changed = commitNativeDoubleBondSideDrag(editDrag, point);
         if (changed) {
-          setActiveEditorObjectId(undefined);
-          setActiveTextEditObjectId(undefined);
-          setActiveAtomLabelEdit(undefined);
-          setHoveredNativeAtom(undefined);
-          assignHoveredNativeDeleteTarget(undefined);
-          setFreeformNativeBond(undefined);
-          setNativeDoubleBondSidePreview(undefined);
+          clearTransientInteractionChrome();
         }
         setStatus(changed ? "Moved double bond line" : "Double bond side unchanged");
       } else {

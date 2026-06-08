@@ -142,12 +142,14 @@ export function nativeMoleculeHitFromPointerTarget(
     if (atom) {
       const atomDistance = distance(atom, point);
       if (!modelHit || atomDistance <= modelHit.distanceToPointer + HOVER_DOM_TIEBREAK_PX) {
-        return { kind: "atom", atomId: atom.id, distanceToPointer: atomDistance };
+        return { kind: "atom", atomId: atom.id, distanceToPointer: atomDistance, source: "atom-dom-tiebreak" };
       }
     }
   }
 
-  return modelHit;
+  // The geometric pick is the source of truth. Tag it so callers/tests can assert the
+  // provenance invariant: a bond hit is only ever produced here (never from the DOM hint).
+  return modelHit ? { ...modelHit, source: "model" } : undefined;
 }
 
 export function nativeMoleculeCanvasHoverTarget(
