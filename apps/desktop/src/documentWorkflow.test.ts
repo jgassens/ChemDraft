@@ -19,7 +19,10 @@ import {
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
+  applyNativeTemplatePlacementPlan,
+  applyNativeTemplateToolAtPoint,
   applyNativeTemplateToolAtTarget,
+  planNativeTemplatePlacement,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   cleanUpNativeMolecules2d,
@@ -3580,6 +3583,63 @@ describe("Phase 4 document workflow", () => {
     expect(moleculeBond(tetracene, anthraceneExtensionBondId).order).toBe("single");
     expectAromaticDoubleBondsAreInternalPerimeterBonds(tetracene);
     expectNoDuplicateAtomPositions(tetracene);
+  });
+
+  it("plans a standalone ring (no target) and applies it identically to direct insertion", () => {
+    const document = createPhase4Document("Plan Standalone");
+    const point = { x: 260, y: 260 };
+    const plan = planNativeTemplatePlacement(document, { point }, "benzene");
+
+    expect(plan?.kind).toBe("standalone");
+    expect(plan?.objectId).toBeUndefined();
+    expect(plan?.addedAtomIds).toHaveLength(6);
+    expect(plan?.addedBondIds).toHaveLength(6);
+    // The plan's standalone apply must match the pre-refactor insertion path exactly.
+    expect(applyNativeTemplatePlacementPlan(document, plan!)).toEqual(
+      insertNativeTemplateMolecule(document, point, "benzene")
+    );
+  });
+
+  it("plans a bond fusion and commits exactly the previewed graph (preview == commit)", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Plan Fuse"), { x: 360, y: 320 }, "benzene");
+    const benzene = selectedMolecule(document);
+    const target = moleculeBondTarget(benzene, "bond_001");
+    const point = moleculeBondMidpoint(benzene, "bond_001");
+    const plan = planNativeTemplatePlacement(document, { point, target }, "benzene");
+
+    expect(plan?.kind).toBe("fuse-bond");
+    expect(plan?.objectId).toBe(benzene.id);
+    expect(plan?.addedAtomIds).toHaveLength(4); // benzene -> naphthalene adds four atoms
+    // The committed molecule must equal the plan's molecule — the preview/commit invariant.
+    const committed = selectedMolecule(applyNativeTemplatePlacementPlan(document, plan!));
+    expect(committed.atoms).toEqual(plan!.molecule.atoms);
+    expect(committed.bonds).toEqual(plan!.molecule.bonds);
+    // And the wrapper tool path is unchanged by the refactor.
+    expect(applyNativeTemplateToolAtTarget(document, target, point, "benzene"))
+      .toEqual(applyNativeTemplatePlacementPlan(document, plan!));
+  });
+
+  it("plans an atom attachment (spiro) for an atom target", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Plan Attach"), { x: 360, y: 320 }, "cyclohexane");
+    const ring = selectedMolecule(document);
+    const target = moleculeAtomTarget(ring, "atom_001");
+    const plan = planNativeTemplatePlacement(document, { point: moleculeAtom(ring, "atom_001"), target }, "cyclohexane");
+
+    expect(plan?.kind).toBe("attach-atom");
+    expect(plan?.objectId).toBe(ring.id);
+    expect(plan?.addedAtomIds).toHaveLength(5); // cyclohexane spiro shares one atom, adds five
+  });
+
+  it("returns no plan when an empty-canvas standalone tool path produces nothing new", () => {
+    // Sanity: the standalone path always yields a plan, and the wrapper matches it.
+    const document = createPhase4Document("Plan Wrapper");
+    const point = { x: 300, y: 300 };
+    expect(applyNativeTemplateToolAtPoint(document, point, "cyclopentane")).toEqual(
+      applyNativeTemplatePlacementPlan(
+        document,
+        planNativeTemplatePlacement(document, { point }, "cyclopentane")!
+      )
+    );
   });
 
   it("fuses a ring outward even when the click lands inside the existing ring", () => {

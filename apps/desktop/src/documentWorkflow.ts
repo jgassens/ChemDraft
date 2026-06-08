@@ -647,12 +647,104 @@ export function insertNativeTemplateMolecule(
   );
 }
 
+/**
+ * A resolved, ready-to-commit template placement. Computing it is pure (no document mutation),
+ * so the SAME plan can be rendered as a ghost preview and then applied — preview and commit can
+ * never diverge. `molecule` is the post-placement graph (a brand-new ring for "standalone", the
+ * edited graph otherwise); `addedAtomIds`/`addedBondIds` are the parts new to this placement
+ * (for preview/selection). `fused-closure` is produced once closure-merge lands (Stage D); for
+ * now bond fusion always reports "fuse-bond".
+ */
+export type NativeTemplatePlacementPlan = {
+  kind: "standalone" | "fuse-bond" | "attach-atom" | "fused-closure";
+  templateId: NativeMoleculeTemplateId;
+  molecule: MoleculeObject;
+  objectId?: string;
+  addedAtomIds: readonly string[];
+  addedBondIds: readonly string[];
+};
+
+/** Compute the placement a template click would make, without mutating the document. */
+export function planNativeTemplatePlacement(
+  document: ChemDraftDocument,
+  placement: { point: PagePoint; target?: NativeMoleculeDeleteTarget },
+  templateId: NativeMoleculeTemplateId
+): NativeTemplatePlacementPlan | undefined {
+  const { point, target } = placement;
+  if (target) {
+    const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+      object.id === target.objectId && object.type === "molecule"
+    );
+    if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+      return undefined;
+    }
+
+    const nextMolecule = target.kind === "bond"
+      ? fuseNativeTemplateRingToBond(molecule, target.bondId, point, templateId)
+      : attachNativeTemplateRingToAtom(molecule, target.atomId, point, templateId);
+    if (!nextMolecule) {
+      return undefined;
+    }
+
+    const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
+    const existingBondIds = new Set(molecule.bonds.map((bond) => bond.id));
+    return {
+      kind: target.kind === "bond" ? "fuse-bond" : "attach-atom",
+      templateId,
+      molecule: nextMolecule,
+      objectId: molecule.id,
+      addedAtomIds: nextMolecule.atoms.filter((atom) => !existingAtomIds.has(atom.id)).map((atom) => atom.id),
+      addedBondIds: nextMolecule.bonds.filter((bond) => !existingBondIds.has(bond.id)).map((bond) => bond.id)
+    };
+  }
+
+  const molecule = createNativeTemplateMolecule(document, point, templateId);
+  return {
+    kind: "standalone",
+    templateId,
+    molecule,
+    addedAtomIds: molecule.atoms.map((atom) => atom.id),
+    addedBondIds: molecule.bonds.map((bond) => bond.id)
+  };
+}
+
+/** Commit a plan produced by {@link planNativeTemplatePlacement}. */
+export function applyNativeTemplatePlacementPlan(
+  document: ChemDraftDocument,
+  plan: NativeTemplatePlacementPlan
+): ChemDraftDocument {
+  const page = firstPage(document);
+  if (plan.kind === "standalone") {
+    return applyPatches(
+      document,
+      [
+        { op: "addObject", pageId: page.id, object: plan.molecule },
+        { op: "setSelection", pageId: page.id, objectIds: [plan.molecule.id] }
+      ],
+      { now: phase4Timestamp }
+    );
+  }
+
+  if (!plan.objectId) {
+    return document;
+  }
+  return applyPatches(
+    document,
+    [
+      { op: "updateObject", objectId: plan.objectId, changes: plan.molecule },
+      { op: "setSelection", pageId: page.id, objectIds: [plan.objectId] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 export function applyNativeTemplateToolAtPoint(
   document: ChemDraftDocument,
   point: PagePoint,
   templateId: NativeMoleculeTemplateId
 ): ChemDraftDocument {
-  return insertNativeTemplateMolecule(document, point, templateId);
+  const plan = planNativeTemplatePlacement(document, { point }, templateId);
+  return plan ? applyNativeTemplatePlacementPlan(document, plan) : document;
 }
 
 export function applyNativeTemplateToolAtTarget(
@@ -661,29 +753,8 @@ export function applyNativeTemplateToolAtTarget(
   point: PagePoint,
   templateId: NativeMoleculeTemplateId
 ): ChemDraftDocument {
-  const page = firstPage(document);
-  const molecule = page.objects.find((object): object is MoleculeObject =>
-    object.id === target.objectId && object.type === "molecule"
-  );
-  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-    return document;
-  }
-
-  const nextMolecule = target.kind === "bond"
-    ? fuseNativeTemplateRingToBond(molecule, target.bondId, point, templateId)
-    : attachNativeTemplateRingToAtom(molecule, target.atomId, point, templateId);
-  if (!nextMolecule) {
-    return document;
-  }
-
-  return applyPatches(
-    document,
-    [
-      { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
-      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
-    ],
-    { now: phase4Timestamp }
-  );
+  const plan = planNativeTemplatePlacement(document, { point, target }, templateId);
+  return plan ? applyNativeTemplatePlacementPlan(document, plan) : document;
 }
 
 function nativeTemplateGeometry(
