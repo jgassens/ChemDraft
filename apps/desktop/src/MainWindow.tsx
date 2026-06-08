@@ -3956,6 +3956,35 @@ export function MainWindow({
     startAtomLabelEdit
   ]);
 
+  // Whole-molecule double-click, callable from any selection-tool pointer-down entry point.
+  // At low zoom the first press selects a part and the molecule is small enough that the
+  // transform/resize/rotate handles blanket it, so the SECOND press of the double-click can
+  // land on a handle instead of the canvas. Sharing this through every entry point (object,
+  // page, resize handle, rotate handle) makes the gesture work regardless of where press 2
+  // lands. Returns true when it consumed the press as a whole-molecule selection.
+  const tryWholeMoleculeDoublePress = useCallback((
+    objectId: string,
+    event: { clientX: number; clientY: number; detail?: number }
+  ): boolean => {
+    const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
+    const isDouble = (event.detail ?? 0) >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+    lastSelectionPressRef.current = press;
+    if (!isDouble) {
+      return false;
+    }
+    replacePresentDocument((current) => selectDocumentObject(current, objectId));
+    setSelectedNativeMoleculePart(undefined);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setStatus("Selected molecule");
+    return true;
+  }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
+
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -3964,6 +3993,9 @@ export function MainWindow({
     }
 
     const object = findDocumentObject(document, objectId);
+    if (object?.type === "molecule" && tryWholeMoleculeDoublePress(objectId, event)) {
+      return;
+    }
     const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = object?.type === "molecule" && selectedNativeMoleculePart?.objectId === objectId
       ? selectedNativeMoleculePart
@@ -4019,7 +4051,8 @@ export function MainWindow({
     document,
     pagePointFromPointerEvent,
     replacePresentDocument,
-    selectedNativeMoleculePart
+    selectedNativeMoleculePart,
+    tryWholeMoleculeDoublePress
   ]);
 
   const handleMoleculeResizePointerDown = useCallback((
@@ -4034,6 +4067,9 @@ export function MainWindow({
     }
 
     const object = findDocumentObject(document, objectId);
+    if (object?.type === "molecule" && tryWholeMoleculeDoublePress(objectId, event)) {
+      return;
+    }
     const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
       ? selectedNativeMoleculePart
@@ -4095,7 +4131,8 @@ export function MainWindow({
     document,
     pagePointFromPointerEvent,
     replacePresentDocument,
-    selectedNativeMoleculePart
+    selectedNativeMoleculePart,
+    tryWholeMoleculeDoublePress
   ]);
 
   const handleObjectContextMenu = useCallback((objectId: string, event: ObjectMouseEvent) => {
@@ -4764,7 +4801,7 @@ export function MainWindow({
           />
         ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
-          Build 6.6.23.12-codex
+          Build {__BUILD_STAMP__}
         </div>
       </section>
       {objectContextMenu ? (

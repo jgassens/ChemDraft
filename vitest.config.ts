@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 const workspacePackage = (path: string) => new URL(path, import.meta.url).pathname;
 
 export default defineConfig({
+  define: {
+    __BUILD_STAMP__: JSON.stringify("test")
+  },
   resolve: {
     alias: {
       "@chemdraft/chem-core": workspacePackage("./packages/chem-core/src/index.ts"),
