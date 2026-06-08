@@ -447,22 +447,33 @@ export interface SelectionPressSample {
   time: number;
   x: number;
   y: number;
+  /** The molecule resolved under the press, if any. */
+  objectId?: string;
 }
 
-/** True when `current` is a second press close in time and SCREEN distance to `previous`. */
+/**
+ * True when `current` is the second press of a double-click. Two presses that resolve to the
+ * SAME molecule within the time window count, even when they land on different visible parts —
+ * a small low-zoom molecule spans more than the screen-distance fallback, and the first press
+ * mutates selection so the browser's `event.detail` counter is unreliable. Empty-canvas /
+ * cross-target presses fall back to a tight screen-distance check.
+ */
 export function isSelectionDoublePress(
   previous: SelectionPressSample | undefined,
   current: SelectionPressSample,
   windowMs: number = DOUBLE_PRESS_MS,
   radiusPx: number = DOUBLE_PRESS_SCREEN_PX
 ): boolean {
-  if (!previous) {
+  if (!previous || current.time - previous.time > windowMs) {
     return false;
   }
-  return (
-    current.time - previous.time <= windowMs &&
-    Math.hypot(current.x - previous.x, current.y - previous.y) <= radiusPx
-  );
+  // When both presses resolve to a molecule, the double-click is defined by the same molecule
+  // (regardless of screen distance — a small low-zoom molecule exceeds the fallback radius).
+  if (previous.objectId !== undefined && current.objectId !== undefined) {
+    return previous.objectId === current.objectId;
+  }
+  // Empty-canvas / unresolved presses fall back to a tight screen-distance check.
+  return Math.hypot(current.x - previous.x, current.y - previous.y) <= radiusPx;
 }
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.bringForward", label: "Move Object Forward" },
@@ -3087,11 +3098,12 @@ export function MainWindow({
     }
 
     if (activeToolState.activeKind === "selection") {
-      const press = { time: Date.now(), x: event.clientX, y: event.clientY };
+      const pressObject = nativeMoleculeObjectAtPoint(document.pages[0].objects, point);
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId: pressObject?.id };
       const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
       lastSelectionPressRef.current = press;
       if (doublePress) {
-        const object = nativeMoleculeObjectAtPoint(document.pages[0].objects, point);
+        const object = pressObject;
         if (object) {
           event.preventDefault();
           event.stopPropagation();
@@ -3696,7 +3708,7 @@ export function MainWindow({
 
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
       event.preventDefault();
-      const press = { time: Date.now(), x: event.clientX, y: event.clientY };
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
       const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
@@ -6177,10 +6189,19 @@ export function nativeSelectionFromHit(
 export function nativeContextMenuSelectionFromHit(
   objectId: string,
   hit: NativeMoleculeDeleteHit,
-  currentPart: NativeMoleculeSelectionPart | undefined
+  currentPart: NativeMoleculeSelectionPart | undefined,
+  molecule?: MoleculeObject
 ): NativeMoleculeSelectionPart {
   const compatibleCurrentPart = currentPart?.objectId === objectId ? currentPart : undefined;
-  return compatibleCurrentPart && nativeSelectionContainsHit(compatibleCurrentPart, hit)
+  // Preserve the existing (possibly multi-part) selection when the hit is inside the visible
+  // selected fragment — including an endpoint atom of a selected bond — not just when the raw
+  // primitive id is explicitly listed. Falls back to strict containment without the molecule.
+  const preserve = compatibleCurrentPart !== undefined && (
+    molecule
+      ? nativeSelectionContextContainsHit(molecule, compatibleCurrentPart, hit)
+      : nativeSelectionContainsHit(compatibleCurrentPart, hit)
+  );
+  return preserve && compatibleCurrentPart
     ? compatibleCurrentPart
     : nativeSelectionFromHit(objectId, hit);
 }
@@ -6198,7 +6219,12 @@ export function nativeContextMenuSelectionResolutionFromHit(
     return { targetKind: "object" };
   }
 
-  const selectedPart = nativeContextMenuSelectionFromHit(objectId, hit, currentPart);
+  const selectedPart = nativeContextMenuSelectionFromHit(
+    objectId,
+    hit,
+    currentPart,
+    nativeMoleculeById(document, objectId)
+  );
   return {
     selectedPart,
     targetKind: selectedPart.kind
@@ -6469,7 +6495,15 @@ export function nativeMoleculeSelectionDragIntent(
   }
 
   const currentPart = selectedPart?.objectId === objectId ? selectedPart : undefined;
-  if (currentPart && nativeSelectionContainsHit(currentPart, hit)) {
+  const molecule = nativeMoleculeById(document, objectId);
+  // Dragging from an endpoint atom of a selected bond should move the whole selected fragment,
+  // matching the visible selection — so use the same context-aware containment as right-click.
+  const withinSelection = currentPart !== undefined && (
+    molecule
+      ? nativeSelectionContextContainsHit(molecule, currentPart, hit)
+      : nativeSelectionContainsHit(currentPart, hit)
+  );
+  if (withinSelection && currentPart) {
     return { kind: "native-part", target: currentPart };
   }
 
@@ -6540,6 +6574,40 @@ function nativeSelectionContainsHit(
   }
 
   return nativeSelectionIncludesBond(part, hit.bondId);
+}
+
+/**
+ * Whether a hit belongs to the *visible* selected fragment, not just the raw primitive list.
+ * The selection blob draws each selected bond's endpoint atoms as selected (see the
+ * `selectedAtomIds.add(bond.fromAtomId/.toAtomId)` expansion in the molecule renderer), so a
+ * right-click or drag that lands on such an endpoint atom should be treated as inside the
+ * selection — even though the atom id is not explicitly stored in `part.atomIds`. The strict
+ * `nativeSelectionContainsHit` stays for primitive-identity callers (e.g. delete).
+ */
+function nativeSelectionContextContainsHit(
+  molecule: MoleculeObject,
+  part: NativeMoleculeSelectionPart,
+  hit: NativeMoleculeDeleteHit
+): boolean {
+  if (nativeSelectionContainsHit(part, hit)) {
+    return true;
+  }
+
+  if (hit.kind === "atom") {
+    return molecule.bonds.some(
+      (bond) =>
+        nativeSelectionIncludesBond(part, bond.id) &&
+        (bond.fromAtomId === hit.atomId || bond.toAtomId === hit.atomId)
+    );
+  }
+
+  return false;
+}
+
+/** The molecule object for `objectId`, or undefined when it is not an editable molecule. */
+function nativeMoleculeById(document: ChemDraftDocument, objectId: string): MoleculeObject | undefined {
+  const object = findDocumentObject(document, objectId);
+  return object?.type === "molecule" ? object : undefined;
 }
 
 function isWholeNativeMoleculeSelected(

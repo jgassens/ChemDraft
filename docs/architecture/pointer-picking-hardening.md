@@ -203,6 +203,28 @@ longer selected the whole molecule; fine at ≥1×.
 - Files: `apps/desktop/src/MainWindow.tsx` (`isSelectionDoublePress`, `lastSelectionPressRef`,
   both selection handlers), test in `apps/desktop/src/App.test.ts`.
 
+### Regression fixes round 2 — right-click multi-select + low-zoom double-click
+
+Reported in the next verification pass:
+
+- **Right-click collapsed a multi-part selection** when the cursor was over an *atom*. Cause:
+  the hit-test is atom-first, shift-select stores only raw primitives, and the selection blob
+  *visually* expands a selected bond to its endpoint atoms — but the preservation check
+  (`nativeSelectionContainsHit`) was strict. Fix: `nativeSelectionContextContainsHit` treats an
+  atom hit as inside the selection when it is an endpoint of a selected bond; used by
+  `nativeContextMenuSelectionFromHit` (right-click) and `nativeMoleculeSelectionDragIntent`
+  (the sibling drag bug). Strict containment stays for delete/primitive-identity callers.
+- **Low-zoom double-click still failed** because the previous detector used a 6px screen radius
+  (too tight for a tiny molecule). Fix: `SelectionPressSample` now carries the resolved
+  `objectId`; `isSelectionDoublePress` counts two presses on the *same molecule* within 400ms as
+  a double-click regardless of screen distance, with the 6px distance only as the empty-canvas
+  fallback. Both selection handlers record the resolved molecule id.
+  - NOTE: the plan's optional defensive hook on the resize/rotate handle handlers was **not**
+    added — the wide bond catcher should still receive the second press (→ object handler →
+    same-molecule detection). If low-zoom double-click still misses when the second press lands
+    on a transform handle, add the hook there next.
+- Files: `apps/desktop/src/MainWindow.tsx`, tests in `apps/desktop/src/App.test.ts`.
+
 ### 6. Narrow cleanup (only after behavior is pinned)
 - [ ] Extract `clearTransientInteractionChrome()` for the repeated editor/hover/preview
       reset block. **Not** a broad `applySelection()` god function.

@@ -246,21 +246,25 @@ describe("ChemDraft desktop shell", () => {
     expect(nativeMoleculeObjectAtPoint(document.pages[0].objects, { x: 24, y: 24 })).toBeUndefined();
   });
 
-  it("detects a whole-molecule double-press independent of browser event.detail (zoom regression)", () => {
-    // The whole-molecule double-click must not depend solely on event.detail, which can fail
-    // to reach 2 at low zoom when the first press selects a part and reroutes/remounts the
-    // target. The self-tracked detector uses wall-clock time + SCREEN distance so it works
-    // regardless of zoom or which handler each press routed to.
-    const first = { time: 1_000, x: 200, y: 220 };
+  it("detects a whole-molecule double-press by resolved molecule, not just screen distance", () => {
+    // The whole-molecule double-click must not depend solely on event.detail (unreliable once
+    // the first press mutates selection) nor on a tight screen distance (a small low-zoom
+    // molecule spans more than the fallback radius). Two presses resolving to the SAME molecule
+    // within the time window count, even when they land on different visible parts.
+    const onMolecule = { time: 1_000, x: 200, y: 220, objectId: "mol_bond_001" };
 
-    // Second press soon after, at (nearly) the same screen point → double-press.
-    expect(isSelectionDoublePress(first, { time: 1_180, x: 203, y: 222 })).toBe(true);
-    // Too slow → not a double-press (two deliberate single clicks).
-    expect(isSelectionDoublePress(first, { time: 1_600, x: 200, y: 220 })).toBe(false);
-    // Too far on screen → not a double-press (distinct targets).
-    expect(isSelectionDoublePress(first, { time: 1_100, x: 240, y: 220 })).toBe(false);
+    // Same molecule, well beyond the 6px screen fallback (opposite ends of a low-zoom bond).
+    expect(isSelectionDoublePress(onMolecule, { time: 1_180, x: 240, y: 220, objectId: "mol_bond_001" })).toBe(true);
+    // Same molecule but too slow → two deliberate single clicks.
+    expect(isSelectionDoublePress(onMolecule, { time: 1_600, x: 201, y: 220, objectId: "mol_bond_001" })).toBe(false);
+    // A different molecule → not a double-press, even at the same instant/spot.
+    expect(isSelectionDoublePress(onMolecule, { time: 1_100, x: 201, y: 220, objectId: "mol_bond_002" })).toBe(false);
+    // No resolved molecule on either side → tight SCREEN-distance fallback (empty canvas).
+    const empty = { time: 1_000, x: 200, y: 220 };
+    expect(isSelectionDoublePress(empty, { time: 1_180, x: 203, y: 222 })).toBe(true);
+    expect(isSelectionDoublePress(empty, { time: 1_180, x: 240, y: 220 })).toBe(false);
     // No prior press → never a double-press.
-    expect(isSelectionDoublePress(undefined, first)).toBe(false);
+    expect(isSelectionDoublePress(undefined, onMolecule)).toBe(false);
   });
 
   it("converts captured window hover coordinates through the rendered page rectangle", () => {
@@ -2394,6 +2398,65 @@ describe("ChemDraft desktop shell", () => {
       },
       undefined
     )).toEqual({ targetKind: "object" });
+  });
+
+  it("right-click over a selected bond's endpoint atom preserves the multi-part selection", () => {
+    // The selection blob draws a selected bond's endpoint atoms as selected, so right-clicking
+    // such an atom (the hit-test is atom-first) must NOT collapse a multi-part selection down to
+    // that single atom. A genuinely unrelated atom still replaces the selection.
+    const document = insertNativeTemplateMolecule(createPhase4Document("Endpoint Right Click"), { x: 300, y: 300 }, "benzene");
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const bond = molecule.bonds[0];
+    const partsSelection = {
+      objectId: molecule.id,
+      kind: "parts" as const,
+      atomIds: [] as string[],
+      bondIds: [bond.id]
+    };
+    const unrelatedAtom = molecule.atoms.find(
+      (atom) => atom.id !== bond.fromAtomId && atom.id !== bond.toAtomId
+    );
+    if (!unrelatedAtom) {
+      throw new Error("expected a non-endpoint atom in the benzene fixture");
+    }
+
+    // Endpoint atom of the selected bond → multi-part selection preserved.
+    expect(nativeContextMenuSelectionResolutionFromHit(
+      document,
+      molecule.id,
+      { kind: "atom", atomId: bond.fromAtomId, distanceToPointer: 0 },
+      partsSelection
+    )).toEqual({ selectedPart: partsSelection, targetKind: "parts" });
+
+    // Unrelated atom → selection collapses to that atom (strict, unchanged behavior).
+    expect(nativeContextMenuSelectionResolutionFromHit(
+      document,
+      molecule.id,
+      { kind: "atom", atomId: unrelatedAtom.id, distanceToPointer: 0 },
+      partsSelection
+    )).toEqual({
+      selectedPart: { objectId: molecule.id, kind: "atom", atomId: unrelatedAtom.id },
+      targetKind: "atom"
+    });
+  });
+
+  it("dragging from a selected bond's endpoint atom targets the whole selected fragment", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Endpoint Drag"), { x: 300, y: 300 }, "benzene");
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const bond = molecule.bonds[0];
+    const partsSelection = {
+      objectId: molecule.id,
+      kind: "parts" as const,
+      atomIds: [] as string[],
+      bondIds: [bond.id]
+    };
+
+    expect(nativeMoleculeSelectionDragIntent(
+      document,
+      molecule.id,
+      partsSelection,
+      { kind: "atom", atomId: bond.fromAtomId, distanceToPointer: 0 }
+    )).toEqual({ kind: "native-part", target: partsSelection });
   });
 
   it("right-click selection still resolves a native bond when the whole molecule is not selected", () => {
