@@ -1576,18 +1576,26 @@ function nativeTemplateSideForBond(
   normal: PagePoint
 ): 1 | -1 {
   const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
-  const clickScore = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
-  if (Math.abs(clickScore) > nativeBondLength * 0.12) {
-    return clickScore >= 0 ? 1 : -1;
-  }
 
+  // Crowding is the PRIMARY signal: a bond that belongs to an existing ring has its other
+  // ring atoms on one side, and fusing into them would drop the new ring on top of the old
+  // one (coincident atoms — the "second benzene placed on top of the first" bug). So we
+  // fuse to the side AWAY from the existing structure whenever there clearly is one. The
+  // click position only decides when the two sides are balanced (an isolated/symmetric bond
+  // with nothing to collide with). Every existing fuse test clicks the exact midpoint
+  // (clickScore == 0), so it already lands here — this only changes off-centre clicks.
   const crowdScore = molecule.atoms
     .filter((atom) => atom.id !== fromAtom.id && atom.id !== toAtom.id)
     .reduce((score, atom) => {
       const side = (atom.x - midpoint.x) * normal.x + (atom.y - midpoint.y) * normal.y;
       return score + Math.sign(side);
     }, 0);
-  return crowdScore > 0 ? -1 : 1;
+  if (crowdScore !== 0) {
+    return crowdScore > 0 ? -1 : 1;
+  }
+
+  const clickScore = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
+  return clickScore >= 0 ? 1 : -1;
 }
 
 function nativeTemplateDirectionForAtom(

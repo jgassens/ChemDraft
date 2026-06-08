@@ -3582,6 +3582,47 @@ describe("Phase 4 document workflow", () => {
     expectNoDuplicateAtomPositions(tetracene);
   });
 
+  it("fuses a ring outward even when the click lands inside the existing ring", () => {
+    // Regression: clicking a hair inside the ring used to let the small click-side term flip
+    // the new ring onto the SAME side as the existing one, dropping a second benzene on top
+    // of the first (coincident atoms). Crowding must win so the fusion always goes outward.
+    const document = insertNativeTemplateMolecule(
+      createPhase4Document("Inside-Click Fusion"),
+      { x: 360, y: 320 },
+      "benzene"
+    );
+    const benzene = selectedMolecule(document);
+    const centroid = {
+      x: benzene.atoms.reduce((sum, atom) => sum + atom.x, 0) / benzene.atoms.length,
+      y: benzene.atoms.reduce((sum, atom) => sum + atom.y, 0) / benzene.atoms.length
+    };
+    const midpoint = moleculeBondMidpoint(benzene, "bond_001");
+    // A click pushed from the shared bond toward the ring centre — i.e. "inside" the ring.
+    const insideClick = {
+      x: midpoint.x + (centroid.x - midpoint.x) * 0.4,
+      y: midpoint.y + (centroid.y - midpoint.y) * 0.4
+    };
+
+    const naphthalene = selectedMolecule(applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(benzene, "bond_001"),
+      insideClick,
+      "benzene"
+    ));
+
+    expect(naphthalene.atoms).toHaveLength(10);
+    expect(naphthalene.bonds).toHaveLength(11);
+    expect(naphthalene.chemistry).toMatchObject({ formula: "C10H8", atomCount: 10, bondCount: 11 });
+    // The decisive assertion: no new atom landed on top of an existing one (no overlap).
+    expectNoDuplicateAtomPositions(naphthalene);
+    // And the new ring sits on the far side of the shared bond from the original centre.
+    const newRingAtoms = naphthalene.atoms.filter((atom) =>
+      !benzene.atoms.some((original) => original.id === atom.id)
+    );
+    const newCentroidY = newRingAtoms.reduce((sum, atom) => sum + atom.y, 0) / newRingAtoms.length;
+    expect(Math.sign(newCentroidY - midpoint.y)).toBe(Math.sign(midpoint.y - centroid.y));
+  });
+
   it("fuses benzene onto saturated cyclohexane as an aromatic ring with internal double bonds", () => {
     let document = insertNativeTemplateMolecule(
       createPhase4Document("Benzene Fused Cyclohexane"),
