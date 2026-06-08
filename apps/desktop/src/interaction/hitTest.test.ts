@@ -1,13 +1,19 @@
 import { describe, it, expect } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
-import { createPhase4Document, insertNativeSingleBondMolecule } from "../documentWorkflow";
+import {
+  createPhase4Document,
+  insertNativeSingleBondMolecule,
+  type NativeMoleculeDeleteTarget
+} from "../documentWorkflow";
 import {
   BOND_HIT_CATCHER_HALF_WIDTH_PX,
   bondHitRadiusForScale,
+  currentTemplateTargetFromHoverOrHit,
   hitToleranceForScale,
   hitTestDocument,
-  maxModelBondScreenTolerancePx
+  maxModelBondScreenTolerancePx,
+  type TemplateHoverSample
 } from "./hitTest";
 
 function singleBondMolecule() {
@@ -268,6 +274,104 @@ describe("bond DOM catcher is a routing superset of the model (invariant #1)", (
     for (const scale of SUPPORTED_ZOOMS) {
       expect(bondHitRadiusForScale(scale) * scale).toBeLessThanOrEqual(BOND_HIT_CATCHER_HALF_WIDTH_PX);
     }
+  });
+});
+
+// Stage A: a template click must commit exactly what the highlight is painting. The fixture
+// presses on an ATOM glyph while the recent hover resolved the incident BOND — the classic
+// "magical spot": a fresh per-object recompute would spiro onto the atom, but parity must
+// reuse the hovered bond and fuse. Staleness (changed tool/template, far press, vanished
+// target, no hover) must instead fall back to a fresh resolve (which, on the atom, is the atom).
+describe("currentTemplateTargetFromHoverOrHit (template click parity)", () => {
+  function bondTarget(molecule: MoleculeObject): NativeMoleculeDeleteTarget {
+    const bond = molecule.bonds[0];
+    return {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: bond.id,
+      fromAtomId: bond.fromAtomId,
+      toAtomId: bond.toAtomId,
+      distanceToPointer: 0
+    };
+  }
+
+  function benzeneHover(molecule: MoleculeObject, pagePoint: Vec): TemplateHoverSample {
+    return { pagePoint, toolCommandId: "tool.benzene", templateId: "benzene", target: bondTarget(molecule) };
+  }
+
+  const benzenePress = (pagePoint: Vec) => ({
+    pagePoint,
+    toolCommandId: "tool.benzene",
+    templateId: "benzene"
+  });
+
+  it("reuses the hovered bond verbatim even when the press lands on an atom glyph", () => {
+    const { document, molecule } = singleBondMolecule();
+    const atom = molecule.atoms[0];
+    const at = { x: atom.x, y: atom.y };
+
+    const resolved = currentTemplateTargetFromHoverOrHit(
+      document,
+      benzenePress(at),
+      benzeneHover(molecule, at),
+      1
+    );
+    expect(resolved).toMatchObject({ kind: "bond", bondId: molecule.bonds[0].id });
+
+    // Sanity: a fresh resolve at the same point (no hover) is the ATOM — proving the parity
+    // path changed the outcome, not the geometry.
+    expect(currentTemplateTargetFromHoverOrHit(document, benzenePress(at), undefined, 1))
+      .toMatchObject({ kind: "atom", atomId: atom.id });
+  });
+
+  it("falls back to a fresh resolve when the template id changed", () => {
+    const { document, molecule } = singleBondMolecule();
+    const atom = molecule.atoms[0];
+    const at = { x: atom.x, y: atom.y };
+    const staleHover = { ...benzeneHover(molecule, at), templateId: "cyclohexane" };
+
+    expect(currentTemplateTargetFromHoverOrHit(document, benzenePress(at), staleHover, 1))
+      .toMatchObject({ kind: "atom", atomId: atom.id });
+  });
+
+  it("falls back to a fresh resolve when the tool command changed", () => {
+    const { document, molecule } = singleBondMolecule();
+    const atom = molecule.atoms[0];
+    const at = { x: atom.x, y: atom.y };
+    const staleHover = { ...benzeneHover(molecule, at), toolCommandId: "tool.cyclohexane" };
+
+    expect(currentTemplateTargetFromHoverOrHit(document, benzenePress(at), staleHover, 1))
+      .toMatchObject({ kind: "atom", atomId: atom.id });
+  });
+
+  it("falls back when the press is too far from where we hovered (screen distance)", () => {
+    const { document, molecule } = singleBondMolecule();
+    const atom = molecule.atoms[0];
+    const at = { x: atom.x, y: atom.y };
+    // Hover sampled 20 page-units away; at scale 1 that is 20px > the 6px reuse slack.
+    const farHover = benzeneHover(molecule, { x: atom.x + 20, y: atom.y });
+
+    expect(currentTemplateTargetFromHoverOrHit(document, benzenePress(at), farHover, 1))
+      .toMatchObject({ kind: "atom", atomId: atom.id });
+  });
+
+  it("falls back when the hovered target no longer exists in the document", () => {
+    const { document, molecule } = singleBondMolecule();
+    const atom = molecule.atoms[0];
+    const at = { x: atom.x, y: atom.y };
+    const goneHover: TemplateHoverSample = {
+      ...benzeneHover(molecule, at),
+      target: { objectId: molecule.id, kind: "bond", bondId: "bond_999", fromAtomId: "x", toAtomId: "y", distanceToPointer: 0 }
+    };
+
+    expect(currentTemplateTargetFromHoverOrHit(document, benzenePress(at), goneHover, 1))
+      .toMatchObject({ kind: "atom", atomId: atom.id });
+  });
+
+  it("returns undefined (standalone) when nothing is hovered and the press is on empty canvas", () => {
+    const { document } = singleBondMolecule();
+    expect(currentTemplateTargetFromHoverOrHit(document, benzenePress({ x: 24, y: 24 }), undefined, 1))
+      .toBeUndefined();
   });
 });
 

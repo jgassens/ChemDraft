@@ -185,6 +185,71 @@ export function nativeMoleculeCanvasHoverTarget(
   return target ? { objectId: target.object.id, ...target.hit } : undefined;
 }
 
+// Screen-space slack (px) within which a press may reuse the last template hover target.
+// A click is normally preceded by a pointermove to the same spot, so the press point and
+// the last hover point are within a pixel or two; this rejects a hover left somewhere else
+// (pointer left and re-entered, programmatic move, etc.).
+const TEMPLATE_HOVER_REUSE_SCREEN_PX = 6;
+
+/**
+ * A captured template-tool hover: the page point we resolved it at, the tool/template
+ * identity at that moment, and the resolved atom/bond target. Used by
+ * `currentTemplateTargetFromHoverOrHit` so a template commit reuses exactly what the
+ * highlight is showing instead of recomputing a (possibly disagreeing) per-object hit.
+ */
+export type TemplateHoverSample = {
+  pagePoint: Point;
+  toolCommandId: string;
+  templateId: string;
+  target: NativeMoleculeDeleteTarget;
+};
+
+/** True when the target's owning molecule and its atom/bond still exist in the document. */
+export function templateTargetStillExists(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): boolean {
+  const molecule = document.pages[0]?.objects.find(
+    (object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule) {
+    return false;
+  }
+  return target.kind === "atom"
+    ? molecule.atoms.some((atom) => atom.id === target.atomId)
+    : molecule.bonds.some((bond) => bond.id === target.bondId);
+}
+
+/**
+ * Resolve the molecule part a template click should act on. Prefers the last hover target
+ * (what the highlight is painting) so click and highlight can never disagree, but only when
+ * that hover is not stale: same tool command AND template id, the press is within
+ * `TEMPLATE_HOVER_REUSE_SCREEN_PX` of where we hovered, and the target still exists. When
+ * the hover is stale or absent it falls back to a fresh geometric resolve — the same one
+ * that paints the highlight — never the per-object DOM-tiebreak recompute that can flip a
+ * bond into an atom at press time.
+ */
+export function currentTemplateTargetFromHoverOrHit(
+  document: ChemDraftDocument,
+  press: { pagePoint: Point; toolCommandId: string; templateId: string },
+  hover: TemplateHoverSample | undefined,
+  scale: number,
+  eventTarget?: EventTarget | null
+): NativeMoleculeDeleteTarget | undefined {
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  if (
+    hover &&
+    hover.toolCommandId === press.toolCommandId &&
+    hover.templateId === press.templateId &&
+    distance(hover.pagePoint, press.pagePoint) * safeScale <= TEMPLATE_HOVER_REUSE_SCREEN_PX &&
+    templateTargetStillExists(document, hover.target)
+  ) {
+    return hover.target;
+  }
+
+  return nativeMoleculeCanvasHoverTarget(document, press.pagePoint, eventTarget, hitToleranceForScale(scale));
+}
+
 /**
  * The clean public name for the single hit-test. Returns the molecule part (atom/bond)
  * under the given page-space point, or `undefined` when the pointer is over empty space.

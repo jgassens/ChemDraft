@@ -195,9 +195,11 @@ import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
+  currentTemplateTargetFromHoverOrHit,
   hitToleranceForScale,
   nativeMoleculeCanvasHoverTarget,
-  nativeMoleculeHitFromPointerTarget
+  nativeMoleculeHitFromPointerTarget,
+  type TemplateHoverSample
 } from "./interaction/hitTest";
 
 // Re-exported so existing tests can keep importing it from "./MainWindow" while the
@@ -572,6 +574,10 @@ export function MainWindow({
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
+  // The last template-tool hover (page point + tool/template identity + resolved target), so a
+  // template click can reuse exactly what the highlight is painting (see
+  // currentTemplateTargetFromHoverOrHit) rather than recompute a possibly-disagreeing hit.
+  const templateHoverTargetRef = useRef<TemplateHoverSample | undefined>(undefined);
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   const viewportRef = useRef(viewport);
@@ -2560,6 +2566,16 @@ export function MainWindow({
     hoveredNativeAtomPointRef.current = target?.kind === "atom"
       ? { objectId: target.objectId, point }
       : undefined;
+    // Capture the hover for a template click to reuse verbatim, so the committed placement
+    // matches the painted highlight (no per-object recompute that can flip bond->atom).
+    templateHoverTargetRef.current = activeNativeTemplateId && target
+      ? {
+          pagePoint: point,
+          toolCommandId: activeToolState.activeCommandId,
+          templateId: activeNativeTemplateId,
+          target
+        }
+      : undefined;
 
     if (activeToolState.activeCommandId === "tool.bond" && target) {
       const object = findDocumentObject(sourceDocument, target.objectId);
@@ -2577,11 +2593,12 @@ export function MainWindow({
 
     setHoveredNativeAtom(undefined);
   }, [
+    activeNativeTemplateId,
     activeToolState.activeCommandId,
     assignHoveredNativeDeleteTarget,
     bondToolActive,
-	    updateBondGrowthPreview
-	  ]);
+    updateBondGrowthPreview
+  ]);
 
   useEffect(() => {
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
@@ -3151,7 +3168,19 @@ export function MainWindow({
     if (activeNativeTemplateId) {
       event.preventDefault();
       event.stopPropagation();
-      if (!startNativePlacementDrag(event, point, { kind: "template", templateId: activeNativeTemplateId })) {
+      // Ask the same question the object path asks: is there a current template target? If so,
+      // fuse/attach to it instead of dropping a standalone ring in the gap. Only true empty
+      // space (no resolved target) starts standalone placement.
+      const templateTarget = currentTemplateTargetFromHoverOrHit(
+        document,
+        { pagePoint: point, toolCommandId: activeToolState.activeCommandId, templateId: activeNativeTemplateId },
+        templateHoverTargetRef.current,
+        viewportRef.current.scale,
+        event.target
+      );
+      if (templateTarget) {
+        applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId, templateTarget);
+      } else if (!startNativePlacementDrag(event, point, { kind: "template", templateId: activeNativeTemplateId })) {
         applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId);
       }
       return;
@@ -3687,11 +3716,16 @@ export function MainWindow({
     if (activeNativeTemplateId && point) {
       event.preventDefault();
       event.stopPropagation();
-      applyNativeTemplateDocumentAtPoint(
-        point,
-        activeNativeTemplateId,
-        object?.type === "molecule" && nativeMoleculeHit ? { objectId, ...nativeMoleculeHit } : undefined
+      // Commit the highlighted target (parity), not a fresh per-object recompute whose DOM
+      // tiebreak can flip a bond-hover into an atom and silently spiro instead of fusing.
+      const templateTarget = currentTemplateTargetFromHoverOrHit(
+        document,
+        { pagePoint: point, toolCommandId: activeToolState.activeCommandId, templateId: activeNativeTemplateId },
+        templateHoverTargetRef.current,
+        viewportRef.current.scale,
+        event.target
       );
+      applyNativeTemplateDocumentAtPoint(point, activeNativeTemplateId, templateTarget);
       return;
     }
 
