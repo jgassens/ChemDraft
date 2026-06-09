@@ -3707,6 +3707,38 @@ describe("Phase 4 document workflow", () => {
     expect(Math.sign(newCentroidY - midpoint.y)).toBe(Math.sign(midpoint.y - centroid.y));
   });
 
+  it("fuses to the clicked side of an isolated bond, where crowding can't break the tie", () => {
+    // A lone bond has no other atoms, so the crowding signal is 0 and the click side is the ONLY
+    // thing nativeTemplateSideForBond can use — its fallback branch. Each perpendicular click must
+    // drop the new ring on its own side (the branch the outward-fusion test never reaches).
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Lone Bond Side"), { x: 220, y: 240 });
+    const molecule = selectedMolecule(document);
+    const bond = molecule.bonds[0];
+    const from = moleculeAtom(molecule, bond.fromAtomId);
+    const to = moleculeAtom(molecule, bond.toAtomId);
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    const normal = { x: -(to.y - from.y) / length, y: (to.x - from.x) / length };
+
+    // Signed distance of the new ring's centroid along the click normal, for a click `sign` * 8px
+    // off the midpoint on that normal.
+    const newRingOffsetForClick = (sign: 1 | -1): number => {
+      const click = { x: midpoint.x + normal.x * 8 * sign, y: midpoint.y + normal.y * 8 * sign };
+      const fused = selectedMolecule(
+        applyNativeTemplateToolAtTarget(document, moleculeBondTarget(molecule, bond.id), click, "benzene")
+      );
+      const newAtoms = fused.atoms.filter((atom) => !molecule.atoms.some((original) => original.id === atom.id));
+      const centroid = {
+        x: newAtoms.reduce((sum, atom) => sum + atom.x, 0) / newAtoms.length,
+        y: newAtoms.reduce((sum, atom) => sum + atom.y, 0) / newAtoms.length
+      };
+      return (centroid.x - midpoint.x) * normal.x + (centroid.y - midpoint.y) * normal.y;
+    };
+
+    expect(Math.sign(newRingOffsetForClick(1))).toBe(1);
+    expect(Math.sign(newRingOffsetForClick(-1))).toBe(-1);
+  });
+
   it("closes a fused ring onto an existing rim atom instead of duplicating it", () => {
     let document = insertNativeTemplateMolecule(createPhase4Document("Closure Snap"), { x: 400, y: 360 }, "benzene");
     const central = selectedMolecule(document);

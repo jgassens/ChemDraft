@@ -5891,7 +5891,6 @@ function NativeTemplateGhostOverlay({
   return (
     <svg
       className="native-template-ghost-surface"
-      data-ghost-kind={plan.kind}
       data-ghost-invalid={producesInvalidAtom ? "true" : undefined}
       aria-hidden="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}

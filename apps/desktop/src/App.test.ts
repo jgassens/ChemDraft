@@ -160,6 +160,9 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain(".native-bond-hover-decorator");
     expect(appCss).not.toMatch(/\.native-bond-line\s*{[^}]*vector-effect:\s*non-scaling-stroke;/s);
     expect(appCss).toMatch(/\.native-bond-hit-target\s*{[^}]*vector-effect:\s*non-scaling-stroke;/s);
+    // The crossing knockout masks the visible bond, so it must scale with the bond (no
+    // non-scaling-stroke) — same decision as .native-bond-line, kept in sync here.
+    expect(appCss).not.toMatch(/\.native-bond-knockout\s*{[^}]*vector-effect:\s*non-scaling-stroke;/s);
     // The bond highlight is no longer driven by CSS :hover (a second opinion that used the
     // DOM catcher's geometry); it is rendered from the resolver result so it matches the
     // click target. The old :hover decorator rule must be gone, and the new resolver-driven

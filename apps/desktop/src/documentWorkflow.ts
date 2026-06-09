@@ -1011,7 +1011,11 @@ function fuseNativeTemplateRingToBond(
   }
   const newBondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), newBonds.length);
   newBonds.forEach((bond, index) => {
-    bond.id = newBondIds[index] ?? nextIndexedId("bond", molecule.bonds.map((candidate) => candidate.id));
+    // newBondIds is sized to newBonds.length, so the index is always present and the fallback is
+    // effectively dead — but mirror the atom path and draw from the already-assigned new bonds too,
+    // so it can never mint a colliding id even if it somehow fired.
+    bond.id = newBondIds[index]
+      ?? nextIndexedId("bond", [...molecule.bonds, ...newBonds.slice(0, index)].map((candidate) => candidate.id));
   });
 
   // Guard the closure (only when a vertex actually snapped, so plain fusion is untouched): on the
@@ -1032,6 +1036,10 @@ function fuseNativeTemplateRingToBond(
 // Closure snap radius. Kept below the minimum distance between two distinct atoms the suite
 // guarantees (0.25*bondLength), so a plain fusion (vertices in open space) never snaps and only
 // a true closure — whose proposed vertices land essentially on an existing atom — merges.
+// NB: this assumes template-spaced geometry. An imported or heavily distorted molecule with atoms
+// closer than this radius could let a plain fusion vertex merge onto an unrelated atom;
+// nativeClosureExceedsDegreeCap rejects the over-connecting cases, but deriving the radius from the
+// actual nearest-neighbour spacing would be more robust if that ever bites.
 const nativeTemplateClosureSnapPx = nativeBondLength * 0.2;
 
 function nearestExistingAtomWithin(
