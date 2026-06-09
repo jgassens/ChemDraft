@@ -1,9 +1,12 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phase 1B complete. Phase 1A (layered identity service) and Phase 1B
-(`flattenPerspectiveFrom3D` constrained-search wedging) are merged into
-`feature/3d-spin`. Architecture decided: **built into the app, behind the
-`chemistry-adapter` seam** — not a plugin. Engine front-runner: **OpenChemLib JS**,
+**Status:** Phase 1C engine-free core complete. Phases 1A (layered identity service),
+1B (`flattenPerspectiveFrom3D` constrained-search wedging), and the engine-free part
+of 1C (labeled corpus runner + oracle non-mutation barrier) are on `feature/3d-spin`.
+The live RDKit chemistry oracle is deferred until RDKit is available (Phase 2). Next
+runnable-without-clicks slice: Phase 3 (pure rotation math). Architecture decided:
+**built into the app, behind the `chemistry-adapter` seam** — not a plugin. Engine
+front-runner: **OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
 measurement. (Revised twice after external review — wedging is a constrained search;
 identity is a mandatory layered service; phases front-load safety before UI.)
@@ -195,10 +198,23 @@ crossing model."* So we **integrate, never reinvent**:
   methane-like, chiral, E/Z, cyclohexane, vicinal/meso, failure cases). No engine wait.
   → `packages/chem-core/src/perspective.ts` · 13 tests passing · commit `347fe65`.
 
-- **Phase 1C — Corpus runner with native RDKit oracle** (no UI, dev-only). Oracle
-  compares identities on **copies**; **hard test fixture** asserting it uses
-  `AssignStereochemistryFrom3D(replaceExistingTags=False)` / discards mutation —
-  never overwrites the product molecule's stereo.
+- ◐ **Phase 1C — Corpus runner + oracle boundary** (no UI, dev-only). **Engine-free
+  core complete & green**; live RDKit chemistry oracle deferred (see caveat).
+  → `packages/chem-core/src/corpus.ts` — labeled corpus (`mustCommit`/`warnButAllow`/
+    `mustRefuse`) + `runCorpus()`; 10 deterministic, engine-free cases regression-lock
+    Phase 1B (commit 6/6, warn 2/2, refuse 2/2). Conformer-dependent families
+    (chairs, decalins, macrocycles…) are explicitly deferred to Phase 2, not faked.
+  → `packages/chem-core/src/oracle.ts` — the **non-mutation discipline barrier**:
+    clones every input before handing it to an engine, so an engine can never
+    corrupt the molecule under validation (the `AssignStereochemistryFrom3D`
+    `replaceExistingTags=True` footgun). Proven by a deliberately-mutating mock.
+  → 11 tests passing.
+  **Caveat (honest):** this environment has no RDKit (python/native) and no OCL. A
+  concrete RDKit-backed `StereoPerceptionEngine` is *not* shipped — an untested
+  chemistry bridge would defeat the oracle's whole purpose. It is a drop-in that
+  must build its RWMol on a copy, call `AssignStereochemistryFrom3D(replaceExistingTags=False)`,
+  and pass the same non-mutation contract test. Wiring it requires RDKit availability
+  (a real external dependency / machine side-effect) and the engine corpus from Phase 2.
 
 - **Phase 2 — OpenChemLib core adapter + corpus run.** Lazy `import()` on first spin.
   **Prove the mapping contract** (tag via `setAtomMapNo`, hand OCL a copy) across
