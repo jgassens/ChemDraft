@@ -5865,7 +5865,10 @@ function CrosshairOverlay({
 // click commits (so what you see is exactly what lands). Only the parts NEW to this placement are
 // drawn — a full hexagon for a standalone insert, the open arc that shares the targeted edge for a
 // fusion, the arc hanging off the shared atom for a spiro, and just the missing edges for a
-// closure. data-ghost-kind lets the CSS tint spiro (the destructive one) differently from fusion.
+// closure. The ghost only turns red (data-ghost-invalid) when the placement would actually make
+// one of the atoms it touches invalid — the same predicate that paints the red "!" — so valid
+// spiro rings (cyclohexane/cyclopentane, degree-4 sp3) stay neutral and only genuinely bad
+// products (e.g. a spiro carbon shared by two aromatic rings) warn.
 function NativeTemplateGhostOverlay({
   plan,
   pageWidth,
@@ -5878,10 +5881,18 @@ function NativeTemplateGhostOverlay({
   const atomById = new Map(plan.molecule.atoms.map((atom) => [atom.id, atom] as const));
   const addedBondIds = new Set(plan.addedBondIds);
   const ghostBonds = plan.molecule.bonds.filter((bond) => addedBondIds.has(bond.id));
+  const invalidAtomIds = new Set(nativeMoleculeInvalidAtomStates(plan.molecule).map((state) => state.atomId));
+  const touchedAtomIds = new Set<string>(plan.addedAtomIds);
+  ghostBonds.forEach((bond) => {
+    touchedAtomIds.add(bond.fromAtomId);
+    touchedAtomIds.add(bond.toAtomId);
+  });
+  const producesInvalidAtom = [...touchedAtomIds].some((atomId) => invalidAtomIds.has(atomId));
   return (
     <svg
       className="native-template-ghost-surface"
       data-ghost-kind={plan.kind}
+      data-ghost-invalid={producesInvalidAtom ? "true" : undefined}
       aria-hidden="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}
     >

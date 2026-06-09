@@ -1541,13 +1541,13 @@ textarea:focus-visible,
   fill-opacity: 0.55;
 }
 
-/* Spiro (single-atom) attachment is the more destructive placement — tint it so it reads
-   differently from an edge fusion at a glance. */
-.native-template-ghost-surface[data-ghost-kind="attach-atom"] .native-template-ghost-bond {
+/* Only warn (red) when the placement would actually produce an invalid atom — the same
+   condition behind the red "!" — so valid spiro rings stay neutral. */
+.native-template-ghost-surface[data-ghost-invalid="true"] .native-template-ghost-bond {
   stroke: var(--cd-danger);
 }
 
-.native-template-ghost-surface[data-ghost-kind="attach-atom"] .native-template-ghost-atom {
+.native-template-ghost-surface[data-ghost-invalid="true"] .native-template-ghost-atom {
   fill: var(--cd-danger);
 }
 

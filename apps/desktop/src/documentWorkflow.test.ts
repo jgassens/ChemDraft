@@ -3642,6 +3642,30 @@ describe("Phase 4 document workflow", () => {
     );
   });
 
+  it("marks an aromatic spiro placement invalid but a saturated spiro valid (ghost warn rule)", () => {
+    const benzeneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Benzene"), { x: 360, y: 320 }, "benzene");
+    const benzene = selectedMolecule(benzeneDocument);
+    const benzeneSpiro = planNativeTemplatePlacement(
+      benzeneDocument,
+      { point: moleculeAtom(benzene, "atom_001"), target: moleculeAtomTarget(benzene, "atom_001") },
+      "benzene"
+    );
+    expect(benzeneSpiro?.kind).toBe("attach-atom");
+    // The shared carbon ends up in two aromatic rings — over-valent — so the ghost must warn.
+    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule).length).toBeGreaterThan(0);
+
+    const cyclohexaneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Cyclohexane"), { x: 360, y: 320 }, "cyclohexane");
+    const cyclohexane = selectedMolecule(cyclohexaneDocument);
+    const cyclohexaneSpiro = planNativeTemplatePlacement(
+      cyclohexaneDocument,
+      { point: moleculeAtom(cyclohexane, "atom_001"), target: moleculeAtomTarget(cyclohexane, "atom_001") },
+      "cyclohexane"
+    );
+    expect(cyclohexaneSpiro?.kind).toBe("attach-atom");
+    // A degree-4 sp3 spiro carbon is perfectly valid — the ghost must stay neutral.
+    expect(nativeMoleculeInvalidAtomStates(cyclohexaneSpiro!.molecule)).toEqual([]);
+  });
+
   it("fuses a ring outward even when the click lands inside the existing ring", () => {
     // Regression: clicking a hair inside the ring used to let the small click-side term flip
     // the new ring onto the SAME side as the existing one, dropping a second benzene on top
