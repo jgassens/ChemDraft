@@ -1445,6 +1445,7 @@ interface NativeAromaticMatching {
   bondIds: string[];
   matchedAtoms: number;
   existingDoubleBonds: number;
+  sharedDoubleBonds: number;
 }
 
 function normalizeNativeAromaticTemplateBonds(molecule: MoleculeObject): MoleculeObject {
@@ -1469,11 +1470,24 @@ function normalizeNativeAromaticTemplateBonds(molecule: MoleculeObject): Molecul
       return false;
     }
 
+    // The bond must lie ENTIRELY within aromatic rings, so a benzene/cyclohexane fusion bond —
+    // which also belongs to the saturated ring — stays single. But a bond shared between two
+    // AROMATIC rings (every inner-ring bond of a peri-fused system like coronene) is eligible;
+    // forbidding it left the inner carbons with no double bond at all, reading as sp3.
     const aromaticMembership = aromaticCycleMembership.get(bondId) ?? 0;
     const totalMembership = allCycleMembership.get(bondId) ?? 0;
-    return aromaticMembership === 1 && totalMembership === aromaticMembership;
+    return aromaticMembership >= 1 && totalMembership === aromaticMembership;
   });
-  const doubleBondIds = new Set(chooseNativeAromaticDoubleBondIds(molecule, aromaticAtomIds, candidateBondIds));
+  // Bonds shared by more than one aromatic ring. We still PREFER double bonds on unshared
+  // (perimeter) bonds, so cata-condensed systems (naphthalene, acenes) keep their conventional
+  // Kekulé with single fusion bonds, while peri-fused systems use the fewest shared double bonds
+  // needed to give every carbon a double bond (coronene's inner ring gets three, not six spokes).
+  const sharedAromaticBondIds = new Set(
+    candidateBondIds.filter((bondId) => (aromaticCycleMembership.get(bondId) ?? 0) > 1)
+  );
+  const doubleBondIds = new Set(
+    chooseNativeAromaticDoubleBondIds(molecule, aromaticAtomIds, candidateBondIds, sharedAromaticBondIds)
+  );
   if (doubleBondIds.size === 0) {
     return molecule;
   }
@@ -1575,7 +1589,8 @@ function bondCycleMembership(cycles: readonly NativeAromaticRingCycle[]): Map<st
 function chooseNativeAromaticDoubleBondIds(
   molecule: MoleculeObject,
   aromaticAtomIds: ReadonlySet<string>,
-  candidateBondIds: readonly string[]
+  candidateBondIds: readonly string[],
+  sharedBondIds: ReadonlySet<string> = new Set()
 ): string[] {
   const candidateBonds = candidateBondIds
     .map((bondId) => molecule.bonds.find((bond) => bond.id === bondId))
@@ -1596,7 +1611,7 @@ function chooseNativeAromaticDoubleBondIds(
     }
 
     if (unmatchedAtomIds.length === 0) {
-      return { bondIds: [], matchedAtoms: 0, existingDoubleBonds: 0 };
+      return { bondIds: [], matchedAtoms: 0, existingDoubleBonds: 0, sharedDoubleBonds: 0 };
     }
 
     const unmatched = new Set(unmatchedAtomIds);
@@ -1613,7 +1628,8 @@ function chooseNativeAromaticDoubleBondIds(
       const candidate: NativeAromaticMatching = {
         bondIds: [bond.id, ...next.bondIds],
         matchedAtoms: next.matchedAtoms + 2,
-        existingDoubleBonds: next.existingDoubleBonds + (bond.order === "double" ? 1 : 0)
+        existingDoubleBonds: next.existingDoubleBonds + (bond.order === "double" ? 1 : 0),
+        sharedDoubleBonds: next.sharedDoubleBonds + (sharedBondIds.has(bond.id) ? 1 : 0)
       };
       if (nativeAromaticMatchingIsBetter(candidate, best)) {
         best = candidate;
@@ -1628,8 +1644,15 @@ function chooseNativeAromaticDoubleBondIds(
 }
 
 function nativeAromaticMatchingIsBetter(candidate: NativeAromaticMatching, current: NativeAromaticMatching): boolean {
+  // Cover the most carbons first (a perfect matching = every carbon gets one double bond), then
+  // use the FEWEST shared/fusion double bonds (so cata-condensed systems keep single fusion
+  // bonds and peri-fused systems use only the shared doubles they truly need), then prefer
+  // keeping existing double bonds for stability across incremental fusions, then a stable order.
   if (candidate.matchedAtoms !== current.matchedAtoms) {
     return candidate.matchedAtoms > current.matchedAtoms;
+  }
+  if (candidate.sharedDoubleBonds !== current.sharedDoubleBonds) {
+    return candidate.sharedDoubleBonds < current.sharedDoubleBonds;
   }
   if (candidate.bondIds.length !== current.bondIds.length) {
     return candidate.bondIds.length > current.bondIds.length;

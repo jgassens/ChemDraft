@@ -3735,6 +3735,22 @@ describe("Phase 4 document workflow", () => {
     expect(coronene.atoms).toHaveLength(24);
     expectNoDuplicateAtomPositions(coronene);
     coronene.atoms.forEach((atom) => expect(atomDegree(coronene, atom.id)).toBeLessThanOrEqual(3));
+
+    // Every carbon must carry exactly one double bond — a valid Kekulé structure / full
+    // aromaticity. The inner six carbons used to be left with none (they read as sp3) because
+    // their bonds are all ring-shared; closure must still hand the inner ring its double bonds.
+    const doubleBondCountByAtom = new Map<string, number>();
+    coronene.bonds
+      .filter((bond) => bond.order === "double")
+      .forEach((bond) => {
+        doubleBondCountByAtom.set(bond.fromAtomId, (doubleBondCountByAtom.get(bond.fromAtomId) ?? 0) + 1);
+        doubleBondCountByAtom.set(bond.toAtomId, (doubleBondCountByAtom.get(bond.toAtomId) ?? 0) + 1);
+      });
+    coronene.atoms.forEach((atom) => {
+      expect(doubleBondCountByAtom.get(atom.id) ?? 0, `atom ${atom.id} double-bond count`).toBe(1);
+    });
+    // Coronene's Kekulé needs exactly 12 double bonds across 24 carbons.
+    expect(coronene.bonds.filter((bond) => bond.order === "double")).toHaveLength(12);
   });
 
   it("fuses benzene onto saturated cyclohexane as an aromatic ring with internal double bonds", () => {
