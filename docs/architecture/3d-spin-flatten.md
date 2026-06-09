@@ -228,9 +228,13 @@ crossing model."* So we **integrate, never reinvent**:
   embind maintenance pain for ETKDGv3 + optional MMFF/UFF. Removes the fallback's
   biggest unknown before UI investment.
 
-- **Phase 3 — Rotation math (pure).** `apps/desktop/src/interaction/rotation3d.ts`
-  (sibling to `camera.ts`, which already anticipates a 4×4 3D camera): trackball →
-  quaternion → 4×4 → orthographic project. Unit-tested, no doc/React coupling.
+- ✅ **Phase 3 — Rotation math (pure).** `apps/desktop/src/interaction/rotation3d.ts`
+  (sibling to `camera.ts`): trackball → quaternion → 4×4 → orthographic project.
+  `quatToViewMatrix` emits a row-major 4×4 in the *exact* convention
+  `perspective.ts.applyMatrix` consumes, so the spin's orientation feeds
+  `flattenPerspectiveFrom3D` with zero glue. Unit-tested (17 tests incl. a
+  flatten-contract test), no doc/React coupling. Done out of order (before 2) since
+  it is dependency-free.
 
 - **Phase 4 — In-canvas spin.** `machine.ts`: add `"molecule-spin-3d"` to `DragKind`
   + `DRAG_THRESHOLDS`. `MainWindow.tsx`: `spin3dMachineRef` mirroring
