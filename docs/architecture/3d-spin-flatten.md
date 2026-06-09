@@ -1,12 +1,12 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phase 1C engine-free core complete. Phases 1A (layered identity service),
-1B (`flattenPerspectiveFrom3D` constrained-search wedging), and the engine-free part
-of 1C (labeled corpus runner + oracle non-mutation barrier) are on `feature/3d-spin`.
-The live RDKit chemistry oracle is deferred until RDKit is available (Phase 2). Next
-runnable-without-clicks slice: Phase 3 (pure rotation math). Architecture decided:
-**built into the app, behind the `chemistry-adapter` seam** — not a plugin. Engine
-front-runner: **OpenChemLib JS**,
+**Status:** Phases 1A, 1B, 1C, and 3 complete on `feature/3d-spin`. 1A (layered
+identity), 1B (`flattenPerspectiveFrom3D` constrained-search wedging), 1C (labeled
+corpus + non-mutation oracle barrier + **independent native-RDKit corpus judge**),
+and 3 (pure trackball rotation math) are all green. Next: Phase 2 (OpenChemLib
+adapter + corpus gate) and Phase 2b (RDKit-WASM spike); then the first click-test,
+Phase 4 (in-canvas spin). Architecture decided: **built into the app, behind the
+`chemistry-adapter` seam** — not a plugin. Engine front-runner: **OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
 measurement. (Revised twice after external review — wedging is a constrained search;
 identity is a mandatory layered service; phases front-load safety before UI.)
@@ -198,8 +198,7 @@ crossing model."* So we **integrate, never reinvent**:
   methane-like, chiral, E/Z, cyclohexane, vicinal/meso, failure cases). No engine wait.
   → `packages/chem-core/src/perspective.ts` · 13 tests passing · commit `347fe65`.
 
-- ◐ **Phase 1C — Corpus runner + oracle boundary** (no UI, dev-only). **Engine-free
-  core complete & green**; live RDKit chemistry oracle deferred (see caveat).
+- ✅ **Phase 1C — Corpus runner + independent RDKit oracle** (no UI, dev-only).
   → `packages/chem-core/src/corpus.ts` — labeled corpus (`mustCommit`/`warnButAllow`/
     `mustRefuse`) + `runCorpus()`; 10 deterministic, engine-free cases regression-lock
     Phase 1B (commit 6/6, warn 2/2, refuse 2/2). Conformer-dependent families
@@ -208,13 +207,19 @@ crossing model."* So we **integrate, never reinvent**:
     clones every input before handing it to an engine, so an engine can never
     corrupt the molecule under validation (the `AssignStereochemistryFrom3D`
     `replaceExistingTags=True` footgun). Proven by a deliberately-mutating mock.
-  → 11 tests passing.
-  **Caveat (honest):** this environment has no RDKit (python/native) and no OCL. A
-  concrete RDKit-backed `StereoPerceptionEngine` is *not* shipped — an untested
-  chemistry bridge would defeat the oracle's whole purpose. It is a drop-in that
-  must build its RWMol on a copy, call `AssignStereochemistryFrom3D(replaceExistingTags=False)`,
-  and pass the same non-mutation contract test. Wiring it requires RDKit availability
-  (a real external dependency / machine side-effect) and the engine corpus from Phase 2.
+  → `tools/rdkit-oracle/` — the **independent external judge**, native/Python RDKit
+    in an isolated, gitignored venv (`rdkit==2026.3.3`), wired via a stdin→stdout
+    JSON bridge (`oracle.py`) + a dev-only Node client (`client.ts`). The corpus
+    cross-check (`corpus-oracle.test.ts`) asks RDKit two independent questions —
+    CIP from the 3D conformer vs. CIP from the flatten's 2D wedge depiction — and
+    asserts they agree at every encoded center. A "teeth" test flips a wedge and
+    asserts RDKit then *disagrees*, proving the check is non-vacuous. Skips (never
+    fails) when the venv is absent, so CI without RDKit stays green.
+  → 15 tests passing (11 chem-core + 4 oracle cross-check).
+  **Guardrails:** RDKit is the dev oracle only — never shipped, never the product
+  engine. Stock `@rdkit/rdkit` WASM remains 2D-only and is not this. The engine
+  decision is unchanged: OCL v1 candidate, RDKit-WASM fallback spike + OCL corpus
+  gate still stand.
 
 - **Phase 2 — OpenChemLib core adapter + corpus run.** Lazy `import()` on first spin.
   **Prove the mapping contract** (tag via `setAtomMapNo`, hand OCL a copy) across
