@@ -1419,7 +1419,6 @@ textarea:focus-visible,
 
 .native-bond-line {
   pointer-events: none;
-  vector-effect: non-scaling-stroke;
 }
 
 .native-bond-hit-target {
@@ -1512,7 +1511,44 @@ textarea:focus-visible,
 
 .native-bond-knockout {
   pointer-events: none;
+}
+
+/* Ghost preview of the ring a template click will place. Shares the page coordinate system
+   (viewBox in page units) with the molecule surface, sits just above it, and never eats events. */
+.native-template-ghost-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.native-template-ghost-bond {
+  stroke: var(--cd-accent);
+  stroke-width: 2;
+  stroke-opacity: 0.6;
+  stroke-linecap: round;
+  stroke-dasharray: 5 3;
+  fill: none;
   vector-effect: non-scaling-stroke;
+}
+
+.native-template-ghost-atom {
+  fill: var(--cd-accent);
+  fill-opacity: 0.55;
+}
+
+/* Spiro (single-atom) attachment is the more destructive placement — tint it so it reads
+   differently from an edge fusion at a glance. */
+.native-template-ghost-surface[data-ghost-kind="attach-atom"] .native-template-ghost-bond {
+  stroke: var(--cd-danger);
+}
+
+.native-template-ghost-surface[data-ghost-kind="attach-atom"] .native-template-ghost-atom {
+  fill: var(--cd-danger);
 }
 
 .native-bond-delete-hover {

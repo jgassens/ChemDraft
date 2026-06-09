@@ -102,6 +102,8 @@ import {
   applyFreeformSingleBondToolAtPoint,
   applyNativeTemplateToolAtTarget,
   applyNativeTemplateToolAtPoint,
+  planNativeTemplatePlacement,
+  type NativeTemplatePlacementPlan,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -550,6 +552,9 @@ export function MainWindow({
   const [crosshairsVisible, setCrosshairsVisible] = useState(initialCrosshairsVisible);
   const [hoveredNativeAtom, setHoveredNativeAtom] = useState<HoveredNativeAtom | undefined>();
   const [hoveredNativeDeleteTarget, setHoveredNativeDeleteTarget] = useState<NativeMoleculeDeleteTarget | undefined>();
+  // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
+  // rendered from the same plan the click commits so preview and result can never diverge.
+  const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
   const [selectedNativeMoleculePart, setSelectedNativeMoleculePart] = useState<NativeMoleculeSelectionPart | undefined>();
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
@@ -579,6 +584,9 @@ export function MainWindow({
   // template click can reuse exactly what the highlight is painting (see
   // currentTemplateTargetFromHoverOrHit) rather than recompute a possibly-disagreeing hit.
   const templateHoverTargetRef = useRef<TemplateHoverSample | undefined>(undefined);
+  // Memo key for the ghost preview so we only recompute the plan (and its Kekulé pass) when the
+  // hovered target or pointer cell changes, not on every sub-pixel pointer move.
+  const templatePreviewKeyRef = useRef<string | undefined>(undefined);
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   const viewportRef = useRef(viewport);
@@ -2402,6 +2410,8 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
     assignHoveredNativeDeleteTarget(undefined);
+    setTemplatePreview(undefined);
+    templatePreviewKeyRef.current = undefined;
     setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
@@ -2441,6 +2451,9 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     assignHoveredNativeDeleteTarget(undefined);
+    // The drag commits a live preview document, so the hover ghost would double up — drop it.
+    setTemplatePreview(undefined);
+    templatePreviewKeyRef.current = undefined;
     event.currentTarget.setPointerCapture(event.pointerId);
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
@@ -2554,6 +2567,8 @@ export function MainWindow({
       setHoveredNativeAtom(undefined);
       setNativeDoubleBondSidePreview(undefined);
       assignHoveredNativeDeleteTarget(undefined);
+      setTemplatePreview(undefined);
+      templatePreviewKeyRef.current = undefined;
       return;
     }
 
@@ -2586,6 +2601,22 @@ export function MainWindow({
           target
         }
       : undefined;
+
+    // Ghost preview: the exact ring a click would place. A fuse/spiro plan is determined by its
+    // target (the shared edge/atom), so we key on that and skip recomputing the Kekulé pass while
+    // the pointer wanders the same bond — only a standalone ring follows the cursor cell-by-cell.
+    if (activeNativeTemplateId) {
+      const previewKey = target
+        ? [activeNativeTemplateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|")
+        : ["standalone", activeNativeTemplateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
+      if (previewKey !== templatePreviewKeyRef.current) {
+        templatePreviewKeyRef.current = previewKey;
+        setTemplatePreview(planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId));
+      }
+    } else if (templatePreviewKeyRef.current !== undefined) {
+      templatePreviewKeyRef.current = undefined;
+      setTemplatePreview(undefined);
+    }
 
     if (activeToolState.activeCommandId === "tool.bond" && target) {
       const object = findDocumentObject(sourceDocument, target.objectId);
@@ -4714,6 +4745,13 @@ export function MainWindow({
                   onPointerMove={handleObjectPointerMove}
                   onPointerUp={handleObjectPointerUp}
                 />
+                {activeNativeTemplateId && templatePreview ? (
+                  <NativeTemplateGhostOverlay
+                    plan={templatePreview}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                  />
+                ) : null}
                 {selectionMarquee ? (
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
@@ -5820,6 +5858,54 @@ function CrosshairOverlay({
         />
       ))}
     </div>
+  );
+}
+
+// A non-interactive ghost of the ring a template click will place, drawn from the SAME plan the
+// click commits (so what you see is exactly what lands). Only the parts NEW to this placement are
+// drawn — a full hexagon for a standalone insert, the open arc that shares the targeted edge for a
+// fusion, the arc hanging off the shared atom for a spiro, and just the missing edges for a
+// closure. data-ghost-kind lets the CSS tint spiro (the destructive one) differently from fusion.
+function NativeTemplateGhostOverlay({
+  plan,
+  pageWidth,
+  pageHeight
+}: {
+  plan: NativeTemplatePlacementPlan;
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const atomById = new Map(plan.molecule.atoms.map((atom) => [atom.id, atom] as const));
+  const addedBondIds = new Set(plan.addedBondIds);
+  const ghostBonds = plan.molecule.bonds.filter((bond) => addedBondIds.has(bond.id));
+  return (
+    <svg
+      className="native-template-ghost-surface"
+      data-ghost-kind={plan.kind}
+      aria-hidden="true"
+      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+    >
+      {ghostBonds.map((bond) => {
+        const from = atomById.get(bond.fromAtomId);
+        const to = atomById.get(bond.toAtomId);
+        return from && to ? (
+          <line
+            key={bond.id}
+            className="native-template-ghost-bond"
+            x1={from.x}
+            y1={from.y}
+            x2={to.x}
+            y2={to.y}
+          />
+        ) : null;
+      })}
+      {plan.addedAtomIds.map((atomId) => {
+        const atom = atomById.get(atomId);
+        return atom ? (
+          <circle key={atomId} className="native-template-ghost-atom" cx={atom.x} cy={atom.y} r={2.5} />
+        ) : null;
+      })}
+    </svg>
   );
 }
 
