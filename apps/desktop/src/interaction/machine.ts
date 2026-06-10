@@ -35,6 +35,7 @@ export type DragKind =
   | "object-move"
   | "native-part"
   | "freeform-bond"
+  | "molecule-spin-3d"
   | "placement"
   | "marquee";
 
@@ -87,6 +88,7 @@ export const DRAG_THRESHOLDS: Record<DragKind, number> = {
   "object-move": 4,
   "native-part": 4,
   "freeform-bond": 6,
+  "molecule-spin-3d": 4,
   placement: 4,
   marquee: 4
 };

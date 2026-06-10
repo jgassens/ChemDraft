@@ -177,3 +177,5 @@ export {
   type StereoCenterStatus,
   type ViewMatrix
 } from "./perspective";
+
+export { moleculeToMolfileV2000, type MolfileWriteOptions } from "./molfile";

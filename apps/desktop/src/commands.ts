@@ -66,6 +66,7 @@ export const drawerActions: CommandSpec[] = [
 ];
 
 export const structureCleanupCommandId = "structure.cleanup2d";
+export const structureSpin3dCommandId = "structure.spin3d";
 
 export const editActions: CommandSpec[] = [
   {

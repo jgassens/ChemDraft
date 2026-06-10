@@ -20,6 +20,7 @@ import {
   pageSizeActions,
   paletteGroups,
   structureCleanupCommandId,
+  structureSpin3dCommandId,
   textCustomColorCommandId,
   textStylePatchForCommand,
   textToolbarActions,
@@ -806,6 +807,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.chairCyclohexaneA",
       "tool.chairCyclohexaneB",
       structureCleanupCommandId,
+      structureSpin3dCommandId,
       "tool.plus",
       "tool.minus",
       "layout.bringToFront",
@@ -1219,6 +1221,7 @@ describe("ChemDraft desktop shell", () => {
       "style.color",
       "tool.settings",
       structureCleanupCommandId,
+      structureSpin3dCommandId,
       "tool.templateGrid"
     ]);
     expect(styleGroupIds).not.toContain("tool.toolOptions");

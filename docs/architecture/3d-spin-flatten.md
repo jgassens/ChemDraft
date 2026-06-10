@@ -1,16 +1,15 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phases 1A, 1B, 1C, 2, and 3 complete on `feature/3d-spin`; all green
-(`tsc` clean, 549 tests). Code+plan review done 2026-06-10: coordinate-frame
-contract documented and test-pinned, degenerate-parity bypass now warns, OCL
-browser-resources URL injectable; remaining phases rewritten as step-by-step specs
-(§ Phase 4/5/6 specs below) executable without deep context. The full chain works
-**end-to-end with independent RDKit confirmation**: OpenChemLib generates a 3D
-conformer → `flattenPerspectiveFrom3D` projects + wedges it → RDKit confirms stereo
-is preserved. **Next: Phase 4 (in-canvas spin — the first slice needing hands-on
-clicking).** Phase 2b is now conditional (see its entry). Architecture decided:
-**built into the app, behind the `chemistry-adapter` seam** — not a plugin. Engine
-front-runner: **OpenChemLib JS**,
+**Status:** Phases 1A, 1B, 1C, 2, 3, 4, and 5.0 complete on `feature/3d-spin`; all
+green (`tsc` clean, 565 tests). The in-canvas 3D spin now works and is verified
+end-to-end in a real browser (draw → Spin 3D → lazy OCL conformer → drag-rotate
+overlay → Esc; clean production web build). The chemistry chain is independently
+RDKit-confirmed: OpenChemLib generates a 3D conformer → `flattenPerspectiveFrom3D`
+projects + wedges it → RDKit confirms stereo is preserved. **Next: Phase 5 (flatten
+commit on release — write the spun perspective back into the document as one undo
+step).** Phase 2b is conditional (see its entry). Architecture decided: **built into
+the app, behind the `chemistry-adapter` seam** — not a plugin. Engine front-runner:
+**OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
 measurement. (Revised twice after external review — wedging is a constrained search;
 identity is a mandatory layered service; phases front-load safety before UI.)
@@ -269,11 +268,28 @@ crossing model."* So we **integrate, never reinvent**:
   flatten-contract test), no doc/React coupling. Done out of order (before 2) since
   it is dependency-free.
 
-- **Phase 4 — In-canvas spin.** Detailed spec below (§ Phase 4 spec). First phase
-  that needs hands-on click verification.
+- ✅ **Phase 4 — In-canvas spin.** Detailed spec below (§ Phase 4 spec). Select a
+  molecule → `structure.spin3d` lazy-loads OpenChemLib (separate ~0.77 MB gzip
+  chunk), generates a 3D conformer, and shows a transient depth-sorted SVG overlay
+  (painter's order, dimmed backdrop) that the pointer drags rotate via the Phase 3
+  trackball; Esc cancels. No document mutation (commit is Phase 5).
+  → `apps/desktop/src/interaction/spinOverlay.ts` (pure projection, 8 tests) +
+    `oclResources.ts` (browser-only resource-URL via `new URL(...,import.meta.url)`).
+  → MainWindow: spin refs, command routing, self-contained `SpinOverlay` that owns
+    its own pointer drag (no edits to existing pointer handlers).
+  → Verified end-to-end in-browser (web build + Playwright-style drive): conformer
+    generates, overlay renders + rotates on drag, Esc tears down, zero console
+    errors; production `build:web` emits `resources.json` as a hashed asset and
+    code-splits OCL out of startup.
+
+- ✅ **Phase 5.0 — V2000 molfile writer** (prerequisite, done early with Phase 4).
+  `packages/chem-core/src/molfile.ts` `moleculeToMolfileV2000` — atom-order
+  preserving, `fromDocFrame` y-negation, wedge/charge support. 8 tests (6 structural
+  + 2 OCL round-trip).
 
 - **Phase 5 — Flatten commit + warning/refusal UX.** Detailed spec below
-  (§ Phase 5 spec). Depends on Phase 4 and the molfile writer (Phase 5.0).
+  (§ Phase 5 spec). Depends on Phase 4 (done) and the molfile writer (5.0, done) —
+  now unblocked. Next slice.
 
 - **Phase 6 — Re-edit + round-trip tests.** Detailed spec below (§ Phase 6 spec).
 

@@ -16,6 +16,7 @@ import {
   DefaultNativeTextStyle,
   applyPatches,
   createDocumentHistory,
+  moleculeToMolfileV2000,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   redo as redoDocumentHistory,
@@ -71,6 +72,7 @@ import {
   pageOrientationActions,
   pageSizeActions,
   structureCleanupCommandId,
+  structureSpin3dCommandId,
   textScriptForCommand,
   textStylePatchForCommand,
   textToolbarActions,
@@ -195,6 +197,8 @@ import {
 } from "./toolsets";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
+import { applyTrackballDrag, quatIdentity, type Quaternion } from "./interaction/rotation3d";
+import { projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
   currentTemplateTargetFromHoverOrHit,
@@ -525,6 +529,10 @@ export function MainWindow({
   const placementMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectRotateMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectDragMachineRef = useRef<InteractionState>(initialInteractionState());
+  // 3D spin (Phase 4): authoritative state in a ref (read by pointer handlers,
+  // immune to stale closures) mirrored into React state so the overlay re-renders.
+  const spin3dStateRef = useRef<Spin3dState | undefined>(undefined);
+  const [spin3dState, setSpin3dStateRender] = useState<Spin3dState | undefined>(undefined);
   const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
@@ -1384,6 +1392,132 @@ export function MainWindow({
     setStatus(changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
+  // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
+  const applySpin = useCallback((next: Spin3dState | undefined) => {
+    spin3dStateRef.current = next;
+    setSpin3dStateRender(next);
+  }, []);
+
+  const endSpin3d = useCallback((message?: string) => {
+    if (!spin3dStateRef.current) return;
+    applySpin(undefined);
+    if (message) setStatus(message);
+  }, [applySpin]);
+
+  const startSpin3d = useCallback(async () => {
+    const currentDocument = documentRef.current;
+    const selectedIds = [
+      ...new Set([
+        ...currentDocument.selection.objectIds,
+        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+      ])
+    ];
+    if (selectedIds.length !== 1) {
+      setStatus("Select a single molecule to spin in 3D");
+      return;
+    }
+    const objectId = selectedIds[0];
+    const molecule = currentDocument.pages[0]?.objects.find(
+      (object): object is MoleculeObject => object.id === objectId && object.type === "molecule"
+    );
+    if (!molecule || !isNativeMoleculeGraph(molecule) || molecule.atoms.length < 2) {
+      setStatus("Spin 3D needs an editable molecule");
+      return;
+    }
+
+    setStatus("Generating 3D conformer…");
+    try {
+      const ocl = await import("@chemdraft/ocl-adapter");
+      const { oclResourcesUrl } = await import("./oclResources");
+      ocl.setOclResourcesUrl(oclResourcesUrl);
+      await ocl.oclConformerGenerator.init();
+      // Document is y-down; the molfile/engine frame is y-up → fromDocFrame negates y.
+      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      const conformer = await ocl.oclConformerGenerator.generate3DConformer(
+        { molfile, originalAtomCount: molecule.atoms.length },
+        { optimize: "auto" }
+      );
+      if (conformer.embed.status !== "ok") {
+        setStatus(`Could not generate a 3D conformer: ${conformer.embed.failureReason ?? "unknown"}`);
+        return;
+      }
+      // Spin may only begin if the molecule is still selected and unchanged.
+      if (documentRef.current.pages[0]?.objects.find((object) => object.id === objectId) !== molecule) {
+        setStatus("Selection changed; spin cancelled");
+        return;
+      }
+
+      const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
+      const bondPairs: [number, number][] = [];
+      for (const bond of molecule.bonds) {
+        const from = atomIndex.get(bond.fromAtomId);
+        const to = atomIndex.get(bond.toAtomId);
+        if (from !== undefined && to !== undefined) bondPairs.push([from, to]);
+      }
+      const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+      const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
+      const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
+      const scale = overlayScale(points2d, conformer.mapping.coords3dByOriginalAtom, bondPairs);
+      const placement: ScreenPlacement = { centerX, centerY, scale };
+
+      applySpin({
+        objectId,
+        quat: quatIdentity(),
+        coords3d: conformer.mapping.coords3dByOriginalAtom,
+        bondPairs,
+        atomElements: molecule.atoms.map((atom) => atom.element),
+        placement,
+        dragging: false
+      });
+      setStatus("Spin 3D: drag to rotate · Esc to cancel");
+    } catch (error) {
+      setStatus(`3D spin unavailable: ${(error as Error).message}`);
+    }
+  }, [applySpin, selectedNativeMoleculePart]);
+
+  const handleSpinOverlayPointerDown = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    if (!spin3dStateRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // Capture is best-effort: a failure (e.g. invalid pointer) must not abort the drag.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* ignore — pointer capture is an enhancement, not a requirement */
+    }
+    applySpin({ ...spin3dStateRef.current, dragging: true, lastClient: { x: event.clientX, y: event.clientY } });
+  }, [applySpin]);
+
+  const handleSpinOverlayPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    const state = spin3dStateRef.current;
+    if (!state || !state.dragging || !state.lastClient) return;
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const trackball = {
+      center: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+      radius: Math.max(120, Math.min(rect.width, rect.height) * 0.4)
+    };
+    const current = { x: event.clientX, y: event.clientY };
+    const quat = applyTrackballDrag(state.quat, state.lastClient, current, trackball);
+    applySpin({ ...state, quat, lastClient: current });
+  }, [applySpin]);
+
+  const handleSpinOverlayPointerUp = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    const state = spin3dStateRef.current;
+    if (!state) return;
+    event.preventDefault();
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      /* ignore */
+    }
+    // Phase 4: releasing ends the drag but stays in spin mode (flatten-on-release
+    // is Phase 5). Esc exits. Keep the latest orientation.
+    applySpin({ ...state, dragging: false, lastClient: undefined });
+  }, [applySpin]);
+
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
     const page = currentDocument.pages[0];
@@ -2035,6 +2169,11 @@ export function MainWindow({
           return;
         }
 
+        if (tool.id === structureSpin3dCommandId) {
+          void startSpin3d();
+          return;
+        }
+
         if (applyTextStyleCommand(tool.id)) {
           return;
         }
@@ -2125,6 +2264,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
     cleanUpSelectedStructure,
+    startSpin3d,
     commitDocumentChange,
     deleteHoveredNativeTarget,
     document,
@@ -2236,6 +2376,19 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [selectedNativeMoleculePart, shortcutRegistry]);
+
+  // Esc cancels an active 3D spin (transient; never touched the document).
+  useEffect(() => {
+    const handleSpinEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && spin3dStateRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        endSpin3d("Spin cancelled");
+      }
+    };
+    window.addEventListener("keydown", handleSpinEscape, { capture: true });
+    return () => window.removeEventListener("keydown", handleSpinEscape, { capture: true });
+  }, [endSpin3d]);
 
   useEffect(() => {
     if (!nativePalette) {
@@ -4831,6 +4984,17 @@ export function MainWindow({
                     onResizeStart={handleGroupResizePointerDown}
                   />
                 ) : null}
+                {spin3dState ? (
+                  <SpinOverlay
+                    state={spin3dState}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                    onPointerDown={handleSpinOverlayPointerDown}
+                    onPointerMove={handleSpinOverlayPointerMove}
+                    onPointerUp={handleSpinOverlayPointerUp}
+                    onPointerCancel={handleSpinOverlayPointerUp}
+                  />
+                ) : null}
                   </>
                   );
                 })()}
@@ -5869,6 +6033,83 @@ function CrosshairOverlay({
 // one of the atoms it touches invalid — the same predicate that paints the red "!" — so valid
 // spiro rings (cyclohexane/cyclopentane, degree-4 sp3) stay neutral and only genuinely bad
 // products (e.g. a spiro carbon shared by two aromatic rings) warn.
+interface Spin3dState {
+  objectId: string;
+  quat: Quaternion;
+  coords3d: Float64Array;
+  bondPairs: [number, number][];
+  atomElements: string[];
+  placement: ScreenPlacement;
+  dragging: boolean;
+  lastClient?: { x: number; y: number };
+}
+
+/**
+ * Transient 3D spin overlay (Phase 4). A full-page SVG that dims the canvas, paints
+ * the spun conformer in painter's order (far → near), and owns its own pointer
+ * drag — so it needs no changes to the existing page/object pointer handlers. It
+ * never mutates the document; the flatten-on-release commit is Phase 5.
+ */
+function SpinOverlay({
+  state,
+  pageWidth,
+  pageHeight,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel
+}: {
+  state: Spin3dState;
+  pageWidth: number;
+  pageHeight: number;
+  onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
+  onPointerMove: (event: PointerEvent<SVGSVGElement>) => void;
+  onPointerUp: (event: PointerEvent<SVGSVGElement>) => void;
+  onPointerCancel: (event: PointerEvent<SVGSVGElement>) => void;
+}) {
+  const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
+  const depths = projection.atoms.map((atom) => atom.depth);
+  const minDepth = Math.min(...depths);
+  const maxDepth = Math.max(...depths);
+  const depthSpan = maxDepth - minDepth || 1;
+  // Nearer bonds render heavier and darker so occlusion reads while spinning.
+  const nearness = (depth: number) => (depth - minDepth) / depthSpan; // 0 far … 1 near
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, cursor: "grab", touchAction: "none" }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+    >
+      <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="var(--cd-surface, #ffffff)" opacity={0.62} />
+      {projection.bonds.map((bond, index) => {
+        const a = projection.atoms[bond.from];
+        const b = projection.atoms[bond.to];
+        const t = nearness(bond.depth);
+        const shade = Math.round(150 - t * 120); // far=lighter grey, near=darker
+        return (
+          <line
+            key={`${bond.from}-${bond.to}-${index}`}
+            x1={a.sx}
+            y1={a.sy}
+            x2={b.sx}
+            y2={b.sy}
+            stroke={`rgb(${shade}, ${shade}, ${shade})`}
+            strokeWidth={1.2 + t * 1.6}
+            strokeLinecap="round"
+          />
+        );
+      })}
+      {projection.atoms.map((atom) => (
+        <circle key={atom.index} cx={atom.sx} cy={atom.sy} r={1.6 + nearness(atom.depth) * 1.8} fill="var(--cd-accent, #2d6cdf)" />
+      ))}
+    </svg>
+  );
+}
+
 function NativeTemplateGhostOverlay({
   plan,
   pageWidth,

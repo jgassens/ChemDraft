@@ -7,6 +7,9 @@
     "@chemdraft/chemistry-adapter": "workspace:*",
     "openchemlib": "^9.22.1"
   },
+  "devDependencies": {
+    "@chemdraft/chem-core": "workspace:*"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",

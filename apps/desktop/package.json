@@ -20,6 +20,7 @@
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/ketcher-adapter": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
+    "@chemdraft/ocl-adapter": "workspace:*",
     "@chemdraft/plugin-host": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
     "@chemdraft/shortcut-engine": "workspace:*",
@@ -31,6 +32,7 @@
     "@tauri-apps/plugin-fs": "^2.5.1",
     "ketcher-react": "^3.12.0",
     "ketcher-standalone": "^3.12.0",
+    "openchemlib": "^9.22.1",
     "raphael": "^2.3.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

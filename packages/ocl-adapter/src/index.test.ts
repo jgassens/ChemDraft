@@ -1,6 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import * as OCL from "openchemlib";
 
+import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
+import type { MoleculeObject } from "@chemdraft/chem-core";
+
 import { depictSmiles2D, ensureOclResources, oclConformerGenerator } from "./index";
 
 /** Minimal V2000 atom-block y-coordinate reader, to pin the depiction's y convention. */
@@ -93,6 +96,61 @@ describe("ocl-adapter — depictSmiles2D", () => {
     const dep = depictSmiles2D("C[C@H](F)Cl");
     const molfileYs = molfileAtomYs(dep.molfile, dep.atoms.length);
     dep.atoms.forEach((a, i) => expect(a.y).toBeCloseTo(molfileYs[i], 3));
+  });
+});
+
+describe("moleculeToMolfileV2000 — round-trips through the OCL parser", () => {
+  function sampleChiralMolecule(): MoleculeObject {
+    return {
+      id: "m",
+      type: "molecule",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      style: {},
+      structureFormat: "molfile-v2000",
+      structure: "",
+      atoms: [
+        { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a1", element: "F", x: 0.87, y: 0.5, formalCharge: 0 },
+        { id: "a2", element: "Cl", x: -0.87, y: 0.5, formalCharge: 0 },
+        { id: "a3", element: "Br", x: 0, y: -1, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "a0", toAtomId: "a1", order: "single", display: { bondStyle: "wedge" } },
+        { id: "b2", fromAtomId: "a0", toAtomId: "a2", order: "single" },
+        { id: "b3", fromAtomId: "a0", toAtomId: "a3", order: "single" }
+      ],
+      superatoms: [],
+      rGroups: []
+    };
+  }
+
+  it("OCL parses the molfile with atom count, element order, and wedge preserved", () => {
+    const molfile = moleculeToMolfileV2000(sampleChiralMolecule());
+    const parsed = OCL.Molecule.fromMolfile(molfile);
+    expect(parsed.getAllAtoms()).toBe(4);
+    expect(parsed.getAtomLabel(0)).toBe("C");
+    expect(parsed.getAtomLabel(1)).toBe("F");
+    // A wedge survived: the molecule carries a stereo (up/down) bond.
+    const up = OCL.Molecule.cBondTypeUp;
+    const down = OCL.Molecule.cBondTypeDown;
+    let hasStereoBond = false;
+    for (let b = 0; b < parsed.getAllBonds(); b++) {
+      const t = parsed.getBondType(b);
+      if (t === up || t === down) hasStereoBond = true;
+    }
+    expect(hasStereoBond).toBe(true);
+  });
+
+  it("the written molfile feeds straight back into generate3DConformer", async () => {
+    const molfile = moleculeToMolfileV2000(sampleChiralMolecule());
+    const result = await oclConformerGenerator.generate3DConformer({ molfile });
+    expect(result.embed.status).toBe("ok");
+    expect(result.originalAtomCount).toBe(4);
+    expect(result.mapping.originalToEngineAtom.every((idx) => idx >= 0)).toBe(true);
   });
 });
 
