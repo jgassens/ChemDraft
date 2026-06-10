@@ -490,6 +490,43 @@ All automated; no UI work.
 - **Later:** `structure.cleanTo2d` (clean relayout via 3D + CoordGen/Indigo);
   high-fidelity engine behind the same contract.
 
+## Spin latency engineering (complete, 2026-06-10)
+
+Click→manipulable was 15–20 s on larger drawings. Profiling (Node, M-series; OCL
+9.22.1) found two independent cost centers plus per-session overhead:
+
+| Cost | Scale driver | Measured |
+|---|---|---|
+| `getOneConformerAsMolecule` (embed) | fused/crowded systems (collision retries) | coronene+tails 3.4 s; rotaxane axle 3.7 s; chains ~20 ms |
+| `ForceFieldMMFF94.minimise()` (default 4000 its) | total atom count incl. generated H | C60H122 5.9–7.5 s; capped `maxIts` reaches the same energy (ΔE ≤ 0.1 kcal/mol) in ~half the time |
+| First-call warmup (module load + resources.json + JIT + torsion tables) | once per session | ~1–2 s, previously paid inside the first click |
+
+Tuning findings (pinned so nobody re-litigates): `STRATEGY_LIKELY_SYSTEMATIC` is
+pathological (17.8 **minutes** on the coronene case) — keep the default
+ADAPTIVE_RANDOM path; chunked `minimise({maxIts:100})` loops restart internal
+state (65 s vs 7.5 s) — refine must be ONE capped call.
+
+Shipped architecture (apps/desktop):
+- **`conformerWorker.ts`** — module Web Worker owning OCL: sequential job queue,
+  LRU cache (6) keyed by molfile, streams two stages per request.
+- **Progressive delivery** — `generate3DConformerProgressive` (ocl-adapter):
+  the embedded conformer (collision-free, parities correct) goes up as the
+  manipulable overlay immediately; capped MMFF94 (`maxIts` 800) runs after and
+  hot-swaps coordinates under the live overlay, preserving the user's quaternion.
+  One-shot `generate3DConformer` is implemented on top (behavior unchanged).
+- **`conformerClient.ts`** — main-thread singleton; `typeof Worker` guarded
+  (tests/jsdom fall back to the in-page path, which also serves as the runtime
+  fallback if the worker errors).
+- **Idle warmup** — 1.5 s after mount the worker preloads OCL + resources and
+  runs a throwaway embed, so the first click never pays cold-start.
+- **Prefetch on selection** — selecting a single eligible molecule (debounced
+  250 ms) speculatively generates + caches; by the time the user reaches the
+  button the conformer usually exists. Measured in-browser: 55 ms click→
+  manipulable on cache hit, 56 ms cold-with-warm-worker on cyclohexane.
+
+Worst case after this work = embed time of the molecule alone (irreducible in
+OCL), off the main thread, usually started at selection time instead of click.
+
 ## Hard-stop conditions
 
 No phase advances past these gates:

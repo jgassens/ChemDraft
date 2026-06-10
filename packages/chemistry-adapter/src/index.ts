@@ -105,10 +105,28 @@ export interface Generate3DConformerOptions {
   seed?: number;
   /** Force-field refinement. "auto" lets the engine choose (MMFF94, else none). */
   optimize?: "none" | "auto" | "mmff94" | "uff";
+  /**
+   * Cap on force-field minimisation iterations (default: the engine's full run).
+   * Depiction-grade geometry reaches essentially the final energy well before the
+   * engine default; capping bounds the worst case on large molecules.
+   */
+  maxMinimiseIterations?: number;
   /** v1 invariant: specified stereo is preserved. */
   preserveSpecifiedStereo?: boolean;
   /** v1 invariant: never invent unspecified stereo. */
   allowInventStereo?: boolean;
+}
+
+/**
+ * Two-stage conformer delivery for latency-sensitive UI: the embedded conformer is
+ * usable (collision-free, parities respected) the moment it exists; force-field
+ * refinement is strictly cosmetic polish and can land later. `refine` is absent
+ * when the embed failed or refinement was disabled (`optimize: "none"`).
+ */
+export interface ProgressiveConformerResult {
+  embedded: Generate3DConformerResult;
+  /** Run the (capped) force-field refinement on the same conformer. Call at most once. */
+  refine?: () => Generate3DConformerResult;
 }
 
 export interface ConformerInput {

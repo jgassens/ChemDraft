@@ -27,6 +27,7 @@ import type {
   ConformerInput,
   Generate3DConformerOptions,
   Generate3DConformerResult,
+  ProgressiveConformerResult,
   ChemistryWarning
 } from "@chemdraft/chemistry-adapter";
 
@@ -175,6 +176,165 @@ function countExplicitHydrogens(mol: OclMolecule): number {
   return count;
 }
 
+/** Read the original-atom mapping + coordinates out of a (tagged) conformer molecule. */
+function readConformerMapping(
+  conformer: OclMolecule,
+  originalAtomCount: number,
+  warnings: ChemistryWarning[]
+): Generate3DConformerResult["mapping"] {
+  const engineAtomCount = conformer.getAllAtoms();
+  const coords3dByOriginalAtom = new Float64Array(originalAtomCount * 3);
+  const originalToEngineAtom = new Array<number>(originalAtomCount).fill(-1);
+  const engineToOriginalAtom = new Array<number>(engineAtomCount).fill(-1);
+  const generatedHydrogenEngineAtoms: number[] = [];
+
+  for (let engineIdx = 0; engineIdx < engineAtomCount; engineIdx++) {
+    const mapNo = conformer.getAtomMapNo(engineIdx);
+    if (mapNo > 0) {
+      const originalIdx = mapNo - 1;
+      originalToEngineAtom[originalIdx] = engineIdx;
+      engineToOriginalAtom[engineIdx] = originalIdx;
+      coords3dByOriginalAtom[originalIdx * 3] = conformer.getAtomX(engineIdx);
+      coords3dByOriginalAtom[originalIdx * 3 + 1] = conformer.getAtomY(engineIdx);
+      coords3dByOriginalAtom[originalIdx * 3 + 2] = conformer.getAtomZ(engineIdx);
+    } else {
+      generatedHydrogenEngineAtoms.push(engineIdx);
+    }
+  }
+
+  const unmapped = originalToEngineAtom.filter((engineIdx) => engineIdx === -1).length;
+  if (unmapped > 0) {
+    warnings.push({
+      code: "ocl.unmapped-original-atoms",
+      message: `${unmapped} original atom(s) could not be located in the conformer by map number.`,
+      severity: "error"
+    });
+  }
+
+  return { coords3dByOriginalAtom, originalToEngineAtom, engineToOriginalAtom, generatedHydrogenEngineAtoms };
+}
+
+/**
+ * Two-stage generation: the embedded conformer is delivered as soon as it exists
+ * (already collision-free with correct E/Z + R/S parities — fully usable for an
+ * interactive overlay); `refine()` then runs the (capped) MMFF94 minimisation on
+ * the SAME in-memory conformer and re-reads the coordinates. This splits the two
+ * dominant latency costs so callers can put the overlay up after the first.
+ */
+export async function generate3DConformerProgressive(
+  input: ConformerInput,
+  options: Generate3DConformerOptions = {}
+): Promise<ProgressiveConformerResult> {
+  await ensureOclResources();
+
+  const warnings: ChemistryWarning[] = [];
+  const unsupportedFeatures: ChemistryWarning[] = [];
+  const seed = options.seed ?? 42;
+  const optimize = options.optimize ?? "auto";
+
+  const parsed: OclMolecule = OCL.Molecule.fromMolfile(input.molfile);
+  const originalAtomCount = parsed.getAllAtoms();
+  const explicitInputHydrogens = countExplicitHydrogens(parsed);
+
+  if (typeof input.originalAtomCount === "number" && input.originalAtomCount !== originalAtomCount) {
+    warnings.push({
+      code: "ocl.atom-count-mismatch",
+      message: `Parsed ${originalAtomCount} atoms but caller expected ${input.originalAtomCount}.`,
+      severity: "warning"
+    });
+  }
+
+  // Tag every original atom so it survives H-saturation and any reordering.
+  for (let i = 0; i < originalAtomCount; i++) parsed.setAtomMapNo(i, i + 1, false);
+
+  // Work on a copy — the conformer generator mutates its argument in place.
+  const work: OclMolecule = new OCL.Molecule(0, 0);
+  parsed.copyMolecule(work);
+
+  const generator = new OCL.ConformerGenerator(seed);
+  const conformer = generator.getOneConformerAsMolecule(work);
+
+  const engine = { name: "openchemlib", version: oclVersion(), parameters: { seed, optimize } } as const;
+  const hydrogens = (added: boolean) => ({
+    added,
+    explicitInputHydrogensPreserved: explicitInputHydrogens > 0
+  });
+
+  if (!conformer) {
+    return {
+      embedded: {
+        mapping: {
+          coords3dByOriginalAtom: new Float64Array(originalAtomCount * 3),
+          originalToEngineAtom: new Array(originalAtomCount).fill(-1),
+          engineToOriginalAtom: [],
+          generatedHydrogenEngineAtoms: []
+        },
+        originalAtomCount,
+        generatedAtomCount: 0,
+        hydrogens: hydrogens(false),
+        engine,
+        embed: { status: "failed", failureReason: "ConformerGenerator returned no collision-free conformer" },
+        unsupportedFeatures,
+        warnings
+      }
+    };
+  }
+
+  const embeddedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
+  const embedded: Generate3DConformerResult = {
+    mapping: embeddedMapping,
+    originalAtomCount,
+    generatedAtomCount: embeddedMapping.generatedHydrogenEngineAtoms.length,
+    hydrogens: hydrogens(embeddedMapping.generatedHydrogenEngineAtoms.length > 0),
+    engine,
+    embed: { status: "ok" },
+    forceField: { name: optimize === "none" ? "none" : "MMFF94", status: "not-run" },
+    unsupportedFeatures: [...unsupportedFeatures],
+    warnings: [...warnings]
+  };
+
+  if (optimize === "none") {
+    return { embedded };
+  }
+
+  const refine = (): Generate3DConformerResult => {
+    let forceField: Generate3DConformerResult["forceField"];
+    try {
+      const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
+      const rc = options.maxMinimiseIterations !== undefined
+        ? ff.minimise({ maxIts: options.maxMinimiseIterations })
+        : ff.minimise();
+      forceField = {
+        name: "MMFF94",
+        status: rc === 0 ? "converged" : "not-converged",
+        returnCode: rc,
+        energy: typeof ff.getTotalEnergy === "function" ? ff.getTotalEnergy() : undefined
+      };
+    } catch (error) {
+      forceField = { name: "MMFF94", status: "setup-failed" };
+      warnings.push({
+        code: "ocl.forcefield-unavailable",
+        message: `MMFF94 setup failed: ${(error as Error).message}`,
+        severity: "warning"
+      });
+    }
+    const refinedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
+    return {
+      mapping: refinedMapping,
+      originalAtomCount,
+      generatedAtomCount: refinedMapping.generatedHydrogenEngineAtoms.length,
+      hydrogens: hydrogens(refinedMapping.generatedHydrogenEngineAtoms.length > 0),
+      engine,
+      embed: { status: "ok" },
+      forceField,
+      unsupportedFeatures: [...unsupportedFeatures],
+      warnings: [...warnings]
+    };
+  };
+
+  return { embedded, refine };
+}
+
 export const oclConformerGenerator: ConformerGenerator3D = {
   engineName: "openchemlib",
   canGenerate3DConformer: true,
@@ -187,125 +347,7 @@ export const oclConformerGenerator: ConformerGenerator3D = {
     input: ConformerInput,
     options: Generate3DConformerOptions = {}
   ): Promise<Generate3DConformerResult> {
-    await ensureOclResources();
-
-    const warnings: ChemistryWarning[] = [];
-    const unsupportedFeatures: ChemistryWarning[] = [];
-    const seed = options.seed ?? 42;
-    const optimize = options.optimize ?? "auto";
-
-    const parsed: OclMolecule = OCL.Molecule.fromMolfile(input.molfile);
-    const originalAtomCount = parsed.getAllAtoms();
-    const explicitInputHydrogens = countExplicitHydrogens(parsed);
-
-    if (typeof input.originalAtomCount === "number" && input.originalAtomCount !== originalAtomCount) {
-      warnings.push({
-        code: "ocl.atom-count-mismatch",
-        message: `Parsed ${originalAtomCount} atoms but caller expected ${input.originalAtomCount}.`,
-        severity: "warning"
-      });
-    }
-
-    // Tag every original atom so it survives H-saturation and any reordering.
-    for (let i = 0; i < originalAtomCount; i++) parsed.setAtomMapNo(i, i + 1, false);
-
-    // Work on a copy — the conformer generator mutates its argument in place.
-    const work: OclMolecule = new OCL.Molecule(0, 0);
-    parsed.copyMolecule(work);
-
-    const generator = new OCL.ConformerGenerator(seed);
-    const conformer = generator.getOneConformerAsMolecule(work);
-
-    if (!conformer) {
-      return {
-        mapping: {
-          coords3dByOriginalAtom: new Float64Array(originalAtomCount * 3),
-          originalToEngineAtom: new Array(originalAtomCount).fill(-1),
-          engineToOriginalAtom: [],
-          generatedHydrogenEngineAtoms: []
-        },
-        originalAtomCount,
-        generatedAtomCount: 0,
-        hydrogens: { added: false, explicitInputHydrogensPreserved: explicitInputHydrogens > 0 },
-        engine: { name: "openchemlib", version: oclVersion(), parameters: { seed, optimize } },
-        embed: { status: "failed", failureReason: "ConformerGenerator returned no collision-free conformer" },
-        unsupportedFeatures,
-        warnings
-      };
-    }
-
-    // Optional force-field refinement.
-    let forceField: Generate3DConformerResult["forceField"];
-    if (optimize === "none") {
-      forceField = { name: "none", status: "not-run" };
-    } else {
-      try {
-        const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
-        const rc = ff.minimise();
-        forceField = {
-          name: "MMFF94",
-          status: rc === 0 ? "converged" : "not-converged",
-          returnCode: rc,
-          energy: typeof ff.getTotalEnergy === "function" ? ff.getTotalEnergy() : undefined
-        };
-      } catch (error) {
-        forceField = { name: "MMFF94", status: "setup-failed" };
-        warnings.push({
-          code: "ocl.forcefield-unavailable",
-          message: `MMFF94 setup failed: ${(error as Error).message}`,
-          severity: "warning"
-        });
-      }
-    }
-
-    // Rebuild the atom mapping from map numbers.
-    const engineAtomCount = conformer.getAllAtoms();
-    const coords3dByOriginalAtom = new Float64Array(originalAtomCount * 3);
-    const originalToEngineAtom = new Array<number>(originalAtomCount).fill(-1);
-    const engineToOriginalAtom = new Array<number>(engineAtomCount).fill(-1);
-    const generatedHydrogenEngineAtoms: number[] = [];
-
-    for (let engineIdx = 0; engineIdx < engineAtomCount; engineIdx++) {
-      const mapNo = conformer.getAtomMapNo(engineIdx);
-      if (mapNo > 0) {
-        const originalIdx = mapNo - 1;
-        originalToEngineAtom[originalIdx] = engineIdx;
-        engineToOriginalAtom[engineIdx] = originalIdx;
-        coords3dByOriginalAtom[originalIdx * 3] = conformer.getAtomX(engineIdx);
-        coords3dByOriginalAtom[originalIdx * 3 + 1] = conformer.getAtomY(engineIdx);
-        coords3dByOriginalAtom[originalIdx * 3 + 2] = conformer.getAtomZ(engineIdx);
-      } else {
-        generatedHydrogenEngineAtoms.push(engineIdx);
-      }
-    }
-
-    const unmapped = originalToEngineAtom.filter((engineIdx) => engineIdx === -1).length;
-    if (unmapped > 0) {
-      warnings.push({
-        code: "ocl.unmapped-original-atoms",
-        message: `${unmapped} original atom(s) could not be located in the conformer by map number.`,
-        severity: "error"
-      });
-    }
-
-    return {
-      mapping: {
-        coords3dByOriginalAtom,
-        originalToEngineAtom,
-        engineToOriginalAtom,
-        generatedHydrogenEngineAtoms
-      },
-      originalAtomCount,
-      generatedAtomCount: generatedHydrogenEngineAtoms.length,
-      hydrogens: {
-        added: generatedHydrogenEngineAtoms.length > 0,
-        explicitInputHydrogensPreserved: explicitInputHydrogens > 0
-      },
-      engine: { name: "openchemlib", version: oclVersion(), parameters: { seed, optimize } },
-      embed: { status: "ok" },
-      forceField,
-      unsupportedFeatures,
-      warnings
-    };
+    const { embedded, refine } = await generate3DConformerProgressive(input, options);
+    return refine ? refine() : embedded;
   }
 };

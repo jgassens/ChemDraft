@@ -62,7 +62,7 @@ import {
 } from "@chemdraft/layout-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
-import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
+import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   atomElementActions,
   atomElementCommandId,
@@ -200,6 +200,7 @@ import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
 import { initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { getConformerWorkerClient } from "./conformerClient";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
   currentTemplateTargetFromHoverOrHit,
@@ -1428,6 +1429,28 @@ export function MainWindow({
     );
   }, [applySpin, commitDocumentChange]);
 
+  // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
+  const spin3dRequestRef = useRef(0);
+
+  /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
+  const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array): {
+    bondPairs: [number, number][];
+    placement: ScreenPlacement;
+  } => {
+    const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
+    const bondPairs: [number, number][] = [];
+    for (const bond of molecule.bonds) {
+      const from = atomIndex.get(bond.fromAtomId);
+      const to = atomIndex.get(bond.toAtomId);
+      if (from !== undefined && to !== undefined) bondPairs.push([from, to]);
+    }
+    const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+    const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
+    const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
+    const scale = overlayScale(points2d, coords3d, bondPairs);
+    return { bondPairs, placement: { centerX, centerY, scale } };
+  }, []);
+
   const startSpin3d = useCallback(async () => {
     const currentDocument = documentRef.current;
     const selectedIds = [
@@ -1450,17 +1473,12 @@ export function MainWindow({
     }
 
     setStatus("Generating 3D conformer…");
-    try {
-      const ocl = await import("@chemdraft/ocl-adapter");
-      const { oclResourcesUrl } = await import("./oclResources");
-      ocl.setOclResourcesUrl(oclResourcesUrl);
-      await ocl.oclConformerGenerator.init();
-      // Document is y-down; the molfile/engine frame is y-up → fromDocFrame negates y.
-      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
-      const conformer = await ocl.oclConformerGenerator.generate3DConformer(
-        { molfile, originalAtomCount: molecule.atoms.length },
-        { optimize: "auto" }
-      );
+    // Document is y-down; the molfile/engine frame is y-up → fromDocFrame negates y.
+    const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    const requestToken = ++spin3dRequestRef.current;
+
+    // Stage 1 — the embedded conformer is fully manipulable; the overlay goes up NOW.
+    const handleEmbedded = (conformer: Generate3DConformerResult): void => {
       if (conformer.embed.status !== "ok") {
         setStatus(`Could not generate a 3D conformer: ${conformer.embed.failureReason ?? "unknown"}`);
         return;
@@ -1470,26 +1488,14 @@ export function MainWindow({
         setStatus("Selection changed; spin cancelled");
         return;
       }
-
-      const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
-      const bondPairs: [number, number][] = [];
-      for (const bond of molecule.bonds) {
-        const from = atomIndex.get(bond.fromAtomId);
-        const to = atomIndex.get(bond.toAtomId);
-        if (from !== undefined && to !== undefined) bondPairs.push([from, to]);
-      }
-      const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
-      const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
-      const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
-      const scale = overlayScale(points2d, conformer.mapping.coords3dByOriginalAtom, bondPairs);
-      const placement: ScreenPlacement = { centerX, centerY, scale };
-
+      const coords3d = conformer.mapping.coords3dByOriginalAtom;
+      const { bondPairs, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         objectId,
         // Open at a readable angle (principal plane toward the viewer + gentle tilt),
         // not the engine's arbitrary — often edge-on — embedding orientation.
-        quat: initialViewQuaternion(conformer.mapping.coords3dByOriginalAtom),
-        coords3d: conformer.mapping.coords3dByOriginalAtom,
+        quat: initialViewQuaternion(coords3d),
+        coords3d,
         bondPairs,
         atomElements: molecule.atoms.map((atom) => atom.element),
         placement,
@@ -1497,10 +1503,91 @@ export function MainWindow({
         dragging: false
       });
       setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
-    } catch (error) {
-      setStatus(`3D spin unavailable: ${(error as Error).message}`);
+    };
+
+    // Stage 2 — force-field-refined coordinates hot-swap under the live overlay,
+    // preserving the user's current rotation. Ignored once the spin session ended.
+    const handleRefined = (conformer: Generate3DConformerResult): void => {
+      if (spin3dRequestRef.current !== requestToken) return;
+      const state = spin3dStateRef.current;
+      if (!state || state.objectId !== objectId) return;
+      const coords3d = conformer.mapping.coords3dByOriginalAtom;
+      const { bondPairs, placement } = spinPlacementFor(molecule, coords3d);
+      applySpin({ ...state, coords3d, bondPairs, placement });
+    };
+
+    const runInPage = async (): Promise<void> => {
+      try {
+        const ocl = await import("@chemdraft/ocl-adapter");
+        const { oclResourcesUrl } = await import("./oclResources");
+        ocl.setOclResourcesUrl(oclResourcesUrl);
+        const { embedded, refine } = await ocl.generate3DConformerProgressive(
+          { molfile, originalAtomCount: molecule.atoms.length },
+          { optimize: "auto", maxMinimiseIterations: 800 }
+        );
+        if (spin3dRequestRef.current !== requestToken) return;
+        handleEmbedded(embedded);
+        if (embedded.embed.status !== "ok" || !refine) return;
+        // Let the overlay paint before the synchronous minimise blocks this thread.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        if (spin3dRequestRef.current !== requestToken) return;
+        handleRefined(refine());
+      } catch (error) {
+        setStatus(`3D spin unavailable: ${(error as Error).message}`);
+      }
+    };
+
+    const client = getConformerWorkerClient();
+    if (client) {
+      client.generate(molfile, molecule.atoms.length, {
+        onEmbedded: (result) => {
+          if (spin3dRequestRef.current === requestToken) handleEmbedded(result);
+        },
+        onRefined: handleRefined,
+        onError: () => {
+          // Worker died or misbehaved — recover via the in-page path.
+          if (spin3dRequestRef.current === requestToken) void runInPage();
+        }
+      });
+      return;
     }
-  }, [applySpin, selectedNativeMoleculePart]);
+    await runInPage();
+  }, [applySpin, selectedNativeMoleculePart, spinPlacementFor]);
+
+  // Warm the conformer worker (OCL module + torsion resources + JIT) at app idle so
+  // the first spin click never pays the ~2s cold-start.
+  useEffect(() => {
+    const timer = setTimeout(() => getConformerWorkerClient()?.warmup(), 1500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Speculatively generate the conformer when a single eligible molecule is selected:
+  // by the time the user reaches the Spin 3D button the result is usually cached.
+  const lastSpinPrefetchRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (spin3dState) return;
+    const selectedIds = [
+      ...new Set([
+        ...document.selection.objectIds,
+        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+      ])
+    ];
+    if (selectedIds.length !== 1) return;
+    const molecule = document.pages[0]?.objects.find(
+      (object): object is MoleculeObject => object.id === selectedIds[0] && object.type === "molecule"
+    );
+    if (!molecule || !isNativeMoleculeGraph(molecule) || molecule.atoms.length < 2) return;
+    const timer = setTimeout(() => {
+      const client = getConformerWorkerClient();
+      if (!client) return;
+      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      if (lastSpinPrefetchRef.current === molfile) return;
+      lastSpinPrefetchRef.current = molfile;
+      client.warmup();
+      client.prefetch(molfile, molecule.atoms.length);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [document, selectedNativeMoleculePart, spin3dState]);
 
   const handleSpinOverlayPointerDown = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
@@ -4938,6 +5025,7 @@ export function MainWindow({
                   pageHeight={activePage.height}
                   pageWidth={activePage.width}
                   plan={pageSvgRenderPlan}
+                  spinningObjectId={spin3dState?.objectId}
                   onContextMenu={handleObjectContextMenu}
                   onPointerCancel={handleObjectPointerCancel}
                   onPointerDown={handleObjectPointerDown}
@@ -4979,8 +5067,12 @@ export function MainWindow({
                   // own resize/rotate handles to the single group overlay.
                   const inGroupSelection = groupSelectionBounds !== undefined &&
                     document.selection.objectIds.includes(object.id);
+                  // While this molecule is being spun in 3D, its real 2D drawing is faded
+                  // to a faint ghost (the live overlay paints on top). The selection box
+                  // and rotate handle are separate chrome and stay fully visible.
+                  const spinning = spin3dState?.objectId === object.id;
                   const objectRenderKey = object.type === "molecule"
-                    ? `${object.id}:${selected ? "selected" : "idle"}:${inGroupSelection ? "grouped" : "solo"}:${nativeSelectionRenderKey(selectedPart)}`
+                    ? `${object.id}:${selected ? "selected" : "idle"}:${inGroupSelection ? "grouped" : "solo"}:${nativeSelectionRenderKey(selectedPart)}:${spinning ? "spinning" : "static"}`
                     : object.id;
 
                   return (
@@ -4990,6 +5082,7 @@ export function MainWindow({
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
+                      spinning={spinning}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
                       selectedPart={selectedPart}
@@ -6133,7 +6226,6 @@ function SpinOverlay({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
     >
-      <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="var(--cd-surface, #ffffff)" opacity={0.94} />
       {projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
@@ -7092,6 +7184,7 @@ function PageSvgSurface({
   pageHeight,
   pageWidth,
   plan,
+  spinningObjectId,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -7103,6 +7196,8 @@ function PageSvgSurface({
   pageHeight: number;
   pageWidth: number;
   plan: PageSvgRenderPlan;
+  /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
+  spinningObjectId?: string;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
@@ -7117,14 +7212,23 @@ function PageSvgSurface({
       data-page-svg-surface="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}
     >
-      {plan.fragments.map((fragment) => renderPageSvgFragment(fragment, {
-        onContextMenu,
-        onPointerCancel,
-        onPointerDown,
-        onPointerLeave,
-        onPointerMove,
-        onPointerUp
-      }))}
+      {plan.fragments.map((fragment) => {
+        const rendered = renderPageSvgFragment(fragment, {
+          onContextMenu,
+          onPointerCancel,
+          onPointerDown,
+          onPointerLeave,
+          onPointerMove,
+          onPointerUp
+        });
+        // The spun molecule's drawn structure fades to a faint ghost (the live 3D overlay
+        // paints on top); pointer events off so the overlay owns the drag.
+        const isSpinning = spinningObjectId !== undefined &&
+          fragment.attrs["data-object-id"] === spinningObjectId;
+        return isSpinning
+          ? <g key={`spin-${fragment.key}`} opacity={0.1} style={{ pointerEvents: "none" }}>{rendered}</g>
+          : rendered;
+      })}
     </svg>
   );
 }
@@ -7197,6 +7301,7 @@ function DocumentObjectView({
   layerIndex,
   pageWidth,
   pageHeight,
+  spinning = false,
   selected,
   inGroupSelection,
   selectedPart,
@@ -7231,6 +7336,7 @@ function DocumentObjectView({
   layerIndex: number;
   pageWidth: number;
   pageHeight: number;
+  spinning?: boolean;
   selected: boolean;
   inGroupSelection: boolean;
   selectedPart?: NativeMoleculeSelectionPart;
@@ -7541,7 +7647,14 @@ function DocumentObjectView({
           onPointerLeave={handleObjectPointerLeave}
           onContextMenu={handleObjectContextMenu}
         >
-          <svg className="native-molecule-overlay" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
+          <svg
+            className="native-molecule-overlay"
+            viewBox={`0 0 ${object.width} ${object.height}`}
+            aria-hidden="true"
+            // While spinning, fade the selection blob/overlays so only the faint structure
+            // and the live 3D overlay read; the transform frame (sibling) stays full opacity.
+            style={spinning ? { opacity: 0.1 } : undefined}
+          >
             {selectionBlob}
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))

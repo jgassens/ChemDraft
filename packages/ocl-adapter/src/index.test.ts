@@ -4,7 +4,7 @@ import * as OCL from "openchemlib";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
-import { depictSmiles2D, ensureOclResources, oclConformerGenerator } from "./index";
+import { depictSmiles2D, ensureOclResources, generate3DConformerProgressive, oclConformerGenerator } from "./index";
 
 /** Minimal V2000 atom-block y-coordinate reader, to pin the depiction's y convention. */
 function molfileAtomYs(molfile: string, count: number): number[] {
@@ -181,5 +181,46 @@ describe("ocl-adapter — adversarial mapping", () => {
     const result = await oclConformerGenerator.generate3DConformer({ molfile }, { optimize: "none" });
     expect(result.forceField).toEqual({ name: "none", status: "not-run" });
     expect(result.embed.status).toBe("ok");
+  });
+});
+
+describe("ocl-adapter — progressive (embed-first) generation", () => {
+  it("embedded stage is immediately usable and refine() matches the one-shot API", async () => {
+    const molfile = molfileFromSmiles("C[C@H](F)CC(=O)O");
+    const { embedded, refine } = await generate3DConformerProgressive(
+      { molfile },
+      { seed: 7, optimize: "auto" }
+    );
+
+    // Stage 1: a real, fully-mapped conformer before any force field ran.
+    expect(embedded.embed.status).toBe("ok");
+    expect(embedded.forceField).toEqual({ name: "MMFF94", status: "not-run" });
+    expect(embedded.mapping.originalToEngineAtom.every((idx) => idx >= 0)).toBe(true);
+    expect([...embedded.mapping.coords3dByOriginalAtom].every(Number.isFinite)).toBe(true);
+    const flat3d = new Set([...embedded.mapping.coords3dByOriginalAtom].filter((_, i) => i % 3 === 2));
+    expect(flat3d.size).toBeGreaterThan(1); // genuinely 3D, not a flat layout
+
+    // Stage 2: refinement on the same conformer reports MMFF94 and keeps the mapping.
+    expect(refine).toBeDefined();
+    const refined = refine!();
+    expect(refined.forceField?.name).toBe("MMFF94");
+    expect(["converged", "not-converged"]).toContain(refined.forceField?.status);
+    expect(refined.mapping.originalToEngineAtom).toEqual(embedded.mapping.originalToEngineAtom);
+
+    // Parity with the one-shot API under the same seed: identical refined coordinates.
+    const oneShot = await oclConformerGenerator.generate3DConformer({ molfile }, { seed: 7, optimize: "auto" });
+    expect([...oneShot.mapping.coords3dByOriginalAtom]).toEqual([...refined.mapping.coords3dByOriginalAtom]);
+  });
+
+  it("optimize:'none' yields no refine stage; a capped refine still reports a force field run", async () => {
+    const molfile = molfileFromSmiles("CCCCCCCC");
+    const none = await generate3DConformerProgressive({ molfile }, { optimize: "none" });
+    expect(none.refine).toBeUndefined();
+    expect(none.embedded.forceField).toEqual({ name: "none", status: "not-run" });
+
+    const capped = await generate3DConformerProgressive({ molfile }, { optimize: "auto", maxMinimiseIterations: 50 });
+    const refined = capped.refine!();
+    expect(refined.forceField?.name).toBe("MMFF94");
+    expect(refined.forceField?.returnCode).toBeDefined();
   });
 });
