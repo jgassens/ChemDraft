@@ -172,6 +172,15 @@ importers:
 
   packages/mechanism-tools: {}
 
+  packages/ocl-adapter:
+    dependencies:
+      '@chemdraft/chemistry-adapter':
+        specifier: workspace:*
+        version: link:../chemistry-adapter
+      openchemlib:
+        specifier: ^9.22.1
+        version: 9.22.1
+
   packages/plugin-api:
     dependencies:
       '@chemdraft/chem-core':
@@ -1777,6 +1786,9 @@ packages:
   object.assign@4.1.7:
     resolution: {integrity: sha512-nK28WOo+QIjBkDduTINE4JkF/UJJKyf2EJxvJKfblDpyg0Q+pkOHNTL0Qwy6NP6FhE/EnzV73BxxqcJaXY9anw==}
     engines: {node: '>= 0.4'}
+
+  openchemlib@9.22.1:
+    resolution: {integrity: sha512-2eVe8uVNipaeWXuZMVk7vSqiPwyoWe2+klSjMopTDMtpr1n8hO8Q5er3+nXxBc5wMC4XRssZyVDhC/r8uj28xA==}
 
   p-limit@2.3.0:
     resolution: {integrity: sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==}
@@ -3938,6 +3950,8 @@ snapshots:
       es-object-atoms: 1.1.2
       has-symbols: 1.1.0
       object-keys: 1.1.1
+
+  openchemlib@9.22.1: {}
 
   p-limit@2.3.0:
     dependencies:

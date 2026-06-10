@@ -1,12 +1,14 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phases 1A, 1B, 1C, and 3 complete on `feature/3d-spin`. 1A (layered
-identity), 1B (`flattenPerspectiveFrom3D` constrained-search wedging), 1C (labeled
-corpus + non-mutation oracle barrier + **independent native-RDKit corpus judge**),
-and 3 (pure trackball rotation math) are all green. Next: Phase 2 (OpenChemLib
-adapter + corpus gate) and Phase 2b (RDKit-WASM spike); then the first click-test,
-Phase 4 (in-canvas spin). Architecture decided: **built into the app, behind the
-`chemistry-adapter` seam** — not a plugin. Engine front-runner: **OpenChemLib JS**,
+**Status:** Phases 1A, 1B, 1C, 2, and 3 complete on `feature/3d-spin`; all green
+(`tsc` clean, 546 tests). The full chain now works **end-to-end with independent
+RDKit confirmation**: OpenChemLib generates a 3D conformer → `flattenPerspectiveFrom3D`
+projects + wedges it → RDKit confirms stereo is preserved. Trackball rotation math
+(Phase 3) feeds the flatten's `ViewMatrix` with zero glue. Remaining before the first
+click-test: Phase 2b (RDKit-WASM fallback spike, optional/parallel) then **Phase 4
+(in-canvas spin — the first thing needing hands-on clicking)**. Architecture decided:
+**built into the app, behind the `chemistry-adapter` seam** — not a plugin. Engine
+front-runner: **OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
 measurement. (Revised twice after external review — wedging is a constrained search;
 identity is a mandatory layered service; phases front-load safety before UI.)
@@ -221,13 +223,31 @@ crossing model."* So we **integrate, never reinvent**:
   decision is unchanged: OCL v1 candidate, RDKit-WASM fallback spike + OCL corpus
   gate still stand.
 
-- **Phase 2 — OpenChemLib core adapter + corpus run.** Lazy `import()` on first spin.
-  **Prove the mapping contract** (tag via `setAtomMapNo`, hand OCL a copy) across
-  isotopes, query atoms, salts/fragments, unusual valence. **Measure real bundle
-  cost** — lazy chunk size, gzip/Brotli, parse/init, first-spin latency in the actual
-  Vite/Tauri bundle. (OCL is GWT/J2CL→esbuild monolithic and likely not
-  tree-shakeable, so ~1.1 MB raw is probably the floor — treat the number as a raw
-  artifact measurement only, not product cost.)
+- ✅ **Phase 2 — OpenChemLib core adapter + end-to-end gate.** (Core complete; the
+  family corpus can keep growing.)
+  → `packages/chemistry-adapter` — engine-neutral `ConformerGenerator3D` contract
+    (`ConformerAtomMapping`, `generate3DConformer`, force-field/embed reports).
+  → `packages/ocl-adapter` — the OCL implementation. Registers OCL torsion
+    `resources.json`, tags every original atom with `setAtomMapNo`, runs the
+    conformer on a `copyMolecule` COPY (`getOneConformerAsMolecule` mutates in
+    place), MMFF94-minimises, and rebuilds the original↔engine atom map via
+    `getAtomMapNo`. 9 tests incl. adversarial mapping (multi-fragment, isotope at a
+    stereocenter, atom-count-mismatch warning, `optimize:'none'`). Lazy-loadable as
+    its own package (dynamic `import()` at first spin keeps OCL out of startup).
+  → `tools/rdkit-oracle/ocl-flatten-gate.test.ts` — the **end-to-end gate**: OCL
+    conformer → flatten → RDKit, asserting the CIP is identical at THREE independent
+    RDKit reads (OCL 2D depiction, OCL 3D conformer, flatten's projected wedges) for
+    both enantiomers of `C[C@H](F)Cl`.
+  → **Bundle cost (measured):** `openchemlib.js` 1.05 MB raw / **0.32 MB gzip**;
+    conformer torsion `resources.json` 1.29 MB raw / **0.45 MB gzip**. Conformer
+    generation needs BOTH → **2.34 MB raw / ~0.77 MB gzip** as a lazy chunk. (The
+    plan's ~1.1 MB estimate was JS-only; resources more than double it.)
+  → **Bug caught by the layered oracle:** OCL's 2D `getAtomY` is screen-down while
+    its molfile writer (and 3D conformer) are y-up; reading the 2D layout raw
+    produced the MIRROR enantiomer. flatten's conformer-mismatch guard refused, and
+    RDKit pinpointed it (depiction=S vs conformer=R). Fixed in `depictSmiles2D`
+    (emit y-up) with a non-RDKit regression guard. Vindicates the layered design:
+    an engine validating its own output would never have caught this.
 
 - **Phase 2b — Minimal RDKit WASM spike (parallel, early).** Build size, init time,
   embind maintenance pain for ETKDGv3 + optional MMFF/UFF. Removes the fallback's
