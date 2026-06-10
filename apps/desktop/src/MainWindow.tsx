@@ -112,6 +112,7 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   cleanUpNativeMolecules2d,
+  flattenSpunMolecule,
   deleteSelectedDocumentObjects,
   exportPhase4Svg,
   getSelectedMolecule,
@@ -197,7 +198,7 @@ import {
 } from "./toolsets";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
-import { applyTrackballDrag, quatIdentity, type Quaternion } from "./interaction/rotation3d";
+import { applyTrackballDrag, quatIdentity, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
 import { projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
@@ -1404,6 +1405,29 @@ export function MainWindow({
     if (message) setStatus(message);
   }, [applySpin]);
 
+  // Flatten the current spin orientation into the document as ONE undo step. On
+  // refusal the document is untouched and the overlay stays so the user can re-spin.
+  const commitSpinFlatten = useCallback(() => {
+    const state = spin3dStateRef.current;
+    if (!state) return;
+    const viewMatrix = quatToViewMatrix(state.quat);
+    const outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix);
+    if (outcome.status !== "committed") {
+      setStatus(`Cannot flatten this view: ${outcome.refusalReasons[0] ?? "stereochemistry would change"}`);
+      // Keep the overlay alive (end the drag) so the user can re-orient and retry.
+      applySpin({ ...state, dragging: false, lastClient: undefined, downClient: undefined });
+      return;
+    }
+    commitDocumentChange(outcome.document);
+    applySpin(undefined);
+    const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
+    setStatus(
+      meaningful.length > 0
+        ? `Flattened perspective with ${meaningful.length} warning(s): ${meaningful.map((w) => w.code).join(", ")}`
+        : "Flattened to a 2D perspective"
+    );
+  }, [applySpin, commitDocumentChange]);
+
   const startSpin3d = useCallback(async () => {
     const currentDocument = documentRef.current;
     const selectedIds = [
@@ -1469,7 +1493,7 @@ export function MainWindow({
         placement,
         dragging: false
       });
-      setStatus("Spin 3D: drag to rotate · Esc to cancel");
+      setStatus("Spin 3D: drag to rotate · release to flatten · Esc to cancel");
     } catch (error) {
       setStatus(`3D spin unavailable: ${(error as Error).message}`);
     }
@@ -1485,7 +1509,8 @@ export function MainWindow({
     } catch {
       /* ignore — pointer capture is an enhancement, not a requirement */
     }
-    applySpin({ ...spin3dStateRef.current, dragging: true, lastClient: { x: event.clientX, y: event.clientY } });
+    const start = { x: event.clientX, y: event.clientY };
+    applySpin({ ...spin3dStateRef.current, dragging: true, lastClient: start, downClient: start });
   }, [applySpin]);
 
   const handleSpinOverlayPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
@@ -1513,10 +1538,18 @@ export function MainWindow({
     } catch {
       /* ignore */
     }
-    // Phase 4: releasing ends the drag but stays in spin mode (flatten-on-release
-    // is Phase 5). Esc exits. Keep the latest orientation.
-    applySpin({ ...state, dragging: false, lastClient: undefined });
-  }, [applySpin]);
+    // A real spin gesture (moved past the drag threshold) flattens on release;
+    // an incidental tap just ends the drag so the user can try again. Esc cancels.
+    const moved =
+      state.downClient
+        ? Math.hypot(event.clientX - state.downClient.x, event.clientY - state.downClient.y)
+        : 0;
+    if (moved >= 4) {
+      commitSpinFlatten();
+    } else {
+      applySpin({ ...state, dragging: false, lastClient: undefined, downClient: undefined });
+    }
+  }, [applySpin, commitSpinFlatten]);
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -6042,6 +6075,7 @@ interface Spin3dState {
   placement: ScreenPlacement;
   dragging: boolean;
   lastClient?: { x: number; y: number };
+  downClient?: { x: number; y: number };
 }
 
 /**
@@ -6106,6 +6140,16 @@ function SpinOverlay({
       {projection.atoms.map((atom) => (
         <circle key={atom.index} cx={atom.sx} cy={atom.sy} r={1.6 + nearness(atom.depth) * 1.8} fill="var(--cd-accent, #2d6cdf)" />
       ))}
+      <text
+        x={pageWidth / 2}
+        y={24}
+        textAnchor="middle"
+        fontSize={13}
+        fill="var(--cd-text-secondary, #555)"
+        style={{ pointerEvents: "none", userSelect: "none" }}
+      >
+        Drag to rotate · release to flatten · Esc to cancel
+      </text>
     </svg>
   );
 }

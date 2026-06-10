@@ -1,15 +1,14 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phases 1A, 1B, 1C, 2, 3, 4, and 5.0 complete on `feature/3d-spin`; all
-green (`tsc` clean, 565 tests). The in-canvas 3D spin now works and is verified
-end-to-end in a real browser (draw → Spin 3D → lazy OCL conformer → drag-rotate
-overlay → Esc; clean production web build). The chemistry chain is independently
-RDKit-confirmed: OpenChemLib generates a 3D conformer → `flattenPerspectiveFrom3D`
-projects + wedges it → RDKit confirms stereo is preserved. **Next: Phase 5 (flatten
-commit on release — write the spun perspective back into the document as one undo
-step).** Phase 2b is conditional (see its entry). Architecture decided: **built into
-the app, behind the `chemistry-adapter` seam** — not a plugin. Engine front-runner:
-**OpenChemLib JS**,
+**Status:** Phases 1A, 1B, 1C, 2, 3, 4, 5.0, and 5 complete on `feature/3d-spin`;
+all green (`tsc` clean, 568 tests). The full feature works end-to-end and is
+browser-verified: draw → Spin 3D → lazy OCL conformer → drag-rotate overlay →
+release flattens the perspective into the document (one undo step) → Cmd+Z reverts.
+Styrene tested specifically — its double bonds survive the flatten on their original
+atom pairs. The chemistry chain is independently RDKit-confirmed end to end. **Next:
+Phase 6 (re-edit + round-trip tests; all automated, no UI).** Phase 2b is conditional
+(see its entry). Architecture decided: **built into the app, behind the
+`chemistry-adapter` seam** — not a plugin. Engine front-runner: **OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
 measurement. (Revised twice after external review — wedging is a constrained search;
 identity is a mandatory layered service; phases front-load safety before UI.)
@@ -287,9 +286,20 @@ crossing model."* So we **integrate, never reinvent**:
   preserving, `fromDocFrame` y-negation, wedge/charge support. 8 tests (6 structural
   + 2 OCL round-trip).
 
-- **Phase 5 — Flatten commit + warning/refusal UX.** Detailed spec below
-  (§ Phase 5 spec). Depends on Phase 4 (done) and the molfile writer (5.0, done) —
-  now unblocked. Next slice.
+- ✅ **Phase 5 — Flatten commit + warning/refusal UX.** Releasing a real spin gesture
+  flattens the conformer into the document as ONE undo step; an incidental tap just
+  ends the drag; refusal keeps the overlay so the user can re-orient.
+  → `documentWorkflow.ts` `flattenSpunMolecule` — frame recipe in/out, rescale +
+    recenter + page-clamp to land on the existing footprint, rewrites the molfile
+    `structure`, clears stale + bakes fresh `CrossingOverride`s, all in one
+    `applyPatches`. Refusal returns the document untouched (=== reference).
+  → MainWindow `commitSpinFlatten` on drag release; on-overlay hint text.
+  → Tests: `apps/desktop/src/spinFlatten.test.ts` (commit mechanics + refusal
+    passthrough) and the **styrene end-to-end test** — real OCL conformer →
+    flatten → all 4 Kekulé double bonds preserved on their original atom pairs,
+    bond-order multiset unchanged, molfile encodes the same double-bond count.
+  → Verified live in-browser: draw → Spin 3D → drag → release flattens + commits,
+    overlay clears, Cmd+Z reverts in one undo, zero console errors.
 
 - **Phase 6 — Re-edit + round-trip tests.** Detailed spec below (§ Phase 6 spec).
 
