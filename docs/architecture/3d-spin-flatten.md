@@ -301,6 +301,22 @@ crossing model."* So we **integrate, never reinvent**:
   → Verified live in-browser: draw → Spin 3D → drag → release flattens + commits,
     overlay clears, Cmd+Z reverts in one undo, zero console errors.
 
+- ✅ **Phase 5 UX refinements (from owner review).**
+  → **Opening orientation:** OCL embeds at an arbitrary angle that often projects
+    edge-on. `initialViewQuaternion` (spinOverlay.ts) PCA-fits the conformer's
+    principal plane and turns it toward the viewer with a gentle ~23° tilt, so the
+    molecule is readable the instant the overlay appears.
+  → **Backdrop:** the dim overlay went from 0.62 → 0.94 opacity so the underlying
+    molecule "phantom" is nearly gone (it was too bright to see the 3D clearly).
+  → **Interaction model:** drag INSIDE the selection box to rotate; release stays in
+    spin mode (grab again to keep rotating); **click OUTSIDE the box to flatten**;
+    Esc cancels. (Previously release-to-flatten, which was too eager.)
+  → **Ring double bonds:** `flattenSpunMolecule` now recomputes every double bond's
+    `doubleBondSide` from the projected geometry via the app's own
+    `defaultDoubleBondSide`, so ring double bonds draw INSIDE the ring (they were
+    landing outside). Pinned by a benzene ring-interior test.
+  → All four verified live (benzene placed, spun, flattened) + unit tests.
+
 - **Phase 6 — Re-edit + round-trip tests.** Detailed spec below (§ Phase 6 spec).
 
 - **Decision gate (after the ring-family corpus, Known gaps G3):** OCL ships / OCL

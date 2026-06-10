@@ -198,8 +198,8 @@ import {
 } from "./toolsets";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { clientToPage, pageToClient } from "./interaction/camera";
-import { applyTrackballDrag, quatIdentity, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
-import { projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
+import { initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
   currentTemplateTargetFromHoverOrHit,
@@ -1415,7 +1415,7 @@ export function MainWindow({
     if (outcome.status !== "committed") {
       setStatus(`Cannot flatten this view: ${outcome.refusalReasons[0] ?? "stereochemistry would change"}`);
       // Keep the overlay alive (end the drag) so the user can re-orient and retry.
-      applySpin({ ...state, dragging: false, lastClient: undefined, downClient: undefined });
+      applySpin({ ...state, dragging: false, lastClient: undefined });
       return;
     }
     commitDocumentChange(outcome.document);
@@ -1486,32 +1486,52 @@ export function MainWindow({
 
       applySpin({
         objectId,
-        quat: quatIdentity(),
+        // Open at a readable angle (principal plane toward the viewer + gentle tilt),
+        // not the engine's arbitrary — often edge-on — embedding orientation.
+        quat: initialViewQuaternion(conformer.mapping.coords3dByOriginalAtom),
         coords3d: conformer.mapping.coords3dByOriginalAtom,
         bondPairs,
         atomElements: molecule.atoms.map((atom) => atom.element),
         placement,
+        selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
         dragging: false
       });
-      setStatus("Spin 3D: drag to rotate · release to flatten · Esc to cancel");
+      setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
     } catch (error) {
       setStatus(`3D spin unavailable: ${(error as Error).message}`);
     }
   }, [applySpin, selectedNativeMoleculePart]);
 
   const handleSpinOverlayPointerDown = useCallback((event: PointerEvent<SVGSVGElement>) => {
-    if (!spin3dStateRef.current) return;
+    const state = spin3dStateRef.current;
+    if (!state) return;
     event.preventDefault();
     event.stopPropagation();
-    // Capture is best-effort: a failure (e.g. invalid pointer) must not abort the drag.
+    // Map the click to page coordinates (the overlay's viewBox spans the page).
+    const rect = event.currentTarget.getBoundingClientRect();
+    const page = documentRef.current.pages[0];
+    const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
+    const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
+    const box = state.selectionBox;
+    const pad = 14;
+    const insideBox =
+      pageX >= box.x - pad &&
+      pageX <= box.x + box.width + pad &&
+      pageY >= box.y - pad &&
+      pageY <= box.y + box.height + pad;
+    if (!insideBox) {
+      // Click outside the selection box commits the current orientation.
+      commitSpinFlatten();
+      return;
+    }
+    // Inside the box: grab to rotate. Capture is best-effort.
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
     } catch {
       /* ignore — pointer capture is an enhancement, not a requirement */
     }
-    const start = { x: event.clientX, y: event.clientY };
-    applySpin({ ...spin3dStateRef.current, dragging: true, lastClient: start, downClient: start });
-  }, [applySpin]);
+    applySpin({ ...state, dragging: true, lastClient: { x: event.clientX, y: event.clientY } });
+  }, [applySpin, commitSpinFlatten]);
 
   const handleSpinOverlayPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
@@ -1538,18 +1558,12 @@ export function MainWindow({
     } catch {
       /* ignore */
     }
-    // A real spin gesture (moved past the drag threshold) flattens on release;
-    // an incidental tap just ends the drag so the user can try again. Esc cancels.
-    const moved =
-      state.downClient
-        ? Math.hypot(event.clientX - state.downClient.x, event.clientY - state.downClient.y)
-        : 0;
-    if (moved >= 4) {
-      commitSpinFlatten();
-    } else {
-      applySpin({ ...state, dragging: false, lastClient: undefined, downClient: undefined });
+    // Releasing ends the rotation but STAYS in spin mode — grab inside the box again
+    // to keep rotating, or click outside to flatten (handled in pointer-down). Esc cancels.
+    if (state.dragging) {
+      applySpin({ ...state, dragging: false, lastClient: undefined });
     }
-  }, [applySpin, commitSpinFlatten]);
+  }, [applySpin]);
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -6073,9 +6087,10 @@ interface Spin3dState {
   bondPairs: [number, number][];
   atomElements: string[];
   placement: ScreenPlacement;
+  /** The molecule's selection box (page coords): drag inside to rotate, click outside to flatten. */
+  selectionBox: { x: number; y: number; width: number; height: number };
   dragging: boolean;
   lastClient?: { x: number; y: number };
-  downClient?: { x: number; y: number };
 }
 
 /**
@@ -6118,7 +6133,7 @@ function SpinOverlay({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
     >
-      <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="var(--cd-surface, #ffffff)" opacity={0.62} />
+      <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="var(--cd-surface, #ffffff)" opacity={0.94} />
       {projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
@@ -6148,7 +6163,7 @@ function SpinOverlay({
         fill="var(--cd-text-secondary, #555)"
         style={{ pointerEvents: "none", userSelect: "none" }}
       >
-        Drag to rotate · release to flatten · Esc to cancel
+        Drag the molecule to rotate · click outside to flatten · Esc to cancel
       </text>
     </svg>
   );

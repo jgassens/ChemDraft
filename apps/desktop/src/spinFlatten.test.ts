@@ -147,5 +147,38 @@ describe("flattenSpunMolecule — styrene keeps its double bonds in place", () =
       .split("\n")
       .filter((line) => /^\s{1,3}\d{1,3}\s{1,3}\d{1,3}\s{1,3}2\b/.test(line)).length;
     expect(molfileDoubleBondCount).toBe(inputDoubleBonds.length);
+
+    // Every double bond gets an explicit side recomputed from the flattened geometry
+    // (so ring double bonds draw INSIDE the ring, not outside).
+    for (const bond of next.bonds.filter((b) => b.order === "double")) {
+      expect(bond.display?.doubleBondSide === "left" || bond.display?.doubleBondSide === "right").toBe(true);
+    }
+  });
+
+  it("ring double bonds point toward the ring interior", async () => {
+    const { mol, coords3d } = await conformerFromSmiles("c1ccccc1", "mol_benzene");
+    const document = documentWith(mol);
+    const outcome = flattenSpunMolecule(document, "mol_benzene", coords3d, IDENTITY);
+    expect(outcome.status).toBe("committed");
+    const next = moleculeOf(outcome.document, "mol_benzene");
+
+    const ringCenter = {
+      x: next.atoms.reduce((s, a) => s + a.x, 0) / next.atoms.length,
+      y: next.atoms.reduce((s, a) => s + a.y, 0) / next.atoms.length
+    };
+    const atomById = new Map(next.atoms.map((a) => [a.id, a]));
+    // For each ring double bond, the assigned side must be the one facing the centroid.
+    for (const bond of next.bonds.filter((b) => b.order === "double")) {
+      const from = atomById.get(bond.fromAtomId)!;
+      const to = atomById.get(bond.toAtomId)!;
+      const ux = to.x - from.x;
+      const uy = to.y - from.y;
+      const len = Math.hypot(ux, uy);
+      const normal = { x: -uy / len, y: ux / len }; // "left" of from→to
+      const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+      const towardCenter = (ringCenter.x - mid.x) * normal.x + (ringCenter.y - mid.y) * normal.y;
+      const expectedSide = towardCenter >= 0 ? "left" : "right";
+      expect(bond.display?.doubleBondSide).toBe(expectedSide);
+    }
   });
 });

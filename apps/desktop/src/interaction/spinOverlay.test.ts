@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { quatFromAxisAngle, quatIdentity, type Vec3 } from "./rotation3d";
 import {
   conformerCentroid,
+  initialViewQuaternion,
   medianBondLength2d,
   medianBondLength3d,
   overlayScale,
@@ -71,6 +72,26 @@ describe("spinOverlay — projection", () => {
     // The near bond (a1-a2) is painted last.
     expect(proj.bonds[proj.bonds.length - 1].from).toBe(1);
     expect(proj.bonds[proj.bonds.length - 1].to).toBe(2);
+  });
+
+  it("initialViewQuaternion turns an edge-on planar molecule toward the viewer", () => {
+    // A square in the x-z plane (all y = 0): at identity it projects edge-on (every
+    // atom on a line, zero y-spread). The initial orientation must open it up.
+    const coords = [1, 0, 1, -1, 0, 1, -1, 0, -1, 1, 0, -1];
+    const place = { centerX: 0, centerY: 0, scale: 1 };
+
+    const flat = projectSpin(coords, [], quatIdentity(), place);
+    const flatYSpread = Math.max(...flat.atoms.map((a) => a.sy)) - Math.min(...flat.atoms.map((a) => a.sy));
+    expect(flatYSpread).toBeLessThan(1e-6); // edge-on at identity
+
+    const opened = projectSpin(coords, [], initialViewQuaternion(coords), place);
+    const xs = opened.atoms.map((a) => a.sx);
+    const ys = opened.atoms.map((a) => a.sy);
+    const xSpread = Math.max(...xs) - Math.min(...xs);
+    const ySpread = Math.max(...ys) - Math.min(...ys);
+    // Now spread out in BOTH screen axes — the face is toward the viewer.
+    expect(xSpread).toBeGreaterThan(1);
+    expect(ySpread).toBeGreaterThan(1);
   });
 
   it("a 90° spin about z swaps the projected x/y of an off-center atom", () => {

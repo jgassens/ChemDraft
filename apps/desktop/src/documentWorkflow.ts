@@ -4567,8 +4567,18 @@ export function flattenSpunMolecule(
 
   // Bonds carry the flatten's graph + any re-encoded wedges; double/aromatic orders
   // and atom pairings are preserved exactly (buildProjectedMolecule never moves them).
-  const nextBonds = projected.bonds.map((bond) => ({ ...bond }));
+  const projectedBonds = projected.bonds.map((bond) => ({ ...bond }));
   const geometry = moleculeGeometryFromAtoms(nextAtoms);
+  // The projection produced fresh 2D coordinates, so every double bond's "side" (which
+  // way its inner line is drawn) must be recomputed from the new geometry — otherwise
+  // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
+  // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
+  const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
+  const nextBonds = projectedBonds.map((bond) =>
+    bond.order === "double"
+      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
+      : bond
+  );
   const stagedMolecule: MoleculeObject = {
     ...molecule,
     atoms: nextAtoms,

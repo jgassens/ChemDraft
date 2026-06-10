@@ -13,7 +13,139 @@
  * document; it is transient until the user releases (Phase 5) or presses Esc.
  */
 
-import { projectPoint, quatToViewMatrix, type Quaternion, type Vec3 } from "./rotation3d";
+import {
+  projectPoint,
+  quatFromAxisAngle,
+  quatIdentity,
+  quatMultiply,
+  quatNormalize,
+  quatToViewMatrix,
+  type Quaternion,
+  type Vec3
+} from "./rotation3d";
+
+function vlen(v: Vec3): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+function vnorm(v: Vec3): Vec3 {
+  const len = vlen(v);
+  return len < 1e-12 ? [0, 0, 0] : [v[0] / len, v[1] / len, v[2] / len];
+}
+function vdot(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+function vcross(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function clamp(value: number, lo: number, hi: number): number {
+  return value < lo ? lo : value > hi ? hi : value;
+}
+
+/**
+ * Symmetric 3×3 eigen-decomposition via cyclic Jacobi rotations. Returns eigenvalues
+ * and their (column) eigenvectors. Used only for the small covariance matrix below.
+ */
+function jacobiEigen3(input: readonly (readonly number[])[]): { values: number[]; vectors: Vec3[] } {
+  const m = input.map((row) => row.slice());
+  const v = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1]
+  ];
+  for (let sweep = 0; sweep < 50; sweep += 1) {
+    let p = 0;
+    let q = 1;
+    let max = Math.abs(m[0][1]);
+    if (Math.abs(m[0][2]) > max) {
+      max = Math.abs(m[0][2]);
+      p = 0;
+      q = 2;
+    }
+    if (Math.abs(m[1][2]) > max) {
+      max = Math.abs(m[1][2]);
+      p = 1;
+      q = 2;
+    }
+    if (max < 1e-12) break;
+    const phi = 0.5 * Math.atan2(2 * m[p][q], m[p][p] - m[q][q]);
+    const c = Math.cos(phi);
+    const s = Math.sin(phi);
+    for (let k = 0; k < 3; k += 1) {
+      const mkp = m[k][p];
+      const mkq = m[k][q];
+      m[k][p] = c * mkp - s * mkq;
+      m[k][q] = s * mkp + c * mkq;
+    }
+    for (let k = 0; k < 3; k += 1) {
+      const mpk = m[p][k];
+      const mqk = m[q][k];
+      m[p][k] = c * mpk - s * mqk;
+      m[q][k] = s * mpk + c * mqk;
+    }
+    for (let k = 0; k < 3; k += 1) {
+      const vkp = v[k][p];
+      const vkq = v[k][q];
+      v[k][p] = c * vkp - s * vkq;
+      v[k][q] = s * vkp + c * vkq;
+    }
+  }
+  return {
+    values: [m[0][0], m[1][1], m[2][2]],
+    vectors: [0, 1, 2].map((col): Vec3 => [v[0][col], v[1][col], v[2][col]])
+  };
+}
+
+/**
+ * A readable opening orientation for a freshly generated conformer. OCL embeds at an
+ * arbitrary angle that often projects edge-on; this turns the molecule's principal
+ * plane (smallest-variance axis = best-fit plane normal) toward the viewer, then adds
+ * a gentle tilt so it still reads as 3D rather than a flat 2D copy.
+ */
+export function initialViewQuaternion(coords3d: ArrayLike<number>): Quaternion {
+  const n = coords3d.length / 3;
+  if (n < 3) return quatIdentity();
+  const c = conformerCentroid(coords3d);
+  const cov = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0]
+  ];
+  for (let i = 0; i < n; i += 1) {
+    const dx = coords3d[i * 3] - c[0];
+    const dy = coords3d[i * 3 + 1] - c[1];
+    const dz = coords3d[i * 3 + 2] - c[2];
+    cov[0][0] += dx * dx;
+    cov[0][1] += dx * dy;
+    cov[0][2] += dx * dz;
+    cov[1][1] += dy * dy;
+    cov[1][2] += dy * dz;
+    cov[2][2] += dz * dz;
+  }
+  cov[1][0] = cov[0][1];
+  cov[2][0] = cov[0][2];
+  cov[2][1] = cov[1][2];
+
+  const { values, vectors } = jacobiEigen3(cov);
+  let minIndex = 0;
+  if (values[1] < values[minIndex]) minIndex = 1;
+  if (values[2] < values[minIndex]) minIndex = 2;
+  const normal = vnorm(vectors[minIndex]);
+  if (vlen(normal) < 1e-9) return quatIdentity();
+
+  const target: Vec3 = [0, 0, 1]; // toward the viewer
+  const d = clamp(vdot(normal, target), -1, 1);
+  let faceOn: Quaternion;
+  if (d > 0.9999) {
+    faceOn = quatIdentity();
+  } else if (d < -0.9999) {
+    faceOn = quatFromAxisAngle([1, 0, 0], Math.PI);
+  } else {
+    faceOn = quatFromAxisAngle(vcross(normal, target), Math.acos(d));
+  }
+  // Gentle 3/4 tilt (~23°) so the depth reads without foreshortening the rings.
+  const tilt = quatFromAxisAngle([1, 0.5, 0], 0.4);
+  return quatNormalize(quatMultiply(tilt, faceOn));
+}
 
 export interface ScreenPlacement {
   /** Document-space center the overlay is drawn around (the molecule's 2D centroid). */
