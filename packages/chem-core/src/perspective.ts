@@ -38,6 +38,24 @@
  * wedges resolves front/back at every projected bond–bond crossing, baked into
  * `CrossingOverride`s. Inconsistent pairwise depths (Escher knots) raise the
  * existing cyclic-depth canary as a warning, never a silent winner.
+ *
+ * ── COORDINATE-FRAME CONTRACT (read this before integrating) ─────────────────
+ * Everything in this function lives in ONE right-handed math frame:
+ *   x → right, y → UP, z → toward the viewer (wedge = +z).
+ * `mol2dOriginal.atoms[].x/y`, `coords3d`, and the emitted projected coordinates
+ * are all interpreted/produced in that frame. The three parities (drawn /
+ * conformer / candidate) are only sign-comparable because the frames agree.
+ *
+ * ChemDraft DOCUMENTS store screen coordinates (y grows DOWN — molfile import
+ * negates y, see `scaleParsedMolfileAtoms` in documentWorkflow.ts). A screen-frame
+ * caller MUST apply the perception-preserving conversion:
+ *   in:  mathAtom.y = -docAtom.y   (wedge/hash styles unchanged)
+ *   out: docAtom.y  = -mathAtom.y  (wedge/hash styles unchanged)
+ * Negating y alone, with styles untouched, maps the document to exactly the
+ * molecule a human perceives on screen, and back. Passing doc coords raw instead
+ * makes the drawn parity read as the MIRROR enantiomer and this function will
+ * (correctly, conservatively) refuse with `conformer-mismatch`. Both behaviors
+ * are pinned by the "screen-frame (y-down) callers" tests.
  */
 
 import type {
@@ -94,6 +112,7 @@ export type FlattenWarningCode =
   | "ez-edge-on"
   | "cyclic-depth"
   | "ambiguous-crossing-depth"
+  | "degenerate-drawn-parity"
   | "perspective-cleanup";
 
 export interface FlattenWarning {
@@ -287,7 +306,12 @@ interface CenterPlan {
  * Project a spun 3D conformer to a 2D perspective depiction with encoding-sound
  * wedges and over/under crossings, or refuse if identity cannot be preserved.
  *
- * @param mol2dOriginal the user's drawn 2D molecule (source of identity + intent)
+ * FRAME: all coordinate inputs and outputs are in the right-handed math frame
+ * (y UP, z toward viewer) — see the module-header contract. Screen-frame (y-down)
+ * callers must negate y on the way in AND on the way out, styles untouched.
+ *
+ * @param mol2dOriginal the user's drawn 2D molecule (source of identity + intent);
+ *                      atom x/y must be in the math frame (y up)
  * @param coords3d      flat `[x0,y0,z0, x1,y1,z1, …]`, indexed by `mol.atoms`
  *                      order (matches `ConformerAtomMapping.coords3dByOriginalAtom`)
  * @param viewMatrix    row-major 4×4 rotation+projection (e.g. trackball → ortho)
@@ -336,6 +360,10 @@ export function flattenPerspectiveFrom3D(
 
   // Eligible set: only centers the user explicitly specified (narrow end of an
   // existing wedge/hash bond). Never invent stereo just because the view has depth.
+  // If one center carries SEVERAL drawn markers (over-specified input), the last
+  // bond in document order wins for the drawn-parity pre-check. That is safe: the
+  // check can only become more conservative (a real contradiction still refuses),
+  // and all original markers are stripped before re-encoding regardless.
   const originalMarkerByCenter = new Map<string, { neighborId: string; style: StereoMarkerStyle }>();
   for (const bond of bonds) {
     if (isStereoStyle(bond.display?.bondStyle)) {
@@ -392,6 +420,16 @@ export function flattenPerspectiveFrom3D(
         `center ${centerId}: 3D conformer handedness contradicts the drawn wedge (engine flipped stereo)`
       );
       continue;
+    }
+    if (drawnSign === 0) {
+      // The drawn 2D geometry is too degenerate (e.g. collinear sketch) to verify
+      // against the conformer — the engine-flip guard cannot run for this center.
+      // Proceed on the conformer's handedness, but say so out loud.
+      warnings.push({
+        code: "degenerate-drawn-parity",
+        message: `Center ${centerId}: drawn 2D geometry is too degenerate to cross-check against the 3D conformer; trusting the conformer's handedness.`,
+        atomIds: [centerId]
+      });
     }
 
     // Enumerate encoding-sound candidates: per eligible bond, exactly one of

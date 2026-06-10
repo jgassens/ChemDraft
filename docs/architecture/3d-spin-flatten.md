@@ -1,12 +1,14 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
 **Status:** Phases 1A, 1B, 1C, 2, and 3 complete on `feature/3d-spin`; all green
-(`tsc` clean, 546 tests). The full chain now works **end-to-end with independent
-RDKit confirmation**: OpenChemLib generates a 3D conformer → `flattenPerspectiveFrom3D`
-projects + wedges it → RDKit confirms stereo is preserved. Trackball rotation math
-(Phase 3) feeds the flatten's `ViewMatrix` with zero glue. Remaining before the first
-click-test: Phase 2b (RDKit-WASM fallback spike, optional/parallel) then **Phase 4
-(in-canvas spin — the first thing needing hands-on clicking)**. Architecture decided:
+(`tsc` clean, 549 tests). Code+plan review done 2026-06-10: coordinate-frame
+contract documented and test-pinned, degenerate-parity bypass now warns, OCL
+browser-resources URL injectable; remaining phases rewritten as step-by-step specs
+(§ Phase 4/5/6 specs below) executable without deep context. The full chain works
+**end-to-end with independent RDKit confirmation**: OpenChemLib generates a 3D
+conformer → `flattenPerspectiveFrom3D` projects + wedges it → RDKit confirms stereo
+is preserved. **Next: Phase 4 (in-canvas spin — the first slice needing hands-on
+clicking).** Phase 2b is now conditional (see its entry). Architecture decided:
 **built into the app, behind the `chemistry-adapter` seam** — not a plugin. Engine
 front-runner: **OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
@@ -249,9 +251,15 @@ crossing model."* So we **integrate, never reinvent**:
     (emit y-up) with a non-RDKit regression guard. Vindicates the layered design:
     an engine validating its own output would never have caught this.
 
-- **Phase 2b — Minimal RDKit WASM spike (parallel, early).** Build size, init time,
-  embind maintenance pain for ETKDGv3 + optional MMFF/UFF. Removes the fallback's
-  biggest unknown before UI investment.
+- **Phase 2b — Minimal RDKit WASM spike (CONDITIONAL — do not start by default).**
+  Originally an early fallback de-risk. OCL has since passed the end-to-end gate
+  with independent RDKit confirmation and a measured ~0.77 MB gzip lazy cost, so
+  this spike is **only triggered if the ring-family corpus (see Known gaps, G3)
+  shows OCL conformer quality failures** (bad chairs, broken fused systems). It
+  requires a local emscripten/CMake toolchain and a custom RDKit MinimalLib build —
+  do NOT attempt it casually or in a constrained environment. If triggered, the
+  deliverables are numbers only (wasm size raw/gzip, init ms, embind surface needed
+  for ETKDGv3+MMFF), recorded here; no committed build artifacts.
 
 - ✅ **Phase 3 — Rotation math (pure).** `apps/desktop/src/interaction/rotation3d.ts`
   (sibling to `camera.ts`): trackball → quaternion → 4×4 → orthographic project.
@@ -261,24 +269,181 @@ crossing model."* So we **integrate, never reinvent**:
   flatten-contract test), no doc/React coupling. Done out of order (before 2) since
   it is dependency-free.
 
-- **Phase 4 — In-canvas spin.** `machine.ts`: add `"molecule-spin-3d"` to `DragKind`
-  + `DRAG_THRESHOLDS`. `MainWindow.tsx`: `spin3dMachineRef` mirroring
-  `objectRotateMachineRef`; transient conformer + quaternion in a sibling ref;
-  transient **depth-sorted** SVG overlay (painter's order from z so occlusion reads
-  during the spin; no per-frame doc mutation; conformer once at spin start);
-  Esc → `cancel`. New `structure.spin3d` (mirror `structureCleanupCommandId`).
+- **Phase 4 — In-canvas spin.** Detailed spec below (§ Phase 4 spec). First phase
+  that needs hands-on click verification.
 
-- **Phase 5 — Flatten commit + warning/refusal UX.** On release run
-  `flattenPerspectiveFrom3D`; commit the molecule (`updateObject`) **plus**
-  `setCrossingOverride`s for the projected crossings as one undo group; surface
-  warnings; refuse on the commit guard (stereo) and warn on cyclic depth.
+- **Phase 5 — Flatten commit + warning/refusal UX.** Detailed spec below
+  (§ Phase 5 spec). Depends on Phase 4 and the molfile writer (Phase 5.0).
 
-- **Phase 6 — Re-edit + round-trip tests.** Re-opens in Ketcher host; round-trip:
-  canonical isomeric SMILES/CXSMILES preserved, stereo preserved-or-warned,
-  atom/bond counts stable.
+- **Phase 6 — Re-edit + round-trip tests.** Detailed spec below (§ Phase 6 spec).
 
-- **Decision gate (after 2 + 2b):** OCL ships / RDKit WASM ships / OCL ships **with a
-  declared unsupported-feature list**. Sidecar stays out of v1 unless both fail.
+- **Decision gate (after the ring-family corpus, Known gaps G3):** OCL ships / OCL
+  ships **with a declared unsupported-feature list** / trigger Phase 2b. Sidecar
+  stays out of v1 unless OCL and (if triggered) RDKit-WASM both fail.
+
+## Coordinate frames (CRITICAL — read before Phases 4/5)
+
+Three frames exist. Mixing them up silently mirrors stereochemistry — this exact
+bug class has already been caught twice (OCL 2D layout; see Phase 2 notes).
+
+| Frame | y direction | Used by |
+|---|---|---|
+| **Document / screen** | y DOWN (SVG) | `MoleculeAtom.x/y` in documents, all of MainWindow/layout-engine. Proof: molfile import negates y (`scaleParsedMolfileAtoms`, documentWorkflow.ts) |
+| **Math / chemistry** | y UP, right-handed, z toward viewer | `flattenPerspectiveFrom3D` (inputs AND outputs), `rotation3d.ts` quaternions/matrices, `coords3dByOriginalAtom` from ocl-adapter, molfiles |
+| **Trackball screen input** | y DOWN in, converted internally | `projectToTrackball` flips y itself — pass raw client/page deltas, get math-frame quaternions out |
+
+**The recipe (Phase 5 must follow verbatim, pinned by tests in perspective.test.ts
+"screen-frame (y-down) callers"):**
+1. IN: build the flatten input molecule from the doc molecule with `y = -atom.y`,
+   wedge/hash styles UNCHANGED. (This maps the doc to exactly the molecule a human
+   perceives on screen.)
+2. OUT: take `mol2dProjected` and negate y back (`y = -atom.y`), styles UNCHANGED.
+3. Never negate only one direction, and never swap wedge↔hash to "fix" a mirror —
+   if output looks mirrored, a negation step is missing.
+4. Passing raw doc coords without step 1 makes flatten refuse with
+   `conformer-mismatch` (safe failure, also pinned by test).
+5. Crossings are depth-only and unaffected by the y hop — bake them as returned.
+
+## Phase 4 spec — in-canvas spin (first click-test)
+
+Goal: select a molecule → invoke `structure.spin3d` → drag rotates a live 3D
+overlay of the conformer → Esc cancels. No document mutation in this phase at all
+(flatten commit is Phase 5; on release, just keep the overlay until Esc).
+
+Wiring (all locations verified against the current code):
+1. `apps/desktop/package.json`: add `"@chemdraft/ocl-adapter": "workspace:*"` and
+   `"@chemdraft/chemistry-adapter": "workspace:*"` to dependencies; run `pnpm install`.
+2. `apps/desktop/vite.config.ts` `resolve.alias`: add
+   `"@chemdraft/ocl-adapter": workspacePackage("../../packages/ocl-adapter/src/index.ts")`
+   and the same for `chemistry-adapter` (the alias list currently lacks both).
+3. `apps/desktop/src/commands.ts` (~line 68, next to `structureCleanupCommandId`):
+   `export const structureSpin3dCommandId = "structure.spin3d";`
+4. `apps/desktop/src/toolsets/desktop-toolsets.json`: copy the `structure.cleanup2d`
+   entries (lines ~97/~116) with `commandId: "structure.spin3d"`,
+   `title: "Spin 3D"`, reuse `icon: "style"` for now, no shortcut.
+5. `apps/desktop/src/interaction/machine.ts`: add `"molecule-spin-3d"` to the
+   `DragKind` union (line ~29) and `"molecule-spin-3d": 4` to `DRAG_THRESHOLDS`
+   (line ~81). Nothing else in the machine changes.
+6. `apps/desktop/src/MainWindow.tsx`:
+   a. Refs (next to `objectRotateMachineRef`, line ~526):
+      `spin3dMachineRef = useRef<InteractionState>(initialInteractionState())` plus
+      one `spin3dStateRef` holding `{ objectId, quat: Quaternion, lastPointer: {x,y},
+      coords3d: Float64Array, atomOrder: string[], bondPairs: [number,number][],
+      trackball: TrackballConfig } | undefined`.
+   b. Command routing (mirror `structureCleanupCommandId` at line ~2033): on
+      `structure.spin3d` with a single selected native molecule, start the spin:
+      lazy-load the engine — `const ocl = await import("@chemdraft/ocl-adapter")` —
+      then `ocl.setOclResourcesUrl(oclResourcesUrl)` where
+      `import oclResourcesUrl from "openchemlib/dist/resources.json?url"` (top-level
+      static import of the URL only; the heavy module stays dynamic), then
+      `await ocl.oclConformerGenerator.init()`, write the molecule to a molfile via
+      `moleculeToMolfileV2000` (Phase 5.0 — build it first if doing 4 before 5.0),
+      `generate3DConformer({ molfile })`, store coords + identity quaternion in
+      `spin3dStateRef`. If `embed.status !== "ok"`, `setStatus(failureReason)` and
+      do not enter spin mode.
+   c. Pointer wiring (mirror the objectRotate pointerDown at ~4092 / pointerMove at
+      ~3302): while spin mode is active, pointerDown captures, pointerMove computes
+      `quat = applyTrackballDrag(quat, lastPointer, current, trackball)` (from
+      `./interaction/rotation3d`), updates `spin3dStateRef`, and triggers a re-render
+      (one `useState` bump; do NOT touch the document).
+      `trackball = { center: moleculeScreenCenter, radius: max(120, boundingRadius) }`.
+   d. Overlay component (new function component next to `NativeTemplateGhostOverlay`,
+      line ~5872): absolutely-positioned SVG over the page. For each atom i:
+      `[px, py, pz] = projectPoint(quatToViewMatrix(quat), centered3d(i))`;
+      screen position = `moleculeCenter + (px, -py) * overlayScale` (NOTE the
+      y negation — math frame → screen frame; `overlayScale` = molecule's median
+      2D bond length / conformer median 3D bond length). Draw bonds as `<line>`s
+      sorted by average pz ASCENDING (far first, near last = painter's order);
+      stroke heavier + lighter color for near bonds if cheap. Dim the real
+      molecule underneath (e.g. `opacity: 0.25` on its group) while spinning.
+   e. Esc (extend handlers at lines ~7045/~7090): if spin mode active, clear
+      `spin3dStateRef` + machine ref, restore opacity, `setStatus("Spin cancelled")`.
+7. Tests: machine threshold test mirroring existing DragKind tests; overlay math
+   (centered3d/overlayScale/painter-order) extracted into pure helpers in
+   `apps/desktop/src/interaction/spinOverlay.ts` with unit tests — keep React out.
+8. Verify: `pnpm lint && pnpm test`, then `./run-app`; draw a molecule with a wedge
+   (or paste `C[C@H](F)Cl` as molfile), select it, invoke Spin 3D, drag — the
+   conformer should rotate smoothly with correct near/far occlusion; Esc restores.
+
+## Phase 5 spec — flatten commit + warning/refusal UX
+
+**Phase 5.0 (prerequisite, pure + unit-tested): molfile writer.** New
+`packages/chem-core/src/molfile.ts` exporting
+`moleculeToMolfileV2000(mol: MoleculeObject, opts?: { fromDocFrame?: boolean }): string`.
+- Atom block IN `mol.atoms` ORDER (critical: keeps `coords3dByOriginalAtom`
+  index-aligned with `mol.atoms`). Line format `%10.4f%10.4f%10.4f SYM` (3-char
+  left-padded symbol field, then padding zeros as in any V2000).
+- `fromDocFrame: true` ⇒ write `y = -atom.y` (doc y-down → molfile y-up).
+- Bonds: `%3d%3d%3d%3d` with 1-based atom indices, order codes 1/2/3 (aromatic→4),
+  stereo flag 1 for `display.bondStyle === "wedge"`, 6 for `"hashed"`, else 0.
+  fromAtomId is the first index (narrow end).
+- Counts line: `%3d%3d  0  0  1  0  0  0  0  0999 V2000` (chiral flag 1 when any
+  wedge/hash present, else 0). `M  CHG` lines for nonzero formalCharge
+  (format: `M  CHG  n  aaa vvv ...`), then `M  END`.
+- Reference implementation of the exact field widths that RDKit+OCL both parse:
+  `tools/rdkit-oracle/oracle.py` `_build_molblock` (proven in tests).
+- Tests: round-trip via `@chemdraft/ocl-adapter`'s `OCL.Molecule.fromMolfile` →
+  atom count, element order, wedge survives; plus a doc-frame fixture asserting the
+  y negation (compare against `scaleParsedMolfileAtoms`'s convention).
+
+**Phase 5.1 — commit path.** New workflow function in documentWorkflow.ts
+(mirror the cleanup pattern at lines ~4395-4426):
+```
+flattenSpunMolecule(document, objectId, coords3d, viewMatrix):
+  mol = the molecule object (must be editable native graph)
+  mathMol = mol with atoms y → -y                      // frame recipe IN
+  result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, { objectId })
+  if result.status === "refused": return { document, refused: result }
+  projected = result.mol2dProjected with atoms y → -y  // frame recipe OUT
+  rescale: s = (median 2D bond length of mol) / (median 2D bond length of projected);
+           atoms = projected.atoms * s, then translate so centroid matches mol's
+           centroid, then clamp into the page (reuse scaleParsedMolfileAtoms's
+           clamping approach)
+  structure = moleculeToMolfileV2000(rescaled, { fromDocFrame: true });
+           structureFormat = "molfile-v2000"
+  patches = [
+    { op: "updateObject", objectId, changes: { atoms, bonds, structure, structureFormat } },
+    ...for each existing page.crossings entry whose BOTH refs point at this object:
+       { op: "clearCrossingOverride", pageId, bonds },   // stale overrides out
+    ...result.crossings.map(c => ({ op: "setCrossingOverride", pageId, crossing: c }))
+  ]
+  return { document: applyPatches(document, patches, { now }), result }
+```
+One `commitDocumentChange(nextDocument)` call in MainWindow = ONE undo step
+(verified: commitDocumentChange at line ~821 pushes a single history entry).
+- On pointer release in spin mode (Phase 4's machine reaching `pointerUp` while
+  dragging): call the workflow; on commit, clear spin state and
+  `setStatus("Perspective flatten: N warnings")`; surface each meaningful warning
+  (`ez-edge-on`, `cyclic-depth`, `ambiguous-crossing-depth`,
+  `degenerate-drawn-parity`) via `setStatus` lines or the existing warning UI;
+  `perspective-cleanup` is baseline noise — show once, softly.
+- On refusal: do NOT modify the document; keep the spin overlay alive so the user
+  can re-spin; `setStatus(refusalReasons[0])`.
+- Tests (documentWorkflow.test.ts style): chiral fixture commits with 1 wedge +
+  correct doc-frame y; refusal leaves document identical (===); crossings baked;
+  stale crossings cleared; single undo restores everything (one `undo()` call).
+
+**Phase 5 verify:** spin `C[C@H](F)Cl` to a new angle → release → molecule
+re-renders with a sound wedge; Cmd+Z restores the old depiction AND old crossings;
+spinning a stereocenter edge-on → release → status shows the refusal, document
+untouched.
+
+## Phase 6 spec — re-edit + round-trip tests
+
+All automated; no UI work.
+1. Round-trip test (chem-core or tools): doc molecule → flatten commit (Phase 5.1
+   function) → `moleculeToMolfileV2000` → parse back via OCL → atom/bond counts
+   stable, stereo perceived (OCL parity non-zero where encoded).
+2. Oracle round-trip (tools/rdkit-oracle): flattened molfile → RDKit
+   `perceiveFrom2D` CIP == pre-flatten CIP for every encoded center (this is the
+   ocl-flatten-gate extended to the committed doc-frame output — remember the
+   doc-frame molfile is y-up again, so no extra negation).
+3. Ketcher re-open: feed the rewritten `structure` to the existing Ketcher host
+   boundary test (`apps/desktop/src/ketcherBoundary.test.ts` pattern) and assert it
+   loads without errors.
+4. Repeat-edit: flatten → move an atom via existing workflow helpers → flatten
+   again with a new conformer → still sound (no marker duplication; the strip-and-
+   re-encode in `buildProjectedMolecule` guarantees this — test pins it).
 
 - **Later:** `structure.cleanTo2d` (clean relayout via 3D + CoordGen/Indigo);
   high-fidelity engine behind the same contract.
@@ -319,6 +484,36 @@ charged/zwitterionic, explicit-H. Adversarial fixtures:
 - **cyclic-depth / Escher** (3+ bonds crossing near one knot; near-coincident z) →
   inconsistent pairwise fronts → **`warnButAllow`** (offer re-spin)
 
+## Known gaps / follow-ups (from the 2026-06-10 code review)
+
+Each is loud-failing or test-guarded today; none blocks Phase 4. Specs are precise
+enough to hand to an inexpensive model as standalone slices.
+
+- **G1 — oracle.py ignores formal charges.** Charged corpus fixtures will fail
+  LOUDLY (RDKit sanitize error reported per-request), not silently. Fix when the
+  charged/zwitterionic family lands: accept optional `charge` per atom in the
+  request JSON; emit `M  CHG  n  aaa vvv ...` lines before `M  END` in
+  `_build_molblock`; add a charged fixture to `corpus-oracle.test.ts`.
+- **G2 — oracle reports tetrahedral CIP only, no E/Z bond stereo.** Add a `bonds`
+  field to the oracle response: for each double bond, RDKit
+  `bond.GetStereo()` mapped to `"E" | "Z" | "none"` (use
+  `Chem.FindPotentialStereoBonds` + `AssignStereochemistry`). Needed before the
+  E/Z corpus family can be oracle-judged (the engine-free `ez-edge-on` warning is
+  already corpus-locked).
+- **G3 — ring/conformer corpus families (chairs, decalins, norbornane, spiro,
+  macrocycles) still deferred — now UNBLOCKED by ocl-adapter.** Build
+  `tools/rdkit-oracle/ring-corpus.test.ts`: for each family SMILES (list in
+  `CORPUS_DEFERRED_FAMILIES`), `depictSmiles2D` → `generate3DConformer` (seeded) →
+  flatten → assert labeled outcome + RDKit CIP agreement (same 3-read structure as
+  `ocl-flatten-gate.test.ts`). THIS is the OCL ring-quality gate that decides
+  whether Phase 2b ever runs.
+- **G4 — multi-marker centers.** Two drawn wedges at one center: last bond in
+  document order drives the pre-check (documented in perspective.ts). Safe
+  (worst case = conservative refusal); revisit only if real-world refusals occur.
+- **G5 — `getTotalEnergy` presence.** ocl-adapter reads MMFF energy via an
+  optional method guard; if OCL's API drifts, energy is simply absent from the
+  report. No action unless energy becomes user-facing.
+
 ## Risks
 
 - **OCL ring/conformer quality (top):** contingent on the corpus (chairs/fused).
@@ -352,8 +547,8 @@ After each merged slice: update the build stamp in **both** `AGENTS.md`
 - **Phase 2 / 2b:** OCL adapter lazy-loads (zero startup cost); mapping adversarial
   tests green; real bundle-cost recorded; RDKit-WASM size/init/maintenance recorded.
 - **Phase 3:** `rotation3d` unit tests pass.
-- **Phase 4:** `pnpm --filter desktop tauri dev`; invoke `structure.spin3d`, drag to
-  rotate overlay, Esc cancels back to original.
+- **Phase 4:** `pnpm lint && pnpm test`, then `./run-app`; invoke `structure.spin3d`,
+  drag to rotate overlay (near/far occlusion correct), Esc cancels back to original.
 - **Phase 5:** spin cyclohexane to a chair → 2D molecule with correct wedges; edge-on
   specified center warns/refuses; one undo reverts the flatten.
 - **Phase 6:** flattened molecule re-opens in Ketcher; round-trip tests green.

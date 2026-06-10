@@ -31,6 +31,7 @@ import type {
 } from "@chemdraft/chemistry-adapter";
 
 let resourcesRegistered = false;
+let resourcesUrlOverride: string | undefined;
 
 /** OpenChemLib version string (from the package's own constant when present). */
 function oclVersion(): string {
@@ -39,9 +40,25 @@ function oclVersion(): string {
 }
 
 /**
+ * Browser/Tauri bundles MUST call this before the first conformer generation.
+ * `registerFromUrl()` with no argument fetches `resources.json` relative to the
+ * OCL module's URL — which, in a bundled Vite app, is a hashed chunk and 404s.
+ * The Vite recipe (see the Phase 4 spec in docs/architecture/3d-spin-flatten.md):
+ *
+ *   import oclResourcesUrl from "openchemlib/dist/resources.json?url";
+ *   setOclResourcesUrl(oclResourcesUrl);
+ *
+ * No-op concern in Node: the Node path reads the file from disk and ignores this.
+ */
+export function setOclResourcesUrl(url: string): void {
+  resourcesUrlOverride = url;
+}
+
+/**
  * Register OCL's static torsion resources exactly once. In Node the bundled
- * `resources.json` is read synchronously; in a browser/Tauri bundle it is fetched
- * relative to the OCL module (callers may pre-register via `OCL.Resources.register`).
+ * `resources.json` is read synchronously from disk; in a browser/Tauri bundle the
+ * URL set via `setOclResourcesUrl` is fetched (falling back to OCL's
+ * module-relative default, which only works unbundled).
  */
 export async function ensureOclResources(): Promise<void> {
   if (resourcesRegistered) return;
@@ -61,7 +78,7 @@ export async function ensureOclResources(): Promise<void> {
   if (isNode && Resources.registerFromNodejs) {
     Resources.registerFromNodejs();
   } else if (Resources.registerFromUrl) {
-    await Resources.registerFromUrl();
+    await Resources.registerFromUrl(resourcesUrlOverride);
   }
   resourcesRegistered = true;
 }

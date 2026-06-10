@@ -203,6 +203,82 @@ describe("flattenPerspectiveFrom3D — single stereocenter", () => {
   });
 });
 
+describe("flattenPerspectiveFrom3D — screen-frame (y-down) callers", () => {
+  // The app's document frame is y-DOWN (molfile import negates y; SVG renders y
+  // down). These two tests pin the integration contract for Phase 5: raw doc
+  // coords must refuse; the negate-in/negate-out recipe must commit.
+
+  it("REFUSES raw y-down document coords (mirror reads as the wrong enantiomer)", () => {
+    const { mol, coords3d } = chiralCenter(1);
+    const yDownDoc: MoleculeObject = {
+      ...mol,
+      atoms: mol.atoms.map((atom) => ({ ...atom, y: -atom.y }))
+    };
+    const result = flattenPerspectiveFrom3D(yDownDoc, coords3d, IDENTITY);
+    expect(result.status).toBe("refused");
+    expect(result.stereoCenters[0]?.status).toBe("conformer-mismatch");
+  });
+
+  it("commits via the negate-in/negate-out recipe (the Phase 5 contract)", () => {
+    const { mol, coords3d } = chiralCenter(1);
+    // What Phase 5 holds: a y-down document molecule.
+    const yDownDoc: MoleculeObject = {
+      ...mol,
+      atoms: mol.atoms.map((atom) => ({ ...atom, y: -atom.y }))
+    };
+    // Recipe in: doc -> math frame (negate y, styles untouched).
+    const mathMol: MoleculeObject = {
+      ...yDownDoc,
+      atoms: yDownDoc.atoms.map((atom) => ({ ...atom, y: -atom.y }))
+    };
+    const result = flattenPerspectiveFrom3D(mathMol, coords3d, IDENTITY);
+    expect(result.status).toBe("committed");
+    const projected = result.mol2dProjected as MoleculeObject;
+    expect(stereoBonds(projected)).toHaveLength(1);
+    expect(stereoBonds(projected)[0]?.fromAtomId).toBe("a0");
+    // Recipe out: math -> doc frame (negate y back, styles untouched).
+    const docOut: MoleculeObject = {
+      ...projected,
+      atoms: projected.atoms.map((atom) => ({ ...atom, y: -atom.y }))
+    };
+    expect(stereoBonds(docOut)).toHaveLength(1); // styles survive the frame hop
+  });
+});
+
+describe("flattenPerspectiveFrom3D — degenerate drawn parity", () => {
+  it("commits but WARNS when the drawn 2D is too degenerate to cross-check", () => {
+    // Collinear sketch (all atoms on the x-axis) with a real wedge: the drawn
+    // parity is zero, so the engine-flip guard cannot run. The 3D is a proper
+    // tetrahedron, so the flatten proceeds on the conformer — loudly.
+    const verts: Array<[number, number, number]> = [
+      [1, 1, 1],
+      [-1, -1, 1],
+      [-1, 1, -1],
+      [1, -1, -1]
+    ];
+    const mol = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "F", x: 1, y: 0 },
+        { id: "a2", element: "Cl", x: 2, y: 0 },
+        { id: "a3", element: "Br", x: 3, y: 0 },
+        { id: "a4", element: "I", x: 4, y: 0 }
+      ],
+      [
+        { id: "b1", from: "a0", to: "a1", style: "wedge" },
+        { id: "b2", from: "a0", to: "a2" },
+        { id: "b3", from: "a0", to: "a3" },
+        { id: "b4", from: "a0", to: "a4" }
+      ]
+    );
+    const coords3d = [0, 0, 0, ...verts.flat()];
+    const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY);
+    expect(result.status).toBe("committed");
+    expect(result.warnings.some((w) => w.code === "degenerate-drawn-parity")).toBe(true);
+    expect(stereoBonds(result.mol2dProjected as MoleculeObject)).toHaveLength(1);
+  });
+});
+
 describe("flattenPerspectiveFrom3D — unspecified stereo is never invented", () => {
   it("leaves an unspecified center plain even though the 3D has a handedness", () => {
     const { mol, coords3d } = chiralCenter(1);

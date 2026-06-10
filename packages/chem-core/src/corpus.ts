@@ -41,7 +41,8 @@ export type CorpusLabel = "mustCommit" | "warnButAllow" | "mustRefuse";
 export const MEANINGFUL_WARNING_CODES: readonly FlattenWarningCode[] = [
   "ez-edge-on",
   "cyclic-depth",
-  "ambiguous-crossing-depth"
+  "ambiguous-crossing-depth",
+  "degenerate-drawn-parity" // engine-flip guard could not run for a center
 ];
 
 export type CorpusOutcome = "committed" | "committedWithWarnings" | "refused";
