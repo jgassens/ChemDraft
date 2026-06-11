@@ -88,3 +88,7 @@ export function getConformerWorkerClient(): ConformerWorkerClient | null {
   if (client === undefined) client = createClient();
   return client;
 }
+
+// Boot the worker immediately at module load so the ~1 MB OCL download starts
+// in parallel with app startup — not lazily on first spin click.
+getConformerWorkerClient();
