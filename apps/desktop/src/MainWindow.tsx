@@ -535,6 +535,10 @@ export function MainWindow({
   // immune to stale closures) mirrored into React state so the overlay re-renders.
   const spin3dStateRef = useRef<Spin3dState | undefined>(undefined);
   const [spin3dState, setSpin3dStateRender] = useState<Spin3dState | undefined>(undefined);
+  // Dirty-flag rAF: drag events write to the ref and set the flag; the scheduled
+  // rAF renders once and stops. Zero frames fired when the scene isn't changing.
+  const spinDirtyRef = useRef(false);
+  const spinRafRef = useRef<number | null>(null);
   const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
@@ -1398,6 +1402,14 @@ export function MainWindow({
   const applySpin = useCallback((next: Spin3dState | undefined) => {
     spin3dStateRef.current = next;
     setSpin3dStateRender(next);
+    if (!next) {
+      // Cancel any pending dirty-flag rAF so it doesn't fire after spin ends.
+      if (spinRafRef.current !== null) {
+        cancelAnimationFrame(spinRafRef.current);
+        spinRafRef.current = null;
+      }
+      spinDirtyRef.current = false;
+    }
   }, []);
 
   const endSpin3d = useCallback((message?: string) => {
@@ -1631,8 +1643,22 @@ export function MainWindow({
     };
     const current = { x: event.clientX, y: event.clientY };
     const quat = applyTrackballDrag(state.quat, state.lastClient, current, trackball);
-    applySpin({ ...state, quat, lastClient: current });
-  }, [applySpin]);
+    // Update ref synchronously so the next event has fresh state; schedule a single
+    // rAF to push to React. If one is already pending it will pick up this latest
+    // state — no need to schedule another.
+    spin3dStateRef.current = { ...state, quat, lastClient: current };
+    spinDirtyRef.current = true;
+    if (spinRafRef.current === null) {
+      spinRafRef.current = requestAnimationFrame(() => {
+        spinRafRef.current = null;
+        if (spinDirtyRef.current) {
+          spinDirtyRef.current = false;
+          const s = spin3dStateRef.current;
+          if (s) setSpin3dStateRender({ ...s });
+        }
+      });
+    }
+  }, []);
 
   const handleSpinOverlayPointerUp = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
@@ -6210,9 +6236,11 @@ function SpinOverlay({
   onPointerCancel: (event: PointerEvent<SVGSVGElement>) => void;
 }) {
   const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
-  const depths = projection.atoms.map((atom) => atom.depth);
-  const minDepth = Math.min(...depths);
-  const maxDepth = Math.max(...depths);
+  let minDepth = Infinity, maxDepth = -Infinity;
+  for (const atom of projection.atoms) {
+    if (atom.depth < minDepth) minDepth = atom.depth;
+    if (atom.depth > maxDepth) maxDepth = atom.depth;
+  }
   const depthSpan = maxDepth - minDepth || 1;
   // Nearer bonds render heavier and darker so occlusion reads while spinning.
   const nearness = (depth: number) => (depth - minDepth) / depthSpan; // 0 far … 1 near
