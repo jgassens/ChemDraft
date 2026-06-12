@@ -1633,10 +1633,14 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotate-handle {
+  left: calc(50% - 17px);
+}
+
 .native-molecule-tilt3d-handle {
   position: absolute;
   top: -34px;
-  left: calc(50% + 34px);
+  left: calc(50% + 17px);
   z-index: 3;
   display: grid;
   width: 25px;
@@ -1844,6 +1848,118 @@ textarea:focus-visible,
 .native-molecule-tilt3d-readout[data-tilt3d-limited="true"] {
   border-color: var(--cd-danger);
   color: var(--cd-danger-strong);
+}
+
+.native-molecule-rotation-input-popover,
+.native-molecule-scale-input-popover {
+  position: absolute;
+  left: 50%;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 3px 4px 3px 7px;
+  border: 1px solid var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control-opaque);
+  box-shadow: 0 8px 20px rgb(17 24 39 / 14%), var(--cd-focus-ring);
+  color: var(--cd-accent-text);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: all;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.native-molecule-rotation-input-popover {
+  bottom: calc(100% + 12px);
+}
+
+.native-molecule-scale-input-popover {
+  top: calc(100% + 8px);
+}
+
+.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotation-input-popover[data-rotation-input-kind="z"] {
+  left: calc(50% - 17px);
+}
+
+.native-molecule-rotation-input-popover[data-rotation-input-kind="xy"] {
+  left: calc(50% + 17px);
+}
+
+.native-molecule-rotation-input-field,
+.native-molecule-scale-input-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--cd-accent-text);
+}
+
+.native-molecule-rotation-input-field span,
+.native-molecule-scale-input-field span {
+  min-width: 8px;
+  text-align: center;
+}
+
+.native-molecule-rotation-input-field input,
+.native-molecule-scale-input-field input {
+  width: 40px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-panel);
+  color: var(--cd-text);
+  font: inherit;
+  line-height: 20px;
+  text-align: right;
+}
+
+.native-molecule-rotation-input-field input:focus,
+.native-molecule-scale-input-field input:focus {
+  border-color: var(--cd-accent-strong);
+  box-shadow: 0 0 0 2px rgb(29 127 104 / 18%);
+  outline: none;
+}
+
+.native-molecule-rotation-input-unit,
+.native-molecule-scale-input-unit {
+  margin-right: 1px;
+  color: var(--cd-muted);
+}
+
+.native-molecule-rotation-input-action,
+.native-molecule-scale-input-action {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--cd-radius-control);
+  background: transparent;
+  color: var(--cd-accent-text);
+  cursor: pointer;
+  place-items: center;
+}
+
+.native-molecule-rotation-input-action:hover,
+.native-molecule-scale-input-action:hover {
+  border-color: var(--cd-accent-border);
+  background: var(--cd-bg-active);
+  color: var(--cd-accent-strong);
+}
+
+.native-molecule-rotation-input-action svg,
+.native-molecule-scale-input-action svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .native-molecule-rotate-arc,

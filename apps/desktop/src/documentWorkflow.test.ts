@@ -75,6 +75,7 @@ import {
   rotateNativeMoleculeObjectAroundPoint,
   rotateNativeMoleculeParts,
   tiltNativeMoleculeProjectedPlane,
+  tiltNativeMoleculeObjectsProjectedPlane,
   tiltNativeMoleculePartsProjectedPlane,
   tiltPointAroundPageAxis,
   resizeNativeMoleculeObject,
@@ -192,19 +193,11 @@ function degToRad(degrees: number): number {
   return degrees * Math.PI / 180;
 }
 
-function moleculeAtomCentroid(molecule: MoleculeObject): { x: number; y: number; z: number } {
-  if (molecule.atoms.length === 0) {
-    return {
-      x: molecule.x + molecule.width / 2,
-      y: molecule.y + molecule.height / 2,
-      z: 0
-    };
-  }
-
+function boundsCenter(bounds: { x: number; y: number; width: number; height: number }): { x: number; y: number; z: number } {
   return {
-    x: molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length,
-    y: molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length,
-    z: molecule.atoms.reduce((sum, atom) => sum + (atom.z ?? 0), 0) / molecule.atoms.length
+    x: bounds.x + bounds.width / 2,
+    y: bounds.y + bounds.height / 2,
+    z: 0
   };
 }
 
@@ -1074,7 +1067,7 @@ describe("Phase 4 document workflow", () => {
       }
     }]);
     const start = selectedMolecule(enriched);
-    const center = moleculeAtomCentroid(start);
+    const center = boundsCenter(start);
     const result = tiltNativeMoleculeProjectedPlane(enriched, start.id, center, 0, degToRad(40));
     const tilted = selectedMolecule(result.document);
 
@@ -1106,7 +1099,7 @@ describe("Phase 4 document workflow", () => {
       "cyclohexane"
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const result = tiltNativeMoleculeProjectedPlane(document, molecule.id, center, 0, degToRad(420), {
       persistTransform: true
     });
@@ -1130,7 +1123,7 @@ describe("Phase 4 document workflow", () => {
       "cyclohexane"
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const result = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1153,7 +1146,7 @@ describe("Phase 4 document workflow", () => {
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const first = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1196,7 +1189,7 @@ describe("Phase 4 document workflow", () => {
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const result = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1217,6 +1210,8 @@ describe("Phase 4 document workflow", () => {
     expect(result.tiltYRad).toBeCloseTo(degToRad(-50), 6);
     expect(transform.tiltXDegrees).toBe(35);
     expect(transform.tiltYDegrees).toBe(-50);
+    expect(transform.tiltCenterX).toBeUndefined();
+    expect(transform.tiltCenterY).toBeUndefined();
     expect(tilted.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
     expect(tilted.bonds).toEqual(molecule.bonds);
     expect(tilted.structure).toBe(molecule.structure);
@@ -1237,7 +1232,7 @@ describe("Phase 4 document workflow", () => {
       "cyclopentane"
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const result = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1256,9 +1251,65 @@ describe("Phase 4 document workflow", () => {
     expect(Math.hypot(result.tiltXRad, result.tiltYRad)).toBeCloseTo(projectedPlaneTiltMaxRadians, 6);
     expect(transform.tiltXDegrees).toBeCloseTo(254.558, 3);
     expect(transform.tiltYDegrees).toBeCloseTo(254.558, 3);
-    expect(selectedMolecule(result.document).atoms.some((atom, index) =>
+    expect(transform.tiltCenterX).toBeUndefined();
+    expect(transform.tiltCenterY).toBeUndefined();
+  expect(selectedMolecule(result.document).atoms.some((atom, index) =>
       Math.abs((atom.z ?? 0) - (molecule.atoms[index]?.z ?? 0)) > 0.1
     )).toBe(true);
+  });
+
+  it("tilts multiple native molecules around the shared selection bounds center", () => {
+    const first = insertNativeTemplateMolecule(
+      createPhase4Document("Projected Plane Group Tilt"),
+      { x: 180, y: 220 },
+      "cyclopentane"
+    );
+    const second = insertNativeTemplateMolecule(first, { x: 360, y: 260 }, "cyclohexane");
+    const document = selectAllDocumentObjects(second, second.pages[0].id);
+    const molecules = document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const objectIds = molecules.map((molecule) => molecule.id);
+    const groupBounds = selectionBounds(document.pages[0].objects, objectIds);
+    if (!groupBounds) {
+      throw new Error("Expected group selection bounds.");
+    }
+    const groupCenter = {
+      x: groupBounds.centerX,
+      y: groupBounds.centerY,
+      z: 0
+    };
+    const result = tiltNativeMoleculeObjectsProjectedPlane(
+      document,
+      objectIds,
+      groupCenter,
+      0,
+      degToRad(30),
+      { tiltYRad: degToRad(-20) }
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.clamped).toBe(false);
+    expect(result.document.selection).toEqual(document.selection);
+    molecules.forEach((startMolecule) => {
+      const tiltedMolecule = moleculeById(result.document, startMolecule.id);
+      expect(tiltedMolecule.atoms.map((atom) => atom.id)).toEqual(startMolecule.atoms.map((atom) => atom.id));
+      expect(tiltedMolecule.bonds).toEqual(startMolecule.bonds);
+      startMolecule.atoms.forEach((atom, index) => {
+        const expected = expectedProjectedPlanePoint(atom, groupCenter, degToRad(30), degToRad(-20));
+        const nextAtom = tiltedMolecule.atoms[index];
+        expect(nextAtom?.x).toBeCloseTo(expected.x, 3);
+        expect(nextAtom?.y).toBeCloseTo(expected.y, 3);
+        expect(nextAtom?.z).toBeCloseTo(expected.z, 3);
+      });
+    });
+
+    const firstMolecule = molecules[0];
+    const firstAtom = firstMolecule?.atoms[0];
+    const firstTiltedAtom = firstMolecule ? moleculeById(result.document, firstMolecule.id).atoms[0] : undefined;
+    if (!firstMolecule || !firstAtom || !firstTiltedAtom) {
+      throw new Error("Expected first tilted atom.");
+    }
+    const localCenterExpected = expectedProjectedPlanePoint(firstAtom, boundsCenter(firstMolecule), degToRad(30), degToRad(-20));
+    expect(firstTiltedAtom.x).not.toBeCloseTo(localCenterExpected.x, 1);
   });
 
   it("applies and persists projected-plane X/Y/Z rotation without changing chemical identity", () => {
@@ -1268,7 +1319,7 @@ describe("Phase 4 document workflow", () => {
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const result = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1310,7 +1361,7 @@ describe("Phase 4 document workflow", () => {
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 };
+    const center = boundsCenter(molecule);
     const result = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1337,7 +1388,7 @@ describe("Phase 4 document workflow", () => {
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 };
+    const center = boundsCenter(molecule);
     const first = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1379,14 +1430,14 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("uses persisted projected-plane X/Y/Z rotation to restore a reselected molecule to zero", () => {
+  it("uses the current visual pivot when resetting persisted projected-plane X/Y/Z rotation", () => {
     const document = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Projected Plane Persistent Three Axis Rotate"), { x: 200, y: 220 }),
       "atom_002",
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 };
+    const center = boundsCenter(molecule);
     const first = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1425,21 +1476,20 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeTransformState(restoredMolecule).rotationDegrees).toBe(0);
     expect(nativeMoleculeTransformState(restoredMolecule).tiltXDegrees ?? 0).toBe(0);
     expect(nativeMoleculeTransformState(restoredMolecule).tiltYDegrees ?? 0).toBe(0);
-    molecule.atoms.forEach((atom, index) => {
-      const restoredAtom = restoredMolecule.atoms[index];
-      expect(restoredAtom?.x).toBeCloseTo(atom.x, 2);
-      expect(restoredAtom?.y).toBeCloseTo(atom.y, 2);
-    });
+    expect(nativeMoleculeTransformState(restoredMolecule).tiltCenterX).toBeUndefined();
+    expect(nativeMoleculeTransformState(restoredMolecule).tiltCenterY).toBeUndefined();
+    expect(restoredMolecule.atoms.map((atom) => atom.id)).toEqual(molecule.atoms.map((atom) => atom.id));
+    expect(restoredMolecule.bonds).toEqual(molecule.bonds);
   });
 
-  it("moves projected-plane tilt centers with a tilted native molecule", () => {
+  it("keeps projected-plane pivots as interaction state instead of persisted molecule state", () => {
     const document = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Projected Plane Moved Center"), { x: 200, y: 220 }),
       "atom_002",
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = moleculeAtomCentroid(molecule);
+    const center = boundsCenter(molecule);
     const tiltedDocument = tiltNativeMoleculeProjectedPlane(
       document,
       molecule.id,
@@ -1452,6 +1502,7 @@ describe("Phase 4 document workflow", () => {
       }
     ).document;
     const tilted = selectedMolecule(tiltedDocument);
+    const tiltedTransform = nativeMoleculeTransformState(tilted);
     const movedDocument = moveDocumentObject(tiltedDocument, molecule.id, {
       x: tilted.x + 40,
       y: tilted.y + 28
@@ -1461,7 +1512,7 @@ describe("Phase 4 document workflow", () => {
     const restored = tiltNativeMoleculeProjectedPlane(
       movedDocument,
       molecule.id,
-      { x: moved.x + moved.width / 2, y: moved.y + moved.height / 2 },
+      boundsCenter(moved),
       0,
       0,
       {
@@ -1472,14 +1523,17 @@ describe("Phase 4 document workflow", () => {
       }
     );
     const restoredMolecule = selectedMolecule(restored.document);
+    const restoredTransform = nativeMoleculeTransformState(restoredMolecule);
 
-    expect(movedTransform.tiltCenterX).toBeCloseTo(center.x + 40, 3);
-    expect(movedTransform.tiltCenterY).toBeCloseTo(center.y + 28, 3);
-    molecule.atoms.forEach((atom, index) => {
-      const restoredAtom = restoredMolecule.atoms[index];
-      expect(restoredAtom?.x).toBeCloseTo(atom.x + 40, 2);
-      expect(restoredAtom?.y).toBeCloseTo(atom.y + 28, 2);
-    });
+    expect(tiltedTransform.tiltCenterX).toBeUndefined();
+    expect(tiltedTransform.tiltCenterY).toBeUndefined();
+    expect(movedTransform.tiltCenterX).toBeUndefined();
+    expect(movedTransform.tiltCenterY).toBeUndefined();
+    expect(restored.changed).toBe(true);
+    expect(restoredTransform.tiltXDegrees ?? 0).toBe(0);
+    expect(restoredTransform.tiltYDegrees ?? 0).toBe(0);
+    expect(restoredTransform.tiltCenterX).toBeUndefined();
+    expect(restoredTransform.tiltCenterY).toBeUndefined();
   });
 
   it("applies projected-plane tilt to selected native molecule fragments while stretching boundary bonds", () => {
@@ -1501,10 +1555,7 @@ describe("Phase 4 document workflow", () => {
     if (!bounds) {
       throw new Error("Expected selected fragment bounds.");
     }
-    const center = moleculeAtomCentroid({
-      ...molecule,
-      atoms: [atom2, atom3]
-    });
+    const center = boundsCenter(bounds);
     const result = tiltNativeMoleculePartsProjectedPlane(document, target, center, 0, degToRad(60));
     const tilted = selectedMolecule(result.document);
 
@@ -1598,7 +1649,7 @@ describe("Phase 4 document workflow", () => {
       -60
     );
     const molecule = selectedMolecule(document);
-    const center = { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 };
+    const center = boundsCenter(molecule);
     const first = tiltNativeMoleculeProjectedPlane(document, molecule.id, center, 0, degToRad(25)).document;
     const recomputed = tiltNativeMoleculeProjectedPlane(document, molecule.id, center, 0, degToRad(55)).document;
     const accumulated = tiltNativeMoleculeProjectedPlane(first, molecule.id, center, 0, degToRad(55)).document;
