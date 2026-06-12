@@ -527,6 +527,18 @@ Shipped architecture (apps/desktop):
 Worst case after this work = embed time of the molecule alone (irreducible in
 OCL), off the main thread, usually started at selection time instead of click.
 
+Scheduler refinements (2026-06-12): the worker queue is priority-ordered
+generates → prefetch → idle refine → warmup, with a macrotask yield between jobs
+so a click posted mid-backlog is seen immediately. Speculative work cannot
+accumulate: prefetch and the background MMFF94 refine are each a **single
+newest-wins slot** (a superseded molecule keeps its refine thunk in the cache and
+refines on demand if actually spun). This capped the `worker.submit queue 3/4`
+backlog — browsing N molecules used to park N multi-second idle refines — and
+the submit trace now carries a composition string ("queue 2 = 1 prefetch · 1 idle
+refine") so idle polish is never mistaken for user-blocking congestion. Large
+structures (>40 atoms) never refine speculatively, and refine `maxIts` scales
+down with atom count (800 ≤30 atoms, 400 ≤60, else 240).
+
 ## Hard-stop conditions
 
 No phase advances past these gates:

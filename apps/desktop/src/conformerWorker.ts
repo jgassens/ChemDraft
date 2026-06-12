@@ -81,6 +81,7 @@ function cachePut(molfile: string, entry: CacheEntry): void {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
     cache.delete(oldest);
+    if (pendingRefine === oldest) pendingRefine = null; // evicted — nothing left to refine
   }
 }
 
@@ -94,8 +95,19 @@ function traceSessionId(request: Pick<ConformerWorkRequest, "id" | "kind" | "ses
 function queueDepth(): number {
   return pendingGenerates.length +
     (pendingPrefetch ? 1 : 0) +
-    pendingRefines.length +
+    (pendingRefine ? 1 : 0) +
     (pendingWarmup ? 1 : 0);
+}
+
+/** Human-readable composition for the debugger, so "queue 3" never reads as three
+ *  user-blocking jobs when two of them are idle polish/boot work. */
+function queueBreakdown(): string {
+  const parts: string[] = [];
+  if (pendingGenerates.length > 0) parts.push(`${pendingGenerates.length} generate`);
+  if (pendingPrefetch) parts.push("1 prefetch");
+  if (pendingRefine) parts.push("1 idle refine");
+  if (pendingWarmup) parts.push("1 warmup");
+  return parts.length > 0 ? `queue ${queueDepth()} = ${parts.join(" · ")}` : "queue 0";
 }
 
 function postTrace(request: ConformerWorkRequest, input: Omit<Parameters<typeof createSpin3dTraceEvent>[0], "sessionId" | "requestId">): void {
@@ -131,13 +143,16 @@ function postOclTrace(request: ConformerWorkRequest, event: Parameters<typeof cr
 //   • generates  → FIFO queue (usually 0–1 deep), always taken first
 //   • prefetch   → only the NEWEST is kept; a burst of selection changes collapses to
 //                  one job instead of stacking multi-second embeds ahead of a click
-//   • refines    → background MMFF94 passes on prefetched entries (newest first) so a
-//                  prefetched molecule still reaches planar/minimised geometry at idle
+//   • refine     → a SINGLE slot (newest wins): only the most recently prefetched
+//                  molecule gets an idle MMFF94 polish. Superseded molecules keep their
+//                  refine thunk in the cache and refine on demand if actually spun —
+//                  browsing across N molecules must not park N multi-second jobs
+//                  (that was the `worker.submit queue 3/4` backlog).
 //   • warmup     → coalesced to one, lowest priority (a waiting generate warms OCL itself)
 let running = false;
 const pendingGenerates: ConformerWorkRequest[] = [];
 let pendingPrefetch: ConformerWorkRequest | null = null;
-const pendingRefines: string[] = []; // molfiles with a cached entry awaiting refinement
+let pendingRefine: string | null = null; // molfile with a cached entry awaiting idle refinement
 let pendingWarmup: ConformerWorkRequest | null = null;
 
 type WorkItem =
@@ -152,8 +167,11 @@ function takeNextWorkItem(): WorkItem | null {
     pendingPrefetch = null;
     return { kind: "request", request: prefetch };
   }
-  const refineMolfile = pendingRefines.pop(); // newest first — likeliest to be spun
-  if (refineMolfile !== undefined) return { kind: "refine", molfile: refineMolfile };
+  if (pendingRefine !== null) {
+    const refineMolfile = pendingRefine;
+    pendingRefine = null;
+    return { kind: "refine", molfile: refineMolfile };
+  }
   if (pendingWarmup) {
     const warmup = pendingWarmup;
     pendingWarmup = null;
@@ -176,7 +194,9 @@ function refineEntry(entry: CacheEntry): Generate3DConformerResult | undefined {
 }
 
 function scheduleBackgroundRefine(molfile: string): void {
-  if (!pendingRefines.includes(molfile)) pendingRefines.push(molfile);
+  // Newest wins: a superseded molecule keeps its refine thunk in the cache and
+  // refines on demand if the user actually spins it.
+  pendingRefine = molfile;
 }
 
 async function drain(): Promise<void> {
@@ -283,6 +303,7 @@ function submit(request: ConformerWorkRequest): void {
     kind: "worker",
     stage: "worker.submit",
     status: "info",
+    message: queueBreakdown(),
     atomCount: request.originalAtomCount,
     queueDepth: queueDepth()
   });
@@ -308,6 +329,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
         kind: "worker",
         stage: "worker.cache",
         status: "info",
+        message: queueBreakdown(),
         cacheStatus: "hit",
         atomCount: request.originalAtomCount,
         queueDepth: queueDepth()
@@ -321,6 +343,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       // If the background refine hasn't landed yet, run it NOW (we're the
       // user-priority job) so double bonds/conjugation reach planar MMFF94
       // geometry; it hot-swaps under the live overlay.
+      if (pendingRefine === molfile) pendingRefine = null; // consuming it here
       const refined = await withOclConformerTrace(
         (event) => postOclTrace(request, event),
         async () => refineEntry(hit)
@@ -335,6 +358,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       kind: "worker",
       stage: "worker.cache",
       status: "info",
+      message: queueBreakdown(),
       cacheStatus: "miss",
       atomCount: request.originalAtomCount,
       queueDepth: queueDepth()
