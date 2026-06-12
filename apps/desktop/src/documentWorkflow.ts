@@ -176,6 +176,15 @@ export interface ProjectedPlaneTiltResult extends ProjectedPlaneTiltPoint {
   z: number;
 }
 
+type Matrix3 = readonly [
+  readonly [number, number, number],
+  readonly [number, number, number],
+  readonly [number, number, number]
+];
+
+type ProjectedPlanePoint3d = ProjectedPlaneTiltPoint & { z?: number };
+type ProjectedPlaneCenter3d = ProjectedPlaneTiltPoint & { z: number };
+
 export interface ProjectedPlaneTiltClamp {
   tiltRad: number;
   clamped: boolean;
@@ -4113,46 +4122,144 @@ export function tiltPointAroundPageAxis(
   const dy = point.y - center.y;
   const alongAxis = dx * ux + dy * uy;
   const acrossAxis = dx * vx + dy * vy;
+  const c = Math.cos(tiltRad);
   const s = Math.sin(tiltRad);
-  const tiltedAlongAxis = alongAxis + acrossAxis * s;
+  const tiltedAcrossAxis = acrossAxis * c;
 
   return {
-    x: center.x + tiltedAlongAxis * ux + acrossAxis * vx,
-    y: center.y + tiltedAlongAxis * uy + acrossAxis * vy,
+    x: center.x + alongAxis * ux + tiltedAcrossAxis * vx,
+    y: center.y + alongAxis * uy + tiltedAcrossAxis * vy,
     z: acrossAxis * s
   };
 }
 
-function retargetProjectedPlaneTiltPointAroundPageAxis(
-  point: ProjectedPlaneTiltPoint,
+function pointZ(point: ProjectedPlanePoint3d): number {
+  const z = point.z ?? 0;
+  return Number.isFinite(z) ? z : 0;
+}
+
+function projectedPlaneRotationMatrix(
+  tiltXRad: number,
+  tiltYRad: number,
+  rotationDegrees = 0
+): Matrix3 {
+  const cx = Math.cos(tiltXRad);
+  const sx = Math.sin(tiltXRad);
+  const cy = Math.cos(tiltYRad);
+  const sy = Math.sin(tiltYRad);
+  const zRad = rotationDegrees * Math.PI / 180;
+  const cz = Math.cos(zRad);
+  const sz = Math.sin(zRad);
+
+  return [
+    [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+    [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+    [-sy, cy * sx, cy * cx]
+  ];
+}
+
+function projectedPlaneAxisRotationMatrix(axisAngleRad: number, tiltRad: number): Matrix3 {
+  const ux = Math.cos(axisAngleRad);
+  const uy = Math.sin(axisAngleRad);
+  const c = Math.cos(tiltRad);
+  const s = Math.sin(tiltRad);
+  const t = 1 - c;
+
+  return [
+    [t * ux * ux + c, t * ux * uy, uy * s],
+    [t * ux * uy, t * uy * uy + c, -ux * s],
+    [-uy * s, ux * s, c]
+  ];
+}
+
+function transposeMatrix3(matrix: Matrix3): Matrix3 {
+  return [
+    [matrix[0][0], matrix[1][0], matrix[2][0]],
+    [matrix[0][1], matrix[1][1], matrix[2][1]],
+    [matrix[0][2], matrix[1][2], matrix[2][2]]
+  ];
+}
+
+function multiplyMatrix3(left: Matrix3, right: Matrix3): Matrix3 {
+  return [
+    [
+      left[0][0] * right[0][0] + left[0][1] * right[1][0] + left[0][2] * right[2][0],
+      left[0][0] * right[0][1] + left[0][1] * right[1][1] + left[0][2] * right[2][1],
+      left[0][0] * right[0][2] + left[0][1] * right[1][2] + left[0][2] * right[2][2]
+    ],
+    [
+      left[1][0] * right[0][0] + left[1][1] * right[1][0] + left[1][2] * right[2][0],
+      left[1][0] * right[0][1] + left[1][1] * right[1][1] + left[1][2] * right[2][1],
+      left[1][0] * right[0][2] + left[1][1] * right[1][2] + left[1][2] * right[2][2]
+    ],
+    [
+      left[2][0] * right[0][0] + left[2][1] * right[1][0] + left[2][2] * right[2][0],
+      left[2][0] * right[0][1] + left[2][1] * right[1][1] + left[2][2] * right[2][1],
+      left[2][0] * right[0][2] + left[2][1] * right[1][2] + left[2][2] * right[2][2]
+    ]
+  ];
+}
+
+function applyMatrix3(matrix: Matrix3, vector: readonly [number, number, number]): [number, number, number] {
+  return [
+    matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
+    matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
+    matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2]
+  ];
+}
+
+function projectedPlaneCenterWithDepth(
   center: ProjectedPlaneTiltPoint,
+  atoms: readonly MoleculeAtom[],
+  options: { useAtomCentroid?: boolean } = {}
+): ProjectedPlaneCenter3d {
+  if (atoms.length === 0) {
+    return {
+      x: center.x,
+      y: center.y,
+      z: 0
+    };
+  }
+
+  const useAtomCentroid = options.useAtomCentroid ?? true;
+
+  return {
+    x: useAtomCentroid
+      ? atoms.reduce((sum, atom) => sum + atom.x, 0) / atoms.length
+      : center.x,
+    y: useAtomCentroid
+      ? atoms.reduce((sum, atom) => sum + atom.y, 0) / atoms.length
+      : center.y,
+    z: atoms.reduce((sum, atom) => sum + pointZ(atom), 0) / atoms.length
+  };
+}
+
+function retargetProjectedPlaneTiltPointAroundPageAxis(
+  point: ProjectedPlanePoint3d,
+  center: ProjectedPlaneCenter3d,
   axisAngleRad: number,
   fromTiltRad: number,
   toTiltRad: number
 ): ProjectedPlaneTiltResult {
-  const ux = Math.cos(axisAngleRad);
-  const uy = Math.sin(axisAngleRad);
-  const vx = -uy;
-  const vy = ux;
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  const alongAxis = dx * ux + dy * uy;
-  const acrossAxis = dx * vx + dy * vy;
-  const fromSin = Math.sin(fromTiltRad);
-  const toSin = Math.sin(toTiltRad);
-  const baseAlongAxis = alongAxis - acrossAxis * fromSin;
-  const tiltedAlongAxis = baseAlongAxis + acrossAxis * toSin;
+  const fromMatrix = projectedPlaneAxisRotationMatrix(axisAngleRad, fromTiltRad);
+  const toMatrix = projectedPlaneAxisRotationMatrix(axisAngleRad, toTiltRad);
+  const deltaMatrix = multiplyMatrix3(toMatrix, transposeMatrix3(fromMatrix));
+  const [x, y, z] = applyMatrix3(deltaMatrix, [
+    point.x - center.x,
+    point.y - center.y,
+    pointZ(point) - center.z
+  ]);
 
   return {
-    x: center.x + tiltedAlongAxis * ux + acrossAxis * vx,
-    y: center.y + tiltedAlongAxis * uy + acrossAxis * vy,
-    z: acrossAxis * toSin
+    x: center.x + x,
+    y: center.y + y,
+    z: center.z + z
   };
 }
 
 function retargetProjectedPlaneTiltPoint(
-  point: ProjectedPlaneTiltPoint,
-  center: ProjectedPlaneTiltPoint,
+  point: ProjectedPlanePoint3d,
+  center: ProjectedPlaneCenter3d,
   fromTiltXRad: number,
   fromTiltYRad: number,
   toTiltXRad: number,
@@ -4160,29 +4267,19 @@ function retargetProjectedPlaneTiltPoint(
   fromRotationDegrees = 0,
   toRotationDegrees = fromRotationDegrees
 ): ProjectedPlaneTiltResult {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  const fromRotationRad = -fromRotationDegrees * Math.PI / 180;
-  const fromRotationCos = Math.cos(fromRotationRad);
-  const fromRotationSin = Math.sin(fromRotationRad);
-  const localX = dx * fromRotationCos - dy * fromRotationSin;
-  const localY = dx * fromRotationSin + dy * fromRotationCos;
-  const fromXShear = Math.sin(fromTiltXRad);
-  const fromYShear = Math.sin(fromTiltYRad);
-  const baseY = localY - fromYShear * localX;
-  const baseX = localX - fromXShear * baseY;
-  const toXShear = Math.sin(toTiltXRad);
-  const toYShear = Math.sin(toTiltYRad);
-  const projectedX = baseX + baseY * toXShear;
-  const projectedY = baseY + projectedX * toYShear;
-  const toRotationRad = toRotationDegrees * Math.PI / 180;
-  const toRotationCos = Math.cos(toRotationRad);
-  const toRotationSin = Math.sin(toRotationRad);
+  const fromMatrix = projectedPlaneRotationMatrix(fromTiltXRad, fromTiltYRad, fromRotationDegrees);
+  const toMatrix = projectedPlaneRotationMatrix(toTiltXRad, toTiltYRad, toRotationDegrees);
+  const deltaMatrix = multiplyMatrix3(toMatrix, transposeMatrix3(fromMatrix));
+  const [x, y, z] = applyMatrix3(deltaMatrix, [
+    point.x - center.x,
+    point.y - center.y,
+    pointZ(point) - center.z
+  ]);
 
   return {
-    x: center.x + projectedX * toRotationCos - projectedY * toRotationSin,
-    y: center.y + projectedX * toRotationSin + projectedY * toRotationCos,
-    z: baseY * toXShear - baseX * toYShear
+    x: center.x + x,
+    y: center.y + y,
+    z: center.z + z
   };
 }
 
@@ -4262,9 +4359,16 @@ export function tiltNativeMoleculeProjectedPlane(
     };
   }
 
-  const projectedPlaneCenter = useTiltVector && transform.tiltCenterX !== undefined && transform.tiltCenterY !== undefined
-    ? { x: transform.tiltCenterX, y: transform.tiltCenterY }
+  const hasStoredTiltCenter = useTiltVector && transform.tiltCenterX !== undefined && transform.tiltCenterY !== undefined;
+  const projectedPlaneCenterPoint: ProjectedPlaneTiltPoint = hasStoredTiltCenter
+    ? {
+        x: transform.tiltCenterX ?? center.x,
+        y: transform.tiltCenterY ?? center.y
+      }
     : center;
+  const projectedPlaneCenter = projectedPlaneCenterWithDepth(projectedPlaneCenterPoint, molecule.atoms, {
+    useAtomCentroid: !hasStoredTiltCenter
+  });
   const tiltedGeometry = normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => {
@@ -4289,7 +4393,8 @@ export function tiltNativeMoleculeProjectedPlane(
       return {
         ...atom,
         x: roundGeometryCoordinate(point.x),
-        y: roundGeometryCoordinate(point.y)
+        y: roundGeometryCoordinate(point.y),
+        z: roundGeometryCoordinate(point.z)
       };
     })
   });
@@ -4407,6 +4512,8 @@ export function tiltNativeMoleculePartsProjectedPlane(
       };
   }
 
+  const targetAtoms = molecule.atoms.filter((atom) => targetAtomIds.has(atom.id));
+  const projectedPlaneCenter = projectedPlaneCenterWithDepth(center, targetAtoms);
   const tilted = normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => {
@@ -4417,7 +4524,7 @@ export function tiltNativeMoleculePartsProjectedPlane(
       const point = useTiltVector
         ? retargetProjectedPlaneTiltPoint(
             atom,
-            center,
+            projectedPlaneCenter,
             fromTiltVector.tiltXRad,
             fromTiltVector.tiltYRad,
             resolvedTiltVector.tiltXRad,
@@ -4427,7 +4534,7 @@ export function tiltNativeMoleculePartsProjectedPlane(
           )
         : retargetProjectedPlaneTiltPointAroundPageAxis(
             atom,
-            center,
+            projectedPlaneCenter,
             axisAngleRad,
             fromTiltVector.tiltXRad,
             resolvedTiltVector.tiltXRad
@@ -4435,7 +4542,8 @@ export function tiltNativeMoleculePartsProjectedPlane(
       return {
         ...atom,
         x: roundGeometryCoordinate(point.x),
-        y: roundGeometryCoordinate(point.y)
+        y: roundGeometryCoordinate(point.y),
+        z: roundGeometryCoordinate(point.z)
       };
     })
   });
@@ -5460,7 +5568,10 @@ function nativeMoleculeGeometryOrTransformChanged(before: MoleculeObject, after:
 
   return before.atoms.some((atom, index) => {
     const nextAtom = after.atoms[index];
-    return !nextAtom || Math.abs(atom.x - nextAtom.x) > 0.001 || Math.abs(atom.y - nextAtom.y) > 0.001;
+    return !nextAtom ||
+      Math.abs(atom.x - nextAtom.x) > 0.001 ||
+      Math.abs(atom.y - nextAtom.y) > 0.001 ||
+      Math.abs(pointZ(atom) - pointZ(nextAtom)) > 0.001;
   });
 }
 

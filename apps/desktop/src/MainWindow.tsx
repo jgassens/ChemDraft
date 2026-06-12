@@ -467,7 +467,7 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 45;
 const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.12.7.12-codex";
+const CURRENT_BUILD_STAMP = "6.12.7.59-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object

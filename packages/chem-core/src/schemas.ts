@@ -100,6 +100,7 @@ export const MoleculeAtomSchema = z
     element: z.string().min(1),
     x: z.number().finite(),
     y: z.number().finite(),
+    z: z.number().finite().optional(),
     formalCharge: z.number().int().default(0),
     labelVisible: z.boolean().optional()
   })
