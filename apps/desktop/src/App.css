@@ -1633,6 +1633,54 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.native-molecule-tilt3d-handle {
+  position: absolute;
+  top: -34px;
+  left: calc(50% + 34px);
+  z-index: 3;
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  color: var(--cd-accent);
+  background: var(--cd-bg-control-opaque);
+  border: 1.5px solid var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+  box-shadow: var(--cd-focus-ring);
+  cursor: grab;
+  place-items: center;
+  pointer-events: all;
+  transform: translateX(-50%);
+}
+
+.native-molecule-tilt3d-handle::before {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1.5px;
+  height: 11px;
+  background: linear-gradient(to bottom, var(--cd-accent), rgb(29 127 104 / 12%));
+  content: "";
+  transform: translateX(-50%);
+}
+
+.native-molecule-tilt3d-handle:hover {
+  background: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+  box-shadow: var(--cd-focus-ring);
+  color: var(--cd-accent-strong);
+}
+
+.native-molecule-tilt3d-handle:active {
+  cursor: grabbing;
+}
+
+.native-molecule-tilt3d-handle svg {
+  width: 19px;
+  height: 19px;
+  pointer-events: none;
+}
+
 .native-molecule-resize-handle {
   position: absolute;
   z-index: 3;
@@ -1770,6 +1818,34 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+.native-molecule-tilt3d-readout {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 17px;
+  padding: 0 5px;
+  border: 1px solid var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control-opaque);
+  box-shadow: var(--cd-focus-ring);
+  color: var(--cd-accent-text);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.native-molecule-tilt3d-readout[data-tilt3d-limited="true"] {
+  border-color: var(--cd-danger);
+  color: var(--cd-danger-strong);
+}
+
 .native-molecule-rotate-arc,
 .native-molecule-rotate-arrow {
   fill: none;
@@ -1777,6 +1853,20 @@ textarea:focus-visible,
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.native-molecule-tilt3d-loop,
+.native-molecule-tilt3d-return {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.native-molecule-tilt3d-arrowhead {
+  fill: currentColor;
+  stroke: none;
 }
 
 .native-atom-label {

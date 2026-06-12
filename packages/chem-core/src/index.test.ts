@@ -565,7 +565,11 @@ describe("native document validation and serialization", () => {
       transform: {
         scaleX: 2,
         scaleY: 0.75,
-        rotationDegrees: 45
+        rotationDegrees: 45,
+        tiltXDegrees: 40,
+        tiltYDegrees: -15,
+        tiltCenterX: 320,
+        tiltCenterY: 260
       }
     } satisfies MoleculeObject;
     const document = applyPatch(
@@ -578,7 +582,11 @@ describe("native document validation and serialization", () => {
       transform: {
         scaleX: 2,
         scaleY: 0.75,
-        rotationDegrees: 45
+        rotationDegrees: 45,
+        tiltXDegrees: 40,
+        tiltYDegrees: -15,
+        tiltCenterX: 320,
+        tiltCenterY: 260
       }
     });
   });

@@ -70,6 +70,7 @@ import {
   editActions,
   pageOrientationActions,
   pageSizeActions,
+  structureCleanup3dCommandId,
   structureCleanupCommandId,
   textScriptForCommand,
   textStylePatchForCommand,
@@ -124,6 +125,8 @@ import {
   nativeMoleculePartBounds,
   nativeMoleculeTransformState,
   nativeTemplateForToolCommand,
+  clampProjectedPlaneTiltVectorRadians,
+  projectedPlaneTiltMaxRadians,
   moveDocumentObject,
   moveDocumentObjects,
   selectionBounds,
@@ -142,6 +145,8 @@ import {
   rotateNativeMoleculeParts,
   rotateDocumentObject,
   rotateNativeMoleculeObjectAroundPoint,
+  tiltNativeMoleculeProjectedPlane,
+  tiltNativeMoleculePartsProjectedPlane,
   selectAllDocumentObjects,
   selectDocumentObject,
   selectDocumentObjects,
@@ -313,6 +318,28 @@ type ObjectRotateReadoutState = {
   objectId: string;
   degrees: number;
 };
+type ProjectedPlaneTiltDragState = {
+  pointerId: number;
+  objectId: string;
+  target?: NativeMoleculeSelectionPart;
+  startDocument: ChemDraftDocument;
+  centerPoint: ClientPoint;
+  axisAngleRad: number;
+  startPoint: ClientPoint;
+  startTiltXRad: number;
+  startTiltYRad: number;
+  startRotationDegrees: number;
+  latestPoint: ClientPoint;
+  latestTiltXRad: number;
+  latestTiltYRad: number;
+  clamped: boolean;
+  dragging: boolean;
+};
+type ProjectedPlaneTiltReadoutState = {
+  objectId: string;
+  label: string;
+  limited: boolean;
+};
 type MoleculeResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 type MoleculeResizeDragState = {
   pointerId: number;
@@ -435,10 +462,12 @@ const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
+const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 45;
 const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
+const CURRENT_BUILD_STAMP = "6.12.7.12-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -515,6 +544,8 @@ export function MainWindow({
   const objectDragRef = useRef<ObjectDragState | null>(null);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
+  const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
+  const projectedPlaneTiltReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const moleculeResizeDragRef = useRef<MoleculeResizeDragState | null>(null);
   const moleculeResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
@@ -524,6 +555,7 @@ export function MainWindow({
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
   const placementMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectRotateMachineRef = useRef<InteractionState>(initialInteractionState());
+  const projectedPlaneTiltMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectDragMachineRef = useRef<InteractionState>(initialInteractionState());
   const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
@@ -561,6 +593,7 @@ export function MainWindow({
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
   const [objectRotateReadout, setObjectRotateReadout] = useState<ObjectRotateReadoutState | undefined>();
+  const [projectedPlaneTiltReadout, setProjectedPlaneTiltReadout] = useState<ProjectedPlaneTiltReadoutState | undefined>();
   const [moleculeResizeReadout, setMoleculeResizeReadout] = useState<MoleculeResizeReadoutState | undefined>();
   const [viewport, setViewport] = useState(() =>
     createViewportState({ rulerUnit: rulerUnitForDocument(initialDocument) })
@@ -889,6 +922,9 @@ export function MainWindow({
   useEffect(() => () => {
     if (objectRotateReadoutTimeoutRef.current !== undefined) {
       window.clearTimeout(objectRotateReadoutTimeoutRef.current);
+    }
+    if (projectedPlaneTiltReadoutTimeoutRef.current !== undefined) {
+      window.clearTimeout(projectedPlaneTiltReadoutTimeoutRef.current);
     }
     if (moleculeResizeReadoutTimeoutRef.current !== undefined) {
       window.clearTimeout(moleculeResizeReadoutTimeoutRef.current);
@@ -1383,6 +1419,43 @@ export function MainWindow({
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
     setStatus(changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+
+  const cleanUpSelectedStructure3d = useCallback(() => {
+    const currentDocument = documentRef.current;
+    const selectedObjectIds = [
+      ...new Set([
+        ...currentDocument.selection.objectIds,
+        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+      ])
+    ];
+
+    if (selectedObjectIds.length === 0) {
+      setStatus("No selected structure for 3D cleanup");
+      return;
+    }
+
+    if (selectedObjectIds.length !== 1) {
+      setStatus("Select a single structure for 3D cleanup");
+      return;
+    }
+
+    const objectId = selectedObjectIds[0];
+    const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
+    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
+      setStatus("3D cleanup needs an editable native molecule");
+      return;
+    }
+
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
+    setStatus("3D cleanup requires the conformer-backed cleanup engine");
+  }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -2035,6 +2108,11 @@ export function MainWindow({
           return;
         }
 
+        if (tool.id === structureCleanup3dCommandId) {
+          cleanUpSelectedStructure3d();
+          return;
+        }
+
         if (applyTextStyleCommand(tool.id)) {
           return;
         }
@@ -2124,6 +2202,7 @@ export function MainWindow({
     applyTextStyleCommand,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
+    cleanUpSelectedStructure3d,
     cleanUpSelectedStructure,
     commitDocumentChange,
     deleteHoveredNativeTarget,
@@ -2202,9 +2281,38 @@ export function MainWindow({
     };
   }, [applyDetectedClipboardPayload]);
 
+  const clearProjectedPlaneTiltDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
+    const drag = projectedPlaneTiltDragRef.current;
+    if (!drag || (event && drag.pointerId !== event.pointerId)) {
+      return;
+    }
+
+    projectedPlaneTiltDragRef.current = null;
+    const page = pageRef.current;
+    if (page?.hasPointerCapture(drag.pointerId)) {
+      page.releasePointerCapture(drag.pointerId);
+    }
+    const currentTarget = event?.currentTarget;
+    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
+      currentTarget.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (shouldIgnoreShortcutTarget(event.target) || event.defaultPrevented) {
+        return;
+      }
+
+      if (event.key === "Escape" && projectedPlaneTiltDragRef.current) {
+        const projectedPlaneTiltDrag = projectedPlaneTiltDragRef.current;
+        event.preventDefault();
+        projectedPlaneTiltMachineRef.current = initialInteractionState();
+        replacePresentDocument(projectedPlaneTiltDrag.startDocument);
+        setSelectedNativeMoleculePart(projectedPlaneTiltDrag.target);
+        clearProjectedPlaneTiltDrag();
+        setProjectedPlaneTiltReadout(undefined);
+        setStatus("3D rotate canceled");
         return;
       }
 
@@ -2235,7 +2343,7 @@ export function MainWindow({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [selectedNativeMoleculePart, shortcutRegistry]);
+  }, [clearProjectedPlaneTiltDrag, replacePresentDocument, selectedNativeMoleculePart, shortcutRegistry]);
 
   useEffect(() => {
     if (!nativePalette) {
@@ -2782,6 +2890,45 @@ export function MainWindow({
       : rotateDocumentObject(drag.startDocument, drag.objectId, degrees);
   }, []);
 
+  const projectedPlaneTiltFromDrag = useCallback((
+    drag: ProjectedPlaneTiltDragState,
+    point: ClientPoint
+  ) => {
+    const tiltDelta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
+    const tiltXRad = drag.startTiltXRad + tiltDelta.xRad;
+    const tiltYRad = drag.startTiltYRad + tiltDelta.yRad;
+    return drag.target
+      ? tiltNativeMoleculePartsProjectedPlane(
+        drag.startDocument,
+        drag.target,
+        drag.centerPoint,
+        drag.axisAngleRad,
+        tiltXRad,
+        {
+          fromTiltRad: drag.startTiltXRad,
+          fromTiltYRad: drag.startTiltYRad,
+          tiltYRad,
+          fromRotationDegrees: drag.startRotationDegrees,
+          rotationDegrees: drag.startRotationDegrees
+        }
+      )
+      : tiltNativeMoleculeProjectedPlane(
+        drag.startDocument,
+        drag.objectId,
+        drag.centerPoint,
+        drag.axisAngleRad,
+        tiltXRad,
+        {
+          fromTiltRad: drag.startTiltXRad,
+          fromTiltYRad: drag.startTiltYRad,
+          tiltYRad,
+          fromRotationDegrees: drag.startRotationDegrees,
+          rotationDegrees: drag.startRotationDegrees,
+          persistTransform: true
+        }
+      );
+  }, []);
+
   const previewObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint) => {
     drag.latestPoint = point;
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
@@ -2798,6 +2945,50 @@ export function MainWindow({
     }, 1200);
     replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
   }, [objectRotateDocumentFromDrag, replacePresentDocument]);
+
+  const showProjectedPlaneTiltReadout = useCallback((
+    objectId: string,
+    tiltXRad: number,
+    tiltYRad: number,
+    limited: boolean,
+    hold = false
+  ) => {
+    if (projectedPlaneTiltReadoutTimeoutRef.current !== undefined) {
+      window.clearTimeout(projectedPlaneTiltReadoutTimeoutRef.current);
+      projectedPlaneTiltReadoutTimeoutRef.current = undefined;
+    }
+
+    setProjectedPlaneTiltReadout({
+      objectId,
+      label: projectedPlaneTiltReadoutLabel(tiltXRad, tiltYRad),
+      limited
+    });
+
+    if (hold) {
+      projectedPlaneTiltReadoutTimeoutRef.current = window.setTimeout(() => {
+        projectedPlaneTiltReadoutTimeoutRef.current = undefined;
+        setProjectedPlaneTiltReadout(undefined);
+      }, 1200);
+    }
+  }, []);
+
+  const previewProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    const result = projectedPlaneTiltFromDrag(drag, point);
+    drag.latestTiltXRad = result.tiltXRad;
+    drag.latestTiltYRad = result.tiltYRad;
+    drag.clamped = result.clamped;
+    showProjectedPlaneTiltReadout(
+      drag.objectId,
+      result.tiltXRad,
+      result.tiltYRad,
+      result.clamped
+    );
+    replacePresentDocument(result.document);
+    setStatus(result.clamped
+      ? "3D rotate limited: full-turn tilt limit reached"
+      : `3D rotate: ${projectedPlaneTiltReadoutLabel(result.tiltXRad, result.tiltYRad)}`);
+  }, [projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout]);
 
   const previewNativeDoubleBondSideDrag = useCallback((drag: NativeBondEditDragState, point: ClientPoint) => {
     const selectedStartDocument = selectDocumentObject(drag.startDocument, drag.target.objectId);
@@ -2853,6 +3044,28 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
+
+  const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
+    const result = projectedPlaneTiltFromDrag(drag, point);
+    drag.latestTiltXRad = result.tiltXRad;
+    drag.latestTiltYRad = result.tiltYRad;
+    drag.clamped = result.clamped;
+    showProjectedPlaneTiltReadout(
+      drag.objectId,
+      result.tiltXRad,
+      result.tiltYRad,
+      result.clamped,
+      true
+    );
+    if (!result.changed || result.document === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, result.document));
+    return true;
+  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout]);
 
   const showMoleculeResizeReadout = useCallback((objectId: string, scale: MoleculeResizeScale, hold = false) => {
     if (moleculeResizeReadoutTimeoutRef.current !== undefined) {
@@ -3291,6 +3504,40 @@ export function MainWindow({
       return;
     }
 
+    const projectedPlaneTiltDrag = projectedPlaneTiltDragRef.current;
+    if (projectedPlaneTiltDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      projectedPlaneTiltDrag.latestPoint = point;
+      projectedPlaneTiltMachineRef.current = interactionReducer(projectedPlaneTiltMachineRef.current, {
+        type: "pointerMove",
+        pointerId: event.pointerId,
+        world: point,
+        target: { kind: "empty" }
+      });
+      const nowDragging = projectedPlaneTiltMachineRef.current.phase === "dragging";
+      if (!projectedPlaneTiltDrag.dragging && nowDragging) {
+        projectedPlaneTiltDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(projectedPlaneTiltDrag.target);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (projectedPlaneTiltDrag.dragging) {
+        previewProjectedPlaneTilt(projectedPlaneTiltDrag, point);
+      }
+      return;
+    }
+
     const objectRotateDrag = objectRotateDragRef.current;
     if (objectRotateDrag?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -3441,6 +3688,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     previewObjectDrag,
     previewObjectRotateDrag,
+    previewProjectedPlaneTilt,
     previewMoleculeResize,
     previewNativePartDrag,
     previewNativePlacementDrag,
@@ -3481,6 +3729,28 @@ export function MainWindow({
       const changed = commitTextResize(textResize, point);
       clearTextResize(event);
       setStatus(changed ? "Resized text box" : "Text box size unchanged");
+      return;
+    }
+
+    const projectedPlaneTiltDrag = projectedPlaneTiltDragRef.current;
+    if (projectedPlaneTiltDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? projectedPlaneTiltDrag.latestPoint;
+      projectedPlaneTiltMachineRef.current = initialInteractionState();
+      if (projectedPlaneTiltDrag.dragging) {
+        const changed = commitProjectedPlaneTilt(projectedPlaneTiltDrag, point);
+        setStatus(changed
+          ? projectedPlaneTiltDrag.clamped
+            ? "3D rotate limited: full-turn tilt limit reached"
+            : "3D rotate applied"
+          : "3D rotate canceled");
+      } else {
+        replacePresentDocument(projectedPlaneTiltDrag.startDocument);
+        setProjectedPlaneTiltReadout(undefined);
+        setStatus("3D rotate canceled");
+      }
+      setSelectedNativeMoleculePart(projectedPlaneTiltDrag.target);
+      clearProjectedPlaneTiltDrag(event);
       return;
     }
 
@@ -3594,6 +3864,7 @@ export function MainWindow({
     clearNativePartDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
+    clearProjectedPlaneTiltDrag,
     clearNativePlacementDrag,
     clearTextResize,
     commitNativePlacementDrag,
@@ -3601,6 +3872,7 @@ export function MainWindow({
     commitTextResize,
     commitObjectDrag,
     commitObjectRotateDrag,
+    commitProjectedPlaneTilt,
     cycleNativeBondOrder,
     document.pages,
     groupTransformDocument,
@@ -3626,6 +3898,18 @@ export function MainWindow({
     if (textResize?.pointerId === event.pointerId) {
       replacePresentDocument(textResize.startDocument);
       clearTextResize(event);
+    }
+
+    const projectedPlaneTiltDrag = projectedPlaneTiltDragRef.current;
+    if (projectedPlaneTiltDrag?.pointerId === event.pointerId) {
+      projectedPlaneTiltMachineRef.current = initialInteractionState();
+      if (projectedPlaneTiltDrag.dragging) {
+        replacePresentDocument(projectedPlaneTiltDrag.startDocument);
+      }
+      setSelectedNativeMoleculePart(projectedPlaneTiltDrag.target);
+      clearProjectedPlaneTiltDrag(event);
+      setProjectedPlaneTiltReadout(undefined);
+      setStatus("3D rotate canceled");
     }
 
     const objectRotateDrag = objectRotateDragRef.current;
@@ -3659,7 +3943,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearTextResize, replacePresentDocument]);
+  }, [clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -4096,6 +4380,95 @@ export function MainWindow({
         ? "Rotate selected text box"
         : selectedFragmentTarget ? "Rotate selected molecule fragment" : "Rotate selected molecule"
     );
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    document,
+    pagePointFromPointerEvent,
+    replacePresentDocument,
+    selectedNativeMoleculePart,
+    tryWholeMoleculeDoublePress
+  ]);
+
+  const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+
+    const object = findDocumentObject(document, objectId);
+    if (object?.type === "molecule" && tryWholeMoleculeDoublePress(objectId, event)) {
+      return;
+    }
+    const point = pagePointFromPointerEvent(event);
+    const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
+      ? selectedNativeMoleculePart
+      : undefined;
+    const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
+      ? nativeMoleculePartBounds(object, selectedFragmentTarget)
+      : undefined;
+    if (
+      object?.type !== "molecule" ||
+      !isNativeMoleculeGraph(object) ||
+      object.atoms.length === 0 ||
+      !point ||
+      (
+        !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) &&
+        selectedFragmentBounds === undefined
+      )
+    ) {
+      setStatus("Select a molecule or molecule fragment for 3D rotate");
+      return;
+    }
+
+    const selectedDocument = document.selection.objectIds.includes(objectId)
+      ? document
+      : selectDocumentObject(document, objectId);
+    replacePresentDocument(selectedDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(selectedFragmentTarget);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setProjectedPlaneTiltReadout(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    const transform = nativeMoleculeTransformState(object);
+    const startTiltXRad = selectedFragmentTarget
+      ? 0
+      : (transform.tiltXDegrees ?? 0) * Math.PI / 180;
+    const startTiltYRad = selectedFragmentTarget
+      ? 0
+      : (transform.tiltYDegrees ?? 0) * Math.PI / 180;
+    const startRotationDegrees = selectedFragmentTarget ? 0 : transform.rotationDegrees;
+    projectedPlaneTiltDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      target: selectedFragmentTarget,
+      startDocument: selectedDocument,
+      centerPoint: selectedFragmentBounds ? documentObjectCenter(selectedFragmentBounds) : documentObjectCenter(object),
+      axisAngleRad: 0,
+      startPoint: point,
+      startTiltXRad,
+      startTiltYRad,
+      startRotationDegrees,
+      latestPoint: point,
+      latestTiltXRad: startTiltXRad,
+      latestTiltYRad: startTiltYRad,
+      clamped: false,
+      dragging: false
+    };
+    projectedPlaneTiltMachineRef.current = interactionReducer(initialInteractionState(), {
+      type: "pointerDown",
+      pointerId: event.pointerId,
+      world: point,
+      target: { kind: "object", objectId },
+      dragKind: "projected-plane-tilt"
+    });
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus(selectedFragmentTarget ? "3D rotate: drag to tilt/twist selected fragment" : "3D rotate: drag to tilt/twist");
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
@@ -4804,6 +5177,9 @@ export function MainWindow({
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
                       rotateReadout={objectRotateReadout?.objectId === object.id ? objectRotateReadout : undefined}
+                      projectedPlaneTiltReadout={
+                        projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
+                      }
                       resizeReadout={moleculeResizeReadout?.objectId === object.id ? moleculeResizeReadout : undefined}
                       onPointerDown={handleObjectPointerDown}
                       onPointerMove={handleObjectPointerMove}
@@ -4811,6 +5187,7 @@ export function MainWindow({
                       onPointerCancel={handleObjectPointerCancel}
                       onPointerLeave={handleObjectPointerLeave}
                       onRotatePointerDown={handleObjectRotatePointerDown}
+                      onProjectedPlaneTiltPointerDown={handleProjectedPlaneTiltPointerDown}
                       onMoleculeResizePointerDown={handleMoleculeResizePointerDown}
                       onContextMenu={handleObjectContextMenu}
                       onTextChange={updateTextObjectContent}
@@ -4847,7 +5224,7 @@ export function MainWindow({
           />
         ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
-          Build {__BUILD_STAMP__}
+          Build {CURRENT_BUILD_STAMP} / {__BUILD_STAMP__}
         </div>
       </section>
       {objectContextMenu ? (
@@ -4945,6 +5322,61 @@ export function nativePlacementRotationDegrees(start: ClientPoint, latest: Clien
   }
 
   return Number((Math.atan2(dy, dx) * 180 / Math.PI).toFixed(3));
+}
+
+export function projectedPlaneTiltRadiansFromDrag(start: ClientPoint, latest: ClientPoint): number {
+  const rawTilt = (start.y - latest.y) / PROJECTED_PLANE_TILT_DRAG_PX * projectedPlaneTiltMaxRadians;
+  return Number(clamp(rawTilt, -projectedPlaneTiltMaxRadians, projectedPlaneTiltMaxRadians).toFixed(6));
+}
+
+export function projectedPlaneTiltVectorFromDrag(start: ClientPoint, latest: ClientPoint): { xRad: number; yRad: number } {
+  const rawXTilt = (start.y - latest.y) / PROJECTED_PLANE_TILT_DRAG_PX * projectedPlaneTiltMaxRadians;
+  const rawYTilt = (latest.x - start.x) / PROJECTED_PLANE_TILT_DRAG_PX * projectedPlaneTiltMaxRadians;
+  const clamped = clampProjectedPlaneTiltVectorRadians(rawXTilt, rawYTilt);
+  return {
+    xRad: Number(clamped.tiltXRad.toFixed(6)),
+    yRad: Number(clamped.tiltYRad.toFixed(6))
+  };
+}
+
+export function projectedPlaneTiltReadoutDegrees(tiltRad: number): number {
+  return Math.round(Math.abs(tiltRad) * 180 / Math.PI);
+}
+
+function projectedPlaneTiltSignedReadoutDegrees(tiltRad: number): number {
+  const degrees = Math.round(tiltRad * 180 / Math.PI);
+  return Object.is(degrees, -0) ? 0 : degrees;
+}
+
+export function projectedPlaneTiltReadoutLabel(tiltXRad: number, tiltYRad = 0): string {
+  const xDegrees = projectedPlaneTiltSignedReadoutDegrees(tiltXRad);
+  const yDegrees = projectedPlaneTiltSignedReadoutDegrees(tiltYRad);
+  if (yDegrees === 0) {
+    return `${Math.abs(xDegrees)}°`;
+  }
+  if (xDegrees === 0) {
+    return `Y ${yDegrees}°`;
+  }
+  const parts: string[] = [];
+  if (xDegrees !== 0) {
+    parts.push(`X ${xDegrees}°`);
+  }
+  if (yDegrees !== 0) {
+    parts.push(`Y ${yDegrees}°`);
+  }
+  return parts.join(" / ");
+}
+
+export function projectedPlaneTiltCommitHistory(
+  currentHistory: DocumentHistory,
+  startDocument: ChemDraftDocument,
+  nextDocument: ChemDraftDocument
+): DocumentHistory {
+  return {
+    past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+    present: nextDocument,
+    future: []
+  };
 }
 
 export function rotationReadoutDegrees(angleDegrees: number): number {
@@ -6909,6 +7341,7 @@ function DocumentObjectView({
   freeformPreview,
   doubleBondSidePreview,
   rotateReadout,
+  projectedPlaneTiltReadout,
   resizeReadout,
   onPointerDown,
   onPointerMove,
@@ -6916,6 +7349,7 @@ function DocumentObjectView({
   onPointerCancel,
   onPointerLeave,
   onRotatePointerDown,
+  onProjectedPlaneTiltPointerDown,
   onMoleculeResizePointerDown,
   onContextMenu,
   onTextChange,
@@ -6943,6 +7377,7 @@ function DocumentObjectView({
   freeformPreview?: FreeformNativeBondPreview;
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
   rotateReadout?: ObjectRotateReadoutState;
+  projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
   resizeReadout?: MoleculeResizeReadoutState;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
@@ -6950,6 +7385,7 @@ function DocumentObjectView({
   onPointerCancel(event: ObjectPointerEvent): void;
   onPointerLeave(objectId: string): void;
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
+  onProjectedPlaneTiltPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onMoleculeResizePointerDown(objectId: string, corner: MoleculeResizeCorner, event: PointerEvent<HTMLButtonElement>): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
@@ -6999,6 +7435,9 @@ function DocumentObjectView({
   };
   const handleRotatePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     onRotatePointerDown(object.id, event);
+  };
+  const handleProjectedPlaneTiltPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    onProjectedPlaneTiltPointerDown(object.id, event);
   };
   const handleMoleculeResizePointerDown = (corner: MoleculeResizeCorner) => (event: PointerEvent<HTMLButtonElement>) => {
     onMoleculeResizePointerDown(object.id, corner, event);
@@ -7138,6 +7577,7 @@ function DocumentObjectView({
         ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
+      const canProjectedPlaneTilt = transformFrame !== undefined;
       const transformFrameStyle = transformFrame ? {
         left: `calc(${transformFrame.x}px * var(--page-scale))`,
         top: `calc(${transformFrame.y}px * var(--page-scale))`,
@@ -7349,6 +7789,24 @@ function DocumentObjectView({
                   <RotateSelectionReadout degrees={rotateReadout.degrees} />
                 ) : null}
               </button>
+              {canProjectedPlaneTilt ? (
+                <button
+                  type="button"
+                  className="native-molecule-tilt3d-handle"
+                  aria-label={`3D rotate ${transformTargetLabel}`}
+                  data-selection-tilt3d-handle="true"
+                  title={`3D rotate ${transformTargetLabel}`}
+                  onPointerDown={handleProjectedPlaneTiltPointerDown}
+                >
+                  <ProjectedPlaneTiltIcon />
+                  {projectedPlaneTiltReadout ? (
+                    <ProjectedPlaneTiltReadout
+                      label={projectedPlaneTiltReadout.label}
+                      limited={projectedPlaneTiltReadout.limited}
+                    />
+                  ) : null}
+                </button>
+              ) : null}
             </div>
           ) : null}
           {editingAtomLabel ? object.atoms
@@ -7816,6 +8274,38 @@ function RotateSelectionReadout({ degrees }: { degrees: number }) {
     >
       {degrees}
       <span aria-hidden="true">°</span>
+    </span>
+  );
+}
+
+function ProjectedPlaneTiltIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" data-tilt3d-icon="circular-arrow">
+      <path
+        className="native-molecule-tilt3d-loop"
+        d="M4.2 12.4c0-4.1 4-7.2 9-7.2 4.7 0 8.4 2.8 8.6 6.7"
+      />
+      <path
+        className="native-molecule-tilt3d-return"
+        d="M4.7 14.1c1.4 2.9 4.7 4.7 8.7 4.7"
+      />
+      <path
+        className="native-molecule-tilt3d-arrowhead"
+        d="M11.2 10.6l7.2 5.5-7.2 5.5v-3.7H7.9v-3.6h3.3z"
+      />
+    </svg>
+  );
+}
+
+function ProjectedPlaneTiltReadout({ label, limited }: { label: string; limited: boolean }) {
+  return (
+    <span
+      className="native-molecule-tilt3d-readout"
+      data-tilt3d-readout="true"
+      data-tilt3d-limited={limited ? "true" : undefined}
+      aria-label={limited ? `3D rotate limited ${label}` : `3D rotate ${label}`}
+    >
+      {label}
     </span>
   );
 }

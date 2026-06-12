@@ -164,7 +164,11 @@ export const MoleculeTransformStateSchema = z
   .object({
     scaleX: z.number().finite().positive().default(1),
     scaleY: z.number().finite().positive().default(1),
-    rotationDegrees: z.number().finite().default(0)
+    rotationDegrees: z.number().finite().default(0),
+    tiltXDegrees: z.number().finite().optional(),
+    tiltYDegrees: z.number().finite().optional(),
+    tiltCenterX: z.number().finite().optional(),
+    tiltCenterY: z.number().finite().optional()
   })
   .strict();
 
