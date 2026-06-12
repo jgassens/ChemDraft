@@ -29,9 +29,11 @@ export interface Point {
 export type DragKind =
   | "text-resize"
   | "object-rotate"
+  | "projected-plane-tilt"
   | "molecule-resize"
   | "group-resize"
   | "group-rotate"
+  | "group-projected-plane-tilt"
   | "object-move"
   | "native-part"
   | "freeform-bond"
@@ -81,9 +83,11 @@ export type InteractionEvent =
 export const DRAG_THRESHOLDS: Record<DragKind, number> = {
   "text-resize": 0,
   "object-rotate": 4,
+  "projected-plane-tilt": 4,
   "molecule-resize": 4,
   "group-resize": 4,
   "group-rotate": 4,
+  "group-projected-plane-tilt": 4,
   "object-move": 4,
   "native-part": 4,
   "freeform-bond": 6,
