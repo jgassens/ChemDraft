@@ -1,6 +1,6 @@
 # Agent Instructions for ChemDraft
 
-**Current Build**: 6.10.18.45-fable
+**Current Build**: 6.11.22.12-fable
 
 > [!IMPORTANT]
 > **Agent Instruction:** Every time you finish a slice of work or make significant changes, you MUST update the `**Current Build**` stamp above AND the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx` (in the viewport's bottom right corner).
@@ -81,6 +81,7 @@ template-library   Owns original templates, abbreviations/superatoms, and style 
 toolset-registry   Owns typed toolset manifests, built-in/plugin/user toolset models, customization state, menu models, and command-ID validation
 viewport-engine    Owns viewport state, coordinate conversion, zoom math, and ruler render state
 apps/desktop/src/surfaces  Local UX surface metadata scaffold for menu/status/canvas-control/panel chrome; metadata only
+apps/desktop/src/agentBridge  Opt-in local automation bridge for agent QA; commands/pointers only, no direct document mutation
 plugin-api         Defines public plugin API types
 plugin-host        Loads plugins, validates manifests, enforces permissions
 export-engine      Coordinates export formats
@@ -497,6 +498,91 @@ UX surface tests should focus on command routing, surface registration, owner/us
 The local `apps/desktop/src/surfaces` module may describe menu, status, canvas-control, panel-trigger, and empty-state metadata. It must not own chemistry behavior, document mutation, plugin permissions, command implementation, or rendering side effects. Surface metadata may reference command IDs, but command implementation stays in the command registry or the relevant owning package.
 
 Disabled future surfaces, including `surface.canvas.addPageAfter`, must not be rendered as active controls until the referenced command exists and is wired. Phase 6.5 page-size infrastructure is closed out; the next implementation lane is Phase 7 core drawing productivity, not a full UX registry package, add-page button, plugin surface renderer, or customization UI.
+
+### 5.25 Tauri Agent Bridge
+
+The Agent Bridge is a local opt-in QA and automation surface for ChemDraft agents. It exists to make bugs reproducible through the same command registry, viewport conversion, hit testing, and pointer handlers that real users exercise. It is not a plugin API, not a remote-control feature, and not a substitute for command-backed product architecture.
+
+Implementation ownership:
+
+```text
+apps/desktop/src/agentBridge.ts        TypeScript bridge API, permission resolution, synthetic pointer dispatch
+apps/desktop/src/MainWindow.tsx        Installs window.__CHEMDRAFT_AGENT__ and maps bridge calls to app state
+apps/desktop/src-tauri/src/lib.rs      Native opt-in gate through agent_bridge_status
+apps/desktop/src/agentBridge.test.ts   Bridge command, pointer, install, and lasso regression tests
+```
+
+Enablement must stay explicit:
+
+```bash
+CHEMDRAFT_AGENT_BRIDGE=1 pnpm --filter @chemdraft/desktop dev
+pnpm --filter @chemdraft/desktop dev -- --chemdraft-agent-bridge
+```
+
+For web-preview/debug-only runs, the renderer may also install the bridge with:
+
+```text
+http://127.0.0.1:5173/?agentBridge=1
+localStorage["chemdraft.agentBridge"] = "enabled"
+```
+
+The installed browser global is:
+
+```ts
+window.__CHEMDRAFT_AGENT__
+```
+
+The bridge exposes these operations:
+
+- `snapshot()` returns the current document, selected object IDs, selected native molecule part, active tool command ID, viewport state, file state, build stamp, and object summaries.
+- `command(commandId)` invokes a registered command ID and waits for the app to settle. Command handlers must be awaited; do not reintroduce fire-and-forget command dispatch.
+- `resolvePoint(target)` converts `page`, `client`, `objectId`, `atom`, or `bond` targets into page and client coordinates.
+- `hitTest(target)` reports the app's native hit-test result at a bridge target.
+- `pointerDown`, `pointerMove`, `pointerUp`, and `pointerCancel` dispatch synthetic pointer events through the rendered page and preserve pointer target capture semantics.
+- `click(target)` is a pointer down/up convenience and must still route through the same pointer handlers as the UI.
+- `drag(request)` is a straight-line drag convenience only. Use explicit pointer calls for freehand lasso or any gesture that needs a polygon.
+- `waitForIdle()` waits for rendering/animation-frame settling and returns a fresh snapshot.
+
+Rules:
+
+- The bridge must never mutate `chem-core` documents directly. All behavior must route through command IDs, page/document pointer handlers, controlled document APIs, or existing app workflows.
+- The bridge must not bypass plugin permissions, command registration, toolset validation, viewport conversion, native molecule hit testing, or document history.
+- The bridge must be disabled by default in native desktop runs. Do not expose it in public builds without the explicit environment variable or launch argument.
+- Do not add network access, file access, clipboard access, native execution, or cross-window control to the bridge unless a task explicitly scopes it and tests cover the permission boundary.
+- Bridge snapshots may contain full document state. Treat them as local debugging data, not telemetry, logs, or shareable user data.
+- Bridge commands should use stable command IDs such as `tool.bond`, `tool.lasso`, `tool.eraser`, and `document.save`, never toolbar labels or DOM selectors.
+- Bridge pointer tests should prefer page/object/atom/bond targets over raw client coordinates unless the bug is specifically about screen-coordinate conversion.
+- After every bridge `command`, `click`, or pointer gesture, call `waitForIdle()` or use the returned snapshot before asserting state.
+
+Required bridge QA for pointer-sensitive work:
+
+```ts
+const agent = window.__CHEMDRAFT_AGENT__;
+await agent.command("tool.bond");
+await agent.click({ page: { x: 300, y: 300 } });
+await agent.command("tool.lasso");
+agent.pointerDown({ page: { x: 280, y: 296 } }, { pointerId: 31, buttons: 1 });
+agent.pointerMove({ page: { x: 320, y: 296 } }, { pointerId: 31, buttons: 1 });
+agent.pointerMove({ page: { x: 320, y: 304 } }, { pointerId: 31, buttons: 1 });
+agent.pointerMove({ page: { x: 280, y: 304 } }, { pointerId: 31, buttons: 1 });
+agent.pointerUp({ page: { x: 280, y: 296 } }, { pointerId: 31, buttons: 0 });
+const snapshot = await agent.waitForIdle();
+```
+
+For lasso regressions, assert the intended selection contract explicitly:
+
+- Tight lasso over atoms/bonds: `snapshot.selectedNativeMoleculePart?.kind === "parts"` and `snapshot.selection.objectIds` is empty.
+- Whole-object lasso: `snapshot.selection.objectIds` contains the molecule ID and `snapshot.selectedNativeMoleculePart` is undefined.
+- Lasso tool chrome: transform resize/rotate handles must not intercept lasso pointer gestures.
+
+Required verification when changing the bridge or bridge-tested pointer behavior:
+
+```bash
+pnpm vitest run apps/desktop/src/agentBridge.test.ts apps/desktop/src/App.test.ts apps/desktop/src/drawingTools.test.ts
+pnpm lint
+cargo test agent_bridge
+git diff --check
+```
 
 ## 6. Package-specific rules
 

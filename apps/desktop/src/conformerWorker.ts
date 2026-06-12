@@ -15,32 +15,61 @@
 import {
   ensureOclResources,
   generate3DConformerProgressive,
-  setOclResourcesUrl
+  setOclResourcesUrl,
+  withOclConformerTrace
 } from "@chemdraft/ocl-adapter";
 import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import { oclResourcesUrl } from "./oclResources";
+import {
+  createSpin3dTraceEvent,
+  createSpin3dTraceEventFromOcl,
+  startSpin3dTraceSpan,
+  type Spin3dTraceEvent
+} from "./conformerDebug";
 
 export interface ConformerWorkRequest {
-  kind: "generate" | "prefetch" | "warmup";
+  kind: "generate" | "prefetch" | "warmup" | "cancel";
   id: number;
   molfile?: string;
   originalAtomCount?: number;
+  sessionId?: string;
 }
 
 export interface ConformerWorkResponse {
   id: number;
-  stage: "embedded" | "refined" | "error" | "warmed";
+  stage: "embedded" | "refined" | "error" | "warmed" | "trace" | "complete";
   result?: Generate3DConformerResult;
   message?: string;
+  trace?: Spin3dTraceEvent;
 }
 
-/** Depiction-grade cap — reaches essentially the converged energy at half the cost. */
-const REFINE_MAX_ITERATIONS = 800;
+/**
+ * Depiction-grade minimisation caps, scaled by size: MMFF94 cost per iteration grows
+ * with the atom-pair count, and the planarising/strain-relief work happens in the
+ * early iterations. 800 on a 63-atom branched chain measured ~9s of uninterruptible
+ * worker time; these caps bound the worst case while keeping small molecules ideal.
+ */
+function refineIterationsFor(atomCount: number | undefined): number {
+  const n = atomCount ?? 0;
+  if (n <= 30) return 800;
+  if (n <= 60) return 400;
+  return 240;
+}
+
+/** Speculative work only: structures above this never prefetch-refine in the
+ *  background — the (size-capped) refine runs on demand when actually spun. */
+const BACKGROUND_REFINE_MAX_ATOMS = 40;
 const CACHE_LIMIT = 6;
 
 interface CacheEntry {
   embedded: Generate3DConformerResult;
   refined?: Generate3DConformerResult;
+  traceSessionId?: string;
+  traceRequestId?: number;
+  /** Pending MMFF94 minimisation on the live OCL conformer. Held until consumed —
+   *  run by a background refine job (after a prefetch) or on demand when a real
+   *  generate hits this entry. Cleared once `refined` is populated. */
+  refine?: () => Generate3DConformerResult;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -58,83 +87,350 @@ function cachePut(molfile: string, entry: CacheEntry): void {
 const post = (response: ConformerWorkResponse) =>
   (globalThis as unknown as { postMessage(message: ConformerWorkResponse): void }).postMessage(response);
 
-// Strictly sequential job chain — OCL calls are synchronous and CPU-bound, so
-// there is no benefit to interleaving; ordering keeps cache/in-flight logic trivial.
-let queue: Promise<void> = Promise.resolve();
+function traceSessionId(request: Pick<ConformerWorkRequest, "id" | "kind" | "sessionId">): string {
+  return request.sessionId ?? `${request.kind}:${request.id}`;
+}
 
-function enqueue(job: () => Promise<void>): void {
-  queue = queue.then(job).catch(() => undefined);
+function queueDepth(): number {
+  return pendingGenerates.length +
+    (pendingPrefetch ? 1 : 0) +
+    pendingRefines.length +
+    (pendingWarmup ? 1 : 0);
+}
+
+function postTrace(request: ConformerWorkRequest, input: Omit<Parameters<typeof createSpin3dTraceEvent>[0], "sessionId" | "requestId">): void {
+  post({
+    id: request.id,
+    stage: "trace",
+    trace: createSpin3dTraceEvent({
+      ...input,
+      sessionId: traceSessionId(request),
+      requestId: request.id,
+      path: "worker"
+    })
+  });
+}
+
+function postOclTrace(request: ConformerWorkRequest, event: Parameters<typeof createSpin3dTraceEventFromOcl>[0]): void {
+  post({
+    id: request.id,
+    stage: "trace",
+    trace: createSpin3dTraceEventFromOcl(event, {
+      sessionId: traceSessionId(request),
+      requestId: request.id,
+      path: "worker"
+    })
+  });
+}
+
+// Single-consumer scheduler with PRIORITY + COALESCING. OCL embeds/minimisations are
+// synchronous and uninterruptible once started, so the only lever we have is ordering:
+// the work the user is actively waiting on (`generate`) must run before any speculative
+// work, and speculative work must never pile up behind a click.
+//
+//   • generates  → FIFO queue (usually 0–1 deep), always taken first
+//   • prefetch   → only the NEWEST is kept; a burst of selection changes collapses to
+//                  one job instead of stacking multi-second embeds ahead of a click
+//   • refines    → background MMFF94 passes on prefetched entries (newest first) so a
+//                  prefetched molecule still reaches planar/minimised geometry at idle
+//   • warmup     → coalesced to one, lowest priority (a waiting generate warms OCL itself)
+let running = false;
+const pendingGenerates: ConformerWorkRequest[] = [];
+let pendingPrefetch: ConformerWorkRequest | null = null;
+const pendingRefines: string[] = []; // molfiles with a cached entry awaiting refinement
+let pendingWarmup: ConformerWorkRequest | null = null;
+
+type WorkItem =
+  | { kind: "request"; request: ConformerWorkRequest }
+  | { kind: "refine"; molfile: string };
+
+function takeNextWorkItem(): WorkItem | null {
+  const generate = pendingGenerates.shift();
+  if (generate) return { kind: "request", request: generate };
+  if (pendingPrefetch) {
+    const prefetch = pendingPrefetch;
+    pendingPrefetch = null;
+    return { kind: "request", request: prefetch };
+  }
+  const refineMolfile = pendingRefines.pop(); // newest first — likeliest to be spun
+  if (refineMolfile !== undefined) return { kind: "refine", molfile: refineMolfile };
+  if (pendingWarmup) {
+    const warmup = pendingWarmup;
+    pendingWarmup = null;
+    return { kind: "request", request: warmup };
+  }
+  return null;
+}
+
+/** Run the entry's pending minimisation (once); upgrades the cache in place. */
+function refineEntry(entry: CacheEntry): Generate3DConformerResult | undefined {
+  const refine = entry.refine;
+  if (!refine) return entry.refined;
+  entry.refine = undefined;
+  try {
+    entry.refined = refine();
+  } catch {
+    // Leave the entry embed-only; the embedded stage is already usable.
+  }
+  return entry.refined;
+}
+
+function scheduleBackgroundRefine(molfile: string): void {
+  if (!pendingRefines.includes(molfile)) pendingRefines.push(molfile);
+}
+
+async function drain(): Promise<void> {
+  if (running) return;
+  running = true;
+  try {
+    let item: WorkItem | null;
+    while ((item = takeNextWorkItem()) !== null) {
+      if (item.kind === "refine") {
+        const entry = cache.get(item.molfile);
+        if (entry) {
+          const request: ConformerWorkRequest = {
+            kind: "prefetch",
+            id: entry.traceRequestId ?? 0,
+            sessionId: entry.traceSessionId ?? "background-refine",
+            molfile: item.molfile,
+            originalAtomCount: entry.embedded.originalAtomCount
+          };
+          const span = startSpin3dTraceSpan({
+            sessionId: traceSessionId(request),
+            requestId: request.id,
+            kind: "worker",
+            stage: "worker.background-refine",
+            path: "worker",
+            atomCount: entry.embedded.originalAtomCount
+          }, (trace) => post({ id: request.id, stage: "trace", trace }));
+          try {
+            await withOclConformerTrace((event) => postOclTrace(request, event), async () => refineEntry(entry));
+            span.complete({ warningCount: entry.refined?.warnings.length });
+          } catch (error) {
+            span.fail(error);
+          }
+        }
+      } else if (item.request.kind === "warmup") {
+        await runWarmup(item.request);
+      } else {
+        await runGenerate(item.request);
+      }
+      // Macrotask yield between jobs: message events can't interleave with the
+      // synchronous OCL work above, so without this a queued generate posted
+      // mid-backlog would wait out every remaining speculative job.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } finally {
+    running = false;
+  }
+}
+
+function submit(request: ConformerWorkRequest): void {
+  if (request.kind === "cancel") {
+    // Drop the job if it is still queued; a running OCL call cannot be interrupted.
+    const queuedIndex = pendingGenerates.findIndex((queued) => queued.id === request.id);
+    if (queuedIndex >= 0) {
+      const [cancelled] = pendingGenerates.splice(queuedIndex, 1);
+      postTrace(cancelled, {
+        kind: "worker",
+        stage: "worker.cancelled",
+        status: "info",
+        atomCount: cancelled.originalAtomCount,
+        queueDepth: queueDepth()
+      });
+    } else if (pendingPrefetch?.id === request.id) {
+      pendingPrefetch = null;
+    }
+    return;
+  }
+  if (request.kind === "generate") {
+    // Coalesce duplicate explicit requests: repeated Spin 3D clicks for the same
+    // structure must not stack multi-second engine jobs. The newest request keeps
+    // the queue slot (its caller token is the only live one); superseded entries
+    // finish immediately with a terminal "complete" so the client forgets them.
+    for (let i = pendingGenerates.length - 1; i >= 0; i--) {
+      if (pendingGenerates[i].molfile === request.molfile) {
+        const [superseded] = pendingGenerates.splice(i, 1);
+        post({ id: superseded.id, stage: "complete" });
+        postTrace(superseded, {
+          kind: "worker",
+          stage: "worker.superseded",
+          status: "info",
+          atomCount: superseded.originalAtomCount,
+          queueDepth: queueDepth()
+        });
+      }
+    }
+    pendingGenerates.push(request);
+  } else if (request.kind === "prefetch") {
+    // Already computed? Nothing to do. Otherwise keep only the latest pending prefetch.
+    if (request.molfile && cache.has(request.molfile)) {
+      postTrace(request, {
+        kind: "worker",
+        stage: "worker.prefetch.skip",
+        status: "info",
+        cacheStatus: "hit",
+        atomCount: request.originalAtomCount,
+        queueDepth: queueDepth()
+      });
+      return;
+    }
+    pendingPrefetch = request;
+  } else {
+    pendingWarmup = request;
+  }
+  postTrace(request, {
+    kind: "worker",
+    stage: "worker.submit",
+    status: "info",
+    atomCount: request.originalAtomCount,
+    queueDepth: queueDepth()
+  });
+  void drain();
 }
 
 async function runGenerate(request: ConformerWorkRequest): Promise<void> {
   const molfile = request.molfile ?? "";
   const isPrefetch = request.kind === "prefetch";
+  const runSpan = startSpin3dTraceSpan({
+    sessionId: traceSessionId(request),
+    requestId: request.id,
+    kind: "worker",
+    stage: isPrefetch ? "worker.prefetch" : "worker.generate",
+    path: "worker",
+    atomCount: request.originalAtomCount
+  }, (trace) => post({ id: request.id, stage: "trace", trace }));
   try {
     const hit = cache.get(molfile);
     if (hit) {
       cachePut(molfile, hit); // refresh LRU position
-      if (!isPrefetch) {
-        post({ id: request.id, stage: "embedded", result: hit.embedded });
-        if (hit.refined) post({ id: request.id, stage: "refined", result: hit.refined });
+      postTrace(request, {
+        kind: "worker",
+        stage: "worker.cache",
+        status: "info",
+        cacheStatus: "hit",
+        atomCount: request.originalAtomCount,
+        queueDepth: queueDepth()
+      });
+      if (isPrefetch) {
+        runSpan.complete({ cacheStatus: "hit" });
+        return; // already computed (or computing in background)
       }
-      // A prefetch hit (or a hit still missing refinement) needs no recompute: a
-      // missing `refined` means refinement previously failed setup — don't retry.
+      // The embedded stage goes out immediately — the user can start spinning.
+      post({ id: request.id, stage: "embedded", result: hit.embedded });
+      // If the background refine hasn't landed yet, run it NOW (we're the
+      // user-priority job) so double bonds/conjugation reach planar MMFF94
+      // geometry; it hot-swaps under the live overlay.
+      const refined = await withOclConformerTrace(
+        (event) => postOclTrace(request, event),
+        async () => refineEntry(hit)
+      );
+      if (refined) post({ id: request.id, stage: "refined", result: refined });
+      else post({ id: request.id, stage: "complete" }); // no refined stage will follow
+      runSpan.complete({ cacheStatus: "hit", warningCount: refined?.warnings.length ?? hit.embedded.warnings.length });
       return;
     }
 
-    const { embedded, refine } = await generate3DConformerProgressive(
-      { molfile, originalAtomCount: request.originalAtomCount },
-      { optimize: "auto", maxMinimiseIterations: REFINE_MAX_ITERATIONS }
+    postTrace(request, {
+      kind: "worker",
+      stage: "worker.cache",
+      status: "info",
+      cacheStatus: "miss",
+      atomCount: request.originalAtomCount,
+      queueDepth: queueDepth()
+    });
+    const { embedded, refine } = await withOclConformerTrace(
+      (event) => postOclTrace(request, event),
+      () => generate3DConformerProgressive(
+        { molfile, originalAtomCount: request.originalAtomCount },
+        { optimize: "auto", maxMinimiseIterations: refineIterationsFor(request.originalAtomCount) }
+      )
     );
     if (embedded.embed.status !== "ok") {
       if (!isPrefetch) post({ id: request.id, stage: "embedded", result: embedded });
+      runSpan.complete({ cacheStatus: "miss", warningCount: embedded.warnings.length });
       return; // never cache failures — a retry should re-attempt
     }
     if (!isPrefetch) post({ id: request.id, stage: "embedded", result: embedded });
-    const entry: CacheEntry = { embedded };
+    const entry: CacheEntry = {
+      embedded,
+      refine,
+      traceSessionId: traceSessionId(request),
+      traceRequestId: request.id
+    };
     cachePut(molfile, entry);
 
-    if (refine) {
-      const refined = refine();
-      entry.refined = refined;
-      if (!isPrefetch) post({ id: request.id, stage: "refined", result: refined });
+    if (isPrefetch) {
+      // Don't block the queue with the expensive MMFF94 pass — a click must be able
+      // to jump in after the embed. Small/medium structures refine as a lowest-
+      // priority background job; large ones only refine on demand when actually
+      // spun, so speculative work can never occupy the worker for many seconds.
+      if ((request.originalAtomCount ?? 0) <= BACKGROUND_REFINE_MAX_ATOMS) {
+        scheduleBackgroundRefine(molfile);
+      } else {
+        postTrace(request, {
+          kind: "worker",
+          stage: "worker.refine.deferred",
+          status: "info",
+          atomCount: request.originalAtomCount,
+          queueDepth: queueDepth()
+        });
+      }
+      runSpan.complete({ cacheStatus: "stored", warningCount: embedded.warnings.length });
+      return;
     }
+    const refined = await withOclConformerTrace(
+      (event) => postOclTrace(request, event),
+      async () => refineEntry(entry)
+    );
+    if (refined) post({ id: request.id, stage: "refined", result: refined });
+    else post({ id: request.id, stage: "complete" });
+    runSpan.complete({ cacheStatus: "stored", warningCount: refined?.warnings.length ?? embedded.warnings.length });
   } catch (error) {
     if (!isPrefetch) post({ id: request.id, stage: "error", message: (error as Error).message });
+    runSpan.fail(error);
   }
+}
+
+async function runWarmup(request: ConformerWorkRequest): Promise<void> {
+  const span = startSpin3dTraceSpan({
+    sessionId: traceSessionId(request),
+    requestId: request.id,
+    kind: "worker",
+    stage: "worker.warmup",
+    path: "worker"
+  }, (trace) => post({ id: request.id, stage: "trace", trace }));
+  try {
+    await withOclConformerTrace((event) => postOclTrace(request, event), async () => {
+      await ensureOclResources();
+      // A tiny throwaway embed warms OCL's lazily-built torsion tables + JIT so
+      // the first real molecule doesn't pay the ~1s first-call cost.
+      await generate3DConformerProgressive(
+        {
+          molfile: [
+            "", "  warmup", "",
+            "  3  2  0  0  0  0  0  0  0  0999 V2000",
+            "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+            "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+            "    2.2500    1.2990    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+            "  1  2  1  0  0  0  0",
+            "  2  3  1  0  0  0  0",
+            "M  END"
+          ].join("\n")
+        },
+        { optimize: "none" }
+      );
+    });
+    span.complete();
+  } catch (error) {
+    // Warmup is best-effort; real requests will surface real errors.
+    span.fail(error);
+  }
+  post({ id: request.id, stage: "warmed" });
 }
 
 setOclResourcesUrl(oclResourcesUrl);
 
 globalThis.addEventListener("message", (event: MessageEvent<ConformerWorkRequest>) => {
-  const request = event.data;
-  if (request.kind === "warmup") {
-    enqueue(async () => {
-      try {
-        await ensureOclResources();
-        // A tiny throwaway embed warms OCL's lazily-built torsion tables + JIT so
-        // the first real molecule doesn't pay the ~1s first-call cost.
-        await generate3DConformerProgressive(
-          {
-            molfile: [
-              "", "  warmup", "",
-              "  3  2  0  0  0  0  0  0  0  0999 V2000",
-              "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
-              "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
-              "    2.2500    1.2990    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
-              "  1  2  1  0  0  0  0",
-              "  2  3  1  0  0  0  0",
-              "M  END"
-            ].join("\n")
-          },
-          { optimize: "none" }
-        );
-      } catch {
-        // Warmup is best-effort; real requests will surface real errors.
-      }
-      post({ id: request.id, stage: "warmed" });
-    });
-    return;
-  }
-  enqueue(() => runGenerate(request));
+  submit(event.data);
 });

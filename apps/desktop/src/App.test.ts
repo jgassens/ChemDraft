@@ -48,6 +48,7 @@ import {
 import {
   MainWindow,
   ObjectLayerContextMenu,
+  SelectionLassoOverlay,
   SelectionMarqueeOverlay,
   activeNativeTargetShortcutCommand,
   cumulativeMoleculeResizeScale,
@@ -74,6 +75,7 @@ import {
   rotationDeltaDegrees,
   rotationReadoutDegrees,
   selectionInSelectionRect,
+  selectionInSelectionPolygon,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
   shouldOpenMoleculeEditorFromObjectClick,
@@ -385,6 +387,25 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("height:calc(60px * var(--page-scale))");
   });
 
+  it("renders the lasso overlay in page coordinates", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SelectionLassoOverlay, {
+        points: [
+          { x: 20, y: 30 },
+          { x: 70, y: 35 },
+          { x: 65, y: 90 }
+        ],
+        latestPoint: { x: 20, y: 30 },
+        pageWidth: 816,
+        pageHeight: 1056
+      })
+    );
+
+    expect(markup).toContain("selection-lasso-surface");
+    expect(markup).toContain('viewBox="0 0 816 1056"');
+    expect(markup).toContain("M 20 30 L 70 35 L 65 90");
+  });
+
   it("selects every whole native molecule inside a marquee instead of keeping only the first one", () => {
     const first = insertNativeSingleBondMolecule(createPhase4Document("Multi Marquee"), { x: 220, y: 240 });
     const second = insertNativeSingleBondMolecule(first, { x: 320, y: 240 });
@@ -462,6 +483,134 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(selection.nativeSelection?.kind).not.toBe("molecule");
+  });
+
+  it("selects every whole native molecule inside a lasso polygon", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Multi Lasso"), { x: 220, y: 240 });
+    const second = insertNativeSingleBondMolecule(first, { x: 320, y: 240 });
+    const molecules = second.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const bounds = molecules.reduce(
+      (rect, molecule) => ({
+        left: Math.min(rect.left, molecule.x),
+        top: Math.min(rect.top, molecule.y),
+        right: Math.max(rect.right, molecule.x + molecule.width),
+        bottom: Math.max(rect.bottom, molecule.y + molecule.height)
+      }),
+      { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY, right: 0, bottom: 0 }
+    );
+    const selection = selectionInSelectionPolygon(second.pages[0].objects, [
+      { x: bounds.left - 12, y: bounds.top - 12 },
+      { x: bounds.right + 12, y: bounds.top - 8 },
+      { x: bounds.right + 8, y: bounds.bottom + 12 },
+      { x: bounds.left - 8, y: bounds.bottom + 8 }
+    ]);
+
+    expect(selection.objectIds).toEqual(molecules.map((molecule) => molecule.id));
+    expect(selection.nativeSelection).toBeUndefined();
+  });
+
+  it("does not pull adjacent text into a lasso unless the text box is enclosed", () => {
+    const withMolecule = insertNativeSingleBondMolecule(createPhase4Document("Lasso Text Guard"), { x: 220, y: 240 });
+    const withText = insertNativeTextObject(withMolecule, { x: 264, y: 212 }, "hello");
+    const molecule = withText.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const text = withText.pages[0].objects.find((object): object is DocumentObject =>
+      object.type === "text" && object.text === "hello"
+    );
+    if (!molecule || !text) {
+      throw new Error("Expected molecule and text fixtures.");
+    }
+    const moleculeSelection = selectionInSelectionPolygon(withText.pages[0].objects, [
+      { x: molecule.x - 8, y: molecule.y - 8 },
+      { x: molecule.x + molecule.width + 8, y: molecule.y - 8 },
+      { x: molecule.x + molecule.width + 8, y: molecule.y + molecule.height + 8 },
+      { x: molecule.x - 8, y: molecule.y + molecule.height + 8 }
+    ]);
+    const fullSelection = selectionInSelectionPolygon(withText.pages[0].objects, [
+      { x: Math.min(molecule.x, text.x) - 8, y: Math.min(molecule.y, text.y) - 8 },
+      { x: Math.max(molecule.x + molecule.width, text.x + text.width) + 8, y: Math.min(molecule.y, text.y) - 8 },
+      { x: Math.max(molecule.x + molecule.width, text.x + text.width) + 8, y: Math.max(molecule.y + molecule.height, text.y + text.height) + 8 },
+      { x: Math.min(molecule.x, text.x) - 8, y: Math.max(molecule.y + molecule.height, text.y + text.height) + 8 }
+    ]);
+
+    expect(moleculeSelection.objectIds).toEqual([molecule.id]);
+    expect(moleculeSelection.objectIds).not.toContain(text.id);
+    expect(fullSelection.objectIds).toEqual([molecule.id, text.id]);
+  });
+
+  it("keeps a tight lasso over one native atom as a partial native selection", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Lasso"), { x: 220, y: 240 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const atom = molecule?.atoms.find((candidate) => candidate.id === "atom_001");
+    if (!molecule || !atom) {
+      throw new Error("Expected native molecule atom fixture.");
+    }
+    const selection = selectionInSelectionPolygon(document.pages[0].objects, [
+      { x: atom.x, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y },
+      { x: atom.x, y: atom.y + 5 },
+      { x: atom.x - 5, y: atom.y }
+    ]);
+
+    expect(selection.objectIds).toEqual([]);
+    expect(selection.nativeSelection).toEqual(
+      expect.objectContaining({
+        objectId: molecule.id
+      })
+    );
+    expect(selection.nativeSelection?.kind).not.toBe("molecule");
+  });
+
+  it("keeps a one-atom lasso partial even when the path ends on a duplicated point", () => {
+    // Releasing the pointer without moving appends a point identical to the last
+    // recorded one, creating a zero-length polygon edge. pointOnSegment's degenerate
+    // case used to test true for EVERY point, so pointInPolygon swallowed the whole
+    // page and the lasso grabbed the whole molecule regardless of the drawn path.
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Degenerate Lasso Edge"), { x: 220, y: 240 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const atom = molecule?.atoms.find((candidate) => candidate.id === "atom_001");
+    if (!molecule || !atom) {
+      throw new Error("Expected native molecule atom fixture.");
+    }
+    const selection = selectionInSelectionPolygon(document.pages[0].objects, [
+      { x: atom.x - 5, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y + 5 },
+      { x: atom.x - 5, y: atom.y + 5 },
+      { x: atom.x - 5, y: atom.y - 5 },
+      { x: atom.x - 5, y: atom.y - 5 }
+    ]);
+
+    expect(selection.objectIds).toEqual([]);
+    expect(selection.nativeSelection).toMatchObject({
+      objectId: molecule.id,
+      kind: "parts",
+      atomIds: ["atom_001"]
+    });
+  });
+
+  it("promotes a lasso that encloses every atom to a whole-object selection", () => {
+    // A lasso catching all atoms IS a whole-molecule selection: the user drew around
+    // the structure, so treat it as a movable/resizable unit. Gating this on the
+    // padded object frame (not just atom coverage) made the outcome unpredictable.
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Whole Graph Lasso"), { x: 220, y: 240 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected native molecule fixture.");
+    }
+    const atomXs = molecule.atoms.map((atom) => atom.x);
+    const atomY = molecule.atoms[0]?.y;
+    if (atomY === undefined) {
+      throw new Error("Expected native molecule atom fixture.");
+    }
+    const selection = selectionInSelectionPolygon(document.pages[0].objects, [
+      { x: Math.min(...atomXs) - 1, y: atomY - 4 },
+      { x: Math.max(...atomXs) + 1, y: atomY - 4 },
+      { x: Math.max(...atomXs) + 1, y: atomY + 4 },
+      { x: Math.min(...atomXs) - 1, y: atomY + 4 }
+    ]);
+
+    expect(selection.objectIds).toEqual([molecule.id]);
+    expect(selection.nativeSelection).toBeUndefined();
   });
 
   it("toggles discontiguous native molecule atoms and bonds with selection hits", () => {
@@ -571,6 +720,7 @@ describe("ChemDraft desktop shell", () => {
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length);
     expect(commands.some((command) => command.id === "document.open")).toBe(true);
     expect(commands.some((command) => command.id === "document.saveAs")).toBe(true);
+    expect(commands.some((command) => command.id === "view.toggle3dDebugger")).toBe(true);
     expect(commands.some((command) => command.id === "view.toggleRulers")).toBe(true);
     expect(commands.some((command) => command.id === "page.setSize.legal")).toBe(true);
     expect(commands.some((command) => command.id === "page.setSize.a4")).toBe(true);
@@ -631,6 +781,7 @@ describe("ChemDraft desktop shell", () => {
     expect(viewActions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "view.toggleRulers", title: "Toggle Rulers" }),
+        expect.objectContaining({ id: "view.toggle3dDebugger", title: "Toggle 3D Debugger" }),
         expect.objectContaining({ id: "view.toggleCrosshairs", title: "Toggle Crosshairs" })
       ])
     );
@@ -795,6 +946,8 @@ describe("ChemDraft desktop shell", () => {
   it("keeps unsupported chemistry tools disabled while native single bond is enabled", () => {
     const enabledToolIds = new Set([
       "tool.select",
+      "tool.lasso",
+      "tool.eraser",
       "tool.text",
       "tool.bond",
       "tool.wedgeBond",
@@ -1364,6 +1517,25 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-active-tool-kind="bond"');
     expect(markup).toContain("native-single-bond");
     expect(markup).not.toContain("native-molecule-selection-blob");
+    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain("data-molecule-resize-corner");
+  });
+
+  it("keeps lasso selection highlights visible without transform handles intercepting the drag", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Lasso Tool Selection Chrome"), { x: 200, y: 220 });
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialActiveToolCommandId: "tool.lasso",
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-active-tool="tool.lasso"');
+    expect(markup).toContain('data-active-tool-kind="selection"');
+    expect(markup).toContain("native-molecule-selection-blob");
+    expect(markup).toContain('data-whole-molecule-selection="true"');
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
     expect(markup).not.toContain("data-molecule-resize-corner");
   });

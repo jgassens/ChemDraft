@@ -33,11 +33,72 @@ import type {
 
 let resourcesRegistered = false;
 let resourcesUrlOverride: string | undefined;
+let activeTraceSink: ((event: OclConformerTraceEvent) => void) | undefined;
+let traceCounter = 0;
+
+export type OclTraceStatus = "started" | "completed" | "failed" | "info";
+
+export interface OclConformerTraceEvent {
+  spanId: string;
+  stage: string;
+  status: OclTraceStatus;
+  startedAt: number;
+  endedAt?: number;
+  durationMs?: number;
+  atomCount?: number;
+  message?: string;
+  warningCount?: number;
+  error?: string;
+}
 
 /** OpenChemLib version string (from the package's own constant when present). */
 function oclVersion(): string {
   const v = (OCL as unknown as { version?: string }).version;
   return typeof v === "string" ? v : "unknown";
+}
+
+function oclTraceNow(): number {
+  return Date.now();
+}
+
+function startOclTraceSpan(stage: string, extras: Partial<OclConformerTraceEvent> = {}) {
+  const startedAt = oclTraceNow();
+  const spanId = `${stage}:${++traceCounter}`;
+  emitOclTrace({ ...extras, spanId, stage, status: "started", startedAt });
+
+  return {
+    complete(extra: Partial<OclConformerTraceEvent> = {}) {
+      const endedAt = oclTraceNow();
+      emitOclTrace({
+        ...extras,
+        ...extra,
+        spanId,
+        stage,
+        status: "completed",
+        startedAt,
+        endedAt,
+        durationMs: Math.max(0, endedAt - startedAt)
+      });
+    },
+    fail(error: unknown, extra: Partial<OclConformerTraceEvent> = {}) {
+      const endedAt = oclTraceNow();
+      emitOclTrace({
+        ...extras,
+        ...extra,
+        spanId,
+        stage,
+        status: "failed",
+        startedAt,
+        endedAt,
+        durationMs: Math.max(0, endedAt - startedAt),
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+}
+
+function emitOclTrace(event: OclConformerTraceEvent): void {
+  activeTraceSink?.(event);
 }
 
 /**
@@ -55,6 +116,19 @@ export function setOclResourcesUrl(url: string): void {
   resourcesUrlOverride = url;
 }
 
+export async function withOclConformerTrace<T>(
+  sink: (event: OclConformerTraceEvent) => void,
+  run: () => Promise<T>
+): Promise<T> {
+  const previous = activeTraceSink;
+  activeTraceSink = sink;
+  try {
+    return await run();
+  } finally {
+    activeTraceSink = previous;
+  }
+}
+
 /**
  * Register OCL's static torsion resources exactly once. In Node the bundled
  * `resources.json` is read synchronously from disk; in a browser/Tauri bundle the
@@ -62,7 +136,11 @@ export function setOclResourcesUrl(url: string): void {
  * module-relative default, which only works unbundled).
  */
 export async function ensureOclResources(): Promise<void> {
-  if (resourcesRegistered) return;
+  const span = startOclTraceSpan("resources");
+  if (resourcesRegistered) {
+    span.complete({ message: "already registered" });
+    return;
+  }
   const Resources = (OCL as unknown as {
     Resources?: {
       registerFromNodejs?: () => void;
@@ -71,17 +149,24 @@ export async function ensureOclResources(): Promise<void> {
   }).Resources;
   if (!Resources) {
     resourcesRegistered = true; // nothing to register in this build
+    span.complete({ message: "no resources API" });
     return;
   }
   const nodeVersion = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions
     ?.node;
   const isNode = typeof nodeVersion === "string";
-  if (isNode && Resources.registerFromNodejs) {
-    Resources.registerFromNodejs();
-  } else if (Resources.registerFromUrl) {
-    await Resources.registerFromUrl(resourcesUrlOverride);
+  try {
+    if (isNode && Resources.registerFromNodejs) {
+      Resources.registerFromNodejs();
+    } else if (Resources.registerFromUrl) {
+      await Resources.registerFromUrl(resourcesUrlOverride);
+    }
+    resourcesRegistered = true;
+    span.complete({ message: isNode ? "node" : "url" });
+  } catch (error) {
+    span.fail(error);
+    throw error;
   }
-  resourcesRegistered = true;
 }
 
 type OclMolecule = InstanceType<typeof OCL.Molecule>;
@@ -232,7 +317,15 @@ export async function generate3DConformerProgressive(
   const seed = options.seed ?? 42;
   const optimize = options.optimize ?? "auto";
 
-  const parsed: OclMolecule = OCL.Molecule.fromMolfile(input.molfile);
+  const parseSpan = startOclTraceSpan("parse-molfile");
+  let parsed: OclMolecule;
+  try {
+    parsed = OCL.Molecule.fromMolfile(input.molfile);
+    parseSpan.complete({ atomCount: parsed.getAllAtoms() });
+  } catch (error) {
+    parseSpan.fail(error);
+    throw error;
+  }
   const originalAtomCount = parsed.getAllAtoms();
   const explicitInputHydrogens = countExplicitHydrogens(parsed);
 
@@ -251,8 +344,15 @@ export async function generate3DConformerProgressive(
   const work: OclMolecule = new OCL.Molecule(0, 0);
   parsed.copyMolecule(work);
 
+  const embedSpan = startOclTraceSpan("embed-conformer", { atomCount: originalAtomCount });
   const generator = new OCL.ConformerGenerator(seed);
-  const conformer = generator.getOneConformerAsMolecule(work);
+  let conformer: OclMolecule | null;
+  try {
+    conformer = generator.getOneConformerAsMolecule(work);
+  } catch (error) {
+    embedSpan.fail(error, { atomCount: originalAtomCount });
+    throw error;
+  }
 
   const engine = { name: "openchemlib", version: oclVersion(), parameters: { seed, optimize } } as const;
   const hydrogens = (added: boolean) => ({
@@ -261,6 +361,7 @@ export async function generate3DConformerProgressive(
   });
 
   if (!conformer) {
+    embedSpan.fail(new Error("ConformerGenerator returned no collision-free conformer"), { atomCount: originalAtomCount });
     return {
       embedded: {
         mapping: {
@@ -279,8 +380,11 @@ export async function generate3DConformerProgressive(
       }
     };
   }
+  embedSpan.complete({ atomCount: originalAtomCount });
 
+  const embeddedMappingSpan = startOclTraceSpan("atom-mapping.embedded", { atomCount: originalAtomCount });
   const embeddedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
+  embeddedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: warnings.length });
   const embedded: Generate3DConformerResult = {
     mapping: embeddedMapping,
     originalAtomCount,
@@ -299,6 +403,7 @@ export async function generate3DConformerProgressive(
 
   const refine = (): Generate3DConformerResult => {
     let forceField: Generate3DConformerResult["forceField"];
+    const refineSpan = startOclTraceSpan("mmff94-refine", { atomCount: originalAtomCount });
     try {
       const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
       const rc = options.maxMinimiseIterations !== undefined
@@ -310,6 +415,7 @@ export async function generate3DConformerProgressive(
         returnCode: rc,
         energy: typeof ff.getTotalEnergy === "function" ? ff.getTotalEnergy() : undefined
       };
+      refineSpan.complete({ atomCount: originalAtomCount, message: forceField.status });
     } catch (error) {
       forceField = { name: "MMFF94", status: "setup-failed" };
       warnings.push({
@@ -317,8 +423,11 @@ export async function generate3DConformerProgressive(
         message: `MMFF94 setup failed: ${(error as Error).message}`,
         severity: "warning"
       });
+      refineSpan.fail(error, { atomCount: originalAtomCount });
     }
+    const refinedMappingSpan = startOclTraceSpan("atom-mapping.refined", { atomCount: originalAtomCount });
     const refinedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
+    refinedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: warnings.length });
     return {
       mapping: refinedMapping,
       originalAtomCount,

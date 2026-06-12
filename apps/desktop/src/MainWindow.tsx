@@ -52,7 +52,10 @@ import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
+  atomDisplayLabel,
   bondRefKey,
+  depthCuedBondColor,
+  depthCuedBondStrokeWidth,
   planPageSvgRender,
   type PageSvgAttributeValue,
   type PageSvgElementFragment,
@@ -99,6 +102,7 @@ import {
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
+  applyNativeMoleculePartsDelete,
   applyEditorSaveResultToSelectedMolecule,
   applyAnalysisToSelectedMolecule,
   applyFreeformSingleBondToolAtPoint,
@@ -183,6 +187,7 @@ import {
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  toggleSpin3dDebuggerWindow,
   toggleToolsetWindow
 } from "./window-manager";
 import {
@@ -202,6 +207,15 @@ import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interac
 import { initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import {
+  SPIN3D_DEBUGGER_COMMAND_ID,
+  broadcastSpin3dTraceEvent,
+  createSpin3dTraceEvent,
+  createSpin3dTraceEventFromOcl,
+  startSpin3dTraceSpan,
+  type Spin3dTraceEvent,
+  type Spin3dTracePath
+} from "./conformerDebug";
+import {
   BOND_HIT_CATCHER_STROKE_PX,
   currentTemplateTargetFromHoverOrHit,
   hitToleranceForScale,
@@ -210,6 +224,21 @@ import {
   nativeMoleculeTemplateHoverTarget,
   type TemplateHoverSample
 } from "./interaction/hitTest";
+import {
+  AGENT_BRIDGE_GLOBAL_NAME,
+  createChemDraftAgentBridge,
+  dispatchAgentPointerEvent,
+  resolveAgentBridgePermission,
+  waitForAnimationFrames,
+  type AgentHitResult,
+  type AgentObjectAnchor,
+  type AgentPoint,
+  type AgentPointerEventType,
+  type AgentPointerOptions,
+  type AgentPointTarget,
+  type AgentResolvedPoint,
+  type AgentSnapshot
+} from "./agentBridge";
 
 // Re-exported so existing tests can keep importing it from "./MainWindow" while the
 // implementation lives in the pure, separately-tested interaction layer.
@@ -417,6 +446,13 @@ type SelectionMarqueeState = {
   latestPoint: ClientPoint;
   dragging: boolean;
 };
+type SelectionLassoState = {
+  pointerId: number;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  points: ClientPoint[];
+  dragging: boolean;
+};
 type ObjectContextMenuState = {
   objectId: string;
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
@@ -443,8 +479,16 @@ const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 45;
 const OBJECT_DRAG_THRESHOLD = 4;
+const LASSO_POINT_SPACING = 3;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
+// Spin 3D speculative-work caps. Prefetch is a surprise cost: above this size the
+// conformer is only computed when the user actually clicks Spin 3D.
+const SPIN_PREFETCH_MAX_ATOMS = 40;
+// The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
+// fine for small structures, catastrophic for a 60-atom branched chain.
+const SPIN_IN_PAGE_MAX_ATOMS = 30;
 const DOCUMENT_HISTORY_LIMIT = 100;
+const CURRENT_BUILD_STAMP = "6.11.22.12-fable";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -527,7 +571,9 @@ export function MainWindow({
   const textResizeRef = useRef<TextResizeState | null>(null);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
+  const selectionLassoRef = useRef<SelectionLassoState | null>(null);
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
+  const lassoMachineRef = useRef<InteractionState>(initialInteractionState());
   const placementMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectRotateMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectDragMachineRef = useRef<InteractionState>(initialInteractionState());
@@ -571,6 +617,7 @@ export function MainWindow({
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
   const [selectedNativeMoleculePart, setSelectedNativeMoleculePart] = useState<NativeMoleculeSelectionPart | undefined>();
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
+  const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
@@ -587,13 +634,17 @@ export function MainWindow({
   }));
   const [, setStatus] = useState("Blank native document");
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
-  const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
+  const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const fileStateRef = useRef<NativeFileState>(fileState);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
+  const nativePaletteRef = useRef(nativePalette);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
+  const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
+  const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
+  const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
   // template click can reuse exactly what the highlight is painting (see
   // currentTemplateTargetFromHoverOrHit) rather than recompute a possibly-disagreeing hit.
@@ -613,7 +664,9 @@ export function MainWindow({
   documentHistoryRef.current = documentHistory;
   fileStateRef.current = fileState;
   activeToolCommandIdRef.current = activeToolState.activeCommandId;
+  nativePaletteRef.current = nativePalette;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
+  selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -1172,6 +1225,30 @@ export function MainWindow({
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
+    // A lasso fragment selection ("parts") can't be expressed as a single delete
+    // target — delete every selected atom and bond at once. A specific hovered
+    // atom/bond still takes precedence over the fragment selection.
+    const part = selectedNativeMoleculePart;
+    if (!hoveredNativeDeleteTargetRef.current && part?.kind === "parts") {
+      const nextDocument = applyNativeMoleculePartsDelete(currentDocument, part);
+      if (nextDocument === currentDocument) {
+        setStatus("No atoms or bonds to delete");
+        return;
+      }
+      commitDocumentChange(nextDocument);
+      toolbarStyleTargetRef.current = undefined;
+      setActiveEditorObjectId((current) => current === part.objectId ? undefined : current);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setSelectedNativeMoleculePart(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      setObjectContextMenu(undefined);
+      setStatus("Deleted selection");
+      return;
+    }
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(currentDocument, selectedNativeMoleculePart);
     if (!target) {
@@ -1218,6 +1295,41 @@ export function MainWindow({
       ? "Deleted carbon atom"
       : target.terminalAtomId ? "Deleted terminal carbon" : "Deleted carbon bond");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+
+  const eraseDocumentObjectTarget = useCallback((
+    object: DocumentObject | undefined,
+    nativeTarget?: NativeMoleculeDeleteTarget
+  ): boolean => {
+    if (!object) {
+      setStatus("Nothing to erase");
+      return false;
+    }
+
+    const currentDocument = documentRef.current;
+    const nextDocument = nativeTarget
+      ? applyNativeMoleculeDeleteTarget(currentDocument, nativeTarget)
+      : deleteSelectedDocumentObjects(selectDocumentObject(currentDocument, object.id));
+    if (nextDocument === currentDocument) {
+      setStatus(nativeTarget ? "No atom or bond to erase" : "Object could not be erased");
+      return false;
+    }
+
+    commitDocumentChange(nextDocument);
+    toolbarStyleTargetRef.current = undefined;
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
+    setStatus(nativeTarget
+      ? nativeTarget.kind === "atom" ? "Erased atom" : "Erased bond"
+      : "Erased object");
+    return true;
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const cycleNativeBondOrder = useCallback((target: NativeBondOrderTarget) => {
     const currentDocument = documentRef.current;
@@ -1443,27 +1555,81 @@ export function MainWindow({
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
   const spin3dRequestRef = useRef(0);
+  // The generation currently awaited (no overlay yet): repeated Spin 3D clicks for
+  // the same structure are absorbed instead of stacking engine jobs in the worker.
+  const spin3dPendingRef = useRef<{ molfile: string; objectId: string; cancel: () => void } | undefined>(undefined);
 
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
   const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array): {
     bondPairs: [number, number][];
+    bondRender: SpinBondRenderInfo[];
+    atomLabels: (string | undefined)[];
     placement: ScreenPlacement;
   } => {
     const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
-    const bondPairs: [number, number][] = [];
+    const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom] as const));
+    // Adjacency (atom index → neighbor indices) for the double-bond side heuristic.
+    const adjacency = new Map<number, number[]>();
     for (const bond of molecule.bonds) {
       const from = atomIndex.get(bond.fromAtomId);
       const to = atomIndex.get(bond.toAtomId);
-      if (from !== undefined && to !== undefined) bondPairs.push([from, to]);
+      if (from === undefined || to === undefined) continue;
+      (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(to);
+      (adjacency.get(to) ?? adjacency.set(to, []).get(to)!).push(from);
     }
+    const bondPairs: [number, number][] = [];
+    const bondRender: SpinBondRenderInfo[] = [];
+    for (const bond of molecule.bonds) {
+      const from = atomIndex.get(bond.fromAtomId);
+      const to = atomIndex.get(bond.toAtomId);
+      if (from === undefined || to === undefined) continue;
+      bondPairs.push([from, to]);
+      const fromAtom = atomById.get(bond.fromAtomId);
+      const toAtom = atomById.get(bond.toAtomId);
+      const neighborIndices = [...(adjacency.get(from) ?? []), ...(adjacency.get(to) ?? [])]
+        .filter((index) => index !== from && index !== to);
+      bondRender.push({
+        order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
+        symmetric: fromAtom !== undefined && toAtom !== undefined &&
+          isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
+        neighborIndices
+      });
+    }
+    // The exact labels the 2D drawing shows (element + implicit H + charge; plain
+    // bonded carbons stay unlabeled) so the spinning structure reads as the SAME one.
+    const atomLabels = molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds));
     const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
     const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
     const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
     const scale = overlayScale(points2d, coords3d, bondPairs);
-    return { bondPairs, placement: { centerX, centerY, scale } };
+    return { bondPairs, bondRender, atomLabels, placement: { centerX, centerY, scale } };
   }, []);
 
   const startSpin3d = useCallback(async () => {
+    const plannedRequestId = spin3dRequestRef.current + 1;
+    const sessionId = `spin3d:${plannedRequestId}:${Date.now()}`;
+    const emitTrace = (event: Spin3dTraceEvent): void => {
+      broadcastSpin3dTraceEvent(event);
+    };
+    const traceInfo = (
+      stage: string,
+      details: Partial<Parameters<typeof createSpin3dTraceEvent>[0]> = {}
+    ): void => {
+      emitTrace(createSpin3dTraceEvent({
+        ...details,
+        sessionId,
+        requestId: plannedRequestId,
+        kind: details.kind ?? "spin",
+        stage,
+        status: details.status ?? "info"
+      }));
+    };
+    const commandSpan = startSpin3dTraceSpan({
+      sessionId,
+      requestId: plannedRequestId,
+      kind: "spin",
+      stage: "spin.command",
+    }, emitTrace);
     const currentDocument = documentRef.current;
     const selectedIds = [
       ...new Set([
@@ -1472,6 +1638,8 @@ export function MainWindow({
       ])
     ];
     if (selectedIds.length !== 1) {
+      traceInfo("spin.selection", { message: `selected ${selectedIds.length}` });
+      commandSpan.complete({ message: "selection rejected" });
       setStatus("Select a single molecule to spin in 3D");
       return;
     }
@@ -1480,28 +1648,84 @@ export function MainWindow({
       (object): object is MoleculeObject => object.id === objectId && object.type === "molecule"
     );
     if (!molecule || !isNativeMoleculeGraph(molecule) || molecule.atoms.length < 2) {
+      traceInfo("spin.selection", { message: "not an editable molecule" });
+      commandSpan.complete({ message: "molecule rejected" });
       setStatus("Spin 3D needs an editable molecule");
+      return;
+    }
+    if (spin3dStateRef.current?.objectId === objectId) {
+      // Button mashed while the overlay is already up — keep the live session.
+      traceInfo("spin.duplicate", { message: "overlay already active" });
+      commandSpan.complete({ message: "already spinning" });
+      setStatus("Spin 3D already active: drag the molecule to rotate · Esc to cancel");
       return;
     }
 
     setStatus("Generating 3D conformer…");
     // Document is y-down; the molfile/engine frame is y-up → fromDocFrame negates y.
-    const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    const molfileSpan = startSpin3dTraceSpan({
+      sessionId,
+      requestId: plannedRequestId,
+      kind: "spin",
+      stage: "spin.molfile",
+      atomCount: molecule.atoms.length
+    }, emitTrace);
+    let molfile: string;
+    try {
+      molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      molfileSpan.complete({ atomCount: molecule.atoms.length });
+    } catch (error) {
+      molfileSpan.fail(error, { atomCount: molecule.atoms.length });
+      commandSpan.fail(error);
+      setStatus(`3D spin unavailable: ${(error as Error).message}`);
+      return;
+    }
+    const pendingSpin = spin3dPendingRef.current;
+    if (pendingSpin?.molfile === molfile) {
+      // Same structure is already being generated — absorb the repeat click
+      // instead of stacking another multi-second engine job in the worker.
+      traceInfo("spin.duplicate", { message: "generation already pending" });
+      commandSpan.complete({ message: "duplicate absorbed" });
+      setStatus(`Generating 3D conformer… still working (${molecule.atoms.length} atoms)`);
+      return;
+    }
+    // A different structure supersedes any pending generation: detach its handlers
+    // and drop the queued worker job (a running engine call finishes + caches).
+    pendingSpin?.cancel();
+    spin3dPendingRef.current = undefined;
     const requestToken = ++spin3dRequestRef.current;
+    commandSpan.complete({ atomCount: molecule.atoms.length });
+
+    // Slow-path feedback: if no overlay after ~2s, tell the user the engine is
+    // genuinely working (large/branched structures can take several seconds).
+    const slowTimer = window.setTimeout(() => {
+      if (spin3dRequestRef.current === requestToken && !spin3dStateRef.current) {
+        setStatus(`Generating 3D conformer… still working (${molecule.atoms.length} atoms — large structures can take a few seconds)`);
+      }
+    }, 2000);
+    const clearSlowTimer = (): void => window.clearTimeout(slowTimer);
 
     // Stage 1 — the embedded conformer is fully manipulable; the overlay goes up NOW.
     const handleEmbedded = (conformer: Generate3DConformerResult): void => {
+      clearSlowTimer();
+      spin3dPendingRef.current = undefined;
+      traceInfo("spin.embedded-callback", {
+        atomCount: conformer.originalAtomCount,
+        warningCount: conformer.warnings.length,
+        message: conformer.embed.status
+      });
       if (conformer.embed.status !== "ok") {
         setStatus(`Could not generate a 3D conformer: ${conformer.embed.failureReason ?? "unknown"}`);
         return;
       }
       // Spin may only begin if the molecule is still selected and unchanged.
       if (documentRef.current.pages[0]?.objects.find((object) => object.id === objectId) !== molecule) {
+        traceInfo("spin.cancelled", { message: "selection changed" });
         setStatus("Selection changed; spin cancelled");
         return;
       }
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, placement } = spinPlacementFor(molecule, coords3d);
+      const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         objectId,
         // Open at a readable angle (principal plane toward the viewer + gentle tilt),
@@ -1509,7 +1733,8 @@ export function MainWindow({
         quat: initialViewQuaternion(coords3d),
         coords3d,
         bondPairs,
-        atomElements: molecule.atoms.map((atom) => atom.element),
+        bondRender,
+        atomLabels,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
         dragging: false
@@ -1523,44 +1748,117 @@ export function MainWindow({
       if (spin3dRequestRef.current !== requestToken) return;
       const state = spin3dStateRef.current;
       if (!state || state.objectId !== objectId) return;
+      traceInfo("spin.refined-callback", {
+        atomCount: conformer.originalAtomCount,
+        warningCount: conformer.warnings.length,
+        message: conformer.forceField?.status
+      });
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, placement } = spinPlacementFor(molecule, coords3d);
-      applySpin({ ...state, coords3d, bondPairs, placement });
+      const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
+      applySpin({ ...state, coords3d, bondPairs, bondRender, atomLabels, placement });
     };
 
     const runInPage = async (): Promise<void> => {
+      const path: Spin3dTracePath = "in-page";
       try {
+        const importSpan = startSpin3dTraceSpan({
+          sessionId,
+          requestId: requestToken,
+          kind: "spin",
+          stage: "fallback.import",
+          path
+        }, emitTrace);
         const ocl = await import("@chemdraft/ocl-adapter");
         const { oclResourcesUrl } = await import("./oclResources");
         ocl.setOclResourcesUrl(oclResourcesUrl);
-        const { embedded, refine } = await ocl.generate3DConformerProgressive(
-          { molfile, originalAtomCount: molecule.atoms.length },
-          { optimize: "auto", maxMinimiseIterations: 800 }
+        importSpan.complete();
+        const generateSpan = startSpin3dTraceSpan({
+          sessionId,
+          requestId: requestToken,
+          kind: "spin",
+          stage: "fallback.generate",
+          path,
+          atomCount: molecule.atoms.length
+        }, emitTrace);
+        const { embedded, refine } = await ocl.withOclConformerTrace(
+          (event) => emitTrace(createSpin3dTraceEventFromOcl(event, { sessionId, requestId: requestToken, path })),
+          () => ocl.generate3DConformerProgressive(
+            { molfile, originalAtomCount: molecule.atoms.length },
+            { optimize: "auto", maxMinimiseIterations: 800 }
+          )
         );
+        generateSpan.complete({ warningCount: embedded.warnings.length });
         if (spin3dRequestRef.current !== requestToken) return;
         handleEmbedded(embedded);
         if (embedded.embed.status !== "ok" || !refine) return;
         // Let the overlay paint before the synchronous minimise blocks this thread.
         await new Promise((resolve) => setTimeout(resolve, 30));
         if (spin3dRequestRef.current !== requestToken) return;
-        handleRefined(refine());
+        const refineSpan = startSpin3dTraceSpan({
+          sessionId,
+          requestId: requestToken,
+          kind: "spin",
+          stage: "fallback.refine",
+          path,
+          atomCount: molecule.atoms.length
+        }, emitTrace);
+        const refined = await ocl.withOclConformerTrace(
+          (event) => emitTrace(createSpin3dTraceEventFromOcl(event, { sessionId, requestId: requestToken, path })),
+          async () => refine()
+        );
+        refineSpan.complete({ warningCount: refined.warnings.length });
+        handleRefined(refined);
       } catch (error) {
+        clearSlowTimer();
+        traceInfo("fallback.error", {
+          status: "failed",
+          path,
+          error: (error as Error).message
+        });
         setStatus(`3D spin unavailable: ${(error as Error).message}`);
       }
     };
 
     const client = getConformerWorkerClient();
     if (client) {
-      client.generate(molfile, molecule.atoms.length, {
-        onEmbedded: (result) => {
-          if (spin3dRequestRef.current === requestToken) handleEmbedded(result);
-        },
-        onRefined: handleRefined,
-        onError: () => {
-          // Worker died or misbehaved — recover via the in-page path.
-          if (spin3dRequestRef.current === requestToken) void runInPage();
-        }
-      });
+      traceInfo("worker.client", { path: "worker", message: "available" });
+      let retriedAfterCrash = false;
+      const dispatch = (): void => {
+        const cancel = client.generate(molfile, molecule.atoms.length, {
+          onEmbedded: (result) => {
+            if (spin3dRequestRef.current === requestToken) handleEmbedded(result);
+          },
+          onRefined: handleRefined,
+          onError: (message, info) => {
+            if (spin3dRequestRef.current !== requestToken) return;
+            clearSlowTimer();
+            spin3dPendingRef.current = undefined;
+            if (info?.workerCrashed && !retriedAfterCrash) {
+              // The client recreated the worker — retry once, transparently.
+              retriedAfterCrash = true;
+              traceInfo("worker.retry", { path: "worker", message });
+              dispatch();
+              return;
+            }
+            traceInfo("worker.error", { path: "worker", status: "failed", error: message });
+            if (info?.workerCrashed && molecule.atoms.length <= SPIN_IN_PAGE_MAX_ATOMS) {
+              // Worker is gone for good — small structures may fall back to the
+              // in-page engine; large ones must NOT (it freezes the whole UI).
+              void runInPage();
+              return;
+            }
+            setStatus(`Could not generate a 3D conformer: ${message}`);
+          }
+        }, { sessionId });
+        spin3dPendingRef.current = { molfile, objectId, cancel };
+      };
+      dispatch();
+      return;
+    }
+    traceInfo("worker.client", { message: "unavailable" });
+    if (molecule.atoms.length > SPIN_IN_PAGE_MAX_ATOMS) {
+      clearSlowTimer();
+      setStatus("Spin 3D is unavailable for structures this large without background worker support");
       return;
     }
     await runInPage();
@@ -1569,7 +1867,7 @@ export function MainWindow({
   // Warm the conformer worker (OCL module + torsion resources + JIT) at app idle so
   // the first spin click never pays the ~2s cold-start.
   useEffect(() => {
-    const timer = setTimeout(() => getConformerWorkerClient()?.warmup(), 1500);
+    const timer = setTimeout(() => getConformerWorkerClient()?.warmup({ sessionId: `warmup:${Date.now()}` }), 1500);
     return () => clearTimeout(timer);
   }, []);
 
@@ -1589,14 +1887,26 @@ export function MainWindow({
       (object): object is MoleculeObject => object.id === selectedIds[0] && object.type === "molecule"
     );
     if (!molecule || !isNativeMoleculeGraph(molecule) || molecule.atoms.length < 2) return;
+    if (molecule.atoms.length > SPIN_PREFETCH_MAX_ATOMS) {
+      // Speculative embeds on large structures occupy the worker for seconds and
+      // make an actual click feel hung behind them. Compute these on demand only.
+      broadcastSpin3dTraceEvent(createSpin3dTraceEvent({
+        sessionId: `prefetch:${molecule.id}`,
+        kind: "spin",
+        stage: "prefetch.skip-large",
+        status: "info",
+        atomCount: molecule.atoms.length
+      }));
+      return;
+    }
     const timer = setTimeout(() => {
       const client = getConformerWorkerClient();
       if (!client) return;
       const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
-      client.warmup();
-      client.prefetch(molfile, molecule.atoms.length);
+      client.warmup({ sessionId: `warmup:${Date.now()}` });
+      client.prefetch(molfile, molecule.atoms.length, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
     }, 250);
     return () => clearTimeout(timer);
   }, [document, selectedNativeMoleculePart, spin3dState]);
@@ -2381,6 +2691,13 @@ export function MainWindow({
 
     viewActions.forEach((action) => {
       register(action, () => {
+        if (action.id === SPIN3D_DEBUGGER_COMMAND_ID) {
+          void toggleSpin3dDebuggerWindow().catch(() => {
+            setStatus("3D debugger unavailable");
+          });
+          return;
+        }
+
         if (action.id === "view.toggleRulers") {
           setRulersVisible((visible) => !visible);
           return;
@@ -2445,12 +2762,12 @@ export function MainWindow({
     toolsetRegistry
   ]);
 
-  const invoke = useCallback((commandId: string) => {
+  const invoke = useCallback(async (commandId: string) => {
     if (applyTextStyleCommand(commandId)) {
       return;
     }
 
-    void registry.invoke(commandId).catch(() => {
+    await registry.invoke(commandId).catch(() => {
       setStatus("Command unavailable");
     });
   }, [applyTextStyleCommand, registry]);
@@ -2537,13 +2854,25 @@ export function MainWindow({
     };
   }, [selectedNativeMoleculePart, shortcutRegistry]);
 
-  // Esc cancels an active 3D spin (transient; never touched the document).
+  // Esc cancels an active 3D spin (transient; never touched the document) — or,
+  // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && spin3dStateRef.current) {
+      if (event.key !== "Escape") return;
+      if (spin3dStateRef.current) {
         event.preventDefault();
         event.stopPropagation();
         endSpin3d("Spin cancelled");
+        return;
+      }
+      const pendingSpin = spin3dPendingRef.current;
+      if (pendingSpin) {
+        event.preventDefault();
+        event.stopPropagation();
+        pendingSpin.cancel();
+        spin3dPendingRef.current = undefined;
+        spin3dRequestRef.current += 1; // invalidate late results from the dropped job
+        setStatus("3D generation cancelled");
       }
     };
     window.addEventListener("keydown", handleSpinEscape, { capture: true });
@@ -3471,6 +3800,29 @@ export function MainWindow({
     (event: PointerEvent<HTMLButtonElement>) => handleGroupTransformPointerDown("resize", event),
   [handleGroupTransformPointerDown]);
 
+  const startLassoSelection = useCallback((event: ObjectPointerEvent, point: ClientPoint) => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectionLassoRef.current = {
+      pointerId: event.pointerId,
+      startPoint: point,
+      latestPoint: point,
+      points: [point],
+      dragging: false
+    };
+    lassoMachineRef.current = interactionReducer(initialInteractionState(), {
+      type: "pointerDown",
+      pointerId: event.pointerId,
+      world: point,
+      target: { kind: "empty" },
+      dragKind: "marquee"
+    });
+    setSelectedNativeMoleculePart(undefined);
+    clearTransientInteractionChrome();
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus("Lasso selection");
+  }, [clearTransientInteractionChrome]);
+
   const handlePagePointerDown = useCallback((event: ObjectPointerEvent) => {
     if (event.button !== 0 || event.defaultPrevented) {
       return;
@@ -3479,6 +3831,18 @@ export function MainWindow({
     setObjectContextMenu(undefined);
     const point = pagePointFromPointerEvent(event);
     if (!point) {
+      return;
+    }
+
+    if (activeToolState.activeCommandId === "tool.lasso") {
+      startLassoSelection(event, point);
+      return;
+    }
+
+    if (activeToolState.activeCommandId === "tool.eraser") {
+      event.preventDefault();
+      event.stopPropagation();
+      setStatus("Nothing to erase");
       return;
     }
 
@@ -3565,6 +3929,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
+    startLassoSelection,
     startNativePlacementDrag
   ]);
 
@@ -3747,6 +4112,29 @@ export function MainWindow({
       return;
     }
 
+    const lasso = selectionLassoRef.current;
+    if (lasso?.pointerId === event.pointerId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      lasso.latestPoint = point;
+      lassoMachineRef.current = interactionReducer(lassoMachineRef.current, {
+        type: "pointerMove",
+        pointerId: event.pointerId,
+        world: point,
+        target: { kind: "empty" }
+      });
+      lasso.dragging = lassoMachineRef.current.phase === "dragging";
+      const lastPoint = lasso.points.at(-1) ?? lasso.startPoint;
+      if (lasso.dragging && clientPointDistance(lastPoint, point) >= LASSO_POINT_SPACING) {
+        lasso.points = [...lasso.points, point];
+      }
+      setSelectionLasso(lasso.dragging ? { ...lasso, points: [...lasso.points] } : undefined);
+      return;
+    }
+
     updateNativeCanvasHover(document, pagePointFromPointerEvent(event), event.target);
   }, [
     document,
@@ -3880,27 +4268,63 @@ export function MainWindow({
     }
 
     const marquee = selectionMarqueeRef.current;
-    if (!marquee || marquee.pointerId !== event.pointerId) {
+    if (marquee?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? marquee.latestPoint;
+      marquee.latestPoint = point;
+      const wasDragging = marqueeMachineRef.current.phase === "dragging";
+      const selection = wasDragging
+        ? selectionInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
+        : { objectIds: [], nativeSelection: undefined };
+      replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, selection.objectIds));
+      setSelectedNativeMoleculePart(selection.nativeSelection);
+      if (selection.objectIds.length === 0 && !selection.nativeSelection) {
+        toolbarStyleTargetRef.current = undefined;
+      }
+      setSelectionMarquee(undefined);
+      selectionMarqueeRef.current = null;
+      setStatus(selectionStatusLabel(selection));
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
+
+    const lasso = selectionLassoRef.current;
+    if (!lasso || lasso.pointerId !== event.pointerId) {
       return;
     }
 
     event.stopPropagation();
-    const point = pagePointFromPointerEvent(event) ?? marquee.latestPoint;
-    marquee.latestPoint = point;
-    const wasDragging = marqueeMachineRef.current.phase === "dragging";
-    const selection = wasDragging
-      ? selectionInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
+    const lassoPoint = pagePointFromPointerEvent(event) ?? lasso.latestPoint;
+    lasso.latestPoint = lassoPoint;
+    const wasLassoDragging = lassoMachineRef.current.phase === "dragging";
+    const points = [...lasso.points, lassoPoint];
+    const lassoSelection = wasLassoDragging && points.length >= 3
+      ? selectionInSelectionPolygon(document.pages[0].objects, points)
       : { objectIds: [], nativeSelection: undefined };
-    replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, selection.objectIds));
-    setSelectedNativeMoleculePart(selection.nativeSelection);
-    if (selection.objectIds.length === 0 && !selection.nativeSelection) {
+    replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, lassoSelection.objectIds));
+    setSelectedNativeMoleculePart(lassoSelection.nativeSelection);
+    if (lassoSelection.objectIds.length === 0 && !lassoSelection.nativeSelection) {
       toolbarStyleTargetRef.current = undefined;
     }
-    setSelectionMarquee(undefined);
-    selectionMarqueeRef.current = null;
-    setStatus(selectionStatusLabel(selection));
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    setSelectionLasso(undefined);
+    selectionLassoRef.current = null;
+    lassoMachineRef.current = initialInteractionState();
+    // A lasso is a one-shot selection gesture. The resize/rotate transform box only
+    // renders under the select tool, so once the lasso has caught something, hand off
+    // to the select tool — otherwise the selection sits there with no way to manipulate
+    // it (the bug: "no bounding box in lasso mode"). Empty lassos stay in lasso mode.
+    if (lassoSelection.objectIds.length > 0 || lassoSelection.nativeSelection) {
+      const selectToolState = createActiveToolState("tool.select");
+      activeToolCommandIdRef.current = selectToolState.activeCommandId;
+      setActiveToolState(selectToolState);
+      void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    }
+    setStatus(selectionStatusLabel(lassoSelection));
+    const captureTarget = pageRef.current ?? event.currentTarget;
+    if (captureTarget.hasPointerCapture(event.pointerId)) {
+      captureTarget.releasePointerCapture(event.pointerId);
     }
   }, [
     activeToolState.activeKind,
@@ -3972,6 +4396,17 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
+
+    const lasso = selectionLassoRef.current;
+    if (lasso?.pointerId === event.pointerId) {
+      lassoMachineRef.current = initialInteractionState();
+      selectionLassoRef.current = null;
+      setSelectionLasso(undefined);
+      const captureTarget = pageRef.current ?? event.currentTarget;
+      if (captureTarget.hasPointerCapture(event.pointerId)) {
+        captureTarget.releasePointerCapture(event.pointerId);
+      }
+    }
   }, [clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
@@ -3984,6 +4419,10 @@ export function MainWindow({
     }
 
     if (selectionMarqueeRef.current) {
+      return;
+    }
+
+    if (selectionLassoRef.current) {
       return;
     }
 
@@ -4032,6 +4471,25 @@ export function MainWindow({
           hitToleranceForScale(viewportRef.current.scale)
         )
       : undefined;
+
+    if (activeToolState.activeCommandId === "tool.lasso" && point) {
+      startLassoSelection(event, point);
+      return;
+    }
+
+    if (activeToolState.activeCommandId === "tool.eraser") {
+      event.preventDefault();
+      event.stopPropagation();
+      const nativeTarget = object?.type === "molecule" && nativeMoleculeHit
+        ? { objectId, ...nativeMoleculeHit }
+        : undefined;
+      if (object?.type === "molecule" && !nativeTarget) {
+        setStatus("No atom or bond to erase");
+        return;
+      }
+      eraseDocumentObjectTarget(object, nativeTarget);
+      return;
+    }
 
     if (activeChargeToolValue && point && !chargeMarkActive) {
       event.stopPropagation();
@@ -4319,11 +4777,13 @@ export function MainWindow({
     applySingleBondDocumentAtPoint,
     cycleNativeBondOrder,
     document,
+    eraseDocumentObjectTarget,
     pagePointFromPointerEvent,
     replacePresentDocument,
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
-    startAtomLabelEdit
+    startAtomLabelEdit,
+    startLassoSelection
   ]);
 
   // Whole-molecule double-click, callable from any selection-tool pointer-down entry point.
@@ -4955,6 +5415,122 @@ export function MainWindow({
     commitDocumentChange((current) => applyEditorSaveResultToSelectedMolecule(current, result));
   }, [commitDocumentChange]);
 
+  const createAgentSnapshot = useCallback((): AgentSnapshot => {
+    const currentDocument = documentRef.current;
+    const page = currentDocument.pages[0];
+    return {
+      bridgeVersion: 1,
+      build: `${CURRENT_BUILD_STAMP} · ${__BUILD_STAMP__}`,
+      runtime: {
+        desktop: nativePaletteRef.current,
+        source: agentRuntimeSourceRef.current
+      },
+      document: currentDocument,
+      activeToolCommandId: activeToolCommandIdRef.current,
+      selection: currentDocument.selection,
+      selectedNativeMoleculePart: selectedNativeMoleculePartRef.current,
+      hoveredNativeTarget: hoveredNativeDeleteTargetRef.current,
+      viewport: viewportRef.current,
+      page: {
+        id: page.id,
+        width: page.width,
+        height: page.height,
+        objectCount: page.objects.length
+      },
+      file: {
+        dirty: fileStateRef.current.dirty,
+        path: fileStateRef.current.path
+      },
+      objects: page.objects.map(agentObjectSummary)
+    };
+  }, []);
+
+  const resolveAgentPoint = useCallback((target: AgentPointTarget): AgentResolvedPoint => {
+    const page = pageRef.current;
+    if (!page) {
+      throw new Error("ChemDraft page is not mounted.");
+    }
+
+    return resolveAgentPointInDocument(target, documentRef.current, page.getBoundingClientRect(), viewportRef.current.scale);
+  }, []);
+
+  const hitTestAgentPoint = useCallback((target: AgentPointTarget): AgentHitResult => {
+    const point = resolveAgentPoint(target);
+    return {
+      point,
+      target: nativeMoleculeCanvasHoverTarget(
+        documentRef.current,
+        point.page,
+        undefined,
+        hitToleranceForScale(viewportRef.current.scale)
+      )
+    };
+  }, [resolveAgentPoint]);
+
+  const dispatchAgentPointer = useCallback((
+    type: AgentPointerEventType,
+    target: AgentPointTarget,
+    options?: AgentPointerOptions
+  ) => {
+    const page = pageRef.current;
+    if (!page) {
+      throw new Error("ChemDraft page is not mounted.");
+    }
+
+    return dispatchAgentPointerEvent({
+      activePointerTargets: agentPointerTargetsRef.current,
+      ownerDocument: page.ownerDocument,
+      pageElement: page,
+      resolvedPoint: resolveAgentPoint(target),
+      type,
+      options
+    });
+  }, [resolveAgentPoint]);
+
+  const waitForAgentIdle = useCallback(async () => {
+    await waitForAnimationFrames(2);
+    return createAgentSnapshot();
+  }, [createAgentSnapshot]);
+
+  useEffect(() => {
+    let disposed = false;
+    let installedBridge: Window[typeof AGENT_BRIDGE_GLOBAL_NAME] | undefined;
+
+    void resolveAgentBridgePermission().then((permission) => {
+      agentRuntimeSourceRef.current = permission.source;
+      if (disposed || !permission.enabled) {
+        return;
+      }
+
+      installedBridge = createChemDraftAgentBridge({
+        snapshot: createAgentSnapshot,
+        command(commandId) {
+          return invokeCommandRef.current(commandId);
+        },
+        resolvePoint: resolveAgentPoint,
+        hitTest: hitTestAgentPoint,
+        pointer: dispatchAgentPointer,
+        waitForIdle: waitForAgentIdle
+      });
+      window[AGENT_BRIDGE_GLOBAL_NAME] = installedBridge;
+      setStatus(`Agent bridge enabled (${permission.source})`);
+    });
+
+    return () => {
+      disposed = true;
+      agentPointerTargetsRef.current.clear();
+      if (installedBridge && window[AGENT_BRIDGE_GLOBAL_NAME] === installedBridge) {
+        delete window[AGENT_BRIDGE_GLOBAL_NAME];
+      }
+    };
+  }, [
+    createAgentSnapshot,
+    dispatchAgentPointer,
+    hitTestAgentPoint,
+    resolveAgentPoint,
+    waitForAgentIdle
+  ]);
+
   return (
     <main
       className={["app-shell", nativePalette ? "native-shell" : "web-shell"].join(" ")}
@@ -5072,8 +5648,17 @@ export function MainWindow({
                     latestPoint={selectionMarquee.latestPoint}
                   />
                 ) : null}
+                {selectionLasso ? (
+                  <SelectionLassoOverlay
+                    points={selectionLasso.points}
+                    latestPoint={selectionLasso.latestPoint}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                  />
+                ) : null}
                 {(() => {
-                  const groupSelectionActive = activeToolState.activeKind === "selection" &&
+                  const transformChromeActive = activeToolState.activeCommandId === "tool.select";
+                  const groupSelectionActive = transformChromeActive &&
                     document.selection.objectIds.length > 1 &&
                     !selectedNativeMoleculePart;
                   const groupSelectionBounds = groupSelectionActive
@@ -5112,6 +5697,7 @@ export function MainWindow({
                       selected={selected}
                       inGroupSelection={inGroupSelection}
                       selectedPart={selectedPart}
+                      transformHandlesEnabled={transformChromeActive}
                       editingText={activeTextEditObjectId === object.id}
                       editingAtomLabel={activeAtomLabelEdit?.objectId === object.id ? activeAtomLabelEdit : undefined}
                       chargeByAtomId={object.type === "molecule" ? chargeResolutionByMoleculeId.get(object.id) : undefined}
@@ -5150,17 +5736,26 @@ export function MainWindow({
                     onResizeStart={handleGroupResizePointerDown}
                   />
                 ) : null}
-                {spin3dState ? (
-                  <SpinOverlay
-                    state={spin3dState}
-                    pageWidth={activePage.width}
-                    pageHeight={activePage.height}
-                    onPointerDown={handleSpinOverlayPointerDown}
-                    onPointerMove={handleSpinOverlayPointerMove}
-                    onPointerUp={handleSpinOverlayPointerUp}
-                    onPointerCancel={handleSpinOverlayPointerUp}
-                  />
-                ) : null}
+                {spin3dState ? (() => {
+                  const spinObject = activePage.objects.find((object) => object.id === spin3dState.objectId);
+                  // The overlay renders with the molecule's OWN drawing style so the
+                  // spinning structure is visually the same structure as the drawing.
+                  const spinStyle = nativeDrawingStyleFromObjectStyle(
+                    spinObject?.type === "molecule" ? spinObject.style : {}
+                  );
+                  return (
+                    <SpinOverlay
+                      state={spin3dState}
+                      pageWidth={activePage.width}
+                      pageHeight={activePage.height}
+                      drawingStyle={spinStyle}
+                      onPointerDown={handleSpinOverlayPointerDown}
+                      onPointerMove={handleSpinOverlayPointerMove}
+                      onPointerUp={handleSpinOverlayPointerUp}
+                      onPointerCancel={handleSpinOverlayPointerUp}
+                    />
+                  );
+                })() : null}
                   </>
                   );
                 })()}
@@ -5177,7 +5772,7 @@ export function MainWindow({
           />
         ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
-          Build {__BUILD_STAMP__}
+          Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>
       </section>
       {objectContextMenu ? (
@@ -5577,9 +6172,15 @@ function nativeBondStrokeWidth(
   bond: MoleculeObject["bonds"][number],
   drawingStyle: NativeDrawingStyle
 ): number {
-  return nativeBondDisplayStyle(bond) === "bold"
+  const base = nativeBondDisplayStyle(bond) === "bold"
     ? drawingStyle.bondStrokeWidthPx * 2.4
     : drawingStyle.bondStrokeWidthPx;
+  // Perspective depth baked by the 3D flatten: near bonds are a little heavier and
+  // far bonds a little lighter. Match the live spin overlay's default 1.2px to 2.8px
+  // feel for a 2px drawing style instead of turning face-on structures chunky.
+  const depthWeight = bond.display?.depthWeight;
+  if (depthWeight === undefined) return base;
+  return base * (0.6 + depthWeight * 0.8);
 }
 
 function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
@@ -6199,12 +6800,27 @@ function CrosshairOverlay({
 // one of the atoms it touches invalid — the same predicate that paints the red "!" — so valid
 // spiro rings (cyclohexane/cyclopentane, degree-4 sp3) stay neutral and only genuinely bad
 // products (e.g. a spiro carbon shared by two aromatic rings) warn.
+/** How one bond draws in the spin overlay — mirrors the 2D renderer's conventions. */
+interface SpinBondRenderInfo {
+  order: 1 | 2 | 3;
+  /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
+   *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
+  symmetric: boolean;
+  /** Atom indices bonded to either endpoint (excluding the endpoints): the secondary
+   *  line goes on the substituent-rich side — ring-interior for ring bonds — which is
+   *  the same neighbor-mass rule the 2D `defaultDoubleBondSide` uses. */
+  neighborIndices: number[];
+}
+
 interface Spin3dState {
   objectId: string;
   quat: Quaternion;
   coords3d: Float64Array;
   bondPairs: [number, number][];
-  atomElements: string[];
+  /** Per bondPairs entry: how the bond renders, mirroring the 2D drawing conventions. */
+  bondRender: SpinBondRenderInfo[];
+  /** Per atom: the exact label the 2D drawing shows (undefined = unlabeled carbon). */
+  atomLabels: (string | undefined)[];
   placement: ScreenPlacement;
   /** The molecule's selection box (page coords): drag inside to rotate, click outside to flatten. */
   selectionBox: { x: number; y: number; width: number; height: number };
@@ -6222,6 +6838,7 @@ function SpinOverlay({
   state,
   pageWidth,
   pageHeight,
+  drawingStyle,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -6230,6 +6847,10 @@ function SpinOverlay({
   state: Spin3dState;
   pageWidth: number;
   pageHeight: number;
+  /** The molecule's own 2D drawing style — the overlay renders with the SAME colors,
+   *  stroke widths, label fonts and multi-bond geometry as the drawing it replaces,
+   *  so spinning never reads as a different engine taking over. */
+  drawingStyle: NativeDrawingStyle;
   onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
   onPointerMove: (event: PointerEvent<SVGSVGElement>) => void;
   onPointerUp: (event: PointerEvent<SVGSVGElement>) => void;
@@ -6242,7 +6863,6 @@ function SpinOverlay({
     if (atom.depth > maxDepth) maxDepth = atom.depth;
   }
   const depthSpan = maxDepth - minDepth || 1;
-  // Nearer bonds render heavier and darker so occlusion reads while spinning.
   const nearness = (depth: number) => (depth - minDepth) / depthSpan; // 0 far … 1 near
   return (
     <svg
@@ -6257,24 +6877,115 @@ function SpinOverlay({
       {projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
+        // The SAME depth-cue helpers the committed 2D drawing uses (flatten bakes the
+        // weight into display.depthWeight) — releasing changes nothing visually.
         const t = nearness(bond.depth);
-        const shade = Math.round(150 - t * 120); // far=lighter grey, near=darker
+        const stroke = depthCuedBondColor(drawingStyle.bondColor, t);
+        const width = depthCuedBondStrokeWidth(drawingStyle.bondStrokeWidthPx, t);
+        const render = state.bondRender[bond.index] ?? { order: 1, symmetric: false, neighborIndices: [] };
+        const rawDx = b.sx - a.sx;
+        const rawDy = b.sy - a.sy;
+        const rawLength = Math.hypot(rawDx, rawDy) || 1;
+        const ux = rawDx / rawLength, uy = rawDy / rawLength;
+        const nx = -uy, ny = ux; // screen-space normal
+        // Trim bond ends back from atom labels exactly like the 2D renderer does, so
+        // lines never strike through an O / NH2 / charge label while spinning.
+        const clearance = labelEndpointClearance(
+          state.atomLabels[bond.from],
+          state.atomLabels[bond.to],
+          drawingStyle,
+          rawLength,
+          { x: ux, y: uy }
+        );
+        const ax = a.sx + ux * clearance.from, ay = a.sy + uy * clearance.from;
+        const bx = b.sx - ux * clearance.to, by = b.sy - uy * clearance.to;
+        const length = Math.hypot(bx - ax, by - ay) || 1;
+        const gap = drawingStyle.multipleBondGapPx;
+        const key = (suffix: string) => `${bond.from}-${bond.to}-${index}-${suffix}`;
+        const line = (sx1: number, sy1: number, sx2: number, sy2: number, suffix: string) => (
+          <line key={key(suffix)} x1={sx1} y1={sy1} x2={sx2} y2={sy2}
+            stroke={stroke} strokeWidth={width} strokeLinecap={drawingStyle.bondLineCap} />
+        );
+        if (render.order === 2 && render.symmetric) {
+          // Terminal heteroatom double (C=O …): two full lines straddling the axis — same as 2D.
+          const o = gap / 2;
+          return [
+            line(ax + nx * o, ay + ny * o, bx + nx * o, by + ny * o, "p"),
+            line(ax - nx * o, ay - ny * o, bx - nx * o, by - ny * o, "s")
+          ];
+        }
+        if (render.order === 2) {
+          // 2D convention: primary line on the bond axis, shorter secondary line a full
+          // gap toward the substituent-rich side (ring interior for ring bonds). The side
+          // is chosen per frame from the PROJECTED neighbor positions, so it tracks the
+          // molecule as it rotates — matching what the drawing will look like flattened.
+          const mx = (ax + bx) / 2, my = (ay + by) / 2;
+          let score = 0;
+          for (const neighborIndex of render.neighborIndices) {
+            const p = projection.atoms[neighborIndex];
+            if (p) score += Math.sign((p.sx - mx) * nx + (p.sy - my) * ny);
+          }
+          const dir = score >= 0 ? 1 : -1;
+          const minimumVisible = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, length);
+          const inset = Math.min(drawingStyle.doubleBondInsetPx, Math.max(0, (length - minimumVisible) / 2));
+          return [
+            line(ax, ay, bx, by, "p"),
+            line(
+              ax + ux * inset + nx * gap * dir, ay + uy * inset + ny * gap * dir,
+              bx - ux * inset + nx * gap * dir, by - uy * inset + ny * gap * dir,
+              "s"
+            )
+          ];
+        }
+        if (render.order === 3) {
+          // Triple: three full-length lines at -gap / 0 / +gap — same as 2D.
+          return [-1, 0, 1].map((step) =>
+            line(ax + nx * gap * step, ay + ny * gap * step, bx + nx * gap * step, by + ny * gap * step, `t${step}`)
+          );
+        }
+        return line(ax, ay, bx, by, "p");
+      })}
+      {projection.atoms.map((atom) => {
+        // Labeled atoms render their 2D label (same layout engine: runs, scripts,
+        // charge superscript, background box). Plain carbons draw nothing — exactly
+        // like the drawing. The label sits over the trimmed bond ends.
+        const label = state.atomLabels[atom.index];
+        if (!label) return null;
+        const layout = atomLabelLayout(label, drawingStyle);
         return (
-          <line
-            key={`${bond.from}-${bond.to}-${index}`}
-            x1={a.sx}
-            y1={a.sy}
-            x2={b.sx}
-            y2={b.sy}
-            stroke={`rgb(${shade}, ${shade}, ${shade})`}
-            strokeWidth={1.2 + t * 1.6}
-            strokeLinecap="round"
-          />
+          <g key={`label-${atom.index}`}>
+            <rect
+              x={atom.sx + layout.bounds.x}
+              y={atom.sy + layout.bounds.y}
+              width={layout.bounds.width}
+              height={layout.bounds.height}
+              fill={drawingStyle.atomLabelBackgroundColor}
+            />
+            <text
+              x={atom.sx}
+              y={atom.sy}
+              fill={drawingStyle.atomLabelColor}
+              fontFamily={drawingStyle.atomLabelFontFamily}
+              fontSize={drawingStyle.atomLabelFontSizePx}
+              fontWeight={drawingStyle.atomLabelFontWeight}
+              style={{ pointerEvents: "none", userSelect: "none" }}
+            >
+              {layout.runs.map((run, runIndex) => (
+                <tspan
+                  key={runIndex}
+                  x={atom.sx + run.x}
+                  y={atom.sy + run.y}
+                  textAnchor={run.textAnchor}
+                  dominantBaseline="central"
+                  fontSize={atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx}
+                >
+                  {run.text}
+                </tspan>
+              ))}
+            </text>
+          </g>
         );
       })}
-      {projection.atoms.map((atom) => (
-        <circle key={atom.index} cx={atom.sx} cy={atom.sy} r={1.6 + nearness(atom.depth) * 1.8} fill="var(--cd-accent, #2d6cdf)" />
-      ))}
       <text
         x={pageWidth / 2}
         y={24}
@@ -6358,6 +7069,33 @@ export function SelectionMarqueeOverlay({
         height: `calc(${rect.height}px * var(--page-scale))`
       }}
     />
+  );
+}
+
+export function SelectionLassoOverlay({
+  points,
+  latestPoint,
+  pageWidth,
+  pageHeight
+}: {
+  points: readonly ClientPoint[];
+  latestPoint: ClientPoint;
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const pathPoints = points.length > 0 ? [...points, latestPoint] : [latestPoint];
+  const pathData = pathPoints
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+  return (
+    <svg
+      className="selection-lasso-surface"
+      aria-hidden="true"
+      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+    >
+      <path className="selection-lasso-fill" d={`${pathData} Z`} />
+      <path className="selection-lasso-path" d={pathData} />
+    </svg>
   );
 }
 
@@ -6547,6 +7285,46 @@ export function selectionInSelectionRect(
   return { objectIds, nativeSelection };
 }
 
+export function selectionInSelectionPolygon(
+  objects: readonly DocumentObject[],
+  polygon: readonly ClientPoint[]
+): { objectIds: string[]; nativeSelection?: NativeMoleculeSelectionPart } {
+  if (polygon.length < 3) {
+    return { objectIds: [] };
+  }
+
+  const objectIds: string[] = [];
+  let nativeSelection: NativeMoleculeSelectionPart | undefined;
+
+  for (const object of objects) {
+    if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
+      const moleculeSelection = nativeMoleculeSelectionInPolygon(object, polygon);
+      if (!moleculeSelection) {
+        continue;
+      }
+
+      // If the lasso caught every atom and bond, it enclosed the whole molecule —
+      // select it as an object (resize/rotate as a unit). Testing atom/bond coverage
+      // is what the user actually drew around; gating on the padded bounding rect on
+      // top of that just made "lasso around everything" unpredictably fall to a
+      // fragment selection instead.
+      if (nativeMoleculeSelectionCoversWholeObject(object, moleculeSelection)) {
+        objectIds.push(object.id);
+        continue;
+      }
+
+      nativeSelection ??= moleculeSelection;
+      continue;
+    }
+
+    if (polygonContainsRect(polygon, objectBounds(object))) {
+      objectIds.push(object.id);
+    }
+  }
+
+  return { objectIds, nativeSelection };
+}
+
 function nativeMoleculeSelectionCoversWholeObject(
   object: MoleculeObject,
   selection: NativeMoleculeSelectionPart
@@ -6671,6 +7449,32 @@ function nativeMoleculeSelectionInRect(
   return { objectId: object.id, kind: "parts", atomIds, bondIds };
 }
 
+function nativeMoleculeSelectionInPolygon(
+  object: MoleculeObject,
+  polygon: readonly ClientPoint[]
+): NativeMoleculeSelectionPart | undefined {
+  const atomIds = object.atoms
+    .filter((atom) => pointInPolygon(atom, polygon))
+    .map((atom) => atom.id);
+  const bondIds = object.bonds
+    .filter((bond) => nativeBondIntersectsPolygon(object, bond, polygon))
+    .map((bond) => bond.id);
+
+  if (atomIds.length === 0 && bondIds.length === 0) {
+    return undefined;
+  }
+
+  if (atomIds.length === 1 && bondIds.length === 0) {
+    return { objectId: object.id, kind: "atom", atomId: atomIds[0] };
+  }
+
+  if (atomIds.length === 0 && bondIds.length === 1) {
+    return { objectId: object.id, kind: "bond", bondId: bondIds[0] };
+  }
+
+  return { objectId: object.id, kind: "parts", atomIds, bondIds };
+}
+
 function nativeBondIntersectsRect(
   object: MoleculeObject,
   bond: MoleculeObject["bonds"][number],
@@ -6689,6 +7493,24 @@ function nativeBondIntersectsRect(
   );
 }
 
+function nativeBondIntersectsPolygon(
+  object: MoleculeObject,
+  bond: MoleculeObject["bonds"][number],
+  polygon: readonly ClientPoint[]
+): boolean {
+  const fromAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const toAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!fromAtom || !toAtom) {
+    return false;
+  }
+
+  return (
+    pointInPolygon(fromAtom, polygon) ||
+    pointInPolygon(toAtom, polygon) ||
+    lineIntersectsPolygon(fromAtom, toAtom, polygon)
+  );
+}
+
 function pointInRect(
   point: ClientPoint,
   rect: { x: number; y: number; width: number; height: number }
@@ -6699,6 +7521,33 @@ function pointInRect(
     point.y >= rect.y &&
     point.y <= rect.y + rect.height
   );
+}
+
+function pointInPolygon(point: ClientPoint, polygon: readonly ClientPoint[]): boolean {
+  if (polygon.length < 3) {
+    return false;
+  }
+
+  if (polygonEdges(polygon).some(([start, end]) => pointOnSegment(point, start, end))) {
+    return true;
+  }
+
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const currentPoint = polygon[index];
+    const previousPoint = polygon[previous];
+    const crossesY = (currentPoint.y > point.y) !== (previousPoint.y > point.y);
+    if (!crossesY) {
+      continue;
+    }
+
+    const xAtY = ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) /
+      (previousPoint.y - currentPoint.y) + currentPoint.x;
+    if (point.x <= xAtY) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 function lineIntersectsRect(
@@ -6719,6 +7568,51 @@ function lineIntersectsRect(
   );
 }
 
+function lineIntersectsPolygon(start: ClientPoint, end: ClientPoint, polygon: readonly ClientPoint[]): boolean {
+  return polygonEdges(polygon).some(([edgeStart, edgeEnd]) => segmentsIntersect(start, end, edgeStart, edgeEnd));
+}
+
+function polygonEdges(polygon: readonly ClientPoint[]): Array<[ClientPoint, ClientPoint]> {
+  return polygon.map((point, index) => [point, polygon[(index + 1) % polygon.length]]);
+}
+
+function polygonContainsRect(
+  polygon: readonly ClientPoint[],
+  rect: { x: number; y: number; width: number; height: number },
+  marginPx = 0
+): boolean {
+  const expanded = {
+    x: rect.x - marginPx,
+    y: rect.y - marginPx,
+    width: rect.width + marginPx * 2,
+    height: rect.height + marginPx * 2
+  };
+  return rectangleContainsRect(polygonBounds(polygon), expanded) &&
+    rectCorners(expanded).every((point) => pointInPolygon(point, polygon));
+}
+
+function polygonBounds(polygon: readonly ClientPoint[]): { x: number; y: number; width: number; height: number } {
+  const xs = polygon.map((point) => point.x);
+  const ys = polygon.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(...xs) - minX,
+    height: Math.max(...ys) - minY
+  };
+}
+
+function rectCorners(rect: { x: number; y: number; width: number; height: number }): ClientPoint[] {
+  return [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+    { x: rect.x, y: rect.y + rect.height }
+  ];
+}
+
 function segmentsIntersect(a: ClientPoint, b: ClientPoint, c: ClientPoint, d: ClientPoint): boolean {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
@@ -6736,6 +7630,29 @@ function segmentsIntersect(a: ClientPoint, b: ClientPoint, c: ClientPoint, d: Cl
   const u = (acx * aby - acy * abx) / denominator;
 
   return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+function pointOnSegment(point: ClientPoint, start: ClientPoint, end: ClientPoint): boolean {
+  const lengthSquared = (end.x - start.x) ** 2 + (end.y - start.y) ** 2;
+  if (lengthSquared === 0) {
+    // Degenerate (zero-length) segment — lasso paths routinely contain consecutive
+    // duplicate points (release without moving). Without this guard the cross/dot
+    // math below degenerates to 0 <= 0 and EVERY point tests "on segment", which
+    // made pointInPolygon swallow the whole page and the lasso grab whole molecules.
+    return point.x === start.x && point.y === start.y;
+  }
+
+  const cross = (point.y - start.y) * (end.x - start.x) - (point.x - start.x) * (end.y - start.y);
+  if (Math.abs(cross) > 0.0001) {
+    return false;
+  }
+
+  const dot = (point.x - start.x) * (end.x - start.x) + (point.y - start.y) * (end.y - start.y);
+  if (dot < 0) {
+    return false;
+  }
+
+  return dot <= lengthSquared;
 }
 
 export function nativeSelectionFromHit(
@@ -7333,6 +8250,7 @@ function DocumentObjectView({
   selected,
   inGroupSelection,
   selectedPart,
+  transformHandlesEnabled,
   editingText,
   editingAtomLabel,
   chargeByAtomId,
@@ -7368,6 +8286,7 @@ function DocumentObjectView({
   selected: boolean;
   inGroupSelection: boolean;
   selectedPart?: NativeMoleculeSelectionPart;
+  transformHandlesEnabled: boolean;
   editingText: boolean;
   editingAtomLabel?: AtomLabelEditState;
   chargeByAtomId?: ReadonlyMap<string, number>;
@@ -7568,7 +8487,7 @@ function DocumentObjectView({
       const selectedFragmentBounds = selectedPart && hasVisibleSelectionTargets
         ? nativeMoleculePartBounds(object, selectedPart)
         : undefined;
-      const transformFrame = hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
+      const transformFrame = transformHandlesEnabled && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
         ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
@@ -8585,6 +9504,121 @@ function findDocumentObject(document: ChemDraftDocument, objectId: string): Docu
   }
 
   return undefined;
+}
+
+function agentObjectSummary(object: DocumentObject): AgentSnapshot["objects"][number] {
+  return {
+    id: object.id,
+    type: object.type,
+    x: object.x,
+    y: object.y,
+    width: object.width,
+    height: object.height,
+    atomCount: object.type === "molecule" ? object.atoms.length : undefined,
+    bondCount: object.type === "molecule" ? object.bonds.length : undefined
+  };
+}
+
+function resolveAgentPointInDocument(
+  target: AgentPointTarget,
+  document: ChemDraftDocument,
+  pageRect: Pick<DOMRect, "left" | "top">,
+  scale: number
+): AgentResolvedPoint {
+  if ("page" in target) {
+    return {
+      page: target.page,
+      client: pageToClient(target.page, { pageRect, scale }),
+      target,
+      source: "page"
+    };
+  }
+
+  if ("client" in target) {
+    return {
+      page: clientToPage(target.client, { pageRect, scale }),
+      client: target.client,
+      target,
+      source: "client"
+    };
+  }
+
+  if ("objectId" in target) {
+    const object = findDocumentObject(document, target.objectId);
+    if (!object) {
+      throw new Error(`Agent bridge could not resolve object "${target.objectId}".`);
+    }
+    const pagePoint = agentObjectAnchorPoint(object, target.anchor ?? "center");
+    return {
+      page: pagePoint,
+      client: pageToClient(pagePoint, { pageRect, scale }),
+      target,
+      source: "object"
+    };
+  }
+
+  if ("atom" in target) {
+    const object = findDocumentObject(document, target.atom.objectId);
+    if (object?.type !== "molecule") {
+      throw new Error(`Agent bridge could not resolve molecule "${target.atom.objectId}".`);
+    }
+    const atom = object.atoms.find((candidate) => candidate.id === target.atom.atomId);
+    if (!atom) {
+      throw new Error(`Agent bridge could not resolve atom "${target.atom.atomId}".`);
+    }
+    const pagePoint = { x: atom.x, y: atom.y };
+    return {
+      page: pagePoint,
+      client: pageToClient(pagePoint, { pageRect, scale }),
+      target,
+      source: "atom"
+    };
+  }
+
+  const object = findDocumentObject(document, target.bond.objectId);
+  if (object?.type !== "molecule") {
+    throw new Error(`Agent bridge could not resolve molecule "${target.bond.objectId}".`);
+  }
+  const bond = object.bonds.find((candidate) => candidate.id === target.bond.bondId);
+  if (!bond) {
+    throw new Error(`Agent bridge could not resolve bond "${target.bond.bondId}".`);
+  }
+  const fromAtom = object.atoms.find((candidate) => candidate.id === bond.fromAtomId);
+  const toAtom = object.atoms.find((candidate) => candidate.id === bond.toAtomId);
+  if (!fromAtom || !toAtom) {
+    throw new Error(`Agent bridge could not resolve atoms for bond "${target.bond.bondId}".`);
+  }
+  const pagePoint = target.bond.anchor === "from"
+    ? { x: fromAtom.x, y: fromAtom.y }
+    : target.bond.anchor === "to"
+      ? { x: toAtom.x, y: toAtom.y }
+      : { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
+  return {
+    page: pagePoint,
+    client: pageToClient(pagePoint, { pageRect, scale }),
+    target,
+    source: "bond"
+  };
+}
+
+function agentObjectAnchorPoint(object: DocumentObject, anchor: AgentObjectAnchor): AgentPoint {
+  if (anchor === "topLeft") {
+    return { x: object.x, y: object.y };
+  }
+  if (anchor === "topRight") {
+    return { x: object.x + object.width, y: object.y };
+  }
+  if (anchor === "bottomLeft") {
+    return { x: object.x, y: object.y + object.height };
+  }
+  if (anchor === "bottomRight") {
+    return { x: object.x + object.width, y: object.y + object.height };
+  }
+
+  return {
+    x: object.x + object.width / 2,
+    y: object.y + object.height / 2
+  };
 }
 
 function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry"]>): string {

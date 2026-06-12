@@ -44,16 +44,14 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "lasso",
-    defaultShortcut: "L",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    defaultShortcut: "L"
   },
   {
     commandId: "tool.eraser",
     title: "Eraser Tool",
     kind: "selection",
     category: "selection",
-    icon: "select",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "select"
   },
   {
     commandId: "tool.bond",

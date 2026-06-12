@@ -165,6 +165,9 @@ export interface SpinAtom {
 export interface SpinBond {
   from: number;
   to: number;
+  /** Index into the caller's bondPairs array (stable across the depth sort), so the
+   *  renderer can look up per-bond data such as bond order. */
+  index: number;
   depth: number; // average endpoint depth; used for painter's-order sort
 }
 
@@ -259,7 +262,7 @@ export function projectSpin(
   }
 
   const bonds: SpinBond[] = bondPairs
-    .map(([from, to]) => ({ from, to, depth: (atoms[from].depth + atoms[to].depth) / 2 }))
+    .map(([from, to], index) => ({ from, to, index, depth: (atoms[from].depth + atoms[to].depth) / 2 }))
     .sort((a, b) => a.depth - b.depth); // far first (painter's order)
 
   return { atoms, bonds };

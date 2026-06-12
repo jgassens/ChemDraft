@@ -3120,6 +3120,56 @@ export function applyNativeMoleculeDeleteTarget(
   );
 }
 
+/**
+ * Delete a multi-part ("parts") selection — every selected atom (with its incident
+ * bonds) plus every explicitly selected bond — in one step, rebuilding the graph the
+ * same way single-atom/bond deletion does. Removes the whole object if nothing remains.
+ * This is the deletion path for lasso fragment selections (`kind: "parts"`), which the
+ * single-target `applyNativeMoleculeDeleteTarget` cannot express.
+ */
+export function applyNativeMoleculePartsDelete(
+  document: ChemDraftDocument,
+  selection: { objectId: string; atomIds: readonly string[]; bondIds: readonly string[] }
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === selection.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const removeAtomIds = new Set(selection.atomIds);
+  const removeBondIds = new Set(selection.bondIds);
+  if (removeAtomIds.size === 0 && removeBondIds.size === 0) {
+    return document;
+  }
+
+  const atoms = molecule.atoms.filter((atom) => !removeAtomIds.has(atom.id));
+  const bonds = molecule.bonds.filter((bond) =>
+    !removeBondIds.has(bond.id) &&
+    !removeAtomIds.has(bond.fromAtomId) &&
+    !removeAtomIds.has(bond.toAtomId)
+  );
+  if (atoms.length === molecule.atoms.length && bonds.length === molecule.bonds.length) {
+    return document; // selection referenced nothing that still exists
+  }
+
+  if (atoms.length === 0) {
+    return applyPatch(
+      document,
+      { op: "removeObject", objectId: molecule.id },
+      { now: phase4Timestamp }
+    );
+  }
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: refreshNativeSingleBondGraph(molecule, atoms, bonds) },
+    { now: phase4Timestamp }
+  );
+}
+
 export function applyNativeMoleculeBondOrderTarget(
   document: ChemDraftDocument,
   target: NativeBondOrderTarget
@@ -4419,7 +4469,10 @@ export function cleanUpNativeMolecules2d(
     }
 
     const cleaned = cleanUpNativeMoleculeGeometry2d(molecule);
-    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned)
+    // Stripped perspective depth weights are a real change even when the geometry
+    // was already ideal (the changed-check below only compares atoms/transform).
+    const strippedDepthWeights = molecule.bonds.some((bond) => bond.display?.depthWeight !== undefined);
+    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights
       ? [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }]
       : [];
   });
@@ -4569,16 +4622,56 @@ export function flattenSpunMolecule(
   // and atom pairings are preserved exactly (buildProjectedMolecule never moves them).
   const projectedBonds = projected.bonds.map((bond) => ({ ...bond }));
   const geometry = moleculeGeometryFromAtoms(nextAtoms);
+  // Perspective depth cue: bake each bond's viewer-facing depth (mean rotated z of its
+  // endpoints, normalized 0 = farthest … 1 = nearest) into display.depthWeight so the
+  // committed 2D drawing keeps the near-heavy / far-light bond weighting of the live
+  // overlay. Display-only — identity is untouched. A near-planar view (no meaningful
+  // depth spread) writes none and clears stale weights from an earlier flatten.
+  const depthOf = (atomId: string): number | undefined => {
+    const index = atomIndex.get(atomId);
+    if (index === undefined) return undefined;
+    const x = coords3d[index * 3];
+    const y = coords3d[index * 3 + 1];
+    const z = coords3d[index * 3 + 2];
+    return viewMatrix[8] * x + viewMatrix[9] * y + viewMatrix[10] * z + viewMatrix[11];
+  };
+  const bondDepths = projectedBonds.map((bond) => {
+    const from = depthOf(bond.fromAtomId);
+    const to = depthOf(bond.toAtomId);
+    return from !== undefined && to !== undefined ? (from + to) / 2 : undefined;
+  });
+  const knownDepths = bondDepths.filter((depth): depth is number => depth !== undefined);
+  const minDepth = Math.min(...knownDepths);
+  const depthSpan = Math.max(...knownDepths) - minDepth;
+  const median3d = medianOf(
+    bondPairs.map(([from, to]) => Math.hypot(
+      coords3d[from * 3] - coords3d[to * 3],
+      coords3d[from * 3 + 1] - coords3d[to * 3 + 1],
+      coords3d[from * 3 + 2] - coords3d[to * 3 + 2]
+    ))
+  );
+  const meaningfulDepth = knownDepths.length > 1 && depthSpan > median3d * 0.12;
+  const depthWeightFor = (bondIndex: number): number | undefined => {
+    if (!meaningfulDepth) return undefined;
+    const depth = bondDepths[bondIndex];
+    if (depth === undefined) return undefined;
+    return Math.round(((depth - minDepth) / depthSpan) * 100) / 100;
+  };
   // The projection produced fresh 2D coordinates, so every double bond's "side" (which
   // way its inner line is drawn) must be recomputed from the new geometry — otherwise
   // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
   // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
-  const nextBonds = projectedBonds.map((bond) =>
-    bond.order === "double"
-      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
-      : bond
-  );
+  const nextBonds = projectedBonds.map((bond, bondIndex) => {
+    const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
+    if (bond.order === "double") {
+      display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+    }
+    const depthWeight = depthWeightFor(bondIndex);
+    if (depthWeight !== undefined) display.depthWeight = depthWeight;
+    else delete display.depthWeight;
+    return Object.keys(display).length > 0 ? { ...bond, display } : { ...bond, display: undefined };
+  });
   const stagedMolecule: MoleculeObject = {
     ...molecule,
     atoms: nextAtoms,
@@ -4685,11 +4778,19 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     const point = nextAtomPoints.get(atom.id);
     return point ? { ...atom, ...point } : atom;
   });
+  // Cleanup re-idealizes to flat 2D geometry — perspective depth weights from an
+  // earlier 3D flatten no longer describe anything and must not linger.
+  const bonds = molecule.bonds.map((bond) => {
+    if (bond.display?.depthWeight === undefined) return bond;
+    const { depthWeight: _cleared, ...display } = bond.display;
+    return { ...bond, display: Object.keys(display).length > 0 ? display : undefined };
+  });
 
   return withNativeMoleculeTransform(
     normalizeNativeMoleculeGeometry({
       ...molecule,
-      atoms
+      atoms,
+      bonds
     }),
     defaultNativeMoleculeTransform
   );
