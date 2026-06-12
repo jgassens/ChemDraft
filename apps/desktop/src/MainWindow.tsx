@@ -53,10 +53,17 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
+  atomLabelLayout,
+  atomLabelRunFontSize,
   bondRefKey,
   depthCuedBondColor,
   depthCuedBondStrokeWidth,
+  isTerminalHeteroatomDoubleBond,
+  labelEndpointClearance,
   planPageSvgRender,
+  sameBondRef,
+  styleColorMapValue,
+  textObjectSpansForRendering,
   type PageSvgAttributeValue,
   type PageSvgElementFragment,
   type PageSvgFragment,
@@ -6046,433 +6053,6 @@ function nativeDoubleBondSidePreviewFromHit(
   };
 }
 
-interface NativeBondLineSegment {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  segment: "primary" | "secondary" | "outer";
-  doubleBondSide?: NativeDoubleBondSide;
-}
-
-function isTerminalHeteroatomDoubleBond(
-  fromAtom: MoleculeObject["atoms"][number],
-  toAtom: MoleculeObject["atoms"][number],
-  object: MoleculeObject,
-  bond: MoleculeObject["bonds"][number]
-): boolean {
-  if (bond.order !== "double") {
-    return false;
-  }
-
-  return isTerminalHeteroatom(fromAtom, object) || isTerminalHeteroatom(toAtom, object);
-}
-
-function isTerminalHeteroatom(atom: MoleculeObject["atoms"][number], object: MoleculeObject): boolean {
-  return atom.element !== "C" && atom.element !== "H" && nativeAtomBondCount(object, atom.id) === 1;
-}
-
-function bondLineSegments(
-  fromAtom: MoleculeObject["atoms"][number],
-  toAtom: MoleculeObject["atoms"][number],
-  object: MoleculeObject,
-  bond: MoleculeObject["bonds"][number],
-  drawingStyle: NativeDrawingStyle,
-  fromLabel?: string,
-  toLabel?: string
-): NativeBondLineSegment[] {
-  const rawX1 = fromAtom.x - object.x;
-  const rawY1 = fromAtom.y - object.y;
-  const rawX2 = toAtom.x - object.x;
-  const rawY2 = toAtom.y - object.y;
-  const dx = rawX2 - rawX1;
-  const dy = rawY2 - rawY1;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return [{ x1: rawX1, y1: rawY1, x2: rawX2, y2: rawY2, segment: "primary" }];
-  }
-
-  const unit = {
-    x: dx / length,
-    y: dy / length
-  };
-  const clearance = labelEndpointClearance(fromLabel, toLabel, drawingStyle, length, unit);
-  const x1 = rawX1 + unit.x * clearance.from;
-  const y1 = rawY1 + unit.y * clearance.from;
-  const x2 = rawX2 - unit.x * clearance.to;
-  const y2 = rawY2 - unit.y * clearance.to;
-  const trimmedLength = Math.hypot(x2 - x1, y2 - y1);
-  const normal = {
-    x: -unit.y,
-    y: unit.x
-  };
-  const gap = drawingStyle.multipleBondGapPx;
-
-  if (bond.order === "double") {
-    const doubleBondSide = bond.display?.doubleBondSide ?? "left";
-    if (isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
-      const offset = gap / 2;
-      return [
-        {
-          x1: x1 + normal.x * offset,
-          y1: y1 + normal.y * offset,
-          x2: x2 + normal.x * offset,
-          y2: y2 + normal.y * offset,
-          segment: "primary",
-          doubleBondSide
-        },
-        {
-          x1: x1 - normal.x * offset,
-          y1: y1 - normal.y * offset,
-          x2: x2 - normal.x * offset,
-          y2: y2 - normal.y * offset,
-          segment: "secondary",
-          doubleBondSide
-        }
-      ];
-    }
-
-    const offset = doubleBondSide === "left" ? gap : -gap;
-    const minimumSecondaryLength = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, trimmedLength);
-    const inset = Math.min(
-      drawingStyle.doubleBondInsetPx,
-      Math.max(0, (trimmedLength - minimumSecondaryLength) / 2)
-    );
-    return [
-      { x1, y1, x2, y2, segment: "primary", doubleBondSide },
-      {
-        x1: x1 + unit.x * inset + normal.x * offset,
-        y1: y1 + unit.y * inset + normal.y * offset,
-        x2: x2 - unit.x * inset + normal.x * offset,
-        y2: y2 - unit.y * inset + normal.y * offset,
-        segment: "secondary",
-        doubleBondSide
-      }
-    ];
-  }
-
-  if (bond.order === "triple") {
-    return [-gap, 0, gap].map((offset, index) => ({
-      x1: x1 + normal.x * offset,
-      y1: y1 + normal.y * offset,
-      x2: x2 + normal.x * offset,
-      y2: y2 + normal.y * offset,
-      segment: index === 1 ? "primary" : "outer"
-    }));
-  }
-
-  return [{ x1, y1, x2, y2, segment: "primary" }];
-}
-
-function nativeBondDisplayStyle(bond: MoleculeObject["bonds"][number]): NativeBondDisplayStyle | undefined {
-  return bond.display?.bondStyle;
-}
-
-function nativeBondStrokeWidth(
-  bond: MoleculeObject["bonds"][number],
-  drawingStyle: NativeDrawingStyle
-): number {
-  const base = nativeBondDisplayStyle(bond) === "bold"
-    ? drawingStyle.bondStrokeWidthPx * 2.4
-    : drawingStyle.bondStrokeWidthPx;
-  // Perspective depth baked by the 3D flatten: near bonds are a little heavier and
-  // far bonds a little lighter. Match the live spin overlay's default 1.2px to 2.8px
-  // feel for a 2px drawing style instead of turning face-on structures chunky.
-  const depthWeight = bond.display?.depthWeight;
-  if (depthWeight === undefined) return base;
-  return base * (0.6 + depthWeight * 0.8);
-}
-
-function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
-  const dash = Math.max(3, drawingStyle.bondStrokeWidthPx * 2.2);
-  const gap = Math.max(3, drawingStyle.bondStrokeWidthPx * 1.8);
-  return `${dash} ${gap}`;
-}
-
-function nativeWedgeWidth(drawingStyle: NativeDrawingStyle): number {
-  return Math.max(8, drawingStyle.bondStrokeWidthPx * 5.2);
-}
-
-function nativeWedgePolygonPoints(
-  segment: Pick<NativeBondLineSegment, "x1" | "y1" | "x2" | "y2">,
-  drawingStyle: NativeDrawingStyle
-): string {
-  const geometry = nativeSegmentVectorGeometry(segment);
-  if (!geometry) {
-    return `${segment.x1},${segment.y1} ${segment.x2},${segment.y2}`;
-  }
-
-  const width = nativeWedgeWidth(drawingStyle);
-  const halfWidth = width / 2;
-  const wideLeft = {
-    x: segment.x2 + geometry.normal.x * halfWidth,
-    y: segment.y2 + geometry.normal.y * halfWidth
-  };
-  const wideRight = {
-    x: segment.x2 - geometry.normal.x * halfWidth,
-    y: segment.y2 - geometry.normal.y * halfWidth
-  };
-  return [
-    `${formatSvgPoint(segment.x1)},${formatSvgPoint(segment.y1)}`,
-    `${formatSvgPoint(wideLeft.x)},${formatSvgPoint(wideLeft.y)}`,
-    `${formatSvgPoint(wideRight.x)},${formatSvgPoint(wideRight.y)}`
-  ].join(" ");
-}
-
-function nativeHashedWedgeSegments(
-  segment: Pick<NativeBondLineSegment, "x1" | "y1" | "x2" | "y2">,
-  drawingStyle: NativeDrawingStyle
-): Pick<NativeBondLineSegment, "x1" | "y1" | "x2" | "y2">[] {
-  const geometry = nativeSegmentVectorGeometry(segment);
-  if (!geometry) {
-    return [];
-  }
-
-  const hashCount = Math.max(5, Math.min(9, Math.round(geometry.length / 9)));
-  const maxWidth = nativeWedgeWidth(drawingStyle);
-  return Array.from({ length: hashCount }, (_, index) => {
-    const t = (index + 1) / (hashCount + 1);
-    const center = {
-      x: segment.x1 + geometry.unit.x * geometry.length * t,
-      y: segment.y1 + geometry.unit.y * geometry.length * t
-    };
-    const halfWidth = maxWidth * t / 2;
-    return {
-      x1: center.x + geometry.normal.x * halfWidth,
-      y1: center.y + geometry.normal.y * halfWidth,
-      x2: center.x - geometry.normal.x * halfWidth,
-      y2: center.y - geometry.normal.y * halfWidth
-    };
-  });
-}
-
-function nativeSegmentVectorGeometry(
-  segment: Pick<NativeBondLineSegment, "x1" | "y1" | "x2" | "y2">
-): { length: number; unit: { x: number; y: number }; normal: { x: number; y: number } } | undefined {
-  const dx = segment.x2 - segment.x1;
-  const dy = segment.y2 - segment.y1;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return undefined;
-  }
-
-  const unit = { x: dx / length, y: dy / length };
-  return {
-    length,
-    unit,
-    normal: { x: -unit.y, y: unit.x }
-  };
-}
-
-function formatSvgPoint(value: number): string {
-  return Number(value.toFixed(3)).toString();
-}
-
-function labelEndpointClearance(
-  fromLabel: string | undefined,
-  toLabel: string | undefined,
-  drawingStyle: NativeDrawingStyle,
-  bondLength: number,
-  unit: { x: number; y: number }
-): { from: number; to: number } {
-  const from = atomLabelBondClearance(fromLabel, drawingStyle, unit);
-  const to = atomLabelBondClearance(toLabel, drawingStyle, { x: -unit.x, y: -unit.y });
-  const total = from + to;
-  const maximumTotal = bondLength * 0.55;
-  if (total <= maximumTotal || total === 0) {
-    return { from, to };
-  }
-
-  const scale = maximumTotal / total;
-  return {
-    from: from * scale,
-    to: to * scale
-  };
-}
-
-function atomLabelBondClearance(
-  label: string | undefined,
-  drawingStyle: NativeDrawingStyle,
-  direction: { x: number; y: number }
-): number {
-  if (!label) {
-    return 0;
-  }
-
-  const { bounds } = atomLabelLayout(label, drawingStyle);
-  const horizontalDistance = direction.x > 0.0001
-    ? (bounds.x + bounds.width) / direction.x
-    : direction.x < -0.0001
-      ? bounds.x / direction.x
-      : Number.POSITIVE_INFINITY;
-  const verticalDistance = direction.y > 0.0001
-    ? (bounds.y + bounds.height) / direction.y
-    : direction.y < -0.0001
-      ? bounds.y / direction.y
-      : Number.POSITIVE_INFINITY;
-  const labelBoundaryDistance = Math.min(horizontalDistance, verticalDistance);
-
-  return Math.max(drawingStyle.atomLabelBondClearancePx, Math.max(0, labelBoundaryDistance));
-}
-
-function atomLabelBox(
-  atom: MoleculeObject["atoms"][number],
-  object: MoleculeObject,
-  label: string,
-  drawingStyle: NativeDrawingStyle
-): { x: number; y: number; width: number; height: number } {
-  const { bounds } = atomLabelLayout(label, drawingStyle);
-  return {
-    x: atom.x - object.x + bounds.x,
-    y: atom.y - object.y + bounds.y,
-    width: bounds.width,
-    height: bounds.height
-  };
-}
-
-type AtomLabelScript = "normal" | "subscript" | "superscript";
-
-interface AtomLabelRun {
-  text: string;
-  script: AtomLabelScript;
-}
-
-interface AtomLabelLayoutRun extends AtomLabelRun {
-  x: number;
-  y: number;
-  textAnchor: "middle" | "start";
-}
-
-interface AtomLabelLayout {
-  bounds: { x: number; y: number; width: number; height: number };
-  runs: AtomLabelLayoutRun[];
-}
-
-function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
-  const { bodyRuns, chargeRun } = atomLabelParts(label);
-  const baseText = bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label;
-  const suffixRuns = bodyRuns.filter((run) => run.script !== "normal");
-  const baseWidth = atomLabelRunWidth({ text: baseText, script: "normal" }, drawingStyle);
-  const baseHalfWidth = baseWidth / 2;
-  const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
-  const runs: AtomLabelLayoutRun[] = [
-    {
-      text: baseText,
-      script: "normal",
-      x: 0,
-      y: 0,
-      textAnchor: "middle"
-    }
-  ];
-  let right = baseHalfWidth;
-  let top = -baseHalfHeight;
-  let bottom = baseHalfHeight;
-  let cursor = baseHalfWidth + drawingStyle.atomLabelFontSizePx * 0.04;
-
-  for (const run of suffixRuns) {
-    const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
-    const width = atomLabelRunWidth(run, drawingStyle);
-    const y = run.script === "subscript"
-      ? drawingStyle.atomLabelFontSizePx * 0.34
-      : -drawingStyle.atomLabelFontSizePx * 0.42;
-    runs.push({
-      ...run,
-      x: cursor,
-      y,
-      textAnchor: "start"
-    });
-    right = Math.max(right, cursor + width);
-    top = Math.min(top, y - fontSize * 0.52);
-    bottom = Math.max(bottom, y + fontSize * 0.52);
-    cursor += width + drawingStyle.atomLabelFontSizePx * 0.03;
-  }
-
-  if (chargeRun) {
-    const fontSize = atomLabelRunFontSize(chargeRun.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
-    const width = atomLabelRunWidth(chargeRun, drawingStyle);
-    const x = Math.max(cursor, baseHalfWidth + drawingStyle.atomLabelFontSizePx * 0.08);
-    const y = -drawingStyle.atomLabelFontSizePx * 0.48;
-    runs.push({
-      ...chargeRun,
-      x,
-      y,
-      textAnchor: "start"
-    });
-    right = Math.max(right, x + width);
-    top = Math.min(top, y - fontSize * 0.52);
-    bottom = Math.max(bottom, y + fontSize * 0.52);
-  }
-
-  const padding = drawingStyle.atomLabelPaddingPx;
-  return {
-    bounds: {
-      x: -baseHalfWidth - padding,
-      y: top - padding,
-      width: right + baseHalfWidth + padding * 2,
-      height: bottom - top + padding * 2
-    },
-    runs
-  };
-}
-
-function atomLabelParts(label: string): { bodyRuns: AtomLabelRun[]; chargeRun?: AtomLabelRun } {
-  const { body, charge } = splitAtomLabelCharge(label);
-  const runs = Array.from(body).reduce<AtomLabelRun[]>((currentRuns, character) => {
-    const script = atomLabelScript(character);
-    const previous = currentRuns[currentRuns.length - 1];
-    if (previous?.script === script) {
-      previous.text += character;
-      return currentRuns;
-    }
-
-    currentRuns.push({ text: character, script });
-    return currentRuns;
-  }, []);
-
-  return {
-    bodyRuns: runs.length > 0 ? runs : [{ text: label, script: "normal" }],
-    chargeRun: charge ? { text: charge, script: "superscript" } : undefined
-  };
-}
-
-function splitAtomLabelCharge(label: string): { body: string; charge?: string } {
-  const twoCharacterCharge = label.match(/^(.*?)(\d[+-])$/);
-  if (twoCharacterCharge && twoCharacterCharge[1] && !twoCharacterCharge[1].endsWith("H")) {
-    return { body: twoCharacterCharge[1], charge: twoCharacterCharge[2] };
-  }
-
-  const oneCharacterCharge = label.match(/^(.*)([+-])$/);
-  if (oneCharacterCharge && oneCharacterCharge[1]) {
-    return { body: oneCharacterCharge[1], charge: oneCharacterCharge[2] };
-  }
-
-  return { body: label };
-}
-
-function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
-  const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
-  const widthFactor = run.script === "normal" ? 0.62 : 0.5;
-  return run.text.length * fontSize * widthFactor;
-}
-
-function atomLabelScript(character: string): AtomLabelScript {
-  if (/\d/.test(character)) {
-    return "subscript";
-  }
-  if (character === "+" || character === "-") {
-    return "superscript";
-  }
-  return "normal";
-}
-
-function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: NativeDrawingStyle): number | undefined {
-  if (script === "normal") {
-    return undefined;
-  }
-
-  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : 0.72);
-}
-
 function updateVisibleToolsets(current: ReadonlySet<string>, toolsetId: string, visible: boolean): Set<string> {
   const next = new Set(current);
   if (visible) {
@@ -7914,10 +7494,6 @@ function bondRefInSet(ref: BondRef, refs: readonly BondRef[]): boolean {
   return refs.some((candidate) => sameBondRef(candidate, ref));
 }
 
-function sameBondRef(left: BondRef, right: BondRef): boolean {
-  return left.objectId === right.objectId && left.bondId === right.bondId;
-}
-
 function toggledSelectionIds(ids: readonly string[], id: string): string[] {
   return ids.includes(id)
     ? ids.filter((candidate) => candidate !== id)
@@ -8936,15 +8512,6 @@ function TextObjectContent({ editing = false, object }: { editing?: boolean; obj
   );
 }
 
-function textObjectSpansForRendering(object: TextObject): TextSpan[] {
-  const spans = object.spans.filter((span) => span.text.length > 0);
-  if (spans.length > 0 && spans.map((span) => span.text).join("") === object.text) {
-    return spans;
-  }
-
-  return [{ text: object.text, script: "normal", style: {} }];
-}
-
 function textScriptForTextObject(object: TextObject): TextSpan["script"] {
   const scripts = new Set(
     textObjectSpansForRendering(object)
@@ -9051,7 +8618,10 @@ function textSpanNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function nativeMoleculeBondColor(
+// BASE colors (the user's chosen per-part color, NO perspective depth tint) — used by
+// the toolbar color reflection. The depth-cued renderer colors live in layout-engine
+// (`nativeMoleculeBondColor` there) and intentionally do NOT share these names.
+function nativeMoleculeBaseBondColor(
   object: MoleculeObject,
   bondId: string,
   drawingStyle: NativeDrawingStyle
@@ -9059,7 +8629,7 @@ function nativeMoleculeBondColor(
   return styleColorMapValue(object.style.bondColors, bondId) ?? drawingStyle.bondColor;
 }
 
-function nativeMoleculeAtomLabelColor(
+function nativeMoleculeBaseAtomLabelColor(
   object: MoleculeObject,
   atomId: string,
   drawingStyle: NativeDrawingStyle
@@ -9073,31 +8643,22 @@ function nativeMoleculeSelectionColor(
   drawingStyle: NativeDrawingStyle
 ): string {
   if (part.kind === "atom") {
-    return nativeMoleculeAtomLabelColor(object, part.atomId, drawingStyle);
+    return nativeMoleculeBaseAtomLabelColor(object, part.atomId, drawingStyle);
   }
 
   if (part.kind === "bond") {
-    return nativeMoleculeBondColor(object, part.bondId, drawingStyle);
+    return nativeMoleculeBaseBondColor(object, part.bondId, drawingStyle);
   }
 
   const firstBondId = part.bondIds[0];
   if (firstBondId) {
-    return nativeMoleculeBondColor(object, firstBondId, drawingStyle);
+    return nativeMoleculeBaseBondColor(object, firstBondId, drawingStyle);
   }
 
   const firstAtomId = part.atomIds[0];
   return firstAtomId
-    ? nativeMoleculeAtomLabelColor(object, firstAtomId, drawingStyle)
+    ? nativeMoleculeBaseAtomLabelColor(object, firstAtomId, drawingStyle)
     : drawingStyle.bondColor;
-}
-
-function styleColorMapValue(value: unknown, id: string): string | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-
-  const color = (value as Record<string, unknown>)[id];
-  return typeof color === "string" ? color : undefined;
 }
 
 function MoleculeResizeHandles({
@@ -9619,17 +9180,6 @@ function agentObjectAnchorPoint(object: DocumentObject, anchor: AgentObjectAncho
     x: object.x + object.width / 2,
     y: object.y + object.height / 2
   };
-}
-
-function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry"]>): string {
-  const parts = [
-    chemistry.averageMass !== undefined ? `avg ${chemistry.averageMass.toFixed(3)}` : undefined,
-    chemistry.exactMass !== undefined ? `exact ${chemistry.exactMass.toFixed(4)}` : undefined,
-    chemistry.totalCharge ? `charge ${chemistry.totalCharge}` : undefined,
-    chemistry.stereochemistry.length > 0 ? chemistry.stereochemistry.join(", ") : undefined
-  ].filter(Boolean);
-
-  return parts.join(" | ");
 }
 
 function moleculeDrawingPrimitive(object: MoleculeObject): "single-bond" | undefined {

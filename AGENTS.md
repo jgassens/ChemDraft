@@ -584,6 +584,23 @@ cargo test agent_bridge
 git diff --check
 ```
 
+### 5.26 Do not duplicate layout-engine rendering math
+
+Native-molecule rendering math — bond line/segment geometry, double/triple-bond gap and
+inset conventions, wedge/hash geometry, atom-label content (`atomDisplayLabel`) and layout
+(`atomLabelLayout`, `labelEndpointClearance`), stroke widths, and the perspective depth
+cues (`depthCuedBondStrokeWidth`, `depthCuedBondColor`) — lives ONLY in
+`packages/layout-engine`. App code (including the 3D spin overlay in `MainWindow.tsx`)
+must import these helpers; it must NEVER carry its own copy, even temporarily.
+
+This rule exists because two agents working the same branch in parallel each edited a
+different copy of the same formula, and the live spin overlay silently diverged from the
+committed drawing. If a helper you need is package-internal, add an `export` keyword in
+layout-engine rather than copying the function. If the app needs *different* behavior
+(e.g. the toolbar wants base colors without the depth tint), give the app-side function a
+distinct name that states the difference (`nativeMoleculeBaseBondColor`) — never reuse a
+layout-engine name for different behavior.
+
 ## 6. Package-specific rules
 
 ### 6.1 `chem-core`

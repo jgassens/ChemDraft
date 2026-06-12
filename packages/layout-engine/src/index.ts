@@ -1105,7 +1105,7 @@ function canonicalBondRefs(bonds: [BondRef, BondRef]): [BondRef, BondRef] {
   return bondRefKey(left).localeCompare(bondRefKey(right)) <= 0 ? [left, right] : [right, left];
 }
 
-function sameBondRef(left: BondRef, right: BondRef): boolean {
+export function sameBondRef(left: BondRef, right: BondRef): boolean {
   return left.objectId === right.objectId && left.bondId === right.bondId;
 }
 
@@ -1868,7 +1868,7 @@ function bondLineSegments(
   return [{ x1, y1, x2, y2, segment: "primary" }];
 }
 
-function labelEndpointClearance(
+export function labelEndpointClearance(
   fromLabel: string | undefined,
   toLabel: string | undefined,
   drawingStyle: NativeDrawingStyle,
@@ -1926,25 +1926,25 @@ function atomLabelBox(
   };
 }
 
-type AtomLabelScript = "normal" | "subscript" | "superscript";
+export type AtomLabelScript = "normal" | "subscript" | "superscript";
 
-interface AtomLabelRun {
+export interface AtomLabelRun {
   text: string;
   script: AtomLabelScript;
 }
 
-interface AtomLabelLayoutRun extends AtomLabelRun {
+export interface AtomLabelLayoutRun extends AtomLabelRun {
   x: number;
   y: number;
   textAnchor: "middle" | "start";
 }
 
-interface AtomLabelLayout {
+export interface AtomLabelLayout {
   bounds: { x: number; y: number; width: number; height: number };
   runs: AtomLabelLayoutRun[];
 }
 
-function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
+export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
   const { bodyRuns, chargeRun } = atomLabelParts(label);
   const baseText = bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label;
   const suffixRuns = bodyRuns.filter((run) => run.script !== "normal");
@@ -2061,7 +2061,7 @@ function atomLabelScript(character: string): AtomLabelScript {
   return "normal";
 }
 
-function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: NativeDrawingStyle): number | undefined {
+export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: NativeDrawingStyle): number | undefined {
   if (script === "normal") {
     return undefined;
   }
@@ -2267,7 +2267,7 @@ function nativeSegmentVectorGeometry(
   };
 }
 
-function isTerminalHeteroatomDoubleBond(
+export function isTerminalHeteroatomDoubleBond(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
   object: MoleculeObject,
@@ -2366,7 +2366,7 @@ function nativeMoleculeAtomLabelColor(
   return styleColorMapValue(object.style.atomLabelColors, atomId) ?? drawingStyle.atomLabelColor;
 }
 
-function styleColorMapValue(value: unknown, id: string): string | undefined {
+export function styleColorMapValue(value: unknown, id: string): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
