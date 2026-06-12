@@ -43,7 +43,6 @@ import {
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
-  projectedPlaneTiltMaxRadians,
   reorderSelectedDocumentObject,
   setDocumentPageOrientation,
   setDocumentPageSize,
@@ -902,8 +901,10 @@ describe("ChemDraft desktop shell", () => {
 
     expect(rotationDeltaDegrees(center, start, { x: 360, y: -20 })).toBe(360);
     expect(rotationDeltaDegrees(center, start, { x: -360, y: -20 })).toBe(-360);
-    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: -380 }))).toBe(360);
-    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: 340 }))).toBe(360);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: -380 }))).toBe(0);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: -390 }))).toBe(10);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: 340 }))).toBe(0);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: 350 }))).toBe(10);
   });
 
   it("keeps short rotate-handle drags smooth instead of jumpy", () => {
@@ -950,26 +951,27 @@ describe("ChemDraft desktop shell", () => {
     expect(manualRotationDeltaDegrees(0, 360)).toBe(0);
   });
 
-  it("maps projected-plane 3D rotate drags to a full-turn tilt readout", () => {
+  it("maps projected-plane 3D rotate drags to a wrapping full-turn tilt readout", () => {
     const start = { x: 80, y: 100 };
 
     expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: 100 }))).toBe(0);
     expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: 30 }))).toBe(70);
     expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: -120 }))).toBe(220);
     expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: 320 }))).toBe(220);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: -320 }))).toBe(60);
   });
 
   it("maps projected-plane 3D rotate diagonal drags to X and Y tilt", () => {
     const start = { x: 80, y: 100 };
     const diagonal = projectedPlaneTiltVectorFromDrag(start, { x: 150, y: 30 });
-    const clamped = projectedPlaneTiltVectorFromDrag(start, { x: 500, y: -300 });
+    const wrapped = projectedPlaneTiltVectorFromDrag(start, { x: 500, y: -300 });
 
     expect(projectedPlaneTiltReadoutDegrees(diagonal.xRad)).toBe(70);
     expect(projectedPlaneTiltReadoutDegrees(diagonal.yRad)).toBe(70);
     expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 70° / Y 70°");
-    expect(Math.hypot(clamped.xRad, clamped.yRad)).toBeCloseTo(projectedPlaneTiltMaxRadians, 6);
-    expect(projectedPlaneTiltReadoutDegrees(clamped.xRad)).toBeLessThan(360);
-    expect(projectedPlaneTiltReadoutDegrees(clamped.yRad)).toBeLessThan(360);
+    expect(projectedPlaneTiltReadoutDegrees(wrapped.xRad)).toBe(40);
+    expect(projectedPlaneTiltReadoutDegrees(wrapped.yRad)).toBe(60);
+    expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
   });
 
   it("keeps projected-plane 3D rotate handle scoped to X/Y tilt", () => {
@@ -977,6 +979,7 @@ describe("ChemDraft desktop shell", () => {
     expect(projectedPlaneTiltReadoutLabel(Math.PI / 6, -Math.PI / 4)).toBe("X 30° / Y -45°");
     expect(mainWindowSource).not.toContain("projectedPlaneZRotationDegreesFromDrag");
     expect(mainWindowSource).not.toContain("rawRotationDegrees");
+    expect(mainWindowSource).not.toContain("full-turn tilt limit");
   });
 
   it("wires manual rotation entry to Z and X/Y rotation handles", () => {
@@ -984,9 +987,16 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-rotation-input-kind={input.kind}");
     expect(mainWindowSource).toContain("onDoubleClick={handleRotateDoubleClick}");
     expect(mainWindowSource).toContain("onDoubleClick={handleProjectedPlaneTiltDoubleClick}");
+    expect(mainWindowSource).toContain("onRotationInputChange={handleRotationInputChange}");
+    expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
+    expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
+    expect(mainWindowSource).toContain("aria-label=\"Restore rotation home\"");
     expect(mainWindowSource).toContain("aria-label=\"Z rotation degrees\"");
     expect(mainWindowSource).toContain("aria-label=\"X rotation degrees\"");
     expect(mainWindowSource).toContain("aria-label=\"Y rotation degrees\"");
+    expect(mainWindowSource).not.toContain("ApplyRotationInputIcon");
+    expect(mainWindowSource).not.toContain("Apply X Y rotation");
+    expect(mainWindowSource).not.toContain("Apply Z rotation");
   });
 
   it("centers the paired Z and X/Y rotation handles over the selection box", () => {
@@ -1001,8 +1011,13 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-scale-input-popover=\"true\"");
     expect(mainWindowSource).toContain("data-scale-input-corner={input.corner}");
     expect(mainWindowSource).toContain("onDoubleClick={onResizeDoubleClick(corner)}");
+    expect(mainWindowSource).toContain("onMoleculeResizeInputChange={handleMoleculeResizeInputChange}");
+    expect(mainWindowSource).toContain("onMoleculeResizeInputHome={handleMoleculeResizeInputHome}");
+    expect(mainWindowSource).toContain("onMoleculeResizeInputKeep={handleMoleculeResizeInputKeep}");
+    expect(mainWindowSource).toContain("aria-label=\"Restore stretch home\"");
     expect(mainWindowSource).toContain("aria-label=\"X stretch percent\"");
     expect(mainWindowSource).toContain("aria-label=\"Y stretch percent\"");
+    expect(mainWindowSource).not.toContain("Apply stretch");
   });
 
   it("wires group 3D rotate to native molecule multi-selections", () => {
@@ -1034,8 +1049,9 @@ describe("ChemDraft desktop shell", () => {
       startDocument,
       molecule.id,
       { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 },
-      Math.PI / 2,
-      Math.PI / 6
+      0,
+      Math.PI / 6,
+      { tiltYRad: Math.PI / 6 }
     );
     const startHistory = createDocumentHistory(startDocument);
     const committedHistory = projectedPlaneTiltCommitHistory(startHistory, startDocument, result.document);
@@ -2276,6 +2292,13 @@ describe("ChemDraft desktop shell", () => {
       kind: "atom",
       atomId: "missing_atom"
     })).toBeUndefined();
+  });
+
+  it("routes Delete through selected native molecule fragments before whole-object deletion", () => {
+    expect(mainWindowSource).toContain("applyNativeMoleculePartDeleteTarget(currentDocument, selectedPartTarget)");
+    expect(mainWindowSource.indexOf("const selectedFragmentTarget = selectedNativeMoleculePart?.kind === \"parts\""))
+      .toBeLessThan(mainWindowSource.indexOf("const target = selectedFragmentTarget ? undefined : hoveredNativeDeleteTargetRef.current"));
+    expect(mainWindowSource).toContain("Deleted selected molecule fragment");
   });
 
   it("keeps whole selected native molecule drags ahead of atom and bond part drags", () => {

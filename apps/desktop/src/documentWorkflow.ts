@@ -186,12 +186,12 @@ type Matrix3 = readonly [
 type ProjectedPlanePoint3d = ProjectedPlaneTiltPoint & { z?: number };
 type ProjectedPlaneCenter3d = ProjectedPlaneTiltPoint & { z: number };
 
-export interface ProjectedPlaneTiltClamp {
+export interface ProjectedPlaneTiltWrap {
   tiltRad: number;
   clamped: boolean;
 }
 
-interface ProjectedPlaneTiltVectorClamp {
+interface ProjectedPlaneTiltVectorWrap {
   tiltXRad: number;
   tiltYRad: number;
   clamped: boolean;
@@ -1579,7 +1579,67 @@ function normalizeNativeAromaticTemplateBonds(molecule: MoleculeObject): Molecul
   return refreshNativeSingleBondGraph(molecule, molecule.atoms, nextBonds);
 }
 
+function refreshNativeCyclicDoubleBondSides(molecule: MoleculeObject): MoleculeObject {
+  const cycles = findNativeCarbonRingCycles(molecule, new Set([5, 6]));
+  if (cycles.length === 0) {
+    return molecule;
+  }
+
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const cyclesByBondId = new Map<string, NativeAromaticRingCycle[]>();
+  cycles.forEach((cycle) => {
+    cycle.bondIds.forEach((bondId) => {
+      cyclesByBondId.set(bondId, [...(cyclesByBondId.get(bondId) ?? []), cycle]);
+    });
+  });
+
+  let changed = false;
+  const bonds = molecule.bonds.map((bond) => {
+    if (bond.order !== "double") {
+      return bond;
+    }
+
+    const owningCycles = cyclesByBondId.get(bond.id) ?? [];
+    const fromAtom = atomById.get(bond.fromAtomId);
+    const toAtom = atomById.get(bond.toAtomId);
+    if (owningCycles.length === 0 || !fromAtom || !toAtom) {
+      return bond;
+    }
+
+    const currentSide = bond.display?.doubleBondSide;
+    const cycle =
+      owningCycles.find((candidate) => doubleBondSideTowardPoint(fromAtom, toAtom, candidate.center) === currentSide)
+      ?? owningCycles[0];
+    if (!cycle) {
+      return bond;
+    }
+
+    const side = doubleBondSideTowardPoint(fromAtom, toAtom, cycle.center);
+    if (currentSide === side) {
+      return bond;
+    }
+
+    changed = true;
+    return nativeBondWithOrderAndDoubleSide(bond, "double", side);
+  });
+
+  return changed ? { ...molecule, bonds } : molecule;
+}
+
 function findNativeSixMemberCarbonRingCycles(molecule: MoleculeObject): NativeAromaticRingCycle[] {
+  return findNativeCarbonRingCycles(molecule, new Set([6]));
+}
+
+function findNativeCarbonRingCycles(
+  molecule: MoleculeObject,
+  ringSizes: ReadonlySet<number>
+): NativeAromaticRingCycle[] {
+  const targetSizes = [...ringSizes].filter((size) => Number.isInteger(size) && size >= 3).sort((a, b) => a - b);
+  const maxRingSize = targetSizes[targetSizes.length - 1];
+  if (maxRingSize === undefined) {
+    return [];
+  }
+
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const carbonAtomIds = new Set(molecule.atoms.filter((atom) => atom.element === "C").map((atom) => atom.id));
   const adjacency = new Map<string, { atomId: string; bondId: string }[]>();
@@ -1600,22 +1660,23 @@ function findNativeSixMemberCarbonRingCycles(molecule: MoleculeObject): NativeAr
 
   const cycles = new Map<string, NativeAromaticRingCycle>();
   const visit = (startAtomId: string, atomId: string, atomIds: string[], bondIds: string[]) => {
-    if (atomIds.length === 6) {
+    if (ringSizes.has(atomIds.length)) {
       const closingBond = (adjacency.get(atomId) ?? []).find((edge) => edge.atomId === startAtomId);
-      if (!closingBond) {
-        return;
+      if (closingBond) {
+        const cycleBondIds = [...bondIds, closingBond.bondId];
+        const key = canonicalNativeRingCycleKey(cycleBondIds);
+        if (!cycles.has(key)) {
+          const cycleAtomIds = [...atomIds];
+          cycles.set(key, {
+            atomIds: cycleAtomIds,
+            bondIds: cycleBondIds,
+            center: centroidOfPoints(cycleAtomIds.map((id) => atomById.get(id)).filter((atom): atom is MoleculeAtom => Boolean(atom)))
+          });
+        }
       }
+    }
 
-      const cycleBondIds = [...bondIds, closingBond.bondId];
-      const key = canonicalNativeRingCycleKey(cycleBondIds);
-      if (!cycles.has(key)) {
-        const cycleAtomIds = [...atomIds];
-        cycles.set(key, {
-          atomIds: cycleAtomIds,
-          bondIds: cycleBondIds,
-          center: centroidOfPoints(cycleAtomIds.map((id) => atomById.get(id)).filter((atom): atom is MoleculeAtom => Boolean(atom)))
-        });
-      }
+    if (atomIds.length >= maxRingSize) {
       return;
     }
 
@@ -3168,6 +3229,38 @@ export function applyNativeMoleculeDeleteTarget(
   );
 }
 
+export function applyNativeMoleculePartDeleteTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculePartReorderTarget
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const nextMolecule = nativeMoleculeAfterPartDelete(molecule, target);
+  if (!nextMolecule) {
+    return document;
+  }
+
+  if (nextMolecule.atoms.length === 0) {
+    return applyPatch(
+      document,
+      { op: "removeObject", objectId: molecule.id },
+      { now: phase4Timestamp }
+    );
+  }
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
 export function applyNativeMoleculeBondOrderTarget(
   document: ChemDraftDocument,
   target: NativeBondOrderTarget
@@ -3905,7 +3998,6 @@ export function moveDocumentObject(
   }
 
   if (object.type === "molecule") {
-    const translatedTransform = translateNativeMoleculeTransformCenter(object, dx, dy);
     return applyPatch(
       document,
       {
@@ -3918,8 +4010,7 @@ export function moveDocumentObject(
             ...atom,
             x: atom.x + dx,
             y: atom.y + dy
-          })),
-          ...(translatedTransform ? { transform: translatedTransform } : {})
+          }))
         }
       },
       { now: phase4Timestamp }
@@ -3982,12 +4073,12 @@ export function rotateNativeMoleculeParts(
 
   const center = objectCenter(bounds);
   const angleRadians = angleDegrees * Math.PI / 180;
-  const rotated = normalizeNativeMoleculeGeometry({
+  const rotated = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => targetAtomIds.has(atom.id)
       ? { ...atom, ...rotatePointAround(atom, center, angleRadians) }
       : atom)
-  });
+  }));
 
   return applyPatch(
     document,
@@ -4008,18 +4099,18 @@ export function rotateDocumentObject(
   }
 
   if (object.type === "molecule" && object.atoms.length > 0) {
-    const center = objectCenter(object);
+    const center = nativeMoleculeCenter(object);
     const angleRadians = (object.rotation + angleDegrees) * Math.PI / 180;
     const atoms = object.atoms.map((atom) => ({
       ...atom,
       ...rotatePointAround(atom, center, angleRadians)
     }));
     const transform = nativeMoleculeTransformState(object);
-    const nextMolecule = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+    const nextMolecule = withNativeMoleculeTransform(refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
       ...object,
       rotation: 0,
       atoms
-    }), {
+    })), {
       ...transform,
       rotationDegrees: transform.rotationDegrees + angleDegrees
     });
@@ -4064,11 +4155,11 @@ export function rotateNativeMoleculeObjectAroundPoint(
     ...rotatePointAround(atom, center, angleRadians)
   }));
   const transform = nativeMoleculeTransformState(molecule);
-  const nextMolecule = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+  const nextMolecule = withNativeMoleculeTransform(refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
     ...molecule,
     rotation: 0,
     atoms
-  }), {
+  })), {
     ...transform,
     rotationDegrees: transform.rotationDegrees + angleDegrees
   });
@@ -4080,32 +4171,58 @@ export function rotateNativeMoleculeObjectAroundPoint(
   );
 }
 
-export function clampProjectedPlaneTiltRadians(tiltRad: number): ProjectedPlaneTiltClamp {
+function rotateNativeMoleculeGeometryAroundPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  center: PagePoint,
+  angleDegrees: number
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const molecule = page?.objects.find((candidate): candidate is MoleculeObject =>
+    candidate.id === objectId && candidate.type === "molecule"
+  );
+  if (!page || !molecule || molecule.atoms.length === 0 || Math.abs(angleDegrees) < 0.05) {
+    return document;
+  }
+
+  const angleRadians = (molecule.rotation + angleDegrees) * Math.PI / 180;
+  const nextMolecule = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+    ...molecule,
+    rotation: 0,
+    atoms: molecule.atoms.map((atom) => ({
+      ...atom,
+      ...rotatePointAround(atom, center, angleRadians)
+    }))
+  }));
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
+function wrapProjectedPlaneTiltValue(value: number, period: number): number {
+  const wrapped = value % period;
+  return Object.is(wrapped, -0) ? 0 : wrapped;
+}
+
+export function wrapProjectedPlaneTiltRadians(tiltRad: number): ProjectedPlaneTiltWrap {
   const finiteTilt = Number.isFinite(tiltRad) ? tiltRad : 0;
-  const clampedTilt = clamp(finiteTilt, -projectedPlaneTiltMaxRadians, projectedPlaneTiltMaxRadians);
+  const wrappedTilt = wrapProjectedPlaneTiltValue(finiteTilt, projectedPlaneTiltMaxRadians);
   return {
-    tiltRad: clampedTilt,
-    clamped: Math.abs(clampedTilt - finiteTilt) > 1e-9
+    tiltRad: wrappedTilt,
+    clamped: !Number.isFinite(tiltRad)
   };
 }
 
-export function clampProjectedPlaneTiltVectorRadians(tiltXRad: number, tiltYRad: number): ProjectedPlaneTiltVectorClamp {
-  const finiteTiltX = Number.isFinite(tiltXRad) ? tiltXRad : 0;
-  const finiteTiltY = Number.isFinite(tiltYRad) ? tiltYRad : 0;
-  const magnitude = Math.hypot(finiteTiltX, finiteTiltY);
-  if (magnitude <= projectedPlaneTiltMaxRadians || magnitude <= 1e-9) {
-    return {
-      tiltXRad: finiteTiltX,
-      tiltYRad: finiteTiltY,
-      clamped: !Number.isFinite(tiltXRad) || !Number.isFinite(tiltYRad)
-    };
-  }
-
-  const scale = projectedPlaneTiltMaxRadians / magnitude;
+export function wrapProjectedPlaneTiltVectorRadians(tiltXRad: number, tiltYRad: number): ProjectedPlaneTiltVectorWrap {
+  const wrappedX = wrapProjectedPlaneTiltRadians(tiltXRad);
+  const wrappedY = wrapProjectedPlaneTiltRadians(tiltYRad);
   return {
-    tiltXRad: finiteTiltX * scale,
-    tiltYRad: finiteTiltY * scale,
-    clamped: true
+    tiltXRad: wrappedX.tiltRad,
+    tiltYRad: wrappedY.tiltRad,
+    clamped: wrappedX.clamped || wrappedY.clamped
   };
 }
 
@@ -4152,24 +4269,14 @@ function projectedPlaneRotationMatrix(
   const cz = Math.cos(zRad);
   const sz = Math.sin(zRad);
 
+  // R_x · R_y · R_z: the in-plane Z rotation is applied first, then the Y and X tilts.
+  // Applying Z first means tiltX/tiltY are interpreted in screen space rather than in
+  // the molecule's already-Z-rotated local frame, so a vertical drag always tilts about
+  // the screen's horizontal axis regardless of how the molecule was rotated in-plane.
   return [
-    [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
-    [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
-    [-sy, cy * sx, cy * cx]
-  ];
-}
-
-function projectedPlaneAxisRotationMatrix(axisAngleRad: number, tiltRad: number): Matrix3 {
-  const ux = Math.cos(axisAngleRad);
-  const uy = Math.sin(axisAngleRad);
-  const c = Math.cos(tiltRad);
-  const s = Math.sin(tiltRad);
-  const t = 1 - c;
-
-  return [
-    [t * ux * ux + c, t * ux * uy, uy * s],
-    [t * ux * uy, t * uy * uy + c, -ux * s],
-    [-uy * s, ux * s, c]
+    [cy * cz, -cy * sz, sy],
+    [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+    [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy]
   ];
 }
 
@@ -4209,35 +4316,26 @@ function applyMatrix3(matrix: Matrix3, vector: readonly [number, number, number]
   ];
 }
 
-function projectedPlaneCenterWithDepth(center: ProjectedPlaneTiltPoint): ProjectedPlaneCenter3d {
+function projectedPlaneCenterWithDepth(center: ProjectedPlaneTiltPoint, depth = 0): ProjectedPlaneCenter3d {
   return {
     x: center.x,
     y: center.y,
-    z: 0
+    z: Number.isFinite(depth) ? depth : 0
   };
 }
 
-function retargetProjectedPlaneTiltPointAroundPageAxis(
-  point: ProjectedPlanePoint3d,
-  center: ProjectedPlaneCenter3d,
-  axisAngleRad: number,
-  fromTiltRad: number,
-  toTiltRad: number
-): ProjectedPlaneTiltResult {
-  const fromMatrix = projectedPlaneAxisRotationMatrix(axisAngleRad, fromTiltRad);
-  const toMatrix = projectedPlaneAxisRotationMatrix(axisAngleRad, toTiltRad);
-  const deltaMatrix = multiplyMatrix3(toMatrix, transposeMatrix3(fromMatrix));
-  const [x, y, z] = applyMatrix3(deltaMatrix, [
-    point.x - center.x,
-    point.y - center.y,
-    pointZ(point) - center.z
-  ]);
-
-  return {
-    x: center.x + x,
-    y: center.y + y,
-    z: center.z + z
-  };
+// Mean projected-plane depth of the given atoms, used as the tilt pivot's z so a molecule is
+// tilted about its own depth plane rather than the z=0 screen plane. This is what keeps a
+// single-object tilt centered on the molecule after a GROUP tilt: a group tilt rotates every
+// member about the shared group center, giving each molecule a large uniform depth offset
+// proportional to its distance from that center. Pivoting a later single tilt at z=0 would
+// rotate that whole offset and swing the molecule about the stale group center; pivoting at
+// the molecule's own mean depth cancels the offset so it tilts in place about its own center.
+function meanAtomDepth(atoms: readonly MoleculeAtom[]): number {
+  if (atoms.length === 0) {
+    return 0;
+  }
+  return atoms.reduce((sum, atom) => sum + pointZ(atom), 0) / atoms.length;
 }
 
 function retargetProjectedPlaneTiltPoint(
@@ -4277,6 +4375,84 @@ function normalizedDegreeDelta(left: number, right: number): number {
   return delta;
 }
 
+interface ProjectedPlaneTiltVector {
+  tiltXRad: number;
+  tiltYRad: number;
+  clamped: boolean;
+}
+
+interface ResolvedProjectedPlaneTilt {
+  resolvedTiltVector: ProjectedPlaneTiltVector;
+  fromTiltVector: ProjectedPlaneTiltVector;
+  fromRotationDegrees: number;
+  resolvedRotationDegrees: number;
+  /** True when the target orientation matches the source orientation within tolerance. */
+  unchanged: boolean;
+  /** True when clamping engaged and the caller asked not to mutate clamped tilts. */
+  blockedByClamp: boolean;
+  /** Maps a single point from the source orientation to the target orientation. */
+  retargetAtom(point: ProjectedPlanePoint3d, center: ProjectedPlaneCenter3d): ProjectedPlaneTiltResult;
+  /** Builds the no-op-friendly document result with the resolved tilt/rotation metadata. */
+  result(document: ChemDraftDocument, changed: boolean): ProjectedPlaneTiltDocumentResult;
+}
+
+// Shared preamble for the three projected-plane tilt entry points. Resolving the tilt
+// vector, clamp state, rotation frame, and retarget closure in one place keeps the single,
+// part, and group paths on the same screen-space frame of reference (always the Euler
+// vector path) so `tiltYRad: 0` behaves identically to omitting it.
+function resolveProjectedPlaneTiltParameters(
+  tiltRad: number,
+  options: ProjectedPlaneTiltOptions,
+  defaultFromRotationDegrees: number
+): ResolvedProjectedPlaneTilt {
+  const resolvedTiltVector = wrapProjectedPlaneTiltVectorRadians(tiltRad, options.tiltYRad ?? 0);
+  const fromTiltX = wrapProjectedPlaneTiltRadians(options.fromTiltRad ?? 0);
+  const fromTiltY = wrapProjectedPlaneTiltRadians(options.fromTiltYRad ?? 0);
+  const fromTiltVector: ProjectedPlaneTiltVector = {
+    tiltXRad: fromTiltX.tiltRad,
+    tiltYRad: fromTiltY.tiltRad,
+    clamped: fromTiltX.clamped || fromTiltY.clamped
+  };
+  const fromRotationDegrees = normalizeDegrees(options.fromRotationDegrees ?? defaultFromRotationDegrees);
+  const resolvedRotationDegrees = normalizeDegrees(options.rotationDegrees ?? fromRotationDegrees);
+  const rotationChanged = Math.abs(normalizedDegreeDelta(resolvedRotationDegrees, fromRotationDegrees)) >= 0.001;
+  const clamped = resolvedTiltVector.clamped || fromTiltVector.clamped;
+  const mutateWhenClamped = options.mutateWhenClamped ?? true;
+  const unchanged =
+    Math.abs(resolvedTiltVector.tiltXRad - fromTiltVector.tiltXRad) < 0.001 &&
+    Math.abs(resolvedTiltVector.tiltYRad - fromTiltVector.tiltYRad) < 0.001 &&
+    !rotationChanged;
+
+  return {
+    resolvedTiltVector,
+    fromTiltVector,
+    fromRotationDegrees,
+    resolvedRotationDegrees,
+    unchanged,
+    blockedByClamp: clamped && !mutateWhenClamped,
+    retargetAtom: (point, center) =>
+      retargetProjectedPlaneTiltPoint(
+        point,
+        center,
+        fromTiltVector.tiltXRad,
+        fromTiltVector.tiltYRad,
+        resolvedTiltVector.tiltXRad,
+        resolvedTiltVector.tiltYRad,
+        fromRotationDegrees,
+        resolvedRotationDegrees
+      ),
+    result: (document, changed) => ({
+      document,
+      tiltRad: resolvedTiltVector.tiltXRad,
+      tiltXRad: resolvedTiltVector.tiltXRad,
+      tiltYRad: resolvedTiltVector.tiltYRad,
+      rotationDegrees: resolvedRotationDegrees,
+      clamped,
+      changed
+    })
+  };
+}
+
 export function tiltNativeMoleculeProjectedPlane(
   document: ChemDraftDocument,
   objectId: string,
@@ -4289,81 +4465,17 @@ export function tiltNativeMoleculeProjectedPlane(
   const molecule = page?.objects.find((candidate): candidate is MoleculeObject =>
     candidate.id === objectId && candidate.type === "molecule"
   );
-  const resolvedTiltVector = clampProjectedPlaneTiltVectorRadians(tiltRad, options.tiltYRad ?? 0);
-  const fromTiltX = clampProjectedPlaneTiltRadians(options.fromTiltRad ?? 0);
-  const fromTiltY = clampProjectedPlaneTiltRadians(options.fromTiltYRad ?? 0);
-  const fromTiltVector = {
-    tiltXRad: fromTiltX.tiltRad,
-    tiltYRad: fromTiltY.tiltRad,
-    clamped: fromTiltX.clamped || fromTiltY.clamped
-  };
   const transform = molecule ? nativeMoleculeTransformState(molecule) : defaultNativeMoleculeTransform;
-  const fromRotationDegrees = normalizeDegrees(options.fromRotationDegrees ?? transform.rotationDegrees);
-  const resolvedRotationDegrees = normalizeDegrees(options.rotationDegrees ?? fromRotationDegrees);
-  const rotationChanged = Math.abs(normalizedDegreeDelta(resolvedRotationDegrees, fromRotationDegrees)) >= 0.001;
-  const useTiltVector =
-    options.tiltYRad !== undefined ||
-    options.fromTiltYRad !== undefined ||
-    options.rotationDegrees !== undefined ||
-    options.fromRotationDegrees !== undefined ||
-    options.persistTransform === true;
-  const mutateWhenClamped = options.mutateWhenClamped ?? true;
-  if (
-    !page ||
-    !molecule ||
-    molecule.atoms.length === 0 ||
-    (
-      Math.abs(resolvedTiltVector.tiltXRad - fromTiltVector.tiltXRad) < 0.001 &&
-      (!useTiltVector || (
-        Math.abs(resolvedTiltVector.tiltYRad - fromTiltVector.tiltYRad) < 0.001 &&
-        !rotationChanged
-      ))
-    )
-  ) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-      changed: false
-    };
-  }
-  if ((resolvedTiltVector.clamped || fromTiltVector.clamped) && !mutateWhenClamped) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: true,
-      changed: false
-    };
+  const params = resolveProjectedPlaneTiltParameters(tiltRad, options, transform.rotationDegrees);
+  if (!page || !molecule || molecule.atoms.length === 0 || params.unchanged || params.blockedByClamp) {
+    return params.result(document, false);
   }
 
-  const projectedPlaneCenter = projectedPlaneCenterWithDepth(center);
-  const tiltedGeometry = normalizeNativeMoleculeGeometry({
+  const projectedPlaneCenter = projectedPlaneCenterWithDepth(center, meanAtomDepth(molecule.atoms));
+  const tiltedGeometry = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => {
-      const point = useTiltVector
-        ? retargetProjectedPlaneTiltPoint(
-            atom,
-            projectedPlaneCenter,
-            fromTiltVector.tiltXRad,
-            fromTiltVector.tiltYRad,
-            resolvedTiltVector.tiltXRad,
-            resolvedTiltVector.tiltYRad,
-            fromRotationDegrees,
-            resolvedRotationDegrees
-          )
-        : retargetProjectedPlaneTiltPointAroundPageAxis(
-            atom,
-            projectedPlaneCenter,
-            axisAngleRad,
-            fromTiltVector.tiltXRad,
-            resolvedTiltVector.tiltXRad
-          );
+      const point = params.retargetAtom(atom, projectedPlaneCenter);
       return {
         ...atom,
         x: roundGeometryCoordinate(point.x),
@@ -4371,42 +4483,24 @@ export function tiltNativeMoleculeProjectedPlane(
         z: roundGeometryCoordinate(point.z)
       };
     })
-  });
+  }));
   const tilted = options.persistTransform
     ? withNativeMoleculeTransform(tiltedGeometry, {
         scaleX: transform.scaleX,
         scaleY: transform.scaleY,
-        rotationDegrees: resolvedRotationDegrees,
-        tiltXDegrees: radiansToDegrees(resolvedTiltVector.tiltXRad),
-        tiltYDegrees: radiansToDegrees(resolvedTiltVector.tiltYRad)
+        rotationDegrees: params.resolvedRotationDegrees,
+        tiltXDegrees: radiansToDegrees(params.resolvedTiltVector.tiltXRad),
+        tiltYDegrees: radiansToDegrees(params.resolvedTiltVector.tiltYRad)
       })
     : tiltedGeometry;
-  const changed = nativeMoleculeGeometryOrTransformChanged(molecule, tilted);
-  if (!changed) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-      changed: false
-    };
+  if (!nativeMoleculeGeometryOrTransformChanged(molecule, tilted)) {
+    return params.result(document, false);
   }
 
-  return {
-    document: applyPatch(
-      document,
-      { op: "updateObject", objectId, changes: tilted },
-      { now: phase4Timestamp }
-    ),
-    tiltRad: resolvedTiltVector.tiltXRad,
-    tiltXRad: resolvedTiltVector.tiltXRad,
-    tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-    rotationDegrees: resolvedRotationDegrees,
-    clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-    changed: true
-  };
+  return params.result(
+    applyPatch(document, { op: "updateObject", objectId, changes: tilted }, { now: phase4Timestamp }),
+    true
+  );
 }
 
 export function tiltNativeMoleculePartsProjectedPlane(
@@ -4421,97 +4515,26 @@ export function tiltNativeMoleculePartsProjectedPlane(
   const molecule = page?.objects.find((candidate): candidate is MoleculeObject =>
     candidate.id === target.objectId && candidate.type === "molecule"
   );
-  const resolvedTiltVector = clampProjectedPlaneTiltVectorRadians(tiltRad, options.tiltYRad ?? 0);
-  const fromTiltX = clampProjectedPlaneTiltRadians(options.fromTiltRad ?? 0);
-  const fromTiltY = clampProjectedPlaneTiltRadians(options.fromTiltYRad ?? 0);
-  const fromTiltVector = {
-    tiltXRad: fromTiltX.tiltRad,
-    tiltYRad: fromTiltY.tiltRad,
-    clamped: fromTiltX.clamped || fromTiltY.clamped
-  };
-  const fromRotationDegrees = normalizeDegrees(options.fromRotationDegrees ?? 0);
-  const resolvedRotationDegrees = normalizeDegrees(options.rotationDegrees ?? fromRotationDegrees);
-  const rotationChanged = Math.abs(normalizedDegreeDelta(resolvedRotationDegrees, fromRotationDegrees)) >= 0.001;
-  const useTiltVector =
-    options.tiltYRad !== undefined ||
-    options.fromTiltYRad !== undefined ||
-    options.rotationDegrees !== undefined ||
-    options.fromRotationDegrees !== undefined;
-  const mutateWhenClamped = options.mutateWhenClamped ?? true;
-  if (
-    !page ||
-    !molecule ||
-    molecule.atoms.length === 0 ||
-    (
-      Math.abs(resolvedTiltVector.tiltXRad - fromTiltVector.tiltXRad) < 0.001 &&
-      (!useTiltVector || (
-        Math.abs(resolvedTiltVector.tiltYRad - fromTiltVector.tiltYRad) < 0.001 &&
-        !rotationChanged
-      ))
-    )
-  ) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-      changed: false
-    };
-  }
-  if ((resolvedTiltVector.clamped || fromTiltVector.clamped) && !mutateWhenClamped) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: true,
-      changed: false
-    };
+  const params = resolveProjectedPlaneTiltParameters(tiltRad, options, 0);
+  if (!page || !molecule || molecule.atoms.length === 0 || params.unchanged || params.blockedByClamp) {
+    return params.result(document, false);
   }
 
   const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
   if (targetAtomIds.size === 0) {
-      return {
-        document,
-        tiltRad: resolvedTiltVector.tiltXRad,
-        tiltXRad: resolvedTiltVector.tiltXRad,
-        tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-        rotationDegrees: resolvedRotationDegrees,
-        clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-        changed: false
-      };
+    return params.result(document, false);
   }
 
   const targetAtoms = molecule.atoms.filter((atom) => targetAtomIds.has(atom.id));
-  const projectedPlaneCenter = projectedPlaneCenterWithDepth(center);
-  const tilted = normalizeNativeMoleculeGeometry({
+  const projectedPlaneCenter = projectedPlaneCenterWithDepth(center, meanAtomDepth(targetAtoms));
+  const tilted = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => {
       if (!targetAtomIds.has(atom.id)) {
         return atom;
       }
 
-      const point = useTiltVector
-        ? retargetProjectedPlaneTiltPoint(
-            atom,
-            projectedPlaneCenter,
-            fromTiltVector.tiltXRad,
-            fromTiltVector.tiltYRad,
-            resolvedTiltVector.tiltXRad,
-            resolvedTiltVector.tiltYRad,
-            fromRotationDegrees,
-            resolvedRotationDegrees
-          )
-        : retargetProjectedPlaneTiltPointAroundPageAxis(
-            atom,
-            projectedPlaneCenter,
-            axisAngleRad,
-            fromTiltVector.tiltXRad,
-            resolvedTiltVector.tiltXRad
-          );
+      const point = params.retargetAtom(atom, projectedPlaneCenter);
       return {
         ...atom,
         x: roundGeometryCoordinate(point.x),
@@ -4519,33 +4542,15 @@ export function tiltNativeMoleculePartsProjectedPlane(
         z: roundGeometryCoordinate(point.z)
       };
     })
-  });
-  const changed = nativeMoleculeGeometryOrTransformChanged(molecule, tilted);
-  if (!changed) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-      changed: false
-    };
+  }));
+  if (!nativeMoleculeGeometryOrTransformChanged(molecule, tilted)) {
+    return params.result(document, false);
   }
 
-  return {
-    document: applyPatch(
-      document,
-      { op: "updateObject", objectId: molecule.id, changes: tilted },
-      { now: phase4Timestamp }
-    ),
-    tiltRad: resolvedTiltVector.tiltXRad,
-    tiltXRad: resolvedTiltVector.tiltXRad,
-    tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-    rotationDegrees: resolvedRotationDegrees,
-    clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-    changed: true
-  };
+  return params.result(
+    applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: tilted }, { now: phase4Timestamp }),
+    true
+  );
 }
 
 export function tiltNativeMoleculeObjectsProjectedPlane(
@@ -4557,53 +4562,9 @@ export function tiltNativeMoleculeObjectsProjectedPlane(
   options: ProjectedPlaneTiltOptions = {}
 ): ProjectedPlaneTiltDocumentResult {
   const objectIdSet = new Set(objectIds);
-  const resolvedTiltVector = clampProjectedPlaneTiltVectorRadians(tiltRad, options.tiltYRad ?? 0);
-  const fromTiltX = clampProjectedPlaneTiltRadians(options.fromTiltRad ?? 0);
-  const fromTiltY = clampProjectedPlaneTiltRadians(options.fromTiltYRad ?? 0);
-  const fromTiltVector = {
-    tiltXRad: fromTiltX.tiltRad,
-    tiltYRad: fromTiltY.tiltRad,
-    clamped: fromTiltX.clamped || fromTiltY.clamped
-  };
-  const fromRotationDegrees = normalizeDegrees(options.fromRotationDegrees ?? 0);
-  const resolvedRotationDegrees = normalizeDegrees(options.rotationDegrees ?? fromRotationDegrees);
-  const rotationChanged = Math.abs(normalizedDegreeDelta(resolvedRotationDegrees, fromRotationDegrees)) >= 0.001;
-  const useTiltVector =
-    options.tiltYRad !== undefined ||
-    options.fromTiltYRad !== undefined ||
-    options.rotationDegrees !== undefined ||
-    options.fromRotationDegrees !== undefined;
-  const mutateWhenClamped = options.mutateWhenClamped ?? true;
-  if (
-    objectIdSet.size === 0 ||
-    (
-      Math.abs(resolvedTiltVector.tiltXRad - fromTiltVector.tiltXRad) < 0.001 &&
-      (!useTiltVector || (
-        Math.abs(resolvedTiltVector.tiltYRad - fromTiltVector.tiltYRad) < 0.001 &&
-        !rotationChanged
-      ))
-    )
-  ) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-      changed: false
-    };
-  }
-  if ((resolvedTiltVector.clamped || fromTiltVector.clamped) && !mutateWhenClamped) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: true,
-      changed: false
-    };
+  const params = resolveProjectedPlaneTiltParameters(tiltRad, options, 0);
+  if (objectIdSet.size === 0 || params.unchanged || params.blockedByClamp) {
+    return params.result(document, false);
   }
 
   const projectedPlaneCenter = projectedPlaneCenterWithDepth(center);
@@ -4618,27 +4579,16 @@ export function tiltNativeMoleculeObjectsProjectedPlane(
         continue;
       }
 
-      const tilted = normalizeNativeMoleculeGeometry({
+      // Group tilt bakes the shared screen-space rotation into each molecule's geometry but
+      // deliberately does NOT persist per-object tilt metadata. The rotation pivots about the
+      // *group* selection center, not each molecule's own center, so persisting an absolute
+      // tilt would seed a later single-object re-tilt with a baseline that swings the molecule
+      // about the stale group pivot (the molecule appears to "remember" the group center).
+      // Leaving tilt unpersisted lets a reselected member tilt cleanly about its own center.
+      const tilted = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
         ...object,
         atoms: object.atoms.map((atom) => {
-          const point = useTiltVector
-            ? retargetProjectedPlaneTiltPoint(
-                atom,
-                projectedPlaneCenter,
-                fromTiltVector.tiltXRad,
-                fromTiltVector.tiltYRad,
-                resolvedTiltVector.tiltXRad,
-                resolvedTiltVector.tiltYRad,
-                fromRotationDegrees,
-                resolvedRotationDegrees
-              )
-            : retargetProjectedPlaneTiltPointAroundPageAxis(
-                atom,
-                projectedPlaneCenter,
-                axisAngleRad,
-                fromTiltVector.tiltXRad,
-                resolvedTiltVector.tiltXRad
-              );
+          const point = params.retargetAtom(atom, projectedPlaneCenter);
           return {
             ...atom,
             x: roundGeometryCoordinate(point.x),
@@ -4646,7 +4596,7 @@ export function tiltNativeMoleculeObjectsProjectedPlane(
             z: roundGeometryCoordinate(point.z)
           };
         })
-      });
+      }));
       if (nativeMoleculeGeometryOrTransformChanged(object, tilted)) {
         patches.push({ op: "updateObject", objectId: object.id, changes: tilted });
       }
@@ -4654,26 +4604,10 @@ export function tiltNativeMoleculeObjectsProjectedPlane(
   }
 
   if (patches.length === 0) {
-    return {
-      document,
-      tiltRad: resolvedTiltVector.tiltXRad,
-      tiltXRad: resolvedTiltVector.tiltXRad,
-      tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-      rotationDegrees: resolvedRotationDegrees,
-      clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-      changed: false
-    };
+    return params.result(document, false);
   }
 
-  return {
-    document: applyPatches(document, patches, { now: phase4Timestamp }),
-    tiltRad: resolvedTiltVector.tiltXRad,
-    tiltXRad: resolvedTiltVector.tiltXRad,
-    tiltYRad: useTiltVector ? resolvedTiltVector.tiltYRad : 0,
-    rotationDegrees: resolvedRotationDegrees,
-    clamped: resolvedTiltVector.clamped || fromTiltVector.clamped,
-    changed: true
-  };
+  return params.result(applyPatches(document, patches, { now: phase4Timestamp }), true);
 }
 
 export function resizeNativeMoleculeParts(
@@ -4830,7 +4764,6 @@ function translateDocumentObjectBy(
   const nextY = object.y + dy;
 
   if (object.type === "molecule") {
-    const translatedTransform = translateNativeMoleculeTransformCenter(object, dx, dy);
     return applyPatch(
       document,
       {
@@ -4839,8 +4772,7 @@ function translateDocumentObjectBy(
         changes: {
           x: nextX,
           y: nextY,
-          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy })),
-          ...(translatedTransform ? { transform: translatedTransform } : {})
+          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
         }
       },
       { now: phase4Timestamp }
@@ -5005,7 +4937,7 @@ export function rotateDocumentObjectsAroundPoint(
       continue;
     }
     next = object.type === "molecule"
-      ? rotateNativeMoleculeObjectAroundPoint(next, object.id, center, degrees)
+      ? rotateNativeMoleculeGeometryAroundPoint(next, object.id, center, degrees)
       : transformOtherObjectAroundPoint(next, object.id, center, { degrees });
   }
   return next;
@@ -5082,20 +5014,12 @@ export function cleanUpNativeMolecules2d(
 export function nativeMoleculeTransformState(molecule: MoleculeObject): MoleculeTransformState {
   const tiltXDegrees = normalizeProjectedPlaneTiltDegrees(molecule.transform?.tiltXDegrees);
   const tiltYDegrees = normalizeProjectedPlaneTiltDegrees(molecule.transform?.tiltYDegrees);
-  const hasProjectedPlaneTilt = tiltXDegrees !== undefined || tiltYDegrees !== undefined;
-  const tiltCenterX = hasProjectedPlaneTilt
-    ? normalizeProjectedPlaneTiltCenterCoordinate(molecule.transform?.tiltCenterX)
-    : undefined;
-  const tiltCenterY = hasProjectedPlaneTilt
-    ? normalizeProjectedPlaneTiltCenterCoordinate(molecule.transform?.tiltCenterY)
-    : undefined;
   return {
     scaleX: normalizeNativeMoleculeScale(molecule.transform?.scaleX ?? defaultNativeMoleculeTransform.scaleX),
     scaleY: normalizeNativeMoleculeScale(molecule.transform?.scaleY ?? defaultNativeMoleculeTransform.scaleY),
     rotationDegrees: normalizeDegrees(molecule.transform?.rotationDegrees ?? defaultNativeMoleculeTransform.rotationDegrees),
     ...(tiltXDegrees === undefined ? {} : { tiltXDegrees }),
-    ...(tiltYDegrees === undefined ? {} : { tiltYDegrees }),
-    ...(tiltCenterX === undefined || tiltCenterY === undefined ? {} : { tiltCenterX, tiltCenterY })
+    ...(tiltYDegrees === undefined ? {} : { tiltYDegrees })
   };
 }
 
@@ -5105,13 +5029,6 @@ function withNativeMoleculeTransform(
 ): MoleculeObject {
   const tiltXDegrees = normalizeProjectedPlaneTiltDegrees(transform.tiltXDegrees);
   const tiltYDegrees = normalizeProjectedPlaneTiltDegrees(transform.tiltYDegrees);
-  const hasProjectedPlaneTilt = tiltXDegrees !== undefined || tiltYDegrees !== undefined;
-  const tiltCenterX = hasProjectedPlaneTilt
-    ? normalizeProjectedPlaneTiltCenterCoordinate(transform.tiltCenterX)
-    : undefined;
-  const tiltCenterY = hasProjectedPlaneTilt
-    ? normalizeProjectedPlaneTiltCenterCoordinate(transform.tiltCenterY)
-    : undefined;
   return {
     ...molecule,
     transform: {
@@ -5119,32 +5036,27 @@ function withNativeMoleculeTransform(
       scaleY: normalizeNativeMoleculeScale(transform.scaleY),
       rotationDegrees: normalizeDegrees(transform.rotationDegrees),
       ...(tiltXDegrees === undefined ? {} : { tiltXDegrees }),
-      ...(tiltYDegrees === undefined ? {} : { tiltYDegrees }),
-      ...(tiltCenterX === undefined || tiltCenterY === undefined ? {} : { tiltCenterX, tiltCenterY })
+      ...(tiltYDegrees === undefined ? {} : { tiltYDegrees })
     }
   };
 }
 
-function translateNativeMoleculeTransformCenter(
-  molecule: MoleculeObject,
-  dx: number,
-  dy: number
-): MoleculeTransformState | undefined {
-  const transform = nativeMoleculeTransformState(molecule);
-  if (transform.tiltCenterX === undefined || transform.tiltCenterY === undefined) {
-    return undefined;
-  }
-
+// Drops per-atom projected-plane depth so a 2D cleanup leaves a genuinely flat molecule.
+// Without this, atoms keep stale `z` from a prior 3D tilt and `pointZ()` would still read
+// that depth on the next projected-plane operation even though the transform reset to 2D.
+function flattenNativeMoleculeDepth(molecule: MoleculeObject): MoleculeObject {
   return {
-    ...transform,
-    tiltCenterX: roundGeometryCoordinate(transform.tiltCenterX + dx),
-    tiltCenterY: roundGeometryCoordinate(transform.tiltCenterY + dy)
+    ...molecule,
+    atoms: molecule.atoms.map(({ z: _z, ...atom }) => atom)
   };
 }
 
 function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObject {
   if (molecule.atoms.length <= 1 || molecule.bonds.length === 0) {
-    return withNativeMoleculeTransform(normalizeNativeMoleculeGeometry(molecule), defaultNativeMoleculeTransform);
+    return withNativeMoleculeTransform(
+      normalizeNativeMoleculeGeometry(flattenNativeMoleculeDepth(molecule)),
+      defaultNativeMoleculeTransform
+    );
   }
 
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
@@ -5181,7 +5093,8 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
 
   const atoms = molecule.atoms.map((atom) => {
     const point = nextAtomPoints.get(atom.id);
-    return point ? { ...atom, ...point } : atom;
+    const { z: _z, ...flatAtom } = atom;
+    return point ? { ...flatAtom, ...point } : flatAtom;
   });
 
   return withNativeMoleculeTransform(
@@ -5652,6 +5565,10 @@ function averagePagePoint(points: readonly PagePoint[]): PagePoint {
   };
 }
 
+export function nativeMoleculeCenter(molecule: Pick<MoleculeObject, "atoms" | "x" | "y" | "width" | "height">): PagePoint {
+  return molecule.atoms.length > 0 ? averagePagePoint(molecule.atoms) : objectCenter(molecule);
+}
+
 function nativeMoleculeGeometryOrTransformChanged(before: MoleculeObject, after: MoleculeObject): boolean {
   const beforeTransform = nativeMoleculeTransformState(before);
   const afterTransform = nativeMoleculeTransformState(after);
@@ -5660,9 +5577,7 @@ function nativeMoleculeGeometryOrTransformChanged(before: MoleculeObject, after:
     Math.abs(beforeTransform.scaleY - afterTransform.scaleY) > 0.001 ||
     Math.abs(beforeTransform.rotationDegrees - afterTransform.rotationDegrees) > 0.001 ||
     Math.abs((beforeTransform.tiltXDegrees ?? 0) - (afterTransform.tiltXDegrees ?? 0)) > 0.001 ||
-    Math.abs((beforeTransform.tiltYDegrees ?? 0) - (afterTransform.tiltYDegrees ?? 0)) > 0.001 ||
-    Math.abs((beforeTransform.tiltCenterX ?? 0) - (afterTransform.tiltCenterX ?? 0)) > 0.001 ||
-    Math.abs((beforeTransform.tiltCenterY ?? 0) - (afterTransform.tiltCenterY ?? 0)) > 0.001
+    Math.abs((beforeTransform.tiltYDegrees ?? 0) - (afterTransform.tiltYDegrees ?? 0)) > 0.001
   ) {
     return true;
   }
@@ -5686,16 +5601,8 @@ function normalizeNativeMoleculeScale(scale: number): number {
 
 function normalizeProjectedPlaneTiltDegrees(degrees: number | undefined): number | undefined {
   const finiteDegrees = Number.isFinite(degrees) ? degrees ?? 0 : 0;
-  const normalized = Number(clamp(
-    finiteDegrees,
-    -projectedPlaneTiltMaxDegrees,
-    projectedPlaneTiltMaxDegrees
-  ).toFixed(3));
+  const normalized = Number(wrapProjectedPlaneTiltValue(finiteDegrees, projectedPlaneTiltMaxDegrees).toFixed(3));
   return Math.abs(normalized) < 0.001 ? undefined : normalized;
-}
-
-function normalizeProjectedPlaneTiltCenterCoordinate(value: number | undefined): number | undefined {
-  return Number.isFinite(value) ? roundGeometryCoordinate(value ?? 0) : undefined;
 }
 
 function radiansToDegrees(radians: number): number {
@@ -6540,6 +6447,34 @@ function deleteNativeCarbonBond(
     molecule.atoms,
     molecule.bonds.filter((bond) => bond.id !== bondId)
   );
+}
+
+function nativeMoleculeAfterPartDelete(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartReorderTarget
+): MoleculeObject | undefined {
+  if (target.kind === "atom") {
+    return deleteNativeCarbonAtom(molecule, target.atomId);
+  }
+
+  if (target.kind === "bond") {
+    return deleteNativeCarbonBond(molecule, target.bondId, undefined);
+  }
+
+  const atomIdsToRemove = new Set(target.atomIds);
+  const bondIdsToRemove = new Set(target.bondIds);
+  const atoms = molecule.atoms.filter((atom) => !atomIdsToRemove.has(atom.id));
+  const bonds = molecule.bonds.filter((bond) =>
+    !bondIdsToRemove.has(bond.id) &&
+    !atomIdsToRemove.has(bond.fromAtomId) &&
+    !atomIdsToRemove.has(bond.toAtomId)
+  );
+
+  if (atoms.length === molecule.atoms.length && bonds.length === molecule.bonds.length) {
+    return undefined;
+  }
+
+  return refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
 function refreshNativeSingleBondGraph(
