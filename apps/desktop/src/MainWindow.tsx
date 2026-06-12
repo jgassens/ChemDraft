@@ -519,7 +519,7 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DR
 const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.12.18.24-reviewfix";
+const CURRENT_BUILD_STAMP = "6.12.18.37-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -4745,7 +4745,7 @@ export function MainWindow({
     return isDouble;
   }
 
-  function openObjectRotateInput(objectId: string): boolean {
+  const openObjectRotateInput = useCallback((objectId: string): boolean => {
     if (activeToolState.activeKind !== "selection") {
       return false;
     }
@@ -4790,7 +4790,7 @@ export function MainWindow({
     });
     setStatus("Z rotation entry");
     return true;
-  }
+  }, [activeToolState.activeKind, document, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
 
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -4877,7 +4877,7 @@ export function MainWindow({
     openObjectRotateInput(objectId);
   }, [openObjectRotateInput]);
 
-  function openProjectedPlaneTiltInput(objectId: string): boolean {
+  const openProjectedPlaneTiltInput = useCallback((objectId: string): boolean => {
     if (activeToolState.activeKind !== "selection") {
       return false;
     }
@@ -4925,7 +4925,7 @@ export function MainWindow({
     });
     setStatus("3D rotation entry");
     return true;
-  }
+  }, [activeToolState.activeKind, document, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
 
   const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -5029,7 +5029,7 @@ export function MainWindow({
     openProjectedPlaneTiltInput(objectId);
   }, [openProjectedPlaneTiltInput]);
 
-  function openMoleculeResizeInput(objectId: string, corner: MoleculeResizeCorner): boolean {
+  const openMoleculeResizeInput = useCallback((objectId: string, corner: MoleculeResizeCorner): boolean => {
     if (activeToolState.activeKind !== "selection") {
       return false;
     }
@@ -5076,7 +5076,7 @@ export function MainWindow({
     });
     setStatus("Stretch entry");
     return true;
-  }
+  }, [activeToolState.activeKind, document, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
 
   const handleMoleculeResizePointerDown = useCallback((
     objectId: string,
