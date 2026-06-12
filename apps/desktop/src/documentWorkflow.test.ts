@@ -1220,10 +1220,20 @@ describe("Phase 4 document workflow", () => {
     expect(tiltedTransform.tiltXDegrees).toBe(80);
     expect(restored.changed).toBe(true);
     expect(nativeMoleculeTransformState(restoredMolecule).tiltXDegrees ?? 0).toBe(0);
+    // Reselection recomputes the pivot from the tilted bounding box (pivots are interaction
+    // state, not persisted), so restoring the tilt rigidly translates the molecule by a
+    // constant offset. The molecule returns to a flat shape with its geometry intact, which we
+    // assert centroid-relative for x/y and via coplanarity in z (same as the X/Y restore test).
+    const originalCentroid = averagePoint(molecule.atoms);
+    const restoredCentroid = averagePoint(restoredMolecule.atoms);
+    const meanRestoredZ =
+      restoredMolecule.atoms.reduce((sum, restoredAtom) => sum + (restoredAtom.z ?? 0), 0) /
+      restoredMolecule.atoms.length;
     molecule.atoms.forEach((atom, index) => {
       const restoredAtom = restoredMolecule.atoms[index];
-      expect(restoredAtom?.x).toBeCloseTo(atom.x, 2);
-      expect(restoredAtom?.y).toBeCloseTo(atom.y, 2);
+      expect((restoredAtom?.x ?? 0) - restoredCentroid.x).toBeCloseTo(atom.x - originalCentroid.x, 2);
+      expect((restoredAtom?.y ?? 0) - restoredCentroid.y).toBeCloseTo(atom.y - originalCentroid.y, 2);
+      expect((restoredAtom?.z ?? 0) - meanRestoredZ).toBeCloseTo(0, 2);
     });
   });
 

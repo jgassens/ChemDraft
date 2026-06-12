@@ -1,10 +1,10 @@
 # Grouped Object Transform Entry
 
-Status: design note for the grouped selection transform UI.
+Status: design note for the grouped selection transform UI. **Not yet implemented** — group selection handles are currently drag-only (rotate, resize, and 3D rotate); double-clicking a group handle does not open numeric entry. Single-object double-click numeric entry ships today; this note specifies the planned group equivalent.
 
 ChemDraft already has single-object double-click entry for exact rotation and molecule stretch. Group selections should use the same interaction idea without making the group a new document object and without hiding chemistry behavior inside handle-local UI.
 
-## Target Behavior
+## Target Behavior (planned)
 
 - Double-click the grouped selection rotate handle to open exact angle entry for the selected group.
 - Double-click any grouped selection resize handle to open exact size entry for the selected group.

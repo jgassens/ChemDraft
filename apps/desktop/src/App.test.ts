@@ -991,12 +991,32 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
     expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
     expect(mainWindowSource).toContain("aria-label=\"Restore rotation home\"");
+    expect(mainWindowSource).toContain('draftXDegrees: "0", draftYDegrees: "0"');
     expect(mainWindowSource).toContain("aria-label=\"Z rotation degrees\"");
     expect(mainWindowSource).toContain("aria-label=\"X rotation degrees\"");
     expect(mainWindowSource).toContain("aria-label=\"Y rotation degrees\"");
     expect(mainWindowSource).not.toContain("ApplyRotationInputIcon");
     expect(mainWindowSource).not.toContain("Apply X Y rotation");
     expect(mainWindowSource).not.toContain("Apply Z rotation");
+  });
+
+  it("keeps transform handle double-clicks out of whole-molecule selection promotion", () => {
+    expect(mainWindowSource).toContain("if (object.type === \"molecule\" && doublePress)");
+    expect(mainWindowSource).not.toContain("tryWholeMoleculeDoublePress");
+    expect(mainWindowSource).not.toContain("Sharing this through every entry point");
+    expect(mainWindowSource).toContain("isTransformHandleSecondPress");
+    expect(mainWindowSource).toContain("lastTransformHandlePressRef");
+    expect(mainWindowSource).toContain("openObjectRotateInput(objectId);");
+    expect(mainWindowSource).toContain("openProjectedPlaneTiltInput(objectId);");
+    expect(mainWindowSource).toContain("openMoleculeResizeInput(objectId, corner);");
+    expect(mainWindowSource.match(/const selectedDocument = selectedFragmentTarget/g)?.length).toBe(3);
+  });
+
+  it("keeps double-click numeric entry whole-molecule only for transform handles", () => {
+    expect(mainWindowSource).toContain("Double-click entry is available for whole molecules only");
+    expect(mainWindowSource).not.toContain("fragmentRotationDegreesRef");
+    expect(mainWindowSource).not.toContain("rememberedFragmentRotationDegrees");
+    expect(mainWindowSource).not.toContain("rememberFragmentRotationDegrees");
   });
 
   it("centers the paired Z and X/Y rotation handles over the selection box", () => {
