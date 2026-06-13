@@ -507,7 +507,7 @@ function conformerGraphSignature(molecule: MoleculeObject): string {
   return `${atoms}|${bonds}`;
 }
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.13.8.5-fable";
+const CURRENT_BUILD_STAMP = "6.13.13.7-opus";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object

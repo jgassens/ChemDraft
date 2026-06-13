@@ -1,12 +1,12 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phases 1A, 1B, 1C, 2, 3, 4, 5.0, and 5 complete on `feature/3d-spin`;
-all green (`tsc` clean, 568 tests). The full feature works end-to-end and is
+**Status:** Phases 1A, 1B, 1C, 2, 3, 4, 5.0, 5, and 6 complete on `feature/3d-spin`;
+all green (`tsc` clean, 628 tests). The full feature works end-to-end and is
 browser-verified: draw → Spin 3D → lazy OCL conformer → drag-rotate overlay →
 release flattens the perspective into the document (one undo step) → Cmd+Z reverts.
 Styrene tested specifically — its double bonds survive the flatten on their original
-atom pairs. The chemistry chain is independently RDKit-confirmed end to end. **Next:
-Phase 6 (re-edit + round-trip tests; all automated, no UI).** Phase 2b is conditional
+atom pairs. The chemistry chain is independently RDKit-confirmed end to end, including
+the committed doc-frame output (Phase 6 oracle round-trip). Phase 2b is conditional
 (see its entry). Architecture decided: **built into the app, behind the
 `chemistry-adapter` seam** — not a plugin. Engine front-runner: **OpenChemLib JS**,
 gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
@@ -317,7 +317,17 @@ crossing model."* So we **integrate, never reinvent**:
     landing outside). Pinned by a benzene ring-interior test.
   → All four verified live (benzene placed, spun, flattened) + unit tests.
 
-- **Phase 6 — Re-edit + round-trip tests.** Detailed spec below (§ Phase 6 spec).
+- ✅ **Phase 6 — Re-edit + round-trip tests** (all automated, no UI). Spec below.
+  → `apps/desktop/src/flattenRoundTrip.test.ts` — commit → OCL re-parse (counts stable,
+    stereocenter re-perceived; styrene double-bond count conserved), re-open through the
+    app's own molfile loader (`parseMolfileGraph`, the paste/open + Ketcher-host path —
+    `ketcher-core` isn't headless-importable), and repeat-edit (flatten → move atom →
+    re-flatten at a new view) with **no** atom/bond/wedge/crossing marker duplication.
+  → `tools/rdkit-oracle/flatten-roundtrip-oracle.test.ts` — the gate extended to the
+    *committed doc-frame output*: `flattenSpunMolecule` → RDKit `perceiveFrom2D` CIP ==
+    pre-flatten CIP at every encoded center (R/S-CHFClMe + 2-center L-threonine). Catches
+    molfile-writer / frame-recipe / rescale regressions the projection-only gate can't.
+    Skips when the RDKit venv is absent.
 
 - **Decision gate (after the ring-family corpus, Known gaps G3):** OCL ships / OCL
   ships **with a declared unsupported-feature list** / trigger Phase 2b. Sidecar
@@ -470,22 +480,32 @@ re-renders with a sound wedge; Cmd+Z restores the old depiction AND old crossing
 spinning a stereocenter edge-on → release → status shows the refusal, document
 untouched.
 
-## Phase 6 spec — re-edit + round-trip tests
+## Phase 6 spec — re-edit + round-trip tests ✅ COMPLETE
 
-All automated; no UI work.
-1. Round-trip test (chem-core or tools): doc molecule → flatten commit (Phase 5.1
-   function) → `moleculeToMolfileV2000` → parse back via OCL → atom/bond counts
-   stable, stereo perceived (OCL parity non-zero where encoded).
-2. Oracle round-trip (tools/rdkit-oracle): flattened molfile → RDKit
-   `perceiveFrom2D` CIP == pre-flatten CIP for every encoded center (this is the
-   ocl-flatten-gate extended to the committed doc-frame output — remember the
-   doc-frame molfile is y-up again, so no extra negation).
-3. Ketcher re-open: feed the rewritten `structure` to the existing Ketcher host
-   boundary test (`apps/desktop/src/ketcherBoundary.test.ts` pattern) and assert it
-   loads without errors.
-4. Repeat-edit: flatten → move an atom via existing workflow helpers → flatten
-   again with a new conformer → still sound (no marker duplication; the strip-and-
-   re-encode in `buildProjectedMolecule` guarantees this — test pins it).
+All automated; no UI work. Shipped in `apps/desktop/src/flattenRoundTrip.test.ts`
+(items 1, 3, 4) and `tools/rdkit-oracle/flatten-roundtrip-oracle.test.ts` (item 2).
+1. ✅ Round-trip test (apps/desktop): doc molecule → flatten commit (Phase 5.1
+   function) → committed `structure` molfile → parse back via OCL → atom/bond counts
+   stable, stereo perceived (OCL `cHelperCIP` parity non-zero where encoded; styrene's
+   double-bond count conserved).
+2. ✅ Oracle round-trip (tools/rdkit-oracle): committed molecule → RDKit
+   `perceiveFrom2D` CIP == pre-flatten CIP for every encoded center (the ocl-flatten-gate
+   extended through the real `flattenSpunMolecule` commit). **Read-frame note:** pre and
+   post are both read in the document frame (y-down). The fixture is built y-down so
+   `flattenSpunMolecule`'s negate-in/negate-out lands pre and post in the same frame —
+   reading the y-up depiction for `pre` mirrors it against `post` and reports a false
+   inversion. Cases: R/S-CHFClMe + 2-center L-threonine. Skips without the RDKit venv.
+3. ✅ Re-open: the rewritten `structure` round-trips through `parseMolfileGraph` — the
+   app's actual molfile loader (clipboard paste + file open, and the Ketcher-host feed) —
+   with no warnings, no dangling bond refs, finite coordinates. **Deviation from spec:**
+   `ketcher-core` is not headless-importable (only the `ketcher-react`/`ketcher-standalone`
+   browser bundles are deps, and `ketcherBoundary.test.ts` is a static import-guard, not a
+   loader), so the app's own strict V2000 loader stands in for the editor's loader — same
+   molblock, same strictness, runnable in node.
+4. ✅ Repeat-edit: flatten → move an atom (updateObject patch) → flatten again at a new
+   view → still sound. Atom/bond counts, wedge-marker count, and crossing overrides all
+   stay stable across the re-flatten (strip-and-re-encode in `buildProjectedMolecule` +
+   clear-then-set crossing patches — no marker duplication).
 
 - **Later:** `structure.cleanTo2d` (clean relayout via 3D + CoordGen/Indigo);
   high-fidelity engine behind the same contract.
@@ -680,4 +700,5 @@ After each merged slice: update the build stamp in **both** `AGENTS.md`
   drag to rotate overlay (near/far occlusion correct), Esc cancels back to original.
 - **Phase 5:** spin cyclohexane to a chair → 2D molecule with correct wedges; edge-on
   specified center warns/refuses; one undo reverts the flatten.
-- **Phase 6:** flattened molecule re-opens in Ketcher; round-trip tests green.
+- **Phase 6:** ✅ flattened molecule re-parses via OCL + the app's molfile loader; RDKit
+  CIP preserved through the real commit; repeat-edit duplicates no markers. All green.
