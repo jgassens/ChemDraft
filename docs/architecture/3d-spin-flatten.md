@@ -503,14 +503,24 @@ Click→manipulable was 15–20 s on larger drawings. Profiling (Node, M-series;
 
 Tuning findings (pinned so nobody re-litigates): `STRATEGY_LIKELY_SYSTEMATIC` is
 pathological (17.8 **minutes** on the coronene case) — keep the default
-ADAPTIVE_RANDOM path. Chunked refine that **re-creates** `ForceFieldMMFF94` each
-chunk is pathological (65 s vs 7.5 s) — but the cost is MMFF94 atom-typing +
-parameter setup repeated per chunk, NOT the optimizer. So refine is driven in
-batches over a **single persistent** force field (built once; `minimise({maxIts})`
-called repeatedly, each call resuming from the conformer's current coords). The
-per-iteration cost is then identical to one capped call (147-atom peptide: 34.5 vs
-33.1 ms/iter — within noise), so batching buys interruptibility for free. The
-earlier "refine must be ONE capped call" rule applied only to the re-creating form.
+ADAPTIVE_RANDOM path.
+
+**Refine is ONE capped `minimise({maxIts})` call — it cannot be chunked.** OCL's
+`ForceFieldMMFF94.minimise()` is single-shot, NOT resumable: only the first call on a
+force-field instance moves atoms; every later call (capped or not) returns rc 1 with the
+energy frozen and the coordinates untouched. Verified directly (pentacene): one
+`minimise()` → e 546→68, rc 0 (planar); `minimise({maxIts:60})` ×8 on the same ff →
+233.4 after the first call, then **frozen at 233.4** for all seven that follow. A
+"chunked/resumable" design (2026-06-12, reverted) was built on the false belief that
+repeated capped calls resume — it ran ~6 iterations of real work and then spun on no-ops,
+leaving fused aromatics at their raw, non-planar **embed** geometry (flat PAHs rendered
+warped; see `packages/ocl-adapter/src/planarity.test.ts`). Two other dead ends, for the
+record: re-creating `ForceFieldMMFF94` per chunk is pathological for a different reason
+(MMFF94 atom-typing + parameter setup repeated each chunk: 65 s vs 7.5 s), and there is
+no incremental/step API to drive. So the geometry can only be obtained by a single
+uninterruptible `minimise({maxIts: cap})`; the size-based cap bounds how long that one
+call blocks the worker (small/medium molecules converge well inside it — pentacene at
+240 its in <100 ms; a 94-atom case converges by 800).
 
 Shipped architecture (apps/desktop):
 - **`conformerWorker.ts`** — module Web Worker owning OCL: sequential job queue,
@@ -545,24 +555,27 @@ refine") so idle polish is never mistaken for user-blocking congestion. Large
 structures (>40 atoms) never refine speculatively, and refine `maxIts` scales
 down with atom count (800 ≤30 atoms, 400 ≤60, else 240).
 
-Chunked / time-boxed / preemptible refine (2026-06-12): a benchmark across diverse
-peptides (18→147 atoms) confirmed the embedded conformer — the only thing the user
-waits on, since it goes up as the overlay immediately — stays **under 5 s up to
-~150 atoms** (embed 1.6–4.1 s). The MMFF94 refine, however, was the unbounded cost:
-an *iteration* cap (240) does NOT bound *wall-clock* because per-iteration cost
-grows with the molecule, so refine hit 4.5 s (113 atoms) and 9.2 s (147 atoms) —
-and being one uninterruptible OCL call on the single worker, a refine in flight
-blocked any click that arrived during it ("first target stuck in the queue"). Fix:
-the worker drives refine in small **adaptive batches** (≈250 ms each, sized from
-the previous batch's measured cost) over the persistent force field, with (a) a
-**wall-clock budget** — 2.5 s on-demand, 1.5 s for idle background polish — so the
-tail is bounded regardless of size, and (b) **preemption**: the instant a user
-`generate` is queued, the batch loop bails (keeping the refine thunk for an
-on-demand resume) and the click is served. Net: a click is never blocked more than
-~one batch (~300 ms even at 147 atoms, measured), so **time-to-overlay ≈ embed time
-≈ <5 s** for any realistic structure; embed is the only remaining floor
-(irreducible in OCL — a truly enormous molecule embeds slower, nothing to cap).
-The `worker.refine` trace reports `"N/cap iters · <stop> · Xms"`.
+Refine latency vs. correctness (2026-06-13, supersedes the reverted chunked design):
+a benchmark across diverse peptides (18→147 atoms) confirmed the embedded conformer —
+the only thing the user waits on, since it goes up as the overlay immediately — stays
+**under 5 s up to ~150 atoms** (embed 1.6–4.1 s). The MMFF94 refine is the larger,
+size-growing cost (4.5 s at 113 atoms, 9.2 s at 147 with the default cap) and, being one
+uninterruptible OCL call on the single worker, a refine in flight delays a click that
+arrives during it. The earlier attempt to fix that by splitting refine into adaptive,
+time-boxed, preemptible **batches** was wrong at the root: `minimise()` is not resumable
+(see the pinned finding above), so chunking produced warped geometry. It is reverted.
+
+What ships instead: **one capped `minimise({maxIts})`** per molecule, off the main
+thread, with the size-based cap (800 ≤30 atoms · 400 ≤60 · else 240) as the only lever
+bounding that single call's duration. The embed is already on screen, so the refine
+hot-swaps when done. Responsiveness is preserved by ordering, not interruption: the
+background (speculative) refine is **skipped if a user `generate` is already queued**
+(its thunk is kept, refined on demand if the molecule is actually spun), so idle polish
+never blocks a click. The on-demand refine of the molecule the user just spun is *not*
+skippable — its overlay is live and must reach planar geometry. A very large molecule
+can therefore still occupy the worker for the duration of one capped minimise; that is
+the accepted floor (correct geometry > a responsiveness trick that produced wrong
+output). The `worker.refine` trace reports `"<cap> iters · <converged|capped|error> · Xms"`.
 
 ## Hard-stop conditions
 
