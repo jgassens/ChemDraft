@@ -494,8 +494,20 @@ const SPIN_PREFETCH_MAX_ATOMS = 40;
 // The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
 // fine for small structures, catastrophic for a 60-atom branched chain.
 const SPIN_IN_PAGE_MAX_ATOMS = 30;
+
+// Identity of the 3D conformer a molecule would embed to — connectivity, elements,
+// charges, and bond orders, in atom-array order (coords3d is indexed by that order).
+// Deliberately position-independent: dragging or flattening a molecule (which only
+// moves its 2D x/y) keeps the signature stable, so the spin model memo survives those.
+// Editing the graph (add/remove atom, change element/charge/bond order) changes it,
+// invalidating a stale memo.
+function conformerGraphSignature(molecule: MoleculeObject): string {
+  const atoms = molecule.atoms.map((atom) => `${atom.id}:${atom.element}:${atom.formalCharge}`).join(",");
+  const bonds = molecule.bonds.map((bond) => `${bond.fromAtomId}>${bond.toAtomId}:${bond.order}`).join(",");
+  return `${atoms}|${bonds}`;
+}
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.12.22.40-fable";
+const CURRENT_BUILD_STAMP = "6.13.7.46-fable";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -1551,6 +1563,19 @@ export function MainWindow({
       return;
     }
     commitDocumentChange(outcome.document);
+    // Remember this conformer + orientation so a later re-spin of the same (unedited)
+    // structure reopens here instead of re-snapping to a fresh embed. The graph is
+    // unchanged by the flatten, so signing the just-committed molecule is equivalent.
+    const flattened = outcome.document.pages
+      .flatMap((page) => page.objects)
+      .find((object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule");
+    if (flattened) {
+      spin3dModelCacheRef.current.set(state.objectId, {
+        signature: conformerGraphSignature(flattened),
+        coords3d: state.coords3d,
+        quat: state.quat
+      });
+    }
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
     setStatus(
@@ -1562,6 +1587,16 @@ export function MainWindow({
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
   const spin3dRequestRef = useRef(0);
+  // Session-scoped 3D model memo, keyed by molecule objectId. The FIRST spin+flatten of a
+  // structure cleans it up (the projected geometry differs from the hand-drawn layout — a
+  // desired one-time reposition). After that we remember the exact conformer + committed
+  // orientation, so re-spinning reopens the overlay landing on the current drawing instead
+  // of re-snapping to a fresh embed's readable angle — letting the user fine-tune position.
+  // Self-invalidating: the stored signature keys on graph identity, so editing the molecule
+  // forces a fresh embed (treated as first-time again). Not persisted across reload.
+  const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion }>>(
+    new Map()
+  );
   // The generation currently awaited (no overlay yet): repeated Spin 3D clicks for
   // the same structure are absorbed instead of stacking engine jobs in the worker.
   const spin3dPendingRef = useRef<{ molfile: string; objectId: string; cancel: () => void } | undefined>(undefined);
@@ -1665,6 +1700,36 @@ export function MainWindow({
       traceInfo("spin.duplicate", { message: "overlay already active" });
       commandSpan.complete({ message: "already spinning" });
       setStatus("Spin 3D already active: drag the molecule to rotate · Esc to cancel");
+      return;
+    }
+
+    // Already-modeled structure: reopen the stored conformer at its committed orientation
+    // so the overlay lands exactly on the current drawing (no re-snap), letting the user
+    // fine-tune. Only when the graph is unchanged since the flatten (signature match).
+    const memo = spin3dModelCacheRef.current.get(objectId);
+    if (memo && memo.signature === conformerGraphSignature(molecule)) {
+      // Supersede any in-flight generation and invalidate stale async callbacks.
+      spin3dPendingRef.current?.cancel();
+      spin3dPendingRef.current = undefined;
+      spin3dRequestRef.current += 1;
+      const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, memo.coords3d);
+      applySpin({
+        objectId,
+        quat: memo.quat,
+        coords3d: memo.coords3d,
+        bondPairs,
+        bondRender,
+        atomLabels,
+        placement,
+        selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
+        dragging: false
+      });
+      traceInfo("spin.reused", {
+        atomCount: molecule.atoms.length,
+        message: "cached model — reopened at committed orientation (no re-snap)"
+      });
+      commandSpan.complete({ message: "reused cached model" });
+      setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
       return;
     }
 
