@@ -125,8 +125,15 @@ export interface Generate3DConformerOptions {
  */
 export interface ProgressiveConformerResult {
   embedded: Generate3DConformerResult;
-  /** Run the (capped) force-field refinement on the same conformer. Call at most once. */
-  refine?: () => Generate3DConformerResult;
+  /**
+   * Run force-field refinement on the same conformer, reading back the result.
+   * With no argument, runs the full `maxMinimiseIterations`-capped minimisation in
+   * one (uninterruptible) call. Pass `maxIts` to run just that many steps and return;
+   * repeated calls RESUME from the conformer's current coordinates, letting a caller
+   * drive minimisation in small batches and yield the thread between them. A returned
+   * `forceField.returnCode === 0` means MMFF94 converged — no further steps will help.
+   */
+  refine?: (maxIts?: number) => Generate3DConformerResult;
 }
 
 export interface ConformerInput {

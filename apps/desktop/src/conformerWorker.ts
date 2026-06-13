@@ -61,6 +61,19 @@ function refineIterationsFor(atomCount: number | undefined): number {
 const BACKGROUND_REFINE_MAX_ATOMS = 40;
 const CACHE_LIMIT = 6;
 
+// Chunked-refine tuning (validated against the embed/refine benchmark). The MMFF94
+// minimisation is split into small batches so (a) a click is never blocked more than
+// ~one batch and (b) the polish tail is bounded by wall-clock instead of an iteration
+// count that costs wildly more on large molecules. The embedded conformer is already
+// on screen before any of this runs, so a bounded/abandoned refine only trades a hair
+// of geometric polish for a responsive worker.
+const REFINE_BATCH_INITIAL = 6; // small first batch absorbs one-time force-field setup
+const REFINE_BATCH_TARGET_MS = 250; // adapt batch size to ≈this → worst-case click block
+/** Wall-clock ceiling for the refine the user is actively watching (hot-swaps live). */
+const ON_DEMAND_REFINE_BUDGET_MS = 2500;
+/** Speculative idle polish gets a tighter budget; it is pure waste if never spun. */
+const BACKGROUND_REFINE_BUDGET_MS = 1500;
+
 interface CacheEntry {
   embedded: Generate3DConformerResult;
   refined?: Generate3DConformerResult;
@@ -68,8 +81,11 @@ interface CacheEntry {
   traceRequestId?: number;
   /** Pending MMFF94 minimisation on the live OCL conformer. Held until consumed —
    *  run by a background refine job (after a prefetch) or on demand when a real
-   *  generate hits this entry. Cleared once `refined` is populated. */
-  refine?: () => Generate3DConformerResult;
+   *  generate hits this entry. `maxIts` runs just that many steps and resumes on the
+   *  next call, so the worker can drive it in yielding batches. Cleared once the
+   *  refine has been fully spent (cap reached / converged / budget) — but KEPT when a
+   *  run is preempted, so an on-demand re-spin resumes the polish. */
+  refine?: (maxIts?: number) => Generate3DConformerResult;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -180,16 +196,68 @@ function takeNextWorkItem(): WorkItem | null {
   return null;
 }
 
-/** Run the entry's pending minimisation (once); upgrades the cache in place. */
-function refineEntry(entry: CacheEntry): Generate3DConformerResult | undefined {
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Drive the entry's MMFF94 minimisation in small, adaptive, yielding batches.
+ *
+ *   • cap         — total iterations (size-based); a converged return (rc 0) stops early
+ *   • budgetMs    — wall-clock ceiling for the whole polish, so a 147-atom molecule no
+ *                   longer pins the worker for ~9s the way a fixed 240-iter run did
+ *   • preemptible — bail the instant a user `generate` is waiting, so switching molecules
+ *                   never waits out a polish; the thunk is KEPT for on-demand resume
+ *
+ * Each batch is sized from the previous batch's measured cost to land near
+ * REFINE_BATCH_TARGET_MS, which bounds how long a single (uninterruptible) batch can
+ * block a click. Upgrades the cache entry in place and returns the latest result.
+ */
+async function runChunkedRefine(
+  entry: CacheEntry,
+  request: ConformerWorkRequest,
+  options: { budgetMs: number; preemptible: boolean; stage: string }
+): Promise<Generate3DConformerResult | undefined> {
   const refine = entry.refine;
-  if (!refine) return entry.refined;
-  entry.refine = undefined;
+  if (!refine) return entry.refined; // already fully refined (or no refinement)
+
+  const atomCount = entry.embedded.originalAtomCount;
+  const cap = refineIterationsFor(atomCount);
+  const span = startSpin3dTraceSpan({
+    sessionId: traceSessionId(request),
+    requestId: request.id,
+    kind: "worker",
+    stage: options.stage,
+    path: "worker",
+    atomCount
+  }, (trace) => post({ id: request.id, stage: "trace", trace }));
+
+  const startedAt = Date.now();
+  let done = 0;
+  let batch = REFINE_BATCH_INITIAL;
+  let stop: "cap" | "converged" | "budget" | "preempt" | "error" = "cap";
   try {
-    entry.refined = refine();
+    while (done < cap) {
+      if (options.preemptible && pendingGenerates.length > 0) { stop = "preempt"; break; }
+      const iters = Math.min(batch, cap - done);
+      const batchStart = Date.now();
+      entry.refined = refine(iters);
+      const batchMs = Date.now() - batchStart;
+      done += iters;
+      if (entry.refined.forceField?.returnCode === 0) { stop = "converged"; break; }
+      if (Date.now() - startedAt > options.budgetMs) { stop = "budget"; break; }
+      const perIter = Math.max(0.1, batchMs / iters);
+      batch = Math.max(8, Math.min(120, Math.round(REFINE_BATCH_TARGET_MS / perIter)));
+      await delay(0); // yield: a queued generate (or its trace) can run between batches
+    }
   } catch {
-    // Leave the entry embed-only; the embedded stage is already usable.
+    stop = "error"; // leave the entry at its embedded/last-refined coords
   }
+  // Fully spent → drop the thunk so re-spins are instant cache hits. Preempted → keep
+  // it: the user moved on, but an on-demand re-spin should resume the polish.
+  if (stop !== "preempt") entry.refine = undefined;
+  span.complete({
+    message: `${done}/${cap} iters · ${stop} · ${Date.now() - startedAt}ms`,
+    warningCount: entry.refined?.warnings.length
+  });
   return entry.refined;
 }
 
@@ -215,20 +283,11 @@ async function drain(): Promise<void> {
             molfile: item.molfile,
             originalAtomCount: entry.embedded.originalAtomCount
           };
-          const span = startSpin3dTraceSpan({
-            sessionId: traceSessionId(request),
-            requestId: request.id,
-            kind: "worker",
-            stage: "worker.background-refine",
-            path: "worker",
-            atomCount: entry.embedded.originalAtomCount
-          }, (trace) => post({ id: request.id, stage: "trace", trace }));
-          try {
-            await withOclConformerTrace((event) => postOclTrace(request, event), async () => refineEntry(entry));
-            span.complete({ warningCount: entry.refined?.warnings.length });
-          } catch (error) {
-            span.fail(error);
-          }
+          await runChunkedRefine(entry, request, {
+            budgetMs: BACKGROUND_REFINE_BUDGET_MS,
+            preemptible: true,
+            stage: "worker.background-refine"
+          });
         }
       } else if (item.request.kind === "warmup") {
         await runWarmup(item.request);
@@ -342,12 +401,14 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       post({ id: request.id, stage: "embedded", result: hit.embedded });
       // If the background refine hasn't landed yet, run it NOW (we're the
       // user-priority job) so double bonds/conjugation reach planar MMFF94
-      // geometry; it hot-swaps under the live overlay.
+      // geometry; it hot-swaps under the live overlay. Chunked + preemptible so a
+      // switch to another molecule isn't blocked by this polish.
       if (pendingRefine === molfile) pendingRefine = null; // consuming it here
-      const refined = await withOclConformerTrace(
-        (event) => postOclTrace(request, event),
-        async () => refineEntry(hit)
-      );
+      const refined = await runChunkedRefine(hit, request, {
+        budgetMs: ON_DEMAND_REFINE_BUDGET_MS,
+        preemptible: true,
+        stage: "worker.refine"
+      });
       if (refined) post({ id: request.id, stage: "refined", result: refined });
       else post({ id: request.id, stage: "complete" }); // no refined stage will follow
       runSpan.complete({ cacheStatus: "hit", warningCount: refined?.warnings.length ?? hit.embedded.warnings.length });
@@ -403,10 +464,11 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       runSpan.complete({ cacheStatus: "stored", warningCount: embedded.warnings.length });
       return;
     }
-    const refined = await withOclConformerTrace(
-      (event) => postOclTrace(request, event),
-      async () => refineEntry(entry)
-    );
+    const refined = await runChunkedRefine(entry, request, {
+      budgetMs: ON_DEMAND_REFINE_BUDGET_MS,
+      preemptible: true,
+      stage: "worker.refine"
+    });
     if (refined) post({ id: request.id, stage: "refined", result: refined });
     else post({ id: request.id, stage: "complete" });
     runSpan.complete({ cacheStatus: "stored", warningCount: refined?.warnings.length ?? embedded.warnings.length });

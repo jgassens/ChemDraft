@@ -503,8 +503,14 @@ Click→manipulable was 15–20 s on larger drawings. Profiling (Node, M-series;
 
 Tuning findings (pinned so nobody re-litigates): `STRATEGY_LIKELY_SYSTEMATIC` is
 pathological (17.8 **minutes** on the coronene case) — keep the default
-ADAPTIVE_RANDOM path; chunked `minimise({maxIts:100})` loops restart internal
-state (65 s vs 7.5 s) — refine must be ONE capped call.
+ADAPTIVE_RANDOM path. Chunked refine that **re-creates** `ForceFieldMMFF94` each
+chunk is pathological (65 s vs 7.5 s) — but the cost is MMFF94 atom-typing +
+parameter setup repeated per chunk, NOT the optimizer. So refine is driven in
+batches over a **single persistent** force field (built once; `minimise({maxIts})`
+called repeatedly, each call resuming from the conformer's current coords). The
+per-iteration cost is then identical to one capped call (147-atom peptide: 34.5 vs
+33.1 ms/iter — within noise), so batching buys interruptibility for free. The
+earlier "refine must be ONE capped call" rule applied only to the re-creating form.
 
 Shipped architecture (apps/desktop):
 - **`conformerWorker.ts`** — module Web Worker owning OCL: sequential job queue,
@@ -538,6 +544,25 @@ the submit trace now carries a composition string ("queue 2 = 1 prefetch · 1 id
 refine") so idle polish is never mistaken for user-blocking congestion. Large
 structures (>40 atoms) never refine speculatively, and refine `maxIts` scales
 down with atom count (800 ≤30 atoms, 400 ≤60, else 240).
+
+Chunked / time-boxed / preemptible refine (2026-06-12): a benchmark across diverse
+peptides (18→147 atoms) confirmed the embedded conformer — the only thing the user
+waits on, since it goes up as the overlay immediately — stays **under 5 s up to
+~150 atoms** (embed 1.6–4.1 s). The MMFF94 refine, however, was the unbounded cost:
+an *iteration* cap (240) does NOT bound *wall-clock* because per-iteration cost
+grows with the molecule, so refine hit 4.5 s (113 atoms) and 9.2 s (147 atoms) —
+and being one uninterruptible OCL call on the single worker, a refine in flight
+blocked any click that arrived during it ("first target stuck in the queue"). Fix:
+the worker drives refine in small **adaptive batches** (≈250 ms each, sized from
+the previous batch's measured cost) over the persistent force field, with (a) a
+**wall-clock budget** — 2.5 s on-demand, 1.5 s for idle background polish — so the
+tail is bounded regardless of size, and (b) **preemption**: the instant a user
+`generate` is queued, the batch loop bails (keeping the refine thunk for an
+on-demand resume) and the click is served. Net: a click is never blocked more than
+~one batch (~300 ms even at 147 atoms, measured), so **time-to-overlay ≈ embed time
+≈ <5 s** for any realistic structure; embed is the only remaining floor
+(irreducible in OCL — a truly enormous molecule embeds slower, nothing to cap).
+The `worker.refine` trace reports `"N/cap iters · <stop> · Xms"`.
 
 ## Hard-stop conditions
 

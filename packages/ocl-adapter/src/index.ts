@@ -401,14 +401,22 @@ export async function generate3DConformerProgressive(
     return { embedded };
   }
 
-  const refine = (): Generate3DConformerResult => {
+  // The force field is built once and reused across calls so the caller can drive
+  // minimisation in small batches (`refine(maxIts)`), yielding the thread between
+  // them, without paying MMFF94 atom-typing setup every batch. Each batch resumes
+  // from the conformer's current coordinates (minimise mutates them in place).
+  let ff: InstanceType<typeof OCL.ForceFieldMMFF94> | null = null;
+  let ffSetupFailed = false;
+  const refine = (maxItsOverride?: number): Generate3DConformerResult => {
     let forceField: Generate3DConformerResult["forceField"];
+    const maxIts = maxItsOverride ?? options.maxMinimiseIterations;
     const refineSpan = startOclTraceSpan("mmff94-refine", { atomCount: originalAtomCount });
     try {
-      const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
-      const rc = options.maxMinimiseIterations !== undefined
-        ? ff.minimise({ maxIts: options.maxMinimiseIterations })
-        : ff.minimise();
+      if (!ff && !ffSetupFailed) {
+        ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
+      }
+      if (!ff) throw new Error("force field unavailable");
+      const rc = maxIts !== undefined ? ff.minimise({ maxIts }) : ff.minimise();
       forceField = {
         name: "MMFF94",
         status: rc === 0 ? "converged" : "not-converged",
@@ -417,12 +425,17 @@ export async function generate3DConformerProgressive(
       };
       refineSpan.complete({ atomCount: originalAtomCount, message: forceField.status });
     } catch (error) {
+      const alreadyFailed = ffSetupFailed;
+      ffSetupFailed = true;
+      ff = null;
       forceField = { name: "MMFF94", status: "setup-failed" };
-      warnings.push({
-        code: "ocl.forcefield-unavailable",
-        message: `MMFF94 setup failed: ${(error as Error).message}`,
-        severity: "warning"
-      });
+      if (!alreadyFailed) {
+        warnings.push({
+          code: "ocl.forcefield-unavailable",
+          message: `MMFF94 setup failed: ${(error as Error).message}`,
+          severity: "warning"
+        });
+      }
       refineSpan.fail(error, { atomCount: originalAtomCount });
     }
     const refinedMappingSpan = startOclTraceSpan("atom-mapping.refined", { atomCount: originalAtomCount });
