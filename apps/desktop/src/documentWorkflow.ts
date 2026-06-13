@@ -4,6 +4,7 @@ import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
   createPageLayout,
+  PageSizePresets,
   pageMarginFromLayout,
   nativeTextStyleFromObjectStyle,
   stylePresetToObjectStyle,
@@ -14,6 +15,7 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
+  type PageLayout,
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
@@ -26,7 +28,7 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import {
-  exportDocumentToCdxml,
+  exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
   openChemDraftPayload,
   sha256Utf8Hex,
   type ChemDraftOpenResult,
@@ -34,7 +36,16 @@ import {
 } from "@chemdraft/cdx-compat";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
-import { exportDocumentToSvg, type SvgExportResult } from "@chemdraft/export-engine";
+import {
+  exportDocumentToCdxml as exportDocumentToCdxmlText,
+  exportDocumentToSvg,
+  type BinaryExportResult,
+  type CdxmlTextExportOptions,
+  type PdfExportOptions,
+  type SvgExportOptions,
+  type SvgExportResult,
+  type TextExportResult
+} from "@chemdraft/export-engine";
 import {
   findNearestAtomAtPoint,
   findNearestBondHit,
@@ -59,6 +70,34 @@ export interface NativeSavePayload {
   contents: string;
   warnings: CompatibilityConversionWarning[];
   payloadHash: string;
+}
+
+export interface PageObjectBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ImportedPageFitRecommendation {
+  pageId: string;
+  pageIndex: number;
+  currentPresetId: PageSizePresetId;
+  currentOrientation: PageOrientation;
+  currentPageTitle: string;
+  recommendedPresetId: PageSizePresetId;
+  recommendedOrientation: PageOrientation;
+  recommendedPageTitle: string;
+  recommendedLayout: PageLayout;
+  contentBounds: PageObjectBounds;
+  requiredWidthPx: number;
+  requiredHeightPx: number;
+  translateX: number;
+  translateY: number;
+  overflowLeftPx: number;
+  overflowTopPx: number;
+  overflowRightPx: number;
+  overflowBottomPx: number;
 }
 
 export interface ClipboardPasteResult {
@@ -5701,7 +5740,7 @@ export function applyEditorSaveResultToSelectedMolecule(
 }
 
 export function createNativeSavePayload(document: ChemDraftDocument): NativeSavePayload {
-  const result = exportDocumentToCdxml(document);
+  const result = exportDocumentToCdxmlEnvelope(document);
   return {
     filename: `${sanitizeFilename(document.title.replace(/\.chemdraft$/i, ""))}.chemdraft`,
     mimeType: "chemical/x-cdxml",
@@ -5711,8 +5750,115 @@ export function createNativeSavePayload(document: ChemDraftDocument): NativeSave
   };
 }
 
+export function exportPhase4Cdxml(
+  document: ChemDraftDocument,
+  options: CdxmlTextExportOptions = {}
+): TextExportResult {
+  return exportDocumentToCdxmlText(document, options);
+}
+
 export function openNativeDocument(contents: string): ChemDraftOpenResult {
   return openChemDraftPayload(contents);
+}
+
+const importedPageFitPaddingPx = 24;
+const importedPageFitCandidatePresetIds: readonly PageSizePresetId[] = [
+  "letter",
+  "legal",
+  "a4",
+  "a3",
+  "a2",
+  "a1",
+  "a0"
+];
+
+export function recommendImportedPageFit(document: ChemDraftDocument): ImportedPageFitRecommendation | undefined {
+  const page = document.pages[0];
+  if (!page || page.objects.length === 0) {
+    return undefined;
+  }
+
+  const contentBounds = boundsForPageObjects(page.objects);
+  const overflowLeftPx = Math.max(0, -contentBounds.x);
+  const overflowTopPx = Math.max(0, -contentBounds.y);
+  const overflowRightPx = Math.max(0, contentBounds.x + contentBounds.width - page.width);
+  const overflowBottomPx = Math.max(0, contentBounds.y + contentBounds.height - page.height);
+  if (overflowLeftPx <= 0 && overflowTopPx <= 0 && overflowRightPx <= 0 && overflowBottomPx <= 0) {
+    return undefined;
+  }
+  const requiredWidthPx = contentBounds.width + importedPageFitPaddingPx * 2;
+  const requiredHeightPx = contentBounds.height + importedPageFitPaddingPx * 2;
+
+  const currentMargin = pageMarginFromLayout(page.layout);
+  const candidates = importedPageFitCandidatePresetIds.flatMap((presetId) => (["portrait", "landscape"] as const).map((orientation) => {
+    const preset = PageSizePresets.find((candidate) => candidate.id === presetId);
+    const layout = createPageLayout(presetId, orientation, currentMargin);
+    return preset
+      ? {
+          presetId,
+          orientation,
+          title: preset.title,
+          layout,
+          area: layout.widthPx * layout.heightPx
+        }
+      : undefined;
+  })).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+  const matchingCandidate = candidates
+    .filter((candidate) =>
+      candidate.layout.widthPx >= requiredWidthPx &&
+      candidate.layout.heightPx >= requiredHeightPx
+    )
+    .sort((left, right) => left.area - right.area || pageOrientationSortValue(left.orientation) - pageOrientationSortValue(right.orientation))[0];
+
+  if (!matchingCandidate) {
+    return undefined;
+  }
+
+  const translateX = importedContentFitDelta(contentBounds.x, contentBounds.width, matchingCandidate.layout.widthPx);
+  const translateY = importedContentFitDelta(contentBounds.y, contentBounds.height, matchingCandidate.layout.heightPx);
+
+  return {
+    pageId: page.id,
+    pageIndex: 0,
+    currentPresetId: page.layout.presetId,
+    currentOrientation: page.layout.orientation,
+    currentPageTitle: PageSizePresets.find((candidate) => candidate.id === page.layout.presetId)?.title ?? page.layout.presetId,
+    recommendedPresetId: matchingCandidate.presetId,
+    recommendedOrientation: matchingCandidate.orientation,
+    recommendedPageTitle: matchingCandidate.title,
+    recommendedLayout: matchingCandidate.layout,
+    contentBounds,
+    requiredWidthPx,
+    requiredHeightPx,
+    translateX,
+    translateY,
+    overflowLeftPx,
+    overflowTopPx,
+    overflowRightPx,
+    overflowBottomPx
+  };
+}
+
+export function applyImportedPageFitRecommendation(
+  document: ChemDraftDocument,
+  recommendation: ImportedPageFitRecommendation
+): ChemDraftDocument {
+  const withLayout = applyPatch(
+    document,
+    {
+      op: "updatePageLayout",
+      pageId: recommendation.pageId,
+      layout: recommendation.recommendedLayout
+    },
+    { now: phase4Timestamp }
+  );
+  if (Math.abs(recommendation.translateX) < 1e-6 && Math.abs(recommendation.translateY) < 1e-6) {
+    return withLayout;
+  }
+
+  const page = withLayout.pages.find((candidate) => candidate.id === recommendation.pageId);
+  const objectIds = page?.objects.map((object) => object.id) ?? [];
+  return moveDocumentObjects(withLayout, objectIds, recommendation.translateX, recommendation.translateY);
 }
 
 export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageSizePresetId): ChemDraftDocument {
@@ -5748,8 +5894,54 @@ export function setDocumentPageOrientation(
   );
 }
 
-export function exportPhase4Svg(document: ChemDraftDocument): SvgExportResult {
-  return exportDocumentToSvg(document, { includeWarnings: true });
+function boundsForPageObjects(objects: readonly DocumentObject[]): PageObjectBounds {
+  const xs = objects.flatMap((object) => [object.x, object.x + object.width]);
+  const ys = objects.flatMap((object) => [object.y, object.y + object.height]);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(0, maxX - minX),
+    height: Math.max(0, maxY - minY)
+  };
+}
+
+function pageOrientationSortValue(orientation: PageOrientation): number {
+  return orientation === "landscape" ? 0 : 1;
+}
+
+function importedContentFitDelta(min: number, size: number, extent: number): number {
+  const lowerBound = importedPageFitPaddingPx;
+  const upperBound = extent - importedPageFitPaddingPx;
+  const max = min + size;
+  if (min < lowerBound) {
+    return lowerBound - min;
+  }
+  if (max > upperBound) {
+    return upperBound - max;
+  }
+  return 0;
+}
+
+export function exportPhase4Svg(
+  document: ChemDraftDocument,
+  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex"> = {}
+): SvgExportResult {
+  return exportDocumentToSvg(document, {
+    ...options,
+    includeWarnings: options.includeWarnings ?? true
+  });
+}
+
+export async function exportPhase4Pdf(
+  document: ChemDraftDocument,
+  options: Pick<PdfExportOptions, "compress" | "includePageGuides" | "pageIndex"> = {}
+): Promise<BinaryExportResult> {
+  const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
+  return exportDocumentToPdf(document, options);
 }
 
 export function chemistryMetadataFromAnalysis(result: StructureAnalysisResult): ChemicalMetadata {

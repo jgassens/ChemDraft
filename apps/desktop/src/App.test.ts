@@ -43,6 +43,7 @@ import {
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
+  openNativeDocument,
   reorderSelectedDocumentObject,
   setDocumentPageOrientation,
   setDocumentPageSize,
@@ -82,7 +83,6 @@ import {
   projectedPlaneTiltReadoutDegrees,
   projectedPlaneTiltReadoutLabel,
   projectedPlaneTiltVectorFromDrag,
-  resolvePngCanvasSize,
   rotationDeltaDegrees,
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
@@ -146,6 +146,27 @@ const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.ur
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
 const desktopToolsetsSource = readFileSync(new URL("./toolsets/desktop-toolsets.json", import.meta.url), "utf8");
+const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="External CDXML Fixture">
+  <page id="page_001" BoundingBox="0 0 792 612">
+    <fragment id="1" BoundingBox="145.6553 124.875 224.6208 168.0677">
+      <n id="2" p="157.6553 130.875"/>
+      <n id="3" p="157.6553 147.375"/>
+      <n id="4" p="173.2089 152.8828"/>
+      <n id="5" p="183.5926 140.0599"/>
+      <n id="6" p="199.1462 145.5677"/>
+      <n id="7" p="199.1462 162.0677"/>
+      <n id="8" p="212.6208 136.0448"/>
+      <b id="9" B="2" E="3" Order="1"/>
+      <b id="10" B="3" E="4" Order="1"/>
+      <b id="11" B="4" E="5" Order="1"/>
+      <b id="12" B="5" E="6" Order="1"/>
+      <b id="13" B="6" E="7" Order="1"/>
+      <b id="14" B="6" E="8" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>`;
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
@@ -614,6 +635,9 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "page.setSize.a4")).toBe(true);
     expect(commands.some((command) => command.id === "page.setSize.a0")).toBe(true);
     expect(commands.some((command) => command.id === "page.setOrientation.landscape")).toBe(true);
+    expect(commands.some((command) => command.id === "export.open")).toBe(true);
+    expect(commands.some((command) => command.id === "export.pdf")).toBe(false);
+    expect(commands.some((command) => command.id === "export.png")).toBe(false);
     expect(commands.some((command) => command.id === "layout.bringForward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.sendBackward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.bringToFront")).toBe(true);
@@ -624,6 +648,38 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain(".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json");
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
+  });
+
+  it("routes desktop exports through native save and file-write helpers", () => {
+    expect(mainWindowSource).toContain("async function pickNativeExportPath(");
+    expect(mainWindowSource).toContain('if (action.id === "export.open")');
+    expect(mainWindowSource).toContain("<ExportDialog");
+    expect(mainWindowSource).toContain("Export as");
+    expect(mainWindowSource).toContain("Compress PDF");
+    expect(mainWindowSource).toContain("Include warning metadata");
+    expect(mainWindowSource).toContain("JPEG quality");
+    expect(mainWindowSource).toContain("Creation program");
+    expect(mainWindowSource).toContain("async function exportTextFile(");
+    expect(mainWindowSource).toContain("async function exportBinaryFile(");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentRef.current, dialog)");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(filename, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
+    expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
+    expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");
+    expect(mainWindowSource).toContain("await writeNativeTextFile(path, contents)");
+    expect(mainWindowSource).toContain("await writeNativeBinaryFile(path, bytes)");
+    expect(mainWindowSource).toContain("const exported = await exportBinaryFile(");
+    expect(mainWindowSource).toContain("descriptor.menuLabel");
+    expect(mainWindowSource).toContain("setStatus(`Command failed: ${message}`)");
+    expect(mainWindowSource).toContain('role="status"');
+  });
+
+  it("offers a page-size choice when imported CDXML content overflows the current page", () => {
+    expect(mainWindowSource).toContain("recommendImportedPageFit(resolvedOpen.document)");
+    expect(mainWindowSource).toContain("<ImportedPageFitPrompt");
+    expect(mainWindowSource).toContain("applyImportedPageFitRecommendation(current, pageFitPrompt)");
+    expect(mainWindowSource).toContain("Keep Current Page");
+    expect(mainWindowSource).toContain("Use {recommendedLabel}");
   });
 
   it("builds keyboard shortcuts from command definitions", () => {
@@ -2409,6 +2465,35 @@ describe("ChemDraft desktop shell", () => {
     expect(document.pages[0].objects).toHaveLength(1);
   });
 
+  it("renders a renamed visible CDXML file as the same horizontal seven-carbon structure", () => {
+    const opened = openNativeDocument(sevenCarbonVisibleCdxml);
+    if (!opened.document) {
+      throw new Error(`Expected visible CDXML import, got warnings: ${opened.warnings.map((item) => item.code).join(", ")}`);
+    }
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: opened.document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    const firstBondMarkup =
+      markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_001"[^>]*>/)?.[0] ?? "";
+    const branchBondMarkup =
+      markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_006"[^>]*>/)?.[0] ?? "";
+
+    expect(opened.source).toBe("external-cdxml");
+    expect(markup).toContain('data-atom-count="7"');
+    expect(markup).toContain('data-bond-count="6"');
+    expect((markup.match(/native-bond-line/g) ?? []).length).toBe(6);
+    expect(svgLineNumberAttribute(firstBondMarkup, "x1")).toBeCloseTo(174.5);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y1")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(firstBondMarkup, "x2")).toBeCloseTo(196.5);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y2")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(branchBondMarkup, "x2")).toBeLessThan(svgLineNumberAttribute(branchBondMarkup, "x1"));
+    expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
+  });
+
   it("renders asymmetric double bonds with overlap clearance strokes", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Double Bond Render"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects[0];
@@ -3106,16 +3191,5 @@ describe("ChemDraft desktop shell", () => {
     expect(resized.pages[0].layout).toMatchObject({ presetId: "a1", orientation: "landscape" });
     expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
     expect(resized.selection).toEqual(document.selection);
-  });
-
-  it("uses active page dimensions as the PNG fallback instead of hard-coded Letter", () => {
-    expect(resolvePngCanvasSize(0, 0, { width: 1122.5, height: 793.7 })).toEqual({
-      width: 1123,
-      height: 794
-    });
-    expect(resolvePngCanvasSize(640, 480, { width: 1122.5, height: 793.7 })).toEqual({
-      width: 640,
-      height: 480
-    });
   });
 });

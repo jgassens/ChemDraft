@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rasterize-svg"
+description = "Enables the rasterize_svg command without any pre-configured scope."
+commands.allow = ["rasterize_svg"]
+
+[[permission]]
+identifier = "deny-rasterize-svg"
+description = "Denies the rasterize_svg command without any pre-configured scope."
+commands.deny = ["rasterize_svg"]
