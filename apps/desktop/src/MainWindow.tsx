@@ -71,7 +71,7 @@ import {
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
-import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
+import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   atomElementActions,
@@ -129,6 +129,7 @@ import {
   getSelectedMolecule,
   getSelectedTextObject,
   insertNativeTextObject,
+  insertSmilesMolecule,
   nativeAtomDisplayLabel,
   nativeChargeAssociationsForMolecule,
   nativeChargeByAtomIdFromAssociations,
@@ -507,7 +508,7 @@ function conformerGraphSignature(molecule: MoleculeObject): string {
   return `${atoms}|${bonds}`;
 }
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.13.13.7-opus";
+const CURRENT_BUILD_STAMP = "6.13.14.8-opus";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -2258,27 +2259,92 @@ export function MainWindow({
     setStatus("Inserted text - type to replace placeholder");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, focusTextObjectEditor, restoreToolAfterTextPlacement, textStyleDefaults]);
 
-  const applyDetectedClipboardPayload = useCallback((detectedPayload: ReturnType<typeof inspectClipboardPayload>) => {
+  const resetPasteUiState = useCallback((editTextObjectId?: string) => {
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(editTextObjectId);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+  }, [assignHoveredNativeDeleteTarget]);
+
+  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
       pastePointForViewport(),
       textStyleDefaults
     );
-
     if (result.document !== documentRef.current) {
       commitDocumentChange(result.document);
     }
-
-    setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(result.editTextObjectId);
-    setActiveAtomLabelEdit(undefined);
-    setHoveredNativeAtom(undefined);
-    setSelectedNativeMoleculePart(undefined);
-    assignHoveredNativeDeleteTarget(undefined);
-    setFreeformNativeBond(undefined);
+    resetPasteUiState(result.editTextObjectId);
     setStatus(result.status);
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointForViewport, textStyleDefaults]);
+  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+
+  // SMILES → editable 2D structure with stereochemistry. Async because the OCL engine
+  // is dynamically imported (kept out of the static/test graph). Returns false when the
+  // text isn't a parseable SMILES, so callers can fall back to pasting it as plain text.
+  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<boolean> => {
+    try {
+      const ocl = await import("@chemdraft/ocl-adapter");
+      const depiction = ocl.depictSmiles2D(smilesText);
+      if (depiction.atoms.length === 0) {
+        return false;
+      }
+      const nextDocument = insertSmilesMolecule(
+        documentRef.current,
+        pastePointForViewport(),
+        {
+          atoms: depiction.atoms.map((atom) => ({ element: atom.element, x: atom.x, y: atom.y, charge: atom.charge })),
+          bonds: depiction.bonds.map((bond) => ({
+            from: bond.from,
+            to: bond.to,
+            order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+            wedge: bond.wedge
+          }))
+        },
+        smilesText
+      );
+      commitDocumentChange(nextDocument);
+      resetPasteUiState();
+      const stereoCount = depiction.bonds.filter((bond) => bond.wedge).length;
+      setStatus(
+        `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereo bond${stereoCount === 1 ? "" : "s"}` : ""}`
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
+
+  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+    if (detectedPayload.kind === "smiles") {
+      void renderPastedSmiles(detectedPayload.text).then((rendered) => {
+        if (!rendered) {
+          applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
+          setStatus("Clipboard SMILES could not be parsed; pasted as text");
+        }
+      });
+      return;
+    }
+    if (detectedPayload.kind === "inchi") {
+      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
+      setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
+      return;
+    }
+    // Plain text that looks like a SMILES: confirm with the engine, else paste as text.
+    if (detectedPayload.kind === "plain-text" && looksLikeSmiles(detectedPayload.text)) {
+      void renderPastedSmiles(detectedPayload.text).then((rendered) => {
+        if (!rendered) {
+          applySyncClipboardPayload(detectedPayload);
+        }
+      });
+      return;
+    }
+    applySyncClipboardPayload(detectedPayload);
+  }, [applySyncClipboardPayload, renderPastedSmiles]);
 
   const pasteClipboard = useCallback(async () => {
     const rawPayload = await readClipboardPayload();

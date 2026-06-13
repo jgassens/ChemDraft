@@ -38,6 +38,12 @@ export type ClipboardDetectedPayload =
       warnings: ClipboardTransferWarning[];
     }
   | {
+      kind: "inchi";
+      text: string;
+      sourceType?: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
       kind: "rxnfile";
       text: string;
       sourceType?: string;
@@ -145,6 +151,22 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
           {
             code: "clipboard.cdxml_not_implemented",
             message: "The clipboard contains CDXML, but CDXML paste parsing is not implemented yet."
+          }
+        ]
+      };
+    }
+  }
+
+  for (const item of textItems) {
+    if (looksLikeInchi(item.text)) {
+      return {
+        kind: "inchi",
+        text: item.text.trim(),
+        sourceType: item.type,
+        warnings: [
+          {
+            code: "clipboard.inchi_not_implemented",
+            message: "The clipboard contains an InChI string; ChemDraft can preserve it, but reconstructing a structure from InChI is not implemented yet."
           }
         ]
       };
@@ -504,6 +526,27 @@ function looksLikeRxnfile(text: string): boolean {
 
 function looksLikeCdxml(text: string): boolean {
   return /<\s*CDXML\b/i.test(text);
+}
+
+/** True for a standard/non-standard InChI string (unambiguous `InChI=` prefix). */
+export function looksLikeInchi(text: string): boolean {
+  return /^InChI=1S?\//.test(text.trim());
+}
+
+/**
+ * Cheap pre-filter for "this plain text might be a SMILES" — single whitespace-free
+ * token, length ≥ 2, only SMILES grammar characters, and at least one ASCII letter
+ * (an element). This NEVER asserts validity (that needs a real parser); the app layer
+ * confirms by attempting an OpenChemLib depiction and falls back to plain text on
+ * failure. Deliberately not used by `inspectClipboardPayload` — it stays conservative
+ * and only classifies plain text as SMILES once the app has actually parsed it.
+ */
+export function looksLikeSmiles(text: string): boolean {
+  const token = text.trim();
+  if (token.length < 2 || /\s/.test(token)) return false;
+  if (looksLikeInchi(token)) return false;
+  if (!/[A-Za-z]/.test(token)) return false;
+  return /^[A-Za-z0-9@+\-[\]()=#$%./\\:*]+$/.test(token);
 }
 
 function findV2000CountsLineIndex(lines: readonly string[]): number {

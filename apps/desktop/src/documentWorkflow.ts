@@ -2004,6 +2004,136 @@ export function createNativeMolfileMolecule(
   });
 }
 
+/** A 2D depiction (atoms + wedge-aware bonds) produced from a SMILES by the OCL
+ *  adapter's `depictSmiles2D`. Kept structural so this module never imports the
+ *  engine (which stays behind a dynamic import to keep it out of the static graph). */
+export interface PastedStructureDepiction {
+  atoms: ReadonlyArray<{ element: string; x: number; y: number; charge: number }>;
+  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; wedge: "wedge" | "hashed" | null }>;
+}
+
+/**
+ * Place a SMILES-derived 2D depiction as an editable native molecule, preserving
+ * stereochemistry. The depiction is engine-frame y-UP with wedge/hash bonds; the
+ * molfile scaler negates y (→ document y-down) and KEEPS the wedges unchanged —
+ * which preserves chirality per the coordinate-frame contract (negate y, never swap
+ * wedges; proven by the Phase 6 oracle round-trip). Double-bond sides are recomputed
+ * from the placed geometry so ring double bonds draw toward the ring interior.
+ */
+export function insertSmilesMolecule(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  depiction: PastedStructureDepiction,
+  smilesText: string
+): ChemDraftDocument {
+  if (depiction.atoms.length === 0) {
+    throw new Error("Cannot paste SMILES: no atoms were generated.");
+  }
+  const page = firstPage(document);
+
+  const pseudoGraph: ParsedMolfileGraph = {
+    format: "molfile-v2000",
+    atoms: depiction.atoms.map((atom, index) => ({
+      id: `a${index}`,
+      element: atom.element,
+      x: atom.x,
+      y: atom.y,
+      formalCharge: atom.charge
+    })),
+    bonds: depiction.bonds.map((bond, index) => ({
+      id: `b${index}`,
+      fromAtomId: `a${bond.from}`,
+      toAtomId: `a${bond.to}`,
+      order: bond.order
+    })),
+    warnings: []
+  };
+
+  const atoms: MoleculeAtom[] = scaleParsedMolfileAtoms(pseudoGraph, point, page).map((atom) => ({
+    id: atom.id,
+    element: atom.element,
+    x: atom.x,
+    y: atom.y,
+    formalCharge: atom.formalCharge
+  }));
+  const atomIds = new Set(atoms.map((atom) => atom.id));
+  const baseBonds: MoleculeBond[] = depiction.bonds
+    .map((bond, index): MoleculeBond => {
+      const base: MoleculeBond = {
+        id: `b${index}`,
+        fromAtomId: `a${bond.from}`,
+        toAtomId: `a${bond.to}`,
+        order: bond.order
+      };
+      return bond.wedge ? { ...base, display: { bondStyle: bond.wedge } } : base;
+    })
+    .filter((bond) => atomIds.has(bond.fromAtomId) && atomIds.has(bond.toAtomId));
+
+  // Recompute each double bond's drawn side from the placed 2D geometry.
+  const geometry = moleculeGeometryFromAtoms(atoms);
+  const sideMolecule: MoleculeObject = {
+    id: "smiles-side",
+    type: "molecule",
+    rotation: 0,
+    style: {},
+    structureFormat: "molfile-v2000",
+    structure: "",
+    atoms,
+    bonds: baseBonds,
+    superatoms: [],
+    rGroups: [],
+    ...geometry
+  };
+  const bonds: MoleculeBond[] = baseBonds.map((bond) =>
+    bond.order === "double"
+      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
+      : bond
+  );
+
+  const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
+
+  const object = normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, "mol_clipboard"),
+    type: "molecule",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    rotation: 0,
+    transform: defaultNativeMoleculeTransform,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "clipboard-smiles"
+    },
+    compatibility: {
+      sourceFormat: "smiles",
+      warnings: [
+        {
+          code: "clipboard.smiles_imported",
+          message: "Generated an editable 2D structure from pasted SMILES (OpenChemLib layout)."
+        }
+      ],
+      unknown: { smiles: smilesText }
+    },
+    structureFormat: "molfile-v2000",
+    structure,
+    chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
+    atoms,
+    bonds,
+    superatoms: [],
+    rGroups: []
+  });
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 export function insertNativeMolfileMolecule(
   document: ChemDraftDocument,
   point: PagePoint,

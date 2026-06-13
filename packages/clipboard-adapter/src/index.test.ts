@@ -5,6 +5,8 @@ import {
   inspectClipboardPayload,
   isCdxType,
   isVectorArtworkType,
+  looksLikeInchi,
+  looksLikeSmiles,
   parseMolfileGraph
 } from "./index";
 
@@ -210,6 +212,15 @@ describe("clipboard-adapter", () => {
     });
   });
 
+  it("classifies plain-text InChI as an inchi payload (not yet importable)", () => {
+    const detected = inspectClipboardPayload({
+      types: ["public.utf8-plain-text"],
+      textItems: [{ type: "public.utf8-plain-text", text: "InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3" }]
+    });
+
+    expect(detected).toMatchObject({ kind: "inchi", text: "InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3" });
+  });
+
   it("reports CDXML and CDX as detected but not implemented", () => {
     expect(inspectClipboardPayload({
       types: ["public.utf8-plain-text"],
@@ -241,6 +252,31 @@ describe("clipboard-adapter", () => {
       kind: "vector-only",
       warnings: [{ code: "clipboard.vector_only" }]
     });
+  });
+});
+
+describe("looksLikeInchi", () => {
+  it("matches standard and non-standard InChI prefixes", () => {
+    expect(looksLikeInchi("InChI=1S/CH4/h1H4")).toBe(true);
+    expect(looksLikeInchi("  InChI=1/C2H6O/c1-2-3/h3H,2H2,1H3")).toBe(true);
+  });
+  it("rejects SMILES and prose", () => {
+    expect(looksLikeInchi("C[C@H](F)Cl")).toBe(false);
+    expect(looksLikeInchi("the inchi is below")).toBe(false);
+  });
+});
+
+describe("looksLikeSmiles (pre-filter only — never asserts validity)", () => {
+  it("accepts whitespace-free chemical-charset tokens", () => {
+    expect(looksLikeSmiles("CCO")).toBe(true);
+    expect(looksLikeSmiles("C[C@H](F)Cl")).toBe(true);
+    expect(looksLikeSmiles("c1ccccc1")).toBe(true);
+  });
+  it("rejects prose, single characters, InChI, and empty input", () => {
+    expect(looksLikeSmiles("reaction conditions: rt, 1 h")).toBe(false); // has spaces
+    expect(looksLikeSmiles("C")).toBe(false); // too short
+    expect(looksLikeSmiles("InChI=1S/CH4/h1H4")).toBe(false);
+    expect(looksLikeSmiles("123")).toBe(false); // no element letter
   });
 });
 
