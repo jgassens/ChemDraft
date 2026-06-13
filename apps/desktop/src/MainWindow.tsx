@@ -508,7 +508,7 @@ function conformerGraphSignature(molecule: MoleculeObject): string {
   return `${atoms}|${bonds}`;
 }
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.13.14.8-opus";
+const CURRENT_BUILD_STAMP = "6.13.14.15-opus";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -2979,6 +2979,17 @@ export function MainWindow({
 
       const commandId = shortcutRegistry.resolve(event);
       if (!commandId) {
+        return;
+      }
+
+      // In the browser, let Cmd/Ctrl+V fall through to the native `paste` event
+      // (handlePaste reads event.clipboardData synchronously — the reliable,
+      // permission-free path). Intercepting it here and reading the async
+      // navigator.clipboard.readText() instead is fragile: it needs document
+      // focus + a clipboard-read permission and is blocked outright in Safari.
+      // The desktop (Tauri) runtime has no browser paste event, so it keeps
+      // routing Cmd+V through the command (→ Tauri clipboard invoke).
+      if (commandId === "clipboard.paste" && !isDesktopRuntime()) {
         return;
       }
 
