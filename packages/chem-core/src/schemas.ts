@@ -102,7 +102,8 @@ export const MoleculeAtomSchema = z
     y: z.number().finite(),
     z: z.number().finite().optional(),
     formalCharge: z.number().int().default(0),
-    labelVisible: z.boolean().optional()
+    labelVisible: z.boolean().optional(),
+    labelOffset: PointSchema.optional()
   })
   .strict();
 

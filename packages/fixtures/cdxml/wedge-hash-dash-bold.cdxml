@@ -4,10 +4,10 @@
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="150 150"/>
-      <n id="a2" p="186 150"/>
-      <n id="a3" p="150 186"/>
+      <n id="a2" p="150 186"/>
+      <n id="a3" p="186 150"/>
       <n id="a4" p="186 186"/>
-      <n id="a5" p="168 222"/>
+      <n id="a5" p="222 168"/>
       <b id="b1" B="a1" E="a2" Order="1" Display="WedgeBegin"/>
       <b id="b2" B="a1" E="a3" Order="1" Display="Hash"/>
       <b id="b3" B="a2" E="a4" Order="1" Display="Dash"/>

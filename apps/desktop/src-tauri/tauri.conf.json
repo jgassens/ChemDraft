@@ -31,6 +31,29 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png"],
+    "fileAssociations": [
+      {
+        "ext": ["chemdraft"],
+        "name": "ChemDraft Document",
+        "description": "ChemDraft CDXML document",
+        "mimeType": "chemical/x-cdxml",
+        "role": "Editor",
+        "rank": "Owner",
+        "exportedType": {
+          "identifier": "org.chemdraft.document",
+          "conformsTo": ["public.xml"]
+        }
+      },
+      {
+        "ext": ["cdxml"],
+        "name": "ChemDraw CDXML Document",
+        "description": "Chemical Markup Language document",
+        "mimeType": "chemical/x-cdxml",
+        "role": "Editor",
+        "rank": "Alternate",
+        "contentTypes": ["com.cambridgesoft.cdxml", "public.xml"]
+      }
+    ],
     "macOS": {}
   }
 }

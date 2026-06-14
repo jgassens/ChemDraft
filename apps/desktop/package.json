@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@chemdraft/cdx-compat": "workspace:*",
     "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/chemistry-adapter": "workspace:*",
     "@chemdraft/clipboard-adapter": "workspace:*",

@@ -3,10 +3,10 @@
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
   <page id="p1" BoundingBox="0 0 792 612">
     <t id="t1" p="72 72">  reagent &amp; label  </t>
-    <t id="plus1" p="144 96">+</t>
+    <t id="plus1" p="96 144">+</t>
     <fragment id="f1">
-      <n id="a1" p="180 120"/>
-      <n id="a2" p="216 120" Element="17"/>
+      <n id="a1" p="120 180"/>
+      <n id="a2" p="120 216" Element="17"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
   </page>

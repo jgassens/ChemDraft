@@ -76,8 +76,37 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(visibleHash).toBe(visibleHashForCdxml(result.contents));
     expect(canonicalVisibleCdxml(result.contents)).toContain("<fragment");
-    expect(result.contents).toContain('p="111 75"');
+    expect(result.contents).toContain('p="75 111"');
     expect(canonicalVisibleCdxml(result.contents)).not.toContain("org.chemdraft/native-document");
+  });
+
+  it("exports visible CDXML page and atom coordinates as vertical-then-horizontal", () => {
+    const document = documentWithObjects([
+      {
+        ...singleBondMolecule(),
+        id: "mol_coordinate_order",
+        x: 160,
+        y: 190,
+        width: 72,
+        height: 104,
+        atoms: [
+          { id: "atom_001", element: "C", x: 174.5, y: 210.20703125, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 196.5, y: 210.20703125, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 203.84375090314296, y: 230.94514405402793, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+          { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
+        ]
+      }
+    ]);
+    const result = exportDocumentToCdxml(document, { creationProgram: "Coordinate Order Test" });
+
+    expect(result.contents).toContain('<page id="page_001" BoundingBox="0 0 792 612">');
+    expect(result.contents).toContain('p="157.6553 130.875"');
+    expect(result.contents).toContain('p="157.6553 147.375"');
+    expect(result.contents).toContain('p="173.2089 152.8828"');
+    expect(result.contents).not.toContain('p="130.875 157.6553"');
   });
 
   it("canonicalizes equivalent visible XML despite comments, whitespace, CDATA, and attribute ordering", () => {
@@ -287,22 +316,22 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.structure_string_not_derived");
   });
 
-  it("imports CDXML p and BoundingBox coordinates as horizontal-then-vertical", () => {
+  it("imports CDXML p and BoundingBox coordinates as vertical-then-horizontal", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
-  <page id="p1" BoundingBox="0 0 540 720">
-    <fragment id="top" BoundingBox="120 100 156 100">
-      <n id="a1" p="120 100"/>
-      <n id="a2" p="156 100"/>
+  <page id="p1" BoundingBox="0 0 720 540">
+    <fragment id="top" BoundingBox="100 120 100 156">
+      <n id="a1" p="100 120"/>
+      <n id="a2" p="100 156"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
-    <fragment id="bottom" BoundingBox="120 220 156 220">
-      <n id="a3" p="120 220"/>
-      <n id="a4" p="156 220"/>
+    <fragment id="bottom" BoundingBox="220 120 220 156">
+      <n id="a3" p="220 120"/>
+      <n id="a4" p="220 156"/>
       <b id="b2" B="a3" E="a4" Order="1"/>
     </fragment>
-    <t id="label" p="120 300">vertical stack</t>
+    <t id="label" p="300 120">vertical stack</t>
   </page>
 </CDXML>`);
 
@@ -316,6 +345,76 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(label?.y ?? 0).toBeGreaterThan((bottom?.y ?? 0) + 100);
   });
 
+  it("rotates ChemDraw 26 visible CDXML into the displayed page orientation", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <fragment id="vertical" BoundingBox="100 120 100 156">
+      <n id="a1" p="100 120" Element="17"><t p="96 118" BoundingBox="94 112 102 124">Cl</t></n>
+      <n id="a2" p="100 156"/>
+      <b id="b1" B="a1" E="a2" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>`);
+
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(184);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(109.33333333333334);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(184);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(157.33333333333334);
+    expect(molecule?.atoms[0]?.labelOffset?.x).toBeCloseTo(2.666666666666657);
+    expect(molecule?.atoms[0]?.labelOffset?.y).toBeCloseTo(-2.666666666666657);
+    expect((molecule?.height ?? 0)).toBeGreaterThan(molecule?.width ?? 0);
+  });
+
+  it("imports a renamed ChemDraw CDXML file from the visible layer when ChemDraft payload tags are absent", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="External CDXML Fixture">
+  <page id="page_001" BoundingBox="0 0 792 612">
+    <fragment id="1" BoundingBox="145.6553 124.875 224.6208 168.0677">
+      <n id="2" p="157.6553 130.875"/>
+      <n id="3" p="157.6553 147.375"/>
+      <n id="4" p="173.2089 152.8828"/>
+      <n id="5" p="183.5926 140.0599"/>
+      <n id="6" p="199.1462 145.5677"/>
+      <n id="7" p="199.1462 162.0677"/>
+      <n id="8" p="212.6208 136.0448"/>
+      <b id="9" B="2" E="3" Order="1"/>
+      <b id="10" B="3" E="4" Order="1"/>
+      <b id="11" B="4" E="5" Order="1"/>
+      <b id="12" B="5" E="6" Order="1"/>
+      <b id="13" B="6" E="7" Order="1"/>
+      <b id="14" B="6" E="8" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>`);
+
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+    expect(opened.source).toBe("external-cdxml");
+    expect(molecule?.atoms).toHaveLength(7);
+    expect(molecule?.bonds).toHaveLength(6);
+    expect(molecule?.atoms[0]?.element).toBe("C");
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(174.5);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(210.20706666666667);
+    expect(molecule?.atoms[5]?.element).toBe("C");
+    expect(molecule?.atoms[5]?.x).toBeCloseTo(216.0896);
+    expect(molecule?.atoms[5]?.y).toBeCloseTo(265.52826666666665);
+    expect(molecule?.bonds[5]).toMatchObject({
+      fromAtomId: "atom_005",
+      toAtomId: "atom_007",
+      order: "single"
+    });
+    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.external_subset_imported");
+
+    const exported = exportDocumentToCdxml(opened.document!);
+    expect(exported.contents).toContain('p="157.6553 130.875"');
+    expect(exported.contents).toContain('p="199.1462 162.0677"');
+    expect(exported.contents).toContain('p="212.6208 136.0448"');
+  });
+
   it("infers ring double-bond side from ChemDraw circular ordering", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
@@ -323,11 +422,11 @@ describe("CDXML-compatible ChemDraft envelope", () => {
   <page id="p1" BoundingBox="0 0 540 720">
     <fragment id="ring" BoundingBox="80 80 170 170">
       <n id="a1" p="100 100"/>
-      <n id="a2" p="100 136"/>
-      <n id="a3" p="132 154"/>
-      <n id="a4" p="164 136"/>
-      <n id="a5" p="164 100"/>
-      <n id="a6" p="132 82"/>
+      <n id="a2" p="136 100"/>
+      <n id="a3" p="154 132"/>
+      <n id="a4" p="136 164"/>
+      <n id="a5" p="100 164"/>
+      <n id="a6" p="82 132"/>
       <b id="b12" B="a1" E="a2" Order="2" BondCircularOrdering="b61 0 0 b23"/>
       <b id="b23" B="a2" E="a3"/>
       <b id="b34" B="a3" E="a4" Order="2" DoublePosition="Left"/>
@@ -346,7 +445,41 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     });
     expect(molecule?.bonds[2]).toMatchObject({
       order: "double",
-      display: { doubleBondSide: "left" }
+      display: { doubleBondSide: "right" }
+    });
+  });
+
+  it("keeps imported cyclic double-bond secondary lines inside the ring", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <fragment id="ring" BoundingBox="80 80 170 170">
+      <n id="a1" p="100 100"/>
+      <n id="a2" p="136 100"/>
+      <n id="a3" p="154 132"/>
+      <n id="a4" p="136 164"/>
+      <n id="a5" p="100 164"/>
+      <n id="a6" p="82 132"/>
+      <b id="b12" B="a1" E="a2" Order="2"/>
+      <b id="b23" B="a2" E="a3"/>
+      <b id="b34" B="a3" E="a4" Order="2" DoublePosition="Left"/>
+      <b id="b45" B="a4" E="a5"/>
+      <b id="b56" B="a5" E="a6"/>
+      <b id="b61" B="a6" E="a1"/>
+    </fragment>
+  </page>
+</CDXML>`);
+
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    expect(molecule?.bonds[0]).toMatchObject({
+      order: "double",
+      display: { doubleBondSide: "right" }
+    });
+    expect(molecule?.bonds[2]).toMatchObject({
+      order: "double",
+      display: { doubleBondSide: "right" }
     });
   });
 
@@ -359,13 +492,114 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((triple.document?.pages[0].objects[0] as MoleculeObject | undefined)?.atoms[1].element).toBe("N");
   });
 
-  it("warns on aromatic and unsupported visible bond display fixture paths", () => {
+  it("imports aromatic and visible bond display fixture paths", () => {
     const aromatic = openChemDraftPayload(cdxmlFixture("aromatic-bond.cdxml"));
     const displays = openChemDraftPayload(cdxmlFixture("wedge-hash-dash-bold.cdxml"));
+    const displayMolecule = displays.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
     expect((aromatic.document?.pages[0].objects[0] as MoleculeObject | undefined)?.bonds[0].order).toBe("aromatic");
     expect(aromatic.warnings.map((item) => item.code)).toContain("cdxml.aromatic_bond_import_approximation");
-    expect(displays.warnings.filter((item) => item.code === "cdxml.bond_display_unsupported")).toHaveLength(4);
+    expect(displayMolecule?.bonds.map((bond) => bond.display?.bondStyle)).toEqual([
+      "wedge",
+      "hashed",
+      "dashed",
+      "bold"
+    ]);
+    expect(displays.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
+  });
+
+  it("imports ChemDraw wedge/hash stereo bonds with the narrow end kept at the stereocenter", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <fragment id="stereocenter">
+      <n id="c0" p="150 150"/>
+      <n id="n1" p="186 150"/>
+      <n id="n2" p="114 150"/>
+      <n id="n3" p="150 186"/>
+      <b id="bw" B="c0" E="n1" Order="1" Display="WedgeBegin"/>
+      <b id="bh" B="c0" E="n2" Order="1" Display="WedgedHashBegin"/>
+      <b id="be" B="n3" E="c0" Order="1" Display="WedgeEnd"/>
+    </fragment>
+  </page>
+</CDXML>`);
+
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    // c0 (atom_001) is the stereocenter, so every wedge/hash narrow end (fromAtomId)
+    // is atom_001, including WedgeEnd which imports with B/E swapped.
+    expect(molecule?.bonds[0]).toMatchObject({
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      order: "single",
+      display: { bondStyle: "wedge" }
+    });
+    expect(molecule?.bonds[1]).toMatchObject({
+      fromAtomId: "atom_001",
+      toAtomId: "atom_003",
+      order: "single",
+      display: { bondStyle: "hashed" }
+    });
+    expect(molecule?.bonds[2]).toMatchObject({
+      fromAtomId: "atom_001",
+      toAtomId: "atom_004",
+      order: "single",
+      display: { bondStyle: "wedge" }
+    });
+    const survivingWedges = molecule?.bonds.filter((bond) => bond.display?.bondStyle).length ?? 0;
+    expect(survivingWedges).toBe(3);
+    expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
+  });
+
+  it("preserves CDXML atom R/S assignments as aggregate molecule stereochemistry", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <fragment id="rs-centers">
+      <n id="c0" p="150 150" Geometry="Tetrahedral" AS="S"/>
+      <n id="c1" p="186 150" Geometry="Tetrahedral" AS="R"/>
+      <n id="n1" p="150 186" AS="N"/>
+      <b id="bw" B="c0" E="n1" Order="1" Display="WedgeBegin"/>
+      <b id="bh" B="c1" E="n1" Order="1" Display="WedgedHashBegin"/>
+    </fragment>
+  </page>
+</CDXML>`);
+
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    expect(molecule?.chemistry?.stereochemistry).toEqual(["atom_001:S", "atom_002:R"]);
+    expect(molecule?.compatibility?.unknown.cdxmlAtomStereochemistryByAtomId).toEqual({
+      atom_001: { assignment: "S", cdxmlAtomId: "c0", geometry: "Tetrahedral" },
+      atom_002: { assignment: "R", cdxmlAtomId: "c1", geometry: "Tetrahedral" }
+    });
+    expect(molecule?.chemistry?.atomCount).toBe(3);
+    expect(molecule?.chemistry?.bondCount).toBe(2);
+    expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
+  });
+
+  it("exports native wedge and hash bonds as ChemDraw Begin-variant Display values", () => {
+    const document = documentWithObjects([
+      {
+        ...singleBondMolecule(),
+        atoms: [
+          { id: "atom_001", element: "C", x: 100, y: 100, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 148, y: 100, formalCharge: 0 },
+          { id: "atom_003", element: "O", x: 100, y: 148, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } },
+          { id: "bond_002", fromAtomId: "atom_001", toAtomId: "atom_003", order: "single", display: { bondStyle: "hashed" } }
+        ]
+      }
+    ]);
+    const result = exportDocumentToCdxml(document, { creationProgram: "Stereo Export Test" });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.contents).toContain('Display="WedgeBegin"');
+    expect(result.contents).toContain('Display="WedgedHashBegin"');
+    expect(result.contents).not.toContain('Display="wedge"');
   });
 
   it("imports synthetic reciprocal CrossingBonds as native page crossing overrides", () => {
@@ -386,10 +620,10 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     }]);
     expect(opened.warnings.map((item) => item.code)).toEqual(
       expect.arrayContaining([
-        "cdxml.bond_display_unsupported",
         "cdxml.object_import_unsupported"
       ])
     );
+    expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
   });
 
   it("keeps a BactVue-style visible subset fixture for integrated CDXML interop checks", () => {
@@ -406,7 +640,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
     expect((opened.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("DIPEA, DMSO");
     expect((opened.document?.pages[0].objects[1] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
-    expect(opened.warnings.filter((item) => item.code === "cdxml.bond_display_unsupported")).toHaveLength(5);
+    expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
   });
 

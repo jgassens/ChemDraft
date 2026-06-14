@@ -4,7 +4,7 @@
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="75 75"/>
-      <n id="a2" p="111 75"/>
+      <n id="a2" p="75 111"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
   </page>

@@ -64,6 +64,14 @@ import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
+  exportFormatDescriptors,
+  getExportFormatDescriptor,
+  type ExportFormatDescriptor,
+  type ExportFormatGroup,
+  type ExportFormatId,
+  type ExportResult
+} from "@chemdraft/export-engine";
+import {
   atomElementActions,
   atomElementCommandId,
   createLayerActions,
@@ -90,6 +98,7 @@ import {
 import { clipboardPayloadFromDataTransfer, readClipboardPayload } from "./clipboard";
 import {
   applyClipboardPastePayload,
+  applyImportedPageFitRecommendation,
   applyNativeCarbonylAtAtomTarget,
   applyNativeAtomElementTarget,
   applyChargeToolAtPoint,
@@ -114,6 +123,8 @@ import {
   createPhase4Document,
   cleanUpNativeMolecules2d,
   deleteSelectedDocumentObjects,
+  exportPhase4Cdxml,
+  exportPhase4Pdf,
   exportPhase4Svg,
   getSelectedMolecule,
   getSelectedTextObject,
@@ -140,6 +151,7 @@ import {
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
+  recommendImportedPageFit,
   reorderSelectedDocumentObject,
   resizeNativeMoleculeParts,
   resizeNativeMoleculeObject,
@@ -171,7 +183,8 @@ import {
   type NativeBondOrderTarget,
   type NativeBondOrderValue,
   type NativeChargeValue,
-  type NativeSingleLetterElement
+  type NativeSingleLetterElement,
+  type ImportedPageFitRecommendation
 } from "./documentWorkflow";
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
@@ -203,6 +216,7 @@ import {
   type DesktopToolsetRegistry
 } from "./toolsets";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
@@ -508,18 +522,75 @@ type LayerContextMenuItem = {
   commandId: string;
   label: string;
 };
+type ExportDialogFormat = ExportFormatId;
+type SvgDialogExportOptions = {
+  includeWarnings: boolean;
+  includePageGuides: boolean;
+};
+type PdfDialogExportOptions = {
+  compress: boolean;
+  includePageGuides: boolean;
+  page: "current";
+  pdfType: "vector";
+  background: "white";
+};
+type RasterDialogExportOptions = {
+  scale: number;
+  background: "white" | "transparent";
+  jpegQuality: number;
+  maxDimensionPx: number;
+};
+type CdxmlDialogExportOptions = {
+  creationProgram: string;
+};
+type ExportDialogState = {
+  format: ExportDialogFormat;
+  filename: string;
+  destinationPath?: string;
+  svg: SvgDialogExportOptions;
+  pdf: PdfDialogExportOptions;
+  raster: RasterDialogExportOptions;
+  cdxml: CdxmlDialogExportOptions;
+  busy: boolean;
+};
+type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
+  displayName: string;
+};
 
 const RULER_THICKNESS = 32;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
+const rasterExportFormatsByCommandId: Record<string, NativeRasterExportFormat> = {
+  "export.png": "png",
+  "export.jpeg": "jpeg",
+  "export.bmp": "bmp",
+  "export.gif": "gif",
+  "export.tiff": "tiff"
+};
+const rasterExportFormatsByFormatId: Partial<Record<ExportFormatId, NativeRasterExportFormat>> = {
+  png: "png",
+  jpeg: "jpeg",
+  bmp: "bmp",
+  gif: "gif",
+  tiff: "tiff"
+};
+const exportFormatGroups: readonly ExportFormatGroup[] = ["graphics", "chemistry", "compatibility", "legacy", "model3d"];
+const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
+  graphics: "Graphics",
+  chemistry: "Chemistry",
+  compatibility: "Compatibility",
+  legacy: "Legacy",
+  model3d: "3D"
+};
+const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
 const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.12.18.37-codex";
+const CURRENT_BUILD_STAMP = "6.13.14.23-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -592,6 +663,14 @@ const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.sendBackward", label: "Move Object Backward" },
   { commandId: "layout.sendToBack", label: "Move Object to Back" }
 ];
+const nativeOpenDocumentEvent = "chemdraft://open-document";
+const domOpenDocumentEvent = "chemdraft:native-open-document";
+
+interface NativeOpenDocumentPayload {
+  path: string;
+  displayName: string;
+  contents: string;
+}
 
 export interface MainWindowProps {
   initialPaletteMode?: PaletteMode;
@@ -627,6 +706,7 @@ export function MainWindow({
   const moleculeResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
+  const lastNativeOpenPayloadKeyRef = useRef<string | undefined>(undefined);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
@@ -683,7 +763,9 @@ export function MainWindow({
     width: 0,
     height: 0
   }));
-  const [, setStatus] = useState("Blank native document");
+  const [status, setStatus] = useState("Blank native document");
+  const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
+  const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void>(() => undefined);
   const documentRef = useRef(document);
@@ -1986,14 +2068,42 @@ export function MainWindow({
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
+    const fitRecommendation = resolvedOpen.source === "external-cdxml"
+      ? recommendImportedPageFit(resolvedOpen.document)
+      : undefined;
     resetDocumentHistory(resolvedOpen.document, {
       path,
       dirty: false,
       lastSavedPayloadHash: sha256Utf8Hex(contents)
     });
     clearDocumentInteractionState();
-    setStatus(formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel));
+    setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
+    const openStatus = formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
+    setStatus(fitRecommendation
+      ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
+      : openStatus);
   }, [clearDocumentInteractionState, resetDocumentHistory]);
+
+  const acceptPageFitRecommendation = useCallback(() => {
+    if (!pageFitPrompt) {
+      return;
+    }
+
+    const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
+    setPageFitPrompt(undefined);
+    setStatus(changed
+      ? `Page changed to ${pageFitPromptLayoutLabel(pageFitPrompt.recommendedPageTitle, pageFitPrompt.recommendedOrientation)}`
+      : "Page already fits imported content");
+  }, [commitDocumentChange, pageFitPrompt]);
+
+  const keepImportedPageOverflow = useCallback(() => {
+    if (!pageFitPrompt) {
+      return;
+    }
+
+    setPageFitPrompt(undefined);
+    setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
+  }, [pageFitPrompt]);
 
   const openDocumentFromNativePicker = useCallback(async () => {
     if (!isDesktopRuntime()) {
@@ -2013,6 +2123,59 @@ export function MainWindow({
     } catch (error) {
       setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }, [openDocumentContents]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) {
+      return undefined;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    const openNativePayload = (payload: NativeOpenDocumentPayload) => {
+      const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
+      if (lastNativeOpenPayloadKeyRef.current === payloadKey) {
+        return;
+      }
+      lastNativeOpenPayloadKeyRef.current = payloadKey;
+      try {
+        openDocumentContents(payload.contents, payload.displayName, payload.path);
+      } catch (error) {
+        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+
+    const handleDomOpen = (event: Event) => {
+      const payload = (event as CustomEvent<unknown>).detail;
+      if (isNativeOpenDocumentPayload(payload)) {
+        openNativePayload(payload);
+      }
+    };
+
+    window.addEventListener(domOpenDocumentEvent, handleDomOpen);
+    void listenForNativeOpenDocuments((payload) => {
+      if (!disposed) {
+        openNativePayload(payload);
+      }
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    void takePendingNativeOpenDocument()
+      .then((payload) => {
+        if (!disposed && payload) {
+          openNativePayload(payload);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener(domOpenDocumentEvent, handleDomOpen);
+    };
   }, [openDocumentContents]);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
@@ -2058,6 +2221,104 @@ export function MainWindow({
     }
   }, []);
 
+  const openExportDialog = useCallback(() => {
+    setExportDialog(createDefaultExportDialogState(documentRef.current));
+    setStatus("Export ready");
+  }, []);
+
+  const chooseExportDestination = useCallback(async () => {
+    if (!exportDialog || exportDialog.busy) {
+      return;
+    }
+
+    const descriptor = getExportFormatDescriptor(exportDialog.format);
+    if (descriptor.status !== "implemented") {
+      setStatus(`${descriptor.menuLabel} export is not available yet`);
+      return;
+    }
+
+    if (!isDesktopRuntime()) {
+      setStatus("Browser export will download the file");
+      return;
+    }
+
+    try {
+      const path = await pickNativeExportPath(
+        exportDialog.destinationPath ?? exportDialog.filename,
+        descriptor.menuLabel,
+        descriptor.extensions
+      );
+      if (!path) {
+        setStatus("Export location unchanged");
+        return;
+      }
+
+      setExportDialog((current) => current
+        ? {
+            ...current,
+            destinationPath: path,
+            filename: nativePathBasename(path)
+          }
+        : current);
+      setStatus(`Export location: ${nativePathBasename(path)}`);
+    } catch (error) {
+      setStatus(`Export location failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [exportDialog]);
+
+  const submitExportDialog = useCallback(async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (!exportDialog || exportDialog.busy) {
+      return;
+    }
+
+    const dialog = exportDialog;
+    const descriptor = getExportFormatDescriptor(dialog.format);
+    setExportDialog({ ...dialog, busy: true });
+
+    try {
+      if (descriptor.status !== "implemented") {
+        setStatus(`${descriptor.menuLabel} export is not available yet`);
+        setExportDialog((current) => current ? { ...current, busy: false } : current);
+        return;
+      }
+
+      const result = await createDialogExportResult(documentRef.current, dialog);
+      const filename = ensureExportFileExtension(dialog.filename, descriptor.extensions);
+
+      if (!isDesktopRuntime()) {
+        downloadExportResult(filename, result);
+        setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
+        setExportDialog(undefined);
+        return;
+      }
+
+      const path = dialog.destinationPath
+        ? ensureExportFileExtension(dialog.destinationPath, descriptor.extensions)
+        : await pickNativeExportPath(filename, descriptor.menuLabel, descriptor.extensions);
+
+      if (!path) {
+        setStatus(`${descriptor.menuLabel} export canceled`);
+        setExportDialog((current) => current ? { ...current, busy: false } : current);
+        return;
+      }
+
+      await writeNativeExportResult(path, result);
+      setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
+      setExportDialog(undefined);
+    } catch (error) {
+      setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
+      setExportDialog((current) => current ? { ...current, busy: false } : current);
+    }
+  }, [exportDialog]);
+
+  const cancelExportDialog = useCallback(() => {
+    if (!exportDialog?.busy) {
+      setExportDialog(undefined);
+      setStatus("Export canceled");
+    }
+  }, [exportDialog]);
+
   const registry = useMemo(() => {
     const commandRegistry = new CommandRegistry();
     const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
@@ -2077,6 +2338,7 @@ export function MainWindow({
           setHoveredNativeAtom(undefined);
           assignHoveredNativeDeleteTarget(undefined);
           setFreeformNativeBond(undefined);
+          setPageFitPrompt(undefined);
           setLastAnalysis(null);
           setStatus("Blank native document");
         }
@@ -2111,16 +2373,36 @@ export function MainWindow({
           await toggleToolset(DEFAULT_TOOLSET_ID);
           setStatus("Toggled main toolbar");
         }
+        if (action.id === "export.open") {
+          openExportDialog();
+        }
         if (action.id === "export.svg") {
           const result = exportPhase4Svg(document);
-          downloadText(createExportFilename(document, "svg"), result.contents, "image/svg+xml");
-          setStatus(result.warnings.length > 0 ? `Exported SVG with ${result.warnings.length} warning(s)` : "Exported SVG");
+          const exported = await exportTextFile(document, "svg", result.contents, "image/svg+xml", "SVG");
+          setStatus(exported
+            ? formatExportStatus("SVG", result.warnings.length)
+            : "SVG export canceled");
         }
-        if (action.id === "export.png") {
-          const result = exportPhase4Svg(document);
-          const blob = await svgToPngBlob(result.contents, { width: activePage.width, height: activePage.height });
-          downloadBlob(createExportFilename(document, "png"), blob);
-          setStatus(result.warnings.length > 0 ? `Exported PNG with ${result.warnings.length} warning(s)` : "Exported PNG");
+        if (action.id === "export.pdf") {
+          const result = await exportPhase4Pdf(document);
+          const exported = await exportBinaryFile(document, "pdf", result.bytes, result.mimeType, "PDF");
+          setStatus(exported
+            ? formatExportStatus("PDF", result.warnings.length)
+            : "PDF export canceled");
+        }
+        if (action.id === "export.cdxml") {
+          const result = exportPhase4Cdxml(document);
+          const exported = await exportTextFile(document, "cdxml", result.contents, result.mimeType, "CDXML");
+          setStatus(exported
+            ? formatExportStatus("CDXML", result.warnings.length)
+            : "CDXML export canceled");
+        }
+        const rasterFormat = rasterExportFormatForCommand(action.id);
+        if (rasterFormat) {
+          const result = await exportRasterPage(document, rasterFormat);
+          setStatus(result.exported
+            ? formatExportStatus(result.label, result.warningCount)
+            : `${result.label} export canceled`);
         }
         if (action.id === "chemistry.validateSelection") {
           const molecule = getSelectedMolecule(document);
@@ -2335,6 +2617,7 @@ export function MainWindow({
     document,
     layerActions,
     nativePalette,
+    openExportDialog,
     openDocumentFromNativePicker,
     pasteClipboard,
     quickActions,
@@ -2355,8 +2638,9 @@ export function MainWindow({
       return;
     }
 
-    void registry.invoke(commandId).catch(() => {
-      setStatus("Command unavailable");
+    void registry.invoke(commandId).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Command failed: ${message}`);
     });
   }, [applyTextStyleCommand, registry]);
 
@@ -5857,8 +6141,72 @@ export function MainWindow({
             onStatus={setStatus}
           />
         ) : null}
+        {exportDialog ? (
+          <ExportDialog
+            state={exportDialog}
+            onCancel={cancelExportDialog}
+            onChooseDestination={chooseExportDestination}
+            onFilenameChange={(filename) => {
+              setExportDialog((current) => current ? { ...current, filename } : current);
+            }}
+            onFormatChange={(format) => {
+              const descriptor = getExportFormatDescriptor(format);
+              setExportDialog((current) => current ? updateExportDialogFormat(current, format) : current);
+              setStatus(descriptor.status === "implemented"
+                ? `Export ready: ${descriptor.menuLabel}`
+                : `${descriptor.menuLabel} export is not available yet`);
+            }}
+            onSvgOptionsChange={(svg) => {
+              setExportDialog((current) => current
+                ? { ...current, svg: { ...current.svg, ...svg } }
+                : current);
+            }}
+            onPdfOptionsChange={(pdf) => {
+              setExportDialog((current) => current
+                ? { ...current, pdf: { ...current.pdf, ...pdf } }
+                : current);
+            }}
+            onRasterOptionsChange={(raster) => {
+              setExportDialog((current) => current
+                ? { ...current, raster: { ...current.raster, ...raster } }
+                : current);
+            }}
+            onCdxmlOptionsChange={(cdxml) => {
+              setExportDialog((current) => current
+                ? { ...current, cdxml: { ...current.cdxml, ...cdxml } }
+                : current);
+            }}
+            onSubmit={submitExportDialog}
+          />
+        ) : null}
+        {pageFitPrompt ? (
+          <ImportedPageFitPrompt
+            recommendation={pageFitPrompt}
+            onKeep={keepImportedPageOverflow}
+            onResize={acceptPageFitRecommendation}
+          />
+        ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
           Build {CURRENT_BUILD_STAMP} / {__BUILD_STAMP__}
+        </div>
+        <div
+          aria-live="polite"
+          role="status"
+          style={{
+            position: "absolute",
+            bottom: 8,
+            left: 8,
+            maxWidth: "min(560px, calc(100% - 280px))",
+            overflow: "hidden",
+            color: "var(--cd-text-secondary)",
+            fontSize: 11,
+            pointerEvents: "none",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            zIndex: 1000
+          }}
+        >
+          {status}
         </div>
       </section>
       {objectContextMenu ? (
@@ -5887,6 +6235,568 @@ export function MainWindow({
     </main>
   );
 }
+
+interface ImportedPageFitPromptProps {
+  recommendation: ImportedPageFitPromptState;
+  onKeep: () => void;
+  onResize: () => void;
+}
+
+function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPageFitPromptProps) {
+  const currentLabel = pageFitPromptLayoutLabel(recommendation.currentPageTitle, recommendation.currentOrientation);
+  const recommendedLabel = pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
+  const overflow = [
+    recommendation.overflowLeftPx > 0 ? `${Math.ceil(recommendation.overflowLeftPx)} px left of the page` : undefined,
+    recommendation.overflowTopPx > 0 ? `${Math.ceil(recommendation.overflowTopPx)} px above the page` : undefined,
+    recommendation.overflowRightPx > 0 ? `${Math.ceil(recommendation.overflowRightPx)} px wider` : undefined,
+    recommendation.overflowBottomPx > 0 ? `${Math.ceil(recommendation.overflowBottomPx)} px taller` : undefined
+  ].filter(Boolean).join(" and ");
+
+  return (
+    <div
+      aria-label="Imported content page size"
+      aria-modal="true"
+      role="dialog"
+      style={exportDialogBackdropStyle}
+    >
+      <section style={exportDialogPanelStyle}>
+        <div style={exportDialogHeaderStyle}>
+          <h2 style={exportDialogTitleStyle}>Imported Content Exceeds Page</h2>
+        </div>
+        <p style={exportDialogHintStyle}>
+          {recommendation.displayName} extends beyond {currentLabel}{overflow ? ` by about ${overflow}` : ""}.
+        </p>
+        <p style={exportDialogHintStyle}>
+          Resize the page to {recommendedLabel} and place the import on the page, or keep the current page size and leave the overflow unchanged.
+        </p>
+        <div style={exportDialogFooterStyle}>
+          <button type="button" style={exportDialogButtonStyle} onClick={onKeep}>
+            Keep Current Page
+          </button>
+          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={onResize}>
+            Use {recommendedLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function pageFitPromptLayoutLabel(pageTitle: string, orientation: "portrait" | "landscape"): string {
+  return `${pageTitle} ${orientation === "landscape" ? "Landscape" : "Portrait"}`;
+}
+
+interface ExportDialogProps {
+  state: ExportDialogState;
+  onCancel: () => void;
+  onChooseDestination: () => void | Promise<void>;
+  onFilenameChange: (filename: string) => void;
+  onFormatChange: (format: ExportDialogFormat) => void;
+  onSvgOptionsChange: (options: Partial<SvgDialogExportOptions>) => void;
+  onPdfOptionsChange: (options: Partial<PdfDialogExportOptions>) => void;
+  onRasterOptionsChange: (options: Partial<RasterDialogExportOptions>) => void;
+  onCdxmlOptionsChange: (options: Partial<CdxmlDialogExportOptions>) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void | Promise<void>;
+}
+
+function ExportDialog({
+  state,
+  onCancel,
+  onChooseDestination,
+  onFilenameChange,
+  onFormatChange,
+  onSvgOptionsChange,
+  onPdfOptionsChange,
+  onRasterOptionsChange,
+  onCdxmlOptionsChange,
+  onSubmit
+}: ExportDialogProps) {
+  const descriptor = getExportFormatDescriptor(state.format);
+  const implemented = descriptor.status === "implemented";
+  const rasterFormat = rasterExportFormatForDialogFormat(state.format);
+  const destinationLabel = state.destinationPath ?? (isDesktopRuntime() ? "Choose a location" : "Downloads");
+  const exportDisabled = state.busy || state.filename.trim() === "" || !implemented;
+
+  return (
+    <div
+      aria-label="Export"
+      aria-modal="true"
+      role="dialog"
+      style={exportDialogBackdropStyle}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          onCancel();
+        }
+      }}
+    >
+      <form style={exportDialogPanelStyle} onSubmit={onSubmit}>
+        <div style={exportDialogHeaderStyle}>
+          <h2 style={exportDialogTitleStyle}>Export</h2>
+          <button
+            aria-label="Close export"
+            disabled={state.busy}
+            type="button"
+            style={exportDialogIconButtonStyle}
+            onClick={onCancel}
+          >
+            x
+          </button>
+        </div>
+
+        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-filename">
+          Save as
+        </label>
+        <input
+          id="chemdraft-export-filename"
+          disabled={state.busy}
+          value={state.filename}
+          style={exportDialogInputStyle}
+          onChange={(event) => onFilenameChange(event.currentTarget.value)}
+        />
+
+        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-format">
+          Export as
+        </label>
+        <select
+          id="chemdraft-export-format"
+          disabled={state.busy}
+          value={state.format}
+          style={exportDialogInputStyle}
+          onChange={(event) => {
+            onFormatChange(event.currentTarget.value as ExportDialogFormat);
+          }}
+        >
+          {exportFormatGroups.map((group) => (
+            <optgroup key={group} label={exportFormatGroupLabels[group]}>
+              {exportFormatDescriptors
+                .filter((candidate) => candidate.group === group)
+                .map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.label}{candidate.status === "implemented" ? "" : ` (${candidate.status})`}
+                  </option>
+                ))}
+            </optgroup>
+          ))}
+        </select>
+        {descriptor.warningSummary || !implemented ? (
+          <p style={implemented ? exportDialogHintStyle : exportDialogWarningStyle}>
+            {descriptor.warningSummary ?? `${descriptor.menuLabel} export is not available yet.`}
+          </p>
+        ) : null}
+
+        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-destination">
+          Where
+        </label>
+        <div style={exportDialogDestinationRowStyle}>
+          <input
+            id="chemdraft-export-destination"
+            readOnly
+            value={destinationLabel}
+            style={{ ...exportDialogInputStyle, ...exportDialogDestinationInputStyle }}
+          />
+          <button
+            disabled={state.busy || !isDesktopRuntime() || !implemented}
+            type="button"
+            style={exportDialogButtonStyle}
+            onClick={() => {
+              void onChooseDestination();
+            }}
+          >
+            Choose...
+          </button>
+        </div>
+
+        {state.format === "svg" ? (
+          <fieldset style={exportDialogFieldsetStyle}>
+            <legend style={exportDialogLegendStyle}>SVG</legend>
+            <label style={exportDialogCheckboxRowStyle}>
+              <input
+                checked={state.svg.includeWarnings}
+                disabled={state.busy}
+                type="checkbox"
+                onChange={(event) => onSvgOptionsChange({ includeWarnings: event.currentTarget.checked })}
+              />
+              Include warning metadata
+            </label>
+            <label style={exportDialogCheckboxRowStyle}>
+              <input
+                checked={state.svg.includePageGuides}
+                disabled={state.busy}
+                type="checkbox"
+                onChange={(event) => onSvgOptionsChange({ includePageGuides: event.currentTarget.checked })}
+              />
+              Include page guides
+            </label>
+          </fieldset>
+        ) : null}
+
+        {state.format === "pdf" ? (
+          <fieldset style={exportDialogFieldsetStyle}>
+            <legend style={exportDialogLegendStyle}>PDF</legend>
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-type">
+              PDF type
+            </label>
+            <select
+              id="chemdraft-export-pdf-type"
+              disabled={state.busy}
+              value={state.pdf.pdfType}
+              style={exportDialogInputStyle}
+              onChange={() => undefined}
+            >
+              <option value="vector">Vector PDF</option>
+            </select>
+
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-page">
+              Page
+            </label>
+            <select
+              id="chemdraft-export-pdf-page"
+              disabled={state.busy}
+              value={state.pdf.page}
+              style={exportDialogInputStyle}
+              onChange={() => undefined}
+            >
+              <option value="current">Current page</option>
+            </select>
+
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-background">
+              Background
+            </label>
+            <select
+              id="chemdraft-export-pdf-background"
+              disabled={state.busy}
+              value={state.pdf.background}
+              style={exportDialogInputStyle}
+              onChange={() => undefined}
+            >
+              <option value="white">White page</option>
+            </select>
+
+            <label style={exportDialogCheckboxRowStyle}>
+              <input
+                checked={state.pdf.compress}
+                disabled={state.busy}
+                type="checkbox"
+                onChange={(event) => onPdfOptionsChange({ compress: event.currentTarget.checked })}
+              />
+              Compress PDF
+            </label>
+            <label style={exportDialogCheckboxRowStyle}>
+              <input
+                checked={state.pdf.includePageGuides}
+                disabled={state.busy}
+                type="checkbox"
+                onChange={(event) => onPdfOptionsChange({ includePageGuides: event.currentTarget.checked })}
+              />
+              Include page guides
+            </label>
+          </fieldset>
+        ) : null}
+
+        {rasterFormat ? (
+          <fieldset style={exportDialogFieldsetStyle}>
+            <legend style={exportDialogLegendStyle}>{descriptor.menuLabel}</legend>
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-scale">
+              Scale
+            </label>
+            <select
+              id="chemdraft-export-raster-scale"
+              disabled={state.busy}
+              value={String(state.raster.scale)}
+              style={exportDialogInputStyle}
+              onChange={(event) => onRasterOptionsChange({ scale: Number(event.currentTarget.value) })}
+            >
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="3">3x</option>
+              <option value="4">4x</option>
+            </select>
+
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-background">
+              Background
+            </label>
+            <select
+              id="chemdraft-export-raster-background"
+              disabled={state.busy}
+              value={state.raster.background}
+              style={exportDialogInputStyle}
+              onChange={(event) => {
+                const value = event.currentTarget.value === "transparent" ? "transparent" : "white";
+                onRasterOptionsChange({ background: value });
+              }}
+            >
+              <option value="white">White page</option>
+              <option value="transparent" disabled={rasterFormat !== "png"}>
+                Transparent
+              </option>
+            </select>
+
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-max">
+              Max dimension
+            </label>
+            <input
+              id="chemdraft-export-raster-max"
+              disabled={state.busy}
+              min={256}
+              max={8192}
+              step={256}
+              type="number"
+              value={state.raster.maxDimensionPx}
+              style={exportDialogInputStyle}
+              onChange={(event) => onRasterOptionsChange({ maxDimensionPx: Number(event.currentTarget.value) })}
+            />
+
+            {rasterFormat === "jpeg" ? (
+              <>
+                <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-jpeg-quality">
+                  JPEG quality
+                </label>
+                <input
+                  id="chemdraft-export-jpeg-quality"
+                  disabled={state.busy}
+                  min={1}
+                  max={100}
+                  step={1}
+                  type="range"
+                  value={state.raster.jpegQuality}
+                  style={exportDialogInputStyle}
+                  onChange={(event) => onRasterOptionsChange({ jpegQuality: Number(event.currentTarget.value) })}
+                />
+              </>
+            ) : null}
+          </fieldset>
+        ) : null}
+
+        {state.format === "cdxml" ? (
+          <fieldset style={exportDialogFieldsetStyle}>
+            <legend style={exportDialogLegendStyle}>CDXML</legend>
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-cdxml-program">
+              Creation program
+            </label>
+            <input
+              id="chemdraft-export-cdxml-program"
+              disabled={state.busy}
+              value={state.cdxml.creationProgram}
+              style={exportDialogInputStyle}
+              onChange={(event) => onCdxmlOptionsChange({ creationProgram: event.currentTarget.value })}
+            />
+          </fieldset>
+        ) : null}
+
+        <div style={exportDialogFooterStyle}>
+          <button disabled={state.busy} type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+            Cancel
+          </button>
+          <button disabled={exportDisabled} type="submit" style={exportDialogPrimaryButtonStyle}>
+            {state.busy ? "Exporting..." : "Export"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function createDefaultExportDialogState(document: ChemDraftDocument): ExportDialogState {
+  const descriptor = getExportFormatDescriptor("pdf");
+  return {
+    format: descriptor.id,
+    filename: createExportFilename(document, descriptor.extensions[0] ?? descriptor.id),
+    svg: {
+      includeWarnings: true,
+      includePageGuides: false
+    },
+    pdf: {
+      compress: true,
+      includePageGuides: false,
+      page: "current",
+      pdfType: "vector",
+      background: "white"
+    },
+    raster: {
+      scale: 1,
+      background: "white",
+      jpegQuality: 90,
+      maxDimensionPx: 8192
+    },
+    cdxml: {
+      creationProgram: "ChemDraft"
+    },
+    busy: false
+  };
+}
+
+function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
+  const descriptor = getExportFormatDescriptor(format);
+  const rasterFormat = rasterExportFormatForDialogFormat(format);
+  return {
+    ...state,
+    format,
+    filename: replaceExportFileExtension(state.filename, descriptor),
+    destinationPath: undefined,
+    raster: {
+      ...state.raster,
+      background: rasterFormat === "png" ? state.raster.background : "white"
+    }
+  };
+}
+
+function rasterExportFormatForDialogFormat(format: ExportFormatId): NativeRasterExportFormat | undefined {
+  return rasterExportFormatsByFormatId[format];
+}
+
+function replaceExportFileExtension(filename: string, descriptor: ExportFormatDescriptor): string {
+  const extension = descriptor.extensions[0] ?? descriptor.id;
+  const trimmed = filename.trim() || "Untitled";
+  const escapedExtensions = exportFormatOptionExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const knownExportExtension = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
+  return `${trimmed.replace(knownExportExtension, "")}.${extension}`;
+}
+
+const exportDialogBackdropStyle: CSSProperties = {
+  alignItems: "center",
+  background: "rgba(12, 18, 24, 0.22)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: 24,
+  position: "absolute",
+  zIndex: 1200
+};
+
+const exportDialogPanelStyle: CSSProperties = {
+  background: "#f7f9fb",
+  border: "1px solid #b7c1ca",
+  borderRadius: 8,
+  boxShadow: "0 18px 48px rgba(20, 30, 40, 0.22)",
+  color: "#18212a",
+  display: "grid",
+  gap: 8,
+  maxHeight: "calc(100vh - 64px)",
+  maxWidth: "calc(100vw - 48px)",
+  overflow: "auto",
+  padding: 16,
+  width: 480
+};
+
+const exportDialogHeaderStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  justifyContent: "space-between",
+  marginBottom: 4
+};
+
+const exportDialogTitleStyle: CSSProperties = {
+  fontSize: 16,
+  fontWeight: 650,
+  lineHeight: 1.2,
+  margin: 0
+};
+
+const exportDialogLabelStyle: CSSProperties = {
+  color: "#44515e",
+  fontSize: 12,
+  fontWeight: 600,
+  lineHeight: 1.2,
+  marginTop: 4
+};
+
+const exportDialogInputStyle: CSSProperties = {
+  background: "#ffffff",
+  border: "1px solid #aeb8c2",
+  borderRadius: 6,
+  boxSizing: "border-box",
+  color: "#18212a",
+  font: "inherit",
+  fontSize: 13,
+  minHeight: 30,
+  padding: "4px 8px",
+  width: "100%"
+};
+
+const exportDialogHintStyle: CSSProperties = {
+  color: "#52606d",
+  fontSize: 12,
+  lineHeight: 1.3,
+  margin: "0 0 2px"
+};
+
+const exportDialogWarningStyle: CSSProperties = {
+  ...exportDialogHintStyle,
+  color: "#875300"
+};
+
+const exportDialogDestinationRowStyle: CSSProperties = {
+  alignItems: "center",
+  display: "grid",
+  gap: 8,
+  gridTemplateColumns: "minmax(0, 1fr) auto"
+};
+
+const exportDialogDestinationInputStyle: CSSProperties = {
+  color: "#52606d",
+  overflow: "hidden",
+  textOverflow: "ellipsis"
+};
+
+const exportDialogFieldsetStyle: CSSProperties = {
+  border: "1px solid #c8d0d8",
+  borderRadius: 8,
+  display: "grid",
+  gap: 8,
+  margin: "8px 0 0",
+  padding: "10px 12px 12px"
+};
+
+const exportDialogLegendStyle: CSSProperties = {
+  color: "#44515e",
+  fontSize: 12,
+  fontWeight: 650,
+  padding: "0 4px"
+};
+
+const exportDialogCheckboxRowStyle: CSSProperties = {
+  alignItems: "center",
+  color: "#28343f",
+  display: "flex",
+  fontSize: 13,
+  gap: 8,
+  lineHeight: 1.2,
+  marginTop: 4
+};
+
+const exportDialogFooterStyle: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  justifyContent: "flex-end",
+  marginTop: 10
+};
+
+const exportDialogButtonStyle: CSSProperties = {
+  background: "#ffffff",
+  border: "1px solid #aeb8c2",
+  borderRadius: 6,
+  color: "#18212a",
+  font: "inherit",
+  fontSize: 13,
+  minHeight: 30,
+  padding: "4px 12px"
+};
+
+const exportDialogPrimaryButtonStyle: CSSProperties = {
+  ...exportDialogButtonStyle,
+  background: "#1967d2",
+  borderColor: "#1967d2",
+  color: "#ffffff"
+};
+
+const exportDialogIconButtonStyle: CSSProperties = {
+  ...exportDialogButtonStyle,
+  borderRadius: 999,
+  height: 28,
+  minHeight: 28,
+  padding: 0,
+  width: 28
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -9474,6 +10384,96 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
+function formatExportStatus(label: string, warningCount: number): string {
+  return warningCount > 0
+    ? `Exported ${label} with ${warningCount} warning(s)`
+    : `Exported ${label}`;
+}
+
+async function createDialogExportResult(
+  document: ChemDraftDocument,
+  state: ExportDialogState
+): Promise<ExportResult> {
+  const descriptor = getExportFormatDescriptor(state.format);
+
+  if (state.format === "svg") {
+    const result = exportPhase4Svg(document, {
+      includeWarnings: state.svg.includeWarnings,
+      includePageGuides: state.svg.includePageGuides
+    });
+    return {
+      format: descriptor.id,
+      kind: "text",
+      contents: result.contents,
+      mimeType: descriptor.mimeType,
+      extension: descriptor.extensions[0] ?? "svg",
+      warnings: result.warnings
+    };
+  }
+
+  if (state.format === "pdf") {
+    return exportPhase4Pdf(document, {
+      compress: state.pdf.compress,
+      includePageGuides: state.pdf.includePageGuides
+    });
+  }
+
+  if (state.format === "cdxml") {
+    return exportPhase4Cdxml(document, {
+      creationProgram: state.cdxml.creationProgram.trim() || "ChemDraft"
+    });
+  }
+
+  const rasterFormat = rasterExportFormatForDialogFormat(state.format);
+  if (rasterFormat) {
+    const svgResult = exportPhase4Svg(document, { includeWarnings: true });
+    const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
+      scale: sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
+      background: rasterFormat === "png" && state.raster.background === "transparent"
+        ? "transparent"
+        : "#ffffff",
+      jpegQuality: sanitizedDialogNumber(state.raster.jpegQuality, 90, 1, 100),
+      maxDimensionPx: sanitizedDialogNumber(state.raster.maxDimensionPx, 8192, 1, 8192)
+    });
+
+    return {
+      format: descriptor.id,
+      kind: "binary",
+      bytes: rasterResult.bytes,
+      mimeType: descriptor.mimeType,
+      extension: descriptor.extensions[0] ?? rasterFormat,
+      warnings: [
+        ...svgResult.warnings,
+        ...rasterResult.warnings
+      ]
+    };
+  }
+
+  throw new Error(`${descriptor.menuLabel} export is not implemented.`);
+}
+
+function downloadExportResult(filename: string, result: ExportResult): void {
+  if (result.kind === "text") {
+    downloadText(filename, result.contents, result.mimeType);
+    return;
+  }
+
+  downloadBlob(filename, new Blob([arrayBufferFromBytes(result.bytes)], { type: result.mimeType }));
+}
+
+async function writeNativeExportResult(path: string, result: ExportResult): Promise<void> {
+  if (result.kind === "text") {
+    await writeNativeTextFile(path, result.contents);
+    return;
+  }
+
+  await writeNativeBinaryFile(path, result.bytes);
+}
+
+function sanitizedDialogNumber(value: number, fallback: number, min: number, max: number): number {
+  return Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+
 function formatOpenStatus(
   filename: string,
   source: ReturnType<typeof openNativeDocument>["source"],
@@ -9519,9 +10519,50 @@ async function pickNativeSavePath(defaultPath: string): Promise<string | undefin
   return selected ?? undefined;
 }
 
+async function pickNativeExportPath(
+  defaultPath: string,
+  formatLabel: string,
+  extensions: readonly string[]
+): Promise<string | undefined> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const selected = await save({
+    title: `Export ${formatLabel}`,
+    defaultPath,
+    filters: [{ name: formatLabel, extensions: [...extensions] }]
+  });
+  return selected ? ensureExportFileExtension(selected, extensions) : undefined;
+}
+
 async function readNativeTextFile(path: string): Promise<string> {
   const { readTextFile } = await import("@tauri-apps/plugin-fs");
   return readTextFile(path);
+}
+
+async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayload | undefined> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const payload = await invoke<NativeOpenDocumentPayload | null>("take_pending_open_document");
+  return payload ?? undefined;
+}
+
+async function listenForNativeOpenDocuments(
+  handler: (payload: NativeOpenDocumentPayload) => void
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
+    if (isNativeOpenDocumentPayload(event.payload)) {
+      handler(event.payload);
+    }
+  });
+}
+
+function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumentPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as NativeOpenDocumentPayload).path === "string" &&
+    typeof (value as NativeOpenDocumentPayload).displayName === "string" &&
+    typeof (value as NativeOpenDocumentPayload).contents === "string"
+  );
 }
 
 async function writeNativeTextFile(path: string, contents: string): Promise<void> {
@@ -9529,8 +10570,22 @@ async function writeNativeTextFile(path: string, contents: string): Promise<void
   await writeTextFile(path, contents);
 }
 
+async function writeNativeBinaryFile(path: string, bytes: Uint8Array): Promise<void> {
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+  await writeFile(path, bytes);
+}
+
 function ensureChemDraftFileExtension(path: string): string {
   return /\.(chemdraft|cdxml)$/i.test(path) ? path : `${path}.chemdraft`;
+}
+
+function ensureExportFileExtension(path: string, extensions: readonly string[]): string {
+  if (extensions.length === 0) {
+    return path;
+  }
+  const escapedExtensions = extensions.map((extension) => extension.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const extensionPattern = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
+  return extensionPattern.test(path) ? path : `${path}.${extensions[0]}`;
 }
 
 function nativePathBasename(path: string): string {
@@ -9550,57 +10605,87 @@ function downloadBlob(filename: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-async function svgToPngBlob(svg: string, fallbackSize: { width: number; height: number }): Promise<Blob> {
-  const image = new Image();
-  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("Could not render SVG for PNG export."));
-      image.src = url;
-    });
-
-    const canvas = globalThis.document.createElement("canvas");
-    const size = resolvePngCanvasSize(image.naturalWidth, image.naturalHeight, fallbackSize);
-    canvas.width = size.width;
-    canvas.height = size.height;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Could not create canvas context for PNG export.");
-    }
-
-    context.drawImage(image, 0, 0);
-
-    return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => {
-        if (blob) {
-          resolve(blob);
-          return;
-        }
-
-        reject(new Error("Could not encode PNG export."));
-      }, "image/png");
-    });
-  } finally {
-    URL.revokeObjectURL(url);
+async function exportTextFile(
+  document: ChemDraftDocument,
+  extension: string,
+  contents: string,
+  mimeType: string,
+  formatLabel: string
+): Promise<boolean> {
+  const filename = createExportFilename(document, extension);
+  if (!isDesktopRuntime()) {
+    downloadText(filename, contents, mimeType);
+    return true;
   }
+
+  const path = await pickNativeExportPath(filename, formatLabel, [extension]);
+  if (!path) {
+    return false;
+  }
+  await writeNativeTextFile(path, contents);
+  return true;
 }
 
-export function resolvePngCanvasSize(
-  naturalWidth: number,
-  naturalHeight: number,
-  fallbackSize: { width: number; height: number }
-): { width: number; height: number } {
+async function exportBinaryFile(
+  document: ChemDraftDocument,
+  extension: string,
+  bytes: Uint8Array,
+  mimeType: string,
+  formatLabel: string,
+  alternateExtensions: readonly string[] = []
+): Promise<boolean> {
+  const extensions = [extension, ...alternateExtensions];
+  const filename = createExportFilename(document, extension);
+  if (!isDesktopRuntime()) {
+    downloadBlob(filename, new Blob([arrayBufferFromBytes(bytes)], { type: mimeType }));
+    return true;
+  }
+
+  const path = await pickNativeExportPath(filename, formatLabel, extensions);
+  if (!path) {
+    return false;
+  }
+  await writeNativeBinaryFile(path, bytes);
+  return true;
+}
+
+function rasterExportFormatForCommand(commandId: string): NativeRasterExportFormat | undefined {
+  return rasterExportFormatsByCommandId[commandId];
+}
+
+async function exportRasterPage(
+  document: ChemDraftDocument,
+  format: NativeRasterExportFormat
+): Promise<{ label: string; warningCount: number; exported: boolean }> {
+  const svgResult = exportPhase4Svg(document);
+  const descriptor = getExportFormatDescriptor(format);
+  const rasterResult = await rasterizeSvgNative(svgResult.contents, format, { background: "#ffffff" });
+  const extension = descriptor.extensions[0] ?? format;
+  const exported = await exportBinaryFile(
+    document,
+    extension,
+    rasterResult.bytes,
+    descriptor.mimeType,
+    descriptor.menuLabel,
+    descriptor.extensions.slice(1)
+  );
+
   return {
-    width: Math.max(1, Math.round(naturalWidth || fallbackSize.width)),
-    height: Math.max(1, Math.round(naturalHeight || fallbackSize.height))
+    label: descriptor.menuLabel,
+    warningCount: svgResult.warnings.length + rasterResult.warnings.length,
+    exported
   };
 }
 
-function createExportFilename(document: ChemDraftDocument, extension: "svg" | "png"): string {
+function createExportFilename(document: ChemDraftDocument, extension: string): string {
   const baseName = document.title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
   return `${baseName}.${extension}`;
+}
+
+function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
 }
 
 function formatAnalysisStatus(analysis: StructureAnalysisResult): string {

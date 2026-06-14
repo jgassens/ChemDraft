@@ -4,6 +4,7 @@ import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
+  applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
   applyColorToDocumentObjects,
   applyColorToNativeMoleculePart,
@@ -32,6 +33,7 @@ import {
   createNativeSingleBondMolecule,
   createPhase4Document,
   deleteSelectedDocumentObjects,
+  exportPhase4Cdxml,
   exportPhase4Svg,
   findNativeMoleculeDeleteHit,
   findNativeMoleculeAtomHit,
@@ -63,6 +65,7 @@ import {
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
+  recommendImportedPageFit,
   moveDocumentObject,
   moveNativeMoleculeParts,
   nativeTextObjectMinimumDimensions,
@@ -699,6 +702,51 @@ describe("Phase 4 document workflow", () => {
     expect(reopened.source).toBe("native-payload");
     expect(reopened.warnings).toEqual([]);
     expect(reopened.document).toEqual(document);
+  });
+
+  it("recommends a larger landscape page for oversized imported CDXML content", () => {
+    const document = createPhase4Document("Oversized Import");
+    const oversizedMolecule: MoleculeObject = {
+      id: "mol_oversized_import",
+      type: "molecule",
+      x: 96,
+      y: 120,
+      width: 2500,
+      height: 1300,
+      rotation: 0,
+      style: {},
+      structureFormat: "unknown",
+      structure: "",
+      atoms: [],
+      bonds: [],
+      superatoms: [],
+      rGroups: []
+    };
+    const imported = {
+      ...document,
+      pages: [{
+        ...document.pages[0],
+        objects: [oversizedMolecule]
+      }]
+    };
+
+    const recommendation = recommendImportedPageFit(imported);
+
+    expect(recommendation).toMatchObject({
+      currentPresetId: "letter",
+      currentOrientation: "portrait",
+      recommendedPresetId: "a1",
+      recommendedOrientation: "landscape",
+      recommendedPageTitle: "A1"
+    });
+    expect(recommendation?.requiredWidthPx).toBeGreaterThan(imported.pages[0].width);
+    expect(recommendation?.requiredHeightPx).toBeGreaterThan(imported.pages[0].height);
+
+    const resized = applyImportedPageFitRecommendation(imported, recommendation!);
+    expect(resized.pages[0].layout).toMatchObject({ presetId: "a1", orientation: "landscape" });
+    expect(resized.pages[0].width).toBeGreaterThanOrEqual(recommendation!.requiredWidthPx);
+    expect(resized.pages[0].height).toBeGreaterThanOrEqual(recommendation!.requiredHeightPx);
+    expect(resized.pages[0].objects[0]).toEqual(oversizedMolecule);
   });
 
   it("creates and inserts a real native single-bond molecule through document patches", () => {
@@ -4925,6 +4973,19 @@ describe("Phase 4 document workflow", () => {
     expect(result.contents).toContain('aria-label="SVG Fixture"');
     expect(result.contents).toContain('data-object-type="molecule"');
     expect(result.contents).toContain("CCO");
+  });
+
+  it("exports the Phase 4 subset as a CDXML compatibility text result", () => {
+    const document = insertAdapterFallbackMolecule(createPhase4Document("CDXML Fixture"));
+    const result = exportPhase4Cdxml(document);
+
+    expect(result.format).toBe("cdxml");
+    expect(result.kind).toBe("text");
+    expect(result.extension).toBe("cdxml");
+    expect(result.mimeType).toBe("chemical/x-cdxml");
+    expect(result.contents).toContain("<CDXML");
+    expect(result.contents).toContain('CreationProgram="ChemDraft"');
+    expect(result.contents).toContain('Name="org.chemdraft/native-document"');
   });
 
   it("exports native single-bond molecules as bond geometry", () => {
