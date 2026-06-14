@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::sync::{Arc, OnceLock};
 
 use image::{codecs::jpeg::JpegEncoder, ColorType, DynamicImage, ImageEncoder, ImageFormat};
 use resvg::{tiny_skia, usvg};
@@ -50,9 +51,24 @@ pub(crate) fn rasterize_svg(request: RasterExportRequest) -> Result<RasterExport
     rasterize_svg_impl(request)
 }
 
+/// System fonts are scanned from disk once and shared across raster exports.
+/// `load_system_fonts` walks every OS font directory (hundreds of ms, and over a
+/// second on Windows installs with many fonts), so doing it per request would block
+/// the Tauri backend on every export.
+fn shared_fontdb() -> Arc<usvg::fontdb::Database> {
+    static FONTDB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    FONTDB
+        .get_or_init(|| {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            Arc::new(db)
+        })
+        .clone()
+}
+
 fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
     let mut options = usvg::Options::default();
-    options.fontdb_mut().load_system_fonts();
+    options.fontdb = shared_fontdb();
 
     let tree = usvg::Tree::from_data(request.svg.as_bytes(), &options)
         .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
@@ -141,11 +157,13 @@ fn encode_raster(
         }
         RasterExportFormat::Jpeg => {
             let quality = jpeg_quality.unwrap_or(DEFAULT_JPEG_QUALITY).clamp(1, 100);
-            if Some(quality) != jpeg_quality {
-                warnings.push(warning(
-                    "jpeg_quality_clamped",
-                    "JPEG export quality was clamped to the supported 1-100 range.".to_string(),
-                ));
+            if let Some(requested) = jpeg_quality {
+                if requested != quality {
+                    warnings.push(warning(
+                        "jpeg_quality_clamped",
+                        "JPEG export quality was clamped to the supported 1-100 range.".to_string(),
+                    ));
+                }
             }
             let rgb = flatten_to_rgb(pixmap.data(), background.unwrap_or([255, 255, 255]));
             let encoder = JpegEncoder::new_with_quality(&mut cursor, quality);
@@ -245,24 +263,44 @@ fn parse_background(value: Option<&str>) -> Result<Option<[u8; 3]>, String> {
     let hex = value.strip_prefix('#').ok_or_else(|| {
         "Raster export background must be a hex color or transparent.".to_string()
     })?;
-    match hex.len() {
+    // Validate as ASCII hex before indexing: the command accepts arbitrary strings,
+    // and byte-slicing a multi-byte char (e.g. "#\u{2603}") would otherwise panic.
+    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Raster export background contains an invalid hex color.".to_string());
+    }
+    let digits = hex.as_bytes();
+    match digits.len() {
         3 => Ok(Some([
-            parse_hex_pair(&hex[0..1].repeat(2))?,
-            parse_hex_pair(&hex[1..2].repeat(2))?,
-            parse_hex_pair(&hex[2..3].repeat(2))?,
+            expand_hex_nibble(digits[0]),
+            expand_hex_nibble(digits[1]),
+            expand_hex_nibble(digits[2]),
         ])),
         6 => Ok(Some([
-            parse_hex_pair(&hex[0..2])?,
-            parse_hex_pair(&hex[2..4])?,
-            parse_hex_pair(&hex[4..6])?,
+            combine_hex_pair(digits[0], digits[1]),
+            combine_hex_pair(digits[2], digits[3]),
+            combine_hex_pair(digits[4], digits[5]),
         ])),
         _ => Err("Raster export background must be a 3- or 6-digit hex color.".to_string()),
     }
 }
 
-fn parse_hex_pair(value: &str) -> Result<u8, String> {
-    u8::from_str_radix(value, 16)
-        .map_err(|_| "Raster export background contains an invalid hex color.".to_string())
+/// Expands a single hex nibble to a full byte (`A` -> `0xAA`), matching CSS short hex.
+fn expand_hex_nibble(digit: u8) -> u8 {
+    hex_value(digit) * 17
+}
+
+fn combine_hex_pair(high: u8, low: u8) -> u8 {
+    hex_value(high) * 16 + hex_value(low)
+}
+
+/// Caller validates ASCII-hex first, so the wildcard arm is unreachable in practice.
+fn hex_value(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'a'..=b'f' => digit - b'a' + 10,
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => 0,
+    }
 }
 
 fn warning(code: &'static str, message: String) -> RasterExportWarning {
@@ -337,5 +375,21 @@ mod tests {
         .expect_err("invalid background should fail");
 
         assert!(error.contains("background"));
+    }
+
+    #[test]
+    fn parses_short_hex_and_rejects_non_ascii_background() {
+        assert_eq!(
+            parse_background(Some("#abc")).expect("short hex parses"),
+            Some([0xaa, 0xbb, 0xcc])
+        );
+        assert_eq!(
+            parse_background(Some("#1A2b3C")).expect("full hex parses"),
+            Some([0x1a, 0x2b, 0x3c])
+        );
+        assert_eq!(parse_background(Some("transparent")).expect("transparent parses"), None);
+        // A multi-byte char reaches the 3-length arm by byte count; it must return an
+        // error rather than panic on a non-char-boundary slice.
+        assert!(parse_background(Some("#\u{2603}")).is_err());
     }
 }
