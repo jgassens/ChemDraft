@@ -562,13 +562,6 @@ const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
-const rasterExportFormatsByCommandId: Record<string, NativeRasterExportFormat> = {
-  "export.png": "png",
-  "export.jpeg": "jpeg",
-  "export.bmp": "bmp",
-  "export.gif": "gif",
-  "export.tiff": "tiff"
-};
 const rasterExportFormatsByFormatId: Partial<Record<ExportFormatId, NativeRasterExportFormat>> = {
   png: "png",
   jpeg: "jpeg",
@@ -664,7 +657,9 @@ const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.sendToBack", label: "Move Object to Back" }
 ];
 const nativeOpenDocumentEvent = "chemdraft://open-document";
-const domOpenDocumentEvent = "chemdraft:native-open-document";
+// Window for coalescing the multi-channel delivery (Tauri event + pending-document poll)
+// of a single OS file-open, while still allowing a deliberate later re-open.
+const NATIVE_OPEN_DEDUPE_WINDOW_MS = 1500;
 
 interface NativeOpenDocumentPayload {
   path: string;
@@ -706,7 +701,7 @@ export function MainWindow({
   const moleculeResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
-  const lastNativeOpenPayloadKeyRef = useRef<string | undefined>(undefined);
+  const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
@@ -2135,10 +2130,16 @@ export function MainWindow({
 
     const openNativePayload = (payload: NativeOpenDocumentPayload) => {
       const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
-      if (lastNativeOpenPayloadKeyRef.current === payloadKey) {
+      const now = Date.now();
+      const last = lastNativeOpenPayloadKeyRef.current;
+      // A single OS open is delivered via both the Tauri event and the pending-document
+      // poll, so coalesce identical payloads that arrive close together. Use a time window
+      // rather than a permanent key so re-opening the same file later (e.g. to discard
+      // in-app edits) still works.
+      if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
         return;
       }
-      lastNativeOpenPayloadKeyRef.current = payloadKey;
+      lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
       try {
         openDocumentContents(payload.contents, payload.displayName, payload.path);
       } catch (error) {
@@ -2146,21 +2147,19 @@ export function MainWindow({
       }
     };
 
-    const handleDomOpen = (event: Event) => {
-      const payload = (event as CustomEvent<unknown>).detail;
-      if (isNativeOpenDocumentPayload(payload)) {
-        openNativePayload(payload);
-      }
-    };
-
-    window.addEventListener(domOpenDocumentEvent, handleDomOpen);
     void listenForNativeOpenDocuments((payload) => {
       if (!disposed) {
         openNativePayload(payload);
       }
     })
       .then((cleanup) => {
-        unlisten = cleanup;
+        // The dynamic import may resolve after the effect was torn down; unsubscribe
+        // immediately in that case instead of leaking the listener.
+        if (disposed) {
+          cleanup();
+        } else {
+          unlisten = cleanup;
+        }
       })
       .catch(() => undefined);
     void takePendingNativeOpenDocument()
@@ -2174,7 +2173,6 @@ export function MainWindow({
     return () => {
       disposed = true;
       unlisten?.();
-      window.removeEventListener(domOpenDocumentEvent, handleDomOpen);
     };
   }, [openDocumentContents]);
 
@@ -2375,34 +2373,6 @@ export function MainWindow({
         }
         if (action.id === "export.open") {
           openExportDialog();
-        }
-        if (action.id === "export.svg") {
-          const result = exportPhase4Svg(document);
-          const exported = await exportTextFile(document, "svg", result.contents, "image/svg+xml", "SVG");
-          setStatus(exported
-            ? formatExportStatus("SVG", result.warnings.length)
-            : "SVG export canceled");
-        }
-        if (action.id === "export.pdf") {
-          const result = await exportPhase4Pdf(document);
-          const exported = await exportBinaryFile(document, "pdf", result.bytes, result.mimeType, "PDF");
-          setStatus(exported
-            ? formatExportStatus("PDF", result.warnings.length)
-            : "PDF export canceled");
-        }
-        if (action.id === "export.cdxml") {
-          const result = exportPhase4Cdxml(document);
-          const exported = await exportTextFile(document, "cdxml", result.contents, result.mimeType, "CDXML");
-          setStatus(exported
-            ? formatExportStatus("CDXML", result.warnings.length)
-            : "CDXML export canceled");
-        }
-        const rasterFormat = rasterExportFormatForCommand(action.id);
-        if (rasterFormat) {
-          const result = await exportRasterPage(document, rasterFormat);
-          setStatus(result.exported
-            ? formatExportStatus(result.label, result.warningCount)
-            : `${result.label} export canceled`);
         }
         if (action.id === "chemistry.validateSelection") {
           const molecule = getSelectedMolecule(document);
@@ -6147,7 +6117,9 @@ export function MainWindow({
             onCancel={cancelExportDialog}
             onChooseDestination={chooseExportDestination}
             onFilenameChange={(filename) => {
-              setExportDialog((current) => current ? { ...current, filename } : current);
+              // Editing the name makes it authoritative again; drop any previously chosen
+              // destination so submit re-prompts with the new name instead of writing the old path.
+              setExportDialog((current) => current ? { ...current, filename, destinationPath: undefined } : current);
             }}
             onFormatChange={(format) => {
               const descriptor = getExportFormatDescriptor(format);
@@ -6370,11 +6342,17 @@ function ExportDialog({
             <optgroup key={group} label={exportFormatGroupLabels[group]}>
               {exportFormatDescriptors
                 .filter((candidate) => candidate.group === group)
-                .map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.label}{candidate.status === "implemented" ? "" : ` (${candidate.status})`}
-                  </option>
-                ))}
+                .map((candidate) => {
+                  const rasterOnly = rasterExportFormatForDialogFormat(candidate.id) !== undefined;
+                  const unavailableInBrowser = rasterOnly && !isDesktopRuntime();
+                  return (
+                    <option key={candidate.id} value={candidate.id} disabled={unavailableInBrowser}>
+                      {candidate.label}
+                      {candidate.status === "implemented" ? "" : ` (${candidate.status})`}
+                      {unavailableInBrowser ? " (desktop only)" : ""}
+                    </option>
+                  );
+                })}
             </optgroup>
           ))}
         </select>
@@ -10426,12 +10404,19 @@ async function createDialogExportResult(
 
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);
   if (rasterFormat) {
-    const svgResult = exportPhase4Svg(document, { includeWarnings: true });
+    if (!isDesktopRuntime()) {
+      throw new Error(`${descriptor.menuLabel} export requires the ChemDraft desktop app.`);
+    }
+    const transparent = rasterFormat === "png" && state.raster.background === "transparent";
+    // The SVG must omit its white page rect for a transparent request, otherwise resvg
+    // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
+    const svgResult = exportPhase4Svg(document, {
+      includeWarnings: true,
+      background: transparent ? "transparent" : "#ffffff"
+    });
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
       scale: sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
-      background: rasterFormat === "png" && state.raster.background === "transparent"
-        ? "transparent"
-        : "#ffffff",
+      background: transparent ? "transparent" : "#ffffff",
       jpegQuality: sanitizedDialogNumber(state.raster.jpegQuality, 90, 1, 100),
       maxDimensionPx: sanitizedDialogNumber(state.raster.maxDimensionPx, 8192, 1, 8192)
     });
@@ -10603,78 +10588,6 @@ function downloadBlob(filename: string, blob: Blob): void {
   anchor.download = filename;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-async function exportTextFile(
-  document: ChemDraftDocument,
-  extension: string,
-  contents: string,
-  mimeType: string,
-  formatLabel: string
-): Promise<boolean> {
-  const filename = createExportFilename(document, extension);
-  if (!isDesktopRuntime()) {
-    downloadText(filename, contents, mimeType);
-    return true;
-  }
-
-  const path = await pickNativeExportPath(filename, formatLabel, [extension]);
-  if (!path) {
-    return false;
-  }
-  await writeNativeTextFile(path, contents);
-  return true;
-}
-
-async function exportBinaryFile(
-  document: ChemDraftDocument,
-  extension: string,
-  bytes: Uint8Array,
-  mimeType: string,
-  formatLabel: string,
-  alternateExtensions: readonly string[] = []
-): Promise<boolean> {
-  const extensions = [extension, ...alternateExtensions];
-  const filename = createExportFilename(document, extension);
-  if (!isDesktopRuntime()) {
-    downloadBlob(filename, new Blob([arrayBufferFromBytes(bytes)], { type: mimeType }));
-    return true;
-  }
-
-  const path = await pickNativeExportPath(filename, formatLabel, extensions);
-  if (!path) {
-    return false;
-  }
-  await writeNativeBinaryFile(path, bytes);
-  return true;
-}
-
-function rasterExportFormatForCommand(commandId: string): NativeRasterExportFormat | undefined {
-  return rasterExportFormatsByCommandId[commandId];
-}
-
-async function exportRasterPage(
-  document: ChemDraftDocument,
-  format: NativeRasterExportFormat
-): Promise<{ label: string; warningCount: number; exported: boolean }> {
-  const svgResult = exportPhase4Svg(document);
-  const descriptor = getExportFormatDescriptor(format);
-  const rasterResult = await rasterizeSvgNative(svgResult.contents, format, { background: "#ffffff" });
-  const extension = descriptor.extensions[0] ?? format;
-  const exported = await exportBinaryFile(
-    document,
-    extension,
-    rasterResult.bytes,
-    descriptor.mimeType,
-    descriptor.menuLabel,
-    descriptor.extensions.slice(1)
-  );
-
-  return {
-    label: descriptor.menuLabel,
-    warningCount: svgResult.warnings.length + rasterResult.warnings.length,
-    exported
-  };
 }
 
 function createExportFilename(document: ChemDraftDocument, extension: string): string {

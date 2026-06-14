@@ -5928,7 +5928,7 @@ function importedContentFitDelta(min: number, size: number, extent: number): num
 
 export function exportPhase4Svg(
   document: ChemDraftDocument,
-  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex"> = {}
+  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex" | "background"> = {}
 ): SvgExportResult {
   return exportDocumentToSvg(document, {
     ...options,

@@ -13,6 +13,11 @@ export interface SvgExportOptions {
   pageIndex?: number;
   includePageGuides?: boolean;
   includeWarnings?: boolean;
+  /**
+   * Page background fill. Defaults to opaque white; pass `"transparent"` to omit the
+   * background rect entirely so downstream raster/PNG export can preserve transparency.
+   */
+  background?: string;
 }
 
 export interface SvgExportResult {
@@ -45,12 +50,16 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const pageGuideMarkup = options.includePageGuides === true
     ? `  <rect x="${page.margin.left}" y="${page.margin.top}" width="${page.width - page.margin.left - page.margin.right}" height="${page.height - page.margin.top - page.margin.bottom}" fill="none" stroke="#9fc9bd" stroke-width="1" opacity="0.5" data-chemdraft-page-guide="margin" />`
     : "";
+  const background = options.background ?? "#ffffff";
+  const backgroundMarkup = background === "transparent"
+    ? ""
+    : `  <rect width="${page.width}" height="${page.height}" fill="${escapeXml(background)}" />`;
 
   return {
     format: "svg",
     contents: [
       `<svg xmlns="http://www.w3.org/2000/svg" width="${svgSize.width}" height="${svgSize.height}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
-      `  <rect width="${page.width}" height="${page.height}" fill="#ffffff" />`,
+      backgroundMarkup,
       pageGuideMarkup,
       body,
       warningMarkup,

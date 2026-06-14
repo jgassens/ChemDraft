@@ -1343,11 +1343,12 @@ function planNativeMoleculeGraphSvg(
         fill: drawingStyle.atomLabelBackgroundColor
       });
     }),
-    ...atomLabels.map(({ atom, label }) =>
-      elementFragment("g", `label-${object.id}-${atom.id}`, {
+    ...atomLabels.map(({ atom, label }) => {
+      const anchor = atomLabelAnchor(atom);
+      return elementFragment("g", `label-${object.id}-${atom.id}`, {
         class: "native-atom-label",
         "data-atom-label": label,
-        transform: `translate(${formatNumber(atomLabelAnchor(atom).x)} ${formatNumber(atomLabelAnchor(atom).y)})`,
+        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
         fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
         "font-family": drawingStyle.atomLabelFontFamily,
         "font-size": drawingStyle.atomLabelFontSizePx,
@@ -1362,8 +1363,8 @@ function planNativeMoleculeGraphSvg(
           "text-anchor": run.textAnchor,
           "font-size": atomLabelRunFontSize(run.script, drawingStyle)
         }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
-      ))
-    ),
+      ));
+    }),
     ...object.atoms.map((atom) =>
       elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
         class: "native-atom-hit-target",

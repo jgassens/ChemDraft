@@ -20,7 +20,6 @@ const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
-const DOM_OPEN_DOCUMENT_EVENT: &str = "chemdraft:native-open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
@@ -792,25 +791,11 @@ fn emit_open_document_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     payload: &NativeOpenDocumentPayload,
 ) -> Result<(), String> {
+    // Deliver via the Tauri event for a running window; a cold start (window not yet
+    // listening) is covered by the pending-document state drained on mount. We deliberately
+    // do not `eval` document contents into the webview to avoid a script-injection surface.
     app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
-        .map_err(|error| error.to_string())?;
-    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        dispatch_dom_open_document_event(&main, payload)?;
-    }
-    Ok(())
-}
-
-fn dispatch_dom_open_document_event<R: Runtime>(
-    main: &tauri::WebviewWindow<R>,
-    payload: &NativeOpenDocumentPayload,
-) -> Result<(), String> {
-    let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-    let event_json =
-        serde_json::to_string(DOM_OPEN_DOCUMENT_EVENT).map_err(|error| error.to_string())?;
-    main.eval(format!(
-        "window.dispatchEvent(new CustomEvent({event_json}, {{ detail: {payload_json} }}));"
-    ))
-    .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())
 }
 
 fn emit_toolset_window_state_to_main<R: Runtime>(

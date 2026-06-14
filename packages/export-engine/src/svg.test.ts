@@ -57,6 +57,21 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("data-object-id=");
   });
 
+  it("omits the page background rect for a transparent export", () => {
+    const document = createEmptyDocument({ title: "Transparent SVG", now: timestamp });
+    const result = exportDocumentToSvg(document, { background: "transparent" });
+
+    expect(result.contents).not.toContain('fill="#ffffff"');
+    expect(result.contents).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
+  });
+
+  it("uses a custom page background fill when provided", () => {
+    const document = createEmptyDocument({ title: "Tinted SVG", now: timestamp });
+    const result = exportDocumentToSvg(document, { background: "#102030" });
+
+    expect(result.contents).toContain('<rect width="816" height="1056" fill="#102030" />');
+  });
+
   it("can include page guide geometry when explicitly requested", () => {
     const document = createEmptyDocument({ title: "Guide SVG", now: timestamp });
     const result = exportDocumentToSvg(document, { includePageGuides: true });

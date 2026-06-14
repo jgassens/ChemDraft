@@ -994,9 +994,16 @@ function refreshImportedCyclicDoubleBondSides(
     }
 
     const currentSide = bond.display?.doubleBondSide;
+    // Prefer the ring whose centroid already matches the current side; otherwise place the
+    // secondary line in the smallest owning ring (the conventional choice for fused systems),
+    // with a stable secondary key so the result is deterministic regardless of traversal order.
     const cycle =
       owningCycles.find((candidate) => sideForPointRelativeToBond(fromAtom, toAtom, candidate.center) === currentSide)
-      ?? owningCycles[0];
+      ?? [...owningCycles].sort(
+        (left, right) =>
+          left.atomIds.length - right.atomIds.length ||
+          canonicalImportedRingCycleKey(left.bondIds).localeCompare(canonicalImportedRingCycleKey(right.bondIds))
+      )[0];
     const side = cycle ? sideForPointRelativeToBond(fromAtom, toAtom, cycle.center) : undefined;
     if (!side || currentSide === side) {
       return bond;
@@ -1008,6 +1015,8 @@ function refreshImportedCyclicDoubleBondSides(
     };
   });
 }
+
+const IMPORTED_RING_CYCLE_VISIT_LIMIT = 250_000;
 
 function findImportedRingCycles(
   atoms: readonly MoleculeAtom[],
@@ -1038,7 +1047,15 @@ function findImportedRingCycles(
   });
 
   const cycles = new Map<string, ImportedRingCycle>();
+  // Bound the path enumeration: dense polycyclic graphs (e.g. metal-organic cages) can make
+  // the DFS combinatorial. Normal organic structures never approach this budget; pathological
+  // inputs degrade gracefully (some cyclic double-bond sides left un-normalized) instead of hanging.
+  let visitBudget = IMPORTED_RING_CYCLE_VISIT_LIMIT;
   const visit = (startAtomId: string, atomId: string, atomIds: string[], bondIds: string[]) => {
+    if (visitBudget <= 0) {
+      return;
+    }
+    visitBudget -= 1;
     if (ringSizes.has(atomIds.length)) {
       const closingBond = (adjacency.get(atomId) ?? []).find((edge) => edge.atomId === startAtomId);
       if (closingBond) {
