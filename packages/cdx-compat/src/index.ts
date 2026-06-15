@@ -931,10 +931,10 @@ function cdxmlGraphicLineAttributes(graphic: GraphicObject): string[] {
 
 function cdxmlAngularSizeForGraphic(graphic: GraphicObject): string {
   const imported = graphic.compatibility?.unknown.cdxmlAngularSize;
-  if (typeof imported === "string" && imported.trim().length > 0) {
+  if (graphic.data.arcSweepRadians === undefined && typeof imported === "string" && imported.trim().length > 0) {
     return imported;
   }
-  return formatNumber(graphic.data.arcAngleDegrees ?? 180);
+  return formatNumber(radiansToDegrees(clampArcSweepRadians(graphic.data.arcSweepRadians ?? Math.PI)));
 }
 
 function cdxmlLineAxisAttributes(start: Point, end: Point): string[] {
@@ -951,6 +951,10 @@ function cdxmlLineAxisAttributes(start: Point, end: Point): string[] {
 }
 
 function graphicLineEndpointsForCdxml(graphic: GraphicObject): { start: Point; end: Point } {
+  if (graphic.data.artPathKind === "arc" && !pointMetadata(graphic.data.pathControlPoint)) {
+    return circularGraphicArcEndpoints(graphic);
+  }
+
   const start = pointMetadata(graphic.data.lineStart);
   const end = pointMetadata(graphic.data.lineEnd);
   return start && end
@@ -959,6 +963,29 @@ function graphicLineEndpointsForCdxml(graphic: GraphicObject): { start: Point; e
         start: { x: graphic.x, y: graphic.y },
         end: { x: graphic.x + graphic.width, y: graphic.y + graphic.height }
       };
+}
+
+function circularGraphicArcEndpoints(graphic: GraphicObject): { start: Point; end: Point } {
+  const angles = nativeGraphicArcAngles(graphic);
+  const center = objectCenter(graphic);
+  const rx = Math.max(graphic.width / 2 - 4, 1);
+  const ry = Math.max(graphic.height / 2 - 4, 1);
+  return {
+    start: ellipsePointAtRadians(center, rx, ry, angles.startRadians),
+    end: ellipsePointAtRadians(center, rx, ry, angles.endRadians)
+  };
+}
+
+function nativeGraphicArcAngles(graphic: GraphicObject): { startRadians: number; sweepRadians: number; endRadians: number } {
+  const sweepRadians = clampArcSweepRadians(graphic.data.arcSweepRadians ?? Math.PI);
+  const startRadians = typeof graphic.data.arcStartRadians === "number" && Number.isFinite(graphic.data.arcStartRadians)
+    ? graphic.data.arcStartRadians
+    : -Math.PI / 2 - sweepRadians / 2;
+  return {
+    startRadians,
+    sweepRadians,
+    endRadians: startRadians + sweepRadians
+  };
 }
 
 function pointMetadata(value: unknown): Point | undefined {
@@ -978,6 +1005,29 @@ function objectCenter(object: { x: number; y: number; width: number; height: num
     x: object.x + object.width / 2,
     y: object.y + object.height / 2
   };
+}
+
+function ellipsePointAtRadians(center: Point, rx: number, ry: number, radians: number): Point {
+  return {
+    x: center.x + Math.cos(radians) * rx,
+    y: center.y + Math.sin(radians) * ry
+  };
+}
+
+function ellipseAngleRadiansForPoint(center: Point, rx: number, ry: number, point: Point): number {
+  return Math.atan2((point.y - center.y) / Math.max(ry, 1), (point.x - center.x) / Math.max(rx, 1));
+}
+
+function degreesToRadians(degrees: number): number {
+  return degrees * Math.PI / 180;
+}
+
+function radiansToDegrees(radians: number): number {
+  return radians * 180 / Math.PI;
+}
+
+function clampArcSweepRadians(radians: number): number {
+  return Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(radians)));
 }
 
 function objectCornerPoints(object: { x: number; y: number; width: number; height: number }): Point[] {
@@ -1810,7 +1860,7 @@ function importShapeGraphic(
   const linePoints = cdxmlLinePointsForShape(element);
   const box = graphicBoundsForCdxmlShape(element, type, linePoints);
   const style = graphicStyleFromCdxmlShape(element, context.colorTable);
-  const data = graphicDataFromCdxmlShape(element, type, linePoints);
+  const data = graphicDataFromCdxmlShape(element, type, linePoints, box);
   const graphicKind = graphicKindFromCdxmlShape(type, data);
 
   return {
@@ -1942,19 +1992,26 @@ function graphicStyleFromCdxmlShape(
 function graphicDataFromCdxmlShape(
   element: XmlElementView,
   type: string | undefined,
-  linePoints: { start: Point; end: Point } | undefined
+  linePoints: { start: Point; end: Point } | undefined,
+  box: { x: number; y: number; width: number; height: number }
 ): GraphicObject["data"] {
   const data: GraphicObject["data"] = {};
   const lineType = normalizedCdxmlToken(element.attributes.LineType);
   const rectangleType = normalizedCdxmlToken(element.attributes.RectangleType);
 
-  if (linePoints) {
+  if (linePoints && type !== "Arc") {
     data.lineStart = linePoints.start;
     data.lineEnd = linePoints.end;
   }
   if (type === "Arc") {
     data.artPathKind = "arc";
-    data.arcAngleDegrees = Math.abs(parseNumber(element.attributes.AngularSize) ?? 180);
+    data.arcSweepRadians = degreesToRadians(Math.abs(parseNumber(element.attributes.AngularSize) ?? 180));
+    if (linePoints) {
+      const center = objectCenter(box);
+      const rx = Math.max(box.width / 2 - 4, 1);
+      const ry = Math.max(box.height / 2 - 4, 1);
+      data.arcStartRadians = ellipseAngleRadiansForPoint(center, rx, ry, linePoints.start);
+    }
   } else if (lineType === "wavy") {
     data.artPathKind = "wavy";
   } else if (type === "Line") {

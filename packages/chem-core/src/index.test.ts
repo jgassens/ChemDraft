@@ -635,7 +635,8 @@ describe("native document validation and serialization", () => {
       data: {
         cornerRadiusPx: 7,
         artPathKind: "arc",
-        arcAngleDegrees: 180,
+        arcStartRadians: -5 * Math.PI / 4,
+        arcSweepRadians: Math.PI,
         lineStart: { x: 100, y: 160 },
         pathControlPoint: { x: 136, y: 104 },
         lineEnd: { x: 172, y: 160 },
@@ -659,10 +660,50 @@ describe("native document validation and serialization", () => {
       },
       data: {
         cornerRadiusPx: 7,
-        arcAngleDegrees: 180,
+        arcStartRadians: -5 * Math.PI / 4,
+        arcSweepRadians: Math.PI,
         pathControlPoint: { x: 136, y: 104 }
       }
     });
+  });
+
+  it("migrates branch-era graphic arc degree metadata to radians", () => {
+    const graphic = {
+      id: "graphic_legacy_arc",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 40,
+      rotation: 15,
+      graphicKind: "path",
+      style: {},
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: -5 * Math.PI / 4,
+        arcSweepRadians: Math.PI
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const legacy = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ data: Record<string, unknown> }> }>;
+    };
+    const data = legacy.pages[0].objects[0].data;
+    data.arcStartDegrees = -225;
+    data.arcAngleDegrees = 180;
+    delete data.arcStartRadians;
+    delete data.arcSweepRadians;
+
+    const migratedGraphic = deserializeDocument(JSON.stringify(legacy)).pages[0].objects[0] as GraphicObject;
+
+    expect(migratedGraphic.data.arcStartRadians).toBeCloseTo(-5 * Math.PI / 4, 6);
+    expect(migratedGraphic.data.arcSweepRadians).toBeCloseTo(Math.PI, 6);
+    expect(migratedGraphic.data).not.toHaveProperty("arcStartDegrees");
+    expect(migratedGraphic.data).not.toHaveProperty("arcAngleDegrees");
   });
 
   it("reports validation issues for unsupported object shapes", () => {

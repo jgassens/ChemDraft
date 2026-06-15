@@ -615,7 +615,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.14.19-codex";
+const CURRENT_BUILD_STAMP = "6.15.14.58-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -10975,11 +10975,18 @@ function GraphicPathEditHandles({
     return null;
   }
 
-  const handles: Array<{ handle: NativeGraphicPathEditHandle; point: { x: number; y: number }; label: string }> = [
-    { handle: "start", point: points.start, label: "Adjust line start" },
-    { handle: "middle", point: points.middle, label: "Bend line into arc" },
-    { handle: "end", point: points.end, label: "Adjust line end" }
-  ];
+  const circularArc = points.pathKind === "arc" && !object.data.pathControlPoint;
+  const handles: Array<{ handle: NativeGraphicPathEditHandle; point: { x: number; y: number }; label: string }> = circularArc
+    ? [
+        { handle: "start", point: points.start, label: "Adjust arc start" },
+        { handle: "middle", point: points.middle, label: "Rotate arc around circle" },
+        { handle: "end", point: points.end, label: "Adjust arc sweep" }
+      ]
+    : [
+        { handle: "start", point: points.start, label: "Adjust line start" },
+        { handle: "middle", point: points.middle, label: "Bend line into arc" },
+        { handle: "end", point: points.end, label: "Adjust line end" }
+      ];
 
   return (
     <>

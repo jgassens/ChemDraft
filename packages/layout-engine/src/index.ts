@@ -1944,6 +1944,17 @@ function nativeArtProjectedLocalBounds(
     );
   }
 
+  if (object.graphicKind === "line") {
+    return projectedPointsBounds(graphicLineLocalPoints(object), width, height, matrix);
+  }
+
+  if (object.graphicKind === "path") {
+    const pathPoints = graphicPathLocalSamplePoints(object);
+    if (pathPoints.length > 0) {
+      return projectedPointsBounds(pathPoints, width, height, matrix);
+    }
+  }
+
   return projectedRectangleBounds(width, height, matrix);
 }
 
@@ -2122,6 +2133,50 @@ function graphicLineEndpoints(
   };
 }
 
+function graphicLineLocalPoints(object: GraphicObject): LayoutPoint[] {
+  const line = graphicLineEndpoints(object, "local");
+  return [
+    { x: line.x1, y: line.y1 },
+    { x: line.x2, y: line.y2 }
+  ];
+}
+
+function graphicPathLocalSamplePoints(object: GraphicObject): LayoutPoint[] {
+  const pathKind = metadataString(object.data.artPathKind);
+  const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
+  if (pathKind === "line") {
+    const endpoints = graphicPathEndpoints(object, "local", inset);
+    return [endpoints.start, endpoints.end];
+  }
+
+  if (pathKind === "wavy") {
+    const endpoints = graphicPathEndpoints(object, "local", inset);
+    return wavyLinePoints(
+      endpoints.start,
+      endpoints.end,
+      Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6))
+    );
+  }
+
+  if (pathKind === "arc") {
+    const explicitStart = pointMetadata(object.data.lineStart);
+    const explicitEnd = pointMetadata(object.data.lineEnd);
+    const explicitControl = pointMetadata(object.data.pathControlPoint);
+    if (explicitStart && explicitEnd && explicitControl) {
+      return quadraticBezierSamplePoints(
+        pointForArtSpace(object, explicitStart, "local"),
+        pointForArtSpace(object, explicitControl, "local"),
+        pointForArtSpace(object, explicitEnd, "local"),
+        24
+      );
+    }
+
+    return artArcSamplePoints(object, "local");
+  }
+
+  return [];
+}
+
 function graphicPathD(
   object: Extract<DocumentObject, { type: "graphic" }>,
   coordinateSpace: NativeArtVisualCoordinateSpace = "page"
@@ -2141,7 +2196,11 @@ function graphicPathD(
   if (pathKind === "wavy") {
     const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
     if (pointMetadata(object.data.lineStart) && pointMetadata(object.data.lineEnd)) {
-      return wavyLinePathD(endpoints.start, endpoints.end, Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6)));
+      return wavyLinePathD(
+        endpoints.start,
+        endpoints.end,
+        Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6))
+      );
     }
     const originX = coordinateSpace === "page" ? object.x : 0;
     const originY = coordinateSpace === "page" ? object.y : 0;
@@ -2167,7 +2226,7 @@ function graphicPathD(
         `Q ${formatNumber(control.x)} ${formatNumber(control.y)} ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`
       ].join(" ");
     }
-    return artArcPathD(object, metadataNumber(object.data.arcAngleDegrees) ?? 180, coordinateSpace);
+    return artArcPathD(object, coordinateSpace);
   }
 
   return storedPath;
@@ -2202,15 +2261,23 @@ function pointForArtSpace(
 }
 
 function wavyLinePathD(start: LayoutPoint, end: LayoutPoint, amplitude: number): string {
+  const points = wavyLinePoints(start, end, amplitude);
+  return [
+    `M ${formatNumber(points[0].x)} ${formatNumber(points[0].y)}`,
+    ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`)
+  ].join(" ");
+}
+
+function wavyLinePoints(start: LayoutPoint, end: LayoutPoint, amplitude: number): LayoutPoint[] {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
   if (length < 1) {
-    return `M ${formatNumber(start.x)} ${formatNumber(start.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
+    return [start, end];
   }
   const normal = { x: -dy / length, y: dx / length };
   const steps = Math.max(8, Math.ceil(length / 5));
-  const points = Array.from({ length: steps + 1 }, (_, index) => {
+  return Array.from({ length: steps + 1 }, (_, index) => {
     const t = index / steps;
     const wave = Math.sin(t * Math.PI * 2 * Math.max(2, length / 8)) * amplitude;
     return {
@@ -2218,18 +2285,13 @@ function wavyLinePathD(start: LayoutPoint, end: LayoutPoint, amplitude: number):
       y: start.y + dy * t + normal.y * wave
     };
   });
-  return [
-    `M ${formatNumber(points[0].x)} ${formatNumber(points[0].y)}`,
-    ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`)
-  ].join(" ");
 }
 
 function artArcPathD(
-  object: Pick<DocumentObject, "x" | "y" | "width" | "height">,
-  degrees: number,
+  object: GraphicObject,
   coordinateSpace: NativeArtVisualCoordinateSpace = "page"
 ): string {
-  const angle = Math.min(359.9, Math.max(1, degrees));
+  const angles = nativeArtArcAngles(object);
   const rx = Math.max(object.width / 2 - 4, 1);
   const ry = Math.max(object.height / 2 - 4, 1);
   const originX = coordinateSpace === "page" ? object.x : 0;
@@ -2238,12 +2300,60 @@ function artArcPathD(
     x: originX + object.width / 2,
     y: originY + object.height / 2
   };
-  const start = ellipsePointAtDegrees(center, rx, ry, -90 - angle / 2);
-  const end = ellipsePointAtDegrees(center, rx, ry, -90 + angle / 2);
+  const start = ellipsePointAtRadians(center, rx, ry, angles.startRadians);
+  const end = ellipsePointAtRadians(center, rx, ry, angles.endRadians);
   return [
     `M ${formatNumber(start.x)} ${formatNumber(start.y)}`,
-    `A ${formatNumber(rx)} ${formatNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatNumber(end.x)} ${formatNumber(end.y)}`
+    `A ${formatNumber(rx)} ${formatNumber(ry)} 0 ${angles.sweepRadians > Math.PI ? 1 : 0} 1 ${formatNumber(end.x)} ${formatNumber(end.y)}`
   ].join(" ");
+}
+
+function artArcSamplePoints(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace = "page"
+): LayoutPoint[] {
+  const angles = nativeArtArcAngles(object);
+  const rx = Math.max(object.width / 2 - 4, 1);
+  const ry = Math.max(object.height / 2 - 4, 1);
+  const originX = coordinateSpace === "page" ? object.x : 0;
+  const originY = coordinateSpace === "page" ? object.y : 0;
+  return arcSamplePointsRadians(
+    {
+      x: originX + object.width / 2,
+      y: originY + object.height / 2
+    },
+    rx,
+    ry,
+    angles.startRadians,
+    angles.endRadians,
+    32
+  );
+}
+
+function nativeArtArcAngles(object: GraphicObject): { startRadians: number; sweepRadians: number; endRadians: number } {
+  const sweepRadians = clampArcSweepRadians(metadataNumber(object.data.arcSweepRadians) ?? Math.PI);
+  const startRadians = metadataNumber(object.data.arcStartRadians) ?? -Math.PI / 2 - sweepRadians / 2;
+  return {
+    startRadians,
+    sweepRadians,
+    endRadians: startRadians + sweepRadians
+  };
+}
+
+function quadraticBezierSamplePoints(
+  start: LayoutPoint,
+  control: LayoutPoint,
+  end: LayoutPoint,
+  steps: number
+): LayoutPoint[] {
+  return Array.from({ length: Math.max(1, steps) + 1 }, (_, index) => {
+    const t = index / Math.max(1, steps);
+    const inverseT = 1 - t;
+    return {
+      x: inverseT * inverseT * start.x + 2 * inverseT * t * control.x + t * t * end.x,
+      y: inverseT * inverseT * start.y + 2 * inverseT * t * control.y + t * t * end.y
+    };
+  });
 }
 
 function roundedRectPathPoints(
@@ -2307,6 +2417,20 @@ function arcSamplePoints(
   });
 }
 
+function arcSamplePointsRadians(
+  center: LayoutPoint,
+  rx: number,
+  ry: number,
+  startRadians: number,
+  endRadians: number,
+  steps: number
+): LayoutPoint[] {
+  return Array.from({ length: steps + 1 }, (_, index) => {
+    const t = steps <= 0 ? 1 : index / steps;
+    return ellipsePointAtRadians(center, rx, ry, startRadians + (endRadians - startRadians) * t);
+  });
+}
+
 function pointsPathD(points: readonly LayoutPoint[], closed: boolean): string {
   const first = points[0];
   if (!first) {
@@ -2335,6 +2459,22 @@ function ellipsePointAtDegrees(
     x: center.x + Math.cos(radians) * rx,
     y: center.y + Math.sin(radians) * ry
   };
+}
+
+function ellipsePointAtRadians(
+  center: LayoutPoint,
+  rx: number,
+  ry: number,
+  radians: number
+): LayoutPoint {
+  return {
+    x: center.x + Math.cos(radians) * rx,
+    y: center.y + Math.sin(radians) * ry
+  };
+}
+
+function clampArcSweepRadians(radians: number): number {
+  return Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(radians)));
 }
 
 function pointMetadata(value: unknown): LayoutPoint | undefined {

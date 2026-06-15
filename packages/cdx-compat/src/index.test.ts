@@ -275,7 +275,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       height: 92,
       rotation: 0,
       style: {
-        strokeColor: "#111111",
+        strokeColor: "#000000",
         strokeWidth: 2
       },
       graphicKind: "path",
@@ -298,6 +298,61 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       }
     });
     expect(result.warnings.map((item) => item.code)).toContain("cdxml.graphic_path_control_payload_only");
+  });
+
+  it("exports circular graphic arcs from native radian sweep metadata", () => {
+    const graphic = {
+      id: "art_cdxml_circle_arc",
+      type: "graphic",
+      x: 40,
+      y: 60,
+      width: 58,
+      height: 58,
+      rotation: 0,
+      style: {
+        strokeColor: "#000000",
+        strokeWidth: 2
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: 0,
+        arcSweepRadians: Math.PI * 1.5
+      }
+    } satisfies GraphicObject;
+    const result = exportDocumentToCdxml(documentWithObjects([graphic]), {
+      creationProgram: "Graphic Circular Arc Export Test"
+    });
+
+    expect(result.contents).toContain('GraphicType="Arc"');
+    expect(result.contents).toContain('AngularSize="270"');
+    expect(result.contents).toContain('Start="66.75 70.5"');
+    expect(result.contents).toContain('End="48 51.75"');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("imports CDXML arcs as circular native graphic arcs with radian angles", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
+<CDXML CreationProgram="Arc Import Test">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="70.5 66.75 0" End="51.75 48 0"/>
+  </page>
+</CDXML>`);
+    const graphic = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+
+    expect(opened.source).toBe("external-cdxml");
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "arc"
+      }
+    });
+    expect(graphic?.data.arcStartRadians).toBeCloseTo(0, 6);
+    expect(graphic?.data.arcSweepRadians).toBeCloseTo(Math.PI * 1.5, 6);
+    expect(graphic?.data.lineStart).toBeUndefined();
+    expect(graphic?.data.lineEnd).toBeUndefined();
   });
 
   it("imports and exports ChemDraw shape graphics as native graphic objects", () => {

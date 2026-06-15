@@ -100,7 +100,7 @@ export function migrateDocument(candidate: unknown): ChemDraftDocument {
     return result.document;
   }
 
-  const migrated = migrateLegacyPageLayouts(candidate);
+  const migrated = migrateLegacyGraphicArcAngles(migrateLegacyPageLayouts(candidate));
   if (migrated !== candidate) {
     const migratedResult = validateDocument(migrated);
     if (migratedResult.ok) {
@@ -150,8 +150,67 @@ function migrateLegacyPageLayouts(candidate: unknown): unknown {
   return changed ? { ...candidate, pages } : candidate;
 }
 
+function migrateLegacyGraphicArcAngles(candidate: unknown): unknown {
+  if (!isRecord(candidate) || !Array.isArray(candidate.pages)) {
+    return candidate;
+  }
+
+  let changed = false;
+  const pages = candidate.pages.map((page) => {
+    if (!isRecord(page) || !Array.isArray(page.objects)) {
+      return page;
+    }
+
+    const objects = page.objects.map((object) => {
+      if (!isRecord(object) || object.type !== "graphic" || !isRecord(object.data)) {
+        return object;
+      }
+
+      const data = object.data;
+      const hasLegacyStart = "arcStartDegrees" in data;
+      const hasLegacySweep = "arcAngleDegrees" in data;
+      if (!hasLegacyStart && !hasLegacySweep) {
+        return object;
+      }
+
+      const nextData: Record<string, unknown> = { ...data };
+      const legacyStartDegrees = finiteNumber(data.arcStartDegrees);
+      const legacySweepDegrees = finiteNumber(data.arcAngleDegrees);
+      if (legacyStartDegrees !== undefined && finiteNumber(nextData.arcStartRadians) === undefined) {
+        nextData.arcStartRadians = degreesToRadians(legacyStartDegrees);
+      }
+      if (legacySweepDegrees !== undefined && finiteNumber(nextData.arcSweepRadians) === undefined) {
+        nextData.arcSweepRadians = degreesToRadians(Math.abs(legacySweepDegrees));
+      }
+      delete nextData.arcStartDegrees;
+      delete nextData.arcAngleDegrees;
+      changed = true;
+
+      return {
+        ...object,
+        data: nextData
+      };
+    });
+
+    return {
+      ...page,
+      objects
+    };
+  });
+
+  return changed ? { ...candidate, pages } : candidate;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function degreesToRadians(degrees: number): number {
+  return degrees * Math.PI / 180;
 }
 
 function isMargin(value: unknown): value is { top: number; right: number; bottom: number; left: number } {

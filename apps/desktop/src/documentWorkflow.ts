@@ -272,14 +272,14 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artShapeTool("lineDashed", "Dashed Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeDasharray: "6 6" }),
   artShapeTool("lineWavy", "Wavy Line", "path", 82, 46, { artPathKind: "wavy" }, artOutlineStyle),
   artShapeTool("lineBold", "Bold Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeWidth: 6 }),
-  artArcTool("arc270", "270 Degree Arc", 270, false),
-  artArcTool("arc270Dashed", "Dashed 270 Degree Arc", 270, true),
-  artArcTool("arc180", "180 Degree Arc", 180, false),
-  artArcTool("arc180Dashed", "Dashed 180 Degree Arc", 180, true),
-  artArcTool("arc120", "120 Degree Arc", 120, false),
-  artArcTool("arc120Dashed", "Dashed 120 Degree Arc", 120, true),
-  artArcTool("arc90", "90 Degree Arc", 90, false),
-  artArcTool("arc90Dashed", "Dashed 90 Degree Arc", 90, true)
+  artArcTool("arc270", "Three-quarter Arc", 270, false),
+  artArcTool("arc270Dashed", "Dashed Three-quarter Arc", 270, true),
+  artArcTool("arc180", "Half Arc", 180, false),
+  artArcTool("arc180Dashed", "Dashed Half Arc", 180, true),
+  artArcTool("arc120", "One-third Arc", 120, false),
+  artArcTool("arc120Dashed", "Dashed One-third Arc", 120, true),
+  artArcTool("arc90", "Quarter Arc", 90, false),
+  artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true)
 ];
 
 const nativeArtToolByCommandId = new Map(nativeArtToolDefinitions.map((tool) => [tool.commandId, tool]));
@@ -308,7 +308,7 @@ function artShapeTool(
 function artArcTool(
   id: NativeArtToolId,
   title: string,
-  arcAngleDegrees: number,
+  arcSweepDegrees: number,
   dashed: boolean
 ): NativeArtToolDefinition {
   return artShapeTool(
@@ -319,7 +319,7 @@ function artArcTool(
     58,
     {
       artPathKind: "arc",
-      arcAngleDegrees
+      arcSweepRadians: degreesToRadians(arcSweepDegrees)
     },
     dashed ? { ...artOutlineStyle, strokeDasharray: "3 4" } : artOutlineStyle
   );
@@ -915,6 +915,9 @@ export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphi
   const explicitEnd = pagePointMetadata(object.data.lineEnd);
   const explicitControl = pagePointMetadata(object.data.pathControlPoint);
   const fallback = nativeGraphicPathFallbackPoints(object, pathKind);
+  if (isNativeCircularGraphicArc(object)) {
+    return fallback;
+  }
   const start = explicitStart ?? fallback.start;
   const end = explicitEnd ?? fallback.end;
   return {
@@ -939,6 +942,10 @@ export function updateNativeGraphicPathHandle(
   const editPoints = nativeGraphicPathEditPoints(object);
   if (!editPoints) {
     return document;
+  }
+
+  if (isNativeCircularGraphicArc(object)) {
+    return updateNativeCircularGraphicArcHandle(document, object, handle, point);
   }
 
   const nextStart = handle === "start" ? point : editPoints.start;
@@ -996,19 +1003,72 @@ function nativeGraphicPathKind(object: GraphicObject): NativeGraphicPathEditPoin
   return object.graphicKind === "line" ? "line" : undefined;
 }
 
+function isNativeCircularGraphicArc(object: GraphicObject): boolean {
+  return nativeGraphicPathKind(object) === "arc" && !pagePointMetadata(object.data.pathControlPoint);
+}
+
+function updateNativeCircularGraphicArcHandle(
+  document: ChemDraftDocument,
+  object: GraphicObject,
+  handle: NativeGraphicPathEditHandle,
+  point: PagePoint
+): ChemDraftDocument {
+  const currentAngles = nativeCircularGraphicArcAngles(object);
+  const center = objectCenter(object);
+  const rx = Math.max(object.width / 2 - 4, 1);
+  const ry = Math.max(object.height / 2 - 4, 1);
+  const targetRadians = ellipseAngleRadiansForPoint(center, rx, ry, point);
+  const nextStartRadians = handle === "start"
+    ? targetRadians
+    : handle === "middle" ? targetRadians - currentAngles.sweepRadians / 2 : currentAngles.startRadians;
+  const nextSweepRadians = handle === "start"
+    ? clampArcSweepRadians(clockwiseDeltaRadians(targetRadians, currentAngles.endRadians))
+    : handle === "end"
+      ? clampArcSweepRadians(clockwiseDeltaRadians(currentAngles.startRadians, targetRadians))
+      : currentAngles.sweepRadians;
+  const nextData: GraphicObjectData = {
+    ...object.data,
+    artPathKind: "arc",
+    arcStartRadians: nextStartRadians,
+    arcSweepRadians: nextSweepRadians
+  };
+  delete nextData.lineStart;
+  delete nextData.lineEnd;
+  delete nextData.pathControlPoint;
+
+  const unchanged =
+    Math.abs((object.data.arcStartRadians ?? currentAngles.startRadians) - nextStartRadians) < 0.001 &&
+    Math.abs((object.data.arcSweepRadians ?? currentAngles.sweepRadians) - nextSweepRadians) < 0.001 &&
+    !pagePointMetadata(object.data.lineStart) &&
+    !pagePointMetadata(object.data.lineEnd);
+  if (unchanged) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId: object.id,
+      changes: { data: nextData }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 function nativeGraphicPathFallbackPoints(
   object: GraphicObject,
   pathKind: NativeGraphicPathEditPoints["pathKind"]
 ): NativeGraphicPathEditPoints {
   if (pathKind === "arc") {
-    const angle = clamp(object.data.arcAngleDegrees ?? 180, 1, 359.9);
+    const angles = nativeCircularGraphicArcAngles(object);
     const rx = Math.max(object.width / 2 - 4, 1);
     const ry = Math.max(object.height / 2 - 4, 1);
     const center = objectCenter(object);
     return {
-      start: ellipsePointAtDegrees(center, rx, ry, -90 - angle / 2),
-      middle: ellipsePointAtDegrees(center, rx, ry, -90),
-      end: ellipsePointAtDegrees(center, rx, ry, -90 + angle / 2),
+      start: ellipsePointAtRadians(center, rx, ry, angles.startRadians),
+      middle: ellipsePointAtRadians(center, rx, ry, angles.startRadians + angles.sweepRadians / 2),
+      end: ellipsePointAtRadians(center, rx, ry, angles.endRadians),
       pathKind
     };
   }
@@ -1072,12 +1132,40 @@ function midpoint(start: PagePoint, end: PagePoint): PagePoint {
   };
 }
 
-function ellipsePointAtDegrees(center: PagePoint, rx: number, ry: number, degrees: number): PagePoint {
-  const radians = degrees * Math.PI / 180;
+function ellipsePointAtRadians(center: PagePoint, rx: number, ry: number, radians: number): PagePoint {
   return {
     x: center.x + Math.cos(radians) * rx,
     y: center.y + Math.sin(radians) * ry
   };
+}
+
+function ellipseAngleRadiansForPoint(center: PagePoint, rx: number, ry: number, point: PagePoint): number {
+  return Math.atan2((point.y - center.y) / Math.max(ry, 1), (point.x - center.x) / Math.max(rx, 1));
+}
+
+function nativeCircularGraphicArcAngles(object: GraphicObject): {
+  startRadians: number;
+  sweepRadians: number;
+  endRadians: number;
+} {
+  const sweepRadians = clampArcSweepRadians(object.data.arcSweepRadians ?? Math.PI);
+  const startRadians = typeof object.data.arcStartRadians === "number" && Number.isFinite(object.data.arcStartRadians)
+    ? object.data.arcStartRadians
+    : -Math.PI / 2 - sweepRadians / 2;
+  return {
+    startRadians,
+    sweepRadians,
+    endRadians: startRadians + sweepRadians
+  };
+}
+
+function clockwiseDeltaRadians(startRadians: number, endRadians: number): number {
+  const delta = (endRadians - startRadians) % (Math.PI * 2);
+  return delta < 0 ? delta + Math.PI * 2 : delta;
+}
+
+function clampArcSweepRadians(radians: number): number {
+  return clamp(Math.abs(radians), Math.PI / 180, Math.PI * 2 - Math.PI / 1800);
 }
 
 function samePoint(left: PagePoint | undefined, right: PagePoint | undefined): boolean {
@@ -6135,6 +6223,10 @@ function normalizeDocumentObjectProjectedPlaneTiltDegrees(degrees: number | unde
 
 function radiansToDegrees(radians: number): number {
   return radians * 180 / Math.PI;
+}
+
+function degreesToRadians(degrees: number): number {
+  return degrees * Math.PI / 180;
 }
 
 function objectCenter(object: Pick<DocumentObject, "x" | "y" | "width" | "height">): PagePoint {

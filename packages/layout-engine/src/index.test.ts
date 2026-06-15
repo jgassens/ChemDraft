@@ -937,7 +937,7 @@ describe("layout-engine page SVG planner", () => {
         graphicKind: "path",
         data: {
           artPathKind: "arc",
-          arcAngleDegrees: 270,
+          arcSweepRadians: Math.PI * 1.5,
           artToolId: "arc270Dashed"
         }
       },
@@ -1022,6 +1022,34 @@ describe("layout-engine page SVG planner", () => {
     expect(plan.warnings.map((warning) => warning.code)).toEqual(["export.svg.graphic_effect_approximation"]);
   });
 
+  it("renders circular arc graphics from radian start and sweep metadata", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_open_arc",
+        type: "graphic",
+        x: 40,
+        y: 60,
+        width: 58,
+        height: 58,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          strokeWidth: 2
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "arc",
+          arcStartRadians: 0,
+          arcSweepRadians: Math.PI * 1.5
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+
+    expect(fragments[0]?.attrs.d).toBe("M 94 89 A 25 25 0 1 1 69 64");
+  });
+
   it("plans native art projection bounds and gloss gradients from the same object transform", () => {
     const sphere = {
       id: "gloss_sphere",
@@ -1048,6 +1076,31 @@ describe("layout-engine page SVG planner", () => {
     expect(unrotated.glossGradient?.gradientTransform).toBeUndefined();
     expect(rotated.glossGradient?.gradientTransform).toContain("matrix(");
     expect(rotated.projectedShapePathD).toContain("M ");
+  });
+
+  it("plans projected path frames from the visible generated path geometry", () => {
+    const line = {
+      id: "path_line_bounds",
+      type: "graphic",
+      x: 120,
+      y: 160,
+      width: 82,
+      height: 46,
+      rotation: 90,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 2
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(line, { coordinateSpace: "local" });
+
+    expect(plan.frameBounds).toEqual({ x: 21, y: -15, width: 40, height: 76 });
+    expect(plan.frameBounds).not.toEqual({ x: 18, y: -18, width: 46, height: 82 });
   });
 
   it("exports native bent graphic paths from explicit control-point data", () => {

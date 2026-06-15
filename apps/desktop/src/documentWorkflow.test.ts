@@ -223,6 +223,17 @@ function degToRad(degrees: number): number {
   return degrees * Math.PI / 180;
 }
 
+function pointOnGraphicEllipse(graphic: GraphicObject, radians: number): { x: number; y: number } {
+  const center = {
+    x: graphic.x + graphic.width / 2,
+    y: graphic.y + graphic.height / 2
+  };
+  return {
+    x: center.x + Math.cos(radians) * Math.max(graphic.width / 2 - 4, 1),
+    y: center.y + Math.sin(radians) * Math.max(graphic.height / 2 - 4, 1)
+  };
+}
+
 function boundsCenter(bounds: { x: number; y: number; width: number; height: number }): { x: number; y: number; z: number } {
   return {
     x: bounds.x + bounds.width / 2,
@@ -3451,6 +3462,76 @@ describe("Phase 4 document workflow", () => {
     };
     expect(graphicById(undo(pathEditHistory).present, objectId).data.artPathKind).toBe("line");
     expect(graphicById(redo(undo(pathEditHistory)).present, objectId).data.pathControlPoint).toEqual(bentControl);
+  });
+
+  it("edits circular art arcs by changing radian sweep around the same ellipse", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Circular Arc Edit"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const originalPoints = nativeGraphicPathEditPoints(originalGraphic);
+    if (!originalPoints) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+
+    const completed = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      pointOnGraphicEllipse(originalGraphic, degToRad(-226))
+    );
+    const completedGraphic = graphicById(completed, objectId);
+
+    expect(completedGraphic.x).toBeCloseTo(originalGraphic.x, 3);
+    expect(completedGraphic.y).toBeCloseTo(originalGraphic.y, 3);
+    expect(completedGraphic.width).toBeCloseTo(originalGraphic.width, 3);
+    expect(completedGraphic.height).toBeCloseTo(originalGraphic.height, 3);
+    expect(completedGraphic.data.artPathKind).toBe("arc");
+    expect(completedGraphic.data.arcStartRadians).toBeCloseTo(degToRad(-225), 6);
+    expect(completedGraphic.data.arcSweepRadians).toBeGreaterThan(degToRad(358));
+    expect(completedGraphic.data.lineStart).toBeUndefined();
+    expect(completedGraphic.data.lineEnd).toBeUndefined();
+    expect(completedGraphic.data.pathControlPoint).toBeUndefined();
+    expect(completed.selection.objectIds).toEqual([objectId]);
+  });
+
+  it("rotates circular art arcs with the middle path handle instead of bending them", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Circular Arc Rotate"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const rotated = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      pointOnGraphicEllipse(originalGraphic, 0)
+    );
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    if (!rotatedPoints) {
+      throw new Error("Expected rotated arc art object to expose path edit points.");
+    }
+
+    expect(rotatedGraphic.data.artPathKind).toBe("arc");
+    expect(rotatedGraphic.data.arcStartRadians).toBeCloseTo(degToRad(-135), 6);
+    expect(rotatedGraphic.data.arcSweepRadians).toBeCloseTo(degToRad(270), 6);
+    expect(rotatedGraphic.data.pathControlPoint).toBeUndefined();
+    expect(rotatedPoints.middle.x).toBeCloseTo(pointOnGraphicEllipse(originalGraphic, 0).x, 3);
+    expect(rotatedPoints.middle.y).toBeCloseTo(pointOnGraphicEllipse(originalGraphic, 0).y, 3);
   });
 
   it("applies selected colors to native molecule atom labels and bonds without recoloring the whole molecule", () => {
