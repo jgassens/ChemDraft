@@ -1677,6 +1677,30 @@ textarea:focus-visible,
   transform: translate(-50%, -50%) rotate(45deg);
 }
 
+.graphic-path-edit-handle-arc-middle {
+  width: 8px;
+  height: 8px;
+  border-width: 1.5px;
+}
+
+.graphic-path-radian-readout {
+  position: absolute;
+  z-index: 5;
+  min-width: 44px;
+  padding: 2px 4px;
+  border: 1px solid rgb(29 127 104 / 54%);
+  border-radius: 3px;
+  background: rgb(255 255 255 / 94%);
+  color: var(--cd-text);
+  font-size: 10px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  text-align: center;
+  transform: translate(-50%, calc(-100% - 12px));
+  white-space: nowrap;
+}
+
 .reaction-arrow-glyph marker path {
   fill: #111111;
   stroke: none;

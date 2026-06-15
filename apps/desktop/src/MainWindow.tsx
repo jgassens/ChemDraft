@@ -616,7 +616,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.15.5-codex";
+const CURRENT_BUILD_STAMP = "6.15.15.23-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -3576,7 +3576,12 @@ export function MainWindow({
   }, [objectDragDocument, replacePresentDocument]);
 
   const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument =>
-    updateNativeGraphicPathHandle(drag.startDocument, drag.objectId, drag.handle, point), []);
+    updateNativeGraphicPathHandle(
+      drag.startDocument,
+      drag.objectId,
+      drag.handle,
+      nativeGraphicPathEditPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
+    ), []);
 
   const previewGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -5871,6 +5876,11 @@ export function MainWindow({
     if (event.button !== 0 || activeToolState.activeKind !== "selection") {
       return;
     }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can be unavailable if the browser has already canceled the press.
+    }
 
     const point = pagePointFromPointerEvent(event);
     const currentDocument = documentRef.current;
@@ -7720,6 +7730,66 @@ function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean)
     return drag.handle === "middle" ? "Rotated selected arc" : "Adjusted selected arc sweep";
   }
   return drag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint";
+}
+
+function nativeGraphicPathEditPointFromProjectedDrag(
+  document: ChemDraftDocument,
+  objectId: string,
+  point: ClientPoint
+): ClientPoint {
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "graphic") {
+    return point;
+  }
+  const matrix = documentObjectProjectedPlaneProjection(object)?.matrix;
+  return unprojectGraphicPathEditPoint(object, point, matrix);
+}
+
+function projectGraphicPathEditPoint(
+  object: GraphicObject,
+  point: ClientPoint,
+  matrix: DocumentObjectProjectionMatrix | undefined
+): ClientPoint {
+  const localPoint = { x: point.x - object.x, y: point.y - object.y };
+  const projected = projectArtPoint(localPoint, object.width, object.height, matrix);
+  return {
+    x: object.x + projected.x,
+    y: object.y + projected.y
+  };
+}
+
+function unprojectGraphicPathEditPoint(
+  object: GraphicObject,
+  point: ClientPoint,
+  matrix: DocumentObjectProjectionMatrix | undefined
+): ClientPoint {
+  if (!matrix) {
+    return point;
+  }
+
+  const determinant = matrix.a * matrix.d - matrix.b * matrix.c;
+  if (Math.abs(determinant) < 0.000001) {
+    return point;
+  }
+
+  const halfWidth = Math.max(object.width, 1) / 2;
+  const halfHeight = Math.max(object.height, 1) / 2;
+  const projectedDx = point.x - object.x - halfWidth;
+  const projectedDy = point.y - object.y - halfHeight;
+  const dx = (matrix.d * projectedDx - matrix.c * projectedDy) / determinant;
+  const dy = (-matrix.b * projectedDx + matrix.a * projectedDy) / determinant;
+  return {
+    x: object.x + halfWidth + dx,
+    y: object.y + halfHeight + dy
+  };
+}
+
+function graphicArcSweepRadiansLabel(object: GraphicObject): string {
+  const rawSweep = typeof object.data.arcSweepRadians === "number" && Number.isFinite(object.data.arcSweepRadians)
+    ? object.data.arcSweepRadians
+    : Math.PI;
+  const sweep = Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(rawSweep)));
+  return `${sweep.toFixed(3)} rad`;
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {
@@ -10622,9 +10692,10 @@ function DocumentObjectView({
   }
 
   if (object.type === "graphic") {
-    const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection && !artObjectProjection ? (
+    const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection ? (
       <GraphicPathEditHandles
         object={object}
+        projectionMatrix={artObjectProjection?.matrix}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
     ) : null;
@@ -10974,9 +11045,11 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
 
 function GraphicPathEditHandles({
   object,
+  projectionMatrix,
   onPointerDown
 }: {
   object: GraphicObject;
+  projectionMatrix?: DocumentObjectProjectionMatrix;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
   const points = nativeGraphicPathEditPoints(object);
@@ -10985,16 +11058,22 @@ function GraphicPathEditHandles({
   }
 
   const circularArc = points.pathKind === "arc" && !object.data.pathControlPoint;
+  const projectedPoints = {
+    start: projectGraphicPathEditPoint(object, points.start, projectionMatrix),
+    middle: projectGraphicPathEditPoint(object, points.middle, projectionMatrix),
+    end: projectGraphicPathEditPoint(object, points.end, projectionMatrix)
+  };
+  const arcRadianReadout = circularArc ? graphicArcSweepRadiansLabel(object) : undefined;
   const handles: Array<{ handle: NativeGraphicPathEditHandle; point: { x: number; y: number }; label: string }> = circularArc
     ? [
-        { handle: "start", point: points.start, label: "Adjust arc start" },
-        { handle: "middle", point: points.middle, label: "Rotate arc around circle" },
-        { handle: "end", point: points.end, label: "Adjust arc sweep" }
+        { handle: "start", point: projectedPoints.start, label: "Adjust arc start" },
+        { handle: "middle", point: projectedPoints.middle, label: "Rotate arc around circle" },
+        { handle: "end", point: projectedPoints.end, label: "Adjust arc sweep" }
       ]
     : [
-        { handle: "start", point: points.start, label: "Adjust line start" },
-        { handle: "middle", point: points.middle, label: "Bend line into arc" },
-        { handle: "end", point: points.end, label: "Adjust line end" }
+        { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
+        { handle: "middle", point: projectedPoints.middle, label: "Bend line into arc" },
+        { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
       ];
 
   return (
@@ -11004,8 +11083,9 @@ function GraphicPathEditHandles({
           type="button"
           className={[
             "graphic-path-edit-handle",
-            `graphic-path-edit-handle-${handle}`
-          ].join(" ")}
+            `graphic-path-edit-handle-${handle}`,
+            circularArc && handle === "middle" ? "graphic-path-edit-handle-arc-middle" : undefined
+          ].filter(Boolean).join(" ")}
           aria-label={label}
           data-graphic-path-handle={handle}
           key={handle}
@@ -11017,6 +11097,18 @@ function GraphicPathEditHandles({
           onPointerDown={onPointerDown(handle)}
         />
       ))}
+      {arcRadianReadout ? (
+        <div
+          className="graphic-path-radian-readout"
+          data-graphic-path-readout="true"
+          style={{
+            left: `${projectedPoints.middle.x - object.x}px`,
+            top: `${projectedPoints.middle.y - object.y}px`
+          }}
+        >
+          {arcRadianReadout}
+        </div>
+      ) : null}
     </>
   );
 }
