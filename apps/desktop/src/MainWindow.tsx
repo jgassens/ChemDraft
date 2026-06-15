@@ -591,11 +591,13 @@ const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap
 const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
 const DOCUMENT_OBJECT_TILT_DRAG_PX = 300;
+const DOCUMENT_OBJECT_INTERACTIVE_TILT_MAX_DEGREES = 60;
 const documentObjectProjectedPlaneTiltMaxRadians = documentObjectProjectedPlaneTiltMaxDegrees * Math.PI / 180;
+const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT_MAX_DEGREES * Math.PI / 180;
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.8.7-codex";
+const CURRENT_BUILD_STAMP = "6.15.8.20-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -3524,13 +3526,13 @@ export function MainWindow({
     if (object && object.type !== "molecule") {
       const tiltXRad = clamp(
         rawTiltXRad,
-        -documentObjectProjectedPlaneTiltMaxRadians,
-        documentObjectProjectedPlaneTiltMaxRadians
+        -documentObjectInteractiveTiltMaxRadians,
+        documentObjectInteractiveTiltMaxRadians
       );
       const tiltYRad = clamp(
         rawTiltYRad,
-        -documentObjectProjectedPlaneTiltMaxRadians,
-        documentObjectProjectedPlaneTiltMaxRadians
+        -documentObjectInteractiveTiltMaxRadians,
+        documentObjectInteractiveTiltMaxRadians
       );
       const document = applyDocumentObjectProjectedPlaneTilt(
         drag.startDocument,
@@ -3542,7 +3544,11 @@ export function MainWindow({
         document,
         tiltXRad,
         tiltYRad,
-        clamped: Math.abs(tiltXRad - rawTiltXRad) >= 0.000001 || Math.abs(tiltYRad - rawTiltYRad) >= 0.000001,
+        clamped:
+          Math.abs(tiltXRad - rawTiltXRad) >= 0.000001 ||
+          Math.abs(tiltYRad - rawTiltYRad) >= 0.000001 ||
+          Math.abs(tiltXRad) >= documentObjectInteractiveTiltMaxRadians - 0.000001 ||
+          Math.abs(tiltYRad) >= documentObjectInteractiveTiltMaxRadians - 0.000001,
         changed: document !== drag.startDocument
       };
     }
@@ -4740,9 +4746,7 @@ export function MainWindow({
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
-        const label = object?.type === "text"
-          ? "text box"
-          : objectRotateDrag.target ? "selected molecule fragment" : "selected molecule";
+        const label = objectRotateDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
@@ -4761,7 +4765,8 @@ export function MainWindow({
           objectResizeDrag.stretching
         );
         const changed = commitObjectResize(objectResizeDrag, point);
-        const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : "selected molecule";
+        const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
+        const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
         setStatus(changed
           ? objectResizeDrag.stretching ? `Stretched ${targetLabel}` : `Resized ${targetLabel}`
           : `${capitalizeLabel(targetLabel)} size unchanged`);
@@ -7284,13 +7289,13 @@ export function documentObjectProjectedPlaneTiltVectorFromDrag(
   return {
     xRad: Number(clamp(
       rawXTilt,
-      -documentObjectProjectedPlaneTiltMaxRadians,
-      documentObjectProjectedPlaneTiltMaxRadians
+      -documentObjectInteractiveTiltMaxRadians,
+      documentObjectInteractiveTiltMaxRadians
     ).toFixed(6)),
     yRad: Number(clamp(
       rawYTilt,
-      -documentObjectProjectedPlaneTiltMaxRadians,
-      documentObjectProjectedPlaneTiltMaxRadians
+      -documentObjectInteractiveTiltMaxRadians,
+      documentObjectInteractiveTiltMaxRadians
     ).toFixed(6))
   };
 }

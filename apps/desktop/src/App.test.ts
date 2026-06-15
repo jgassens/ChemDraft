@@ -1119,8 +1119,8 @@ describe("ChemDraft desktop shell", () => {
     const clamped = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 1000, y: -1000 });
 
     expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 29° / Y 34°");
-    expect(projectedPlaneTiltReadoutDegrees(clamped.xRad)).toBe(75);
-    expect(projectedPlaneTiltReadoutDegrees(clamped.yRad)).toBe(75);
+    expect(projectedPlaneTiltReadoutDegrees(clamped.xRad)).toBe(60);
+    expect(projectedPlaneTiltReadoutDegrees(clamped.yRad)).toBe(60);
   });
 
   it("keeps projected-plane 3D rotate handle scoped to X/Y tilt", () => {
