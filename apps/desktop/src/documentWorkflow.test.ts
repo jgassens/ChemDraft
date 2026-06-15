@@ -3380,10 +3380,13 @@ describe("Phase 4 document workflow", () => {
 
     const cdxml = exportPhase4Cdxml(tilted);
     const graphicCdxmlWarnings = cdxml.warnings.filter((warning) => warning.code.startsWith("cdxml.graphic_"));
-    expect(cdxml.contents).toContain('GraphicType="rect"');
+    expect(cdxml.contents).toContain('GraphicType="Rectangle"');
+    expect(cdxml.contents).toContain('RectangleType="RoundEdge"');
+    expect(cdxml.contents).toContain('CornerRadius="525"');
     expect(graphicCdxmlWarnings.map((warning) => warning.code)).toEqual([
-      "cdxml.graphic_style_payload_only",
-      "cdxml.graphic_data_payload_only"
+      "cdxml.graphic_color_approximation",
+      "cdxml.graphic_gloss_payload_only",
+      "cdxml.graphic_tilt_payload_only"
     ]);
     expect(graphicCdxmlWarnings.every((warning) => warning.objectId === objectId)).toBe(true);
   });

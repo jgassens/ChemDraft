@@ -1784,10 +1784,18 @@ function graphicPathD(object: Extract<DocumentObject, { type: "graphic" }>): str
 
   const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
   if (pathKind === "line") {
+    const endpoints = graphicExplicitLineEndpoints(object);
+    if (endpoints) {
+      return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
+    }
     return `M ${formatNumber(object.x + inset)} ${formatNumber(object.y + inset)} L ${formatNumber(object.x + object.width - inset)} ${formatNumber(object.y + object.height - inset)}`;
   }
 
   if (pathKind === "wavy") {
+    const endpoints = graphicExplicitLineEndpoints(object);
+    if (endpoints) {
+      return wavyLinePathD(endpoints.start, endpoints.end, Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6)));
+    }
     const midY = object.y + object.height / 2;
     const amplitude = Math.max(4, Math.min(12, object.height * 0.24));
     return [
@@ -1803,6 +1811,35 @@ function graphicPathD(object: Extract<DocumentObject, { type: "graphic" }>): str
   }
 
   return storedPath;
+}
+
+function graphicExplicitLineEndpoints(object: GraphicObject): { start: LayoutPoint; end: LayoutPoint } | undefined {
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  return start && end ? { start, end } : undefined;
+}
+
+function wavyLinePathD(start: LayoutPoint, end: LayoutPoint, amplitude: number): string {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) {
+    return `M ${formatNumber(start.x)} ${formatNumber(start.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
+  }
+  const normal = { x: -dy / length, y: dx / length };
+  const steps = Math.max(8, Math.ceil(length / 5));
+  const points = Array.from({ length: steps + 1 }, (_, index) => {
+    const t = index / steps;
+    const wave = Math.sin(t * Math.PI * 2 * Math.max(2, length / 8)) * amplitude;
+    return {
+      x: start.x + dx * t + normal.x * wave,
+      y: start.y + dy * t + normal.y * wave
+    };
+  });
+  return [
+    `M ${formatNumber(points[0].x)} ${formatNumber(points[0].y)}`,
+    ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`)
+  ].join(" ");
 }
 
 function artArcPathD(object: Pick<DocumentObject, "x" | "y" | "width" | "height">, degrees: number): string {

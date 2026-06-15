@@ -78,6 +78,21 @@ const cssPxPerInch = 96;
 const cdxmlPointsPerInch = 72;
 const cdxmlScale = cdxmlPointsPerInch / cssPxPerInch;
 const nativeImportTimestamp = "2026-05-29T00:00:00.000Z";
+const defaultCdxmlStrokeColor = "#000000";
+const defaultCdxmlFillColor = "none";
+const defaultCdxmlLineWidthPx = 0.8;
+const defaultCdxmlBoldWidthPx = 2.68;
+const defaultCdxmlCornerRadiusFactor = 100;
+const standardCdxmlColorTable = [
+  "#ffffff",
+  "#000000",
+  "#ff0000",
+  "#ffff00",
+  "#00ff00",
+  "#00ffff",
+  "#0000ff",
+  "#ff00ff"
+] as const;
 
 type OrderedXmlNode = Record<string, unknown>;
 type OrderedXmlTree = OrderedXmlNode[];
@@ -99,6 +114,10 @@ interface VisibleExportContext {
   crossingFrontKeysByRefKey: Map<string, { front: number; back: number }>;
 }
 
+interface CdxmlColorTable {
+  colorByIndex: Map<number, string>;
+}
+
 interface CdxmlCrossingImportHint {
   sourceBondId: string;
   partnerBondIds: string[];
@@ -109,6 +128,7 @@ interface ImportPageContext {
   zByRefKey: Map<string, number>;
   displayByRefKey: Map<string, string>;
   crossingHints: CdxmlCrossingImportHint[];
+  colorTable: CdxmlColorTable;
 }
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
@@ -353,9 +373,21 @@ function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[]): 
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
     `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}">`,
+    buildStandardColorTableXml(),
     ...pages,
     "</CDXML>",
     ""
+  ].join("\n");
+}
+
+function buildStandardColorTableXml(): string {
+  return [
+    "  <colortable>",
+    ...standardCdxmlColorTable.map((color) => {
+      const rgb = hexToRgb(color) ?? { r: 0, g: 0, b: 0 };
+      return `    <color r="${formatColorComponent(rgb.r)}" g="${formatColorComponent(rgb.g)}" b="${formatColorComponent(rgb.b)}"/>`;
+    }),
+    "  </colortable>"
   ].join("\n");
 }
 
@@ -618,47 +650,333 @@ function exportGraphicObject(
 ): string {
   const graphicId = idFor(ids, graphic.id, allocator);
   warnForGraphicCdxmlLimitations(graphic, warnings);
-  return `<graphic id="${graphicId}" GraphicType="${escapeXmlAttribute(graphic.graphicKind)}" BoundingBox="${formatBoundingBox(graphic)}"/>`;
+  if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
+    return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
+  }
+  return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
 }
 
 function warnForGraphicCdxmlLimitations(
   graphic: GraphicObject,
   warnings: CompatibilityConversionWarning[]
 ): void {
-  const styleFields = [
-    "color",
-    "strokeColor",
-    "fillColor",
-    "strokeWidth",
-    "strokeDasharray",
-    "fillMode",
-    "effect",
-    "tiltXDegrees",
-    "tiltYDegrees"
-  ].filter((field) => graphic.style[field as keyof GraphicObject["style"]] !== undefined);
-  if (styleFields.length > 0) {
+  const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
+  if (typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlColorIndexForHex(color) === undefined) {
     warnings.push({
-      code: "cdxml.graphic_style_payload_only",
-      message: `Native graphic style fields (${styleFields.join(", ")}) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.`,
+      code: "cdxml.graphic_color_approximation",
+      message: `Native graphic color "${color}" is not in the standard ChemDraw color table and is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }
 
-  const dataFields = [
-    "lineStart",
-    "lineEnd",
-    "pathD",
-    "artPathKind",
-    "arcAngleDegrees",
-    "cornerRadiusPx"
-  ].filter((field) => graphic.data[field as keyof GraphicObject["data"]] !== undefined);
-  if (dataFields.length > 0) {
+  if (graphic.style.fillMode === "gloss" && graphic.graphicKind !== "ellipse") {
     warnings.push({
-      code: "cdxml.graphic_data_payload_only",
-      message: `Native graphic data fields (${dataFields.join(", ")}) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.`,
+      code: "cdxml.graphic_gloss_payload_only",
+      message: "Native non-oval gloss graphics are preserved exactly only in the embedded ChemDraft payload.",
       sourceObjectId: graphic.id
     });
   }
+
+  if (graphic.style.effect === "reflection") {
+    warnings.push({
+      code: "cdxml.graphic_effect_payload_only",
+      message: "Native reflection graphics are preserved exactly only in the embedded ChemDraft payload.",
+      sourceObjectId: graphic.id
+    });
+  }
+
+  const tiltX = typeof graphic.style.tiltXDegrees === "number" ? graphic.style.tiltXDegrees : 0;
+  const tiltY = typeof graphic.style.tiltYDegrees === "number" ? graphic.style.tiltYDegrees : 0;
+  if (Math.abs(tiltX) >= 0.001 || Math.abs(tiltY) >= 0.001) {
+    warnings.push({
+      code: "cdxml.graphic_tilt_payload_only",
+      message: "Native X/Y tilt is preserved exactly only in the embedded ChemDraft payload.",
+      sourceObjectId: graphic.id
+    });
+  }
+
+  if (graphic.data.pathD && !graphic.data.artPathKind) {
+    warnings.push({
+      code: "cdxml.graphic_custom_path_payload_only",
+      message: "Native custom graphic paths are preserved exactly only in the embedded ChemDraft payload.",
+      sourceObjectId: graphic.id
+    });
+  }
+}
+
+function exportGraphicAsCdxmlGraphic(
+  graphic: GraphicObject,
+  graphicId: string,
+  warnings: CompatibilityConversionWarning[]
+): string {
+  const type = cdxmlGraphicTypeForNativeGraphic(graphic);
+  const attrs = [
+    `id="${graphicId}"`,
+    ...cdxmlGraphicColorAttribute(graphic),
+    `GraphicType="${type}"`,
+    `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, objectCornerPoints(graphic)))}"`,
+    ...(type === "Line" || type === "Arc" ? cdxmlLineTypeAttributes(graphic) : []),
+    ...cdxmlShapeSubtypeAttributes(graphic)
+  ];
+  if (type === "Oval" || type === "Rectangle") {
+    attrs.push(...cdxmlAxisAttributes(graphic));
+  }
+  if (type === "Line" || type === "Arc") {
+    attrs.push(...cdxmlGraphicLineAttributes(graphic));
+  }
+  return `<graphic ${attrs.join(" ")}/>`;
+}
+
+function exportGraphicAsCdxmlArrow(
+  graphic: GraphicObject,
+  graphicId: string,
+  warnings: CompatibilityConversionWarning[]
+): string {
+  const line = graphicLineEndpointsForCdxml(graphic);
+  const isArc = graphic.data.artPathKind === "arc";
+  const attrs = [
+    `id="${graphicId}"`,
+    `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, [line.start, line.end]))}"`,
+    ...cdxmlGraphicColorAttribute(graphic),
+    ...cdxmlLineTypeAttributes(graphic),
+    'FillType="None"',
+    'ArrowheadType="Solid"',
+    ...(isArc ? [`AngularSize="${escapeXmlAttribute(cdxmlAngularSizeForGraphic(graphic))}"`] : []),
+    `Head3D="${formatXyPoint(line.end)}"`,
+    `Tail3D="${formatXyPoint(line.start)}"`,
+    ...cdxmlLineAxisAttributes(line.start, line.end)
+  ];
+  return `<arrow ${attrs.join(" ")}/>`;
+}
+
+function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line" | "Oval" | "Rectangle" | "Unknown" {
+  if (graphic.graphicKind === "ellipse") {
+    return "Oval";
+  }
+  if (graphic.graphicKind === "rect") {
+    return "Rectangle";
+  }
+  if (graphic.data.artPathKind === "arc") {
+    return "Arc";
+  }
+  if (graphic.graphicKind === "line" || graphic.data.artPathKind === "line" || graphic.data.artPathKind === "wavy") {
+    return "Line";
+  }
+  return "Unknown";
+}
+
+function cdxmlShapeSubtypeAttributes(graphic: GraphicObject): string[] {
+  const attrs: string[] = [];
+  if (graphic.graphicKind === "ellipse") {
+    const ovalType = cdxmlOvalTypeForGraphic(graphic);
+    if (ovalType) {
+      attrs.push(`OvalType="${ovalType}"`);
+    }
+  }
+  if (graphic.graphicKind === "rect") {
+    const rectangleType = cdxmlRectangleTypeForGraphic(graphic);
+    if (rectangleType) {
+      attrs.push(`RectangleType="${rectangleType}"`);
+    }
+    if (graphic.data.cornerRadiusPx !== undefined) {
+      attrs.push(`CornerRadius="${formatNumber(cssPxToCdxml(graphic.data.cornerRadiusPx) * defaultCdxmlCornerRadiusFactor)}"`);
+    }
+  }
+  if (graphic.style.effect === "shadow") {
+    attrs.push('ShadowSize="400"');
+  }
+  return attrs;
+}
+
+function cdxmlOvalTypeForGraphic(graphic: GraphicObject): string | undefined {
+  if (graphic.style.fillMode === "gloss") {
+    return graphic.width > 0 && Math.abs(graphic.width - graphic.height) / graphic.width < 0.05
+      ? "Circle Shaded"
+      : "Shaded";
+  }
+  if (graphic.style.effect === "shadow") {
+    return "Shadowed";
+  }
+  if (graphicHasVisibleFill(graphic)) {
+    return "Filled";
+  }
+  return undefined;
+}
+
+function cdxmlRectangleTypeForGraphic(graphic: GraphicObject): string | undefined {
+  const roundEdge = typeof graphic.data.cornerRadiusPx === "number" && graphic.data.cornerRadiusPx > 0;
+  const dashed = Boolean(graphic.style.strokeDasharray);
+  const shadow = graphic.style.effect === "shadow";
+  if (roundEdge && shadow) {
+    return "RoundEdge Shadow";
+  }
+  if (roundEdge && dashed) {
+    return "RoundEdge Dashed";
+  }
+  if (roundEdge) {
+    return "RoundEdge";
+  }
+  if (shadow) {
+    return "Shadow";
+  }
+  if (graphicHasVisibleFill(graphic)) {
+    return "Filled";
+  }
+  return dashed ? "Dashed" : undefined;
+}
+
+function cdxmlLineTypeAttributes(graphic: GraphicObject): string[] {
+  const lineType = cdxmlLineTypeForGraphic(graphic);
+  return lineType ? [`LineType="${lineType}"`] : [];
+}
+
+function cdxmlLineTypeForGraphic(graphic: GraphicObject): string | undefined {
+  if (graphic.data.artPathKind === "wavy") {
+    return "Wavy";
+  }
+  if (graphic.style.strokeDasharray) {
+    return "Dashed";
+  }
+  const strokeWidth = typeof graphic.style.strokeWidth === "number" ? graphic.style.strokeWidth : defaultCdxmlLineWidthPx;
+  return strokeWidth >= defaultCdxmlBoldWidthPx ? "Bold" : undefined;
+}
+
+function cdxmlGraphicColorAttribute(graphic: GraphicObject): string[] {
+  const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
+  if (!color || color.toLowerCase() === "none") {
+    return [];
+  }
+  const index = cdxmlColorIndexForHex(color);
+  if (index === undefined) {
+    return [];
+  }
+  return [`color="${index}"`];
+}
+
+function cdxmlBoundingBoxForGraphic(graphic: GraphicObject, fallbackPoints: readonly Point[]): string {
+  const imported = graphic.compatibility?.unknown.cdxmlBoundingBox;
+  if (typeof imported === "string") {
+    const importedBounds = parseCdxmlXyBoundingBox(imported);
+    if (importedBounds && boxesApproximatelyEqual(importedBounds, graphic)) {
+      return imported;
+    }
+  }
+  return formatXyBoundingBox(fallbackPoints);
+}
+
+function boxesApproximatelyEqual(
+  left: { x: number; y: number; width: number; height: number },
+  right: { x: number; y: number; width: number; height: number }
+): boolean {
+  return nearlyEqual(left.x, right.x) &&
+    nearlyEqual(left.y, right.y) &&
+    nearlyEqual(left.width, right.width) &&
+    nearlyEqual(left.height, right.height);
+}
+
+function nearlyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 0.01;
+}
+
+function cdxmlColorIndexForHex(color: string): number | undefined {
+  const normalized = normalizeHexColor(color);
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "#000000") {
+    return 0;
+  }
+  if (normalized === "#ffffff") {
+    return 1;
+  }
+  const index = standardCdxmlColorTable.findIndex((candidate) => candidate === normalized);
+  return index >= 0 ? index + 2 : undefined;
+}
+
+function normalizeHexColor(color: string): string | undefined {
+  const rgb = hexToRgb(color);
+  return rgb ? rgbToHexColor(rgb.r, rgb.g, rgb.b) : undefined;
+}
+
+function graphicHasVisibleFill(graphic: GraphicObject): boolean {
+  const fill = graphic.style.fillColor;
+  return typeof fill === "string" && fill.length > 0 && fill.toLowerCase() !== "none";
+}
+
+function cdxmlAxisAttributes(graphic: GraphicObject): string[] {
+  const center = objectCenter(graphic);
+  return [
+    `Center3D="${formatXyPoint(center)}"`,
+    `MajorAxisEnd3D="${formatXyPoint({ x: graphic.x + graphic.width, y: center.y })}"`,
+    `MinorAxisEnd3D="${formatXyPoint({ x: center.x, y: graphic.y + graphic.height })}"`
+  ];
+}
+
+function cdxmlGraphicLineAttributes(graphic: GraphicObject): string[] {
+  const line = graphicLineEndpointsForCdxml(graphic);
+  return [
+    `Start="${formatPoint(line.start)}"`,
+    `End="${formatPoint(line.end)}"`,
+    ...(graphic.data.artPathKind === "arc" ? [`AngularSize="${escapeXmlAttribute(cdxmlAngularSizeForGraphic(graphic))}"`] : [])
+  ];
+}
+
+function cdxmlAngularSizeForGraphic(graphic: GraphicObject): string {
+  const imported = graphic.compatibility?.unknown.cdxmlAngularSize;
+  if (typeof imported === "string" && imported.trim().length > 0) {
+    return imported;
+  }
+  return formatNumber(graphic.data.arcAngleDegrees ?? 180);
+}
+
+function cdxmlLineAxisAttributes(start: Point, end: Point): string[] {
+  const center = {
+    x: (start.x + end.x) / 2,
+    y: (start.y + end.y) / 2
+  };
+  const length = Math.max(Math.hypot(end.x - start.x, end.y - start.y), 1);
+  return [
+    `Center3D="${formatXyPoint(center)}"`,
+    `MajorAxisEnd3D="${formatXyPoint({ x: center.x + length, y: center.y })}"`,
+    `MinorAxisEnd3D="${formatXyPoint({ x: center.x, y: center.y + length })}"`
+  ];
+}
+
+function graphicLineEndpointsForCdxml(graphic: GraphicObject): { start: Point; end: Point } {
+  const start = pointMetadata(graphic.data.lineStart);
+  const end = pointMetadata(graphic.data.lineEnd);
+  return start && end
+    ? { start, end }
+    : {
+        start: { x: graphic.x, y: graphic.y },
+        end: { x: graphic.x + graphic.width, y: graphic.y + graphic.height }
+      };
+}
+
+function pointMetadata(value: unknown): Point | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const point = value as Record<string, unknown>;
+  const x = point.x;
+  const y = point.y;
+  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)
+    ? { x, y }
+    : undefined;
+}
+
+function objectCenter(object: { x: number; y: number; width: number; height: number }): Point {
+  return {
+    x: object.x + object.width / 2,
+    y: object.y + object.height / 2
+  };
+}
+
+function objectCornerPoints(object: { x: number; y: number; width: number; height: number }): Point[] {
+  return [
+    { x: object.x, y: object.y },
+    { x: object.x + object.width, y: object.y + object.height }
+  ];
 }
 
 function buildMetadataObjectTags(values: {
@@ -688,11 +1006,12 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
   }
 
   const importTransform = importTransformForTree(tree);
+  const colorTable = importCdxmlColorTable(tree);
   const base = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: nativeImportTimestamp });
   const importedPages = pageElements.map((pageElement, pageIndex) => {
     const pageTemplate = base.pages[0];
     const importedPage = applyImportTransformToPageObjects(
-      importPageObjects(pageElement, pageIndex, warnings),
+      importPageObjects(pageElement, pageIndex, warnings, colorTable),
       importTransform
     );
     return {
@@ -729,14 +1048,16 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
 function importPageObjects(
   pageElement: XmlElementView,
   pageIndex: number,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colorTable: CdxmlColorTable
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
   const objects: DocumentObject[] = [];
   const context: ImportPageContext = {
     bondRefsByCdxmlId: new Map(),
     zByRefKey: new Map(),
     displayByRefKey: new Map(),
-    crossingHints: []
+    crossingHints: [],
+    colorTable
   };
   let objectIndex = 1;
   for (const child of pageElement.children) {
@@ -758,7 +1079,15 @@ function importPageObjects(
       continue;
     }
     if (element.name === "graphic") {
-      objects.push(importGraphic(element, pageIndex, objectIndex));
+      const graphic = importGraphic(element, pageIndex, objectIndex, context);
+      if (graphic) {
+        objects.push(graphic);
+        objectIndex += 1;
+      }
+      continue;
+    }
+    if (element.name === "arrow") {
+      objects.push(importArrowGraphic(element, pageIndex, objectIndex, context));
       objectIndex += 1;
       continue;
     }
@@ -794,6 +1123,10 @@ function applyImportTransformToPageObjects(
 }
 
 function rotateImportedObjectCounterclockwise90(object: DocumentObject, center: Point): DocumentObject {
+  if (object.compatibility?.unknown.cdxmlCoordinateSpace === "xy") {
+    return object;
+  }
+
   if (object.type === "molecule") {
     const atoms = object.atoms.map((atom) => {
       const point = rotatePointCounterclockwise90(atom, center);
@@ -1407,7 +1740,16 @@ function importText(textElement: XmlElementView, pageIndex: number, objectIndex:
   };
 }
 
-function importGraphic(element: XmlElementView, pageIndex: number, objectIndex: number): GraphicObject | ArrowObject {
+function importGraphic(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext
+): GraphicObject | ArrowObject | undefined {
+  if (element.attributes.SupersededBy) {
+    return undefined;
+  }
+
   const box = parseBoundingBox(element.attributes.BoundingBox);
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
     const start = parseCdxmlPoint(element.attributes.Start) ?? { x: box.x, y: box.y };
@@ -1434,24 +1776,215 @@ function importGraphic(element: XmlElementView, pageIndex: number, objectIndex: 
     };
   }
 
+  return importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
+}
+
+function importArrowGraphic(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext
+): GraphicObject {
+  return importShapeGraphic(element, pageIndex, objectIndex, context, "arrow");
+}
+
+function importShapeGraphic(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext,
+  elementName: "graphic" | "arrow"
+): GraphicObject {
+  const id = `cdxml_graphic_${pageIndex + 1}_${objectIndex}`;
+  const type = elementName === "arrow"
+    ? graphicTypeForCdxmlArrow(element)
+    : element.attributes.GraphicType;
+  const linePoints = cdxmlLinePointsForShape(element);
+  const box = graphicBoundsForCdxmlShape(element, type, linePoints);
+  const style = graphicStyleFromCdxmlShape(element, context.colorTable);
+  const data = graphicDataFromCdxmlShape(element, type, linePoints);
+  const graphicKind = graphicKindFromCdxmlShape(type, data);
+
   return {
-    id: `cdxml_graphic_${pageIndex + 1}_${objectIndex}`,
+    id,
     type: "graphic",
     x: box.x,
     y: box.y,
     width: box.width,
     height: box.height,
     rotation: 0,
-    style: {},
-    graphicKind: graphicKindFromCdxml(element.attributes.GraphicType),
-    data: {},
+    style,
+    graphicKind,
+    data,
     compatibility: {
       sourceFormat: "cdxml",
       originalId: element.attributes.id,
       warnings: [],
-      unknown: {}
+      unknown: {
+        cdxmlElementName: elementName,
+        cdxmlGraphicType: type,
+        ...(element.attributes.OvalType ? { cdxmlOvalType: element.attributes.OvalType } : {}),
+        ...(element.attributes.RectangleType ? { cdxmlRectangleType: element.attributes.RectangleType } : {}),
+        ...(element.attributes.LineType ? { cdxmlLineType: element.attributes.LineType } : {}),
+        ...(element.attributes.AngularSize ? { cdxmlAngularSize: element.attributes.AngularSize } : {}),
+        ...(element.attributes.CornerRadius ? { cdxmlCornerRadius: element.attributes.CornerRadius } : {}),
+        ...(element.attributes.ShadowSize ? { cdxmlShadowSize: element.attributes.ShadowSize } : {}),
+        ...(element.attributes.BoundingBox ? { cdxmlBoundingBox: element.attributes.BoundingBox } : {}),
+        ...(element.attributes.color ? { cdxmlColor: element.attributes.color } : {}),
+        cdxmlCoordinateSpace: "xy"
+      }
     }
   };
+}
+
+function graphicTypeForCdxmlArrow(element: XmlElementView): string {
+  return element.attributes.AngularSize ? "Arc" : "Line";
+}
+
+function cdxmlLinePointsForShape(element: XmlElementView): { start: Point; end: Point } | undefined {
+  const tail = parseCdxmlXyPoint(element.attributes.Tail3D ?? element.attributes.Start);
+  const head = parseCdxmlXyPoint(element.attributes.Head3D ?? element.attributes.End);
+  return tail && head ? { start: tail, end: head } : undefined;
+}
+
+function graphicBoundsForCdxmlShape(
+  element: XmlElementView,
+  type: string | undefined,
+  linePoints: { start: Point; end: Point } | undefined
+): { x: number; y: number; width: number; height: number } {
+  if (type === "Line" || type === "Arc") {
+    return parseCdxmlXyBoundingBox(element.attributes.BoundingBox)
+      ?? (linePoints ? paddedBoundsForPoints([linePoints.start, linePoints.end], type === "Arc" ? 12 : 1) : undefined)
+      ?? parseBoundingBox(element.attributes.BoundingBox);
+  }
+
+  const axisBounds = graphicAxisBounds(element);
+  if (axisBounds) {
+    return axisBounds;
+  }
+
+  return parseCdxmlXyBoundingBox(element.attributes.BoundingBox) ?? parseBoundingBox(element.attributes.BoundingBox);
+}
+
+function graphicAxisBounds(element: XmlElementView): { x: number; y: number; width: number; height: number } | undefined {
+  const center = parseCdxmlXyPoint(element.attributes.Center3D);
+  const majorAxisEnd = parseCdxmlXyPoint(element.attributes.MajorAxisEnd3D);
+  const minorAxisEnd = parseCdxmlXyPoint(element.attributes.MinorAxisEnd3D);
+  if (!center || !majorAxisEnd || !minorAxisEnd) {
+    return undefined;
+  }
+
+  const radiusX = Math.max(Math.abs(majorAxisEnd.x - center.x), Math.abs(minorAxisEnd.x - center.x), 0.5);
+  const radiusY = Math.max(Math.abs(majorAxisEnd.y - center.y), Math.abs(minorAxisEnd.y - center.y), 0.5);
+  return {
+    x: center.x - radiusX,
+    y: center.y - radiusY,
+    width: radiusX * 2,
+    height: radiusY * 2
+  };
+}
+
+function paddedBoundsForPoints(points: readonly Point[], padding: number): { x: number; y: number; width: number; height: number } {
+  const bounds = boundsForPoints(points);
+  return {
+    x: bounds.x - padding,
+    y: bounds.y - padding,
+    width: Math.max(1, bounds.width + padding * 2),
+    height: Math.max(1, bounds.height + padding * 2)
+  };
+}
+
+function graphicStyleFromCdxmlShape(
+  element: XmlElementView,
+  colorTable: CdxmlColorTable
+): GraphicObject["style"] {
+  const strokeColor = colorForCdxmlIndex(element.attributes.color, colorTable) ?? defaultCdxmlStrokeColor;
+  const style: GraphicObject["style"] = {
+    strokeColor,
+    fillColor: defaultCdxmlFillColor,
+    strokeWidth: defaultCdxmlLineWidthPx
+  };
+  const lineType = normalizedCdxmlToken(element.attributes.LineType);
+  const ovalType = normalizedCdxmlToken(element.attributes.OvalType);
+  const rectangleType = normalizedCdxmlToken(element.attributes.RectangleType);
+
+  if (lineType === "dashed" || rectangleType.includes("dashed")) {
+    style.strokeDasharray = "3 4";
+  }
+  if (lineType === "bold") {
+    style.strokeWidth = defaultCdxmlBoldWidthPx;
+  }
+  if (ovalType.includes("filled") || rectangleType.includes("filled")) {
+    style.fillColor = strokeColor;
+    style.fillMode = "solid";
+  }
+  if (ovalType.includes("shaded")) {
+    style.fillColor = strokeColor;
+    style.fillMode = "gloss";
+    style.strokeWidth = 1.5;
+  }
+  if (ovalType.includes("shadow") || rectangleType.includes("shadow")) {
+    style.effect = "shadow";
+    style.fillColor = rectangleType.includes("shadow") ? "#ffffff" : defaultCdxmlFillColor;
+  }
+
+  return style;
+}
+
+function graphicDataFromCdxmlShape(
+  element: XmlElementView,
+  type: string | undefined,
+  linePoints: { start: Point; end: Point } | undefined
+): GraphicObject["data"] {
+  const data: GraphicObject["data"] = {};
+  const lineType = normalizedCdxmlToken(element.attributes.LineType);
+  const rectangleType = normalizedCdxmlToken(element.attributes.RectangleType);
+
+  if (linePoints) {
+    data.lineStart = linePoints.start;
+    data.lineEnd = linePoints.end;
+  }
+  if (type === "Arc") {
+    data.artPathKind = "arc";
+    data.arcAngleDegrees = Math.abs(parseNumber(element.attributes.AngularSize) ?? 180);
+  } else if (lineType === "wavy") {
+    data.artPathKind = "wavy";
+  } else if (type === "Line") {
+    data.artPathKind = "line";
+  }
+  if (rectangleType.includes("roundedge") || element.attributes.CornerRadius) {
+    data.cornerRadiusPx = cdxmlCornerRadiusToCssPx(element.attributes.CornerRadius);
+  }
+
+  return data;
+}
+
+function graphicKindFromCdxmlShape(type: string | undefined, data: GraphicObject["data"]): GraphicObject["graphicKind"] {
+  if (type === "Oval") {
+    return "ellipse";
+  }
+  if (type === "Rectangle") {
+    return "rect";
+  }
+  if (type === "Arc" || data.artPathKind === "wavy" || data.artPathKind === "arc") {
+    return "path";
+  }
+  if (type === "Line") {
+    return "line";
+  }
+  return graphicKindFromCdxml(type);
+}
+
+function normalizedCdxmlToken(value: string | undefined): string {
+  return value?.replace(/\s+/g, "").toLowerCase() ?? "";
+}
+
+function cdxmlCornerRadiusToCssPx(value: string | undefined): number {
+  const radius = parseNumber(value);
+  if (radius === undefined) {
+    return 0;
+  }
+  return cdxmlToCssPx(radius / defaultCdxmlCornerRadiusFactor);
 }
 
 function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number): DocumentObject {
@@ -1868,8 +2401,76 @@ function importTransformForTree(tree: OrderedXmlTree): CdxmlImportTransform {
     : "none";
 }
 
+function importCdxmlColorTable(tree: OrderedXmlTree): CdxmlColorTable {
+  const colorByIndex = new Map<number, string>([
+    [0, "#000000"],
+    [1, "#ffffff"]
+  ]);
+  const colorElements = childElements(findElements(tree, "colortable")[0] ?? { name: "colortable", attributes: {}, children: [] }, "color");
+  const colors = colorElements.length > 0
+    ? colorElements.map((element) => rgbToHexColor(
+        colorComponentFromCdxml(element.attributes.r),
+        colorComponentFromCdxml(element.attributes.g),
+        colorComponentFromCdxml(element.attributes.b)
+      ))
+    : [...standardCdxmlColorTable];
+  colors.forEach((color, index) => {
+    colorByIndex.set(index + 2, color);
+  });
+  return { colorByIndex };
+}
+
+function colorForCdxmlIndex(value: string | undefined, colorTable: CdxmlColorTable): string | undefined {
+  const index = parseInteger(value);
+  return index === undefined ? undefined : colorTable.colorByIndex.get(index);
+}
+
+function colorComponentFromCdxml(value: string | undefined): number {
+  const parsed = parseNumber(value) ?? 0;
+  return Math.max(0, Math.min(255, Math.round(parsed * 255)));
+}
+
+function rgbToHexColor(r: number, g: number, b: number): string {
+  return `#${[r, g, b].map((component) => component.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function hexToRgb(value: string): { r: number; g: number; b: number } | undefined {
+  const match = /^#?([0-9a-f]{6})$/i.exec(value.trim());
+  if (!match) {
+    return undefined;
+  }
+  const hex = match[1];
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16)
+  };
+}
+
+function formatColorComponent(value: number): string {
+  return formatNumber(Math.max(0, Math.min(255, value)) / 255);
+}
+
 function formatPoint(point: Point): string {
   return `${formatNumber(cssPxToCdxml(point.y))} ${formatNumber(cssPxToCdxml(point.x))}`;
+}
+
+function formatXyPoint(point: Point): string {
+  return `${formatNumber(cssPxToCdxml(point.x))} ${formatNumber(cssPxToCdxml(point.y))} 0`;
+}
+
+function parseCdxmlXyPoint(point: string | undefined): Point | undefined {
+  if (!point) {
+    return undefined;
+  }
+  const [x, y] = point.trim().split(/\s+/).map(Number);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return undefined;
+  }
+  return {
+    x: cdxmlToCssPx(x),
+    y: cdxmlToCssPx(y)
+  };
 }
 
 function parseCdxmlPoint(point: string | undefined): Point {
@@ -1881,6 +2482,16 @@ function parseCdxmlPoint(point: string | undefined): Point {
     x: cdxmlToCssPx(Number.isFinite(horizontal) ? horizontal : 0),
     y: cdxmlToCssPx(Number.isFinite(vertical) ? vertical : 0)
   };
+}
+
+function formatXyBoundingBox(points: readonly Point[]): string {
+  const bounds = boundsForPoints(points);
+  return [
+    formatNumber(cssPxToCdxml(bounds.x)),
+    formatNumber(cssPxToCdxml(bounds.y)),
+    formatNumber(cssPxToCdxml(bounds.x + bounds.width)),
+    formatNumber(cssPxToCdxml(bounds.y + bounds.height))
+  ].join(" ");
 }
 
 function formatBoundingBox(object: { x: number; y: number; width: number; height: number }): string {
@@ -1903,6 +2514,26 @@ function parseBoundingBox(box: string | undefined): { x: number; y: number; widt
     y,
     width: Math.max(1, cdxmlToCssPx(Number.isFinite(right) ? right : left) - x),
     height: Math.max(1, cdxmlToCssPx(Number.isFinite(bottom) ? bottom : top) - y)
+  };
+}
+
+function parseCdxmlXyBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } | undefined {
+  if (!box) {
+    return undefined;
+  }
+  const [x1, y1, x2, y2] = box.trim().split(/\s+/).map(Number);
+  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+    return undefined;
+  }
+  const left = Math.min(x1, x2);
+  const top = Math.min(y1, y2);
+  const right = Math.max(x1, x2);
+  const bottom = Math.max(y1, y2);
+  return {
+    x: cdxmlToCssPx(left),
+    y: cdxmlToCssPx(top),
+    width: Math.max(1, cdxmlToCssPx(right - left)),
+    height: Math.max(1, cdxmlToCssPx(bottom - top))
   };
 }
 
@@ -1983,6 +2614,15 @@ function graphicKindFromCdxml(value: string | undefined): GraphicObject["graphic
   if (value === "Line") {
     return "line";
   }
+  if (value === "Rectangle") {
+    return "rect";
+  }
+  if (value === "Oval") {
+    return "ellipse";
+  }
+  if (value === "Arc") {
+    return "path";
+  }
   return "unknown";
 }
 
@@ -1992,6 +2632,14 @@ function parseInteger(value: string | undefined): number | undefined {
   }
   const parsed = Number(value);
   return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+function parseNumber(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function escapeXmlText(value: string): string {

@@ -592,7 +592,7 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DR
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.14.23.4-codex";
+const CURRENT_BUILD_STAMP = "6.14.23.33-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -10484,10 +10484,22 @@ function graphicPathD(object: GraphicObject, width: number, height: number): str
 
   const inset = Math.max(3, metadataNumberValue(object.style.strokeWidth, 2) / 2);
   if (pathKind === "line") {
+    const endpoints = graphicLineGlyphEndpoints(object);
+    if (endpoints) {
+      return `M ${formatSvgNumber(endpoints.x1)} ${formatSvgNumber(endpoints.y1)} L ${formatSvgNumber(endpoints.x2)} ${formatSvgNumber(endpoints.y2)}`;
+    }
     return `M ${formatSvgNumber(inset)} ${formatSvgNumber(inset)} L ${formatSvgNumber(width - inset)} ${formatSvgNumber(height - inset)}`;
   }
 
   if (pathKind === "wavy") {
+    const endpoints = graphicLineGlyphEndpoints(object);
+    if (endpoints) {
+      return wavyLinePathD(
+        { x: endpoints.x1, y: endpoints.y1 },
+        { x: endpoints.x2, y: endpoints.y2 },
+        Math.max(2, Math.min(5, metadataNumberValue(object.style.strokeWidth, 2) * 1.6))
+      );
+    }
     const midY = height / 2;
     const amplitude = Math.max(4, Math.min(12, height * 0.24));
     return [
@@ -10503,6 +10515,29 @@ function graphicPathD(object: GraphicObject, width: number, height: number): str
   }
 
   return storedPath;
+}
+
+function wavyLinePathD(start: { x: number; y: number }, end: { x: number; y: number }, amplitude: number): string {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) {
+    return `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)} L ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`;
+  }
+  const normal = { x: -dy / length, y: dx / length };
+  const steps = Math.max(8, Math.ceil(length / 5));
+  const points = Array.from({ length: steps + 1 }, (_, index) => {
+    const t = index / steps;
+    const wave = Math.sin(t * Math.PI * 2 * Math.max(2, length / 8)) * amplitude;
+    return {
+      x: start.x + dx * t + normal.x * wave,
+      y: start.y + dy * t + normal.y * wave
+    };
+  });
+  return [
+    `M ${formatSvgNumber(points[0].x)} ${formatSvgNumber(points[0].y)}`,
+    ...points.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
+  ].join(" ");
 }
 
 function artArcPathD(width: number, height: number, degrees: number): string {

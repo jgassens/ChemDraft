@@ -221,7 +221,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
   });
 
-  it("warns when native graphic style and data are visible-CDXML payload-only", () => {
+  it("warns only for native graphic style that visible CDXML cannot represent", () => {
     const graphic = {
       id: "art_cdxml_effects",
       type: "graphic",
@@ -250,24 +250,93 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     const result = exportDocumentToCdxml(document, { creationProgram: "Graphic Warning Test" });
 
     expect(result.contents).toContain('<graphic id="');
-    expect(result.contents).toContain('GraphicType="rect"');
-    expect(result.warnings).toEqual([
-      {
-        code: "cdxml.graphic_style_payload_only",
-        message: "Native graphic style fields (strokeColor, fillColor, strokeWidth, strokeDasharray, fillMode, effect, tiltXDegrees, tiltYDegrees) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.",
-        sourceObjectId: "art_cdxml_effects"
-      },
-      {
-        code: "cdxml.graphic_data_payload_only",
-        message: "Native graphic data fields (cornerRadiusPx) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.",
-        sourceObjectId: "art_cdxml_effects"
-      }
+    expect(result.contents).toContain('GraphicType="Rectangle"');
+    expect(result.contents).toContain('RectangleType="RoundEdge Shadow"');
+    expect(result.contents).toContain('CornerRadius="525"');
+    expect(result.warnings.map((item) => item.code)).toEqual([
+      "cdxml.graphic_color_approximation",
+      "cdxml.graphic_gloss_payload_only",
+      "cdxml.graphic_tilt_payload_only"
     ]);
     expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
       type: "graphic",
       style: { fillMode: "gloss", effect: "shadow" },
       data: { cornerRadiusPx: 7, artToolId: "roundedRectGloss" }
     });
+  });
+
+  it("imports and exports ChemDraw shape graphics as native graphic objects", () => {
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <colortable>
+    <color r="1" g="1" b="1"/>
+    <color r="0" g="0" b="0"/>
+    <color r="1" g="0" b="0"/>
+    <color r="1" g="1" b="0"/>
+    <color r="0" g="1" b="0"/>
+    <color r="0" g="1" b="1"/>
+    <color r="0" g="0" b="1"/>
+    <color r="1" g="0" b="1"/>
+  </colortable>
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="7" BoundingBox="202.34 192 121 192" Z="1" color="8" GraphicType="Oval" OvalType="Circle Shaded" Center3D="121 192 0" MajorAxisEnd3D="202.34 192 0" MinorAxisEnd3D="121 273.34 0"/>
+    <graphic id="10" SupersededBy="22" BoundingBox="329.66 376.34 201 505" Z="4" color="9" LineType="Wavy" GraphicType="Line"/>
+    <arrow id="22" BoundingBox="200.08 375.42 330.58 505.92" Z="4" color="9" LineType="Wavy" FillType="None" ArrowheadType="Solid" Head3D="329.66 376.34 0" Tail3D="201 505 0" Center3D="265.33 440.67 0" MajorAxisEnd3D="447.28 440.67 0" MinorAxisEnd3D="265.33 622.62 0"/>
+    <graphic id="17" BoundingBox="491 168 441.95 76.95" Z="11" color="4" GraphicType="Rectangle" RectangleType="Filled" Center3D="466.47 122.47 0" MajorAxisEnd3D="491 122.47 0" MinorAxisEnd3D="466.47 168 0"/>
+  </page>
+</CDXML>`);
+    const objects = opened.document?.pages[0].objects ?? [];
+    const [circle, wavy, rectangle] = objects as GraphicObject[];
+
+    expect(opened.source).toBe("external-cdxml");
+    expect(objects.map((object) => object.type)).toEqual(["graphic", "graphic", "graphic"]);
+    expect(circle).toMatchObject({
+      graphicKind: "ellipse",
+      style: {
+        strokeColor: "#0000ff",
+        fillColor: "#0000ff",
+        fillMode: "gloss"
+      }
+    });
+    expect(wavy).toMatchObject({
+      graphicKind: "path",
+      style: {
+        strokeColor: "#ff00ff"
+      },
+      data: {
+        artPathKind: "wavy"
+      }
+    });
+    expect(wavy.data.lineStart?.x).toBeCloseTo(268, 6);
+    expect(wavy.data.lineStart?.y).toBeCloseTo(673.3333333333334, 6);
+    expect(wavy.data.lineEnd?.x).toBeCloseTo(439.5466666666667, 6);
+    expect(wavy.data.lineEnd?.y).toBeCloseTo(501.7866666666667, 6);
+    expect(wavy.x).toBeCloseTo(266.7733333333333, 6);
+    expect(wavy.y).toBeCloseTo(500.56, 6);
+    expect(wavy.width).toBeCloseTo(174, 6);
+    expect(wavy.height).toBeCloseTo(174, 6);
+    expect(rectangle).toMatchObject({
+      graphicKind: "rect",
+      style: {
+        strokeColor: "#ff0000",
+        fillColor: "#ff0000",
+        fillMode: "solid"
+      }
+    });
+
+    const exported = exportDocumentToCdxml(opened.document ?? documentWithObjects([]), { creationProgram: "Shape Round Trip Test" });
+    expect(exported.contents).toContain("<colortable>");
+    expect(exported.contents).toContain('GraphicType="Oval"');
+    expect(exported.contents).toContain('OvalType="Circle Shaded"');
+    expect(exported.contents).toContain('color="8"');
+    expect(exported.contents).toContain("<arrow ");
+    expect(exported.contents).toContain('LineType="Wavy"');
+    expect(exported.contents).toContain('color="9"');
+    expect(exported.contents).toContain('GraphicType="Rectangle"');
+    expect(exported.contents).toContain('RectangleType="Filled"');
+    expect(exported.contents).toContain('color="4"');
+    expect(exported.warnings).toEqual([]);
   });
 
   it("opens legacy JSON with a BOM and leading whitespace", () => {
