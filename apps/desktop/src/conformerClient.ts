@@ -93,20 +93,12 @@ export function createConformerWorkerClient(
   };
 
   const handleCrash = (): void => {
-    // Fail all in-flight requests, then RECREATE the worker: a singleton pointing
-    // at a dead worker would silently eat every future request for the session.
-    for (const [id, request] of pending.entries()) {
-      broadcastSpin3dTraceEvent(createSpin3dTraceEvent({
-        sessionId: request.traceContext?.sessionId ?? "worker-client",
-        requestId: id,
-        kind: "worker-client",
-        stage: "worker.crash",
-        status: "failed",
-        path: "worker",
-        error: "conformer worker crashed"
-      }));
-      request.handlers.onError("conformer worker crashed", { workerCrashed: true });
-    }
+    // Snapshot and clear the in-flight requests, recreate the worker, and ONLY THEN fire
+    // onError. The consumer's onError synchronously re-dispatches (generate → pending.set),
+    // so if we cleared pending or recreated the worker after firing, that retry entry would
+    // be wiped (or posted to the dead worker) — turning the documented transparent retry
+    // into a hard "could not generate" failure.
+    const snapshot = [...pending.entries()];
     pending.clear();
     try {
       worker?.terminate?.();
@@ -117,7 +109,19 @@ export function createConformerWorkerClient(
     warmed = false; // a fresh worker needs OCL + torsion tables again
     if (restarts < MAX_WORKER_RESTARTS) {
       restarts += 1;
-      ensureWorker(); // recreate eagerly so the next request has a live target
+      ensureWorker(); // recreate eagerly so the retry has a live target
+    }
+    for (const [id, request] of snapshot) {
+      broadcastSpin3dTraceEvent(createSpin3dTraceEvent({
+        sessionId: request.traceContext?.sessionId ?? "worker-client",
+        requestId: id,
+        kind: "worker-client",
+        stage: "worker.crash",
+        status: "failed",
+        path: "worker",
+        error: "conformer worker crashed"
+      }));
+      request.handlers.onError("conformer worker crashed", { workerCrashed: true });
     }
   };
 
@@ -142,6 +146,10 @@ export function createConformerWorkerClient(
     }
     worker.addEventListener("message", handleMessage);
     worker.addEventListener("error", handleCrash);
+    // A structured-clone deserialization failure fires "messageerror" (not "error" or
+    // "message"); without this the pending request would leak and the UI would hang in
+    // "Generating 3D conformer…" forever. Treat it as a crash so the request fails over.
+    worker.addEventListener("messageerror", handleCrash);
     broadcastSpin3dTraceEvent(createSpin3dTraceEvent({
       sessionId: "worker-client",
       kind: "worker-client",
@@ -208,6 +216,8 @@ export function getConformerWorkerClient(): ConformerWorkerClient | null {
   return client;
 }
 
-// Boot the worker immediately at module load so the ~1 MB OCL download starts
-// in parallel with app startup — not lazily on first spin click.
-getConformerWorkerClient();
+// NOTE: the worker is intentionally NOT booted at module load. App.tsx statically imports
+// MainWindow (and therefore this module) on every route, so a module-load spawn would start
+// the ~1 MB OCL download in windows that never spin a molecule (the palette window, the
+// Spin 3D debugger pop-out). MainWindow's idle warmup effect boots it on the main document
+// window instead.

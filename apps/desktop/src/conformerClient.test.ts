@@ -36,6 +36,12 @@ class FakeWorker {
       listener({} as MessageEvent<ConformerWorkResponse>);
     }
   }
+
+  messageError() {
+    for (const listener of this.listeners.get("messageerror") ?? []) {
+      listener({} as MessageEvent<ConformerWorkResponse>);
+    }
+  }
 }
 
 afterEach(() => {
@@ -148,6 +154,28 @@ describe("conformer worker client tracing", () => {
     );
   });
 
+  it("keeps a retry dispatched synchronously from onError after a crash", () => {
+    const workers: FakeWorker[] = [];
+    const client = createConformerWorkerClient(() => {
+      const next = new FakeWorker();
+      workers.push(next);
+      return next as unknown as Worker;
+    });
+    // MainWindow's onError re-dispatches synchronously. The crash handler must clear pending
+    // and recreate the worker BEFORE firing onError, or this retry would be wiped by
+    // pending.clear() and posted to the dead worker.
+    const onError = vi.fn(() => {
+      client?.generate("retry", 2, noopHandlers(), { sessionId: "spin:retry" });
+    });
+    client?.generate("mol", 2, noopHandlers(onError), { sessionId: "spin:initial" });
+    workers[0].crash();
+
+    expect(workers).toHaveLength(2); // recreated before onError ran
+    expect(workers[1].posted).toContainEqual(
+      expect.objectContaining({ kind: "generate", sessionId: "spin:retry" })
+    );
+  });
+
   it("posts a cancel message when the returned canceller runs", () => {
     const fake = new FakeWorker();
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
@@ -160,12 +188,22 @@ describe("conformer worker client tracing", () => {
     const fake = new FakeWorker();
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
     const refined = vi.fn();
-    client?.generate("mol", 2, noopHandlers(vi.fn()), { sessionId: "spin:complete" });
+    // Wire `refined` as the actual onRefined handler so the assertion below is meaningful.
+    client?.generate("mol", 2, { onEmbedded: vi.fn(), onRefined: refined, onError: vi.fn() }, { sessionId: "spin:complete" });
     // complete is terminal bookkeeping — no handler fires, but a later stray
     // refined for the same id must not reach a (now-forgotten) handler.
     fake.emit({ id: 1, stage: "complete" });
     fake.emit({ id: 1, stage: "refined", result: conformerResult("converged"), });
     expect(refined).not.toHaveBeenCalled();
+  });
+
+  it("messageerror is treated as a crash so the pending request fails over", () => {
+    const fake = new FakeWorker();
+    const client = createConformerWorkerClient(() => fake as unknown as Worker);
+    const onError = vi.fn();
+    client?.generate("mol", 2, noopHandlers(onError), { sessionId: "spin:messageerror" });
+    fake.messageError();
+    expect(onError).toHaveBeenCalledWith("conformer worker crashed", { workerCrashed: true });
   });
 });
 
