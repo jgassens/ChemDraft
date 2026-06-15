@@ -235,7 +235,7 @@ import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
-import { initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import {
   SPIN3D_DEBUGGER_COMMAND_ID,
@@ -1850,6 +1850,9 @@ export function MainWindow({
       const neighborIndices = [...(adjacency.get(from) ?? []), ...(adjacency.get(to) ?? [])]
         .filter((index) => index !== from && index !== to);
       bondRender.push({
+        // aromatic/unknown render as a single line ON PURPOSE: the 2D layout engine
+        // (bondLineSegments) only draws inner lines for double/triple, so matching it here
+        // keeps the spin overlay identical to the drawing it replaces (and to the flatten).
         order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
           isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
@@ -2240,8 +2243,19 @@ export function MainWindow({
     if (!state || !state.dragging || !state.lastClient) return;
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
+    // The overlay SVG fills the page area with viewBox "0 0 pageWidth pageHeight", so a
+    // document-space point maps to client pixels by the page zoom (rect size / page size).
+    // Pivot the trackball at the molecule's screen centroid (placement.center) — NOT the
+    // page-spanning overlay's geometric center. A molecule drawn away from page center
+    // would otherwise rotate about the wrong point and the grabbed atom slides off-cursor.
+    const page = documentRef.current.pages[0];
+    const scaleX = page && page.width > 0 ? rect.width / page.width : 1;
+    const scaleY = page && page.height > 0 ? rect.height / page.height : 1;
     const trackball = {
-      center: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+      center: {
+        x: rect.left + state.placement.centerX * scaleX,
+        y: rect.top + state.placement.centerY * scaleY
+      },
       radius: Math.max(120, Math.min(rect.width, rect.height) * 0.4)
     };
     const current = { x: event.clientX, y: event.clientY };
@@ -8574,13 +8588,10 @@ function SpinOverlay({
   onPointerCancel: (event: PointerEvent<SVGSVGElement>) => void;
 }) {
   const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
-  let minDepth = Infinity, maxDepth = -Infinity;
-  for (const atom of projection.atoms) {
-    if (atom.depth < minDepth) minDepth = atom.depth;
-    if (atom.depth > maxDepth) maxDepth = atom.depth;
-  }
-  const depthSpan = maxDepth - minDepth || 1;
-  const nearness = (depth: number) => (depth - minDepth) / depthSpan; // 0 far … 1 near
+  // Depth-cue weights computed with the EXACT recipe flattenSpunMolecule commits, so the
+  // live overlay's stroke weighting is identical to the flattened result (no snap on
+  // release). `undefined` = near-planar view ⇒ no depth cue, same as the commit.
+  const depthWeights = bondDepthWeights(state.coords3d, state.bondPairs, quatToViewMatrix(state.quat));
   return (
     <svg
       aria-hidden="true"
@@ -8594,11 +8605,12 @@ function SpinOverlay({
       {projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
-        // The SAME depth-cue helpers the committed 2D drawing uses (flatten bakes the
-        // weight into display.depthWeight) — releasing changes nothing visually.
-        const t = nearness(bond.depth);
-        const stroke = depthCuedBondColor(drawingStyle.bondColor, t);
-        const width = depthCuedBondStrokeWidth(drawingStyle.bondStrokeWidthPx, t);
+        // The SAME depth-cue helpers AND the SAME weight the committed 2D drawing uses
+        // (flatten bakes the identical weight into display.depthWeight) — releasing changes
+        // nothing visually. undefined ⇒ no cue, exactly as the commit leaves a planar view.
+        const weight = depthWeights[bond.index];
+        const stroke = depthCuedBondColor(drawingStyle.bondColor, weight);
+        const width = depthCuedBondStrokeWidth(drawingStyle.bondStrokeWidthPx, weight);
         const render = state.bondRender[bond.index] ?? { order: 1, symmetric: false, neighborIndices: [] };
         const rawDx = b.sx - a.sx;
         const rawDy = b.sy - a.sy;
@@ -8638,11 +8650,16 @@ function SpinOverlay({
           // gap toward the substituent-rich side (ring interior for ring bonds). The side
           // is chosen per frame from the PROJECTED neighbor positions, so it tracks the
           // molecule as it rotates — matching what the drawing will look like flattened.
+          // MAGNITUDE-weighted projection onto the bond normal (NOT a sign-sum) so this is
+          // the identical heuristic defaultDoubleBondSide uses on commit — otherwise the
+          // inner line could resolve to the opposite side and visibly jump on release.
+          // (The reference point along the bond axis is irrelevant: the axis is ⊥ to the
+          // normal, so the midpoint gives the same dot as each neighbor's own endpoint.)
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           let score = 0;
           for (const neighborIndex of render.neighborIndices) {
             const p = projection.atoms[neighborIndex];
-            if (p) score += Math.sign((p.sx - mx) * nx + (p.sy - my) * ny);
+            if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
           }
           const dir = score >= 0 ? 1 : -1;
           const minimumVisible = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, length);

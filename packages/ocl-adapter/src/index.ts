@@ -206,8 +206,13 @@ function depictionOrder(order: number): DepictionBondOrder {
       return "double";
     case 3:
       return "triple";
+    case 4:
+      // Delocalized/aromatic: OCL can return order 4 for un-kekulized rings. Preserve it as
+      // "aromatic" rather than silently collapsing to a single bond (AGENTS.md §5.7) — the
+      // bond order stays faithful even though the renderer currently draws it as a single line.
+      return "aromatic";
     default:
-      return "single";
+      return "unknown";
   }
 }
 

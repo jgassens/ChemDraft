@@ -13,6 +13,7 @@
  * document; it is transient until the user releases (Phase 5) or presses Esc.
  */
 
+import type { ViewMatrix } from "@chemdraft/chem-core";
 import {
   projectPoint,
   quatFromAxisAngle,
@@ -281,4 +282,40 @@ export function overlayScale(
   const conformer = medianBondLength3d(coords3d, bondPairs);
   if (drawn <= 0 || conformer <= 0) return 1;
   return drawn / conformer;
+}
+
+/**
+ * Per-bond perspective depth weight (0 = farthest … 1 = nearest), or `undefined` for a
+ * near-planar view with no meaningful depth spread.
+ *
+ * IMPORTANT: this is the SAME recipe `flattenSpunMolecule` (documentWorkflow.ts) bakes into
+ * `display.depthWeight` on commit — mean rotated z of a bond's endpoints, normalized over
+ * the bond-depth span, gated when the span is below 12% of the median 3D bond length. The
+ * live spin overlay must depth-cue strokes identically, or releasing the spin would visibly
+ * re-shade the bonds. Keep the two in sync.
+ */
+export function bondDepthWeights(
+  coords3d: ArrayLike<number>,
+  bondPairs: readonly BondPair[],
+  viewMatrix: ViewMatrix
+): (number | undefined)[] {
+  const depthOf = (index: number): number =>
+    viewMatrix[8] * coords3d[index * 3] +
+    viewMatrix[9] * coords3d[index * 3 + 1] +
+    viewMatrix[10] * coords3d[index * 3 + 2] +
+    viewMatrix[11];
+  const bondDepths = bondPairs.map(([a, b]) => (depthOf(a) + depthOf(b)) / 2);
+  if (bondDepths.length < 2) return bondDepths.map(() => undefined);
+
+  let minDepth = Infinity;
+  let maxDepth = -Infinity;
+  for (const depth of bondDepths) {
+    if (depth < minDepth) minDepth = depth;
+    if (depth > maxDepth) maxDepth = depth;
+  }
+  const depthSpan = maxDepth - minDepth;
+  const median3d = medianBondLength3d(coords3d, bondPairs);
+  // Below this threshold the view is effectively planar — no depth cue (matches flatten).
+  if (depthSpan <= median3d * 0.12) return bondDepths.map(() => undefined);
+  return bondDepths.map((depth) => Math.round(((depth - minDepth) / depthSpan) * 100) / 100);
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { quatFromAxisAngle, quatIdentity, type Vec3 } from "./rotation3d";
 import {
+  bondDepthWeights,
   conformerCentroid,
   initialViewQuaternion,
   medianBondLength2d,
@@ -11,6 +12,7 @@ import {
 } from "./spinOverlay";
 
 const Z: Vec3 = [0, 0, 1];
+const IDENTITY_VIEW: readonly number[] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 describe("spinOverlay — measures", () => {
   it("computes the conformer centroid", () => {
@@ -100,5 +102,22 @@ describe("spinOverlay — projection", () => {
     // +x rotates to +y (math) → screen y goes UP (smaller). x returns to center.
     expect(proj.atoms[1].sx).toBeCloseTo(100, 6);
     expect(proj.atoms[1].sy).toBeCloseTo(200 - 1 * 10, 6);
+  });
+});
+
+describe("spinOverlay — bondDepthWeights (overlay ↔ flatten parity)", () => {
+  it("matches the flatten depth-weight recipe for a tilted chain", () => {
+    // Same fixture as spinFlatten.test.ts "bakes normalized near/far bond weights":
+    // identity view ⇒ depth = z; bond mean depths 0.5 / 1.5 / 2.5 ⇒ weights 0 / 0.5 / 1.
+    const coords = [0, 0, 0, 1, 0.4, 1, 2, 0, 2, 3, 0.4, 3];
+    const weights = bondDepthWeights(coords, [[0, 1], [1, 2], [2, 3]], IDENTITY_VIEW);
+    expect(weights).toEqual([0, 0.5, 1]);
+  });
+
+  it("returns no cue (undefined) for a near-planar view", () => {
+    // All z = 0 ⇒ no depth spread ⇒ no depth cue, exactly as flatten leaves a planar view.
+    const coords = [0, 0, 0, 1, 0, 0, 2, 0, 0];
+    const weights = bondDepthWeights(coords, [[0, 1], [1, 2]], IDENTITY_VIEW);
+    expect(weights).toEqual([undefined, undefined]);
   });
 });
