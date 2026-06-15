@@ -1773,7 +1773,16 @@ export function MainWindow({
     const state = spin3dStateRef.current;
     if (!state) return;
     const viewMatrix = quatToViewMatrix(state.quat);
-    const outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix);
+    let outcome: ReturnType<typeof flattenSpunMolecule>;
+    try {
+      outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix);
+    } catch (error) {
+      // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
+      // wrong stereo. Surface it as a clean refusal and keep the overlay alive for a retry.
+      setStatus(`Cannot flatten this view: ${error instanceof Error ? error.message : String(error)}`);
+      applySpin({ ...state, dragging: false, lastClient: undefined });
+      return;
+    }
     if (outcome.status !== "committed") {
       setStatus(`Cannot flatten this view: ${outcome.refusalReasons[0] ?? "stereochemistry would change"}`);
       // Keep the overlay alive (end the drag) so the user can re-orient and retry.

@@ -5,6 +5,12 @@ import { ensureOclResources, generate3DConformerProgressive } from "./index";
 beforeAll(async () => { await ensureOclResources(); });
 
 const SEED = 42;
+// Per-center stereo diagnostics are useful when debugging a parity failure but noisy in CI.
+// Gate them behind an env flag so a normal `vitest run` stays quiet.
+const VERBOSE = Boolean((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.OCL_STEREO_VERBOSE);
+const log = (message: string): void => {
+  if (VERBOSE) console.log(message);
+};
 
 /** Signed tetrahedral volume of a center's first three heavy neighbours (Å³). Sign = handedness. */
 function signedVolume(coords: Float64Array, center: number, neighbors: number[]): number {
@@ -67,7 +73,7 @@ describe("2D→3D stereochemistry fidelity", () => {
       const backCenters = stereoCenters(back);
 
       // eslint-disable-next-line no-console
-      console.log(`${name.padEnd(22)} centers=${refCenters.length} refCIP=[${refCenters.map(c => c.cip)}] 3dCIP=[${backCenters.map(c => c.cip)}] idMatch=${backId === refId}`);
+      log(`${name.padEnd(22)} centers=${refCenters.length} refCIP=[${refCenters.map(c => c.cip)}] 3dCIP=[${backCenters.map(c => c.cip)}] idMatch=${backId === refId}`);
 
       expect(backCenters.length).toBe(refCenters.length);
       expect(backId).toBe(refId); // canonical stereo identical → absolute config preserved
@@ -100,7 +106,7 @@ describe("2D→3D stereochemistry fidelity", () => {
         const va = signedVolume(coordsA, ca.atom, ca.nbrs);
         const vb = signedVolume(coordsB, cb.atom, cb.nbrs);
         // eslint-disable-next-line no-console
-        console.log(`  ${name} center#${i} atom${ca.atom}: volA=${va.toFixed(2)} volB=${vb.toFixed(2)} ${Math.sign(va) !== Math.sign(vb) ? "FLIP✓" : "same✗"}`);
+        log(`  ${name} center#${i} atom${ca.atom}: volA=${va.toFixed(2)} volB=${vb.toFixed(2)} ${Math.sign(va) !== Math.sign(vb) ? "FLIP✓" : "same✗"}`);
         if (Math.sign(va) !== Math.sign(vb) && Math.abs(va) > 0.3 && Math.abs(vb) > 0.3) flipped++;
       }
       // Every defined center that differs between the two SMILES must flip in 3D.

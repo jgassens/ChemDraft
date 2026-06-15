@@ -552,7 +552,13 @@ export function flattenPerspectiveFrom3D(
 
 function centerOf(atomId: string, atoms: readonly MoleculeAtom[]): readonly [number, number] {
   const atom = atoms.find((candidate) => candidate.id === atomId);
-  return atom ? [atom.x, atom.y] : [0, 0];
+  // A missing atom (stale reference) silently using origin [0,0] would compute the WRONG
+  // parity sign — a wrong wedge or a spurious refusal. Fail loud instead (the flatten
+  // commit catches and refuses cleanly).
+  if (!atom) {
+    throw new Error(`perspective: stereocenter references missing atom "${atomId}"`);
+  }
+  return [atom.x, atom.y];
 }
 
 /** Pseudo-3D position of `neighborId` in the ORIGINAL drawing (z from drawn wedge at center). */
@@ -563,10 +569,13 @@ function drawnPseudo3d(
   markers: Map<string, { neighborId: string; style: StereoMarkerStyle }>
 ): Vec3 {
   const atom = atoms.find((candidate) => candidate.id === neighborId);
+  if (!atom) {
+    throw new Error(`perspective: stereo neighbor references missing atom "${neighborId}"`);
+  }
   const marker = markers.get(centerId);
   let z = 0;
   if (marker && marker.neighborId === neighborId) z = marker.style === "wedge" ? 1 : -1;
-  return [atom?.x ?? 0, atom?.y ?? 0, z];
+  return [atom.x, atom.y, z];
 }
 
 /** Parity of a trial depiction: wedge/hash neighbor lifted to z=±1, others in-plane. */
@@ -804,7 +813,10 @@ function detectCyclicDepth(pairs: readonly CrossingPair[], warnings: FlattenWarn
         hasCycle = true;
         return;
       }
-      if (c === WHITE) visit(next);
+      if (c === WHITE) {
+        visit(next);
+        if (hasCycle) return; // stop the DFS as soon as any deeper call found a cycle
+      }
     }
     color.set(node, BLACK);
   };

@@ -31,7 +31,7 @@ import type {
   ChemistryWarning
 } from "@chemdraft/chemistry-adapter";
 
-let resourcesRegistered = false;
+let resourcesPromise: Promise<void> | undefined;
 let resourcesUrlOverride: string | undefined;
 let activeTraceSink: ((event: OclConformerTraceEvent) => void) | undefined;
 let traceCounter = 0;
@@ -135,12 +135,21 @@ export async function withOclConformerTrace<T>(
  * URL set via `setOclResourcesUrl` is fetched (falling back to OCL's
  * module-relative default, which only works unbundled).
  */
-export async function ensureOclResources(): Promise<void> {
-  const span = startOclTraceSpan("resources");
-  if (resourcesRegistered) {
-    span.complete({ message: "already registered" });
-    return;
+export function ensureOclResources(): Promise<void> {
+  // Cache the in-flight registration promise so two concurrent first callers don't BOTH pass
+  // a "not yet registered" check and register the torsion tables twice (a TOCTOU race, since
+  // registration awaits). On failure, clear the cache so a later call can retry.
+  if (!resourcesPromise) {
+    resourcesPromise = registerOclResources().catch((error) => {
+      resourcesPromise = undefined;
+      throw error;
+    });
   }
+  return resourcesPromise;
+}
+
+async function registerOclResources(): Promise<void> {
+  const span = startOclTraceSpan("resources");
   const Resources = (OCL as unknown as {
     Resources?: {
       registerFromNodejs?: () => void;
@@ -148,7 +157,6 @@ export async function ensureOclResources(): Promise<void> {
     };
   }).Resources;
   if (!Resources) {
-    resourcesRegistered = true; // nothing to register in this build
     span.complete({ message: "no resources API" });
     return;
   }
@@ -161,7 +169,6 @@ export async function ensureOclResources(): Promise<void> {
     } else if (Resources.registerFromUrl) {
       await Resources.registerFromUrl(resourcesUrlOverride);
     }
-    resourcesRegistered = true;
     span.complete({ message: isNode ? "node" : "url" });
   } catch (error) {
     span.fail(error);
@@ -322,6 +329,20 @@ export async function generate3DConformerProgressive(
   const seed = options.seed ?? 42;
   const optimize = options.optimize ?? "auto";
 
+  // v1 stereo invariants are enforced by construction: OCL's ConformerGenerator embeds the
+  // stereo parsed from the molfile and never invents unspecified centres. The two options
+  // exist to make that contract explicit; only their default (true / false) is supported, so
+  // surface a warning rather than silently ignoring a caller that asked for the opposite.
+  if (options.preserveSpecifiedStereo === false || options.allowInventStereo === true) {
+    warnings.push({
+      code: "ocl.stereo-option-unsupported",
+      message:
+        "OCL always preserves specified stereo and never invents unspecified stereo; " +
+        "preserveSpecifiedStereo:false / allowInventStereo:true are not supported.",
+      severity: "warning"
+    });
+  }
+
   const parseSpan = startOclTraceSpan("parse-molfile");
   let parsed: OclMolecule;
   try {
@@ -406,13 +427,16 @@ export async function generate3DConformerProgressive(
     return { embedded };
   }
 
-  // The force field is built once and reused across calls so the caller can drive
-  // minimisation in small batches (`refine(maxIts)`), yielding the thread between
-  // them, without paying MMFF94 atom-typing setup every batch. Each batch resumes
-  // from the conformer's current coordinates (minimise mutates them in place).
+  // MMFF94 minimisation is SINGLE-SHOT: ForceFieldMMFF94.minimise() runs to its termination
+  // condition in one call and is NOT reliably resumable — re-minimising from already-relaxed
+  // coordinates can warp geometry (notably flattening aromatic rings). So refine() runs the
+  // (capped) minimisation exactly once and caches its result; any later call returns that
+  // same result without touching the conformer again.
   let ff: InstanceType<typeof OCL.ForceFieldMMFF94> | null = null;
   let ffSetupFailed = false;
+  let refined: Generate3DConformerResult | undefined;
   const refine = (maxItsOverride?: number): Generate3DConformerResult => {
+    if (refined) return refined;
     let forceField: Generate3DConformerResult["forceField"];
     const maxIts = maxItsOverride ?? options.maxMinimiseIterations;
     const refineSpan = startOclTraceSpan("mmff94-refine", { atomCount: originalAtomCount });
@@ -446,7 +470,7 @@ export async function generate3DConformerProgressive(
     const refinedMappingSpan = startOclTraceSpan("atom-mapping.refined", { atomCount: originalAtomCount });
     const refinedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
     refinedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: warnings.length });
-    return {
+    refined = {
       mapping: refinedMapping,
       originalAtomCount,
       generatedAtomCount: refinedMapping.generatedHydrogenEngineAtoms.length,
@@ -457,6 +481,7 @@ export async function generate3DConformerProgressive(
       unsupportedFeatures: [...unsupportedFeatures],
       warnings: [...warnings]
     };
+    return refined;
   };
 
   return { embedded, refine };

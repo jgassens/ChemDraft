@@ -215,32 +215,38 @@ export function agentBridgeRequestedFromLocation(
 }
 
 export async function resolveAgentBridgePermission(): Promise<AgentBridgePermission> {
+  // In the packaged desktop runtime the native env/CLI gate (agent_bridge_status) is
+  // AUTHORITATIVE. The renderer flags (?agentBridge / localStorage["chemdraft.agentBridge"])
+  // are a web-preview/debug-only convenience and must NOT be able to enable the bridge from
+  // inside a Tauri window — otherwise a packaged session could turn the bridge on behind the
+  // explicit launch gate. So check the runtime FIRST and ignore browser flags under Tauri.
+  if (isDesktopRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke<NativeAgentBridgeStatus>("agent_bridge_status");
+      return {
+        enabled: status.enabled,
+        source: status.source,
+        detail: status.enabled
+          ? `Native wrapper allowed ChemDraft agent bridge through ${status.source}.`
+          : `Set ${status.envVar}=1 or pass ${status.cliArg} to enable the ChemDraft agent bridge.`
+      };
+    } catch {
+      return {
+        enabled: false,
+        source: "unavailable",
+        detail: "Native agent bridge permission command is unavailable."
+      };
+    }
+  }
+
+  // Non-Tauri (web preview / debug): renderer flags may opt in.
   const browserPermission = browserAgentBridgePermission();
   if (browserPermission) {
     return browserPermission;
   }
 
-  if (!isDesktopRuntime()) {
-    return { enabled: false, source: "unavailable", detail: "Not running in the Tauri desktop runtime." };
-  }
-
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const status = await invoke<NativeAgentBridgeStatus>("agent_bridge_status");
-    return {
-      enabled: status.enabled,
-      source: status.source,
-      detail: status.enabled
-        ? `Native wrapper allowed ChemDraft agent bridge through ${status.source}.`
-        : `Set ${status.envVar}=1 or pass ${status.cliArg} to enable the ChemDraft agent bridge.`
-    };
-  } catch {
-    return {
-      enabled: false,
-      source: "unavailable",
-      detail: "Native agent bridge permission command is unavailable."
-    };
-  }
+  return { enabled: false, source: "unavailable", detail: "Not running in the Tauri desktop runtime." };
 }
 
 export function dispatchAgentPointerEvent({

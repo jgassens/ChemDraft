@@ -5398,8 +5398,15 @@ export function flattenSpunMolecule(
     return from !== undefined && to !== undefined ? (from + to) / 2 : undefined;
   });
   const knownDepths = bondDepths.filter((depth): depth is number => depth !== undefined);
-  const minDepth = Math.min(...knownDepths);
-  const depthSpan = Math.max(...knownDepths) - minDepth;
+  // Loop rather than Math.min(...knownDepths): argument spread can blow the call-stack arg
+  // limit (~65k) on a very large molecule.
+  let minDepth = Infinity;
+  let maxDepth = -Infinity;
+  for (const depth of knownDepths) {
+    if (depth < minDepth) minDepth = depth;
+    if (depth > maxDepth) maxDepth = depth;
+  }
+  const depthSpan = maxDepth - minDepth;
   const median3d = medianOf(
     bondPairs.map(([from, to]) => Math.hypot(
       coords3d[from * 3] - coords3d[to * 3],
