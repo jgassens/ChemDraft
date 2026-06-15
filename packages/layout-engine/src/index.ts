@@ -6,6 +6,7 @@ import {
   type DocumentObject,
   type DocumentPage,
   type ElectronMarkObject,
+  type ArrowObject,
   type MoleculeAtom,
   type MoleculeBond as CoreMoleculeBond,
   type MoleculeObject,
@@ -1194,7 +1195,7 @@ function planDocumentObjectSvg(
         ? chargeMarkFragment(object, layerIndex)
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
-      return lineObjectFragment(object, object.arrowKind, layerIndex);
+      return reactionArrowFragment(object, layerIndex);
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
     default:
@@ -1657,16 +1658,71 @@ function graphicObjectFragment(
   warnings: PageSvgRenderWarning[],
   layerIndex: number
 ): PageSvgElementFragment {
+  const stroke = metadataString(object.style.strokeColor) ?? metadataString(object.style.color) ?? "#111111";
+  const fill = metadataString(object.style.fillColor) ?? "none";
+  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 1.5;
+  const strokeDasharray = metadataString(object.style.strokeDasharray);
+  const transform = rotationTransform(object);
+  if (object.graphicKind === "line") {
+    const endpoints = graphicLineEndpoints(object);
+    return elementFragment("line", `object-${object.id}`, objectAttributes(object, layerIndex, {
+      x1: endpoints.start.x,
+      y1: endpoints.start.y,
+      x2: endpoints.end.x,
+      y2: endpoints.end.y,
+      class: "graphic-glyph-stroke",
+      stroke,
+      "stroke-width": strokeWidth,
+      "stroke-dasharray": strokeDasharray,
+      "stroke-linecap": "round",
+      transform
+    }));
+  }
+
+  if (object.graphicKind === "path") {
+    const pathD = graphicPathD(object);
+    if (pathD) {
+      return elementFragment("path", `object-${object.id}`, objectAttributes(object, layerIndex, {
+        d: pathD,
+        class: "graphic-glyph-stroke graphic-glyph-path",
+        fill: "none",
+        stroke,
+        "stroke-width": strokeWidth,
+        "stroke-dasharray": strokeDasharray,
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+        transform
+      }));
+    }
+  }
+
   if (object.graphicKind === "rect") {
     return elementFragment("rect", `object-${object.id}`, objectAttributes(object, layerIndex, {
-      x: object.x,
-      y: object.y,
-      width: object.width,
-      height: object.height,
-      fill: "none",
-      stroke: "#2f3b42",
-      "stroke-width": 1.5,
-      transform: rotationTransform(object)
+      x: object.x + strokeWidth / 2,
+      y: object.y + strokeWidth / 2,
+      width: Math.max(object.width - strokeWidth, 0.5),
+      height: Math.max(object.height - strokeWidth, 0.5),
+      rx: metadataNumber(object.data.cornerRadiusPx),
+      ry: metadataNumber(object.data.cornerRadiusPx),
+      fill,
+      stroke,
+      "stroke-width": strokeWidth,
+      "stroke-dasharray": strokeDasharray,
+      transform
+    }));
+  }
+
+  if (object.graphicKind === "ellipse") {
+    return elementFragment("ellipse", `object-${object.id}`, objectAttributes(object, layerIndex, {
+      cx: object.x + object.width / 2,
+      cy: object.y + object.height / 2,
+      rx: Math.max(object.width / 2 - strokeWidth / 2, 0.5),
+      ry: Math.max(object.height / 2 - strokeWidth / 2, 0.5),
+      fill,
+      stroke,
+      "stroke-width": strokeWidth,
+      "stroke-dasharray": strokeDasharray,
+      transform
     }));
   }
 
@@ -1678,30 +1734,150 @@ function graphicObjectFragment(
   return fallbackObjectFragment(object, layerIndex);
 }
 
-function lineObjectFragment(object: DocumentObject, label: string, layerIndex: number): PageSvgElementFragment {
-  const startX = object.x;
-  const startY = object.y + object.height / 2;
-  const endX = object.x + object.width;
-  const endY = startY;
+function graphicLineEndpoints(object: Extract<DocumentObject, { type: "graphic" }>): { start: LayoutPoint; end: LayoutPoint } {
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  return start && end
+    ? { start, end }
+    : {
+        start: { x: object.x, y: object.y },
+        end: { x: object.x + object.width, y: object.y + object.height }
+      };
+}
+
+function graphicPathD(object: Extract<DocumentObject, { type: "graphic" }>): string | undefined {
+  const storedPath = metadataString(object.data.pathD);
+  const pathKind = metadataString(object.data.artPathKind);
+  if (storedPath && !pathKind) {
+    return storedPath;
+  }
+
+  const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
+  if (pathKind === "line") {
+    return `M ${formatNumber(object.x + inset)} ${formatNumber(object.y + inset)} L ${formatNumber(object.x + object.width - inset)} ${formatNumber(object.y + object.height - inset)}`;
+  }
+
+  if (pathKind === "wavy") {
+    const midY = object.y + object.height / 2;
+    const amplitude = Math.max(4, Math.min(12, object.height * 0.24));
+    return [
+      `M ${formatNumber(object.x + inset)} ${formatNumber(midY)}`,
+      `C ${formatNumber(object.x + object.width * 0.16)} ${formatNumber(midY - amplitude)}, ${formatNumber(object.x + object.width * 0.28)} ${formatNumber(midY + amplitude)}, ${formatNumber(object.x + object.width * 0.4)} ${formatNumber(midY)}`,
+      `S ${formatNumber(object.x + object.width * 0.64)} ${formatNumber(midY - amplitude)}, ${formatNumber(object.x + object.width * 0.76)} ${formatNumber(midY)}`,
+      `S ${formatNumber(object.x + object.width * 0.92)} ${formatNumber(midY + amplitude)}, ${formatNumber(object.x + object.width - inset)} ${formatNumber(midY)}`
+    ].join(" ");
+  }
+
+  if (pathKind === "arc") {
+    return artArcPathD(object, metadataNumber(object.data.arcAngleDegrees) ?? 180);
+  }
+
+  return storedPath;
+}
+
+function artArcPathD(object: Pick<DocumentObject, "x" | "y" | "width" | "height">, degrees: number): string {
+  const angle = Math.min(359.9, Math.max(1, degrees));
+  const rx = Math.max(object.width / 2 - 4, 1);
+  const ry = Math.max(object.height / 2 - 4, 1);
+  const center = {
+    x: object.x + object.width / 2,
+    y: object.y + object.height / 2
+  };
+  const start = ellipsePointAtDegrees(center, rx, ry, -90 - angle / 2);
+  const end = ellipsePointAtDegrees(center, rx, ry, -90 + angle / 2);
+  return [
+    `M ${formatNumber(start.x)} ${formatNumber(start.y)}`,
+    `A ${formatNumber(rx)} ${formatNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatNumber(end.x)} ${formatNumber(end.y)}`
+  ].join(" ");
+}
+
+function ellipsePointAtDegrees(
+  center: LayoutPoint,
+  rx: number,
+  ry: number,
+  degrees: number
+): LayoutPoint {
+  const radians = degreesToRadians(degrees);
+  return {
+    x: center.x + Math.cos(radians) * rx,
+    y: center.y + Math.sin(radians) * ry
+  };
+}
+
+function pointMetadata(value: unknown): LayoutPoint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const point = value as Record<string, unknown>;
+  const x = point.x;
+  const y = point.y;
+  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)
+    ? { x, y }
+    : undefined;
+}
+
+function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
+  const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
+  const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
+  const arrowHead = object.arrowKind === "forward" ? arrowHeadPolygonPoints(start, end) : undefined;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     transform: rotationTransform(object)
   }), [
-    elementFragment("line", `line-${object.id}`, {
-      x1: startX,
-      y1: startY,
-      x2: endX,
-      y2: endY,
+    elementFragment("line", `reaction-arrow-line-${object.id}`, {
+      class: "reaction-arrow-line",
+      "data-arrow-kind": object.arrowKind,
+      x1: start.x,
+      y1: start.y,
+      x2: end.x,
+      y2: end.y,
       stroke: "#172026",
-      "stroke-width": 1.5
+      "stroke-width": 1.5,
+      "stroke-linecap": "round"
     }),
-    elementFragment("text", `line-label-${object.id}`, {
-      x: object.x,
-      y: object.y - 6,
-      "font-family": "Arial, sans-serif",
-      "font-size": 10,
-      fill: "#52616b"
-    }, [textFragment(`line-label-text-${object.id}`, label)])
+    ...(arrowHead ? [
+      elementFragment("polygon", `reaction-arrow-head-${object.id}`, {
+        class: "reaction-arrow-head",
+        "data-arrow-kind": object.arrowKind,
+        points: arrowHead,
+        fill: "#172026",
+        stroke: "none"
+      })
+    ] : [])
   ]);
+}
+
+function arrowAnchorPointForObject(
+  object: ArrowObject,
+  anchor: ArrowObject["start"] | ArrowObject["end"],
+  fallback: LayoutPoint
+): LayoutPoint {
+  if (anchor.kind === "point" && anchor.point) {
+    return anchor.point;
+  }
+  return fallback;
+}
+
+function arrowHeadPolygonPoints(start: LayoutPoint, end: LayoutPoint): string | undefined {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return undefined;
+  }
+
+  const unit = { x: dx / length, y: dy / length };
+  const normal = { x: -unit.y, y: unit.x };
+  const arrowLength = 9;
+  const arrowHalfWidth = 4.5;
+  const base = {
+    x: end.x - unit.x * arrowLength,
+    y: end.y - unit.y * arrowLength
+  };
+  return [
+    `${formatNumber(end.x)},${formatNumber(end.y)}`,
+    `${formatNumber(base.x + normal.x * arrowHalfWidth)},${formatNumber(base.y + normal.y * arrowHalfWidth)}`,
+    `${formatNumber(base.x - normal.x * arrowHalfWidth)},${formatNumber(base.y - normal.y * arrowHalfWidth)}`
+  ].join(" ");
 }
 
 function fallbackObjectFragmentWithWarning(

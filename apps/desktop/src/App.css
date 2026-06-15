@@ -286,7 +286,7 @@ textarea:focus-visible,
   background: var(--cd-bg-panel);
   box-shadow: var(--cd-shadow-floating);
   cursor: grab;
-  overflow: hidden;
+  overflow: visible;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -372,6 +372,11 @@ textarea:focus-visible,
   max-height: 64px;
 }
 
+.tool-palette.horizontal.art-style-palette,
+.tool-palette.floating.horizontal.art-style-palette {
+  max-height: 84px;
+}
+
 .tool-palette.docked .tool-group,
 .tool-palette.floating .tool-group {
   grid-template-columns: repeat(2, 24px);
@@ -398,6 +403,18 @@ textarea:focus-visible,
 .tool-palette.horizontal .tool-group:last-of-type,
 .tool-palette.floating.horizontal .tool-group:last-of-type {
   border-right: 1px solid var(--line-soft);
+}
+
+.tool-palette.horizontal.main-style-palette .tool-tooltip,
+.tool-palette.floating.horizontal.main-style-palette .tool-tooltip {
+  top: calc(100% + 7px);
+  bottom: auto;
+  transform: translate(-50%, -2px);
+}
+
+.tool-palette.horizontal.main-style-palette .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip,
+.tool-palette.floating.horizontal.main-style-palette .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip {
+  transform: translate(-50%, 0);
 }
 
 .tool-palette.floating::-webkit-scrollbar {
@@ -572,6 +589,13 @@ textarea:focus-visible,
 
 .toolbar-color-picker.compact .toolbar-color-trigger {
   width: 76px;
+}
+
+.art-toolbar-style-controls {
+  display: flex;
+  align-items: flex-start;
+  min-height: 52px;
+  padding-left: var(--cd-space-1);
 }
 
 .toolbar-color-trigger-swatch {
@@ -902,7 +926,7 @@ textarea:focus-visible,
   color: var(--ink);
   box-shadow: none;
   cursor: grab;
-  overflow: hidden;
+  overflow: visible;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -1024,6 +1048,47 @@ textarea:focus-visible,
   height: 17px;
 }
 
+.art-tool-icon {
+  overflow: visible;
+}
+
+.art-tool-stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.art-tool-stroke.filled {
+  fill: currentColor;
+  stroke-width: 1.2;
+}
+
+.art-tool-stroke.dashed {
+  stroke-dasharray: 2 2;
+}
+
+.art-tool-stroke.bold {
+  stroke-width: 3.4;
+}
+
+.art-tool-shadow {
+  fill: none;
+  stroke: var(--cd-text-muted);
+  stroke-width: 1.7;
+  opacity: 0.46;
+  transform: translate(1px, 1px);
+}
+
+.art-tool-gloss {
+  fill: none;
+  stroke: var(--cd-bg-panel);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.86;
+}
+
 .tool-icon-image {
   width: 23px;
   height: 23px;
@@ -1138,6 +1203,11 @@ textarea:focus-visible,
   transform: translate(0, 2px);
 }
 
+.tool-palette.horizontal.main-style-palette .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip,
+.tool-palette.floating.horizontal.main-style-palette .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip {
+  transform: translate(0, -2px);
+}
+
 .tool-palette.horizontal .tool-group:first-of-type .icon-button-shell:first-child[data-tooltip-visible="true"] .tool-tooltip,
 .tool-palette.floating.horizontal .tool-group:first-of-type .icon-button-shell:first-child[data-tooltip-visible="true"] .tool-tooltip {
   transform: translate(0, 0);
@@ -1148,6 +1218,11 @@ textarea:focus-visible,
   right: 0;
   left: auto;
   transform: translate(0, 2px);
+}
+
+.tool-palette.horizontal.main-style-palette .tool-group:last-of-type .icon-button-shell:last-child .tool-tooltip,
+.tool-palette.floating.horizontal.main-style-palette .tool-group:last-of-type .icon-button-shell:last-child .tool-tooltip {
+  transform: translate(0, -2px);
 }
 
 .tool-palette.horizontal .tool-group:last-of-type .icon-button-shell:last-child[data-tooltip-visible="true"] .tool-tooltip,
@@ -1401,6 +1476,59 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.reaction-arrow-object,
+.bracket-object,
+.graphic-object {
+  display: block;
+  overflow: visible;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.reaction-arrow-glyph,
+.bracket-glyph,
+.graphic-glyph {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.reaction-arrow-line,
+.bracket-glyph-path {
+  fill: none;
+  stroke: #111111;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.graphic-glyph-stroke {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.graphic-glyph-shadow {
+  opacity: 0.56;
+  pointer-events: none;
+}
+
+.reaction-arrow-glyph marker path {
+  fill: #111111;
+  stroke: none;
+}
+
+.bracket-glyph-path {
+  stroke-width: 1.5;
+}
+
 .molecule-glyph {
   display: block;
   width: 100%;
@@ -1577,6 +1705,12 @@ textarea:focus-visible,
   position: absolute;
   z-index: 3;
   pointer-events: none;
+}
+
+.art-object-transform-frame {
+  inset: 0;
+  border: 1.5px dashed var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
 }
 
 /* Bounding box around a multi-object selection (group rotate/resize chrome). */

@@ -803,6 +803,9 @@ describe("layout-engine page SVG planner", () => {
       "graphic_001"
     ]);
     expect(plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001")).toHaveLength(2);
+    const arrowFragments = plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001");
+    expect(arrowFragments.map((fragment) => fragment.tag)).toEqual(["line", "polygon"]);
+    expect(arrowFragments.flatMap((fragment) => fragment.children)).toEqual([]);
   });
 
   it("keeps the visible primitive stream stable while flattening object wrappers", () => {
@@ -881,5 +884,123 @@ describe("layout-engine page SVG planner", () => {
       .map((fragment) => fragment.attrs.stroke);
 
     expect(lineStrokes).toEqual(["#ff0000", "#0000ff"]);
+  });
+
+  it("renders explicit line graphics without fallback labels", () => {
+    const page = pageWithObjects([
+      {
+        id: "graphic_line",
+        type: "graphic",
+        x: 20,
+        y: 30,
+        width: 80,
+        height: 1,
+        rotation: 0,
+        style: {},
+        graphicKind: "line",
+        data: {
+          lineStart: { x: 20, y: 30 },
+          lineEnd: { x: 100, y: 30 }
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    expect(fragments.map((fragment) => fragment.tag)).toEqual(["line"]);
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-object-id": "graphic_line",
+      class: "graphic-glyph-stroke",
+      x1: 20,
+      y1: 30,
+      x2: 100,
+      y2: 30
+    });
+  });
+
+  it("renders styled native art graphics as exportable shape primitives", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_arc",
+        type: "graphic",
+        x: 40,
+        y: 60,
+        width: 58,
+        height: 58,
+        rotation: 0,
+        style: {
+          strokeColor: "#1d7f68",
+          strokeWidth: 2,
+          strokeDasharray: "3 4"
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "arc",
+          arcAngleDegrees: 270,
+          artToolId: "arc270Dashed"
+        }
+      },
+      {
+        id: "art_ellipse",
+        type: "graphic",
+        x: 120,
+        y: 60,
+        width: 72,
+        height: 34,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          fillColor: "#b3261e",
+          strokeWidth: 1.5,
+          fillMode: "gloss"
+        },
+        graphicKind: "ellipse",
+        data: {
+          artToolId: "ellipseGloss"
+        }
+      },
+      {
+        id: "art_rect",
+        type: "graphic",
+        x: 210,
+        y: 60,
+        width: 72,
+        height: 40,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          fillColor: "#f8faf9",
+          strokeWidth: 2,
+          effect: "shadow"
+        },
+        graphicKind: "rect",
+        data: {
+          cornerRadiusPx: 7,
+          artToolId: "roundedRectShadow"
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+
+    expect(fragments.map((fragment) => fragment.tag)).toEqual(["path", "ellipse", "rect"]);
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-object-id": "art_arc",
+      class: "graphic-glyph-stroke graphic-glyph-path",
+      stroke: "#1d7f68",
+      "stroke-dasharray": "3 4",
+      "stroke-linejoin": "round"
+    });
+    expect(String(fragments[0]?.attrs.d)).toContain("A 25 25 0 1 1");
+    expect(fragments[1]?.attrs).toMatchObject({
+      "data-object-id": "art_ellipse",
+      fill: "#b3261e",
+      stroke: "#111111"
+    });
+    expect(fragments[2]?.attrs).toMatchObject({
+      "data-object-id": "art_rect",
+      fill: "#f8faf9",
+      rx: 7,
+      ry: 7
+    });
   });
 });

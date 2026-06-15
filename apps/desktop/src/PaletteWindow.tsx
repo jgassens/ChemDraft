@@ -360,6 +360,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         title={toolset.title}
         showMainStyleControls={toolset.id === "core.main"}
         showTextStyleControls={toolset.id === "core.text"}
+        showArtStyleControls={toolset.id === "core.art"}
         currentTextStyle={currentTextStyle}
         currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}

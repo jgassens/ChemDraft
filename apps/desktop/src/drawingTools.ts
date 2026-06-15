@@ -1,6 +1,6 @@
 import type { CommandSpec } from "./commands";
 
-export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge";
+export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
 
 export interface DrawingToolDefinition {
@@ -215,7 +215,8 @@ export const coreDrawingToolDefinitions = [
     category: "arrows",
     icon: "export",
     disabledReason: EDITOR_ADAPTER_UNAVAILABLE
-  }
+  },
+  ...artDrawingToolDefinitions()
 ] as const satisfies readonly DrawingToolDefinition[];
 
 const drawingToolDefinitionByCommandId: ReadonlyMap<string, DrawingToolDefinition> = new Map(
@@ -355,4 +356,49 @@ function dedupeCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   });
 
   return [...byId.values()];
+}
+
+function artDrawingToolDefinitions(): DrawingToolDefinition[] {
+  const tools = [
+    ["tool.art.circle", "Circle", "bracket"],
+    ["tool.art.circleDashed", "Dashed Circle", "bracket"],
+    ["tool.art.circleGloss", "Gloss Circle", "style"],
+    ["tool.art.circleFilled", "Filled Circle", "style"],
+    ["tool.art.circleShadow", "Shadow Circle", "bracket"],
+    ["tool.art.ellipse", "Ellipse", "bracket"],
+    ["tool.art.ellipseDashed", "Dashed Ellipse", "bracket"],
+    ["tool.art.ellipseGloss", "Gloss Ellipse", "style"],
+    ["tool.art.ellipseFilled", "Filled Ellipse", "style"],
+    ["tool.art.ellipseShadow", "Shadow Ellipse", "bracket"],
+    ["tool.art.roundedRect", "Rounded Rectangle", "bracket"],
+    ["tool.art.roundedRectDashed", "Dashed Rounded Rectangle", "bracket"],
+    ["tool.art.roundedRectGloss", "Gloss Rounded Rectangle", "style"],
+    ["tool.art.roundedRectFilled", "Filled Rounded Rectangle", "style"],
+    ["tool.art.roundedRectShadow", "Shadow Rounded Rectangle", "bracket"],
+    ["tool.art.rect", "Rectangle", "bracket"],
+    ["tool.art.rectDashed", "Dashed Rectangle", "bracket"],
+    ["tool.art.rectGloss", "Gloss Rectangle", "style"],
+    ["tool.art.rectFilled", "Filled Rectangle", "style"],
+    ["tool.art.rectShadow", "Shadow Rectangle", "bracket"],
+    ["tool.art.line", "Line", "bond"],
+    ["tool.art.lineDashed", "Dashed Line", "bond"],
+    ["tool.art.lineWavy", "Wavy Line", "mechanism"],
+    ["tool.art.lineBold", "Bold Line", "bond"],
+    ["tool.art.arc270", "270 Degree Arc", "export"],
+    ["tool.art.arc270Dashed", "Dashed 270 Degree Arc", "export"],
+    ["tool.art.arc180", "180 Degree Arc", "export"],
+    ["tool.art.arc180Dashed", "Dashed 180 Degree Arc", "export"],
+    ["tool.art.arc120", "120 Degree Arc", "export"],
+    ["tool.art.arc120Dashed", "Dashed 120 Degree Arc", "export"],
+    ["tool.art.arc90", "90 Degree Arc", "export"],
+    ["tool.art.arc90Dashed", "Dashed 90 Degree Arc", "export"]
+  ] as const;
+
+  return tools.map(([commandId, title, icon]) => ({
+    commandId,
+    title,
+    kind: "art",
+    category: "art",
+    icon
+  } satisfies DrawingToolDefinition));
 }

@@ -37,7 +37,7 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   || command.id === "text.color.green"
   || command.id === "text.color.gray"
 ));
-const TOOLTIP_DELAY_MS = 1000;
+const TOOLTIP_DELAY_MS = 650;
 
 export function ToolPalette({
   groups,
@@ -47,6 +47,7 @@ export function ToolPalette({
   title = "Drawing tools",
   showMainStyleControls = false,
   showTextStyleControls = false,
+  showArtStyleControls = false,
   currentTextStyle,
   currentTextScript,
   onColorPickerOpenChange,
@@ -59,6 +60,7 @@ export function ToolPalette({
   title?: string;
   showMainStyleControls?: boolean;
   showTextStyleControls?: boolean;
+  showArtStyleControls?: boolean;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
@@ -77,7 +79,8 @@ export function ToolPalette({
         mode,
         orientation,
         showMainStyleControls ? "main-style-palette" : "",
-        showTextStyleControls ? "text-style-palette" : ""
+        showTextStyleControls ? "text-style-palette" : "",
+        showArtStyleControls ? "art-style-palette" : ""
       ].filter(Boolean).join(" ")}
       aria-label={title}
       data-tool-palette-orientation={orientation}
@@ -125,26 +128,43 @@ export function ToolPalette({
           onInvoke={onInvoke}
         />
       ) : null}
+      {showArtStyleControls ? (
+        <ArtToolbarStyleControls
+          currentTextStyle={currentTextStyle}
+          onColorPickerOpenChange={onColorPickerOpenChange}
+          onInvoke={onInvoke}
+        />
+      ) : null}
     </aside>
   );
 }
 
 function usePaletteTooltipState() {
   const [visibleTooltipId, setVisibleTooltipId] = useState<string | undefined>();
+  const visibleTooltipIdRef = useRef<string | undefined>(undefined);
   const pendingTooltipRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingTooltipIdRef = useRef<string | undefined>(undefined);
+  visibleTooltipIdRef.current = visibleTooltipId;
 
   const clearPendingTooltip = useCallback(() => {
     if (pendingTooltipRef.current !== undefined) {
       clearTimeout(pendingTooltipRef.current);
       pendingTooltipRef.current = undefined;
     }
+    pendingTooltipIdRef.current = undefined;
   }, []);
 
   const requestTooltip = useCallback((tooltipId: string) => {
+    if (visibleTooltipIdRef.current === tooltipId || pendingTooltipIdRef.current === tooltipId) {
+      return;
+    }
+
     clearPendingTooltip();
     setVisibleTooltipId(undefined);
+    pendingTooltipIdRef.current = tooltipId;
     pendingTooltipRef.current = setTimeout(() => {
       pendingTooltipRef.current = undefined;
+      pendingTooltipIdRef.current = undefined;
       setVisibleTooltipId(tooltipId);
     }, TOOLTIP_DELAY_MS);
   }, [clearPendingTooltip]);
@@ -480,6 +500,32 @@ function TextToolbarStyleControls({
   );
 }
 
+function ArtToolbarStyleControls({
+  currentTextStyle,
+  onColorPickerOpenChange,
+  onInvoke
+}: {
+  currentTextStyle?: NativeTextStyle;
+  onColorPickerOpenChange?: (open: boolean) => void;
+  onInvoke: (commandId: string) => void;
+}) {
+  const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
+
+  return (
+    <div className="art-toolbar-style-controls" data-toolbar-style-controls="art">
+      <ColorPickerControl
+        compact
+        currentColor={currentColor}
+        label="Object color"
+        triggerLabel="Open object color picker"
+        dialogLabel="Object color picker"
+        onOpenChange={onColorPickerOpenChange}
+        onInvoke={onInvoke}
+      />
+    </div>
+  );
+}
+
 type ColorPickerTab = "palette" | "mixer";
 
 export interface RgbColor {
@@ -498,11 +544,17 @@ export interface CmykColor {
 function ColorPickerControl({
   compact = false,
   currentColor,
+  label = "Text color",
+  triggerLabel = "Open text color picker",
+  dialogLabel = "Text color picker",
   onOpenChange,
   onInvoke
 }: {
   compact?: boolean;
   currentColor: string;
+  label?: string;
+  triggerLabel?: string;
+  dialogLabel?: string;
   onOpenChange?: (open: boolean) => void;
   onInvoke: (commandId: string) => void;
 }) {
@@ -573,7 +625,7 @@ function ColorPickerControl({
     <div
       className={["toolbar-color-picker", compact ? "compact" : ""].filter(Boolean).join(" ")}
       role="group"
-      aria-label="Text color"
+      aria-label={label}
       data-color-picker="true"
       data-palette-control="true"
       onPointerDown={(event) => event.stopPropagation()}
@@ -582,7 +634,7 @@ function ColorPickerControl({
       <button
         type="button"
         className="toolbar-color-trigger"
-        aria-label="Open text color picker"
+        aria-label={triggerLabel}
         aria-expanded={open}
         data-color-picker-trigger="true"
         data-palette-control="true"
@@ -593,7 +645,7 @@ function ColorPickerControl({
         <span className="toolbar-color-trigger-label">Color</span>
       </button>
       {open ? (
-        <div className="toolbar-color-popover" role="dialog" aria-label="Text color picker">
+        <div className="toolbar-color-popover" role="dialog" aria-label={dialogLabel}>
           <div className="color-picker-tabs" role="tablist" aria-label="Color picker mode">
             <button
               type="button"
@@ -989,7 +1041,8 @@ export function CommandIconButton({
   const activeState = active && !disabled;
   const shortcut = command.shortcut ?? command.defaultShortcut;
   const shortcutLabel = command.shortcutLabel ?? shortcut;
-  const shortcutText = shortcutLabel ? ` (${shortcutLabel})` : "";
+  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const shortcutText = ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}${shortcutText}${stateText}`;
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
@@ -1001,6 +1054,7 @@ export function CommandIconButton({
       data-tooltip-owner-id={tooltipId}
       data-tooltip-visible={tooltipVisible ? "true" : undefined}
       onBlur={() => onTooltipLeave?.()}
+      onClickCapture={() => onTooltipLeave?.()}
       onPointerCancel={() => onTooltipLeave?.()}
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
@@ -1020,13 +1074,15 @@ export function CommandIconButton({
         disabled={disabled}
         data-active={activeState ? "true" : undefined}
         data-command-id={command.id}
-        data-shortcut-label={shortcutLabel}
+        data-shortcut-label={visibleShortcutLabel}
         data-toolbar-asset={command.assetName}
         data-tooltip={tooltipText}
         {...invokeHandlers}
       >
         {command.assetName ? (
           <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        ) : command.id.startsWith("tool.art.") ? (
+          <ArtToolIcon commandId={command.id} />
         ) : (
           <Icon name={command.icon} />
         )}
@@ -1034,4 +1090,88 @@ export function CommandIconButton({
       </button>
     </span>
   );
+}
+
+function ArtToolIcon({ commandId }: { commandId: string }) {
+  const toolId = commandId.replace(/^tool\.art\./, "");
+  const dashed = toolId.includes("Dashed");
+  const filled = toolId.includes("Filled") || toolId.includes("Gloss");
+  const gloss = toolId.includes("Gloss");
+  const shadow = toolId.includes("Shadow");
+  const strokeClass = ["art-tool-stroke", dashed ? "dashed" : "", filled ? "filled" : ""].filter(Boolean).join(" ");
+  const shadowElement = shadow ? <path className="art-tool-shadow" d={artToolShapePath(toolId)} aria-hidden="true" /> : null;
+
+  if (toolId.startsWith("line")) {
+    const path = toolId === "lineWavy"
+      ? "M2 9 C4 4, 6 14, 8.5 9 S13 4, 15 9"
+      : "M3 3 L14 14";
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path
+          className={["art-tool-stroke", dashed ? "dashed" : "", toolId === "lineBold" ? "bold" : ""].filter(Boolean).join(" ")}
+          d={path}
+        />
+      </svg>
+    );
+  }
+
+  if (toolId.startsWith("arc")) {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className={["art-tool-stroke", dashed ? "dashed" : ""].filter(Boolean).join(" ")} d={artToolArcPath(toolId)} />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+      {shadowElement}
+      <path className={strokeClass} d={artToolShapePath(toolId)} />
+      {gloss ? <path className="art-tool-gloss" d={artToolGlossPath(toolId)} /> : null}
+    </svg>
+  );
+}
+
+function artToolShapePath(toolId: string): string {
+  if (toolId.startsWith("circle")) {
+    return "M8.5 2.2 A6.3 6.3 0 1 1 8.45 2.2 Z";
+  }
+
+  if (toolId.startsWith("ellipse")) {
+    return "M2 8.5 A6.5 3.7 0 1 1 15 8.5 A6.5 3.7 0 1 1 2 8.5 Z";
+  }
+
+  if (toolId.startsWith("roundedRect")) {
+    return "M4.1 3 H12.9 Q14 3 14 4.1 V12.9 Q14 14 12.9 14 H4.1 Q3 14 3 12.9 V4.1 Q3 3 4.1 3 Z";
+  }
+
+  return "M3 4 H14 V13 H3 Z";
+}
+
+function artToolGlossPath(toolId: string): string {
+  if (toolId.startsWith("circle")) {
+    return "M5.2 5.2 C6.1 4.2, 7.6 3.7, 9.2 4";
+  }
+
+  if (toolId.startsWith("ellipse")) {
+    return "M4.5 7.1 C6.5 5.8, 10.3 5.8, 12.5 7.1";
+  }
+
+  return "M5 5.2 H12";
+}
+
+function artToolArcPath(toolId: string): string {
+  if (toolId.startsWith("arc270")) {
+    return "M8.5 2.2 A6.3 6.3 0 1 1 2.2 8.5";
+  }
+
+  if (toolId.startsWith("arc180")) {
+    return "M2.4 8.5 A6.1 6.1 0 0 1 14.6 8.5";
+  }
+
+  if (toolId.startsWith("arc120")) {
+    return "M4 10.6 A5.9 5.9 0 0 1 13 5.6";
+  }
+
+  return "M5.2 11.8 A6 6 0 0 1 11.8 5.2";
 }

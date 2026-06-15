@@ -15,6 +15,7 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
+  type GraphicObject,
   type PageLayout,
   type MoleculeAtom,
   type MoleculeBond,
@@ -162,6 +163,156 @@ export type NativeMoleculeTemplateId =
   | "benzene"
   | "chairCyclohexaneA"
   | "chairCyclohexaneB";
+
+export type NativeArtToolId =
+  | "circle"
+  | "circleDashed"
+  | "circleGloss"
+  | "circleFilled"
+  | "circleShadow"
+  | "ellipse"
+  | "ellipseDashed"
+  | "ellipseGloss"
+  | "ellipseFilled"
+  | "ellipseShadow"
+  | "roundedRect"
+  | "roundedRectDashed"
+  | "roundedRectGloss"
+  | "roundedRectFilled"
+  | "roundedRectShadow"
+  | "rect"
+  | "rectDashed"
+  | "rectGloss"
+  | "rectFilled"
+  | "rectShadow"
+  | "line"
+  | "lineDashed"
+  | "lineWavy"
+  | "lineBold"
+  | "arc270"
+  | "arc270Dashed"
+  | "arc180"
+  | "arc180Dashed"
+  | "arc120"
+  | "arc120Dashed"
+  | "arc90"
+  | "arc90Dashed";
+
+export interface NativeArtToolDefinition {
+  id: NativeArtToolId;
+  commandId: string;
+  title: string;
+  graphicKind: GraphicObject["graphicKind"];
+  width: number;
+  height: number;
+  data: Record<string, unknown>;
+  style: Record<string, unknown>;
+}
+
+const artOutlineStyle = {
+  strokeColor: "#111111",
+  fillColor: "none",
+  strokeWidth: 2
+};
+
+const artFilledStyle = {
+  strokeColor: "#111111",
+  fillColor: "#111111",
+  strokeWidth: 1.5,
+  fillMode: "solid"
+};
+
+const artGlossStyle = {
+  strokeColor: "#111111",
+  fillColor: "#111111",
+  strokeWidth: 1.5,
+  fillMode: "gloss"
+};
+
+const artShadowStyle = {
+  strokeColor: "#111111",
+  fillColor: "#f8faf9",
+  strokeWidth: 2,
+  effect: "shadow"
+};
+
+export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
+  artShapeTool("circle", "Circle", "ellipse", 48, 48, {}, artOutlineStyle),
+  artShapeTool("circleDashed", "Dashed Circle", "ellipse", 48, 48, {}, { ...artOutlineStyle, strokeDasharray: "3 4" }),
+  artShapeTool("circleGloss", "Gloss Circle", "ellipse", 48, 48, {}, artGlossStyle),
+  artShapeTool("circleFilled", "Filled Circle", "ellipse", 48, 48, {}, artFilledStyle),
+  artShapeTool("circleShadow", "Shadow Circle", "ellipse", 48, 48, {}, artShadowStyle),
+  artShapeTool("ellipse", "Ellipse", "ellipse", 72, 34, {}, artOutlineStyle),
+  artShapeTool("ellipseDashed", "Dashed Ellipse", "ellipse", 72, 34, {}, { ...artOutlineStyle, strokeDasharray: "3 4" }),
+  artShapeTool("ellipseGloss", "Gloss Ellipse", "ellipse", 72, 34, {}, artGlossStyle),
+  artShapeTool("ellipseFilled", "Filled Ellipse", "ellipse", 72, 34, {}, artFilledStyle),
+  artShapeTool("ellipseShadow", "Shadow Ellipse", "ellipse", 72, 34, {}, artShadowStyle),
+  artShapeTool("roundedRect", "Rounded Rectangle", "rect", 72, 40, { cornerRadiusPx: 7 }, artOutlineStyle),
+  artShapeTool("roundedRectDashed", "Dashed Rounded Rectangle", "rect", 72, 40, { cornerRadiusPx: 7 }, { ...artOutlineStyle, strokeDasharray: "3 4" }),
+  artShapeTool("roundedRectGloss", "Gloss Rounded Rectangle", "rect", 72, 40, { cornerRadiusPx: 7 }, artGlossStyle),
+  artShapeTool("roundedRectFilled", "Filled Rounded Rectangle", "rect", 72, 40, { cornerRadiusPx: 7 }, artFilledStyle),
+  artShapeTool("roundedRectShadow", "Shadow Rounded Rectangle", "rect", 72, 40, { cornerRadiusPx: 7 }, artShadowStyle),
+  artShapeTool("rect", "Rectangle", "rect", 72, 40, {}, artOutlineStyle),
+  artShapeTool("rectDashed", "Dashed Rectangle", "rect", 72, 40, {}, { ...artOutlineStyle, strokeDasharray: "3 4" }),
+  artShapeTool("rectGloss", "Gloss Rectangle", "rect", 72, 40, {}, artGlossStyle),
+  artShapeTool("rectFilled", "Filled Rectangle", "rect", 72, 40, {}, artFilledStyle),
+  artShapeTool("rectShadow", "Shadow Rectangle", "rect", 72, 40, {}, artShadowStyle),
+  artShapeTool("line", "Line", "path", 82, 46, { artPathKind: "line" }, artOutlineStyle),
+  artShapeTool("lineDashed", "Dashed Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeDasharray: "6 6" }),
+  artShapeTool("lineWavy", "Wavy Line", "path", 82, 46, { artPathKind: "wavy" }, artOutlineStyle),
+  artShapeTool("lineBold", "Bold Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeWidth: 6 }),
+  artArcTool("arc270", "270 Degree Arc", 270, false),
+  artArcTool("arc270Dashed", "Dashed 270 Degree Arc", 270, true),
+  artArcTool("arc180", "180 Degree Arc", 180, false),
+  artArcTool("arc180Dashed", "Dashed 180 Degree Arc", 180, true),
+  artArcTool("arc120", "120 Degree Arc", 120, false),
+  artArcTool("arc120Dashed", "Dashed 120 Degree Arc", 120, true),
+  artArcTool("arc90", "90 Degree Arc", 90, false),
+  artArcTool("arc90Dashed", "Dashed 90 Degree Arc", 90, true)
+];
+
+const nativeArtToolByCommandId = new Map(nativeArtToolDefinitions.map((tool) => [tool.commandId, tool]));
+
+function artShapeTool(
+  id: NativeArtToolId,
+  title: string,
+  graphicKind: GraphicObject["graphicKind"],
+  width: number,
+  height: number,
+  data: Record<string, unknown>,
+  style: Record<string, unknown>
+): NativeArtToolDefinition {
+  return {
+    id,
+    commandId: `tool.art.${id}`,
+    title,
+    graphicKind,
+    width,
+    height,
+    data,
+    style
+  };
+}
+
+function artArcTool(
+  id: NativeArtToolId,
+  title: string,
+  arcAngleDegrees: number,
+  dashed: boolean
+): NativeArtToolDefinition {
+  return artShapeTool(
+    id,
+    title,
+    "path",
+    58,
+    58,
+    {
+      artPathKind: "arc",
+      arcAngleDegrees
+    },
+    dashed ? { ...artOutlineStyle, strokeDasharray: "3 4" } : artOutlineStyle
+  );
+}
 
 export interface NativeBondToolOptions {
   bondStyle?: NativeBondDisplayStyle;
@@ -676,6 +827,119 @@ export function nativeTemplateForToolCommand(commandId: string): NativeMoleculeT
     default:
       return undefined;
   }
+}
+
+export function nativeArtToolForCommand(commandId: string): NativeArtToolDefinition | undefined {
+  return nativeArtToolByCommandId.get(commandId);
+}
+
+export function createNativeArtGraphicObject(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  commandId: string
+): GraphicObject | undefined {
+  const tool = nativeArtToolForCommand(commandId);
+  if (!tool) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const x = clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
+  const y = clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  return {
+    id: nextObjectId(document, `art_${tool.id}`),
+    type: "graphic",
+    x,
+    y,
+    width: tool.width,
+    height: tool.height,
+    rotation: 0,
+    style: {
+      ...tool.style,
+      source: "chemdraft-native-art",
+      artToolId: tool.id,
+      artToolCommandId: tool.commandId
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    graphicKind: tool.graphicKind,
+    data: {
+      ...tool.data,
+      artToolId: tool.id
+    }
+  };
+}
+
+export function insertNativeArtGraphicObject(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  commandId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeArtGraphicObject(document, point, commandId);
+  if (!object) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+export function applyDocumentObjectProjectedPlaneTilt(
+  document: ChemDraftDocument,
+  objectId: string,
+  tiltXDegrees: number,
+  tiltYDegrees: number
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (!object || object.type === "molecule") {
+    return document;
+  }
+
+  const nextTiltX = normalizeProjectedPlaneTiltDegrees(tiltXDegrees) ?? 0;
+  const nextTiltY = normalizeProjectedPlaneTiltDegrees(tiltYDegrees) ?? 0;
+  if (
+    object.style.tiltXDegrees === nextTiltX &&
+    object.style.tiltYDegrees === nextTiltY
+  ) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          ...object.style,
+          tiltXDegrees: nextTiltX,
+          tiltYDegrees: nextTiltY
+        }
+      }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function documentObjectProjectedPlaneTilt(object: DocumentObject): { tiltXDegrees: number; tiltYDegrees: number } {
+  return {
+    tiltXDegrees: typeof object.style.tiltXDegrees === "number" && Number.isFinite(object.style.tiltXDegrees)
+      ? object.style.tiltXDegrees
+      : 0,
+    tiltYDegrees: typeof object.style.tiltYDegrees === "number" && Number.isFinite(object.style.tiltYDegrees)
+      ? object.style.tiltYDegrees
+      : 0
+  };
 }
 
 export function createNativeTemplateMolecule(
@@ -3801,11 +4065,32 @@ function documentObjectColorChanges(object: DocumentObject, color: string): Part
     return styleColorChanges(object, { color });
   }
 
+  if (object.type === "graphic") {
+    const fillsVisible = graphicObjectHasVisibleFill(object);
+    return styleColorChanges(object, {
+      color,
+      strokeColor: color,
+      ...(fillsVisible ? { fillColor: color } : {})
+    });
+  }
+
   return styleColorChanges(object, {
     color,
     strokeColor: color,
     fillColor: color
   });
+}
+
+function graphicObjectHasVisibleFill(object: GraphicObject): boolean {
+  const fillColor = object.style.fillColor;
+  if (typeof fillColor === "string" && fillColor.toLowerCase() === "none") {
+    return false;
+  }
+
+  return typeof fillColor === "string" ||
+    object.style.fillMode === "solid" ||
+    object.style.fillMode === "gloss" ||
+    object.style.effect === "shadow";
 }
 
 function styleColorChanges(
@@ -5972,6 +6257,17 @@ function findTextObject(document: ChemDraftDocument, objectId: string): TextObje
 
 function documentObjectExists(document: ChemDraftDocument, objectId: string): boolean {
   return document.pages.some((page) => page.objects.some((object) => object.id === objectId));
+}
+
+function findDocumentObject(document: ChemDraftDocument, objectId: string): DocumentObject | undefined {
+  for (const page of document.pages) {
+    const object = page.objects.find((candidate) => candidate.id === objectId);
+    if (object) {
+      return object;
+    }
+  }
+
+  return undefined;
 }
 
 function findMoleculeObject(document: ChemDraftDocument, objectId: string): MoleculeObject | undefined {

@@ -22,6 +22,8 @@ describe("Phase 7 drawing tool activation", () => {
     expect(commandsForKind("ring")).toContain("tool.cyclopentane");
     expect(commandsForKind("text")).toContain("tool.text");
     expect(commandsForKind("arrow")).toContain("tool.reactionArrow");
+    expect(commandsForKind("art")).toContain("tool.art.circle");
+    expect(commandsForKind("art")).toContain("tool.art.arc90Dashed");
   });
 
   it("starts with the selection tool active", () => {
@@ -84,6 +86,21 @@ describe("Phase 7 drawing tool activation", () => {
     expect(command.enabled).toBe(true);
   });
 
+  it("activates manifest-backed art tools without requiring an editor adapter", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.circleGloss");
+    if (!command) {
+      throw new Error("Expected tool.art.circleGloss to be registered by the toolset manifest.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Gloss Circle active");
+    expect(result.state.activeCommandId).toBe("tool.art.circleGloss");
+    expect(result.state.activeKind).toBe("art");
+    expect(command.enabled).toBe(true);
+  });
+
   it("keeps unavailable tools from changing the active tool", () => {
     const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.chain");
     if (!command) {
@@ -133,6 +150,7 @@ describe("Phase 7 drawing tool activation", () => {
     expect(drawingCommands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.benzene")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.reactionArrow")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "tool.art.rectShadow")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "plugin.fixture.toolset.ping")).toBe(false);
   });
 
@@ -142,6 +160,10 @@ describe("Phase 7 drawing tool activation", () => {
     expect(getDrawingToolDefinition("tool.equilibriumArrow")).toMatchObject({
       kind: "arrow",
       category: "arrows"
+    });
+    expect(getDrawingToolDefinition("tool.art.lineWavy")).toMatchObject({
+      kind: "art",
+      category: "art"
     });
   });
 });

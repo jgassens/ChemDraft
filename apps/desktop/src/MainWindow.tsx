@@ -22,10 +22,13 @@ import {
   redo as redoDocumentHistory,
   undo as undoDocumentHistory,
   type BondRef,
+  type ArrowObject,
+  type BracketObject,
   type ChemDraftDocument,
   type DocumentHistory,
   type DocumentObject,
   type DocumentPatch,
+  type GraphicObject,
   type MoleculeObject,
   type NativeDrawingStyle,
   type NativeTextStyle,
@@ -103,6 +106,7 @@ import {
   applyNativeAtomElementTarget,
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
+  applyDocumentObjectProjectedPlaneTilt,
   applyNativeBondDisplayStyleTarget,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
@@ -129,7 +133,9 @@ import {
   getSelectedMolecule,
   getSelectedTextObject,
   insertNativeTextObject,
+  insertNativeArtGraphicObject,
   nativeAtomDisplayLabel,
+  documentObjectProjectedPlaneTilt,
   nativeChargeAssociationsForMolecule,
   nativeChargeByAtomIdFromAssociations,
   nativeBondStyleForToolCommand,
@@ -138,6 +144,7 @@ import {
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
+  nativeArtToolForCommand,
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
@@ -583,7 +590,7 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DR
 const OBJECT_DRAG_THRESHOLD = 4;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.13.14.23-codex";
+const CURRENT_BUILD_STAMP = "6.14.20.51-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -665,6 +672,37 @@ interface NativeOpenDocumentPayload {
   path: string;
   displayName: string;
   contents: string;
+}
+
+type ChemDraftAgentOpenResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+interface ChemDraftAgentSnapshot {
+  status: string;
+  fileState: NativeFileState;
+  pageCount: number;
+  pages: Array<{
+    id: string;
+    width: number;
+    height: number;
+    objectCount: number;
+    objectTypes: Partial<Record<DocumentObject["type"], number>>;
+    crossingCount: number;
+  }>;
+  compatibilityWarnings: number;
+}
+
+interface ChemDraftAgentBridge {
+  openDocument(payload: { contents: string; displayName?: string; path?: string }): ChemDraftAgentOpenResult;
+  snapshot(): ChemDraftAgentSnapshot;
+  waitForIdle(): Promise<void>;
+}
+
+declare global {
+  interface Window {
+    __CHEMDRAFT_AGENT__?: ChemDraftAgentBridge;
+  }
 }
 
 export interface MainWindowProps {
@@ -766,6 +804,7 @@ export function MainWindow({
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const fileStateRef = useRef<NativeFileState>(fileState);
+  const statusRef = useRef(status);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
   const moleculeResizeInputRef = useRef<MoleculeResizeInputState | undefined>(undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
@@ -790,6 +829,7 @@ export function MainWindow({
   documentRef.current = document;
   documentHistoryRef.current = documentHistory;
   fileStateRef.current = fileState;
+  statusRef.current = status;
   rotationInputRef.current = rotationInput;
   moleculeResizeInputRef.current = moleculeResizeInput;
   activeToolCommandIdRef.current = activeToolState.activeCommandId;
@@ -814,6 +854,9 @@ export function MainWindow({
   const selectedMoleculeForStyle = selectedNativePartObject?.type === "molecule"
     ? selectedNativePartObject
     : selectedMolecule;
+  const selectedToolbarObject = document.selection.objectIds.length === 1
+    ? findDocumentObject(document, document.selection.objectIds[0])
+    : undefined;
   const currentToolbarTextStyle = useMemo(() => {
     if (selectedTextObject) {
       return selectedTextRange
@@ -834,8 +877,22 @@ export function MainWindow({
       });
     }
 
+    if (selectedToolbarObject) {
+      return nativeTextStyleFromObjectStyle({
+        ...textStyleDefaults,
+        color: documentObjectToolbarColor(selectedToolbarObject)
+      });
+    }
+
     return textStyleDefaults;
-  }, [selectedMoleculeForStyle, selectedNativeMoleculePart, selectedTextObject, selectedTextRange, textStyleDefaults]);
+  }, [
+    selectedMoleculeForStyle,
+    selectedNativeMoleculePart,
+    selectedTextObject,
+    selectedTextRange,
+    selectedToolbarObject,
+    textStyleDefaults
+  ]);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript)
@@ -853,6 +910,7 @@ export function MainWindow({
   const activeNativeTemplateId = nativeTemplateForToolCommand(activeToolState.activeCommandId);
   const bondToolActive = activeNativeBondToolStyle !== undefined;
   const activeChargeToolValue = chargeValueForToolCommand(activeToolState.activeCommandId);
+  const activeNativeArtTool = nativeArtToolForCommand(activeToolState.activeCommandId);
   const activePage = document.pages[0];
   const plannedDisplayPage = useMemo(() => {
     if (!nativeDoubleBondSidePreview) {
@@ -1858,6 +1916,30 @@ export function MainWindow({
     setStatus("Inserted text - type to replace placeholder");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, focusTextObjectEditor, restoreToolAfterTextPlacement, textStyleDefaults]);
 
+  const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
+    const currentDocument = documentRef.current;
+    const nextDocument = insertNativeArtGraphicObject(currentDocument, point, commandId);
+    if (nextDocument === currentDocument) {
+      setStatus("Art tool unavailable");
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    setStatus("Inserted art object");
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ReturnType<typeof inspectClipboardPayload>) => {
     const result = applyClipboardPastePayload(
       documentRef.current,
@@ -2118,6 +2200,78 @@ export function MainWindow({
     } catch (error) {
       setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }, [openDocumentContents]);
+
+  useEffect(() => {
+    if (!shouldEnableAgentBridge()) {
+      return undefined;
+    }
+
+    const bridge: ChemDraftAgentBridge = {
+      openDocument: ({ contents, displayName = "Agent document", path }) => {
+        try {
+          openDocumentContents(contents, displayName, path);
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      snapshot: () => {
+        const currentDocument = documentRef.current;
+        return {
+          status: statusRef.current,
+          fileState: fileStateRef.current,
+          pageCount: currentDocument.pages.length,
+          pages: currentDocument.pages.map((page) => ({
+            id: page.id,
+            width: page.width,
+            height: page.height,
+            objectCount: page.objects.length,
+            objectTypes: page.objects.reduce<Partial<Record<DocumentObject["type"], number>>>((counts, object) => {
+              counts[object.type] = (counts[object.type] ?? 0) + 1;
+              return counts;
+            }, {}),
+            crossingCount: page.crossings.length
+          })),
+          compatibilityWarnings: currentDocument.compatibility?.warnings.length ?? 0
+        };
+      },
+      waitForIdle: async () => {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      }
+    };
+
+    window.__CHEMDRAFT_AGENT__ = bridge;
+    window.dispatchEvent(new CustomEvent("chemdraft-agent-ready"));
+    return () => {
+      if (window.__CHEMDRAFT_AGENT__ === bridge) {
+        delete window.__CHEMDRAFT_AGENT__;
+      }
+    };
+  }, [openDocumentContents]);
+
+  useEffect(() => {
+    if (!shouldEnableAgentBridge()) {
+      return undefined;
+    }
+
+    const openPayloadFromHash = () => {
+      const payload = agentBridgeDocumentPayloadFromHash();
+      if (!payload) {
+        return;
+      }
+
+      try {
+        openDocumentContents(payload.contents, payload.displayName, payload.path);
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      } catch (error) {
+        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+
+    openPayloadFromHash();
+    window.addEventListener("hashchange", openPayloadFromHash);
+    return () => window.removeEventListener("hashchange", openPayloadFromHash);
   }, [openDocumentContents]);
 
   useEffect(() => {
@@ -3301,8 +3455,28 @@ export function MainWindow({
     point: ClientPoint
   ) => {
     const tiltDelta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
-    const tiltXRad = drag.startTiltXRad + tiltDelta.xRad;
-    const tiltYRad = drag.startTiltYRad + tiltDelta.yRad;
+    const rawTiltXRad = drag.startTiltXRad + tiltDelta.xRad;
+    const rawTiltYRad = drag.startTiltYRad + tiltDelta.yRad;
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object && object.type !== "molecule") {
+      const wrapped = wrapProjectedPlaneTiltVectorRadians(rawTiltXRad, rawTiltYRad);
+      const document = applyDocumentObjectProjectedPlaneTilt(
+        drag.startDocument,
+        drag.objectId,
+        radiansToDegrees(wrapped.tiltXRad),
+        radiansToDegrees(wrapped.tiltYRad)
+      );
+      return {
+        document,
+        tiltXRad: wrapped.tiltXRad,
+        tiltYRad: wrapped.tiltYRad,
+        clamped: wrapped.clamped,
+        changed: document !== drag.startDocument
+      };
+    }
+
+    const tiltXRad = rawTiltXRad;
+    const tiltYRad = rawTiltYRad;
     return drag.target
       ? tiltNativeMoleculePartsProjectedPlane(
         drag.startDocument,
@@ -3473,7 +3647,7 @@ export function MainWindow({
 
   const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
-    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object)) {
+    if (!object) {
       return undefined;
     }
 
@@ -3483,19 +3657,41 @@ export function MainWindow({
         return undefined;
       }
 
-      const nextDocument = input.target
-        ? rotateNativeMoleculeParts(input.startDocument, input.target, zDegrees)
-        : rotateDocumentObject(
-            input.startDocument,
-            input.objectId,
-            manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees)
-          );
+      const nextDocument = object.type === "molecule" && isNativeMoleculeGraph(object)
+        ? input.target
+          ? rotateNativeMoleculeParts(input.startDocument, input.target, zDegrees)
+          : rotateDocumentObject(
+              input.startDocument,
+              input.objectId,
+              manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees)
+            )
+        : rotateDocumentObject(input.startDocument, input.objectId, manualRotationDeltaDegrees(object.rotation, zDegrees));
       return { kind: "z", document: nextDocument, zDegrees };
     }
 
     const xDegrees = parseRotationInputDegrees(input.draftXDegrees);
     const yDegrees = parseRotationInputDegrees(input.draftYDegrees);
     if (xDegrees === undefined || yDegrees === undefined) {
+      return undefined;
+    }
+
+    if (object.type !== "molecule") {
+      const wrapped = wrapProjectedPlaneTiltVectorRadians(degreesToRadians(xDegrees), degreesToRadians(yDegrees));
+      return {
+        kind: "xy",
+        document: applyDocumentObjectProjectedPlaneTilt(
+          input.startDocument,
+          input.objectId,
+          radiansToDegrees(wrapped.tiltXRad),
+          radiansToDegrees(wrapped.tiltYRad)
+        ),
+        tiltXRad: wrapped.tiltXRad,
+        tiltYRad: wrapped.tiltYRad,
+        clamped: wrapped.clamped
+      };
+    }
+
+    if (!isNativeMoleculeGraph(object)) {
       return undefined;
     }
 
@@ -3560,20 +3756,11 @@ export function MainWindow({
 
   const handleRotationInputHome = useCallback((input: RotationInputState) => {
     const nextInput: RotationInputState = input.kind === "z"
-      ? { ...input, draftZDegrees: input.homeZDegrees }
-      : { ...input, draftXDegrees: "0", draftYDegrees: "0" };
-    if (nextInput.kind === "xy") {
-      handleRotationInputChange(nextInput);
-      setStatus("X/Y rotation set to 0");
-      return;
-    }
-
-    replacePresentDocument(input.startDocument);
-    updateRotationInput(nextInput);
-    setObjectRotateReadout(undefined);
-    setProjectedPlaneTiltReadout(undefined);
-    setStatus("Rotation restored home");
-  }, [handleRotationInputChange, replacePresentDocument, updateRotationInput]);
+      ? { ...input, ...rotationInputHomeDraftDegrees("z") }
+      : { ...input, ...rotationInputHomeDraftDegrees("xy") };
+    handleRotationInputChange(nextInput);
+    setStatus(nextInput.kind === "z" ? "Z rotation set to 0" : "X/Y rotation set to 0");
+  }, [handleRotationInputChange]);
 
   const handleRotationInputCancel = useCallback((input?: RotationInputState) => {
     const session = input ?? rotationInputRef.current;
@@ -3622,7 +3809,7 @@ export function MainWindow({
 
   const moleculeResizeInputDocumentFromDraft = useCallback((input: MoleculeResizeInputState) => {
     const object = findDocumentObject(input.startDocument, input.objectId);
-    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object)) {
+    if (!object) {
       return undefined;
     }
 
@@ -3636,6 +3823,23 @@ export function MainWindow({
       x: xPercent / 100,
       y: yPercent / 100
     };
+    if (object.type !== "molecule") {
+      return {
+        document: scaleDocumentObjectsAroundPoint(
+          input.startDocument,
+          [input.objectId],
+          documentObjectCenter(object),
+          targetScale.x,
+          targetScale.y
+        ),
+        targetScale
+      };
+    }
+
+    if (!isNativeMoleculeGraph(object)) {
+      return undefined;
+    }
+
     const transform = nativeMoleculeTransformState(object);
     const resizeScale = input.target
       ? targetScale
@@ -3720,6 +3924,11 @@ export function MainWindow({
     stretching: boolean
   ): ChemDraftDocument => {
     const scale = moleculeResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching);
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (!drag.target && object?.type !== "molecule") {
+      return scaleDocumentObjectsAroundPoint(drag.startDocument, [drag.objectId], drag.centerPoint, scale.x, scale.y);
+    }
+
     return drag.target
       ? resizeNativeMoleculeParts(drag.startDocument, drag.target, scale)
       : resizeNativeMoleculeObject(drag.startDocument, drag.objectId, scale);
@@ -4102,6 +4311,13 @@ export function MainWindow({
       return;
     }
 
+    if (activeNativeArtTool) {
+      event.preventDefault();
+      event.stopPropagation();
+      applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.text") {
       event.preventDefault();
       event.stopPropagation();
@@ -4121,8 +4337,10 @@ export function MainWindow({
     activeNativeBondDisplayStyle,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
+    activeNativeArtTool,
     activeToolState.activeCommandId,
     applyChargeDocumentAtPoint,
+    applyNativeArtDocumentAtPoint,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
     applyTextDocumentAtPoint,
@@ -4677,7 +4895,8 @@ export function MainWindow({
       }
     }
 
-    const object = findDocumentObject(document, objectId);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
     const chargeMarkActive = object?.type === "electron-mark" && object.markKind === "charge";
     const nativeMoleculeHit = object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(
@@ -5004,22 +5223,24 @@ export function MainWindow({
       return false;
     }
 
-    const object = findDocumentObject(document, objectId);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
     const selectedFragmentTarget = object?.type === "molecule" && selectedNativeMoleculePart?.objectId === objectId
       ? selectedNativeMoleculePart
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
       : undefined;
-    if (
-      object?.type !== "molecule" ||
-      !isNativeMoleculeGraph(object) ||
-      (
-        !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) &&
-        selectedFragmentBounds === undefined
-      )
-    ) {
-      setStatus("Select a molecule or molecule fragment for rotation entry");
+    const canOpenRotationEntry = object && (
+      object.type !== "molecule"
+        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        : isNativeMoleculeGraph(object) && (
+            isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
+            selectedFragmentBounds !== undefined
+          )
+    );
+    if (!canOpenRotationEntry) {
+      setStatus("Select an object for rotation entry");
       return false;
     }
     if (selectedFragmentTarget) {
@@ -5027,9 +5248,12 @@ export function MainWindow({
       return false;
     }
 
-    const transform = nativeMoleculeTransformState(object);
-    const targetLabel = selectedFragmentTarget ? "selected molecule fragment" : "selected molecule";
-    const homeZDegrees = rotationInputDraftDegrees(transform.rotationDegrees);
+    const targetLabel = selectedFragmentTarget
+      ? "selected molecule fragment"
+      : object.type === "molecule" ? "selected molecule" : "selected art object";
+    const homeZDegrees = rotationInputDraftDegrees(
+      object.type === "molecule" ? nativeMoleculeTransformState(object).rotationDegrees : object.rotation
+    );
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
     updateMoleculeResizeInput(undefined);
@@ -5038,13 +5262,13 @@ export function MainWindow({
       objectId,
       target: selectedFragmentTarget,
       targetLabel,
-      startDocument: document,
+      startDocument: currentDocument,
       draftZDegrees: homeZDegrees,
       homeZDegrees
     });
     setStatus("Z rotation entry");
     return true;
-  }, [activeToolState.activeKind, document, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
+  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
 
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -5053,8 +5277,9 @@ export function MainWindow({
       return;
     }
 
-    const object = findDocumentObject(document, objectId);
-    if (object?.type === "molecule" && isTransformHandleSecondPress(objectId, "rotate-z", event)) {
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, "rotate-z", event)) {
       openObjectRotateInput(objectId);
       return;
     }
@@ -5067,8 +5292,9 @@ export function MainWindow({
       : undefined;
     const canRotateObject =
       object?.type === "text" ||
+      (object !== undefined && documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)) ||
       (object?.type === "molecule" && (
-        isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) ||
+        isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
         selectedFragmentBounds !== undefined
       ));
     if (!object || !point || !canRotateObject) {
@@ -5076,10 +5302,10 @@ export function MainWindow({
     }
 
     const selectedDocument = selectedFragmentTarget
-      ? document
-      : document.selection.objectIds.includes(objectId)
-        ? document
-        : selectDocumentObject(document, objectId);
+      ? currentDocument
+      : currentDocument.selection.objectIds.includes(objectId)
+        ? currentDocument
+        : selectDocumentObject(currentDocument, objectId);
     handleRotationInputKeep();
     handleMoleculeResizeInputKeep();
     replacePresentDocument(selectedDocument);
@@ -5111,12 +5337,13 @@ export function MainWindow({
     setStatus(
       object.type === "text"
         ? "Rotate selected text box"
-        : selectedFragmentTarget ? "Rotate selected molecule fragment" : "Rotate selected molecule"
+        : object.type === "molecule"
+          ? selectedFragmentTarget ? "Rotate selected molecule fragment" : "Rotate selected molecule"
+          : "Rotate selected art object"
     );
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
-    document,
     handleMoleculeResizeInputKeep,
     handleRotationInputKeep,
     pagePointFromPointerEvent,
@@ -5136,22 +5363,24 @@ export function MainWindow({
       return false;
     }
 
-    const object = findDocumentObject(document, objectId);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
       ? selectedNativeMoleculePart
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
       : undefined;
-    if (
-      object?.type !== "molecule" ||
-      !isNativeMoleculeGraph(object) ||
-      (
-        !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) &&
-        selectedFragmentBounds === undefined
-      )
-    ) {
-      setStatus("Select a molecule or molecule fragment for 3D rotation entry");
+    const canOpenTiltEntry = object && (
+      object.type !== "molecule"
+        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        : isNativeMoleculeGraph(object) && (
+            isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
+            selectedFragmentBounds !== undefined
+          )
+    );
+    if (!canOpenTiltEntry) {
+      setStatus("Select an object for X/Y rotation entry");
       return false;
     }
     if (selectedFragmentTarget) {
@@ -5159,8 +5388,15 @@ export function MainWindow({
       return false;
     }
 
-    const transform = nativeMoleculeTransformState(object);
-    const targetLabel = selectedFragmentTarget ? "selected molecule fragment" : "selected molecule";
+    const transform = object.type === "molecule"
+      ? nativeMoleculeTransformState(object)
+      : {
+          ...documentObjectProjectedPlaneTilt(object),
+          rotationDegrees: object.rotation
+        };
+    const targetLabel = selectedFragmentTarget
+      ? "selected molecule fragment"
+      : object.type === "molecule" ? "selected molecule" : "selected art object";
     const homeXDegrees = rotationInputDraftDegrees(selectedFragmentTarget ? 0 : transform.tiltXDegrees ?? 0);
     const homeYDegrees = rotationInputDraftDegrees(selectedFragmentTarget ? 0 : transform.tiltYDegrees ?? 0);
     setObjectRotateReadout(undefined);
@@ -5171,7 +5407,7 @@ export function MainWindow({
       objectId,
       target: selectedFragmentTarget,
       targetLabel,
-      startDocument: document,
+      startDocument: currentDocument,
       draftXDegrees: homeXDegrees,
       draftYDegrees: homeYDegrees,
       homeXDegrees,
@@ -5179,7 +5415,7 @@ export function MainWindow({
     });
     setStatus("3D rotation entry");
     return true;
-  }, [activeToolState.activeKind, document, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
+  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
 
   const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -5188,8 +5424,9 @@ export function MainWindow({
       return;
     }
 
-    const object = findDocumentObject(document, objectId);
-    if (object?.type === "molecule" && isTransformHandleSecondPress(objectId, "rotate-xy", event)) {
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, "rotate-xy", event)) {
       openProjectedPlaneTiltInput(objectId);
       return;
     }
@@ -5200,25 +5437,26 @@ export function MainWindow({
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
       : undefined;
-    if (
-      object?.type !== "molecule" ||
-      !isNativeMoleculeGraph(object) ||
-      object.atoms.length === 0 ||
-      !point ||
-      (
-        !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) &&
-        selectedFragmentBounds === undefined
-      )
-    ) {
-      setStatus("Select a molecule or molecule fragment for 3D rotate");
+    const canTiltObject = object && point && (
+      object.type !== "molecule"
+        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        : isNativeMoleculeGraph(object) &&
+          object.atoms.length > 0 &&
+          (
+            isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
+            selectedFragmentBounds !== undefined
+          )
+    );
+    if (!canTiltObject || !object || !point) {
+      setStatus("Select an object for X/Y rotate");
       return;
     }
 
     const selectedDocument = selectedFragmentTarget
-      ? document
-      : document.selection.objectIds.includes(objectId)
-        ? document
-        : selectDocumentObject(document, objectId);
+      ? currentDocument
+      : currentDocument.selection.objectIds.includes(objectId)
+        ? currentDocument
+        : selectDocumentObject(currentDocument, objectId);
     handleRotationInputKeep();
     handleMoleculeResizeInputKeep();
     replacePresentDocument(selectedDocument);
@@ -5231,7 +5469,12 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     setProjectedPlaneTiltReadout(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-    const transform = nativeMoleculeTransformState(object);
+    const transform = object.type === "molecule"
+      ? nativeMoleculeTransformState(object)
+      : {
+          ...documentObjectProjectedPlaneTilt(object),
+          rotationDegrees: object.rotation
+        };
     const startTiltXRad = selectedFragmentTarget
       ? 0
       : (transform.tiltXDegrees ?? 0) * Math.PI / 180;
@@ -5244,7 +5487,9 @@ export function MainWindow({
       objectId,
       target: selectedFragmentTarget,
       startDocument: selectedDocument,
-      centerPoint: selectedFragmentBounds ? documentObjectCenter(selectedFragmentBounds) : nativeMoleculeCenter(object),
+      centerPoint: selectedFragmentBounds
+        ? documentObjectCenter(selectedFragmentBounds)
+        : object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object),
       axisAngleRad: 0,
       startPoint: point,
       startTiltXRad,
@@ -5264,11 +5509,12 @@ export function MainWindow({
       dragKind: "projected-plane-tilt"
     });
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
-    setStatus(selectedFragmentTarget ? "3D rotate: drag to tilt/twist selected fragment" : "3D rotate: drag to tilt/twist");
+    setStatus(selectedFragmentTarget
+      ? "3D rotate: drag to tilt/twist selected fragment"
+      : object.type === "molecule" ? "3D rotate: drag to tilt/twist" : "X/Y rotate selected art object");
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
-    document,
     handleMoleculeResizeInputKeep,
     handleRotationInputKeep,
     pagePointFromPointerEvent,
@@ -5288,22 +5534,24 @@ export function MainWindow({
       return false;
     }
 
-    const object = findDocumentObject(document, objectId);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
       ? selectedNativeMoleculePart
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
       : undefined;
-    if (
-      object?.type !== "molecule" ||
-      !isNativeMoleculeGraph(object) ||
-      (
-        !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) &&
-        selectedFragmentBounds === undefined
-      )
-    ) {
-      setStatus("Select a molecule or molecule fragment for stretch entry");
+    const canOpenResizeEntry = object && (
+      object.type !== "molecule"
+        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        : isNativeMoleculeGraph(object) && (
+            isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
+            selectedFragmentBounds !== undefined
+          )
+    );
+    if (!canOpenResizeEntry) {
+      setStatus("Select an object for stretch entry");
       return false;
     }
     if (selectedFragmentTarget) {
@@ -5311,10 +5559,12 @@ export function MainWindow({
       return false;
     }
 
-    const transform = nativeMoleculeTransformState(object);
-    const targetLabel = selectedFragmentTarget ? "selected molecule fragment" : "selected molecule";
-    const homeXPercent = moleculeResizeInputDraftPercent(selectedFragmentTarget ? 1 : transform.scaleX);
-    const homeYPercent = moleculeResizeInputDraftPercent(selectedFragmentTarget ? 1 : transform.scaleY);
+    const transform = object.type === "molecule" ? nativeMoleculeTransformState(object) : undefined;
+    const targetLabel = selectedFragmentTarget
+      ? "selected molecule fragment"
+      : object.type === "molecule" ? "selected molecule" : "selected art object";
+    const homeXPercent = moleculeResizeInputDraftPercent(selectedFragmentTarget ? 1 : transform?.scaleX ?? 1);
+    const homeYPercent = moleculeResizeInputDraftPercent(selectedFragmentTarget ? 1 : transform?.scaleY ?? 1);
     updateRotationInput(undefined);
     setMoleculeResizeReadout(undefined);
     updateMoleculeResizeInput({
@@ -5322,7 +5572,7 @@ export function MainWindow({
       target: selectedFragmentTarget,
       targetLabel,
       corner,
-      startDocument: document,
+      startDocument: currentDocument,
       draftXPercent: homeXPercent,
       draftYPercent: homeYPercent,
       homeXPercent,
@@ -5330,7 +5580,7 @@ export function MainWindow({
     });
     setStatus("Stretch entry");
     return true;
-  }, [activeToolState.activeKind, document, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
+  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateMoleculeResizeInput, updateRotationInput]);
 
   const handleMoleculeResizePointerDown = useCallback((
     objectId: string,
@@ -5343,8 +5593,9 @@ export function MainWindow({
       return;
     }
 
-    const object = findDocumentObject(document, objectId);
-    if (object?.type === "molecule" && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
       openMoleculeResizeInput(objectId, corner);
       return;
     }
@@ -5355,23 +5606,24 @@ export function MainWindow({
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
       : undefined;
-    if (
-      object?.type !== "molecule" ||
-      object.atoms.length === 0 ||
-      !point ||
-      (
-        !isWholeNativeMoleculeSelected(document, objectId, selectedNativeMoleculePart) &&
-        selectedFragmentBounds === undefined
-      )
-    ) {
+    const canResizeObject = object && point && (
+      object.type !== "molecule"
+        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        : object.atoms.length > 0 &&
+          (
+            isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
+            selectedFragmentBounds !== undefined
+          )
+    );
+    if (!canResizeObject || !object || !point) {
       return;
     }
 
     const selectedDocument = selectedFragmentTarget
-      ? document
-      : document.selection.objectIds.includes(objectId)
-        ? document
-        : selectDocumentObject(document, objectId);
+      ? currentDocument
+      : currentDocument.selection.objectIds.includes(objectId)
+        ? currentDocument
+        : selectDocumentObject(currentDocument, objectId);
     handleRotationInputKeep();
     handleMoleculeResizeInputKeep();
     replacePresentDocument(selectedDocument);
@@ -5383,12 +5635,12 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-    const transform = nativeMoleculeTransformState(object);
+    const transform = object.type === "molecule" ? nativeMoleculeTransformState(object) : undefined;
     const startCumulativeScale = selectedFragmentTarget
       ? { x: 1, y: 1 }
       : {
-          x: transform.scaleX,
-          y: transform.scaleY
+          x: transform?.scaleX ?? 1,
+          y: transform?.scaleY ?? 1
         };
     moleculeResizeDragRef.current = {
       pointerId: event.pointerId,
@@ -5406,11 +5658,12 @@ export function MainWindow({
       dragging: false
     };
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
-    setStatus(selectedFragmentTarget ? "Resize selected molecule fragment" : "Resize selected molecule");
+    setStatus(selectedFragmentTarget
+      ? "Resize selected molecule fragment"
+      : object.type === "molecule" ? "Resize selected molecule" : "Resize selected art object");
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
-    document,
     handleMoleculeResizeInputKeep,
     handleRotationInputKeep,
     openMoleculeResizeInput,
@@ -5726,7 +5979,7 @@ export function MainWindow({
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
-        const label = object?.type === "text" ? "text box" : "selected molecule";
+        const label = documentObjectTransformLabel(object);
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
@@ -5745,9 +5998,11 @@ export function MainWindow({
           moleculeResizeDrag.stretching
         );
         const changed = commitMoleculeResize(moleculeResizeDrag, point);
+        const object = findDocumentObject(documentRef.current, moleculeResizeDrag.objectId);
+        const label = documentObjectTransformLabel(object);
         setStatus(changed
-          ? moleculeResizeDrag.stretching ? "Stretched selected molecule" : "Resized selected molecule"
-          : "Molecule size unchanged");
+          ? moleculeResizeDrag.stretching ? `Stretched ${label}` : `Resized ${label}`
+          : `${capitalizeLabel(label)} size unchanged`);
       }
       clearMoleculeResizeDrag(event);
       return;
@@ -5933,6 +6188,8 @@ export function MainWindow({
                   orientation={toolset.gridLayout?.orientation ?? "vertical"}
                   title={toolset.title}
                   showMainStyleControls={toolset.id === "core.main"}
+                  showTextStyleControls={toolset.id === "core.text"}
+                  showArtStyleControls={toolset.id === "core.art"}
                   currentTextStyle={currentToolbarTextStyle}
                   currentTextScript={currentToolbarTextScript}
                   onInvoke={invoke}
@@ -6863,6 +7120,14 @@ export function rotationInputDraftDegrees(degrees: number): string {
   return `${Number(degrees.toFixed(3))}`;
 }
 
+export function rotationInputHomeDraftDegrees(kind: "z"): { draftZDegrees: string };
+export function rotationInputHomeDraftDegrees(kind: "xy"): { draftXDegrees: string; draftYDegrees: string };
+export function rotationInputHomeDraftDegrees(kind: "z" | "xy") {
+  return kind === "z"
+    ? { draftZDegrees: "0" }
+    : { draftXDegrees: "0", draftYDegrees: "0" };
+}
+
 export function parseMoleculeResizeInputPercent(value: string): number | undefined {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
@@ -6897,6 +7162,10 @@ function normalizeRotationInputDegrees(degrees: number): number {
 
 function degreesToRadians(degrees: number): number {
   return degrees * Math.PI / 180;
+}
+
+function radiansToDegrees(radians: number): number {
+  return radians * 180 / Math.PI;
 }
 
 export function nativePlacementRotationDegrees(start: ClientPoint, latest: ClientPoint): number {
@@ -8922,6 +9191,7 @@ function reactSvgAttributeName(name: string): string {
     "letter-spacing": "letterSpacing",
     "stroke-dasharray": "strokeDasharray",
     "stroke-linecap": "strokeLinecap",
+    "stroke-linejoin": "strokeLinejoin",
     "stroke-width": "strokeWidth",
     "text-anchor": "textAnchor",
     "text-decoration": "textDecoration"
@@ -9176,8 +9446,32 @@ function DocumentObjectView({
     width: `${(object.width / pageWidth) * 100}%`,
     height: `${(object.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
-    transform: `rotate(${object.rotation}deg)`
+    transform: documentObjectCssTransform(object)
   } as CSSProperties;
+  const artObjectTransformFrame = selected && !inGroupSelection && documentObjectSupportsArtTransform(object) ? (
+    <ArtObjectTransformFrame
+      targetLabel="selected art object"
+      rotateReadout={rotateReadout}
+      projectedPlaneTiltReadout={projectedPlaneTiltReadout}
+      rotationInput={rotationInput}
+      resizeReadout={resizeReadout}
+      resizeInput={resizeInput}
+      onRotatePointerDown={handleRotatePointerDown}
+      onRotateDoubleClick={handleRotateDoubleClick}
+      onProjectedPlaneTiltPointerDown={handleProjectedPlaneTiltPointerDown}
+      onProjectedPlaneTiltDoubleClick={handleProjectedPlaneTiltDoubleClick}
+      onRotationInputChange={onRotationInputChange}
+      onRotationInputKeep={onRotationInputKeep}
+      onRotationInputHome={onRotationInputHome}
+      onRotationInputCancel={onRotationInputCancel}
+      onResizePointerDown={handleMoleculeResizePointerDown}
+      onResizeDoubleClick={handleMoleculeResizeDoubleClick}
+      onResizeInputChange={onMoleculeResizeInputChange}
+      onResizeInputKeep={onMoleculeResizeInputKeep}
+      onResizeInputHome={onMoleculeResizeInputHome}
+      onResizeInputCancel={onMoleculeResizeInputCancel}
+    />
+  ) : null;
 
   if (object.type === "molecule") {
     if (isNativeMoleculeGraph(object)) {
@@ -9663,6 +9957,105 @@ function DocumentObjectView({
     );
   }
 
+  if (object.type === "reaction-arrow") {
+    const width = Math.max(object.width, 1);
+    const height = Math.max(object.height, 1);
+    const start = arrowAnchorPointRelativeToObject(object, object.start, { x: 0, y: height / 2 });
+    const end = arrowAnchorPointRelativeToObject(object, object.end, { x: width, y: height / 2 });
+    const markerId = `reaction-arrowhead-${object.id}`;
+    return (
+      <div
+        className={["document-object", "document-object-overlay", "reaction-arrow-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        style={style}
+        data-object-id={object.id}
+        data-layer-index={layerIndex}
+        data-arrow-kind={object.arrowKind}
+        aria-label={`${object.arrowKind === "forward" ? "Forward" : "Reaction"} arrow`}
+        onPointerDown={handleObjectPointerDown}
+        onPointerMove={handleObjectPointerMove}
+        onPointerUp={handleObjectPointerUp}
+        onPointerCancel={handleObjectPointerCancel}
+        onPointerLeave={handleObjectPointerLeave}
+        onContextMenu={handleObjectContextMenu}
+      >
+        <svg
+          className="reaction-arrow-glyph"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <marker
+              id={markerId}
+              markerHeight="7"
+              markerUnits="strokeWidth"
+              markerWidth="7"
+              orient="auto"
+              refX="6"
+              refY="3.5"
+            >
+              <path d="M 0 0 L 7 3.5 L 0 7 z" />
+            </marker>
+          </defs>
+          <line
+            className="reaction-arrow-line"
+            x1={start.x}
+            y1={start.y}
+            x2={end.x}
+            y2={end.y}
+            markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
+          />
+        </svg>
+        {artObjectTransformFrame}
+      </div>
+    );
+  }
+
+  if (object.type === "bracket") {
+    return (
+      <div
+        className={["document-object", "document-object-overlay", "bracket-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        style={style}
+        data-object-id={object.id}
+        data-layer-index={layerIndex}
+        data-bracket-kind={object.bracketKind}
+        data-contained-object-ids={object.containedObjectIds.join(",") || undefined}
+        aria-label={`${object.bracketKind} bracket`}
+        onPointerDown={handleObjectPointerDown}
+        onPointerMove={handleObjectPointerMove}
+        onPointerUp={handleObjectPointerUp}
+        onPointerCancel={handleObjectPointerCancel}
+        onPointerLeave={handleObjectPointerLeave}
+        onContextMenu={handleObjectContextMenu}
+      >
+        <BracketGlyph object={object} />
+        {artObjectTransformFrame}
+      </div>
+    );
+  }
+
+  if (object.type === "graphic") {
+    return (
+      <div
+        className={["document-object", "document-object-overlay", "graphic-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        style={style}
+        data-object-id={object.id}
+        data-layer-index={layerIndex}
+        data-graphic-kind={object.graphicKind}
+        aria-label={`${object.graphicKind} graphic`}
+        onPointerDown={handleObjectPointerDown}
+        onPointerMove={handleObjectPointerMove}
+        onPointerUp={handleObjectPointerUp}
+        onPointerCancel={handleObjectPointerCancel}
+        onPointerLeave={handleObjectPointerLeave}
+        onContextMenu={handleObjectContextMenu}
+      >
+        <GraphicGlyph object={object} />
+        {artObjectTransformFrame}
+      </div>
+    );
+  }
+
   return (
     <div
       className={["document-object", "document-object-overlay", "generic-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
@@ -9674,8 +10067,462 @@ function DocumentObjectView({
       onPointerUp={handleObjectPointerUp}
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
+    >
+      {artObjectTransformFrame}
+    </div>
+  );
+}
+
+function ArtObjectTransformFrame({
+  targetLabel,
+  rotateReadout,
+  projectedPlaneTiltReadout,
+  rotationInput,
+  resizeReadout,
+  resizeInput,
+  onRotatePointerDown,
+  onRotateDoubleClick,
+  onProjectedPlaneTiltPointerDown,
+  onProjectedPlaneTiltDoubleClick,
+  onRotationInputChange,
+  onRotationInputKeep,
+  onRotationInputHome,
+  onRotationInputCancel,
+  onResizePointerDown,
+  onResizeDoubleClick,
+  onResizeInputChange,
+  onResizeInputKeep,
+  onResizeInputHome,
+  onResizeInputCancel
+}: {
+  targetLabel: string;
+  rotateReadout?: ObjectRotateReadoutState;
+  projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
+  rotationInput?: RotationInputState;
+  resizeReadout?: MoleculeResizeReadoutState;
+  resizeInput?: MoleculeResizeInputState;
+  onRotatePointerDown(event: PointerEvent<HTMLButtonElement>): void;
+  onRotateDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
+  onProjectedPlaneTiltPointerDown(event: PointerEvent<HTMLButtonElement>): void;
+  onProjectedPlaneTiltDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
+  onRotationInputChange(nextInput: RotationInputState): void;
+  onRotationInputKeep(input: RotationInputState): void;
+  onRotationInputHome(input: RotationInputState): void;
+  onRotationInputCancel(input: RotationInputState): void;
+  onResizePointerDown(corner: MoleculeResizeCorner): (event: PointerEvent<HTMLButtonElement>) => void;
+  onResizeDoubleClick(corner: MoleculeResizeCorner): (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onResizeInputChange(nextInput: MoleculeResizeInputState): void;
+  onResizeInputKeep(input: MoleculeResizeInputState): void;
+  onResizeInputHome(input: MoleculeResizeInputState): void;
+  onResizeInputCancel(input: MoleculeResizeInputState): void;
+}) {
+  return (
+    <div className="native-molecule-transform-frame art-object-transform-frame" data-art-transform-frame="true">
+      <MoleculeResizeHandles
+        targetLabel={targetLabel}
+        onResizeDoubleClick={onResizeDoubleClick}
+        onResizeStart={onResizePointerDown}
+      />
+      {resizeReadout && !resizeInput ? (
+        <MoleculeResizeReadout
+          scaleXPercent={resizeReadout.scaleXPercent}
+          scaleYPercent={resizeReadout.scaleYPercent}
+        />
+      ) : null}
+      <button
+        type="button"
+        className="native-molecule-rotate-handle"
+        aria-label={`Rotate ${targetLabel}`}
+        data-selection-rotate-handle="true"
+        title={`Rotate ${targetLabel}`}
+        onPointerDown={onRotatePointerDown}
+        onDoubleClick={onRotateDoubleClick}
+      >
+        <RotateSelectionIcon />
+        {rotateReadout ? (
+          <RotateSelectionReadout degrees={rotateReadout.degrees} />
+        ) : null}
+      </button>
+      <button
+        type="button"
+        className="native-molecule-tilt3d-handle art-object-tilt-handle"
+        aria-label={`X/Y rotate ${targetLabel}`}
+        data-selection-tilt3d-handle="true"
+        title={`X/Y rotate ${targetLabel}`}
+        onPointerDown={onProjectedPlaneTiltPointerDown}
+        onDoubleClick={onProjectedPlaneTiltDoubleClick}
+      >
+        <ProjectedPlaneTiltIcon />
+        {projectedPlaneTiltReadout ? (
+          <ProjectedPlaneTiltReadout
+            label={projectedPlaneTiltReadout.label}
+            limited={projectedPlaneTiltReadout.limited}
+          />
+        ) : null}
+      </button>
+      {rotationInput ? (
+        <RotationInputPopover
+          input={rotationInput}
+          onKeep={onRotationInputKeep}
+          onHome={onRotationInputHome}
+          onCancel={onRotationInputCancel}
+          onChange={onRotationInputChange}
+        />
+      ) : null}
+      {resizeInput ? (
+        <MoleculeResizeInputPopover
+          input={resizeInput}
+          onKeep={onResizeInputKeep}
+          onHome={onResizeInputHome}
+          onCancel={onResizeInputCancel}
+          onChange={onResizeInputChange}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function arrowAnchorPointRelativeToObject(
+  object: ArrowObject,
+  anchor: ArrowObject["start"] | ArrowObject["end"],
+  fallback: { x: number; y: number }
+): { x: number; y: number } {
+  if (anchor.kind === "point" && anchor.point) {
+    return {
+      x: anchor.point.x - object.x,
+      y: anchor.point.y - object.y
+    };
+  }
+
+  return fallback;
+}
+
+function BracketGlyph({ object }: { object: BracketObject }) {
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  return (
+    <svg
+      className="bracket-glyph"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <path className="bracket-glyph-path" d={bracketPath(object.bracketKind, width, height)} />
+    </svg>
+  );
+}
+
+function bracketPath(kind: BracketObject["bracketKind"], width: number, height: number): string {
+  const right = Math.max(width - 1, 0);
+  const bottom = Math.max(height - 1, 0);
+  if (kind === "round") {
+    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
+  }
+  if (kind === "curly") {
+    return [
+      `M ${right} 0`,
+      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
+      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
+    ].join(" ");
+  }
+  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
+}
+
+function GraphicGlyph({ object }: { object: GraphicObject }) {
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  const line = object.graphicKind === "line" ? graphicLineGlyphEndpoints(object) : undefined;
+  const strokeColor = metadataColor(object.style.strokeColor, object.style.color, "#111111");
+  const fillColor = metadataFillColor(object.style.fillColor);
+  const strokeWidth = metadataNumberValue(object.style.strokeWidth, 2);
+  const strokeDasharray = metadataStringValue(object.style.strokeDasharray);
+  const cornerRadius = metadataNumberValue(object.data.cornerRadiusPx, 0);
+  const fillMode = metadataStringValue(object.style.fillMode);
+  const effect = metadataStringValue(object.style.effect);
+  const gradientId = `graphic-gloss-${object.id}`;
+  const pathD = graphicPathD(object, width, height);
+  const sharedStrokeProps = {
+    stroke: strokeColor,
+    strokeWidth,
+    strokeDasharray,
+    vectorEffect: "non-scaling-stroke" as const
+  };
+  return (
+    <svg
+      className="graphic-glyph"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      {fillMode === "gloss" ? (
+        <defs>
+          <radialGradient id={gradientId} cx="34%" cy="28%" r="70%">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.92" />
+            <stop offset="28%" stopColor="#ffffff" stopOpacity="0.42" />
+            <stop offset="72%" stopColor={fillColor === "none" ? strokeColor : fillColor} />
+            <stop offset="100%" stopColor="#000000" stopOpacity="0.78" />
+          </radialGradient>
+        </defs>
+      ) : null}
+      {effect === "shadow" && object.graphicKind !== "path" ? (
+        <ArtShapePrimitive
+          kind={object.graphicKind}
+          width={width}
+          height={height}
+          rx={cornerRadius}
+          className="graphic-glyph-shadow"
+          fill="#aeb8c2"
+          stroke="none"
+          transform="translate(6 6)"
+        />
+      ) : null}
+      {object.graphicKind === "ellipse" ? (
+        <ellipse
+          className="graphic-glyph-stroke graphic-glyph-shape"
+          cx={width / 2}
+          cy={height / 2}
+          rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
+          ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
+          fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+          {...sharedStrokeProps}
+        />
+      ) : object.graphicKind === "rect" ? (
+        <rect
+          className="graphic-glyph-stroke graphic-glyph-shape"
+          x={strokeWidth / 2}
+          y={strokeWidth / 2}
+          width={Math.max(width - strokeWidth, 0.5)}
+          height={Math.max(height - strokeWidth, 0.5)}
+          rx={cornerRadius}
+          ry={cornerRadius}
+          fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+          {...sharedStrokeProps}
+        />
+      ) : object.graphicKind === "path" && pathD ? (
+        <path
+          className="graphic-glyph-stroke graphic-glyph-path"
+          d={pathD}
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          {...sharedStrokeProps}
+        />
+      ) : line ? (
+        <line
+          className="graphic-glyph-stroke"
+          x1={line.x1}
+          y1={line.y1}
+          x2={line.x2}
+          y2={line.y2}
+          {...sharedStrokeProps}
+        />
+      ) : (
+        <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
+      )}
+    </svg>
+  );
+}
+
+function ArtShapePrimitive({
+  kind,
+  width,
+  height,
+  rx,
+  className,
+  fill,
+  stroke,
+  transform
+}: {
+  kind: GraphicObject["graphicKind"];
+  width: number;
+  height: number;
+  rx: number;
+  className: string;
+  fill: string;
+  stroke: string;
+  transform?: string;
+}) {
+  return kind === "ellipse" ? (
+    <ellipse
+      className={className}
+      cx={width / 2}
+      cy={height / 2}
+      rx={Math.max(width / 2, 0.5)}
+      ry={Math.max(height / 2, 0.5)}
+      fill={fill}
+      stroke={stroke}
+      transform={transform}
+    />
+  ) : (
+    <rect
+      className={className}
+      x="0"
+      y="0"
+      width={width}
+      height={height}
+      rx={rx}
+      ry={rx}
+      fill={fill}
+      stroke={stroke}
+      transform={transform}
     />
   );
+}
+
+function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
+  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow";
+}
+
+function documentObjectCssTransform(object: DocumentObject): string {
+  if (!documentObjectSupportsArtTransform(object)) {
+    return `rotate(${object.rotation}deg)`;
+  }
+
+  const tilt = documentObjectProjectedPlaneTilt(object);
+  if (Math.abs(tilt.tiltXDegrees) < 0.001 && Math.abs(tilt.tiltYDegrees) < 0.001) {
+    return `rotate(${object.rotation}deg)`;
+  }
+
+  return [
+    "perspective(720px)",
+    `rotateX(${tilt.tiltXDegrees}deg)`,
+    `rotateY(${tilt.tiltYDegrees}deg)`,
+    `rotate(${object.rotation}deg)`
+  ].join(" ");
+}
+
+function documentObjectToolbarColor(object: DocumentObject): string {
+  if (object.type === "graphic") {
+    const fillColor = metadataStringValue(object.style.fillColor);
+    if (fillColor && fillColor.toLowerCase() !== "none") {
+      return metadataColor(fillColor, object.style.strokeColor, object.style.color, "#111111");
+    }
+    return metadataColor(object.style.strokeColor, object.style.color, "#111111");
+  }
+
+  return metadataColor(object.style.color, object.style.strokeColor, object.style.fillColor, "#111111");
+}
+
+function documentObjectTransformLabel(object: DocumentObject | undefined): string {
+  if (object?.type === "text") {
+    return "text box";
+  }
+  if (object?.type === "molecule") {
+    return "selected molecule";
+  }
+  if (object && documentObjectSupportsArtTransform(object)) {
+    return "selected art object";
+  }
+  return "selected object";
+}
+
+function graphicPathD(object: GraphicObject, width: number, height: number): string | undefined {
+  const storedPath = metadataStringValue(object.data.pathD);
+  const pathKind = metadataStringValue(object.data.artPathKind);
+  if (storedPath && !pathKind) {
+    return storedPath;
+  }
+
+  const inset = Math.max(3, metadataNumberValue(object.style.strokeWidth, 2) / 2);
+  if (pathKind === "line") {
+    return `M ${formatSvgNumber(inset)} ${formatSvgNumber(inset)} L ${formatSvgNumber(width - inset)} ${formatSvgNumber(height - inset)}`;
+  }
+
+  if (pathKind === "wavy") {
+    const midY = height / 2;
+    const amplitude = Math.max(4, Math.min(12, height * 0.24));
+    return [
+      `M ${formatSvgNumber(inset)} ${formatSvgNumber(midY)}`,
+      `C ${formatSvgNumber(width * 0.16)} ${formatSvgNumber(midY - amplitude)}, ${formatSvgNumber(width * 0.28)} ${formatSvgNumber(midY + amplitude)}, ${formatSvgNumber(width * 0.4)} ${formatSvgNumber(midY)}`,
+      `S ${formatSvgNumber(width * 0.64)} ${formatSvgNumber(midY - amplitude)}, ${formatSvgNumber(width * 0.76)} ${formatSvgNumber(midY)}`,
+      `S ${formatSvgNumber(width * 0.92)} ${formatSvgNumber(midY + amplitude)}, ${formatSvgNumber(width - inset)} ${formatSvgNumber(midY)}`
+    ].join(" ");
+  }
+
+  if (pathKind === "arc") {
+    return artArcPathD(width, height, metadataNumberValue(object.data.arcAngleDegrees, 180));
+  }
+
+  return storedPath;
+}
+
+function artArcPathD(width: number, height: number, degrees: number): string {
+  const angle = clamp(degrees, 1, 359.9);
+  const rx = Math.max(width / 2 - 4, 1);
+  const ry = Math.max(height / 2 - 4, 1);
+  const center = { x: width / 2, y: height / 2 };
+  const startAngle = -90 - angle / 2;
+  const endAngle = -90 + angle / 2;
+  const start = ellipsePointAtDegrees(center, rx, ry, startAngle);
+  const end = ellipsePointAtDegrees(center, rx, ry, endAngle);
+  return [
+    `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)}`,
+    `A ${formatSvgNumber(rx)} ${formatSvgNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`
+  ].join(" ");
+}
+
+function ellipsePointAtDegrees(
+  center: { x: number; y: number },
+  rx: number,
+  ry: number,
+  degrees: number
+): { x: number; y: number } {
+  const radians = degreesToRadians(degrees);
+  return {
+    x: center.x + Math.cos(radians) * rx,
+    y: center.y + Math.sin(radians) * ry
+  };
+}
+
+function metadataColor(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "none") {
+      return value.trim();
+    }
+  }
+  return "#111111";
+}
+
+function metadataFillColor(value: unknown): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : "none";
+}
+
+function metadataStringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function metadataNumberValue(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function formatSvgNumber(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+function graphicLineGlyphEndpoints(object: GraphicObject): { x1: number; y1: number; x2: number; y2: number } | undefined {
+  const start = graphicPointMetadata(object.data.lineStart);
+  const end = graphicPointMetadata(object.data.lineEnd);
+  if (!start || !end) {
+    return undefined;
+  }
+  return {
+    x1: start.x - object.x,
+    y1: start.y - object.y,
+    x2: end.x - object.x,
+    y2: end.y - object.y
+  };
+}
+
+function graphicPointMetadata(value: unknown): { x: number; y: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const point = value as Record<string, unknown>;
+  const x = point.x;
+  const y = point.y;
+  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)
+    ? { x, y }
+    : undefined;
 }
 
 function TextObjectContent({ editing = false, object }: { editing?: boolean; object: TextObject }) {
@@ -10354,6 +11201,52 @@ function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>
         statusSourceLabel: "embedded ChemDraft document"
       }
     : undefined;
+}
+
+function shouldEnableAgentBridge(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("agentBridge") === "1" ||
+      params.get("chemdraftAgentBridge") === "1" ||
+      window.localStorage.getItem("chemdraft.agentBridge") === "enabled";
+  } catch {
+    return false;
+  }
+}
+
+function agentBridgeDocumentPayloadFromHash(): { contents: string; displayName: string; path?: string } | undefined {
+  if (typeof window === "undefined" || window.location.hash.length <= 1) {
+    return undefined;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const text = params.get("openDocumentText");
+    if (text) {
+      return {
+        contents: text,
+        displayName: params.get("displayName") ?? "Agent document",
+        path: params.get("path") ?? undefined
+      };
+    }
+
+    const encoded = params.get("openDocumentBase64");
+    if (!encoded) {
+      return undefined;
+    }
+
+    return {
+      contents: window.atob(encoded),
+      displayName: params.get("displayName") ?? "Agent document",
+      path: params.get("path") ?? undefined
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function formatSaveStatus(filename: string, warnings: readonly { code: string; message: string }[]): string {
