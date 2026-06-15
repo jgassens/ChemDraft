@@ -1489,15 +1489,6 @@ textarea:focus-visible,
   pointer-events: auto;
 }
 
-.art-object-content {
-  position: absolute;
-  inset: 0;
-  display: block;
-  overflow: visible;
-  transform-origin: center;
-  pointer-events: auto;
-}
-
 .reaction-arrow-glyph,
 .bracket-glyph,
 .graphic-glyph {
@@ -1714,12 +1705,6 @@ textarea:focus-visible,
   position: absolute;
   z-index: 3;
   pointer-events: none;
-}
-
-.art-object-transform-frame {
-  inset: 0;
-  border: 1.5px dashed var(--cd-accent-border);
-  border-radius: var(--cd-radius-control);
 }
 
 /* Bounding box around a multi-object selection (group rotate/resize chrome). */

@@ -597,7 +597,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.8.20-codex";
+const CURRENT_BUILD_STAMP = "6.15.9.12-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -9555,11 +9555,14 @@ function DocumentObjectView({
     zIndex: layerIndex + 20,
     transform: documentObjectSupportsArtTransform(object) ? undefined : documentObjectCssTransform(object)
   } as CSSProperties;
-  const artObjectContentStyle = documentObjectSupportsArtTransform(object)
-    ? { transform: documentObjectCssTransform(object) } as CSSProperties
+  const artObjectProjection = documentObjectSupportsArtTransform(object)
+    ? documentObjectProjectedPlaneProjection(object)
     : undefined;
+  const artObjectGlyphStyle = artObjectProjection?.glyphStyle;
+  const artObjectTransformFrameStyle = artObjectProjection?.frameStyle;
   const artObjectTransformFrame = selected && !inGroupSelection && documentObjectSupportsArtTransform(object) ? (
     <ArtObjectTransformFrame
+      frameStyle={artObjectTransformFrameStyle}
       targetLabel="selected art object"
       rotateReadout={rotateReadout}
       projectedPlaneTiltReadout={projectedPlaneTiltReadout}
@@ -10075,7 +10078,7 @@ function DocumentObjectView({
     const markerId = `reaction-arrowhead-${object.id}`;
     return (
       <div
-        className={["document-object", "document-object-overlay", "reaction-arrow-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        className={["document-object", "document-object-overlay", "reaction-arrow-object"].join(" ")}
         style={style}
         data-object-id={object.id}
         data-layer-index={layerIndex}
@@ -10088,36 +10091,35 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <div className="art-object-content" style={artObjectContentStyle}>
-          <svg
-            className="reaction-arrow-glyph"
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="none"
-            aria-hidden="true"
-          >
-            <defs>
-              <marker
-                id={markerId}
-                markerHeight="7"
-                markerUnits="strokeWidth"
-                markerWidth="7"
-                orient="auto"
-                refX="6"
-                refY="3.5"
-              >
-                <path d="M 0 0 L 7 3.5 L 0 7 z" />
-              </marker>
-            </defs>
-            <line
-              className="reaction-arrow-line"
-              x1={start.x}
-              y1={start.y}
-              x2={end.x}
-              y2={end.y}
-              markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
-            />
-          </svg>
-        </div>
+        <svg
+          className="reaction-arrow-glyph"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          style={artObjectGlyphStyle}
+        >
+          <defs>
+            <marker
+              id={markerId}
+              markerHeight="7"
+              markerUnits="strokeWidth"
+              markerWidth="7"
+              orient="auto"
+              refX="6"
+              refY="3.5"
+            >
+              <path d="M 0 0 L 7 3.5 L 0 7 z" />
+            </marker>
+          </defs>
+          <line
+            className="reaction-arrow-line"
+            x1={start.x}
+            y1={start.y}
+            x2={end.x}
+            y2={end.y}
+            markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
+          />
+        </svg>
         {artObjectTransformFrame}
       </div>
     );
@@ -10126,7 +10128,7 @@ function DocumentObjectView({
   if (object.type === "bracket") {
     return (
       <div
-        className={["document-object", "document-object-overlay", "bracket-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        className={["document-object", "document-object-overlay", "bracket-object"].join(" ")}
         style={style}
         data-object-id={object.id}
         data-layer-index={layerIndex}
@@ -10140,9 +10142,7 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <div className="art-object-content" style={artObjectContentStyle}>
-          <BracketGlyph object={object} />
-        </div>
+        <BracketGlyph object={object} style={artObjectGlyphStyle} />
         {artObjectTransformFrame}
       </div>
     );
@@ -10151,7 +10151,7 @@ function DocumentObjectView({
   if (object.type === "graphic") {
     return (
       <div
-        className={["document-object", "document-object-overlay", "graphic-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        className={["document-object", "document-object-overlay", "graphic-object"].join(" ")}
         style={style}
         data-object-id={object.id}
         data-layer-index={layerIndex}
@@ -10164,9 +10164,7 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <div className="art-object-content" style={artObjectContentStyle}>
-          <GraphicGlyph object={object} />
-        </div>
+        <GraphicGlyph object={object} style={artObjectGlyphStyle} />
         {artObjectTransformFrame}
       </div>
     );
@@ -10190,6 +10188,7 @@ function DocumentObjectView({
 }
 
 function ArtObjectTransformFrame({
+  frameStyle,
   targetLabel,
   rotateReadout,
   projectedPlaneTiltReadout,
@@ -10211,6 +10210,7 @@ function ArtObjectTransformFrame({
   onResizeInputHome,
   onResizeInputCancel
 }: {
+  frameStyle?: CSSProperties;
   targetLabel: string;
   rotateReadout?: ObjectRotateReadoutState;
   projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
@@ -10233,7 +10233,12 @@ function ArtObjectTransformFrame({
   onResizeInputCancel(input: ObjectResizeInputState): void;
 }) {
   return (
-    <div className="object-transform-frame art-object-transform-frame" data-art-transform-frame="true">
+    <div
+      className="object-transform-frame"
+      data-art-transform-frame="true"
+      data-has-tilt3d="true"
+      style={frameStyle ?? { inset: 0 }}
+    >
       <ObjectResizeHandles
         targetLabel={targetLabel}
         onResizeDoubleClick={onResizeDoubleClick}
@@ -10261,7 +10266,7 @@ function ArtObjectTransformFrame({
       </button>
       <button
         type="button"
-        className="object-tilt3d-handle art-object-tilt-handle"
+        className="object-tilt3d-handle"
         aria-label={`X/Y rotate ${targetLabel}`}
         data-selection-tilt3d-handle="true"
         title={`X/Y rotate ${targetLabel}`}
@@ -10313,7 +10318,7 @@ function arrowAnchorPointRelativeToObject(
   return fallback;
 }
 
-function BracketGlyph({ object }: { object: BracketObject }) {
+function BracketGlyph({ object, style }: { object: BracketObject; style?: CSSProperties }) {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   return (
@@ -10322,6 +10327,7 @@ function BracketGlyph({ object }: { object: BracketObject }) {
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
+      style={style}
     >
       <path className="bracket-glyph-path" d={bracketPath(object.bracketKind, width, height)} />
     </svg>
@@ -10344,7 +10350,7 @@ function bracketPath(kind: BracketObject["bracketKind"], width: number, height: 
   return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
 }
 
-function GraphicGlyph({ object }: { object: GraphicObject }) {
+function GraphicGlyph({ object, style }: { object: GraphicObject; style?: CSSProperties }) {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   const line = object.graphicKind === "line" ? graphicLineGlyphEndpoints(object) : undefined;
@@ -10369,6 +10375,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
+      style={style}
     >
       {fillMode === "gloss" ? (
         <defs>
@@ -10490,21 +10497,99 @@ function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
 }
 
 function documentObjectCssTransform(object: DocumentObject): string {
-  if (!documentObjectSupportsArtTransform(object)) {
-    return `rotate(${object.rotation}deg)`;
-  }
+  return `rotate(${object.rotation}deg)`;
+}
 
+function documentObjectProjectedPlaneProjection(object: DocumentObject): {
+  frameStyle?: CSSProperties;
+  glyphStyle?: CSSProperties;
+} | undefined {
   const tilt = documentObjectProjectedPlaneTilt(object);
-  if (Math.abs(tilt.tiltXDegrees) < 0.001 && Math.abs(tilt.tiltYDegrees) < 0.001) {
-    return `rotate(${object.rotation}deg)`;
+  if (
+    Math.abs(tilt.tiltXDegrees) < 0.001 &&
+    Math.abs(tilt.tiltYDegrees) < 0.001 &&
+    Math.abs(object.rotation) < 0.001
+  ) {
+    return undefined;
   }
 
-  return [
-    "perspective(720px)",
-    `rotateX(${tilt.tiltXDegrees}deg)`,
-    `rotateY(${tilt.tiltYDegrees}deg)`,
-    `rotate(${object.rotation}deg)`
-  ].join(" ");
+  const matrix = documentObjectProjectedPlaneMatrix(tilt.tiltXDegrees, tilt.tiltYDegrees, object.rotation);
+  const bounds = documentObjectProjectedPlaneBounds(object.width, object.height, matrix);
+  return {
+    frameStyle: {
+      left: `${bounds.x}px`,
+      top: `${bounds.y}px`,
+      width: `${bounds.width}px`,
+      height: `${bounds.height}px`
+    },
+    glyphStyle: {
+      transform: `matrix(${formatCssNumber(matrix.a)}, ${formatCssNumber(matrix.b)}, ${formatCssNumber(matrix.c)}, ${formatCssNumber(matrix.d)}, 0, 0)`,
+      transformOrigin: "center"
+    }
+  };
+}
+
+function documentObjectProjectedPlaneMatrix(
+  tiltXDegrees: number,
+  tiltYDegrees: number,
+  rotationDegrees: number
+): { a: number; b: number; c: number; d: number } {
+  const tiltXRad = degreesToRadians(tiltXDegrees);
+  const tiltYRad = degreesToRadians(tiltYDegrees);
+  const cx = Math.cos(tiltXRad);
+  const sx = Math.sin(tiltXRad);
+  const cy = Math.cos(tiltYRad);
+  const sy = Math.sin(tiltYRad);
+  const zRad = degreesToRadians(rotationDegrees);
+  const cz = Math.cos(zRad);
+  const sz = Math.sin(zRad);
+
+  // Same screen-space projected-plane basis used by native molecule X/Y tilt
+  // for local z=0 points, expressed as a 2D affine CSS matrix. The in-plane
+  // Z rotation is applied first, then the screen-space Y and X tilts.
+  return {
+    a: cy * cz,
+    b: cx * sz + sx * sy * cz,
+    c: -cy * sz,
+    d: cx * cz - sx * sy * sz
+  };
+}
+
+function documentObjectProjectedPlaneBounds(
+  width: number,
+  height: number,
+  matrix: { a: number; b: number; c: number; d: number }
+): { x: number; y: number; width: number; height: number } {
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const corners = [
+    { x: -halfWidth, y: -halfHeight },
+    { x: halfWidth, y: -halfHeight },
+    { x: halfWidth, y: halfHeight },
+    { x: -halfWidth, y: halfHeight }
+  ].map((point) => ({
+    x: matrix.a * point.x + matrix.c * point.y,
+    y: matrix.b * point.x + matrix.d * point.y
+  }));
+  const minX = Math.min(...corners.map((point) => point.x));
+  const maxX = Math.max(...corners.map((point) => point.x));
+  const minY = Math.min(...corners.map((point) => point.y));
+  const maxY = Math.max(...corners.map((point) => point.y));
+
+  return {
+    x: roundCssCoordinate(halfWidth + minX),
+    y: roundCssCoordinate(halfHeight + minY),
+    width: roundCssCoordinate(maxX - minX),
+    height: roundCssCoordinate(maxY - minY)
+  };
+}
+
+function roundCssCoordinate(value: number): number {
+  return Number(value.toFixed(4));
+}
+
+function formatCssNumber(value: number): string {
+  return `${roundCssCoordinate(value)}`;
 }
 
 function documentObjectToolbarColor(object: DocumentObject): string {

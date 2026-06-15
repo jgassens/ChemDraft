@@ -1785,17 +1785,31 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain("graphic-object");
     expect(markup).toContain('data-graphic-kind="rect"');
-    expect(markup).toContain("art-object-content");
+    expect(markup).not.toContain("art-object-content");
+    expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain("graphic-glyph-shadow");
     expect(markup).toContain('rx="7"');
     expect(markup).toContain('data-art-transform-frame="true"');
-    expect(markup).toContain("art-object-transform-frame");
+    expect(markup).toContain('data-has-tilt3d="true"');
+    expect(markup).not.toContain("art-object-transform-frame");
     expect(markup).toContain("object-resize-handle");
     expect(markup).toContain('data-object-resize-corner="top-left"');
     expect(markup).toContain("object-rotate-handle");
     expect(markup).toContain("object-tilt3d-handle");
+    expect(markup).not.toContain("art-object-tilt-handle");
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
+
+    const tilted = applyDocumentObjectProjectedPlaneTilt(document, document.selection.objectIds[0] ?? "", 35, -20);
+    const tiltedMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: tilted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(tiltedMarkup).toContain("matrix(");
+    expect(tiltedMarkup).not.toContain("perspective(");
   });
 
   it("hides molecule transform handles when the bond tool is active", () => {
