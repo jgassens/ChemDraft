@@ -615,7 +615,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.13.57-codex";
+const CURRENT_BUILD_STAMP = "6.15.14.19-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -630,7 +630,7 @@ export interface SelectionPressSample {
   time: number;
   x: number;
   y: number;
-  /** The molecule resolved under the press, if any. */
+  /** The document object resolved under the press, if any. */
   objectId?: string;
 }
 
@@ -646,8 +646,8 @@ interface TransformHandlePressSample extends SelectionPressSample {
 
 /**
  * True when `current` is the second press of a double-click. Two presses that resolve to the
- * SAME molecule within the time window count, even when they land on different visible parts —
- * a small low-zoom molecule spans more than the screen-distance fallback, and the first press
+ * same object within the time window count, even when they land on different visible parts —
+ * a small low-zoom object can span more than the screen-distance fallback, and the first press
  * mutates selection so the browser's `event.detail` counter is unreliable. Empty-canvas /
  * cross-target presses fall back to a tight screen-distance check.
  */
@@ -660,8 +660,8 @@ export function isSelectionDoublePress(
   if (!previous || current.time - previous.time > windowMs) {
     return false;
   }
-  // When both presses resolve to a molecule, the double-click is defined by the same molecule
-  // (regardless of screen distance — a small low-zoom molecule exceeds the fallback radius).
+  // When both presses resolve to an object, the double-click is defined by the same object
+  // (regardless of screen distance — a small low-zoom object exceeds the fallback radius).
   if (previous.objectId !== undefined && current.objectId !== undefined) {
     return previous.objectId === current.objectId;
   }
@@ -787,6 +787,7 @@ export function MainWindow({
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
+  const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
   const [activeAtomLabelEdit, setActiveAtomLabelEdit] = useState<AtomLabelEditState | undefined>();
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
@@ -2229,6 +2230,7 @@ export function MainWindow({
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    setActiveGraphicTransformObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
@@ -2241,6 +2243,7 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveTextSelection(undefined);
+    setActiveGraphicTransformObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
@@ -4083,6 +4086,7 @@ export function MainWindow({
     handleObjectResizeInputKeep();
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    setActiveGraphicTransformObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
@@ -4456,6 +4460,7 @@ export function MainWindow({
           event.stopPropagation();
           replacePresentDocument((current) => selectDocumentObject(current, object.id));
           setSelectedNativeMoleculePart(undefined);
+          setActiveGraphicTransformObjectId(undefined);
           clearTransientInteractionChrome();
           setStatus("Selected molecule");
           return;
@@ -4471,6 +4476,7 @@ export function MainWindow({
       };
       marqueeMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "marquee" });
       setSelectedNativeMoleculePart(undefined);
+      setActiveGraphicTransformObjectId(undefined);
       clearTransientInteractionChrome();
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
@@ -5218,6 +5224,7 @@ export function MainWindow({
         event.stopPropagation();
         replacePresentDocument((current) => selectDocumentObject(current, objectId));
         clearTransientInteractionChrome();
+        setActiveGraphicTransformObjectId(undefined);
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(undefined);
         setStatus("Selected molecule");
@@ -5240,6 +5247,7 @@ export function MainWindow({
         replacePresentDocument(nextDocument);
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
+        setActiveGraphicTransformObjectId(undefined);
         setActiveAtomLabelEdit(undefined);
         setHoveredNativeAtom(undefined);
         setFreeformNativeBond(undefined);
@@ -5283,6 +5291,7 @@ export function MainWindow({
           : selectDocumentObject(document, objectId);
         replacePresentDocument(selectedDocument);
         clearTransientInteractionChrome();
+        setActiveGraphicTransformObjectId(undefined);
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(dragIntent.target);
         nativePartDragRef.current = {
@@ -5307,6 +5316,7 @@ export function MainWindow({
         replacePresentDocument((current) => selectDocumentObject(current, objectId));
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
+        setActiveGraphicTransformObjectId(undefined);
         setActiveAtomLabelEdit(undefined);
         setHoveredNativeAtom(undefined);
         setFreeformNativeBond(undefined);
@@ -5325,6 +5335,25 @@ export function MainWindow({
       return;
     }
 
+    if (activeToolState.activeKind === "selection" && object?.type === "graphic" && nativeGraphicPathEditPoints(object)) {
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
+      const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+      lastSelectionPressRef.current = press;
+      if (doublePress) {
+        event.preventDefault();
+        event.stopPropagation();
+        const selectedDocument = document.selection.objectIds.includes(objectId)
+          ? document
+          : selectDocumentObject(document, objectId);
+        replacePresentDocument(selectedDocument);
+        clearTransientInteractionChrome();
+        setSelectedNativeMoleculePart(undefined);
+        setActiveGraphicTransformObjectId(objectId);
+        setStatus("Selected art object");
+        return;
+      }
+    }
+
     if (shouldDragDocumentObject(object, activeToolState.activeKind)) {
       event.preventDefault();
       event.stopPropagation();
@@ -5336,6 +5365,9 @@ export function MainWindow({
       replacePresentDocument(selectedDocument);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
+      setActiveGraphicTransformObjectId((current) =>
+        current === objectId && object?.type === "graphic" && nativeGraphicPathEditPoints(object) ? current : undefined
+      );
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
       setFreeformNativeBond(undefined);
@@ -5420,6 +5452,7 @@ export function MainWindow({
     replacePresentDocument((current) => selectDocumentObject(current, objectId));
     setActiveEditorObjectId(object?.type === "molecule" ? object.id : undefined);
     setActiveTextEditObjectId(undefined);
+    setActiveGraphicTransformObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
@@ -6649,6 +6682,7 @@ export function MainWindow({
                       pageWidth={activePage.width}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
+                      graphicTransformActive={activeGraphicTransformObjectId === object.id}
                       selectedPart={selectedPart}
                       editingText={activeTextEditObjectId === object.id}
                       editingAtomLabel={activeAtomLabelEdit?.objectId === object.id ? activeAtomLabelEdit : undefined}
@@ -9728,6 +9762,7 @@ function DocumentObjectView({
   pageHeight,
   selected,
   inGroupSelection,
+  graphicTransformActive,
   selectedPart,
   editingText,
   editingAtomLabel,
@@ -9778,6 +9813,7 @@ function DocumentObjectView({
   pageHeight: number;
   selected: boolean;
   inGroupSelection: boolean;
+  graphicTransformActive: boolean;
   selectedPart?: NativeMoleculeSelectionPart;
   editingText: boolean;
   editingAtomLabel?: AtomLabelEditState;
@@ -9980,7 +10016,16 @@ function DocumentObjectView({
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
   const artObjectTransformFrameStyle = artObjectProjection?.frameStyle;
-  const artObjectTransformFrame = selected && !inGroupSelection && documentObjectSupportsArtTransform(object) ? (
+  const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+  const pathGraphicInEditMode = selected &&
+    object.type === "graphic" &&
+    graphicPathEditPoints !== undefined &&
+    !graphicTransformActive;
+  const showArtObjectTransformFrame = selected &&
+    !inGroupSelection &&
+    documentObjectSupportsArtTransform(object) &&
+    !pathGraphicInEditMode;
+  const artObjectTransformFrame = showArtObjectTransformFrame ? (
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
       targetLabel="selected art object"
@@ -10568,7 +10613,7 @@ function DocumentObjectView({
   }
 
   if (object.type === "graphic") {
-    const graphicPathEditHandles = selected && !inGroupSelection && !artObjectProjection ? (
+    const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection && !artObjectProjection ? (
       <GraphicPathEditHandles
         object={object}
         onPointerDown={handleGraphicPathEditPointerDown}
@@ -10581,6 +10626,9 @@ function DocumentObjectView({
         data-object-id={object.id}
         data-layer-index={layerIndex}
         data-graphic-kind={object.graphicKind}
+        data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints
+          ? pathGraphicInEditMode ? "path-edit" : "object-transform"
+          : undefined}
         aria-label={`${object.graphicKind} graphic`}
         onPointerDown={handleObjectPointerDown}
         onPointerMove={handleObjectPointerMove}
@@ -11028,8 +11076,25 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): Documen
     return undefined;
   }
 
+  if (object.type === "graphic") {
+    const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+    if (!plan.projectionMatrix) {
+      return undefined;
+    }
+
+    return {
+      frameStyle: {
+        left: `${plan.frameBounds.x}px`,
+        top: `${plan.frameBounds.y}px`,
+        width: `${plan.frameBounds.width}px`,
+        height: `${plan.frameBounds.height}px`
+      },
+      matrix: plan.projectionMatrix
+    };
+  }
+
   const matrix = documentObjectProjectedPlaneMatrix(tilt.tiltXDegrees, tilt.tiltYDegrees, object.rotation);
-  const bounds = documentObjectProjectedPlaneBoundsForObject(object, matrix);
+  const bounds = documentObjectProjectedPlaneBounds(object.width, object.height, matrix);
   return {
     frameStyle: {
       left: `${bounds.x}px`,
@@ -11039,30 +11104,6 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): Documen
     },
     matrix
   };
-}
-
-function documentObjectProjectedPlaneBoundsForObject(
-  object: DocumentObject,
-  matrix: DocumentObjectProjectionMatrix
-): { x: number; y: number; width: number; height: number } {
-  if (object.type === "graphic" && (object.graphicKind === "ellipse" || object.graphicKind === "rect")) {
-    const width = Math.max(object.width, 1);
-    const height = Math.max(object.height, 1);
-    if (object.graphicKind === "ellipse") {
-      return documentObjectProjectedEllipseBounds(width, height, matrix);
-    }
-
-    const points = roundedRectPathPoints(
-      width,
-      height,
-      metadataNumberValue(object.data.cornerRadiusPx, 0),
-      0,
-      { x: 0, y: 0 }
-    );
-    return documentObjectProjectedPointsBounds(points, width, height, matrix);
-  }
-
-  return documentObjectProjectedPlaneBounds(object.width, object.height, matrix);
 }
 
 function documentObjectProjectedPlaneMatrix(
@@ -11088,44 +11129,6 @@ function documentObjectProjectedPlaneMatrix(
     b: cx * sz + sx * sy * cz,
     c: -cy * sz,
     d: cx * cz - sx * sy * sz
-  };
-}
-
-function documentObjectProjectedEllipseBounds(
-  width: number,
-  height: number,
-  matrix: DocumentObjectProjectionMatrix
-): { x: number; y: number; width: number; height: number } {
-  const halfWidth = Math.max(width, 1) / 2;
-  const halfHeight = Math.max(height, 1) / 2;
-  const projectedHalfWidth = Math.hypot(matrix.a * halfWidth, matrix.c * halfHeight);
-  const projectedHalfHeight = Math.hypot(matrix.b * halfWidth, matrix.d * halfHeight);
-
-  return {
-    x: roundCssCoordinate(halfWidth - projectedHalfWidth),
-    y: roundCssCoordinate(halfHeight - projectedHalfHeight),
-    width: roundCssCoordinate(projectedHalfWidth * 2),
-    height: roundCssCoordinate(projectedHalfHeight * 2)
-  };
-}
-
-function documentObjectProjectedPointsBounds(
-  points: Array<{ x: number; y: number }>,
-  width: number,
-  height: number,
-  matrix: DocumentObjectProjectionMatrix
-): { x: number; y: number; width: number; height: number } {
-  const projected = points.map((point) => projectArtPoint(point, width, height, matrix));
-  const minX = Math.min(...projected.map((point) => point.x));
-  const maxX = Math.max(...projected.map((point) => point.x));
-  const minY = Math.min(...projected.map((point) => point.y));
-  const maxY = Math.max(...projected.map((point) => point.y));
-
-  return {
-    x: roundCssCoordinate(minX),
-    y: roundCssCoordinate(minY),
-    width: roundCssCoordinate(maxX - minX),
-    height: roundCssCoordinate(maxY - minY)
   };
 }
 

@@ -1834,13 +1834,18 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(lineMarkup).toContain('data-graphic-kind="path"');
+    expect(lineMarkup).toContain('data-graphic-interaction-mode="path-edit"');
     expect(lineMarkup).toContain('data-graphic-path-handle="start"');
     expect(lineMarkup).toContain('data-graphic-path-handle="middle"');
     expect(lineMarkup).toContain('data-graphic-path-handle="end"');
-    expect(lineMarkup).toContain('data-art-transform-frame="true"');
-    expect(lineMarkup).toContain("object-resize-handle");
+    expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
+    expect(lineMarkup).not.toContain("object-resize-handle");
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
+    expect(mainWindowSource).toContain("left: `${plan.frameBounds.x}px`");
+    expect(mainWindowSource).toContain('data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints');
+    expect(mainWindowSource).toContain('setActiveGraphicTransformObjectId(objectId)');
     expect(mainWindowSource).not.toContain("function graphicPathD(object: GraphicObject");
+    expect(mainWindowSource).not.toContain("function documentObjectProjectedEllipseBounds");
 
     const rotated = applyPatch(document, {
       op: "updateObject",
