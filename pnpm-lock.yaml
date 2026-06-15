@@ -23,6 +23,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@chemdraft/art-engine':
+        specifier: workspace:*
+        version: link:../../packages/art-engine
       '@chemdraft/cdx-compat':
         specifier: workspace:*
         version: link:../../packages/cdx-compat
@@ -119,6 +122,15 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/plugin-host
 
+  packages/art-engine:
+    dependencies:
+      '@chemdraft/chem-core':
+        specifier: workspace:*
+        version: link:../chem-core
+      svg-path-commander:
+        specifier: 2.2.1
+        version: 2.2.1
+
   packages/cdx-compat:
     dependencies:
       '@chemdraft/chem-core':
@@ -178,6 +190,9 @@ importers:
 
   packages/layout-engine:
     dependencies:
+      '@chemdraft/art-engine':
+        specifier: workspace:*
+        version: link:../art-engine
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core
@@ -905,6 +920,10 @@ packages:
 
   '@tauri-apps/plugin-fs@2.5.1':
     resolution: {integrity: sha512-9Lz+Jopp6QyeEWhlpkMx4R/+P9HgR+AVAI4vOZhlT8Xaymtz8iVI/Ov984/XTqgJz/5gz5NretqPB/XEMS3NhQ==}
+
+  '@thednp/dommatrix@3.0.4':
+    resolution: {integrity: sha512-xpKtQZqFOuAPfQDbePIh9f48YKfmULV7z9C+anPBSHiOG4P+T3ct7Cx2AZOoUeXbxiDkz7SONANy1bB7p2uysg==}
+    engines: {node: '>=20', pnpm: '>=8.6.0'}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -2168,6 +2187,10 @@ packages:
     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
     engines: {node: '>= 0.4'}
 
+  svg-path-commander@2.2.1:
+    resolution: {integrity: sha512-hZ9GOFBT/J31fTu3UCj+dZs1w4ZqiGCG/nQpFm1CEQ/EPFj9x3pHXPi6EjYuZmPlua7K8CdFc2+HxndiZ/Q3+g==}
+    engines: {node: '>=16', pnpm: '>=8.6.0'}
+
   svg-pathdata@6.0.3:
     resolution: {integrity: sha512-qsjeeq5YjBZ5eMdFuUa4ZosMLxgr5RZ+F+Y1OrDhuOCEInRMA3x74XdBtggJcj9kOeInz0WE+LgCPDkZFlBYJw==}
     engines: {node: '>=12.0.0'}
@@ -3005,6 +3028,8 @@ snapshots:
   '@tauri-apps/plugin-fs@2.5.1':
     dependencies:
       '@tauri-apps/api': 2.11.0
+
+  '@thednp/dommatrix@3.0.4': {}
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -4449,6 +4474,10 @@ snapshots:
       has-flag: 3.0.0
 
   supports-preserve-symlinks-flag@1.0.0: {}
+
+  svg-path-commander@2.2.1:
+    dependencies:
+      '@thednp/dommatrix': 3.0.4
 
   svg-pathdata@6.0.3:
     optional: true

@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@chemdraft/chem-core": workspacePackage("./packages/chem-core/src/index.ts"),
+      "@chemdraft/art-engine": workspacePackage("./packages/art-engine/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("./packages/cdx-compat/src/index.ts"),
       "@chemdraft/fixtures": workspacePackage("./packages/fixtures/src/index.ts"),
       "@chemdraft/style-compat": workspacePackage("./packages/style-compat/src/index.ts"),

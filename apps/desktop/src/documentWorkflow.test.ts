@@ -3534,6 +3534,88 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedPoints.middle.y).toBeCloseTo(pointOnGraphicEllipse(originalGraphic, 0).y, 3);
   });
 
+  it("expands circular art arc radius from the middle handle and preserves edits through history and reopen", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Circular Arc Radius"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const originalPoints = nativeGraphicPathEditPoints(originalGraphic);
+    if (!originalPoints) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const center = {
+      x: originalGraphic.x + originalGraphic.width / 2,
+      y: originalGraphic.y + originalGraphic.height / 2
+    };
+    const dx = originalPoints.middle.x - center.x;
+    const dy = originalPoints.middle.y - center.y;
+    const length = Math.max(Math.hypot(dx, dy), 1);
+    const outwardMiddle = {
+      x: center.x + dx / length * (length + 26),
+      y: center.y + dy / length * (length + 26)
+    };
+
+    const expanded = updateNativeGraphicPathHandle(inserted, objectId, "middle", outwardMiddle);
+    const expandedGraphic = graphicById(expanded, objectId);
+
+    expect(expandedGraphic.width).toBeGreaterThan(originalGraphic.width);
+    expect(expandedGraphic.height).toBeCloseTo(expandedGraphic.width, 3);
+    expect(expandedGraphic.x + expandedGraphic.width / 2).toBeCloseTo(center.x, 3);
+    expect(expandedGraphic.y + expandedGraphic.height / 2).toBeCloseTo(center.y, 3);
+    expect(expandedGraphic.data.arcSweepRadians).toBeCloseTo(degToRad(270), 6);
+    expect(expandedGraphic.data.pathControlPoint).toBeUndefined();
+
+    const radiusHistory = {
+      past: [inserted],
+      present: expanded,
+      future: []
+    };
+    expect(graphicById(undo(radiusHistory).present, objectId).width).toBeCloseTo(originalGraphic.width, 3);
+    expect(graphicById(redo(undo(radiusHistory)).present, objectId).width).toBeCloseTo(expandedGraphic.width, 3);
+
+    const reopened = openNativeDocument(createNativeSavePayload(expanded).contents);
+    expect(graphicById(reopened.document ?? inserted, objectId)).toEqual(expandedGraphic);
+
+    const transformed = applyDocumentObjectProjectedPlaneTilt(
+      rotateDocumentObject(expanded, objectId, 24),
+      objectId,
+      18,
+      -12
+    );
+    const transformedGraphic = graphicById(transformed, objectId);
+    const transformedPoints = nativeGraphicPathEditPoints(transformedGraphic);
+    if (!transformedPoints) {
+      throw new Error("Expected transformed arc art object to remain editable.");
+    }
+    const transformedCenter = {
+      x: transformedGraphic.x + transformedGraphic.width / 2,
+      y: transformedGraphic.y + transformedGraphic.height / 2
+    };
+    const transformedDx = transformedPoints.middle.x - transformedCenter.x;
+    const transformedDy = transformedPoints.middle.y - transformedCenter.y;
+    const transformedLength = Math.max(Math.hypot(transformedDx, transformedDy), 1);
+    const transformedOutwardMiddle = {
+      x: transformedCenter.x + transformedDx / transformedLength * (transformedLength + 16),
+      y: transformedCenter.y + transformedDy / transformedLength * (transformedLength + 16)
+    };
+    const editedAfterTransform = updateNativeGraphicPathHandle(
+      transformed,
+      objectId,
+      "middle",
+      transformedOutwardMiddle
+    );
+
+    expect(graphicById(editedAfterTransform, objectId).width).toBeGreaterThan(transformedGraphic.width);
+    expect(nativeGraphicPathEditPoints(graphicById(editedAfterTransform, objectId))).toBeDefined();
+  });
+
   it("applies selected colors to native molecule atom labels and bonds without recoloring the whole molecule", () => {
     const document = insertNativeSingleBondMolecule(
       createPhase4Document("Selected Part Color"),

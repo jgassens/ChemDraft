@@ -1,4 +1,10 @@
 import {
+  editGraphicPathGeometry,
+  graphicPathEditPoints,
+  type GraphicPathEditHandle,
+  type GraphicPathEditPoints
+} from "@chemdraft/art-engine";
+import {
   applyPatch,
   applyPatches,
   ChemDraftSyntheticStylePreset,
@@ -211,14 +217,8 @@ export interface NativeArtToolDefinition {
   style: GraphicObjectStyle;
 }
 
-export type NativeGraphicPathEditHandle = "start" | "middle" | "end";
-
-export interface NativeGraphicPathEditPoints {
-  start: PagePoint;
-  middle: PagePoint;
-  end: PagePoint;
-  pathKind: "line" | "wavy" | "arc";
-}
+export type NativeGraphicPathEditHandle = GraphicPathEditHandle;
+export type NativeGraphicPathEditPoints = GraphicPathEditPoints;
 
 const artOutlineStyle = {
   strokeColor: "#111111",
@@ -428,8 +428,6 @@ const projectedPlaneTiltMaxDegrees = 360;
 export const documentObjectProjectedPlaneTiltMaxDegrees = 75;
 
 export const projectedPlaneTiltMaxRadians = projectedPlaneTiltMaxDegrees * Math.PI / 180;
-const minimumArcSweepRadians = Math.PI / 180;
-const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
 
 export const nativeSingleBondDimensions = {
   width: 48,
@@ -908,26 +906,7 @@ export function insertNativeArtGraphicObject(
 }
 
 export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphicPathEditPoints | undefined {
-  const pathKind = nativeGraphicPathKind(object);
-  if (!pathKind) {
-    return undefined;
-  }
-
-  const explicitStart = pagePointMetadata(object.data.lineStart);
-  const explicitEnd = pagePointMetadata(object.data.lineEnd);
-  const explicitControl = pagePointMetadata(object.data.pathControlPoint);
-  const fallback = nativeGraphicPathFallbackPoints(object, pathKind);
-  if (isNativeCircularGraphicArc(object)) {
-    return fallback;
-  }
-  const start = explicitStart ?? fallback.start;
-  const end = explicitEnd ?? fallback.end;
-  return {
-    start,
-    end,
-    middle: explicitControl ?? fallback.middle ?? midpoint(start, end),
-    pathKind
-  };
+  return graphicPathEditPoints(object);
 }
 
 export function updateNativeGraphicPathHandle(
@@ -941,45 +920,8 @@ export function updateNativeGraphicPathHandle(
     return document;
   }
 
-  const editPoints = nativeGraphicPathEditPoints(object);
-  if (!editPoints) {
-    return document;
-  }
-
-  if (isNativeCircularGraphicArc(object)) {
-    return updateNativeCircularGraphicArcHandle(document, object, handle, point);
-  }
-
-  const nextStart = handle === "start" ? point : editPoints.start;
-  const nextEnd = handle === "end" ? point : editPoints.end;
-  const nextControl = handle === "middle"
-    ? point
-    : editPoints.pathKind === "arc" ? editPoints.middle : pagePointMetadata(object.data.pathControlPoint);
-  const nextPathKind = handle === "middle" ? "arc" : editPoints.pathKind;
-  const nextData: GraphicObjectData = {
-    ...object.data,
-    artPathKind: nextPathKind,
-    lineStart: nextStart,
-    lineEnd: nextEnd
-  };
-
-  if (nextControl) {
-    nextData.pathControlPoint = nextControl;
-  } else {
-    delete nextData.pathControlPoint;
-  }
-
-  const nextBounds = boundsForNativeGraphicPath(object, nextData);
-  const unchanged =
-    samePoint(pagePointMetadata(object.data.lineStart), nextData.lineStart) &&
-    samePoint(pagePointMetadata(object.data.lineEnd), nextData.lineEnd) &&
-    samePoint(pagePointMetadata(object.data.pathControlPoint), nextData.pathControlPoint) &&
-    object.data.artPathKind === nextData.artPathKind &&
-    Math.abs(object.x - nextBounds.x) < 0.001 &&
-    Math.abs(object.y - nextBounds.y) < 0.001 &&
-    Math.abs(object.width - nextBounds.width) < 0.001 &&
-    Math.abs(object.height - nextBounds.height) < 0.001;
-  if (unchanged) {
+  const edited = editGraphicPathGeometry(object, handle, point);
+  if (!edited || edited === object) {
     return document;
   }
 
@@ -988,198 +930,10 @@ export function updateNativeGraphicPathHandle(
     {
       op: "updateObject",
       objectId,
-      changes: {
-        ...nextBounds,
-        data: nextData
-      }
+      changes: edited
     },
     { now: phase4Timestamp }
   );
-}
-
-function nativeGraphicPathKind(object: GraphicObject): NativeGraphicPathEditPoints["pathKind"] | undefined {
-  const kind = object.data.artPathKind;
-  if (kind === "line" || kind === "wavy" || kind === "arc") {
-    return kind;
-  }
-  return object.graphicKind === "line" ? "line" : undefined;
-}
-
-function isNativeCircularGraphicArc(object: GraphicObject): boolean {
-  return nativeGraphicPathKind(object) === "arc" && !pagePointMetadata(object.data.pathControlPoint);
-}
-
-function updateNativeCircularGraphicArcHandle(
-  document: ChemDraftDocument,
-  object: GraphicObject,
-  handle: NativeGraphicPathEditHandle,
-  point: PagePoint
-): ChemDraftDocument {
-  const currentAngles = nativeCircularGraphicArcAngles(object);
-  const center = objectCenter(object);
-  const rx = Math.max(object.width / 2 - 4, 1);
-  const ry = Math.max(object.height / 2 - 4, 1);
-  const targetRadians = ellipseAngleRadiansForPoint(center, rx, ry, point);
-  const nextStartRadians = handle === "start"
-    ? targetRadians
-    : handle === "middle" ? targetRadians - currentAngles.sweepRadians / 2 : currentAngles.startRadians;
-  const nextSweepRadians = handle === "start"
-    ? arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(targetRadians, currentAngles.endRadians))
-    : handle === "end"
-      ? arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(currentAngles.startRadians, targetRadians))
-      : currentAngles.sweepRadians;
-  const nextData: GraphicObjectData = {
-    ...object.data,
-    artPathKind: "arc",
-    arcStartRadians: nextStartRadians,
-    arcSweepRadians: nextSweepRadians
-  };
-  delete nextData.lineStart;
-  delete nextData.lineEnd;
-  delete nextData.pathControlPoint;
-
-  const unchanged =
-    Math.abs((object.data.arcStartRadians ?? currentAngles.startRadians) - nextStartRadians) < 0.001 &&
-    Math.abs((object.data.arcSweepRadians ?? currentAngles.sweepRadians) - nextSweepRadians) < 0.001 &&
-    !pagePointMetadata(object.data.lineStart) &&
-    !pagePointMetadata(object.data.lineEnd);
-  if (unchanged) {
-    return document;
-  }
-
-  return applyPatch(
-    document,
-    {
-      op: "updateObject",
-      objectId: object.id,
-      changes: { data: nextData }
-    },
-    { now: phase4Timestamp }
-  );
-}
-
-function nativeGraphicPathFallbackPoints(
-  object: GraphicObject,
-  pathKind: NativeGraphicPathEditPoints["pathKind"]
-): NativeGraphicPathEditPoints {
-  if (pathKind === "arc") {
-    const angles = nativeCircularGraphicArcAngles(object);
-    const rx = Math.max(object.width / 2 - 4, 1);
-    const ry = Math.max(object.height / 2 - 4, 1);
-    const center = objectCenter(object);
-    return {
-      start: ellipsePointAtRadians(center, rx, ry, angles.startRadians),
-      middle: ellipsePointAtRadians(center, rx, ry, angles.startRadians + angles.sweepRadians / 2),
-      end: ellipsePointAtRadians(center, rx, ry, angles.endRadians),
-      pathKind
-    };
-  }
-
-  const inset = Math.max(3, (typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 2) / 2);
-  const start = { x: object.x + inset, y: object.y + inset };
-  const end = { x: object.x + object.width - inset, y: object.y + object.height - inset };
-  return {
-    start,
-    middle: midpoint(start, end),
-    end,
-    pathKind
-  };
-}
-
-function boundsForNativeGraphicPath(object: GraphicObject, data: GraphicObjectData): PageRect {
-  const points = [
-    pagePointMetadata(data.lineStart),
-    pagePointMetadata(data.lineEnd),
-    pagePointMetadata(data.pathControlPoint)
-  ].filter((point): point is PagePoint => point !== undefined);
-  if (points.length === 0) {
-    return {
-      x: object.x,
-      y: object.y,
-      width: object.width,
-      height: object.height
-    };
-  }
-
-  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 2;
-  const padding = Math.max(6, strokeWidth * 2);
-  const minX = Math.min(...points.map((point) => point.x));
-  const minY = Math.min(...points.map((point) => point.y));
-  const maxX = Math.max(...points.map((point) => point.x));
-  const maxY = Math.max(...points.map((point) => point.y));
-  const minSize = padding * 2;
-  return {
-    x: minX - padding,
-    y: minY - padding,
-    width: Math.max(maxX - minX + padding * 2, minSize),
-    height: Math.max(maxY - minY + padding * 2, minSize)
-  };
-}
-
-function pagePointMetadata(value: unknown): PagePoint | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const point = value as Record<string, unknown>;
-  return typeof point.x === "number" && Number.isFinite(point.x) &&
-    typeof point.y === "number" && Number.isFinite(point.y)
-    ? { x: point.x, y: point.y }
-    : undefined;
-}
-
-function midpoint(start: PagePoint, end: PagePoint): PagePoint {
-  return {
-    x: (start.x + end.x) / 2,
-    y: (start.y + end.y) / 2
-  };
-}
-
-function ellipsePointAtRadians(center: PagePoint, rx: number, ry: number, radians: number): PagePoint {
-  return {
-    x: center.x + Math.cos(radians) * rx,
-    y: center.y + Math.sin(radians) * ry
-  };
-}
-
-function ellipseAngleRadiansForPoint(center: PagePoint, rx: number, ry: number, point: PagePoint): number {
-  return Math.atan2((point.y - center.y) / Math.max(ry, 1), (point.x - center.x) / Math.max(rx, 1));
-}
-
-function nativeCircularGraphicArcAngles(object: GraphicObject): {
-  startRadians: number;
-  sweepRadians: number;
-  endRadians: number;
-} {
-  const sweepRadians = clampArcSweepRadians(object.data.arcSweepRadians ?? Math.PI);
-  const startRadians = typeof object.data.arcStartRadians === "number" && Number.isFinite(object.data.arcStartRadians)
-    ? object.data.arcStartRadians
-    : -Math.PI / 2 - sweepRadians / 2;
-  return {
-    startRadians,
-    sweepRadians,
-    endRadians: startRadians + sweepRadians
-  };
-}
-
-function clockwiseDeltaRadians(startRadians: number, endRadians: number): number {
-  const delta = (endRadians - startRadians) % (Math.PI * 2);
-  return delta < 0 ? delta + Math.PI * 2 : delta;
-}
-
-function clampArcSweepRadians(radians: number): number {
-  return clamp(Math.abs(radians), minimumArcSweepRadians, maximumArcSweepRadians);
-}
-
-function arcSweepRadiansFromEndpointDrag(radians: number): number {
-  const sweep = Math.abs(radians);
-  return sweep < minimumArcSweepRadians ? maximumArcSweepRadians : clampArcSweepRadians(sweep);
-}
-
-function samePoint(left: PagePoint | undefined, right: PagePoint | undefined): boolean {
-  if (!left || !right) {
-    return left === right;
-  }
-  return Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
 }
 
 export function applyDocumentObjectProjectedPlaneTilt(

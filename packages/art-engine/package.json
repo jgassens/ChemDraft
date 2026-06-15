@@ -1,11 +1,11 @@
 {
-  "name": "@chemdraft/layout-engine",
+  "name": "@chemdraft/art-engine",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@chemdraft/art-engine": "workspace:*",
-    "@chemdraft/chem-core": "workspace:*"
+    "@chemdraft/chem-core": "workspace:*",
+    "svg-path-commander": "2.2.1"
   },
   "exports": {
     ".": {
