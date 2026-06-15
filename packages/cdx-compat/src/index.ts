@@ -702,6 +702,14 @@ function warnForGraphicCdxmlLimitations(
       sourceObjectId: graphic.id
     });
   }
+
+  if (graphic.data.pathControlPoint) {
+    warnings.push({
+      code: "cdxml.graphic_path_control_payload_only",
+      message: "Native path bend control points are preserved exactly only in the embedded ChemDraft payload.",
+      sourceObjectId: graphic.id
+    });
+  }
 }
 
 function exportGraphicAsCdxmlGraphic(

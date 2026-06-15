@@ -1638,6 +1638,45 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.graphic-path-edit-handle {
+  position: absolute;
+  z-index: 4;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  background: var(--cd-bg-control-opaque);
+  border: 2px solid var(--cd-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 78%);
+  cursor: move;
+  pointer-events: all;
+  transform: translate(-50%, -50%);
+}
+
+.graphic-path-edit-handle:hover {
+  background: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+}
+
+.graphic-path-edit-handle-start,
+.graphic-path-edit-handle-end {
+  cursor: grab;
+}
+
+.graphic-path-edit-handle-start:active,
+.graphic-path-edit-handle-end:active,
+.graphic-path-edit-handle-middle:active {
+  cursor: grabbing;
+}
+
+.graphic-path-edit-handle-middle {
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  cursor: ns-resize;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
 .reaction-arrow-glyph marker path {
   fill: #111111;
   stroke: none;

@@ -636,6 +636,9 @@ describe("native document validation and serialization", () => {
         cornerRadiusPx: 7,
         artPathKind: "arc",
         arcAngleDegrees: 180,
+        lineStart: { x: 100, y: 160 },
+        pathControlPoint: { x: 136, y: 104 },
+        lineEnd: { x: 172, y: 160 },
         artToolId: "roundedRectGloss"
       }
     } satisfies GraphicObject;
@@ -656,7 +659,8 @@ describe("native document validation and serialization", () => {
       },
       data: {
         cornerRadiusPx: 7,
-        arcAngleDegrees: 180
+        arcAngleDegrees: 180,
+        pathControlPoint: { x: 136, y: 104 }
       }
     });
   });

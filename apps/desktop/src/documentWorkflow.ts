@@ -211,6 +211,15 @@ export interface NativeArtToolDefinition {
   style: GraphicObjectStyle;
 }
 
+export type NativeGraphicPathEditHandle = "start" | "middle" | "end";
+
+export interface NativeGraphicPathEditPoints {
+  start: PagePoint;
+  middle: PagePoint;
+  end: PagePoint;
+  pathKind: "line" | "wavy" | "arc";
+}
+
 const artOutlineStyle = {
   strokeColor: "#111111",
   fillColor: "none",
@@ -894,6 +903,188 @@ export function insertNativeArtGraphicObject(
     ],
     { now: phase4Timestamp }
   );
+}
+
+export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphicPathEditPoints | undefined {
+  const pathKind = nativeGraphicPathKind(object);
+  if (!pathKind) {
+    return undefined;
+  }
+
+  const explicitStart = pagePointMetadata(object.data.lineStart);
+  const explicitEnd = pagePointMetadata(object.data.lineEnd);
+  const explicitControl = pagePointMetadata(object.data.pathControlPoint);
+  const fallback = nativeGraphicPathFallbackPoints(object, pathKind);
+  const start = explicitStart ?? fallback.start;
+  const end = explicitEnd ?? fallback.end;
+  return {
+    start,
+    end,
+    middle: explicitControl ?? fallback.middle ?? midpoint(start, end),
+    pathKind
+  };
+}
+
+export function updateNativeGraphicPathHandle(
+  document: ChemDraftDocument,
+  objectId: string,
+  handle: NativeGraphicPathEditHandle,
+  point: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (!object || object.type !== "graphic") {
+    return document;
+  }
+
+  const editPoints = nativeGraphicPathEditPoints(object);
+  if (!editPoints) {
+    return document;
+  }
+
+  const nextStart = handle === "start" ? point : editPoints.start;
+  const nextEnd = handle === "end" ? point : editPoints.end;
+  const nextControl = handle === "middle"
+    ? point
+    : editPoints.pathKind === "arc" ? editPoints.middle : pagePointMetadata(object.data.pathControlPoint);
+  const nextPathKind = handle === "middle" ? "arc" : editPoints.pathKind;
+  const nextData: GraphicObjectData = {
+    ...object.data,
+    artPathKind: nextPathKind,
+    lineStart: nextStart,
+    lineEnd: nextEnd
+  };
+
+  if (nextControl) {
+    nextData.pathControlPoint = nextControl;
+  } else {
+    delete nextData.pathControlPoint;
+  }
+
+  const nextBounds = boundsForNativeGraphicPath(object, nextData);
+  const unchanged =
+    samePoint(pagePointMetadata(object.data.lineStart), nextData.lineStart) &&
+    samePoint(pagePointMetadata(object.data.lineEnd), nextData.lineEnd) &&
+    samePoint(pagePointMetadata(object.data.pathControlPoint), nextData.pathControlPoint) &&
+    object.data.artPathKind === nextData.artPathKind &&
+    Math.abs(object.x - nextBounds.x) < 0.001 &&
+    Math.abs(object.y - nextBounds.y) < 0.001 &&
+    Math.abs(object.width - nextBounds.width) < 0.001 &&
+    Math.abs(object.height - nextBounds.height) < 0.001;
+  if (unchanged) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        ...nextBounds,
+        data: nextData
+      }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+function nativeGraphicPathKind(object: GraphicObject): NativeGraphicPathEditPoints["pathKind"] | undefined {
+  const kind = object.data.artPathKind;
+  if (kind === "line" || kind === "wavy" || kind === "arc") {
+    return kind;
+  }
+  return object.graphicKind === "line" ? "line" : undefined;
+}
+
+function nativeGraphicPathFallbackPoints(
+  object: GraphicObject,
+  pathKind: NativeGraphicPathEditPoints["pathKind"]
+): NativeGraphicPathEditPoints {
+  if (pathKind === "arc") {
+    const angle = clamp(object.data.arcAngleDegrees ?? 180, 1, 359.9);
+    const rx = Math.max(object.width / 2 - 4, 1);
+    const ry = Math.max(object.height / 2 - 4, 1);
+    const center = objectCenter(object);
+    return {
+      start: ellipsePointAtDegrees(center, rx, ry, -90 - angle / 2),
+      middle: ellipsePointAtDegrees(center, rx, ry, -90),
+      end: ellipsePointAtDegrees(center, rx, ry, -90 + angle / 2),
+      pathKind
+    };
+  }
+
+  const inset = Math.max(3, (typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 2) / 2);
+  const start = { x: object.x + inset, y: object.y + inset };
+  const end = { x: object.x + object.width - inset, y: object.y + object.height - inset };
+  return {
+    start,
+    middle: midpoint(start, end),
+    end,
+    pathKind
+  };
+}
+
+function boundsForNativeGraphicPath(object: GraphicObject, data: GraphicObjectData): PageRect {
+  const points = [
+    pagePointMetadata(data.lineStart),
+    pagePointMetadata(data.lineEnd),
+    pagePointMetadata(data.pathControlPoint)
+  ].filter((point): point is PagePoint => point !== undefined);
+  if (points.length === 0) {
+    return {
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height
+    };
+  }
+
+  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 2;
+  const padding = Math.max(6, strokeWidth * 2);
+  const minX = Math.min(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const maxY = Math.max(...points.map((point) => point.y));
+  const minSize = padding * 2;
+  return {
+    x: minX - padding,
+    y: minY - padding,
+    width: Math.max(maxX - minX + padding * 2, minSize),
+    height: Math.max(maxY - minY + padding * 2, minSize)
+  };
+}
+
+function pagePointMetadata(value: unknown): PagePoint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const point = value as Record<string, unknown>;
+  return typeof point.x === "number" && Number.isFinite(point.x) &&
+    typeof point.y === "number" && Number.isFinite(point.y)
+    ? { x: point.x, y: point.y }
+    : undefined;
+}
+
+function midpoint(start: PagePoint, end: PagePoint): PagePoint {
+  return {
+    x: (start.x + end.x) / 2,
+    y: (start.y + end.y) / 2
+  };
+}
+
+function ellipsePointAtDegrees(center: PagePoint, rx: number, ry: number, degrees: number): PagePoint {
+  const radians = degrees * Math.PI / 180;
+  return {
+    x: center.x + Math.cos(radians) * rx,
+    y: center.y + Math.sin(radians) * ry
+  };
+}
+
+function samePoint(left: PagePoint | undefined, right: PagePoint | undefined): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
 }
 
 export function applyDocumentObjectProjectedPlaneTilt(

@@ -1011,4 +1011,36 @@ describe("layout-engine page SVG planner", () => {
       "export.svg.graphic_effect_approximation"
     ]);
   });
+
+  it("exports native bent graphic paths from explicit control-point data", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_bent_line",
+        type: "graphic",
+        x: 94,
+        y: 84,
+        width: 132,
+        height: 92,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          strokeWidth: 2
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "arc",
+          lineStart: { x: 100, y: 170 },
+          pathControlPoint: { x: 160, y: 90 },
+          lineEnd: { x: 220, y: 170 }
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-object-id": "art_bent_line",
+      class: "graphic-glyph-stroke graphic-glyph-path",
+      d: "M 100 170 Q 160 90 220 170"
+    });
+  });
 });

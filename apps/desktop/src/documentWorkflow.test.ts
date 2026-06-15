@@ -76,6 +76,7 @@ import {
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
+  nativeGraphicPathEditPoints,
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
@@ -106,7 +107,8 @@ import {
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
-  updateNativeTextObjectText
+  updateNativeTextObjectText,
+  updateNativeGraphicPathHandle
 } from "./documentWorkflow";
 
 function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
@@ -3394,6 +3396,61 @@ describe("Phase 4 document workflow", () => {
       "cdxml.graphic_tilt_payload_only"
     ]);
     expect(graphicCdxmlWarnings.every((warning) => warning.objectId === objectId)).toBe(true);
+  });
+
+  it("edits native graphic path endpoints and bends straight lines into explicit arcs", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Path Edit"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const originalPoints = nativeGraphicPathEditPoints(originalGraphic);
+    if (!originalPoints) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+
+    const extendedEnd = {
+      x: originalPoints.end.x + 64,
+      y: originalPoints.end.y + 12
+    };
+    const endpointEdited = updateNativeGraphicPathHandle(inserted, objectId, "end", extendedEnd);
+    const endpointGraphic = graphicById(endpointEdited, objectId);
+    expect(endpointGraphic.data).toMatchObject({
+      artPathKind: "line",
+      lineStart: originalPoints.start,
+      lineEnd: extendedEnd
+    });
+    expect(endpointGraphic.width).toBeGreaterThan(originalGraphic.width);
+    expect(endpointGraphic.height).toBeGreaterThan(originalGraphic.height);
+    expect(endpointEdited.selection.objectIds).toEqual([objectId]);
+
+    const bentControl = {
+      x: (originalPoints.start.x + extendedEnd.x) / 2,
+      y: originalPoints.start.y - 48
+    };
+    const bent = updateNativeGraphicPathHandle(endpointEdited, objectId, "middle", bentControl);
+    const bentGraphic = graphicById(bent, objectId);
+    expect(bentGraphic.data).toMatchObject({
+      artPathKind: "arc",
+      lineStart: originalPoints.start,
+      lineEnd: extendedEnd,
+      pathControlPoint: bentControl
+    });
+    expect(bentGraphic.y).toBeLessThan(endpointGraphic.y);
+
+    const pathEditHistory = {
+      past: [endpointEdited],
+      present: bent,
+      future: []
+    };
+    expect(graphicById(undo(pathEditHistory).present, objectId).data.artPathKind).toBe("line");
+    expect(graphicById(redo(undo(pathEditHistory)).present, objectId).data.pathControlPoint).toEqual(bentControl);
   });
 
   it("applies selected colors to native molecule atom labels and bonds without recoloring the whole molecule", () => {

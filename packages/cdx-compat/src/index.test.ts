@@ -265,6 +265,41 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     });
   });
 
+  it("warns when a native graphic path bend cannot be represented exactly in visible CDXML", () => {
+    const graphic = {
+      id: "art_cdxml_bent_line",
+      type: "graphic",
+      x: 94,
+      y: 84,
+      width: 132,
+      height: 92,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 2
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "arc",
+        lineStart: { x: 100, y: 170 },
+        pathControlPoint: { x: 160, y: 90 },
+        lineEnd: { x: 220, y: 170 }
+      }
+    } satisfies GraphicObject;
+    const result = exportDocumentToCdxml(documentWithObjects([graphic]), {
+      creationProgram: "Graphic Bend Warning Test"
+    });
+
+    expect(result.contents).toContain('GraphicType="Arc"');
+    expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
+      type: "graphic",
+      data: {
+        pathControlPoint: { x: 160, y: 90 }
+      }
+    });
+    expect(result.warnings.map((item) => item.code)).toContain("cdxml.graphic_path_control_payload_only");
+  });
+
   it("imports and exports ChemDraw shape graphics as native graphic objects", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">

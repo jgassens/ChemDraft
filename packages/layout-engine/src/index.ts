@@ -1807,6 +1807,14 @@ function graphicPathD(object: Extract<DocumentObject, { type: "graphic" }>): str
   }
 
   if (pathKind === "arc") {
+    const endpoints = graphicExplicitLineEndpoints(object);
+    const control = pointMetadata(object.data.pathControlPoint);
+    if (endpoints && control) {
+      return [
+        `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)}`,
+        `Q ${formatNumber(control.x)} ${formatNumber(control.y)} ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`
+      ].join(" ");
+    }
     return artArcPathD(object, metadataNumber(object.data.arcAngleDegrees) ?? 180);
   }
 

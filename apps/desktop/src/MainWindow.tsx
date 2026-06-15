@@ -145,6 +145,7 @@ import {
   nativeElementFromKeyboardKey,
   nativeMoleculeInvalidAtomStates,
   nativeMoleculePartBounds,
+  nativeGraphicPathEditPoints,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
   nativeArtToolForCommand,
@@ -183,6 +184,8 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
+  updateNativeGraphicPathHandle,
+  type NativeGraphicPathEditHandle,
   type NativeTextSelectionRange,
   type ToolbarColorSelection,
   type NativeBondDisplayStyle,
@@ -329,6 +332,15 @@ type ObjectDragState = {
   // When the grabbed object is part of a multi-object selection, the whole set moves
   // together by the pointer delta (group move). Undefined ⇒ single-object move.
   groupObjectIds?: readonly string[];
+  dragging: boolean;
+};
+type GraphicPathEditDragState = {
+  pointerId: number;
+  objectId: string;
+  handle: NativeGraphicPathEditHandle;
+  startDocument: ChemDraftDocument;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
   dragging: boolean;
 };
 type ObjectRotateDragState = {
@@ -602,7 +614,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.12.39-codex";
+const CURRENT_BUILD_STAMP = "6.15.13.21-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -744,6 +756,7 @@ export function MainWindow({
   const nativeBondEditDragRef = useRef<NativeBondEditDragState | null>(null);
   const nativePartDragRef = useRef<NativePartDragState | null>(null);
   const objectDragRef = useRef<ObjectDragState | null>(null);
+  const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -3544,6 +3557,14 @@ export function MainWindow({
     replacePresentDocument(objectDragDocument(drag, point));
   }, [objectDragDocument, replacePresentDocument]);
 
+  const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument =>
+    updateNativeGraphicPathHandle(drag.startDocument, drag.objectId, drag.handle, point), []);
+
+  const previewGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    replacePresentDocument(graphicPathEditDocumentFromDrag(drag, point));
+  }, [graphicPathEditDocumentFromDrag, replacePresentDocument]);
+
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     return drag.target
@@ -3722,6 +3743,22 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory, objectDragDocument, replacePresentDocument]);
+
+  const commitGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): boolean => {
+    const edited = graphicPathEditDocumentFromDrag(drag, point);
+    if (edited === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: edited,
+      future: []
+    });
+    return true;
+  }, [graphicPathEditDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
 
   const commitObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): boolean => {
     const rotated = objectRotateDocumentFromDrag(drag, point);
@@ -4169,6 +4206,20 @@ export function MainWindow({
     }
   }, []);
 
+  const clearGraphicPathEditDrag = useCallback((event: ObjectPointerEvent) => {
+    const drag = graphicPathEditDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      graphicPathEditDragRef.current = null;
+      const page = pageRef.current;
+      if (page?.hasPointerCapture(event.pointerId)) {
+        page.releasePointerCapture(event.pointerId);
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
   const clearObjectRotateDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectRotateDragRef.current;
     if (drag?.pointerId === event.pointerId) {
@@ -4609,6 +4660,33 @@ export function MainWindow({
       return;
     }
 
+    const graphicPathEditDrag = graphicPathEditDragRef.current;
+    if (graphicPathEditDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicPathEditDrag.latestPoint = point;
+      if (!graphicPathEditDrag.dragging && clientPointDistance(graphicPathEditDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        graphicPathEditDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (graphicPathEditDrag.dragging) {
+        previewGraphicPathEdit(graphicPathEditDrag, point);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -4698,6 +4776,7 @@ export function MainWindow({
 
     updateNativeCanvasHover(document, pagePointFromPointerEvent(event), event.target);
   }, [
+    assignHoveredNativeDeleteTarget,
     document,
     groupProjectedPlaneTiltFromDrag,
     groupTransformDocument,
@@ -4706,6 +4785,7 @@ export function MainWindow({
     previewObjectRotateDrag,
     previewProjectedPlaneTilt,
     previewObjectResize,
+    previewGraphicPathEdit,
     previewNativePartDrag,
     previewNativePlacementDrag,
     previewTextResize,
@@ -4813,6 +4893,23 @@ export function MainWindow({
       return;
     }
 
+    const graphicPathEditDrag = graphicPathEditDragRef.current;
+    if (graphicPathEditDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicPathEditDrag.latestPoint;
+      if (graphicPathEditDrag.dragging) {
+        const changed = commitGraphicPathEdit(graphicPathEditDrag, point);
+        setStatus(changed
+          ? graphicPathEditDrag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint"
+          : "Selected line geometry unchanged");
+      } else {
+        replacePresentDocument(graphicPathEditDrag.startDocument);
+        setStatus("Selected art path");
+      }
+      clearGraphicPathEditDrag(event);
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -4886,14 +4983,18 @@ export function MainWindow({
     clearNativePartDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
+    clearObjectResizeDrag,
+    clearGraphicPathEditDrag,
     clearProjectedPlaneTiltDrag,
     clearNativePlacementDrag,
     clearTextResize,
+    commitGraphicPathEdit,
     commitNativePlacementDrag,
     commitNativePartDrag,
     commitTextResize,
     commitObjectDrag,
     commitObjectRotateDrag,
+    commitObjectResize,
     commitProjectedPlaneTilt,
     cycleNativeBondOrder,
     document.pages,
@@ -4947,6 +5048,14 @@ export function MainWindow({
       clearObjectRotateDrag(event);
     }
 
+    const graphicPathEditDrag = graphicPathEditDragRef.current;
+    if (graphicPathEditDrag?.pointerId === event.pointerId) {
+      if (graphicPathEditDrag.dragging) {
+        replacePresentDocument(graphicPathEditDrag.startDocument);
+      }
+      clearGraphicPathEditDrag(event);
+    }
+
     const nativePartDrag = nativePartDragRef.current;
     if (nativePartDrag?.pointerId === event.pointerId && nativePartDrag.dragging) {
       replacePresentDocument(nativePartDrag.startDocument);
@@ -4969,7 +5078,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicPathEditDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -5706,6 +5815,58 @@ export function MainWindow({
     return true;
   }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
+  const handleGraphicPathEditPointerDown = useCallback((
+    objectId: string,
+    handle: NativeGraphicPathEditHandle,
+    event: PointerEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+
+    const point = pagePointFromPointerEvent(event);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    if (!point || object?.type !== "graphic" || !nativeGraphicPathEditPoints(object)) {
+      return;
+    }
+
+    const selectedDocument = currentDocument.selection.objectIds.includes(objectId)
+      ? currentDocument
+      : selectDocumentObject(currentDocument, objectId);
+    replacePresentDocument(selectedDocument);
+    handleRotationInputKeep();
+    handleObjectResizeInputKeep();
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    graphicPathEditDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      handle,
+      startDocument: selectedDocument,
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus(handle === "middle" ? "Bend selected line into an arc" : "Adjust selected line endpoint");
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    handleObjectResizeInputKeep,
+    handleRotationInputKeep,
+    pagePointFromPointerEvent,
+    replacePresentDocument
+  ]);
+
   const handleObjectResizePointerDown = useCallback((
     objectId: string,
     corner: ObjectResizeCorner,
@@ -5997,6 +6158,32 @@ export function MainWindow({
       return;
     }
 
+    const graphicPathEditDrag = graphicPathEditDragRef.current;
+    if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.objectId === objectId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicPathEditDrag.latestPoint = point;
+      if (!graphicPathEditDrag.dragging && clientPointDistance(graphicPathEditDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        graphicPathEditDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (graphicPathEditDrag.dragging) {
+        previewGraphicPathEdit(graphicPathEditDrag, point);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       const point = pagePointFromPointerEvent(event);
@@ -6049,6 +6236,7 @@ export function MainWindow({
     previewObjectDrag,
     previewObjectRotateDrag,
     previewObjectResize,
+    previewGraphicPathEdit,
     previewNativeDoubleBondSideDrag,
     previewNativePartDrag,
     previewTextResize,
@@ -6132,6 +6320,23 @@ export function MainWindow({
       return;
     }
 
+    const graphicPathEditDrag = graphicPathEditDragRef.current;
+    if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.objectId === objectId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicPathEditDrag.latestPoint;
+      if (graphicPathEditDrag.dragging) {
+        const changed = commitGraphicPathEdit(graphicPathEditDrag, point);
+        setStatus(changed
+          ? graphicPathEditDrag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint"
+          : "Selected line geometry unchanged");
+      } else {
+        replacePresentDocument(graphicPathEditDrag.startDocument);
+        setStatus("Selected art path");
+      }
+      clearGraphicPathEditDrag(event);
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       event.stopPropagation();
@@ -6176,7 +6381,9 @@ export function MainWindow({
     clearObjectDrag,
     clearObjectRotateDrag,
     clearObjectResizeDrag,
+    clearGraphicPathEditDrag,
     clearTextResize,
+    commitGraphicPathEdit,
     commitNativeDoubleBondSideDrag,
     commitNativePartDrag,
     commitObjectResize,
@@ -6216,6 +6423,11 @@ export function MainWindow({
       setObjectResizeReadout(undefined);
     }
 
+    const graphicPathEditDrag = graphicPathEditDragRef.current;
+    if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.dragging) {
+      replacePresentDocument(graphicPathEditDrag.startDocument);
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
@@ -6223,6 +6435,7 @@ export function MainWindow({
     clearNativePartDrag(event);
     clearObjectRotateDrag(event);
     clearObjectResizeDrag(event);
+    clearGraphicPathEditDrag(event);
     clearObjectDrag(event);
     clearNativeBondEditDrag(event);
     clearNativeBondDrag(event);
@@ -6234,6 +6447,7 @@ export function MainWindow({
     clearNativeBondDrag,
     clearNativeBondEditDrag,
     clearNativePartDrag,
+    clearGraphicPathEditDrag,
     clearObjectResizeDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
@@ -6247,6 +6461,7 @@ export function MainWindow({
       nativeBondEditDragRef.current?.objectId === objectId ||
       nativePartDragRef.current?.objectId === objectId ||
       objectDragRef.current?.objectId === objectId ||
+      graphicPathEditDragRef.current?.objectId === objectId ||
       objectRotateDragRef.current?.objectId === objectId ||
       objectResizeDragRef.current?.objectId === objectId
     ) {
@@ -6447,6 +6662,7 @@ export function MainWindow({
                       onRotateDoubleClick={handleObjectRotateDoubleClick}
                       onProjectedPlaneTiltPointerDown={handleProjectedPlaneTiltPointerDown}
                       onProjectedPlaneTiltDoubleClick={handleProjectedPlaneTiltDoubleClick}
+                      onGraphicPathEditPointerDown={handleGraphicPathEditPointerDown}
                       onRotationInputChange={handleRotationInputChange}
                       onRotationInputKeep={handleRotationInputKeep}
                       onRotationInputHome={handleRotationInputHome}
@@ -9521,6 +9737,7 @@ function DocumentObjectView({
   onRotateDoubleClick,
   onProjectedPlaneTiltPointerDown,
   onProjectedPlaneTiltDoubleClick,
+  onGraphicPathEditPointerDown,
   onRotationInputChange,
   onRotationInputKeep,
   onRotationInputHome,
@@ -9570,6 +9787,7 @@ function DocumentObjectView({
   onRotateDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
+  onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
   onRotationInputKeep(input: RotationInputState): void;
   onRotationInputHome(input: RotationInputState): void;
@@ -9637,6 +9855,9 @@ function DocumentObjectView({
   };
   const handleProjectedPlaneTiltDoubleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     onProjectedPlaneTiltDoubleClick(object.id, event);
+  };
+  const handleGraphicPathEditPointerDown = (handle: NativeGraphicPathEditHandle) => (event: PointerEvent<HTMLButtonElement>) => {
+    onGraphicPathEditPointerDown(object.id, handle, event);
   };
   const handleObjectResizePointerDown = (corner: ObjectResizeCorner) => (event: PointerEvent<HTMLButtonElement>) => {
     onObjectResizePointerDown(object.id, corner, event);
@@ -10333,6 +10554,12 @@ function DocumentObjectView({
   }
 
   if (object.type === "graphic") {
+    const graphicPathEditHandles = selected && !inGroupSelection && !artObjectProjection ? (
+      <GraphicPathEditHandles
+        object={object}
+        onPointerDown={handleGraphicPathEditPointerDown}
+      />
+    ) : null;
     return (
       <div
         className={["document-object", "document-object-overlay", "graphic-object"].join(" ")}
@@ -10349,6 +10576,7 @@ function DocumentObjectView({
         onContextMenu={handleObjectContextMenu}
       >
         <GraphicGlyph object={object} projection={artObjectProjection} />
+        {graphicPathEditHandles}
         {artObjectTransformFrame}
       </div>
     );
@@ -10677,6 +10905,48 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
         </g>
       )}
     </svg>
+  );
+}
+
+function GraphicPathEditHandles({
+  object,
+  onPointerDown
+}: {
+  object: GraphicObject;
+  onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<HTMLButtonElement>) => void;
+}) {
+  const points = nativeGraphicPathEditPoints(object);
+  if (!points) {
+    return null;
+  }
+
+  const handles: Array<{ handle: NativeGraphicPathEditHandle; point: { x: number; y: number }; label: string }> = [
+    { handle: "start", point: points.start, label: "Adjust line start" },
+    { handle: "middle", point: points.middle, label: "Bend line into arc" },
+    { handle: "end", point: points.end, label: "Adjust line end" }
+  ];
+
+  return (
+    <>
+      {handles.map(({ handle, point, label }) => (
+        <button
+          type="button"
+          className={[
+            "graphic-path-edit-handle",
+            `graphic-path-edit-handle-${handle}`
+          ].join(" ")}
+          aria-label={label}
+          data-graphic-path-handle={handle}
+          key={handle}
+          style={{
+            left: `${point.x - object.x}px`,
+            top: `${point.y - object.y}px`
+          }}
+          title={label}
+          onPointerDown={onPointerDown(handle)}
+        />
+      ))}
+    </>
   );
 }
 
@@ -11249,6 +11519,14 @@ function graphicPathD(object: GraphicObject, width: number, height: number): str
   }
 
   if (pathKind === "arc") {
+    const endpoints = graphicLineGlyphEndpoints(object);
+    const control = graphicPathControlPoint(object);
+    if (endpoints && control) {
+      return [
+        `M ${formatSvgNumber(endpoints.x1)} ${formatSvgNumber(endpoints.y1)}`,
+        `Q ${formatSvgNumber(control.x)} ${formatSvgNumber(control.y)} ${formatSvgNumber(endpoints.x2)} ${formatSvgNumber(endpoints.y2)}`
+      ].join(" ");
+    }
     return artArcPathD(width, height, metadataNumberValue(object.data.arcAngleDegrees, 180));
   }
 
@@ -11372,6 +11650,16 @@ function graphicLineGlyphEndpoints(object: GraphicObject): { x1: number; y1: num
     x2: end.x - object.x,
     y2: end.y - object.y
   };
+}
+
+function graphicPathControlPoint(object: GraphicObject): { x: number; y: number } | undefined {
+  const point = graphicPointMetadata(object.data.pathControlPoint);
+  return point
+    ? {
+        x: point.x - object.x,
+        y: point.y - object.y
+      }
+    : undefined;
 }
 
 function graphicPointMetadata(value: unknown): { x: number; y: number } | undefined {

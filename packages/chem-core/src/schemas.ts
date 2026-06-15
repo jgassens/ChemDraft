@@ -81,6 +81,7 @@ export const GraphicObjectDataSchema = z
   .object({
     lineStart: PointSchema.optional(),
     lineEnd: PointSchema.optional(),
+    pathControlPoint: PointSchema.optional(),
     pathD: z.string().optional(),
     artPathKind: z.enum(["line", "wavy", "arc"]).optional(),
     arcAngleDegrees: z.number().finite().positive().optional(),

@@ -1813,6 +1813,25 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
 
+    const lineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Line Art Render"),
+      { x: 260, y: 220 },
+      "tool.art.line"
+    );
+    const lineMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: lineDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(lineMarkup).toContain('data-graphic-kind="path"');
+    expect(lineMarkup).toContain('data-graphic-path-handle="start"');
+    expect(lineMarkup).toContain('data-graphic-path-handle="middle"');
+    expect(lineMarkup).toContain('data-graphic-path-handle="end"');
+    expect(lineMarkup).toContain('data-art-transform-frame="true"');
+    expect(lineMarkup).toContain("object-resize-handle");
+
     const rotated = applyPatch(document, {
       op: "updateObject",
       objectId: document.selection.objectIds[0] ?? "",
