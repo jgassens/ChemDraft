@@ -1850,6 +1850,10 @@ describe("ChemDraft desktop shell", () => {
     expect(rotatedSphereMarkup).toContain("graphic-glyph-projected-shape");
     expect(rotatedSphereMarkup).not.toContain("transform:rotate(45deg)");
     expect(rotatedSphereMarkup).toContain("left:0px;top:0px;width:48px;height:48px");
+    expect(rotatedSphereMarkup).toContain('gradientUnits="userSpaceOnUse"');
+    expect(rotatedSphereMarkup).toContain('gradientTransform="matrix(');
+    expect(rotatedSphereMarkup).not.toContain('cx="34%"');
+    expect(rotatedSphereMarkup).not.toContain('cy="28%"');
     expect(rotatedSphereMarkup).not.toContain("66.423");
 
     const tilted = applyDocumentObjectProjectedPlaneTilt(document, document.selection.objectIds[0] ?? "", 35, -20);

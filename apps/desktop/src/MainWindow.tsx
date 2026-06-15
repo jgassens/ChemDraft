@@ -602,7 +602,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.11.57-codex";
+const CURRENT_BUILD_STAMP = "6.15.12.39-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -10554,6 +10554,7 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
   const projectionTransform = projection?.matrix
     ? artProjectionSvgTransform(width, height, projection.matrix)
     : undefined;
+  const glossGradient = graphicGlossGradient(width, height, projection?.matrix);
   const sharedStrokeProps = {
     stroke: strokeColor,
     strokeWidth,
@@ -10569,7 +10570,14 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
     >
       {fillMode === "gloss" ? (
         <defs>
-          <radialGradient id={gradientId} cx="34%" cy="28%" r="70%">
+          <radialGradient
+            id={gradientId}
+            cx={glossGradient.cx}
+            cy={glossGradient.cy}
+            r={glossGradient.r}
+            gradientTransform={glossGradient.gradientTransform}
+            gradientUnits="userSpaceOnUse"
+          >
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.92" />
             <stop offset="28%" stopColor="#ffffff" stopOpacity="0.42" />
             <stop offset="72%" stopColor={fillColor === "none" ? strokeColor : fillColor} />
@@ -10670,6 +10678,19 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
       )}
     </svg>
   );
+}
+
+function graphicGlossGradient(
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix | undefined
+): { cx: number; cy: number; r: number; gradientTransform?: string } {
+  return {
+    cx: formatSvgNumber(width * 0.34),
+    cy: formatSvgNumber(height * 0.28),
+    r: formatSvgNumber(Math.max(width, height) * 0.7),
+    gradientTransform: matrix ? artProjectionSvgTransform(width, height, matrix) : undefined
+  };
 }
 
 function ArtShapePrimitive({
