@@ -1343,11 +1343,12 @@ function planNativeMoleculeGraphSvg(
         fill: drawingStyle.atomLabelBackgroundColor
       });
     }),
-    ...atomLabels.map(({ atom, label }) =>
-      elementFragment("g", `label-${object.id}-${atom.id}`, {
+    ...atomLabels.map(({ atom, label }) => {
+      const anchor = atomLabelAnchor(atom);
+      return elementFragment("g", `label-${object.id}-${atom.id}`, {
         class: "native-atom-label",
         "data-atom-label": label,
-        transform: `translate(${formatNumber(atom.x)} ${formatNumber(atom.y)})`,
+        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
         fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
         "font-family": drawingStyle.atomLabelFontFamily,
         "font-size": drawingStyle.atomLabelFontSizePx,
@@ -1362,8 +1363,8 @@ function planNativeMoleculeGraphSvg(
           "text-anchor": run.textAnchor,
           "font-size": atomLabelRunFontSize(run.script, drawingStyle)
         }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
-      ))
-    ),
+      ));
+    }),
     ...object.atoms.map((atom) =>
       elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
         class: "native-atom-hit-target",
@@ -1803,7 +1804,7 @@ function bondLineSegments(
   }
 
   const unit = { x: dx / length, y: dy / length };
-  const clearance = labelEndpointClearance(fromLabel, toLabel, drawingStyle, length, unit);
+  const clearance = labelEndpointClearance(fromAtom, toAtom, fromLabel, toLabel, drawingStyle, length, unit);
   const x1 = fromAtom.x + unit.x * clearance.from;
   const y1 = fromAtom.y + unit.y * clearance.from;
   const x2 = toAtom.x - unit.x * clearance.to;
@@ -1869,14 +1870,16 @@ function bondLineSegments(
 }
 
 export function labelEndpointClearance(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
   fromLabel: string | undefined,
   toLabel: string | undefined,
   drawingStyle: NativeDrawingStyle,
   bondLength: number,
   unit: { x: number; y: number }
 ): { from: number; to: number } {
-  const from = atomLabelBondClearance(fromLabel, drawingStyle, unit);
-  const to = atomLabelBondClearance(toLabel, drawingStyle, { x: -unit.x, y: -unit.y });
+  const from = atomLabelBondClearance(fromAtom, fromLabel, drawingStyle, unit);
+  const to = atomLabelBondClearance(toAtom, toLabel, drawingStyle, { x: -unit.x, y: -unit.y });
   const total = from + to;
   const maximumTotal = bondLength * 0.55;
   if (total <= maximumTotal || total === 0) {
@@ -1888,6 +1891,7 @@ export function labelEndpointClearance(
 }
 
 function atomLabelBondClearance(
+  atom: MoleculeAtom,
   label: string | undefined,
   drawingStyle: NativeDrawingStyle,
   direction: { x: number; y: number }
@@ -1896,7 +1900,7 @@ function atomLabelBondClearance(
     return 0;
   }
 
-  const { bounds } = atomLabelLayout(label, drawingStyle);
+  const bounds = atomLabelBoundsRelativeToAtom(atom, label, drawingStyle);
   const horizontalDistance = direction.x > 0.0001
     ? (bounds.x + bounds.width) / direction.x
     : direction.x < -0.0001
@@ -1917,10 +1921,32 @@ function atomLabelBox(
   label: string,
   drawingStyle: NativeDrawingStyle
 ): { x: number; y: number; width: number; height: number } {
+  const anchor = atomLabelAnchor(atom);
   const { bounds } = atomLabelLayout(label, drawingStyle);
   return {
-    x: atom.x + bounds.x,
-    y: atom.y + bounds.y,
+    x: anchor.x + bounds.x,
+    y: anchor.y + bounds.y,
+    width: bounds.width,
+    height: bounds.height
+  };
+}
+
+function atomLabelAnchor(atom: MoleculeAtom): LayoutPoint {
+  return {
+    x: atom.x + (atom.labelOffset?.x ?? 0),
+    y: atom.y + (atom.labelOffset?.y ?? 0)
+  };
+}
+
+function atomLabelBoundsRelativeToAtom(
+  atom: MoleculeAtom,
+  label: string,
+  drawingStyle: NativeDrawingStyle
+): { x: number; y: number; width: number; height: number } {
+  const { bounds } = atomLabelLayout(label, drawingStyle);
+  return {
+    x: (atom.labelOffset?.x ?? 0) + bounds.x,
+    y: (atom.labelOffset?.y ?? 0) + bounds.y,
     width: bounds.width,
     height: bounds.height
   };

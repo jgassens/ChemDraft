@@ -259,12 +259,14 @@ function staticResourcesUrl(): string {
 function installKetcherBrowserGlobals(): void {
   const host = globalThis as typeof globalThis & {
     global?: typeof globalThis;
+  };
+  const processHost = globalThis as unknown as {
     process?: { env?: Record<string, string | undefined> };
   };
 
   host.global = host;
-  host.process ??= { env: {} };
-  host.process.env ??= {};
+  processHost.process ??= { env: {} };
+  processHost.process.env ??= {};
 }
 
 function installKetcherRequireShim(modules: ReadonlyMap<string, unknown>): void {

@@ -89,7 +89,7 @@ export const cdxmlFixtures: Record<string, string> = {
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="75 75"/>
-      <n id="a2" p="111 75"/>
+      <n id="a2" p="75 111"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
   </page>
@@ -101,7 +101,7 @@ export const cdxmlFixtures: Record<string, string> = {
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="75 75"/>
-      <n id="a2" p="111 75" Element="8" Charge="-1"/>
+      <n id="a2" p="75 111" Element="8" Charge="-1"/>
       <b id="b1" B="a1" E="a2" Order="2"/>
     </fragment>
   </page>
@@ -113,7 +113,7 @@ export const cdxmlFixtures: Record<string, string> = {
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="96 96"/>
-      <n id="a2" p="132 96" Element="7"/>
+      <n id="a2" p="96 132" Element="7"/>
       <b id="b1" B="a1" E="a2" Order="3"/>
     </fragment>
   </page>
@@ -125,7 +125,7 @@ export const cdxmlFixtures: Record<string, string> = {
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="120 120"/>
-      <n id="a2" p="156 120"/>
+      <n id="a2" p="120 156"/>
       <b id="b1" B="a1" E="a2" Order="1.5"/>
     </fragment>
   </page>
@@ -137,10 +137,10 @@ export const cdxmlFixtures: Record<string, string> = {
   <page id="p1" BoundingBox="0 0 792 612">
     <fragment id="f1">
       <n id="a1" p="150 150"/>
-      <n id="a2" p="186 150"/>
-      <n id="a3" p="150 186"/>
+      <n id="a2" p="150 186"/>
+      <n id="a3" p="186 150"/>
       <n id="a4" p="186 186"/>
-      <n id="a5" p="168 222"/>
+      <n id="a5" p="222 168"/>
       <b id="b1" B="a1" E="a2" Order="1" Display="WedgeBegin"/>
       <b id="b2" B="a1" E="a3" Order="1" Display="Hash"/>
       <b id="b3" B="a2" E="a4" Order="1" Display="Dash"/>
@@ -159,8 +159,8 @@ export const cdxmlFixtures: Record<string, string> = {
       <b id="b_back" B="a1" E="a2" Order="1" Z="1" CrossingBonds="b_front"/>
     </fragment>
     <fragment id="f_front">
-      <n id="a3" p="216 144"/>
-      <n id="a4" p="144 216"/>
+      <n id="a3" p="144 216"/>
+      <n id="a4" p="216 144"/>
       <b id="b_front" B="a3" E="a4" Order="1" Z="2" Display="Bold" CrossingBonds="b_back"/>
     </fragment>
     <graphic id="g_crossing" BoundingBox="174 174 186 186" GraphicType="Bracket" BracketType="Round" LipSize="60"/>
@@ -176,30 +176,30 @@ export const cdxmlFixtures: Record<string, string> = {
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
   <page id="p1" BoundingBox="0 0 792 612">
-    <t id="conditions" p="120 84">DIPEA, DMSO</t>
-    <graphic id="arrow1" GraphicType="Line" ArrowType="FullHead" BoundingBox="156 96 252 96" Start="156 96" End="252 96"/>
+    <t id="conditions" p="84 120">DIPEA, DMSO</t>
+    <graphic id="arrow1" GraphicType="Line" ArrowType="FullHead" BoundingBox="96 156 96 252" Start="96 156" End="96 252"/>
     <fragment id="f_stereo_display">
       <n id="s1" p="168 168"/>
-      <n id="s2" p="204 168"/>
-      <n id="s3" p="168 204"/>
+      <n id="s2" p="168 204"/>
+      <n id="s3" p="204 168"/>
       <n id="s4" p="204 204"/>
-      <n id="s5" p="186 240"/>
+      <n id="s5" p="240 186"/>
       <b id="sb1" B="s1" E="s2" Order="1" Display="WedgeBegin"/>
       <b id="sb2" B="s1" E="s3" Order="1" Display="WedgedHashBegin"/>
       <b id="sb3" B="s2" E="s4" Order="1" Display="Dash"/>
       <b id="sb4" B="s3" E="s5" Order="1" Display="Bold"/>
     </fragment>
     <fragment id="f_back">
-      <n id="c1" p="168 300"/>
-      <n id="c2" p="240 372"/>
+      <n id="c1" p="300 168"/>
+      <n id="c2" p="372 240"/>
       <b id="b_back" B="c1" E="c2" Order="1" Z="1" CrossingBonds="b_front"/>
     </fragment>
     <fragment id="f_front">
-      <n id="c3" p="168 372"/>
-      <n id="c4" p="240 300"/>
+      <n id="c3" p="372 168"/>
+      <n id="c4" p="300 240"/>
       <b id="b_front" B="c3" E="c4" Order="1" Z="2" Display="Bold" CrossingBonds="b_back"/>
     </fragment>
-    <graphic id="g_crossing" BoundingBox="198 330 210 342" GraphicType="Bracket" BracketType="Round" LipSize="60"/>
+    <graphic id="g_crossing" BoundingBox="330 198 342 210" GraphicType="Bracket" BracketType="Round" LipSize="60"/>
     <bracketedgroup id="bg_crossing" BracketedObjectIDs="c1 c2">
       <bracketattachment id="ba_crossing" GraphicID="g_crossing">
         <crossingbond id="cb_crossing" BondID="b_back" InnerAtomID="c1"/>
@@ -213,10 +213,10 @@ export const cdxmlFixtures: Record<string, string> = {
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
   <page id="p1" BoundingBox="0 0 792 612">
     <t id="t1" p="72 72">  reagent &amp; label  </t>
-    <t id="plus1" p="144 96">+</t>
+    <t id="plus1" p="96 144">+</t>
     <fragment id="f1">
-      <n id="a1" p="180 120"/>
-      <n id="a2" p="216 120" Element="17"/>
+      <n id="a1" p="120 180"/>
+      <n id="a2" p="120 216" Element="17"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
   </page>
@@ -226,7 +226,7 @@ export const cdxmlFixtures: Record<string, string> = {
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
   <page id="p1" BoundingBox="0 0 792 612">
-    <graphic id="arrow1" GraphicType="Line" ArrowType="forward" BoundingBox="120 120 216 120" Start="120 120" End="216 120"/>
+    <graphic id="arrow1" GraphicType="Line" ArrowType="forward" BoundingBox="120 120 120 216" Start="120 120" End="120 216"/>
   </page>
 </CDXML>
 `,

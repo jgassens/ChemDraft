@@ -40,11 +40,13 @@
     "allow-tool-palette-state",
     "allow-route-palette-command",
     "allow-toggle-spin3d-debugger-window",
+    "allow-rasterize-svg",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-confirm",
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
+    "fs:allow-write-file",
     {
       "identifier": "fs:scope",
       "allow": [

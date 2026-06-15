@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   DefaultNativeTextStyle,
   applyPatch,
+  createDocumentHistory,
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
   type DocumentObject,
@@ -19,8 +20,10 @@ import {
   pageOrientationActions,
   pageSizeActions,
   paletteGroups,
+  structureCleanup3dCommandId,
   structureCleanupCommandId,
   structureSpin3dCommandId,
+  structureRotate3dCommandId,
   textCustomColorCommandId,
   textStylePatchForCommand,
   textToolbarActions,
@@ -41,9 +44,11 @@ import {
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
+  openNativeDocument,
   reorderSelectedDocumentObject,
   setDocumentPageOrientation,
-  setDocumentPageSize
+  setDocumentPageSize,
+  tiltNativeMoleculeProjectedPlane
 } from "./documentWorkflow";
 import {
   MainWindow,
@@ -55,6 +60,7 @@ import {
   cumulativeRotationReadoutDegrees,
   hoveredNativeTargetShortcutCommand,
   moleculeResizeReadoutPercent,
+  moleculeResizeInputDraftPercent,
   moleculeResizeScaleFromDrag,
   bondDepthContextFromNativeSelection,
   bondDepthRefsFromNativeSelection,
@@ -66,13 +72,21 @@ import {
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
   isSelectionDoublePress,
+  manualRotationDeltaDegrees,
   planBondDepthPatches,
   reorderSelectedDocumentObjectWithCrossingDefaults,
   nativeMoleculeSelectionDragIntent,
   nativeSelectionWithHitToggled,
   pagePointFromRenderedPageRect,
-  resolvePngCanvasSize,
+  parseRotationInputDegrees,
+  parseMoleculeResizeInputPercent,
+  projectedPlaneTiltCommitHistory,
+  projectedPlaneTiltRadiansFromDrag,
+  projectedPlaneTiltReadoutDegrees,
+  projectedPlaneTiltReadoutLabel,
+  projectedPlaneTiltVectorFromDrag,
   rotationDeltaDegrees,
+  rotationInputDraftDegrees,
   rotationReadoutDegrees,
   selectionInSelectionRect,
   selectionInSelectionPolygon,
@@ -131,6 +145,31 @@ function buttonMarkupForCommand(markup: string, commandId: string): string {
 
 const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
+const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
+const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
+const desktopToolsetsSource = readFileSync(new URL("./toolsets/desktop-toolsets.json", import.meta.url), "utf8");
+const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="External CDXML Fixture">
+  <page id="page_001" BoundingBox="0 0 792 612">
+    <fragment id="1" BoundingBox="145.6553 124.875 224.6208 168.0677">
+      <n id="2" p="157.6553 130.875"/>
+      <n id="3" p="157.6553 147.375"/>
+      <n id="4" p="173.2089 152.8828"/>
+      <n id="5" p="183.5926 140.0599"/>
+      <n id="6" p="199.1462 145.5677"/>
+      <n id="7" p="199.1462 162.0677"/>
+      <n id="8" p="212.6208 136.0448"/>
+      <b id="9" B="2" E="3" Order="1"/>
+      <b id="10" B="3" E="4" Order="1"/>
+      <b id="11" B="4" E="5" Order="1"/>
+      <b id="12" B="5" E="6" Order="1"/>
+      <b id="13" B="6" E="7" Order="1"/>
+      <b id="14" B="6" E="8" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>`;
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
@@ -174,6 +213,30 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.native-bond-hover\s*{[^}]*stroke-opacity:\s*0\.32;/s);
     expect(appCss).not.toContain(".native-bond-hit-target:hover");
     expect(appCss).not.toContain(".native-atom-hit-target:hover");
+  });
+
+  it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
+    const implementationSource = [mainWindowSource, documentWorkflowSource].join("\n");
+
+    expect(desktopToolsetsSource).toContain(structureCleanup3dCommandId);
+    expect(desktopToolsetsSource).toContain('"title": "3D Cleanup"');
+    expect(desktopToolsetsSource).toContain('"disabledReason": "requires conformer-backed 3D cleanup engine"');
+    expect(desktopToolsetsSource).not.toContain('"commandId": "structure.rotate3d"');
+    expect(desktopToolsetsSource).not.toContain('"title": "3D Rotate"');
+    expect(mainWindowSource).toContain("cleanUpSelectedStructure3d");
+    expect(mainWindowSource).toContain("3D cleanup requires the conformer-backed cleanup engine");
+    expect(mainWindowSource).not.toContain("tool.id === structureRotate3dCommandId");
+    expect(implementationSource).toContain("tiltNativeMoleculeProjectedPlane");
+    expect(implementationSource).toContain("tiltNativeMoleculePartsProjectedPlane");
+    expect(mainWindowSource).toContain("selectedFragmentBounds ? documentObjectCenter(selectedFragmentBounds) : documentObjectCenter(object)");
+    expect(mainWindowSource).toContain('title={`3D rotate ${transformTargetLabel}`}');
+    expect(mainWindowSource).toContain('data-tilt3d-icon="circular-arrow"');
+    expect(appCss).toMatch(/\.native-molecule-tilt3d-handle\s*{[^}]*color:\s*var\(--cd-accent\);/s);
+    expect(appCss).toContain(".native-molecule-tilt3d-arrowhead");
+    // NOTE: a blanket "no conformer imports" assertion used to live here, but the Spin 3D
+    // feature now legitimately uses the conformer worker/OCL adapter in MainWindow's overlay
+    // path (and SMILES paste references OpenChemLib in a status message). The 3D-cleanup item
+    // remains a stub — that invariant is covered by the status-string assertions above.
   });
 
   it("renders compact web-preview workspace regions with a floating fallback palette", () => {
@@ -726,6 +789,9 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "page.setSize.a4")).toBe(true);
     expect(commands.some((command) => command.id === "page.setSize.a0")).toBe(true);
     expect(commands.some((command) => command.id === "page.setOrientation.landscape")).toBe(true);
+    expect(commands.some((command) => command.id === "export.open")).toBe(true);
+    expect(commands.some((command) => command.id === "export.pdf")).toBe(false);
+    expect(commands.some((command) => command.id === "export.png")).toBe(false);
     expect(commands.some((command) => command.id === "layout.bringForward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.sendBackward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.bringToFront")).toBe(true);
@@ -736,6 +802,38 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain(".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json");
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
+  });
+
+  it("routes desktop exports through native save and file-write helpers", () => {
+    expect(mainWindowSource).toContain("async function pickNativeExportPath(");
+    expect(mainWindowSource).toContain('if (action.id === "export.open")');
+    expect(mainWindowSource).toContain("<ExportDialog");
+    expect(mainWindowSource).toContain("Export as");
+    expect(mainWindowSource).toContain("Compress PDF");
+    expect(mainWindowSource).toContain("Include warning metadata");
+    expect(mainWindowSource).toContain("JPEG quality");
+    expect(mainWindowSource).toContain("Creation program");
+    expect(mainWindowSource).toContain("async function createDialogExportResult(");
+    expect(mainWindowSource).toContain("async function writeNativeExportResult(");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentRef.current, dialog)");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(filename, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
+    expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
+    expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");
+    expect(mainWindowSource).toContain("await writeNativeTextFile(path, result.contents)");
+    expect(mainWindowSource).toContain("await writeNativeBinaryFile(path, result.bytes)");
+    expect(mainWindowSource).toContain('if (result.kind === "text")');
+    expect(mainWindowSource).toContain("descriptor.menuLabel");
+    expect(mainWindowSource).toContain("setStatus(`Command failed: ${message}`)");
+    expect(mainWindowSource).toContain('role="status"');
+  });
+
+  it("offers a page-size choice when imported CDXML content overflows the current page", () => {
+    expect(mainWindowSource).toContain("recommendImportedPageFit(resolvedOpen.document)");
+    expect(mainWindowSource).toContain("<ImportedPageFitPrompt");
+    expect(mainWindowSource).toContain("applyImportedPageFitRecommendation(current, pageFitPrompt)");
+    expect(mainWindowSource).toContain("Keep Current Page");
+    expect(mainWindowSource).toContain("Use {recommendedLabel}");
   });
 
   it("builds keyboard shortcuts from command definitions", () => {
@@ -973,6 +1071,10 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.bond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.text")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
+    expect(paletteGroups.flat().find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
+      enabled: false,
+      disabledReason: "requires conformer-backed 3D cleanup engine"
+    });
     expect(paletteGroups.flat().find((command) => command.id === "tool.plus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
@@ -1007,14 +1109,24 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.wedgeBond")).not.toContain('data-active="true"');
   });
 
-  it("keeps rotate-handle drag sensitive without capping full turns", () => {
+  it("matches rotate-handle tangential drag speed to projected-plane tilt speed", () => {
     const center = { x: 0, y: 0 };
     const start = { x: 0, y: -20 };
 
-    expect(rotationDeltaDegrees(center, start, { x: 4, y: -20 })).toBe(180);
-    expect(rotationDeltaDegrees(center, start, { x: 8, y: -20 })).toBe(360);
-    expect(rotationDeltaDegrees(center, start, { x: 16, y: -20 })).toBe(720);
-    expect(rotationDeltaDegrees(center, start, { x: -8, y: -20 })).toBe(-360);
+    expect(rotationDeltaDegrees(center, start, { x: 360, y: -20 })).toBe(360);
+    expect(rotationDeltaDegrees(center, start, { x: -360, y: -20 })).toBe(-360);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: -380 }))).toBe(0);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: -390 }))).toBe(10);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: 340 }))).toBe(0);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 0, y: 350 }))).toBe(10);
+  });
+
+  it("keeps short rotate-handle drags smooth instead of jumpy", () => {
+    const center = { x: 0, y: 0 };
+    const start = { x: 0, y: -20 };
+
+    expect(rotationDeltaDegrees(center, start, { x: 4, y: -20 })).toBe(4);
+    expect(rotationDeltaDegrees(center, start, { x: 8, y: -20 })).toBe(8);
   });
 
   it("uses the placement click point as the rotation origin for fresh bonds and templates", () => {
@@ -1041,6 +1153,158 @@ describe("ChemDraft desktop shell", () => {
     expect(cumulativeRotationReadoutDegrees(90, 45)).toBe(135);
     expect(cumulativeRotationReadoutDegrees(350, 25)).toBe(15);
     expect(cumulativeRotationReadoutDegrees(200, -60)).toBe(140);
+  });
+
+  it("parses manual rotation entries and resolves absolute Z targets", () => {
+    expect(parseRotationInputDegrees(" 42.5 ")).toBe(42.5);
+    expect(parseRotationInputDegrees("")).toBeUndefined();
+    expect(parseRotationInputDegrees("x")).toBeUndefined();
+    expect(rotationInputDraftDegrees(45.1234)).toBe("45.123");
+    expect(manualRotationDeltaDegrees(350, 10)).toBe(20);
+    expect(manualRotationDeltaDegrees(10, 350)).toBe(-20);
+    expect(manualRotationDeltaDegrees(0, 360)).toBe(0);
+  });
+
+  it("maps projected-plane 3D rotate drags to a wrapping full-turn tilt readout", () => {
+    const start = { x: 80, y: 100 };
+
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: 100 }))).toBe(0);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: 30 }))).toBe(70);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: -120 }))).toBe(220);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: 320 }))).toBe(220);
+    expect(projectedPlaneTiltReadoutDegrees(projectedPlaneTiltRadiansFromDrag(start, { x: 80, y: -320 }))).toBe(60);
+  });
+
+  it("maps projected-plane 3D rotate diagonal drags to X and Y tilt", () => {
+    const start = { x: 80, y: 100 };
+    const diagonal = projectedPlaneTiltVectorFromDrag(start, { x: 150, y: 30 });
+    const wrapped = projectedPlaneTiltVectorFromDrag(start, { x: 500, y: -300 });
+
+    expect(projectedPlaneTiltReadoutDegrees(diagonal.xRad)).toBe(70);
+    expect(projectedPlaneTiltReadoutDegrees(diagonal.yRad)).toBe(70);
+    expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 70° / Y 70°");
+    expect(projectedPlaneTiltReadoutDegrees(wrapped.xRad)).toBe(40);
+    expect(projectedPlaneTiltReadoutDegrees(wrapped.yRad)).toBe(60);
+    expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
+  });
+
+  it("keeps projected-plane 3D rotate handle scoped to X/Y tilt", () => {
+    expect(projectedPlaneTiltReadoutLabel(0, 0)).toBe("0°");
+    expect(projectedPlaneTiltReadoutLabel(Math.PI / 6, -Math.PI / 4)).toBe("X 30° / Y -45°");
+    expect(mainWindowSource).not.toContain("projectedPlaneZRotationDegreesFromDrag");
+    expect(mainWindowSource).not.toContain("rawRotationDegrees");
+    expect(mainWindowSource).not.toContain("full-turn tilt limit");
+  });
+
+  it("wires manual rotation entry to Z and X/Y rotation handles", () => {
+    expect(mainWindowSource).toContain("data-rotation-input-popover=\"true\"");
+    expect(mainWindowSource).toContain("data-rotation-input-kind={input.kind}");
+    expect(mainWindowSource).toContain("onDoubleClick={handleRotateDoubleClick}");
+    expect(mainWindowSource).toContain("onDoubleClick={handleProjectedPlaneTiltDoubleClick}");
+    expect(mainWindowSource).toContain("onRotationInputChange={handleRotationInputChange}");
+    expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
+    expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
+    expect(mainWindowSource).toContain("aria-label=\"Restore rotation home\"");
+    expect(mainWindowSource).toContain('draftXDegrees: "0", draftYDegrees: "0"');
+    expect(mainWindowSource).toContain("aria-label=\"Z rotation degrees\"");
+    expect(mainWindowSource).toContain("aria-label=\"X rotation degrees\"");
+    expect(mainWindowSource).toContain("aria-label=\"Y rotation degrees\"");
+    expect(mainWindowSource).not.toContain("ApplyRotationInputIcon");
+    expect(mainWindowSource).not.toContain("Apply X Y rotation");
+    expect(mainWindowSource).not.toContain("Apply Z rotation");
+  });
+
+  it("keeps transform handle double-clicks out of whole-molecule selection promotion", () => {
+    expect(mainWindowSource).toContain("if (object.type === \"molecule\" && doublePress)");
+    expect(mainWindowSource).not.toContain("tryWholeMoleculeDoublePress");
+    expect(mainWindowSource).not.toContain("Sharing this through every entry point");
+    expect(mainWindowSource).toContain("isTransformHandleSecondPress");
+    expect(mainWindowSource).toContain("lastTransformHandlePressRef");
+    expect(mainWindowSource).toContain("openObjectRotateInput(objectId);");
+    expect(mainWindowSource).toContain("openProjectedPlaneTiltInput(objectId);");
+    expect(mainWindowSource).toContain("openMoleculeResizeInput(objectId, corner);");
+    expect(mainWindowSource.match(/const selectedDocument = selectedFragmentTarget/g)?.length).toBe(3);
+  });
+
+  it("keeps double-click numeric entry whole-molecule only for transform handles", () => {
+    expect(mainWindowSource).toContain("Double-click entry is available for whole molecules only");
+    expect(mainWindowSource).not.toContain("fragmentRotationDegreesRef");
+    expect(mainWindowSource).not.toContain("rememberedFragmentRotationDegrees");
+    expect(mainWindowSource).not.toContain("rememberFragmentRotationDegrees");
+  });
+
+  it("centers the paired Z and X/Y rotation handles over the selection box", () => {
+    expect(mainWindowSource).toContain('data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}');
+    expect(appCss).toContain('.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotate-handle');
+    expect(appCss).toContain("left: calc(50% - 17px);");
+    expect(appCss).toContain("left: calc(50% + 17px);");
+    expect(appCss).not.toContain("left: calc(50% + 34px);");
+  });
+
+  it("wires manual stretch entry to molecule resize corners", () => {
+    expect(mainWindowSource).toContain("data-scale-input-popover=\"true\"");
+    expect(mainWindowSource).toContain("data-scale-input-corner={input.corner}");
+    expect(mainWindowSource).toContain("onDoubleClick={onResizeDoubleClick(corner)}");
+    expect(mainWindowSource).toContain("onMoleculeResizeInputChange={handleMoleculeResizeInputChange}");
+    expect(mainWindowSource).toContain("onMoleculeResizeInputHome={handleMoleculeResizeInputHome}");
+    expect(mainWindowSource).toContain("onMoleculeResizeInputKeep={handleMoleculeResizeInputKeep}");
+    expect(mainWindowSource).toContain("aria-label=\"Restore stretch home\"");
+    expect(mainWindowSource).toContain("aria-label=\"X stretch percent\"");
+    expect(mainWindowSource).toContain("aria-label=\"Y stretch percent\"");
+    expect(mainWindowSource).not.toContain("Apply stretch");
+  });
+
+  it("wires group 3D rotate to native molecule multi-selections", () => {
+    expect(mainWindowSource).toContain("nativeMoleculeObjectIdsForGroupProjectedPlaneTilt");
+    expect(mainWindowSource).toContain('data-group-tilt3d-handle="true"');
+    expect(mainWindowSource).toContain("handleGroupProjectedPlaneTiltPointerDown");
+    expect(mainWindowSource).toContain('"group-projected-plane-tilt"');
+    expect(mainWindowSource).toContain("center: { x: bounds.centerX, y: bounds.centerY }");
+    expect(mainWindowSource).toContain("tiltNativeMoleculeObjectsProjectedPlane");
+  });
+
+  it("parses manual stretch percentages", () => {
+    expect(parseMoleculeResizeInputPercent("150")).toBe(150);
+    expect(parseMoleculeResizeInputPercent(" 62.5 ")).toBe(62.5);
+    expect(parseMoleculeResizeInputPercent("0")).toBeUndefined();
+    expect(parseMoleculeResizeInputPercent("-4")).toBeUndefined();
+    expect(parseMoleculeResizeInputPercent("")).toBeUndefined();
+    expect(moleculeResizeInputDraftPercent(1.5)).toBe("150");
+  });
+
+  it("commits projected-plane 3D rotate as exactly one history entry", () => {
+    const startDocument = insertNativeSingleBondMolecule(createPhase4Document("3D Rotate History"), { x: 200, y: 220 });
+    const molecule = startDocument.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected native molecule fixture.");
+    }
+
+    const result = tiltNativeMoleculeProjectedPlane(
+      startDocument,
+      molecule.id,
+      { x: molecule.x + molecule.width / 2, y: molecule.y + molecule.height / 2 },
+      0,
+      Math.PI / 6,
+      { tiltYRad: Math.PI / 6 }
+    );
+    const startHistory = createDocumentHistory(startDocument);
+    const committedHistory = projectedPlaneTiltCommitHistory(startHistory, startDocument, result.document);
+
+    expect(result.changed).toBe(true);
+    expect(committedHistory.past).toHaveLength(1);
+    expect(committedHistory.past[0]).toBe(startDocument);
+    expect(committedHistory.present).toBe(result.document);
+    expect(committedHistory.future).toEqual([]);
+  });
+
+  it("restores the drag-start document on projected-plane 3D rotate cancel paths", () => {
+    expect(mainWindowSource.match(/replacePresentDocument\(projectedPlaneTiltDrag\.startDocument\)/g) ?? []).toHaveLength(3);
+    expect(mainWindowSource).toContain('setStatus("3D rotate canceled")');
+  });
+
+  it("keeps selected molecule fragments highlighted while projected-plane 3D rotate drags", () => {
+    expect(mainWindowSource.match(/setSelectedNativeMoleculePart\(projectedPlaneTiltDrag\.target\)/g) ?? []).toHaveLength(4);
+    expect(mainWindowSource).not.toContain("projectedPlaneTiltDrag.dragging = true;\n        setActiveEditorObjectId(undefined);\n        setActiveTextEditObjectId(undefined);\n        setActiveAtomLabelEdit(undefined);\n        setHoveredNativeAtom(undefined);\n        setSelectedNativeMoleculePart(undefined);");
   });
 
   it("resolves molecule corner resize drag as proportional unless shift stretch is active", () => {
@@ -1286,11 +1550,12 @@ describe("ChemDraft desktop shell", () => {
   it("uses custom toolbar assets for the expanded palette", () => {
     const toolCommands = paletteGroups.flat();
 
-    expect(toolCommands.length).toBeGreaterThanOrEqual(48);
+    expect(toolCommands.length).toBeGreaterThanOrEqual(49);
     expect(toolCommands.some((command) => command.assetName === "Custom_Bond_Wedge")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Arrow_Equilibrium")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Flip_Horizontal")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Structure_Cleanup")).toBe(true);
+    expect(toolCommands.some((command) => command.id === structureCleanup3dCommandId)).toBe(true);
   });
 
   it("keeps toolbar shortcuts in delayed hover tooltips instead of visible icon badges", () => {
@@ -1349,7 +1614,7 @@ describe("ChemDraft desktop shell", () => {
   it("keeps functional metadata on asset-backed palette commands", () => {
     const assetCommands = paletteGroups.flat().filter((command) => command.assetName);
 
-    expect(assetCommands.length).toBeGreaterThanOrEqual(48);
+    expect(assetCommands.length).toBeGreaterThanOrEqual(49);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.every((command) => command.description)).toBe(true);
     expect(assetCommands.find((command) => command.assetName === "Custom_Bond_Wedge")).toMatchObject({
@@ -1364,6 +1629,12 @@ describe("ChemDraft desktop shell", () => {
       shortcutLabel: "⌘⇧K",
       category: "structure"
     });
+    expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
+      id: structureCleanup3dCommandId,
+      title: "3D Cleanup",
+      category: "structure"
+    });
+    expect(assetCommands.find((command) => command.id === structureRotate3dCommandId)).toBeUndefined();
   });
 
   it("places cleanup in the main toolbar chrome cluster instead of a vague disabled options button", () => {
@@ -1375,10 +1646,13 @@ describe("ChemDraft desktop shell", () => {
       "tool.settings",
       structureCleanupCommandId,
       structureSpin3dCommandId,
+      structureCleanup3dCommandId,
       "tool.templateGrid"
     ]);
     expect(styleGroupIds).not.toContain("tool.toolOptions");
     expect(mainGroups.flat().filter((command) => command.id === structureCleanupCommandId)).toHaveLength(1);
+    expect(mainGroups.flat().filter((command) => command.id === structureCleanup3dCommandId)).toHaveLength(1);
+    expect(mainGroups.flat().filter((command) => command.id === structureRotate3dCommandId)).toHaveLength(0);
   });
 
   it("routes palette events as command ids only", () => {
@@ -1489,6 +1763,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-selection-rotate-handle="true"');
     expect(markup).toContain('data-rotate-icon="double-headed"');
     expect(markup).not.toContain('data-rotate-readout="true"');
+    expect(markup).toContain('data-selection-tilt3d-handle="true"');
+    expect(markup).toContain('data-tilt3d-icon="circular-arrow"');
+    expect(markup).not.toContain('data-tilt3d-readout="true"');
     expect(markup.match(/data-molecule-resize-corner=/g) ?? []).toHaveLength(4);
     expect(markup).toContain('data-molecule-resize-corner="top-left"');
     expect(markup).toContain('data-molecule-resize-corner="top-right"');
@@ -1497,6 +1774,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-molecule-resize-readout="true"');
     expect(markup).not.toContain("data-text-resize-edge");
     expect(markup).toContain("Rotate selected molecule");
+    expect(markup).toContain("3D rotate selected molecule");
     expect(markup).toContain("native-bond-hit-target");
     expect(markup).toContain("native-atom-hit-target");
     expect(markup).toContain("Molecule C2H6");
@@ -1518,6 +1796,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("native-single-bond");
     expect(markup).not.toContain("native-molecule-selection-blob");
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).not.toContain("data-molecule-resize-corner");
   });
 
@@ -1587,6 +1866,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("native-bond-selection-connector");
     expect(markup).not.toContain('data-bond-selection-connectors="true"');
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).not.toContain("data-molecule-transform-frame");
     expect(markup).not.toContain("data-molecule-resize-corner");
   });
@@ -1633,6 +1913,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('aria-label="Rotate selected text box"');
     expect(markup).toContain('data-selection-rotate-handle="true"');
     expect(markup).toContain('data-rotate-icon="double-headed"');
+    expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).toContain("reaction note");
   });
 
@@ -2267,6 +2548,13 @@ describe("ChemDraft desktop shell", () => {
     })).toBeUndefined();
   });
 
+  it("routes Delete through selected native molecule fragments before whole-object deletion", () => {
+    expect(mainWindowSource).toContain("applyNativeMoleculePartDeleteTarget(currentDocument, selectedPartTarget)");
+    expect(mainWindowSource.indexOf("const selectedFragmentTarget = selectedNativeMoleculePart?.kind === \"parts\""))
+      .toBeLessThan(mainWindowSource.indexOf("const target = selectedFragmentTarget ? undefined : hoveredNativeDeleteTargetRef.current"));
+    expect(mainWindowSource).toContain("Deleted selected molecule fragment");
+  });
+
   it("keeps whole selected native molecule drags ahead of atom and bond part drags", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Whole Molecule Drag Intent"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects[0];
@@ -2353,6 +2641,35 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-bond-count="2"');
     expect((markup.match(/native-bond-line/g) ?? []).length).toBe(2);
     expect(document.pages[0].objects).toHaveLength(1);
+  });
+
+  it("renders a renamed visible CDXML file as the same horizontal seven-carbon structure", () => {
+    const opened = openNativeDocument(sevenCarbonVisibleCdxml);
+    if (!opened.document) {
+      throw new Error(`Expected visible CDXML import, got warnings: ${opened.warnings.map((item) => item.code).join(", ")}`);
+    }
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: opened.document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    const firstBondMarkup =
+      markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_001"[^>]*>/)?.[0] ?? "";
+    const branchBondMarkup =
+      markup.match(/<line class="native-bond-line native-bond-single" data-bond-id="bond_006"[^>]*>/)?.[0] ?? "";
+
+    expect(opened.source).toBe("external-cdxml");
+    expect(markup).toContain('data-atom-count="7"');
+    expect(markup).toContain('data-bond-count="6"');
+    expect((markup.match(/native-bond-line/g) ?? []).length).toBe(6);
+    expect(svgLineNumberAttribute(firstBondMarkup, "x1")).toBeCloseTo(174.5);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y1")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(firstBondMarkup, "x2")).toBeCloseTo(196.5);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y2")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(branchBondMarkup, "x2")).toBeLessThan(svgLineNumberAttribute(branchBondMarkup, "x1"));
+    expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
   });
 
   it("renders asymmetric double bonds with overlap clearance strokes", () => {
@@ -3052,16 +3369,5 @@ describe("ChemDraft desktop shell", () => {
     expect(resized.pages[0].layout).toMatchObject({ presetId: "a1", orientation: "landscape" });
     expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
     expect(resized.selection).toEqual(document.selection);
-  });
-
-  it("uses active page dimensions as the PNG fallback instead of hard-coded Letter", () => {
-    expect(resolvePngCanvasSize(0, 0, { width: 1122.5, height: 793.7 })).toEqual({
-      width: 1123,
-      height: 794
-    });
-    expect(resolvePngCanvasSize(640, 480, { width: 1122.5, height: 793.7 })).toEqual({
-      width: 640,
-      height: 480
-    });
   });
 });

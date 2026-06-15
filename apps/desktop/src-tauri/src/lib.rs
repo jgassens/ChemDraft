@@ -1,4 +1,6 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+mod export;
+
+use std::{collections::HashMap, fs, path::PathBuf, sync::Mutex};
 
 use tauri::{
     menu::{
@@ -20,6 +22,7 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
+const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const AGENT_BRIDGE_ENV_VAR: &str = "CHEMDRAFT_AGENT_BRIDGE";
@@ -33,8 +36,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "document.save",
     "document.saveAs",
     "clipboard.paste",
-    "export.svg",
-    "export.png",
+    "export.open",
     "page.setSize.letter",
     "page.setSize.legal",
     "page.setSize.a4",
@@ -97,6 +99,19 @@ struct ToolsetWindowState {
 #[serde(rename_all = "camelCase")]
 struct ToolsetCommandPayload {
     command_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeOpenDocumentPayload {
+    path: String,
+    display_name: String,
+    contents: String,
+}
+
+#[derive(Default)]
+struct PendingOpenDocument {
+    payload: Mutex<Option<NativeOpenDocumentPayload>>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -174,6 +189,7 @@ struct ToolsetCustomizationOverride {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(PendingOpenDocument::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
@@ -304,16 +320,25 @@ pub fn run() {
             tool_palette_state,
             route_palette_command,
             toggle_spin3d_debugger_window,
-            agent_bridge_status
+            agent_bridge_status,
+            take_pending_open_document,
+            export::rasterize_svg
         ])
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
-        .run(|app, event| {
-            if let RunEvent::Reopen { .. } = event {
+        .run(|app, event| match event {
+            RunEvent::Reopen { .. } => {
                 if let Err(error) = ensure_main_window_visible(app) {
                     eprintln!("Could not reopen ChemDraft main window: {error}");
                 }
             }
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+            RunEvent::Opened { urls } => {
+                if let Err(error) = handle_opened_document_urls(app, urls) {
+                    eprintln!("Could not open ChemDraft document from OS event: {error}");
+                }
+            }
+            _ => {}
         });
 }
 
@@ -774,6 +799,14 @@ fn agent_bridge_flag_enabled(value: Option<&str>) -> bool {
     )
 }
 
+#[tauri::command]
+fn take_pending_open_document(
+    state: tauri::State<'_, PendingOpenDocument>,
+) -> Result<Option<NativeOpenDocumentPayload>, String> {
+    let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
+    Ok(pending.take())
+}
+
 fn emit_command_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
@@ -800,6 +833,68 @@ fn dispatch_dom_command_event<R: Runtime>(
         "window.dispatchEvent(new CustomEvent({event_json}, {{ detail: {payload_json} }}));"
     ))
     .map_err(|error| error.to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn handle_opened_document_urls<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    urls: Vec<tauri::Url>,
+) -> Result<(), String> {
+    let mut opened_payload = None;
+    for url in urls {
+        if let Some(payload) = open_document_payload_from_url(&url)? {
+            opened_payload = Some(payload);
+            break;
+        }
+    }
+    let Some(payload) = opened_payload else {
+        return Ok(());
+    };
+    let state = app.state::<PendingOpenDocument>();
+    {
+        let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
+        *pending = Some(payload.clone());
+    }
+
+    if let Err(error) = ensure_main_window_visible(app) {
+        eprintln!("Could not show ChemDraft main window for opened document: {error}");
+    }
+    emit_open_document_to_main(app, &payload)
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn open_document_payload_from_url(
+    url: &tauri::Url,
+) -> Result<Option<NativeOpenDocumentPayload>, String> {
+    if url.scheme() != "file" {
+        return Ok(None);
+    }
+    let path = url
+        .to_file_path()
+        .map_err(|_| format!("Opened URL is not a local file path: {url}"))?;
+    let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let display_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled.chemdraft")
+        .to_string();
+
+    Ok(Some(NativeOpenDocumentPayload {
+        path: path.to_string_lossy().to_string(),
+        display_name,
+        contents,
+    }))
+}
+
+fn emit_open_document_to_main<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    payload: &NativeOpenDocumentPayload,
+) -> Result<(), String> {
+    // Deliver via the Tauri event for a running window; a cold start (window not yet
+    // listening) is covered by the pending-document state drained on mount. We deliberately
+    // do not `eval` document contents into the webview to avoid a script-injection surface.
+    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
+        .map_err(|error| error.to_string())
 }
 
 fn emit_toolset_window_state_to_main<R: Runtime>(
@@ -843,12 +938,23 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
                     &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
                     &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
-                    &MenuItem::with_id(app, "document.saveAs", "Save As...", true, Some("CmdOrCtrl+Shift+S"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.saveAs",
+                        "Save As...",
+                        true,
+                        Some("CmdOrCtrl+Shift+S"),
+                    )?,
                     &PredefinedMenuItem::separator(app)?,
                     &page_setup_menu,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "export.svg", "Export SVG", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "export.png", "Export PNG", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "export.open",
+                        "Export...",
+                        true,
+                        Some("CmdOrCtrl+Shift+E"),
+                    )?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::close_window(app, None)?,
                     #[cfg(not(target_os = "macos"))]
@@ -1791,6 +1897,101 @@ mod tests {
             expect_true(is_routed_menu_command(command_id));
         }
         expect_false(is_routed_menu_command("page.setSize.custom"));
+    }
+
+    #[test]
+    fn export_menu_commands_are_routed() {
+        expect_true(is_routed_menu_command("export.open"));
+        expect_false(is_routed_menu_command("export.pdf"));
+        expect_false(is_routed_menu_command("export.png"));
+    }
+
+    #[test]
+    fn default_capability_allows_native_export_file_writes() {
+        let capability = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("default capability should parse");
+        let permissions = parsed
+            .pointer("/permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("default capability should declare permissions");
+
+        expect_true(permissions.iter().any(|permission| {
+            permission
+                .as_str()
+                .is_some_and(|permission| permission == "dialog:allow-save")
+        }));
+        expect_true(permissions.iter().any(|permission| {
+            permission
+                .as_str()
+                .is_some_and(|permission| permission == "fs:allow-write-text-file")
+        }));
+        expect_true(permissions.iter().any(|permission| {
+            permission
+                .as_str()
+                .is_some_and(|permission| permission == "fs:allow-write-file")
+        }));
+        expect_true(permissions.iter().any(|permission| {
+            permission
+                .as_str()
+                .is_some_and(|permission| permission == "allow-rasterize-svg")
+        }));
+    }
+
+    #[test]
+    fn bundle_config_declares_chemical_file_associations() {
+        let config = include_str!("../tauri.conf.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(config).expect("tauri config should parse");
+        let associations = parsed
+            .pointer("/bundle/fileAssociations")
+            .and_then(serde_json::Value::as_array)
+            .expect("bundle.fileAssociations should exist");
+        let extension_sets = associations
+            .iter()
+            .filter_map(|association| association.get("ext"))
+            .filter_map(serde_json::Value::as_array)
+            .map(|extensions| {
+                extensions
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        expect_true(
+            extension_sets
+                .iter()
+                .any(|extensions| extensions.contains(&"chemdraft")),
+        );
+        expect_true(
+            extension_sets
+                .iter()
+                .any(|extensions| extensions.contains(&"cdxml")),
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    #[test]
+    fn opened_file_urls_read_document_payloads() {
+        let path = std::env::temp_dir().join(format!(
+            "chemdraft-open-test-{}.chemdraft",
+            std::process::id()
+        ));
+        fs::write(&path, "<CDXML/>").expect("fixture should write");
+        let url = tauri::Url::from_file_path(&path).expect("fixture path should become file URL");
+        let payload = open_document_payload_from_url(&url)
+            .expect("file URL should read")
+            .expect("file URL should produce payload");
+
+        expect_eq(path.to_string_lossy().to_string(), payload.path);
+        expect_eq(
+            path.file_name().unwrap().to_string_lossy().to_string(),
+            payload.display_name,
+        );
+        expect_eq("<CDXML/>".to_string(), payload.contents);
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

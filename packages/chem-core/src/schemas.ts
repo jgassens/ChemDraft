@@ -100,8 +100,10 @@ export const MoleculeAtomSchema = z
     element: z.string().min(1),
     x: z.number().finite(),
     y: z.number().finite(),
+    z: z.number().finite().optional(),
     formalCharge: z.number().int().default(0),
-    labelVisible: z.boolean().optional()
+    labelVisible: z.boolean().optional(),
+    labelOffset: PointSchema.optional()
   })
   .strict();
 
@@ -167,7 +169,9 @@ export const MoleculeTransformStateSchema = z
   .object({
     scaleX: z.number().finite().positive().default(1),
     scaleY: z.number().finite().positive().default(1),
-    rotationDegrees: z.number().finite().default(0)
+    rotationDegrees: z.number().finite().default(0),
+    tiltXDegrees: z.number().finite().optional(),
+    tiltYDegrees: z.number().finite().optional()
   })
   .strict();
 

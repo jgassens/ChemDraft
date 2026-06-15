@@ -559,13 +559,38 @@ describe("native document validation and serialization", () => {
     });
   });
 
+  it("accepts optional molecule atom depth metadata", () => {
+    const molecule = {
+      ...moleculeObject(),
+      atoms: [
+        { id: "atom_001", element: "C", x: 0, y: 0, z: 12.5, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 22, y: 0, z: -3.25, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      atoms: [
+        { id: "atom_001", z: 12.5 },
+        { id: "atom_002", z: -3.25 }
+      ]
+    });
+  });
+
   it("accepts optional molecule transform state metadata", () => {
     const molecule = {
       ...moleculeObject(),
       transform: {
         scaleX: 2,
         scaleY: 0.75,
-        rotationDegrees: 45
+        rotationDegrees: 45,
+        tiltXDegrees: 40,
+        tiltYDegrees: -15
       }
     } satisfies MoleculeObject;
     const document = applyPatch(
@@ -578,7 +603,9 @@ describe("native document validation and serialization", () => {
       transform: {
         scaleX: 2,
         scaleY: 0.75,
-        rotationDegrees: 45
+        rotationDegrees: 45,
+        tiltXDegrees: 40,
+        tiltYDegrees: -15
       }
     });
   });

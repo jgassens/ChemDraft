@@ -32,8 +32,6 @@ export function createQuickActions(
   selectedMolecule: MoleculeObject | undefined,
   availability: CommandAvailability = {}
 ): CommandSpec[] {
-  const hasObjects = document.pages.some((page) => page.objects.length > 0);
-
   return [
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
@@ -47,8 +45,7 @@ export function createQuickActions(
     { id: "view.zoomOut", title: "Zoom Out", icon: "zoomOut", shortcut: "Cmd+-", source: "core" },
     { id: "view.zoomIn", title: "Zoom In", icon: "zoomIn", shortcut: "Cmd++", source: "core" },
     { id: "view.toggleToolPalette", title: "Toggle Tool Palette", icon: "palette", source: "core" },
-    { id: "export.svg", title: "Export SVG", icon: "export", source: "core" },
-    { id: "export.png", title: "Export PNG", icon: "export", source: "core", enabled: hasObjects },
+    { id: "export.open", title: "Export...", icon: "export", shortcut: "Shift+Cmd+E", source: "core" },
     {
       id: "chemistry.validateSelection",
       title: "Validate Selected Structure",
@@ -68,6 +65,8 @@ export const drawerActions: CommandSpec[] = [
 
 export const structureCleanupCommandId = "structure.cleanup2d";
 export const structureSpin3dCommandId = "structure.spin3d";
+export const structureCleanup3dCommandId = "structure.cleanup3d";
+export const structureRotate3dCommandId = "structure.rotate3d";
 
 export const editActions: CommandSpec[] = [
   {

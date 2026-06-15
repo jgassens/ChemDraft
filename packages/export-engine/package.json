@@ -4,13 +4,20 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@chemdraft/cdx-compat": "workspace:*",
     "@chemdraft/chem-core": "workspace:*",
-    "@chemdraft/layout-engine": "workspace:*"
+    "@chemdraft/layout-engine": "workspace:*",
+    "jspdf": "4.2.1",
+    "svg2pdf.js": "2.7.0"
   },
   "exports": {
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./pdf": {
+      "types": "./src/pdf.ts",
+      "default": "./src/pdf.ts"
     }
   }
 }

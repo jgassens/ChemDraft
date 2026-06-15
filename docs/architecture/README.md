@@ -8,9 +8,11 @@ Key architecture notes:
 
 - `composited-page-editor-model.md`
 - `over-under-crossing-model.md`
+- `export-engines-build-plan.md`
 - `save-open-and-file-format.md`
 - `design-language.md`
 - `editor-adapter-hardening.md`
+- `grouped-object-transform-entry.md`
 - `pointer-picking-hardening.md`
 - `toolbars-and-toolsets.md`
 - `viewport-and-rulers.md`

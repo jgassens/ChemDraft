@@ -112,6 +112,8 @@ interface ImportPageContext {
 }
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
+type BondDisplayStyle = NonNullable<MoleculeBond["display"]>["bondStyle"];
+type CdxmlImportTransform = "none" | "rotate-counterclockwise-90";
 
 export function exportDocumentToCdxml(
   document: ChemDraftDocument,
@@ -360,7 +362,7 @@ function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[]): 
 function buildPageXml(page: DocumentPage, children: string): string {
   const attributes = [
     `id="${escapeXmlAttribute(page.id)}"`,
-    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.width))} ${formatNumber(cssPxToCdxml(page.height))}"`
+    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.height))} ${formatNumber(cssPxToCdxml(page.width))}"`
   ];
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
@@ -529,7 +531,7 @@ function exportBond(
     `E="${atomIds.get(bond.toAtomId) ?? escapeXmlAttribute(bond.toAtomId)}"`,
     `Order="${order}"`
   ];
-  const bondStyle = bondStyleFromDisplay(bond.display);
+  const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
   if (bondStyle) {
     attributes.push(`Display="${bondStyle}"`);
   }
@@ -627,10 +629,14 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
     };
   }
 
+  const importTransform = importTransformForTree(tree);
   const base = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: nativeImportTimestamp });
   const importedPages = pageElements.map((pageElement, pageIndex) => {
     const pageTemplate = base.pages[0];
-    const importedPage = importPageObjects(pageElement, pageIndex, warnings);
+    const importedPage = applyImportTransformToPageObjects(
+      importPageObjects(pageElement, pageIndex, warnings),
+      importTransform
+    );
     return {
       ...pageTemplate,
       id: `page_${String(pageIndex + 1).padStart(3, "0")}`,
@@ -713,6 +719,96 @@ function importPageObjects(
   };
 }
 
+function applyImportTransformToPageObjects(
+  page: { objects: DocumentObject[]; crossings: CrossingOverride[] },
+  transform: CdxmlImportTransform
+): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
+  if (transform === "none" || page.objects.length === 0) {
+    return page;
+  }
+
+  const bounds = boundsForDocumentObjects(page.objects);
+  const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  return {
+    ...page,
+    objects: page.objects.map((object) => rotateImportedObjectCounterclockwise90(object, center))
+  };
+}
+
+function rotateImportedObjectCounterclockwise90(object: DocumentObject, center: Point): DocumentObject {
+  if (object.type === "molecule") {
+    const atoms = object.atoms.map((atom) => {
+      const point = rotatePointCounterclockwise90(atom, center);
+      if (!atom.labelOffset) {
+        return {
+          ...atom,
+          ...point
+        };
+      }
+      const labelPoint = rotatePointCounterclockwise90({
+        x: atom.x + atom.labelOffset.x,
+        y: atom.y + atom.labelOffset.y
+      }, center);
+      return {
+        ...atom,
+        ...point,
+        labelOffset: {
+          x: labelPoint.x - point.x,
+          y: labelPoint.y - point.y
+        }
+      };
+    });
+    const bounds = boundsForAtoms(atoms);
+    return {
+      ...object,
+      ...bounds,
+      atoms
+    };
+  }
+
+  if (object.type === "reaction-arrow") {
+    const start = object.start.kind === "point" && object.start.point
+      ? { ...object.start, point: rotatePointCounterclockwise90(object.start.point, center) }
+      : object.start;
+    const end = object.end.kind === "point" && object.end.point
+      ? { ...object.end, point: rotatePointCounterclockwise90(object.end.point, center) }
+      : object.end;
+    const pointBounds = start.kind === "point" && start.point && end.kind === "point" && end.point
+      ? boundsForPoints([start.point, end.point])
+      : rotateBoxCounterclockwise90(object, center);
+    return {
+      ...object,
+      ...pointBounds,
+      start,
+      end
+    };
+  }
+
+  return {
+    ...object,
+    ...rotateBoxCounterclockwise90(object, center)
+  } as DocumentObject;
+}
+
+function rotateBoxCounterclockwise90(
+  box: { x: number; y: number; width: number; height: number },
+  center: Point
+): { x: number; y: number; width: number; height: number } {
+  return boundsForPoints([
+    rotatePointCounterclockwise90({ x: box.x, y: box.y }, center),
+    rotatePointCounterclockwise90({ x: box.x + box.width, y: box.y }, center),
+    rotatePointCounterclockwise90({ x: box.x, y: box.y + box.height }, center),
+    rotatePointCounterclockwise90({ x: box.x + box.width, y: box.y + box.height }, center)
+  ]);
+}
+
+function rotatePointCounterclockwise90(point: Point, center: Point): Point {
+  return {
+    x: center.x - (point.y - center.y),
+    y: center.y + (point.x - center.x)
+  };
+}
+
 function importFragment(
   fragment: XmlElementView,
   pageIndex: number,
@@ -732,18 +828,30 @@ function importFragment(
 
   const objectId = `cdxml_molecule_${pageIndex + 1}_${objectIndex}`;
   const atomIdByCdxmlId = new Map<string, string>();
+  const cdxmlAtomStereochemistryByAtomId: Record<string, { assignment: "R" | "S"; cdxmlAtomId: string; geometry?: string }> = {};
   const atoms: MoleculeAtom[] = atomElements.map((atomElement, atomIndex) => {
     const atomId = `atom_${String(atomIndex + 1).padStart(3, "0")}`;
     const cdxmlId = atomElement.attributes.id ?? atomId;
     atomIdByCdxmlId.set(cdxmlId, atomId);
     const point = parseCdxmlPoint(atomElement.attributes.p);
+    const labelPoint = cdxmlAtomLabelPoint(atomElement);
     const element = elementFromCdxmlAtom(atomElement.attributes.Element);
+    const stereoAssignment = cdxmlAtomStereoAssignment(atomElement.attributes.AS);
+    if (stereoAssignment) {
+      const geometry = atomElement.attributes.Geometry?.trim();
+      cdxmlAtomStereochemistryByAtomId[atomId] = {
+        assignment: stereoAssignment,
+        cdxmlAtomId: cdxmlId,
+        ...(geometry ? { geometry } : {})
+      };
+    }
     return {
       id: atomId,
       element,
       x: point.x,
       y: point.y,
-      formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0
+      formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
+      ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
     };
   });
   const atomByCdxmlId = new Map<string, MoleculeAtom>(
@@ -778,7 +886,17 @@ function importFragment(
     if (doubleBondSide) {
       bond.display = { ...(bond.display ?? {}), doubleBondSide };
     }
-    if (bondElement.attributes.Display) {
+    const bondDisplay = cdxmlBondDisplay(bondElement.attributes.Display);
+    if (bondDisplay) {
+      bond.display = { ...(bond.display ?? {}), bondStyle: bondDisplay.bondStyle };
+      if (bondDisplay.narrowAtEnd) {
+        // CDXML WedgeEnd/WedgedHashEnd put the narrow (stereocenter) end at E; ChemDraft
+        // keeps the narrow end at fromAtomId, so swap B/E to preserve the wedge direction.
+        const narrowAtomId = bond.toAtomId;
+        bond.toAtomId = bond.fromAtomId;
+        bond.fromAtomId = narrowAtomId;
+      }
+    } else if (bondElement.attributes.Display) {
       warnings.push({
         code: "cdxml.bond_display_unsupported",
         message: `CDXML bond display "${bondElement.attributes.Display}" is not represented in the current ChemDraft molecule schema.`,
@@ -787,6 +905,20 @@ function importFragment(
     }
     return bond;
   });
+  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, bonds);
+  const atomStereochemistry = Object.entries(cdxmlAtomStereochemistryByAtomId).map(
+    ([atomId, stereo]) => `${atomId}:${stereo.assignment}`
+  );
+  const chemistry: MoleculeObject["chemistry"] | undefined = atomStereochemistry.length > 0
+    ? {
+        atomCount: atoms.length,
+        bondCount: normalizedBonds.length,
+        radicalCount: 0,
+        isotopeLabels: [],
+        stereochemistry: atomStereochemistry,
+        warnings: []
+      }
+    : undefined;
   const bounds = boundsForAtoms(atoms);
   const compatibilityWarning: CompatibilityWarning = {
     code: "cdxml.structure_string_not_derived",
@@ -810,17 +942,183 @@ function importFragment(
     style: {},
     structureFormat: "unknown",
     structure: "",
+    ...(chemistry ? { chemistry } : {}),
     atoms,
-    bonds,
+    bonds: normalizedBonds,
     superatoms: [],
     rGroups: [],
     compatibility: {
       sourceFormat: "cdxml",
       originalId: fragment.attributes.id,
       warnings: [compatibilityWarning],
-      unknown: {}
+      unknown: Object.keys(cdxmlAtomStereochemistryByAtomId).length > 0
+        ? { cdxmlAtomStereochemistryByAtomId }
+        : {}
     }
   };
+}
+
+interface ImportedRingCycle {
+  atomIds: string[];
+  bondIds: string[];
+  center: Point;
+}
+
+function refreshImportedCyclicDoubleBondSides(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): MoleculeBond[] {
+  const cycles = findImportedRingCycles(atoms, bonds, new Set([5, 6]));
+  if (cycles.length === 0) {
+    return [...bonds];
+  }
+
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const cyclesByBondId = new Map<string, ImportedRingCycle[]>();
+  cycles.forEach((cycle) => {
+    cycle.bondIds.forEach((bondId) => {
+      cyclesByBondId.set(bondId, [...(cyclesByBondId.get(bondId) ?? []), cycle]);
+    });
+  });
+
+  return bonds.map((bond) => {
+    if (bond.order !== "double") {
+      return bond;
+    }
+
+    const owningCycles = cyclesByBondId.get(bond.id) ?? [];
+    const fromAtom = atomById.get(bond.fromAtomId);
+    const toAtom = atomById.get(bond.toAtomId);
+    if (owningCycles.length === 0 || !fromAtom || !toAtom) {
+      return bond;
+    }
+
+    const currentSide = bond.display?.doubleBondSide;
+    // Prefer the ring whose centroid already matches the current side; otherwise place the
+    // secondary line in the smallest owning ring (the conventional choice for fused systems),
+    // with a stable secondary key so the result is deterministic regardless of traversal order.
+    const cycle =
+      owningCycles.find((candidate) => sideForPointRelativeToBond(fromAtom, toAtom, candidate.center) === currentSide)
+      ?? [...owningCycles].sort(
+        (left, right) =>
+          left.atomIds.length - right.atomIds.length ||
+          canonicalImportedRingCycleKey(left.bondIds).localeCompare(canonicalImportedRingCycleKey(right.bondIds))
+      )[0];
+    const side = cycle ? sideForPointRelativeToBond(fromAtom, toAtom, cycle.center) : undefined;
+    if (!side || currentSide === side) {
+      return bond;
+    }
+
+    return {
+      ...bond,
+      display: { ...(bond.display ?? {}), doubleBondSide: side }
+    };
+  });
+}
+
+const IMPORTED_RING_CYCLE_VISIT_LIMIT = 250_000;
+
+function findImportedRingCycles(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  ringSizes: ReadonlySet<number>
+): ImportedRingCycle[] {
+  const targetSizes = [...ringSizes].filter((size) => Number.isInteger(size) && size >= 3).sort((a, b) => a - b);
+  const maxRingSize = targetSizes[targetSizes.length - 1];
+  if (maxRingSize === undefined) {
+    return [];
+  }
+
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const adjacency = new Map<string, { atomId: string; bondId: string }[]>();
+  bonds.forEach((bond) => {
+    if (!atomById.has(bond.fromAtomId) || !atomById.has(bond.toAtomId)) {
+      return;
+    }
+
+    adjacency.set(bond.fromAtomId, [
+      ...(adjacency.get(bond.fromAtomId) ?? []),
+      { atomId: bond.toAtomId, bondId: bond.id }
+    ]);
+    adjacency.set(bond.toAtomId, [
+      ...(adjacency.get(bond.toAtomId) ?? []),
+      { atomId: bond.fromAtomId, bondId: bond.id }
+    ]);
+  });
+
+  const cycles = new Map<string, ImportedRingCycle>();
+  // Bound the path enumeration: dense polycyclic graphs (e.g. metal-organic cages) can make
+  // the DFS combinatorial. Normal organic structures never approach this budget; pathological
+  // inputs degrade gracefully (some cyclic double-bond sides left un-normalized) instead of hanging.
+  let visitBudget = IMPORTED_RING_CYCLE_VISIT_LIMIT;
+  const visit = (startAtomId: string, atomId: string, atomIds: string[], bondIds: string[]) => {
+    if (visitBudget <= 0) {
+      return;
+    }
+    visitBudget -= 1;
+    if (ringSizes.has(atomIds.length)) {
+      const closingBond = (adjacency.get(atomId) ?? []).find((edge) => edge.atomId === startAtomId);
+      if (closingBond) {
+        const cycleBondIds = [...bondIds, closingBond.bondId];
+        const key = canonicalImportedRingCycleKey(cycleBondIds);
+        if (!cycles.has(key)) {
+          const cycleAtomIds = [...atomIds];
+          cycles.set(key, {
+            atomIds: cycleAtomIds,
+            bondIds: cycleBondIds,
+            center: centroidOfImportedAtoms(cycleAtomIds.map((id) => atomById.get(id)).filter((atom): atom is MoleculeAtom => Boolean(atom)))
+          });
+        }
+      }
+    }
+
+    if (atomIds.length >= maxRingSize) {
+      return;
+    }
+
+    (adjacency.get(atomId) ?? []).forEach((edge) => {
+      if (edge.atomId === startAtomId || atomIds.includes(edge.atomId)) {
+        return;
+      }
+
+      visit(startAtomId, edge.atomId, [...atomIds, edge.atomId], [...bondIds, edge.bondId]);
+    });
+  };
+
+  atoms.forEach((atom) => {
+    visit(atom.id, atom.id, [atom.id], []);
+  });
+
+  return [...cycles.values()];
+}
+
+function canonicalImportedRingCycleKey(bondIds: readonly string[]): string {
+  return [...bondIds].sort().join("|");
+}
+
+function centroidOfImportedAtoms(atoms: readonly MoleculeAtom[]): Point {
+  if (atoms.length === 0) {
+    return { x: 0, y: 0 };
+  }
+
+  return atoms.reduce<Point>(
+    (sum, atom) => ({ x: sum.x + atom.x / atoms.length, y: sum.y + atom.y / atoms.length }),
+    { x: 0, y: 0 }
+  );
+}
+
+function cdxmlAtomLabelPoint(atomElement: XmlElementView): Point | undefined {
+  const labelElement = childElements(atomElement, "t")[0];
+  if (!labelElement) {
+    return undefined;
+  }
+
+  if (labelElement.attributes.BoundingBox) {
+    const box = parseBoundingBox(labelElement.attributes.BoundingBox);
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  }
+
+  return labelElement.attributes.p ? parseCdxmlPoint(labelElement.attributes.p) : undefined;
 }
 
 function doubleBondSideFromCdxmlDoublePosition(value: string | undefined): DoubleBondSide | undefined {
@@ -1448,12 +1746,45 @@ function moleculeBondOrderFromCdxml(
   return "unknown";
 }
 
-function bondStyleFromDisplay(display: MoleculeBond["display"]): string | undefined {
-  const maybeDisplay = display as { bondStyle?: string } | undefined;
-  if (!maybeDisplay?.bondStyle) {
+// ChemDraw encodes wedge/hash stereo on <b> via Display. The "Begin" variants put the
+// narrow (stereocenter) end at B; the "End" variants put it at E. ChemDraft keeps the
+// narrow end at fromAtomId, so the "End" variants import with B/E swapped. Older and
+// alternate visible styles such as Hash, Dash, and Bold map into ChemDraft's native
+// display styles without warning.
+const cdxmlBondDisplays: Record<string, { bondStyle: BondDisplayStyle; narrowAtEnd: boolean }> = {
+  Bold: { bondStyle: "bold", narrowAtEnd: false },
+  Dash: { bondStyle: "dashed", narrowAtEnd: false },
+  Hash: { bondStyle: "hashed", narrowAtEnd: false },
+  WedgeBegin: { bondStyle: "wedge", narrowAtEnd: false },
+  WedgeEnd: { bondStyle: "wedge", narrowAtEnd: true },
+  WedgedHashBegin: { bondStyle: "hashed", narrowAtEnd: false },
+  WedgedHashEnd: { bondStyle: "hashed", narrowAtEnd: true }
+};
+
+const cdxmlBeginDisplayByBondStyle = {
+  bold: "Bold",
+  dashed: "Dash",
+  wedge: "WedgeBegin",
+  hashed: "WedgedHashBegin"
+} as const;
+
+function cdxmlBondDisplay(
+  display: string | undefined
+): { bondStyle: BondDisplayStyle; narrowAtEnd: boolean } | undefined {
+  return display ? cdxmlBondDisplays[display] : undefined;
+}
+
+function cdxmlBondDisplayForBondStyle(display: MoleculeBond["display"]): string | undefined {
+  const bondStyle = display?.bondStyle;
+  if (!bondStyle) {
     return undefined;
   }
-  return maybeDisplay.bondStyle;
+  return cdxmlBeginDisplayByBondStyle[bondStyle];
+}
+
+function cdxmlAtomStereoAssignment(value: string | undefined): "R" | "S" | undefined {
+  const normalized = value?.trim().toUpperCase();
+  return normalized === "R" || normalized === "S" ? normalized : undefined;
 }
 
 function atomicNumberForElement(element: string): number | undefined {
@@ -1471,15 +1802,23 @@ function elementFromCdxmlAtom(element: string | undefined): string {
   return element;
 }
 
+function importTransformForTree(tree: OrderedXmlTree): CdxmlImportTransform {
+  const root = findElements(tree, "CDXML")[0];
+  const creationProgram = root?.attributes.CreationProgram ?? "";
+  return /\bChemDraw\b/i.test(creationProgram)
+    ? "rotate-counterclockwise-90"
+    : "none";
+}
+
 function formatPoint(point: Point): string {
-  return `${formatNumber(cssPxToCdxml(point.x))} ${formatNumber(cssPxToCdxml(point.y))}`;
+  return `${formatNumber(cssPxToCdxml(point.y))} ${formatNumber(cssPxToCdxml(point.x))}`;
 }
 
 function parseCdxmlPoint(point: string | undefined): Point {
   if (!point) {
     return { x: 0, y: 0 };
   }
-  const [horizontal, vertical] = point.trim().split(/\s+/).map(Number);
+  const [vertical, horizontal] = point.trim().split(/\s+/).map(Number);
   return {
     x: cdxmlToCssPx(Number.isFinite(horizontal) ? horizontal : 0),
     y: cdxmlToCssPx(Number.isFinite(vertical) ? vertical : 0)
@@ -1487,18 +1826,18 @@ function parseCdxmlPoint(point: string | undefined): Point {
 }
 
 function formatBoundingBox(object: { x: number; y: number; width: number; height: number }): string {
-  return `${formatNumber(cssPxToCdxml(object.x))} ${formatNumber(cssPxToCdxml(object.y))} ${formatNumber(cssPxToCdxml(object.x + object.width))} ${formatNumber(cssPxToCdxml(object.y + object.height))}`;
+  return `${formatNumber(cssPxToCdxml(object.y))} ${formatNumber(cssPxToCdxml(object.x))} ${formatNumber(cssPxToCdxml(object.y + object.height))} ${formatNumber(cssPxToCdxml(object.x + object.width))}`;
 }
 
 function formatLineBoundingBox(start: Point, end: Point): string {
-  return `${formatNumber(cssPxToCdxml(Math.min(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.min(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.max(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.max(start.y, end.y)))}`;
+  return `${formatNumber(cssPxToCdxml(Math.min(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.min(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.max(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.max(start.x, end.x)))}`;
 }
 
 function parseBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } {
   if (!box) {
     return { x: 0, y: 0, width: 1, height: 1 };
   }
-  const [left, top, right, bottom] = box.trim().split(/\s+/).map(Number);
+  const [top, left, bottom, right] = box.trim().split(/\s+/).map(Number);
   const x = cdxmlToCssPx(Number.isFinite(left) ? left : 0);
   const y = cdxmlToCssPx(Number.isFinite(top) ? top : 0);
   return {
@@ -1534,6 +1873,28 @@ function boundsForAtoms(atoms: readonly MoleculeAtom[]): { x: number; y: number;
     y: minY - 8,
     width: Math.max(16, maxX - minX + 16),
     height: Math.max(16, maxY - minY + 16)
+  };
+}
+
+function boundsForDocumentObjects(objects: readonly DocumentObject[]): { x: number; y: number; width: number; height: number } {
+  return boundsForPoints(objects.flatMap((object) => [
+    { x: object.x, y: object.y },
+    { x: object.x + object.width, y: object.y + object.height }
+  ]));
+}
+
+function boundsForPoints(points: readonly Point[]): { x: number; y: number; width: number; height: number } {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY)
   };
 }
 
