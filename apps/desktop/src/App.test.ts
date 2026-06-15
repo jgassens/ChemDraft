@@ -83,6 +83,7 @@ import {
   nativeMoleculeSelectionDragIntent,
   nativeSelectionWithHitToggled,
   pagePointFromRenderedPageRect,
+  documentObjectProjectedPlaneTiltVectorFromDrag,
   parseRotationInputDegrees,
   parseObjectResizeInputPercent,
   projectedPlaneTiltCommitHistory,
@@ -1112,6 +1113,16 @@ describe("ChemDraft desktop shell", () => {
     expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
   });
 
+  it("maps native art X/Y rotate drags to a clamped visible tilt range", () => {
+    const start = { x: 80, y: 100 };
+    const diagonal = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 215, y: -15 });
+    const clamped = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 1000, y: -1000 });
+
+    expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 29° / Y 34°");
+    expect(projectedPlaneTiltReadoutDegrees(clamped.xRad)).toBe(75);
+    expect(projectedPlaneTiltReadoutDegrees(clamped.yRad)).toBe(75);
+  });
+
   it("keeps projected-plane 3D rotate handle scoped to X/Y tilt", () => {
     expect(projectedPlaneTiltReadoutLabel(0, 0)).toBe("0°");
     expect(projectedPlaneTiltReadoutLabel(Math.PI / 6, -Math.PI / 4)).toBe("X 30° / Y -45°");
@@ -1774,6 +1785,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain("graphic-object");
     expect(markup).toContain('data-graphic-kind="rect"');
+    expect(markup).toContain("art-object-content");
     expect(markup).toContain("graphic-glyph-shadow");
     expect(markup).toContain('rx="7"');
     expect(markup).toContain('data-art-transform-frame="true"');

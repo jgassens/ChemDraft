@@ -138,6 +138,7 @@ import {
   insertNativeArtGraphicObject,
   nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
+  documentObjectProjectedPlaneTiltMaxDegrees,
   nativeChargeAssociationsForMolecule,
   nativeChargeByAtomIdFromAssociations,
   nativeBondStyleForToolCommand,
@@ -589,10 +590,12 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
 const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
+const DOCUMENT_OBJECT_TILT_DRAG_PX = 300;
+const documentObjectProjectedPlaneTiltMaxRadians = documentObjectProjectedPlaneTiltMaxDegrees * Math.PI / 180;
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.14.23.33-codex";
+const CURRENT_BUILD_STAMP = "6.15.8.7-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -3512,23 +3515,34 @@ export function MainWindow({
     drag: ProjectedPlaneTiltDragState,
     point: ClientPoint
   ) => {
-    const tiltDelta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    const tiltDelta = object && object.type !== "molecule"
+      ? documentObjectProjectedPlaneTiltVectorFromDrag(drag.startPoint, point)
+      : projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
     const rawTiltXRad = drag.startTiltXRad + tiltDelta.xRad;
     const rawTiltYRad = drag.startTiltYRad + tiltDelta.yRad;
-    const object = findDocumentObject(drag.startDocument, drag.objectId);
     if (object && object.type !== "molecule") {
-      const wrapped = wrapProjectedPlaneTiltVectorRadians(rawTiltXRad, rawTiltYRad);
+      const tiltXRad = clamp(
+        rawTiltXRad,
+        -documentObjectProjectedPlaneTiltMaxRadians,
+        documentObjectProjectedPlaneTiltMaxRadians
+      );
+      const tiltYRad = clamp(
+        rawTiltYRad,
+        -documentObjectProjectedPlaneTiltMaxRadians,
+        documentObjectProjectedPlaneTiltMaxRadians
+      );
       const document = applyDocumentObjectProjectedPlaneTilt(
         drag.startDocument,
         drag.objectId,
-        radiansToDegrees(wrapped.tiltXRad),
-        radiansToDegrees(wrapped.tiltYRad)
+        radiansToDegrees(tiltXRad),
+        radiansToDegrees(tiltYRad)
       );
       return {
         document,
-        tiltXRad: wrapped.tiltXRad,
-        tiltYRad: wrapped.tiltYRad,
-        clamped: wrapped.clamped,
+        tiltXRad,
+        tiltYRad,
+        clamped: Math.abs(tiltXRad - rawTiltXRad) >= 0.000001 || Math.abs(tiltYRad - rawTiltYRad) >= 0.000001,
         changed: document !== drag.startDocument
       };
     }
@@ -3734,18 +3748,27 @@ export function MainWindow({
     }
 
     if (object.type !== "molecule") {
-      const wrapped = wrapProjectedPlaneTiltVectorRadians(degreesToRadians(xDegrees), degreesToRadians(yDegrees));
+      const tiltXDegrees = clamp(
+        xDegrees,
+        -documentObjectProjectedPlaneTiltMaxDegrees,
+        documentObjectProjectedPlaneTiltMaxDegrees
+      );
+      const tiltYDegrees = clamp(
+        yDegrees,
+        -documentObjectProjectedPlaneTiltMaxDegrees,
+        documentObjectProjectedPlaneTiltMaxDegrees
+      );
       return {
         kind: "xy",
         document: applyDocumentObjectProjectedPlaneTilt(
           input.startDocument,
           input.objectId,
-          radiansToDegrees(wrapped.tiltXRad),
-          radiansToDegrees(wrapped.tiltYRad)
+          tiltXDegrees,
+          tiltYDegrees
         ),
-        tiltXRad: wrapped.tiltXRad,
-        tiltYRad: wrapped.tiltYRad,
-        clamped: wrapped.clamped
+        tiltXRad: degreesToRadians(tiltXDegrees),
+        tiltYRad: degreesToRadians(tiltYDegrees),
+        clamped: tiltXDegrees !== xDegrees || tiltYDegrees !== yDegrees
       };
     }
 
@@ -7252,6 +7275,26 @@ export function projectedPlaneTiltVectorFromDrag(start: ClientPoint, latest: Cli
   };
 }
 
+export function documentObjectProjectedPlaneTiltVectorFromDrag(
+  start: ClientPoint,
+  latest: ClientPoint
+): { xRad: number; yRad: number } {
+  const rawXTilt = (start.y - latest.y) / DOCUMENT_OBJECT_TILT_DRAG_PX * documentObjectProjectedPlaneTiltMaxRadians;
+  const rawYTilt = (latest.x - start.x) / DOCUMENT_OBJECT_TILT_DRAG_PX * documentObjectProjectedPlaneTiltMaxRadians;
+  return {
+    xRad: Number(clamp(
+      rawXTilt,
+      -documentObjectProjectedPlaneTiltMaxRadians,
+      documentObjectProjectedPlaneTiltMaxRadians
+    ).toFixed(6)),
+    yRad: Number(clamp(
+      rawYTilt,
+      -documentObjectProjectedPlaneTiltMaxRadians,
+      documentObjectProjectedPlaneTiltMaxRadians
+    ).toFixed(6))
+  };
+}
+
 export function projectedPlaneTiltReadoutDegrees(tiltRad: number): number {
   return Math.round(Math.abs(tiltRad) * 180 / Math.PI);
 }
@@ -9505,8 +9548,11 @@ function DocumentObjectView({
     width: `${(object.width / pageWidth) * 100}%`,
     height: `${(object.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
-    transform: documentObjectCssTransform(object)
+    transform: documentObjectSupportsArtTransform(object) ? undefined : documentObjectCssTransform(object)
   } as CSSProperties;
+  const artObjectContentStyle = documentObjectSupportsArtTransform(object)
+    ? { transform: documentObjectCssTransform(object) } as CSSProperties
+    : undefined;
   const artObjectTransformFrame = selected && !inGroupSelection && documentObjectSupportsArtTransform(object) ? (
     <ArtObjectTransformFrame
       targetLabel="selected art object"
@@ -10037,34 +10083,36 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <svg
-          className="reaction-arrow-glyph"
-          viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          <defs>
-            <marker
-              id={markerId}
-              markerHeight="7"
-              markerUnits="strokeWidth"
-              markerWidth="7"
-              orient="auto"
-              refX="6"
-              refY="3.5"
-            >
-              <path d="M 0 0 L 7 3.5 L 0 7 z" />
-            </marker>
-          </defs>
-          <line
-            className="reaction-arrow-line"
-            x1={start.x}
-            y1={start.y}
-            x2={end.x}
-            y2={end.y}
-            markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
-          />
-        </svg>
+        <div className="art-object-content" style={artObjectContentStyle}>
+          <svg
+            className="reaction-arrow-glyph"
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <defs>
+              <marker
+                id={markerId}
+                markerHeight="7"
+                markerUnits="strokeWidth"
+                markerWidth="7"
+                orient="auto"
+                refX="6"
+                refY="3.5"
+              >
+                <path d="M 0 0 L 7 3.5 L 0 7 z" />
+              </marker>
+            </defs>
+            <line
+              className="reaction-arrow-line"
+              x1={start.x}
+              y1={start.y}
+              x2={end.x}
+              y2={end.y}
+              markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
+            />
+          </svg>
+        </div>
         {artObjectTransformFrame}
       </div>
     );
@@ -10087,7 +10135,9 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <BracketGlyph object={object} />
+        <div className="art-object-content" style={artObjectContentStyle}>
+          <BracketGlyph object={object} />
+        </div>
         {artObjectTransformFrame}
       </div>
     );
@@ -10109,7 +10159,9 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <GraphicGlyph object={object} />
+        <div className="art-object-content" style={artObjectContentStyle}>
+          <GraphicGlyph object={object} />
+        </div>
         {artObjectTransformFrame}
       </div>
     );

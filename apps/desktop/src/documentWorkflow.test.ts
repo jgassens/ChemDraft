@@ -3357,6 +3357,11 @@ describe("Phase 4 document workflow", () => {
       tiltXDegrees: 21,
       tiltYDegrees: -13
     });
+    const clampedTilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 180, -180);
+    expect(graphicById(clampedTilted, objectId).style).toMatchObject({
+      tiltXDegrees: 75,
+      tiltYDegrees: -75
+    });
     const transformHistory = {
       past: [colored],
       present: tilted,

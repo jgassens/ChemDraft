@@ -1489,6 +1489,15 @@ textarea:focus-visible,
   pointer-events: auto;
 }
 
+.art-object-content {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
+  transform-origin: center;
+  pointer-events: auto;
+}
+
 .reaction-arrow-glyph,
 .bracket-glyph,
 .graphic-glyph {

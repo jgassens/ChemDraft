@@ -416,6 +416,7 @@ const defaultNativeMoleculeTransform: MoleculeTransformState = {
 };
 
 const projectedPlaneTiltMaxDegrees = 360;
+export const documentObjectProjectedPlaneTiltMaxDegrees = 75;
 
 export const projectedPlaneTiltMaxRadians = projectedPlaneTiltMaxDegrees * Math.PI / 180;
 
@@ -906,8 +907,8 @@ export function applyDocumentObjectProjectedPlaneTilt(
     return document;
   }
 
-  const nextTiltX = normalizeProjectedPlaneTiltDegrees(tiltXDegrees) ?? 0;
-  const nextTiltY = normalizeProjectedPlaneTiltDegrees(tiltYDegrees) ?? 0;
+  const nextTiltX = normalizeDocumentObjectProjectedPlaneTiltDegrees(tiltXDegrees) ?? 0;
+  const nextTiltY = normalizeDocumentObjectProjectedPlaneTiltDegrees(tiltYDegrees) ?? 0;
   if (
     object.style.tiltXDegrees === nextTiltX &&
     object.style.tiltYDegrees === nextTiltY
@@ -5928,6 +5929,16 @@ function normalizeNativeMoleculeScale(scale: number): number {
 function normalizeProjectedPlaneTiltDegrees(degrees: number | undefined): number | undefined {
   const finiteDegrees = Number.isFinite(degrees) ? degrees ?? 0 : 0;
   const normalized = Number(wrapProjectedPlaneTiltValue(finiteDegrees, projectedPlaneTiltMaxDegrees).toFixed(3));
+  return Math.abs(normalized) < 0.001 ? undefined : normalized;
+}
+
+function normalizeDocumentObjectProjectedPlaneTiltDegrees(degrees: number | undefined): number | undefined {
+  const finiteDegrees = Number.isFinite(degrees) ? degrees ?? 0 : 0;
+  const normalized = Number(clamp(
+    finiteDegrees,
+    -documentObjectProjectedPlaneTiltMaxDegrees,
+    documentObjectProjectedPlaneTiltMaxDegrees
+  ).toFixed(3));
   return Math.abs(normalized) < 0.001 ? undefined : normalized;
 }
 
