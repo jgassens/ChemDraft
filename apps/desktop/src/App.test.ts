@@ -1808,7 +1808,8 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    expect(tiltedMarkup).toContain("matrix(");
+    expect(tiltedMarkup).toContain("graphic-glyph-projected-shape");
+    expect(tiltedMarkup).not.toContain("graphic-glyph-shape");
     expect(tiltedMarkup).not.toContain("perspective(");
   });
 

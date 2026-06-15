@@ -597,7 +597,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.9.12-codex";
+const CURRENT_BUILD_STAMP = "6.15.10.0-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -9558,7 +9558,6 @@ function DocumentObjectView({
   const artObjectProjection = documentObjectSupportsArtTransform(object)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
-  const artObjectGlyphStyle = artObjectProjection?.glyphStyle;
   const artObjectTransformFrameStyle = artObjectProjection?.frameStyle;
   const artObjectTransformFrame = selected && !inGroupSelection && documentObjectSupportsArtTransform(object) ? (
     <ArtObjectTransformFrame
@@ -10096,7 +10095,6 @@ function DocumentObjectView({
           viewBox={`0 0 ${width} ${height}`}
           preserveAspectRatio="none"
           aria-hidden="true"
-          style={artObjectGlyphStyle}
         >
           <defs>
             <marker
@@ -10113,10 +10111,10 @@ function DocumentObjectView({
           </defs>
           <line
             className="reaction-arrow-line"
-            x1={start.x}
-            y1={start.y}
-            x2={end.x}
-            y2={end.y}
+            x1={formatSvgNumber(projectArtPoint(start, width, height, artObjectProjection?.matrix).x)}
+            y1={formatSvgNumber(projectArtPoint(start, width, height, artObjectProjection?.matrix).y)}
+            x2={formatSvgNumber(projectArtPoint(end, width, height, artObjectProjection?.matrix).x)}
+            y2={formatSvgNumber(projectArtPoint(end, width, height, artObjectProjection?.matrix).y)}
             markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
           />
         </svg>
@@ -10142,7 +10140,7 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <BracketGlyph object={object} style={artObjectGlyphStyle} />
+        <BracketGlyph object={object} projection={artObjectProjection} />
         {artObjectTransformFrame}
       </div>
     );
@@ -10164,7 +10162,7 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <GraphicGlyph object={object} style={artObjectGlyphStyle} />
+        <GraphicGlyph object={object} projection={artObjectProjection} />
         {artObjectTransformFrame}
       </div>
     );
@@ -10318,18 +10316,22 @@ function arrowAnchorPointRelativeToObject(
   return fallback;
 }
 
-function BracketGlyph({ object, style }: { object: BracketObject; style?: CSSProperties }) {
+function BracketGlyph({ object, projection }: { object: BracketObject; projection?: DocumentObjectProjection }) {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
+  const pathD = bracketPath(object.bracketKind, width, height);
   return (
     <svg
       className="bracket-glyph"
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
-      style={style}
     >
-      <path className="bracket-glyph-path" d={bracketPath(object.bracketKind, width, height)} />
+      <path
+        className="bracket-glyph-path"
+        d={pathD}
+        transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}
+      />
     </svg>
   );
 }
@@ -10350,7 +10352,7 @@ function bracketPath(kind: BracketObject["bracketKind"], width: number, height: 
   return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
 }
 
-function GraphicGlyph({ object, style }: { object: GraphicObject; style?: CSSProperties }) {
+function GraphicGlyph({ object, projection }: { object: GraphicObject; projection?: DocumentObjectProjection }) {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   const line = object.graphicKind === "line" ? graphicLineGlyphEndpoints(object) : undefined;
@@ -10375,7 +10377,6 @@ function GraphicGlyph({ object, style }: { object: GraphicObject; style?: CSSPro
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
-      style={style}
     >
       {fillMode === "gloss" ? (
         <defs>
@@ -10388,18 +10389,49 @@ function GraphicGlyph({ object, style }: { object: GraphicObject; style?: CSSPro
         </defs>
       ) : null}
       {effect === "shadow" && object.graphicKind !== "path" ? (
-        <ArtShapePrimitive
-          kind={object.graphicKind}
-          width={width}
-          height={height}
-          rx={cornerRadius}
-          className="graphic-glyph-shadow"
-          fill="#aeb8c2"
-          stroke="none"
-          transform="translate(6 6)"
-        />
+        projection?.matrix ? (
+          <path
+            className="graphic-glyph-shadow graphic-glyph-projected-shape"
+            d={projectedArtShapePathD(
+              object.graphicKind,
+              width,
+              height,
+              cornerRadius,
+              projection.matrix,
+              { x: 6, y: 6 }
+            )}
+            fill="#aeb8c2"
+            stroke="none"
+          />
+        ) : (
+          <ArtShapePrimitive
+            kind={object.graphicKind}
+            width={width}
+            height={height}
+            rx={cornerRadius}
+            className="graphic-glyph-shadow"
+            fill="#aeb8c2"
+            stroke="none"
+            transform="translate(6 6)"
+          />
+        )
       ) : null}
-      {object.graphicKind === "ellipse" ? (
+      {projection?.matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect") ? (
+        <path
+          className="graphic-glyph-stroke graphic-glyph-projected-shape"
+          d={projectedArtShapePathD(
+            object.graphicKind,
+            width,
+            height,
+            object.graphicKind === "rect" ? cornerRadius : 0,
+            projection.matrix,
+            undefined,
+            strokeWidth
+          )}
+          fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+          {...sharedStrokeProps}
+        />
+      ) : object.graphicKind === "ellipse" ? (
         <ellipse
           className="graphic-glyph-stroke graphic-glyph-shape"
           cx={width / 2}
@@ -10422,21 +10454,32 @@ function GraphicGlyph({ object, style }: { object: GraphicObject; style?: CSSPro
           {...sharedStrokeProps}
         />
       ) : object.graphicKind === "path" && pathD ? (
-        <path
-          className="graphic-glyph-stroke graphic-glyph-path"
-          d={pathD}
-          fill="none"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          {...sharedStrokeProps}
-        />
+        (() => {
+          const projectedPathD = projectedGraphicPathD(object, width, height, projection?.matrix);
+          return (
+            <path
+              className={[
+                "graphic-glyph-stroke",
+                projection?.matrix ? "graphic-glyph-projected-path" : "graphic-glyph-path"
+              ].join(" ")}
+              d={projectedPathD ?? pathD}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              transform={!projectedPathD && projection?.matrix
+                ? artProjectionSvgTransform(width, height, projection.matrix)
+                : undefined}
+              {...sharedStrokeProps}
+            />
+          );
+        })()
       ) : line ? (
         <line
           className="graphic-glyph-stroke"
-          x1={line.x1}
-          y1={line.y1}
-          x2={line.x2}
-          y2={line.y2}
+          x1={formatSvgNumber(projectArtPoint({ x: line.x1, y: line.y1 }, width, height, projection?.matrix).x)}
+          y1={formatSvgNumber(projectArtPoint({ x: line.x1, y: line.y1 }, width, height, projection?.matrix).y)}
+          x2={formatSvgNumber(projectArtPoint({ x: line.x2, y: line.y2 }, width, height, projection?.matrix).x)}
+          y2={formatSvgNumber(projectArtPoint({ x: line.x2, y: line.y2 }, width, height, projection?.matrix).y)}
           {...sharedStrokeProps}
         />
       ) : (
@@ -10492,6 +10535,13 @@ function ArtShapePrimitive({
   );
 }
 
+type DocumentObjectProjectionMatrix = { a: number; b: number; c: number; d: number };
+
+interface DocumentObjectProjection {
+  frameStyle?: CSSProperties;
+  matrix?: DocumentObjectProjectionMatrix;
+}
+
 function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
   return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow";
 }
@@ -10500,10 +10550,7 @@ function documentObjectCssTransform(object: DocumentObject): string {
   return `rotate(${object.rotation}deg)`;
 }
 
-function documentObjectProjectedPlaneProjection(object: DocumentObject): {
-  frameStyle?: CSSProperties;
-  glyphStyle?: CSSProperties;
-} | undefined {
+function documentObjectProjectedPlaneProjection(object: DocumentObject): DocumentObjectProjection | undefined {
   const tilt = documentObjectProjectedPlaneTilt(object);
   if (
     Math.abs(tilt.tiltXDegrees) < 0.001 &&
@@ -10522,10 +10569,7 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): {
       width: `${bounds.width}px`,
       height: `${bounds.height}px`
     },
-    glyphStyle: {
-      transform: `matrix(${formatCssNumber(matrix.a)}, ${formatCssNumber(matrix.b)}, ${formatCssNumber(matrix.c)}, ${formatCssNumber(matrix.d)}, 0, 0)`,
-      transformOrigin: "center"
-    }
+    matrix
   };
 }
 
@@ -10533,7 +10577,7 @@ function documentObjectProjectedPlaneMatrix(
   tiltXDegrees: number,
   tiltYDegrees: number,
   rotationDegrees: number
-): { a: number; b: number; c: number; d: number } {
+): DocumentObjectProjectionMatrix {
   const tiltXRad = degreesToRadians(tiltXDegrees);
   const tiltYRad = degreesToRadians(tiltYDegrees);
   const cx = Math.cos(tiltXRad);
@@ -10558,7 +10602,7 @@ function documentObjectProjectedPlaneMatrix(
 function documentObjectProjectedPlaneBounds(
   width: number,
   height: number,
-  matrix: { a: number; b: number; c: number; d: number }
+  matrix: DocumentObjectProjectionMatrix
 ): { x: number; y: number; width: number; height: number } {
   const halfWidth = Math.max(width, 1) / 2;
   const halfHeight = Math.max(height, 1) / 2;
@@ -10590,6 +10634,133 @@ function roundCssCoordinate(value: number): number {
 
 function formatCssNumber(value: number): string {
   return `${roundCssCoordinate(value)}`;
+}
+
+function projectArtPoint(
+  point: { x: number; y: number },
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix | undefined
+): { x: number; y: number } {
+  if (!matrix) {
+    return point;
+  }
+
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const dx = point.x - halfWidth;
+  const dy = point.y - halfHeight;
+  return {
+    x: halfWidth + matrix.a * dx + matrix.c * dy,
+    y: halfHeight + matrix.b * dx + matrix.d * dy
+  };
+}
+
+function artProjectionSvgTransform(
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix
+): string {
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const e = halfWidth - matrix.a * halfWidth - matrix.c * halfHeight;
+  const f = halfHeight - matrix.b * halfWidth - matrix.d * halfHeight;
+  return [
+    "matrix(",
+    formatCssNumber(matrix.a),
+    " ",
+    formatCssNumber(matrix.b),
+    " ",
+    formatCssNumber(matrix.c),
+    " ",
+    formatCssNumber(matrix.d),
+    " ",
+    formatCssNumber(e),
+    " ",
+    formatCssNumber(f),
+    ")"
+  ].join("");
+}
+
+function projectedArtShapePathD(
+  kind: GraphicObject["graphicKind"],
+  width: number,
+  height: number,
+  rx: number,
+  matrix: DocumentObjectProjectionMatrix,
+  offset: { x: number; y: number } = { x: 0, y: 0 },
+  strokeWidth = 0
+): string {
+  const points = kind === "ellipse"
+    ? ellipsePathPoints(width, height, strokeWidth, offset)
+    : roundedRectPathPoints(width, height, rx, strokeWidth, offset);
+  return projectedPointsPathD(points, true, width, height, matrix);
+}
+
+function roundedRectPathPoints(
+  width: number,
+  height: number,
+  rx: number,
+  strokeWidth: number,
+  offset: { x: number; y: number }
+): Array<{ x: number; y: number }> {
+  const inset = Math.max(strokeWidth / 2, 0);
+  const x0 = inset + offset.x;
+  const y0 = inset + offset.y;
+  const x1 = Math.max(width - inset + offset.x, x0 + 0.5);
+  const y1 = Math.max(height - inset + offset.y, y0 + 0.5);
+  const radius = Math.max(0, Math.min(rx, (x1 - x0) / 2, (y1 - y0) / 2));
+  if (radius <= 0.001) {
+    return [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 }
+    ];
+  }
+
+  return [
+    ...arcSamplePoints({ x: x1 - radius, y: y0 + radius }, radius, radius, -90, 0, 6),
+    ...arcSamplePoints({ x: x1 - radius, y: y1 - radius }, radius, radius, 0, 90, 6).slice(1),
+    ...arcSamplePoints({ x: x0 + radius, y: y1 - radius }, radius, radius, 90, 180, 6).slice(1),
+    ...arcSamplePoints({ x: x0 + radius, y: y0 + radius }, radius, radius, 180, 270, 6).slice(1)
+  ];
+}
+
+function ellipsePathPoints(
+  width: number,
+  height: number,
+  strokeWidth: number,
+  offset: { x: number; y: number }
+): Array<{ x: number; y: number }> {
+  const inset = Math.max(strokeWidth / 2, 0);
+  return arcSamplePoints(
+    { x: width / 2 + offset.x, y: height / 2 + offset.y },
+    Math.max(width / 2 - inset, 0.5),
+    Math.max(height / 2 - inset, 0.5),
+    0,
+    360,
+    48
+  );
+}
+
+function projectedPointsPathD(
+  points: Array<{ x: number; y: number }>,
+  closed: boolean,
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix
+): string {
+  const projected = points.map((point) => projectArtPoint(point, width, height, matrix));
+  if (projected.length === 0) {
+    return "";
+  }
+
+  return [
+    `M ${formatSvgNumber(projected[0].x)} ${formatSvgNumber(projected[0].y)}`,
+    ...projected.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`),
+    closed ? "Z" : ""
+  ].filter(Boolean).join(" ");
 }
 
 function documentObjectToolbarColor(object: DocumentObject): string {
@@ -10659,16 +10830,78 @@ function graphicPathD(object: GraphicObject, width: number, height: number): str
   return storedPath;
 }
 
+function projectedGraphicPathD(
+  object: GraphicObject,
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix | undefined
+): string | undefined {
+  if (!matrix) {
+    return undefined;
+  }
+
+  const storedPath = metadataStringValue(object.data.pathD);
+  const pathKind = metadataStringValue(object.data.artPathKind);
+  if (storedPath && !pathKind) {
+    return undefined;
+  }
+
+  const inset = Math.max(3, metadataNumberValue(object.style.strokeWidth, 2) / 2);
+  if (pathKind === "line") {
+    const endpoints = graphicLineGlyphEndpoints(object);
+    const points = endpoints
+      ? [{ x: endpoints.x1, y: endpoints.y1 }, { x: endpoints.x2, y: endpoints.y2 }]
+      : [{ x: inset, y: inset }, { x: width - inset, y: height - inset }];
+    return projectedPointsPathD(points, false, width, height, matrix);
+  }
+
+  if (pathKind === "wavy") {
+    const endpoints = graphicLineGlyphEndpoints(object);
+    const points = endpoints
+      ? wavyLinePoints(
+          { x: endpoints.x1, y: endpoints.y1 },
+          { x: endpoints.x2, y: endpoints.y2 },
+          Math.max(2, Math.min(5, metadataNumberValue(object.style.strokeWidth, 2) * 1.6))
+        )
+      : wavyLinePoints(
+          { x: inset, y: height / 2 },
+          { x: width - inset, y: height / 2 },
+          Math.max(4, Math.min(12, height * 0.24))
+        );
+    return projectedPointsPathD(points, false, width, height, matrix);
+  }
+
+  if (pathKind === "arc") {
+    return projectedPointsPathD(
+      artArcPoints(width, height, metadataNumberValue(object.data.arcAngleDegrees, 180)),
+      false,
+      width,
+      height,
+      matrix
+    );
+  }
+
+  return undefined;
+}
+
 function wavyLinePathD(start: { x: number; y: number }, end: { x: number; y: number }, amplitude: number): string {
+  const points = wavyLinePoints(start, end, amplitude);
+  return [
+    `M ${formatSvgNumber(points[0].x)} ${formatSvgNumber(points[0].y)}`,
+    ...points.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
+  ].join(" ");
+}
+
+function wavyLinePoints(start: { x: number; y: number }, end: { x: number; y: number }, amplitude: number): Array<{ x: number; y: number }> {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
   if (length < 1) {
-    return `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)} L ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`;
+    return [start, end];
   }
   const normal = { x: -dy / length, y: dx / length };
   const steps = Math.max(8, Math.ceil(length / 5));
-  const points = Array.from({ length: steps + 1 }, (_, index) => {
+  return Array.from({ length: steps + 1 }, (_, index) => {
     const t = index / steps;
     const wave = Math.sin(t * Math.PI * 2 * Math.max(2, length / 8)) * amplitude;
     return {
@@ -10676,25 +10909,46 @@ function wavyLinePathD(start: { x: number; y: number }, end: { x: number; y: num
       y: start.y + dy * t + normal.y * wave
     };
   });
-  return [
-    `M ${formatSvgNumber(points[0].x)} ${formatSvgNumber(points[0].y)}`,
-    ...points.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
-  ].join(" ");
 }
 
 function artArcPathD(width: number, height: number, degrees: number): string {
+  const points = artArcPoints(width, height, degrees);
+  const start = points[0];
+  const end = points[points.length - 1];
+  const angle = clamp(degrees, 1, 359.9);
+  const rx = Math.max(width / 2 - 4, 1);
+  const ry = Math.max(height / 2 - 4, 1);
+  if (!start || !end) {
+    return "";
+  }
+  return [
+    `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)}`,
+    `A ${formatSvgNumber(rx)} ${formatSvgNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`
+  ].join(" ");
+}
+
+function artArcPoints(width: number, height: number, degrees: number): Array<{ x: number; y: number }> {
   const angle = clamp(degrees, 1, 359.9);
   const rx = Math.max(width / 2 - 4, 1);
   const ry = Math.max(height / 2 - 4, 1);
   const center = { x: width / 2, y: height / 2 };
   const startAngle = -90 - angle / 2;
   const endAngle = -90 + angle / 2;
-  const start = ellipsePointAtDegrees(center, rx, ry, startAngle);
-  const end = ellipsePointAtDegrees(center, rx, ry, endAngle);
-  return [
-    `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)}`,
-    `A ${formatSvgNumber(rx)} ${formatSvgNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`
-  ].join(" ");
+  return arcSamplePoints(center, rx, ry, startAngle, endAngle, Math.max(12, Math.ceil(angle / 8)));
+}
+
+function arcSamplePoints(
+  center: { x: number; y: number },
+  rx: number,
+  ry: number,
+  startDegrees: number,
+  endDegrees: number,
+  steps: number
+): Array<{ x: number; y: number }> {
+  return Array.from({ length: steps + 1 }, (_, index) => {
+    const t = steps <= 0 ? 1 : index / steps;
+    return ellipsePointAtDegrees(center, rx, ry, startDegrees + (endDegrees - startDegrees) * t);
+  });
 }
 
 function ellipsePointAtDegrees(
