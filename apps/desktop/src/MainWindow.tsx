@@ -614,7 +614,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.13.21-codex";
+const CURRENT_BUILD_STAMP = "6.15.13.34-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -924,6 +924,25 @@ export function MainWindow({
     selectedTextRange,
     selectedToolbarObject,
     textStyleDefaults
+  ]);
+  const currentToolbarObjectColor = useMemo(() => {
+    if (selectedMoleculeForStyle) {
+      const drawingStyle = nativeDrawingStyleFromObjectStyle(selectedMoleculeForStyle.style);
+      return selectedNativeMoleculePart?.objectId === selectedMoleculeForStyle.id
+        ? nativeMoleculeSelectionColor(selectedMoleculeForStyle, selectedNativeMoleculePart, drawingStyle)
+        : drawingStyle.bondColor;
+    }
+
+    if (selectedToolbarObject) {
+      return documentObjectToolbarColor(selectedToolbarObject);
+    }
+
+    return textStyleDefaults.color;
+  }, [
+    selectedMoleculeForStyle,
+    selectedNativeMoleculePart,
+    selectedToolbarObject,
+    textStyleDefaults.color
   ]);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
   const currentToolbarTextStateRef = useRef(
@@ -2159,23 +2178,9 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
-    const activeTextObject = activeTextEditObjectId
-      ? findDocumentObject(currentDocument, activeTextEditObjectId)
-      : undefined;
-    const activeRange = activeTextObject?.type === "text" &&
-      activeTextSelectionRef.current?.objectId === activeTextObject.id &&
-      activeTextSelectionRef.current.range.start !== activeTextSelectionRef.current.range.end
-      ? activeTextSelectionRef.current.range
-      : undefined;
     const liveColorSelection: ToolbarColorSelection = {
-      objectIds: [
-        ...currentDocument.selection.objectIds,
-        ...(activeTextObject?.type === "text" ? [activeTextObject.id] : [])
-      ],
-      moleculePart: selectedNativeMoleculePart,
-      textRange: activeTextObject?.type === "text" && activeRange
-        ? { objectId: activeTextObject.id, range: activeRange }
-        : undefined
+      objectIds: currentDocument.selection.objectIds,
+      moleculePart: selectedNativeMoleculePart
     };
     const colorSelection = resolveToolbarColorSelection(currentDocument, liveColorSelection, toolbarStyleTarget);
     const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
@@ -2186,13 +2191,10 @@ export function MainWindow({
     }
 
     const changed = commitDocumentChange(colorResult.document);
-    setActiveTextEditObjectId((current) =>
-      activeTextObject?.type === "text" && current === activeTextObject.id ? current : undefined
-    );
     setActiveEditorObjectId(undefined);
     setStatus(changed ? "Updated selected object color" : "Selected object color unchanged");
     return true;
-  }, [activeTextEditObjectId, commitDocumentChange, selectedNativeMoleculePart]);
+  }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
     const currentHistory = documentHistoryRef.current;
@@ -6529,7 +6531,7 @@ export function MainWindow({
                   showMainStyleControls={toolset.id === "core.main"}
                   showTextStyleControls={toolset.id === "core.text"}
                   showArtStyleControls={toolset.id === "core.art"}
-                  currentObjectColor={currentToolbarTextStyle.color}
+                  currentObjectColor={currentToolbarObjectColor}
                   currentTextStyle={currentToolbarTextStyle}
                   currentTextScript={currentToolbarTextScript}
                   onInvoke={invoke}

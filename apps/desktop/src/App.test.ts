@@ -933,6 +933,11 @@ describe("ChemDraft desktop shell", () => {
     expect(objectColorForCommand(objectCustomColorCommandId("#A0B1C2"))).toBe("#a0b1c2");
     expect(textStylePatchForCommand("object.color.green")).toBeUndefined();
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.color.green")).toBe(true);
+    expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
+    expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
+    expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
+    expect(mainWindowSource).toContain("objectIds: currentDocument.selection.objectIds");
+    expect(mainWindowSource).not.toContain("textRange: activeTextObject?.type === \"text\"");
   });
 
   it("renders mutually exclusive text toolbar active states from current style", () => {
