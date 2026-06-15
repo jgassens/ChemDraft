@@ -2119,7 +2119,10 @@ export function createNativeMolfileMolecule(
       id: bond.id,
       fromAtomId: bond.fromAtomId,
       toAtomId: bond.toAtomId,
-      order: bond.order
+      order: bond.order,
+      // Preserve wedge/hash stereo markers from the pasted molfile (V2000 bond stereo /
+      // V3000 CFG) instead of silently dropping them (AGENTS.md §5.7).
+      ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {})
     })) satisfies MoleculeBond[];
   const warnings = [
     ...clipboardWarningsToCompatibilityWarnings(graph.warnings),

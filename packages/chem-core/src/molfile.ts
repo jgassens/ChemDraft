@@ -18,6 +18,13 @@
  *
  * Field widths mirror `tools/rdkit-oracle/oracle.py` `_build_molblock`, which is
  * proven against RDKit in the Phase 1C/2 tests.
+ *
+ * Known limitations (the native model does not carry these, so they cannot be emitted):
+ *   - Isotopes (`M  ISO`) and radicals (`M  RAD`) are not represented in `MoleculeAtom`
+ *     and are therefore not written. A round-trip through this writer loses them.
+ *   - `unknown` bond order has no V2000 encoding and is written as single (code 1).
+ *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
+ *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
  */
 
 import type { MoleculeBond, MoleculeObject } from "./schemas";
@@ -38,11 +45,24 @@ const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
 function f10_4(value: number): string {
   // Guard -0 and non-finite so the column never corrupts.
   const safe = Number.isFinite(value) ? value + 0 : 0;
-  return safe.toFixed(4).padStart(10);
+  let text = safe.toFixed(4);
+  if (text.length > 10) {
+    // Coordinate too large for the fixed 10-char column: drop decimal places so the
+    // column stays exactly 10 wide rather than shifting every field that follows.
+    text = safe.toFixed(Math.max(0, 4 - (text.length - 10)));
+    if (text.length > 10) {
+      text = text.slice(0, 10); // pathological magnitude — clamp width to preserve alignment
+    }
+  }
+  return text.padStart(10);
 }
 
 function i3(value: number): string {
-  return String(value).padStart(3);
+  // Never exceed the fixed 3-char column: a wider value would shift the counts line and
+  // every subsequent column. Callers guard atom/bond counts to ≤999 (the V2000 limit), so
+  // truncation here is purely defensive against an unexpected overflow.
+  const text = String(Math.trunc(value));
+  return text.length > 3 ? text.slice(-3) : text.padStart(3);
 }
 
 function i4(value: number): string {
@@ -68,11 +88,26 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based
 
-  const hasStereo = bonds.some((bond) => wedgeStereoFlag(bond) !== 0);
+  // Drop dangling bonds (endpoint not in the atom list) BEFORE writing the counts line, so
+  // the declared bond count matches the number of bond lines actually emitted — otherwise a
+  // fixed-width parser reads atom/property lines as phantom bonds.
+  const writableBonds = bonds.filter(
+    (bond) => atomIndex.has(bond.fromAtomId) && atomIndex.has(bond.toAtomId)
+  );
+
+  // V2000 atom/bond counts live in 3-char columns: values >999 cannot be represented and
+  // would corrupt the whole molblock. Refuse rather than emit a silently-broken file.
+  if (atoms.length > 999 || writableBonds.length > 999) {
+    throw new Error(
+      `V2000 supports at most 999 atoms and 999 bonds (got ${atoms.length} atoms, ${writableBonds.length} bonds).`
+    );
+  }
+
+  const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
   const chiralFlag = hasStereo ? 1 : 0;
 
   const lines: string[] = ["", "  ChemDraft", ""];
-  lines.push(`${i3(atoms.length)}${i3(bonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
+  lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
   for (const atom of atoms) {
     const x = f10_4(atom.x);
@@ -81,10 +116,9 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     lines.push(`${x}${y}${z} ${atom.element.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
   }
 
-  for (const bond of bonds) {
-    const from = atomIndex.get(bond.fromAtomId);
-    const to = atomIndex.get(bond.toAtomId);
-    if (from === undefined || to === undefined) continue; // dangling bond → skip defensively
+  for (const bond of writableBonds) {
+    const from = atomIndex.get(bond.fromAtomId)!;
+    const to = atomIndex.get(bond.toAtomId)!;
     lines.push(`${i3(from)}${i3(to)}${i3(BOND_ORDER_CODE[bond.order])}${i3(wedgeStereoFlag(bond))}  0  0  0`);
   }
 

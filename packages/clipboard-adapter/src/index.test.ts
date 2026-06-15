@@ -96,6 +96,72 @@ describe("clipboard-adapter", () => {
     expect(graph.atoms[2]).toMatchObject({ element: "N", formalCharge: 1 });
   });
 
+  it("preserves V2000 wedge/hash bond stereo as bondStyle", () => {
+    const wedgeHashV2000 = [
+      "ChemDraft stereo",
+      "  ChemDraft",
+      "",
+      "  4  3  0  0  1  0            999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.0000    0.0000    0.0000 F   0  0  0  0  0  0  0  0  0  0  0  0",
+      "   -0.5000    0.8660    0.0000 Cl  0  0  0  0  0  0  0  0  0  0  0  0",
+      "   -0.5000   -0.8660    0.0000 Br  0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  1  0  0  0",
+      "  1  3  1  6  0  0  0",
+      "  1  4  1  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(wedgeHashV2000);
+
+    expect(graph.bonds[0]).toMatchObject({ order: "single", bondStyle: "wedge" });
+    expect(graph.bonds[1]).toMatchObject({ order: "single", bondStyle: "hashed" });
+    expect(graph.bonds[2].bondStyle).toBeUndefined();
+  });
+
+  it("treats atom-block charges as zero once any M CHG line is present (V2000 spec)", () => {
+    // Atom 1 carries a legacy atom-block charge (code 3 = +1); atom 2 is named in M CHG.
+    // Per spec the presence of any M CHG line voids ALL atom-block charges, so atom 1 must
+    // import as neutral rather than a phantom +1.
+    const lines = [
+      "ChemDraft charge",
+      "  ChemDraft",
+      "",
+      "  2  1  0  0  0  0            999 V2000",
+      "    0.0000    0.0000    0.0000 N   0  3  0  0  0  0  0  0  0  0  0  0",
+      "    1.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  0  0  0  0"
+    ];
+    // Without an M CHG line, the atom-block charge IS honored (+1 on atom 1).
+    const withoutChg = parseMolfileGraph([...lines, "M  END"].join("\n"));
+    expect(withoutChg.atoms[0].formalCharge).toBe(1);
+
+    // With an M CHG line (atom 2 only), atom 1's atom-block charge is discarded.
+    const withChg = parseMolfileGraph([...lines, "M  CHG  1   2  -1", "M  END"].join("\n"));
+    expect(withChg.atoms[0].formalCharge).toBe(0);
+    expect(withChg.atoms[1].formalCharge).toBe(-1);
+  });
+
+  it("parses V2000 columns even when coordinates abut (≥100 magnitude)", () => {
+    // Two coordinates at magnitude ≥100 fill their 10-char columns with no separator
+    // ("-123.4567-123.4567"); a whitespace split would read them as one token.
+    const abutting = [
+      "ChemDraft wide",
+      "  ChemDraft",
+      "",
+      "  2  1  0  0  0  0            999 V2000",
+      " -123.4567 -123.4567    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      " -123.4567  123.4567    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(abutting);
+
+    expect(graph.atoms[0]).toMatchObject({ x: -123.4567, y: -123.4567, element: "C" });
+    expect(graph.atoms[1]).toMatchObject({ x: -123.4567, y: 123.4567, element: "O" });
+  });
+
   it("detects and parses V3000 molfile text", () => {
     expect(detectMolfileFormat(etheneV3000)).toBe("molfile-v3000");
 
