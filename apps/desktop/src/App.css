@@ -1515,6 +1515,10 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
+.graphic-glyph-transform .graphic-glyph-stroke {
+  vector-effect: none;
+}
+
 .graphic-glyph-shadow {
   opacity: 0.56;
   pointer-events: none;

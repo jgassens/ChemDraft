@@ -1808,9 +1808,12 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    expect(tiltedMarkup).toContain("graphic-glyph-projected-shape");
-    expect(tiltedMarkup).not.toContain("graphic-glyph-shape");
+    expect(tiltedMarkup).toContain("graphic-glyph-transform");
+    expect(tiltedMarkup).toContain("graphic-glyph-shape");
+    expect(tiltedMarkup).not.toContain("graphic-glyph-projected-shape");
     expect(tiltedMarkup).not.toContain("perspective(");
+    expect(appCss).toContain(".graphic-glyph-transform .graphic-glyph-stroke");
+    expect(appCss).toContain("vector-effect: none;");
   });
 
   it("hides molecule transform handles when the bond tool is active", () => {

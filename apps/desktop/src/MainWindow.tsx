@@ -597,7 +597,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.10.0-codex";
+const CURRENT_BUILD_STAMP = "6.15.10.37-codex";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -10365,6 +10365,9 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
   const effect = metadataStringValue(object.style.effect);
   const gradientId = `graphic-gloss-${object.id}`;
   const pathD = graphicPathD(object, width, height);
+  const projectionTransform = projection?.matrix
+    ? artProjectionSvgTransform(width, height, projection.matrix)
+    : undefined;
   const sharedStrokeProps = {
     stroke: strokeColor,
     strokeWidth,
@@ -10388,22 +10391,8 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
           </radialGradient>
         </defs>
       ) : null}
-      {effect === "shadow" && object.graphicKind !== "path" ? (
-        projection?.matrix ? (
-          <path
-            className="graphic-glyph-shadow graphic-glyph-projected-shape"
-            d={projectedArtShapePathD(
-              object.graphicKind,
-              width,
-              height,
-              cornerRadius,
-              projection.matrix,
-              { x: 6, y: 6 }
-            )}
-            fill="#aeb8c2"
-            stroke="none"
-          />
-        ) : (
+      <g className={projectionTransform ? "graphic-glyph-transform" : undefined} transform={projectionTransform}>
+        {effect === "shadow" && object.graphicKind !== "path" ? (
           <ArtShapePrimitive
             kind={object.graphicKind}
             width={width}
@@ -10414,77 +10403,51 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
             stroke="none"
             transform="translate(6 6)"
           />
-        )
-      ) : null}
-      {projection?.matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect") ? (
-        <path
-          className="graphic-glyph-stroke graphic-glyph-projected-shape"
-          d={projectedArtShapePathD(
-            object.graphicKind,
-            width,
-            height,
-            object.graphicKind === "rect" ? cornerRadius : 0,
-            projection.matrix,
-            undefined,
-            strokeWidth
-          )}
-          fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
-          {...sharedStrokeProps}
-        />
-      ) : object.graphicKind === "ellipse" ? (
-        <ellipse
-          className="graphic-glyph-stroke graphic-glyph-shape"
-          cx={width / 2}
-          cy={height / 2}
-          rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
-          ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
-          fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
-          {...sharedStrokeProps}
-        />
-      ) : object.graphicKind === "rect" ? (
-        <rect
-          className="graphic-glyph-stroke graphic-glyph-shape"
-          x={strokeWidth / 2}
-          y={strokeWidth / 2}
-          width={Math.max(width - strokeWidth, 0.5)}
-          height={Math.max(height - strokeWidth, 0.5)}
-          rx={cornerRadius}
-          ry={cornerRadius}
-          fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
-          {...sharedStrokeProps}
-        />
-      ) : object.graphicKind === "path" && pathD ? (
-        (() => {
-          const projectedPathD = projectedGraphicPathD(object, width, height, projection?.matrix);
-          return (
-            <path
-              className={[
-                "graphic-glyph-stroke",
-                projection?.matrix ? "graphic-glyph-projected-path" : "graphic-glyph-path"
-              ].join(" ")}
-              d={projectedPathD ?? pathD}
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              transform={!projectedPathD && projection?.matrix
-                ? artProjectionSvgTransform(width, height, projection.matrix)
-                : undefined}
-              {...sharedStrokeProps}
-            />
-          );
-        })()
-      ) : line ? (
-        <line
-          className="graphic-glyph-stroke"
-          x1={formatSvgNumber(projectArtPoint({ x: line.x1, y: line.y1 }, width, height, projection?.matrix).x)}
-          y1={formatSvgNumber(projectArtPoint({ x: line.x1, y: line.y1 }, width, height, projection?.matrix).y)}
-          x2={formatSvgNumber(projectArtPoint({ x: line.x2, y: line.y2 }, width, height, projection?.matrix).x)}
-          y2={formatSvgNumber(projectArtPoint({ x: line.x2, y: line.y2 }, width, height, projection?.matrix).y)}
-          {...sharedStrokeProps}
-        />
-      ) : (
-        <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
-      )}
+        ) : null}
+        {object.graphicKind === "ellipse" ? (
+          <ellipse
+            className="graphic-glyph-stroke graphic-glyph-shape"
+            cx={width / 2}
+            cy={height / 2}
+            rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
+            ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
+            fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+            {...sharedStrokeProps}
+          />
+        ) : object.graphicKind === "rect" ? (
+          <rect
+            className="graphic-glyph-stroke graphic-glyph-shape"
+            x={strokeWidth / 2}
+            y={strokeWidth / 2}
+            width={Math.max(width - strokeWidth, 0.5)}
+            height={Math.max(height - strokeWidth, 0.5)}
+            rx={cornerRadius}
+            ry={cornerRadius}
+            fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+            {...sharedStrokeProps}
+          />
+        ) : object.graphicKind === "path" && pathD ? (
+          <path
+            className="graphic-glyph-stroke graphic-glyph-path"
+            d={pathD}
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            {...sharedStrokeProps}
+          />
+        ) : line ? (
+          <line
+            className="graphic-glyph-stroke"
+            x1={line.x1}
+            y1={line.y1}
+            x2={line.x2}
+            y2={line.y2}
+            {...sharedStrokeProps}
+          />
+        ) : (
+          <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
+        )}
+      </g>
     </svg>
   );
 }
@@ -10682,87 +10645,6 @@ function artProjectionSvgTransform(
   ].join("");
 }
 
-function projectedArtShapePathD(
-  kind: GraphicObject["graphicKind"],
-  width: number,
-  height: number,
-  rx: number,
-  matrix: DocumentObjectProjectionMatrix,
-  offset: { x: number; y: number } = { x: 0, y: 0 },
-  strokeWidth = 0
-): string {
-  const points = kind === "ellipse"
-    ? ellipsePathPoints(width, height, strokeWidth, offset)
-    : roundedRectPathPoints(width, height, rx, strokeWidth, offset);
-  return projectedPointsPathD(points, true, width, height, matrix);
-}
-
-function roundedRectPathPoints(
-  width: number,
-  height: number,
-  rx: number,
-  strokeWidth: number,
-  offset: { x: number; y: number }
-): Array<{ x: number; y: number }> {
-  const inset = Math.max(strokeWidth / 2, 0);
-  const x0 = inset + offset.x;
-  const y0 = inset + offset.y;
-  const x1 = Math.max(width - inset + offset.x, x0 + 0.5);
-  const y1 = Math.max(height - inset + offset.y, y0 + 0.5);
-  const radius = Math.max(0, Math.min(rx, (x1 - x0) / 2, (y1 - y0) / 2));
-  if (radius <= 0.001) {
-    return [
-      { x: x0, y: y0 },
-      { x: x1, y: y0 },
-      { x: x1, y: y1 },
-      { x: x0, y: y1 }
-    ];
-  }
-
-  return [
-    ...arcSamplePoints({ x: x1 - radius, y: y0 + radius }, radius, radius, -90, 0, 6),
-    ...arcSamplePoints({ x: x1 - radius, y: y1 - radius }, radius, radius, 0, 90, 6).slice(1),
-    ...arcSamplePoints({ x: x0 + radius, y: y1 - radius }, radius, radius, 90, 180, 6).slice(1),
-    ...arcSamplePoints({ x: x0 + radius, y: y0 + radius }, radius, radius, 180, 270, 6).slice(1)
-  ];
-}
-
-function ellipsePathPoints(
-  width: number,
-  height: number,
-  strokeWidth: number,
-  offset: { x: number; y: number }
-): Array<{ x: number; y: number }> {
-  const inset = Math.max(strokeWidth / 2, 0);
-  return arcSamplePoints(
-    { x: width / 2 + offset.x, y: height / 2 + offset.y },
-    Math.max(width / 2 - inset, 0.5),
-    Math.max(height / 2 - inset, 0.5),
-    0,
-    360,
-    48
-  );
-}
-
-function projectedPointsPathD(
-  points: Array<{ x: number; y: number }>,
-  closed: boolean,
-  width: number,
-  height: number,
-  matrix: DocumentObjectProjectionMatrix
-): string {
-  const projected = points.map((point) => projectArtPoint(point, width, height, matrix));
-  if (projected.length === 0) {
-    return "";
-  }
-
-  return [
-    `M ${formatSvgNumber(projected[0].x)} ${formatSvgNumber(projected[0].y)}`,
-    ...projected.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`),
-    closed ? "Z" : ""
-  ].filter(Boolean).join(" ");
-}
-
 function documentObjectToolbarColor(object: DocumentObject): string {
   if (object.type === "graphic") {
     const fillColor = metadataStringValue(object.style.fillColor);
@@ -10828,60 +10710,6 @@ function graphicPathD(object: GraphicObject, width: number, height: number): str
   }
 
   return storedPath;
-}
-
-function projectedGraphicPathD(
-  object: GraphicObject,
-  width: number,
-  height: number,
-  matrix: DocumentObjectProjectionMatrix | undefined
-): string | undefined {
-  if (!matrix) {
-    return undefined;
-  }
-
-  const storedPath = metadataStringValue(object.data.pathD);
-  const pathKind = metadataStringValue(object.data.artPathKind);
-  if (storedPath && !pathKind) {
-    return undefined;
-  }
-
-  const inset = Math.max(3, metadataNumberValue(object.style.strokeWidth, 2) / 2);
-  if (pathKind === "line") {
-    const endpoints = graphicLineGlyphEndpoints(object);
-    const points = endpoints
-      ? [{ x: endpoints.x1, y: endpoints.y1 }, { x: endpoints.x2, y: endpoints.y2 }]
-      : [{ x: inset, y: inset }, { x: width - inset, y: height - inset }];
-    return projectedPointsPathD(points, false, width, height, matrix);
-  }
-
-  if (pathKind === "wavy") {
-    const endpoints = graphicLineGlyphEndpoints(object);
-    const points = endpoints
-      ? wavyLinePoints(
-          { x: endpoints.x1, y: endpoints.y1 },
-          { x: endpoints.x2, y: endpoints.y2 },
-          Math.max(2, Math.min(5, metadataNumberValue(object.style.strokeWidth, 2) * 1.6))
-        )
-      : wavyLinePoints(
-          { x: inset, y: height / 2 },
-          { x: width - inset, y: height / 2 },
-          Math.max(4, Math.min(12, height * 0.24))
-        );
-    return projectedPointsPathD(points, false, width, height, matrix);
-  }
-
-  if (pathKind === "arc") {
-    return projectedPointsPathD(
-      artArcPoints(width, height, metadataNumberValue(object.data.arcAngleDegrees, 180)),
-      false,
-      width,
-      height,
-      matrix
-    );
-  }
-
-  return undefined;
 }
 
 function wavyLinePathD(start: { x: number; y: number }, end: { x: number; y: number }, amplitude: number): string {
