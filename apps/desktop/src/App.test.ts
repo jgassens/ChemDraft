@@ -936,7 +936,10 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
     expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
     expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
-    expect(mainWindowSource).toContain("objectIds: currentDocument.selection.objectIds");
+    expect(mainWindowSource).toContain("const objectStyleObjectIds = currentDocument.selection.objectIds.filter");
+    expect(mainWindowSource).toContain("findDocumentObject(currentDocument, objectId)?.type !== \"text\"");
+    expect(mainWindowSource).toContain("const objectStyleTarget = toolbarStyleTarget");
+    expect(mainWindowSource).toContain("objectIds: objectStyleObjectIds");
     expect(mainWindowSource).not.toContain("textRange: activeTextObject?.type === \"text\"");
   });
 

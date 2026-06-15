@@ -614,7 +614,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.13.34-codex";
+const CURRENT_BUILD_STAMP = "6.15.13.43-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -2178,11 +2178,22 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
+    const objectStyleObjectIds = currentDocument.selection.objectIds.filter((objectId) =>
+      findDocumentObject(currentDocument, objectId)?.type !== "text"
+    );
+    const objectStyleTarget = toolbarStyleTarget
+      ? {
+          objectIds: toolbarStyleTarget.objectIds.filter((objectId) =>
+            findDocumentObject(currentDocument, objectId)?.type !== "text"
+          ),
+          moleculePart: toolbarStyleTarget.moleculePart
+        }
+      : undefined;
     const liveColorSelection: ToolbarColorSelection = {
-      objectIds: currentDocument.selection.objectIds,
+      objectIds: objectStyleObjectIds,
       moleculePart: selectedNativeMoleculePart
     };
-    const colorSelection = resolveToolbarColorSelection(currentDocument, liveColorSelection, toolbarStyleTarget);
+    const colorSelection = resolveToolbarColorSelection(currentDocument, liveColorSelection, objectStyleTarget);
     const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
 
     if (!colorResult.targetedSelection) {
