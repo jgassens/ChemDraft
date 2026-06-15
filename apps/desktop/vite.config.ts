@@ -31,6 +31,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@chemdraft/chem-core": workspacePackage("../../packages/chem-core/src/index.ts"),
+      "@chemdraft/ocl-adapter": workspacePackage("../../packages/ocl-adapter/src/index.ts"),
+      "@chemdraft/chemistry-adapter": workspacePackage("../../packages/chemistry-adapter/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("../../packages/cdx-compat/src/index.ts"),
       "@chemdraft/export-engine/pdf": workspacePackage("../../packages/export-engine/src/pdf.ts"),
       "@chemdraft/export-engine": workspacePackage("../../packages/export-engine/src/index.ts"),

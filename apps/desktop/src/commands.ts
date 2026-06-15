@@ -12,6 +12,7 @@ import { nativeSingleLetterElements, type NativeSingleLetterElement } from "./do
 import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
+import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 
 export interface CommandAvailability {
   canUndo?: boolean;
@@ -63,6 +64,7 @@ export const drawerActions: CommandSpec[] = [
 ];
 
 export const structureCleanupCommandId = "structure.cleanup2d";
+export const structureSpin3dCommandId = "structure.spin3d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
 
@@ -161,6 +163,14 @@ export const atomElementActions: CommandSpec[] = nativeSingleLetterElements.map(
 }));
 
 export const viewActions: CommandSpec[] = [
+  {
+    id: SPIN3D_DEBUGGER_COMMAND_ID,
+    title: "Toggle 3D Debugger",
+    icon: "inspector",
+    source: "core",
+    category: "view",
+    description: "Open or close the 3D spin debugger window"
+  },
   {
     id: "view.toggleRulers",
     title: "Toggle Rulers",

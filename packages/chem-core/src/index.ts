@@ -165,3 +165,17 @@ export {
   type StereoMarkerFingerprint,
   type StereoMarkerStyle
 } from "./identity";
+
+export {
+  flattenPerspectiveFrom3D,
+  type FlattenOptions,
+  type FlattenResult,
+  type FlattenStatus,
+  type FlattenWarning,
+  type FlattenWarningCode,
+  type StereoCenterReport,
+  type StereoCenterStatus,
+  type ViewMatrix
+} from "./perspective";
+
+export { moleculeToMolfileV2000, type MolfileWriteOptions } from "./molfile";

@@ -1105,7 +1105,7 @@ function canonicalBondRefs(bonds: [BondRef, BondRef]): [BondRef, BondRef] {
   return bondRefKey(left).localeCompare(bondRefKey(right)) <= 0 ? [left, right] : [right, left];
 }
 
-function sameBondRef(left: BondRef, right: BondRef): boolean {
+export function sameBondRef(left: BondRef, right: BondRef): boolean {
   return left.objectId === right.objectId && left.bondId === right.bondId;
 }
 
@@ -1415,7 +1415,7 @@ function nativeBondSegmentFragments(
     "data-bond-style": bondStyle,
     "data-double-bond-side": segment.doubleBondSide
   };
-  const stroke = nativeMoleculeBondColor(object, segment.bond.id, drawingStyle);
+  const stroke = nativeMoleculeBondColor(object, segment.bond, drawingStyle);
 
   if (bondStyle === "wedge" && segment.segment === "primary") {
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
@@ -1869,7 +1869,7 @@ function bondLineSegments(
   return [{ x1, y1, x2, y2, segment: "primary" }];
 }
 
-function labelEndpointClearance(
+export function labelEndpointClearance(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
   fromLabel: string | undefined,
@@ -1952,25 +1952,25 @@ function atomLabelBoundsRelativeToAtom(
   };
 }
 
-type AtomLabelScript = "normal" | "subscript" | "superscript";
+export type AtomLabelScript = "normal" | "subscript" | "superscript";
 
-interface AtomLabelRun {
+export interface AtomLabelRun {
   text: string;
   script: AtomLabelScript;
 }
 
-interface AtomLabelLayoutRun extends AtomLabelRun {
+export interface AtomLabelLayoutRun extends AtomLabelRun {
   x: number;
   y: number;
   textAnchor: "middle" | "start";
 }
 
-interface AtomLabelLayout {
+export interface AtomLabelLayout {
   bounds: { x: number; y: number; width: number; height: number };
   runs: AtomLabelLayoutRun[];
 }
 
-function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
+export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
   const { bodyRuns, chargeRun } = atomLabelParts(label);
   const baseText = bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label;
   const suffixRuns = bodyRuns.filter((run) => run.script !== "normal");
@@ -2087,7 +2087,7 @@ function atomLabelScript(character: string): AtomLabelScript {
   return "normal";
 }
 
-function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: NativeDrawingStyle): number | undefined {
+export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: NativeDrawingStyle): number | undefined {
   if (script === "normal") {
     return undefined;
   }
@@ -2095,7 +2095,12 @@ function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: NativeDrawi
   return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : 0.72);
 }
 
-function atomDisplayLabel(atom: MoleculeAtom, bonds: readonly CoreMoleculeBond[]): string | undefined {
+/**
+ * The label a native atom renders with in 2D — element symbol + implicit hydrogens +
+ * charge, or undefined for plain bonded carbons. Exported so the 3D spin overlay can
+ * label its atoms IDENTICALLY to the drawing it floats over.
+ */
+export function atomDisplayLabel(atom: MoleculeAtom, bonds: readonly CoreMoleculeBond[]): string | undefined {
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
     const symbol = atom.element.trim() || "C";
@@ -2190,9 +2195,21 @@ function nativeBondDisplayStyle(bond: CoreMoleculeBond): BondDisplayStyle | unde
 }
 
 function nativeBondStrokeWidth(bond: CoreMoleculeBond, drawingStyle: NativeDrawingStyle): number {
-  return nativeBondDisplayStyle(bond) === "bold"
+  const base = nativeBondDisplayStyle(bond) === "bold"
     ? drawingStyle.bondStrokeWidthPx * 2.4
     : drawingStyle.bondStrokeWidthPx;
+  return depthCuedBondStrokeWidth(base, bond.display?.depthWeight);
+}
+
+/**
+ * Perspective depth → stroke width, shared by the committed 2D rendering AND the live
+ * 3D spin overlay so flatten-on-release changes nothing visually. Near bonds are a
+ * little heavier, far bonds a little lighter (1.2px–2.8px for a 2px drawing style)
+ * without turning face-on structures chunky.
+ */
+export function depthCuedBondStrokeWidth(baseWidthPx: number, depthWeight: number | undefined): number {
+  if (depthWeight === undefined) return baseWidthPx;
+  return baseWidthPx * (0.6 + clamp(depthWeight, 0, 1) * 0.8);
 }
 
 function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
@@ -2276,7 +2293,7 @@ function nativeSegmentVectorGeometry(
   };
 }
 
-function isTerminalHeteroatomDoubleBond(
+export function isTerminalHeteroatomDoubleBond(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
   object: MoleculeObject,
@@ -2299,10 +2316,72 @@ function atomBondCount(object: MoleculeObject, atomId: string): number {
 
 function nativeMoleculeBondColor(
   object: MoleculeObject,
-  bondId: string,
+  bond: CoreMoleculeBond,
   drawingStyle: NativeDrawingStyle
 ): string {
-  return styleColorMapValue(object.style.bondColors, bondId) ?? drawingStyle.bondColor;
+  const baseColor = styleColorMapValue(object.style.bondColors, bond.id) ?? drawingStyle.bondColor;
+  return depthCuedBondColor(baseColor, bond.display?.depthWeight);
+}
+
+/**
+ * Perspective depth → bond color, shared by the committed 2D rendering AND the live
+ * 3D spin overlay: far bonds fade toward a neutral grey, near bonds keep the full
+ * drawing color.
+ */
+export function depthCuedBondColor(baseColor: string, depthWeight: number | undefined): string {
+  if (depthWeight === undefined) {
+    return baseColor;
+  }
+
+  const color = parseCssRgbColor(baseColor);
+  if (!color) {
+    return baseColor;
+  }
+
+  const near = clamp(depthWeight, 0, 1);
+  const farGrey = 150;
+  return rgbToHex({
+    r: farGrey + (color.r - farGrey) * near,
+    g: farGrey + (color.g - farGrey) * near,
+    b: farGrey + (color.b - farGrey) * near
+  });
+}
+
+function parseCssRgbColor(value: string): { r: number; g: number; b: number } | undefined {
+  const trimmed = value.trim();
+  const shortHex = trimmed.match(/^#([0-9a-f]{3})$/i);
+  if (shortHex?.[1]) {
+    const [r, g, b] = shortHex[1].split("").map((channel) => parseInt(`${channel}${channel}`, 16));
+    return { r, g, b };
+  }
+
+  const hex = trimmed.match(/^#([0-9a-f]{6})$/i);
+  if (hex?.[1]) {
+    return {
+      r: parseInt(hex[1].slice(0, 2), 16),
+      g: parseInt(hex[1].slice(2, 4), 16),
+      b: parseInt(hex[1].slice(4, 6), 16)
+    };
+  }
+
+  const rgb = trimmed.match(/^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)(?:\s*,\s*\d*(?:\.\d+)?)?\s*\)$/i);
+  if (!rgb?.[1] || !rgb[2] || !rgb[3]) {
+    return undefined;
+  }
+
+  return {
+    r: clamp(Number(rgb[1]), 0, 255),
+    g: clamp(Number(rgb[2]), 0, 255),
+    b: clamp(Number(rgb[3]), 0, 255)
+  };
+}
+
+function rgbToHex(color: { r: number; g: number; b: number }): string {
+  return `#${hexChannel(color.r)}${hexChannel(color.g)}${hexChannel(color.b)}`;
+}
+
+function hexChannel(value: number): string {
+  return Math.round(clamp(value, 0, 255)).toString(16).padStart(2, "0");
 }
 
 function nativeMoleculeAtomLabelColor(
@@ -2313,7 +2392,7 @@ function nativeMoleculeAtomLabelColor(
   return styleColorMapValue(object.style.atomLabelColors, atomId) ?? drawingStyle.atomLabelColor;
 }
 
-function styleColorMapValue(value: unknown, id: string): string | undefined {
+export function styleColorMapValue(value: unknown, id: string): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }

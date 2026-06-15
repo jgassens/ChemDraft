@@ -4,6 +4,8 @@ import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
   createPageLayout,
+  flattenPerspectiveFrom3D,
+  moleculeToMolfileV2000,
   PageSizePresets,
   pageMarginFromLayout,
   nativeTextStyleFromObjectStyle,
@@ -15,6 +17,7 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
+  type FlattenWarning,
   type PageLayout,
   type MoleculeAtom,
   type MoleculeBond,
@@ -24,8 +27,10 @@ import {
   type ObjectReorderPlacement,
   type PageOrientation,
   type PageSizePresetId,
+  type StereoCenterReport,
   type TextSpan,
-  type TextObject
+  type TextObject,
+  type ViewMatrix
 } from "@chemdraft/chem-core";
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
@@ -2114,7 +2119,10 @@ export function createNativeMolfileMolecule(
       id: bond.id,
       fromAtomId: bond.fromAtomId,
       toAtomId: bond.toAtomId,
-      order: bond.order
+      order: bond.order,
+      // Preserve wedge/hash stereo markers from the pasted molfile (V2000 bond stereo /
+      // V3000 CFG) instead of silently dropping them (AGENTS.md §5.7).
+      ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {})
     })) satisfies MoleculeBond[];
   const warnings = [
     ...clipboardWarningsToCompatibilityWarnings(graph.warnings),
@@ -2150,6 +2158,136 @@ export function createNativeMolfileMolecule(
     superatoms: [],
     rGroups: []
   });
+}
+
+/** A 2D depiction (atoms + wedge-aware bonds) produced from a SMILES by the OCL
+ *  adapter's `depictSmiles2D`. Kept structural so this module never imports the
+ *  engine (which stays behind a dynamic import to keep it out of the static graph). */
+export interface PastedStructureDepiction {
+  atoms: ReadonlyArray<{ element: string; x: number; y: number; charge: number }>;
+  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; wedge: "wedge" | "hashed" | null }>;
+}
+
+/**
+ * Place a SMILES-derived 2D depiction as an editable native molecule, preserving
+ * stereochemistry. The depiction is engine-frame y-UP with wedge/hash bonds; the
+ * molfile scaler negates y (→ document y-down) and KEEPS the wedges unchanged —
+ * which preserves chirality per the coordinate-frame contract (negate y, never swap
+ * wedges; proven by the Phase 6 oracle round-trip). Double-bond sides are recomputed
+ * from the placed geometry so ring double bonds draw toward the ring interior.
+ */
+export function insertSmilesMolecule(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  depiction: PastedStructureDepiction,
+  smilesText: string
+): ChemDraftDocument {
+  if (depiction.atoms.length === 0) {
+    throw new Error("Cannot paste SMILES: no atoms were generated.");
+  }
+  const page = firstPage(document);
+
+  const pseudoGraph: ParsedMolfileGraph = {
+    format: "molfile-v2000",
+    atoms: depiction.atoms.map((atom, index) => ({
+      id: `a${index}`,
+      element: atom.element,
+      x: atom.x,
+      y: atom.y,
+      formalCharge: atom.charge
+    })),
+    bonds: depiction.bonds.map((bond, index) => ({
+      id: `b${index}`,
+      fromAtomId: `a${bond.from}`,
+      toAtomId: `a${bond.to}`,
+      order: bond.order
+    })),
+    warnings: []
+  };
+
+  const atoms: MoleculeAtom[] = scaleParsedMolfileAtoms(pseudoGraph, point, page).map((atom) => ({
+    id: atom.id,
+    element: atom.element,
+    x: atom.x,
+    y: atom.y,
+    formalCharge: atom.formalCharge
+  }));
+  const atomIds = new Set(atoms.map((atom) => atom.id));
+  const baseBonds: MoleculeBond[] = depiction.bonds
+    .map((bond, index): MoleculeBond => {
+      const base: MoleculeBond = {
+        id: `b${index}`,
+        fromAtomId: `a${bond.from}`,
+        toAtomId: `a${bond.to}`,
+        order: bond.order
+      };
+      return bond.wedge ? { ...base, display: { bondStyle: bond.wedge } } : base;
+    })
+    .filter((bond) => atomIds.has(bond.fromAtomId) && atomIds.has(bond.toAtomId));
+
+  // Recompute each double bond's drawn side from the placed 2D geometry.
+  const geometry = moleculeGeometryFromAtoms(atoms);
+  const sideMolecule: MoleculeObject = {
+    id: "smiles-side",
+    type: "molecule",
+    rotation: 0,
+    style: {},
+    structureFormat: "molfile-v2000",
+    structure: "",
+    atoms,
+    bonds: baseBonds,
+    superatoms: [],
+    rGroups: [],
+    ...geometry
+  };
+  const bonds: MoleculeBond[] = baseBonds.map((bond) =>
+    bond.order === "double"
+      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
+      : bond
+  );
+
+  const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
+
+  const object = normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, "mol_clipboard"),
+    type: "molecule",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    rotation: 0,
+    transform: defaultNativeMoleculeTransform,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "clipboard-smiles"
+    },
+    compatibility: {
+      sourceFormat: "smiles",
+      warnings: [
+        {
+          code: "clipboard.smiles_imported",
+          message: "Generated an editable 2D structure from pasted SMILES (OpenChemLib layout)."
+        }
+      ],
+      unknown: { smiles: smilesText }
+    },
+    structureFormat: "molfile-v2000",
+    structure,
+    chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
+    atoms,
+    bonds,
+    superatoms: [],
+    rGroups: []
+  });
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
 }
 
 export function insertNativeMolfileMolecule(
@@ -3264,6 +3402,56 @@ export function applyNativeMoleculeDeleteTarget(
   return applyPatch(
     document,
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
+/**
+ * Delete a multi-part ("parts") selection — every selected atom (with its incident
+ * bonds) plus every explicitly selected bond — in one step, rebuilding the graph the
+ * same way single-atom/bond deletion does. Removes the whole object if nothing remains.
+ * This is the deletion path for lasso fragment selections (`kind: "parts"`), which the
+ * single-target `applyNativeMoleculeDeleteTarget` cannot express.
+ */
+export function applyNativeMoleculePartsDelete(
+  document: ChemDraftDocument,
+  selection: { objectId: string; atomIds: readonly string[]; bondIds: readonly string[] }
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === selection.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const removeAtomIds = new Set(selection.atomIds);
+  const removeBondIds = new Set(selection.bondIds);
+  if (removeAtomIds.size === 0 && removeBondIds.size === 0) {
+    return document;
+  }
+
+  const atoms = molecule.atoms.filter((atom) => !removeAtomIds.has(atom.id));
+  const bonds = molecule.bonds.filter((bond) =>
+    !removeBondIds.has(bond.id) &&
+    !removeAtomIds.has(bond.fromAtomId) &&
+    !removeAtomIds.has(bond.toAtomId)
+  );
+  if (atoms.length === molecule.atoms.length && bonds.length === molecule.bonds.length) {
+    return document; // selection referenced nothing that still exists
+  }
+
+  if (atoms.length === 0) {
+    return applyPatch(
+      document,
+      { op: "removeObject", objectId: molecule.id },
+      { now: phase4Timestamp }
+    );
+  }
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: refreshNativeSingleBondGraph(molecule, atoms, bonds) },
     { now: phase4Timestamp }
   );
 }
@@ -5038,7 +5226,10 @@ export function cleanUpNativeMolecules2d(
     }
 
     const cleaned = cleanUpNativeMoleculeGeometry2d(molecule);
-    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned)
+    // Stripped perspective depth weights are a real change even when the geometry
+    // was already ideal (the changed-check below only compares atoms/transform).
+    const strippedDepthWeights = molecule.bonds.some((bond) => bond.display?.depthWeight !== undefined);
+    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights
       ? [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }]
       : [];
   });
@@ -5048,6 +5239,244 @@ export function cleanUpNativeMolecules2d(
   }
 
   return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+// ── 3D spin → flatten commit (Phase 5) ──────────────────────────────────────
+
+export interface FlattenSpunOutcome {
+  document: ChemDraftDocument;
+  status: "committed" | "refused";
+  warnings: FlattenWarning[];
+  refusalReasons: string[];
+  stereoCenters: StereoCenterReport[];
+}
+
+function pointBondLengths(
+  atoms: readonly { x: number; y: number }[],
+  bondPairs: readonly (readonly [number, number])[]
+): number[] {
+  return bondPairs
+    .map(([from, to]) => Math.hypot(atoms[from].x - atoms[to].x, atoms[from].y - atoms[to].y))
+    .filter((value) => value > 0)
+    .sort((a, b) => a - b);
+}
+
+function medianOf(sorted: number[]): number {
+  if (sorted.length === 0) return 0;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function atomsCentroid(atoms: readonly { x: number; y: number }[]): { x: number; y: number } {
+  if (atoms.length === 0) return { x: 0, y: 0 };
+  const sum = atoms.reduce((acc, a) => ({ x: acc.x + a.x, y: acc.y + a.y }), { x: 0, y: 0 });
+  return { x: sum.x / atoms.length, y: sum.y / atoms.length };
+}
+
+/**
+ * Commit a spun 3D conformer as a flattened 2D perspective depiction (Phase 5).
+ *
+ * `coords3d` is the spun conformer (math frame, y-up), indexed by the molecule's
+ * atom order. This applies the coordinate-frame recipe (negate y in, negate y out;
+ * see docs/architecture/3d-spin-flatten.md), rescales/recenters the projection to
+ * the molecule's existing 2D footprint, rewrites the molfile `structure`, and bakes
+ * any depth-derived over/under crossings — refusing (document untouched) when the
+ * flatten cannot preserve identity. The whole result is one `applyPatches` call, so
+ * a single undo reverts geometry, wedges, and crossings together.
+ */
+export function flattenSpunMolecule(
+  document: ChemDraftDocument,
+  objectId: string,
+  coords3d: ArrayLike<number>,
+  viewMatrix: ViewMatrix
+): FlattenSpunOutcome {
+  let pageId: string | undefined;
+  let molecule: MoleculeObject | undefined;
+  for (const page of document.pages) {
+    const found = page.objects.find((object) => object.id === objectId);
+    if (found && found.type === "molecule") {
+      molecule = found;
+      pageId = page.id;
+      break;
+    }
+  }
+  if (!molecule || !pageId || !isEditableNativeMoleculeGraph(molecule)) {
+    return {
+      document,
+      status: "refused",
+      warnings: [],
+      refusalReasons: ["target is not an editable native molecule"],
+      stereoCenters: []
+    };
+  }
+  if (coords3d.length !== molecule.atoms.length * 3) {
+    return {
+      document,
+      status: "refused",
+      warnings: [],
+      refusalReasons: [`conformer atom count ${coords3d.length / 3} ≠ molecule atom count ${molecule.atoms.length}`],
+      stereoCenters: []
+    };
+  }
+
+  // Frame recipe IN: document (y-down) → math (y-up), styles untouched.
+  const mathMol: MoleculeObject = {
+    ...molecule,
+    atoms: molecule.atoms.map((atom) => ({ ...atom, y: -atom.y }))
+  };
+  const result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, { objectId });
+  if (result.status !== "committed" || !result.mol2dProjected) {
+    return {
+      document,
+      status: "refused",
+      warnings: result.warnings,
+      refusalReasons: result.refusalReasons,
+      stereoCenters: result.stereoCenters
+    };
+  }
+
+  const projected = result.mol2dProjected;
+  // Frame recipe OUT: math (y-up) → document (y-down), styles untouched.
+  const projectedById = new Map(
+    projected.atoms.map((atom) => [atom.id, { ...atom, y: -atom.y }] as const)
+  );
+
+  // Rescale the projection to the molecule's existing median bond length and recenter
+  // on its centroid, so the flatten lands where the drawing already was.
+  const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
+  const bondPairs = molecule.bonds
+    .map((bond) => [atomIndex.get(bond.fromAtomId), atomIndex.get(bond.toAtomId)] as const)
+    .filter((pair): pair is readonly [number, number] => pair[0] !== undefined && pair[1] !== undefined);
+  const projectedInOrder = molecule.atoms.map((atom) => projectedById.get(atom.id) ?? atom);
+  const medianOriginal = medianOf(pointBondLengths(molecule.atoms, bondPairs));
+  const medianProjected = medianOf(pointBondLengths(projectedInOrder, bondPairs));
+  const scale = medianProjected > 0 ? medianOriginal / medianProjected : 1;
+  const projectedCentroid = atomsCentroid(projectedInOrder);
+  const originalCentroid = atomsCentroid(molecule.atoms);
+
+  let nextAtoms: MoleculeAtom[] = molecule.atoms.map((atom) => {
+    const p = projectedById.get(atom.id) ?? atom;
+    return {
+      ...atom,
+      x: originalCentroid.x + (p.x - projectedCentroid.x) * scale,
+      y: originalCentroid.y + (p.y - projectedCentroid.y) * scale
+    };
+  });
+  // Clamp into the page bounds (mirrors scaleParsedMolfileAtoms).
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (page) {
+    const geometry = moleculeGeometryFromAtoms(nextAtoms);
+    const boundedX = clamp(geometry.x, 0, Math.max(0, page.width - geometry.width));
+    const boundedY = clamp(geometry.y, 0, Math.max(0, page.height - geometry.height));
+    const shiftX = boundedX - geometry.x;
+    const shiftY = boundedY - geometry.y;
+    if (Math.abs(shiftX) > 0.001 || Math.abs(shiftY) > 0.001) {
+      nextAtoms = nextAtoms.map((atom) => ({ ...atom, x: atom.x + shiftX, y: atom.y + shiftY }));
+    }
+  }
+
+  // Bonds carry the flatten's graph + any re-encoded wedges; double/aromatic orders
+  // and atom pairings are preserved exactly (buildProjectedMolecule never moves them).
+  const projectedBonds = projected.bonds.map((bond) => ({ ...bond }));
+  const geometry = moleculeGeometryFromAtoms(nextAtoms);
+  // Perspective depth cue: bake each bond's viewer-facing depth (mean rotated z of its
+  // endpoints, normalized 0 = farthest … 1 = nearest) into display.depthWeight so the
+  // committed 2D drawing keeps the near-heavy / far-light bond weighting of the live
+  // overlay. Display-only — identity is untouched. A near-planar view (no meaningful
+  // depth spread) writes none and clears stale weights from an earlier flatten.
+  const depthOf = (atomId: string): number | undefined => {
+    const index = atomIndex.get(atomId);
+    if (index === undefined) return undefined;
+    const x = coords3d[index * 3];
+    const y = coords3d[index * 3 + 1];
+    const z = coords3d[index * 3 + 2];
+    return viewMatrix[8] * x + viewMatrix[9] * y + viewMatrix[10] * z + viewMatrix[11];
+  };
+  const bondDepths = projectedBonds.map((bond) => {
+    const from = depthOf(bond.fromAtomId);
+    const to = depthOf(bond.toAtomId);
+    return from !== undefined && to !== undefined ? (from + to) / 2 : undefined;
+  });
+  const knownDepths = bondDepths.filter((depth): depth is number => depth !== undefined);
+  // Loop rather than Math.min(...knownDepths): argument spread can blow the call-stack arg
+  // limit (~65k) on a very large molecule.
+  let minDepth = Infinity;
+  let maxDepth = -Infinity;
+  for (const depth of knownDepths) {
+    if (depth < minDepth) minDepth = depth;
+    if (depth > maxDepth) maxDepth = depth;
+  }
+  const depthSpan = maxDepth - minDepth;
+  const median3d = medianOf(
+    bondPairs.map(([from, to]) => Math.hypot(
+      coords3d[from * 3] - coords3d[to * 3],
+      coords3d[from * 3 + 1] - coords3d[to * 3 + 1],
+      coords3d[from * 3 + 2] - coords3d[to * 3 + 2]
+    ))
+  );
+  const meaningfulDepth = knownDepths.length > 1 && depthSpan > median3d * 0.12;
+  const depthWeightFor = (bondIndex: number): number | undefined => {
+    if (!meaningfulDepth) return undefined;
+    const depth = bondDepths[bondIndex];
+    if (depth === undefined) return undefined;
+    return Math.round(((depth - minDepth) / depthSpan) * 100) / 100;
+  };
+  // The projection produced fresh 2D coordinates, so every double bond's "side" (which
+  // way its inner line is drawn) must be recomputed from the new geometry — otherwise
+  // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
+  // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
+  const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
+  const nextBonds = projectedBonds.map((bond, bondIndex) => {
+    const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
+    if (bond.order === "double") {
+      display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+    }
+    const depthWeight = depthWeightFor(bondIndex);
+    if (depthWeight !== undefined) display.depthWeight = depthWeight;
+    else delete display.depthWeight;
+    return Object.keys(display).length > 0 ? { ...bond, display } : { ...bond, display: undefined };
+  });
+  const stagedMolecule: MoleculeObject = {
+    ...molecule,
+    atoms: nextAtoms,
+    bonds: nextBonds,
+    ...geometry
+  };
+  const structure = moleculeToMolfileV2000(stagedMolecule, { fromDocFrame: true });
+
+  const patches: DocumentPatch[] = [
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        atoms: nextAtoms,
+        bonds: nextBonds,
+        x: geometry.x,
+        y: geometry.y,
+        width: geometry.width,
+        height: geometry.height,
+        structure,
+        structureFormat: "molfile-v2000"
+      }
+    }
+  ];
+  // Replace this molecule's stale crossing overrides with the freshly baked ones.
+  for (const crossing of page?.crossings ?? []) {
+    if (crossing.bonds.every((ref) => ref.objectId === objectId)) {
+      patches.push({ op: "clearCrossingOverride", pageId, bonds: crossing.bonds });
+    }
+  }
+  for (const crossing of result.crossings) {
+    patches.push({ op: "setCrossingOverride", pageId, crossing });
+  }
+
+  return {
+    document: applyPatches(document, patches, { now: phase4Timestamp }),
+    status: "committed",
+    warnings: result.warnings,
+    refusalReasons: [],
+    stereoCenters: result.stereoCenters
+  };
 }
 
 export function nativeMoleculeTransformState(molecule: MoleculeObject): MoleculeTransformState {
@@ -5135,11 +5564,19 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     const { z: _z, ...flatAtom } = atom;
     return point ? { ...flatAtom, ...point } : flatAtom;
   });
+  // Cleanup re-idealizes to flat 2D geometry — perspective depth weights from an
+  // earlier 3D flatten no longer describe anything and must not linger.
+  const bonds = molecule.bonds.map((bond) => {
+    if (bond.display?.depthWeight === undefined) return bond;
+    const { depthWeight: _cleared, ...display } = bond.display;
+    return { ...bond, display: Object.keys(display).length > 0 ? display : undefined };
+  });
 
   return withNativeMoleculeTransform(
     normalizeNativeMoleculeGeometry({
       ...molecule,
-      atoms
+      atoms,
+      bonds
     }),
     defaultNativeMoleculeTransform
   );

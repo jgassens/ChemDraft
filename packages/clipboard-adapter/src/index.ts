@@ -38,6 +38,12 @@ export type ClipboardDetectedPayload =
       warnings: ClipboardTransferWarning[];
     }
   | {
+      kind: "inchi";
+      text: string;
+      sourceType?: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
       kind: "rxnfile";
       text: string;
       sourceType?: string;
@@ -77,6 +83,9 @@ export interface ParsedClipboardBond {
   fromAtomId: string;
   toAtomId: string;
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
+  /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
+   *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`. */
+  bondStyle?: "wedge" | "hashed";
 }
 
 export interface ParsedMolfileGraph {
@@ -145,6 +154,22 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
           {
             code: "clipboard.cdxml_not_implemented",
             message: "The clipboard contains CDXML, but CDXML paste parsing is not implemented yet."
+          }
+        ]
+      };
+    }
+  }
+
+  for (const item of textItems) {
+    if (looksLikeInchi(item.text)) {
+      return {
+        kind: "inchi",
+        text: item.text.trim(),
+        sourceType: item.type,
+        warnings: [
+          {
+            code: "clipboard.inchi_not_implemented",
+            message: "The clipboard contains an InChI string; ChemDraft can preserve it, but reconstructing a structure from InChI is not implemented yet."
           }
         ]
       };
@@ -304,10 +329,14 @@ export function isVectorArtworkType(type: string): boolean {
 
 export function isCdxType(type: string): boolean {
   const normalized = type.trim().toLowerCase();
+  // Match the known binary-CDX MIME/pasteboard identifiers exactly rather than any string
+  // containing "cdx" (which would also catch e.g. a hypothetical "text/cdx-markdown" and
+  // suppress the plain-text fallback). CDXML is explicitly excluded — it is XML, not CDX.
   return (
-    normalized.includes("chemical/x-cdx") ||
-    normalized.includes("cdx") ||
-    (normalized.includes("chemdraw") && !normalized.includes("cdxml")) ||
+    normalized === "chemical/x-cdx" ||
+    normalized === "application/x-cdx" ||
+    normalized === "application/vnd.cambridgesoft.cdx" ||
+    (normalized.includes("chemdraw") && normalized.includes("cdx") && !normalized.includes("cdxml")) ||
     normalized.includes("cambridgesoft") ||
     normalized.includes("perkinelmer") ||
     normalized.includes("revvity")
@@ -332,21 +361,22 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   const atomStartIndex = countsLineIndex + 1;
   const atomLines = lines.slice(atomStartIndex, atomStartIndex + atomCount);
   const bondLines = lines.slice(atomStartIndex + atomCount, atomStartIndex + atomCount + bondCount);
-  const chargeByAtomIndex = new Map<number, number>();
+  // Atom-block charges and M CHG charges are kept separate: per the V2000 spec, the
+  // presence of ANY M CHG line means every atom-block charge must be treated as zero.
+  const atomBlockCharges = new Map<number, number>();
+  const chgLineCharges = new Map<number, number>();
+  let sawChgLine = false;
   const warnings: ClipboardTransferWarning[] = [];
 
   const atoms = atomLines.map((line, index): ParsedClipboardAtom => {
-    const fields = line.trim().split(/\s+/);
-    const x = Number(fields[0]);
-    const y = Number(fields[1]);
-    const element = fields[3] ?? "C";
+    const { x, y, element, chargeCode } = parseV2000AtomLine(line);
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       throw new Error(`V2000 atom ${index + 1} has invalid coordinates.`);
     }
 
-    const atomLineCharge = chargeFromV2000AtomCode(Number(fields[5] ?? "0"));
+    const atomLineCharge = chargeFromV2000AtomCode(chargeCode);
     if (atomLineCharge !== 0) {
-      chargeByAtomIndex.set(index + 1, atomLineCharge);
+      atomBlockCharges.set(index + 1, atomLineCharge);
     }
 
     return {
@@ -359,19 +389,18 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   });
 
   const bonds = bondLines.map((line, index): ParsedClipboardBond => {
-    const fields = line.trim().split(/\s+/);
-    const fromIndex = Number(fields[0]);
-    const toIndex = Number(fields[1]);
-    const orderCode = Number(fields[2]);
+    const { fromIndex, toIndex, orderCode, stereoCode } = parseV2000BondLine(line);
     if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) {
       throw new Error(`V2000 bond ${index + 1} has invalid atom references.`);
     }
 
+    const bondStyle = bondStyleFromV2000Stereo(stereoCode);
     return {
       id: bondId(index + 1),
       fromAtomId: atomId(fromIndex),
       toAtomId: atomId(toIndex),
-      order: bondOrderFromMolfile(orderCode)
+      order: bondOrderFromMolfile(orderCode),
+      ...(bondStyle ? { bondStyle } : {})
     };
   });
 
@@ -381,18 +410,22 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       continue;
     }
 
+    sawChgLine = true;
     const pairCount = Number(fields[2] ?? "0");
     for (let index = 0; index < pairCount; index += 1) {
       const atomIndex = Number(fields[3 + index * 2]);
       const charge = Number(fields[4 + index * 2]);
       if (Number.isInteger(atomIndex) && Number.isInteger(charge)) {
-        chargeByAtomIndex.set(atomIndex, charge);
+        chgLineCharges.set(atomIndex, charge);
       }
     }
   }
 
+  // V2000 spec: any M CHG line supersedes ALL atom-block charges (which otherwise stay
+  // as phantom charges on atoms not named in an M CHG entry).
   atoms.forEach((atom, index) => {
-    atom.formalCharge = chargeByAtomIndex.get(index + 1) ?? 0;
+    const i = index + 1;
+    atom.formalCharge = sawChgLine ? (chgLineCharges.get(i) ?? 0) : (atomBlockCharges.get(i) ?? 0);
   });
 
   if (atoms.length === 0) {
@@ -469,11 +502,15 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
         continue;
       }
 
+      const cfgMatch = line.match(/\bCFG=(\d+)/);
+      const cfg = cfgMatch ? Number(cfgMatch[1]) : 0;
+      const bondStyle = cfg === 1 ? "wedge" : cfg === 3 ? "hashed" : undefined; // CFG 2 = either
       bonds.push({
         id: bondId(index),
         fromAtomId: atomId(fromIndex),
         toAtomId: atomId(toIndex),
-        order: bondOrderFromMolfile(orderCode)
+        order: bondOrderFromMolfile(orderCode),
+        ...(bondStyle ? { bondStyle } : {})
       });
     }
   }
@@ -506,9 +543,33 @@ function looksLikeCdxml(text: string): boolean {
   return /<\s*CDXML\b/i.test(text);
 }
 
+/** True for a standard/non-standard InChI string (unambiguous `InChI=` prefix). */
+export function looksLikeInchi(text: string): boolean {
+  return /^InChI=1S?\//.test(text.trim());
+}
+
+/**
+ * Cheap pre-filter for "this plain text might be a SMILES" — single whitespace-free
+ * token, length ≥ 2, only SMILES grammar characters, and at least one ASCII letter
+ * (an element). This NEVER asserts validity (that needs a real parser); the app layer
+ * confirms by attempting an OpenChemLib depiction and falls back to plain text on
+ * failure. Deliberately not used by `inspectClipboardPayload` — it stays conservative
+ * and only classifies plain text as SMILES once the app has actually parsed it.
+ */
+export function looksLikeSmiles(text: string): boolean {
+  const token = text.trim();
+  if (token.length < 2 || /\s/.test(token)) return false;
+  if (looksLikeInchi(token)) return false;
+  if (!/[A-Za-z]/.test(token)) return false;
+  return /^[A-Za-z0-9@+\-[\]()=#$%./\\:*]+$/.test(token);
+}
+
 function findV2000CountsLineIndex(lines: readonly string[]): number {
+  // A V2000 counts line is "aaabbb...  V2000" (atoms, bonds, then 9 more fields + tag).
+  // Requiring either the explicit V2000 tag or the full 6+ field shape avoids mis-reading
+  // ordinary two-number text (e.g. "42 17 results found") as a counts line.
   return lines.findIndex((line) =>
-    /^\s*\d+\s+\d+/.test(line) && (/\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 2)
+    /^\s*\d+\s+\d+/.test(line) && (/\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 6)
   );
 }
 
@@ -561,6 +622,60 @@ function atomId(index: number): string {
 
 function bondId(index: number): string {
   return `bond_${String(index).padStart(3, "0")}`;
+}
+
+// V2000 is a COLUMNAR fixed-width format, not whitespace-delimited. Two coordinates at
+// magnitude ≥100 (e.g. "-123.4567-123.4567") abut with no separator, and atom indices ≥100
+// in bond lines ("100200") abut too — both break a naive whitespace split. Parse by column
+// offset, falling back to whitespace only for non-conforming writers that under-pad.
+function parseV2000AtomLine(line: string): { x: number; y: number; element: string; chargeCode: number } {
+  if (line.length >= 34) {
+    // x[0,10) y[10,20) z[20,30) symbol[31,34) … charge[36,39)
+    return {
+      x: Number(line.slice(0, 10)),
+      y: Number(line.slice(10, 20)),
+      element: line.slice(31, 34).trim() || "C",
+      chargeCode: Number(line.slice(36, 39).trim() || "0")
+    };
+  }
+  const fields = line.trim().split(/\s+/);
+  return {
+    x: Number(fields[0]),
+    y: Number(fields[1]),
+    element: fields[3] ?? "C",
+    chargeCode: Number(fields[5] ?? "0")
+  };
+}
+
+function parseV2000BondLine(line: string): { fromIndex: number; toIndex: number; orderCode: number; stereoCode: number } {
+  // atom1[0,3) atom2[3,6) type[6,9) stereo[9,12), each a 3-char field.
+  const columnFrom = Number(line.slice(0, 3));
+  const columnTo = Number(line.slice(3, 6));
+  if (line.length >= 9 && Number.isInteger(columnFrom) && Number.isInteger(columnTo) && columnFrom > 0 && columnTo > 0) {
+    return {
+      fromIndex: columnFrom,
+      toIndex: columnTo,
+      orderCode: Number(line.slice(6, 9).trim() || "0"),
+      stereoCode: Number(line.slice(9, 12).trim() || "0")
+    };
+  }
+  const fields = line.trim().split(/\s+/);
+  return {
+    fromIndex: Number(fields[0]),
+    toIndex: Number(fields[1]),
+    orderCode: Number(fields[2]),
+    stereoCode: Number(fields[3] ?? "0")
+  };
+}
+
+function bondStyleFromV2000Stereo(code: number): ParsedClipboardBond["bondStyle"] {
+  if (code === 1) {
+    return "wedge"; // up
+  }
+  if (code === 6) {
+    return "hashed"; // down
+  }
+  return undefined; // 0 none, 4 either, 3 cis/trans — no native single-bond wedge style
 }
 
 function bondOrderFromMolfile(code: number): ParsedClipboardBond["order"] {
