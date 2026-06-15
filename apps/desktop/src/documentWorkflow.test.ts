@@ -3485,7 +3485,7 @@ describe("Phase 4 document workflow", () => {
       inserted,
       objectId,
       "end",
-      pointOnGraphicEllipse(originalGraphic, degToRad(-226))
+      originalPoints.start
     );
     const completedGraphic = graphicById(completed, objectId);
 

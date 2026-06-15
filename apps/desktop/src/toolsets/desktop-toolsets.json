@@ -229,14 +229,14 @@
         {
           "id": "core.art.arcs",
           "items": [
-            { "commandId": "tool.art.arc270", "title": "270 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc270Dashed", "title": "Dashed 270 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc180", "title": "180 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc180Dashed", "title": "Dashed 180 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc120", "title": "120 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc120Dashed", "title": "Dashed 120 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc90", "title": "90 Degree Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc90Dashed", "title": "Dashed 90 Degree Arc", "icon": "export", "category": "art" }
+            { "commandId": "tool.art.arc270", "title": "Three-quarter Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc270Dashed", "title": "Dashed Three-quarter Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc180Dashed", "title": "Dashed Half Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc120", "title": "One-third Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc120Dashed", "title": "Dashed One-third Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc90Dashed", "title": "Dashed Quarter Arc", "icon": "export", "category": "art" }
           ]
         }
       ]

@@ -428,6 +428,8 @@ const projectedPlaneTiltMaxDegrees = 360;
 export const documentObjectProjectedPlaneTiltMaxDegrees = 75;
 
 export const projectedPlaneTiltMaxRadians = projectedPlaneTiltMaxDegrees * Math.PI / 180;
+const minimumArcSweepRadians = Math.PI / 180;
+const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
 
 export const nativeSingleBondDimensions = {
   width: 48,
@@ -1022,9 +1024,9 @@ function updateNativeCircularGraphicArcHandle(
     ? targetRadians
     : handle === "middle" ? targetRadians - currentAngles.sweepRadians / 2 : currentAngles.startRadians;
   const nextSweepRadians = handle === "start"
-    ? clampArcSweepRadians(clockwiseDeltaRadians(targetRadians, currentAngles.endRadians))
+    ? arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(targetRadians, currentAngles.endRadians))
     : handle === "end"
-      ? clampArcSweepRadians(clockwiseDeltaRadians(currentAngles.startRadians, targetRadians))
+      ? arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(currentAngles.startRadians, targetRadians))
       : currentAngles.sweepRadians;
   const nextData: GraphicObjectData = {
     ...object.data,
@@ -1165,7 +1167,12 @@ function clockwiseDeltaRadians(startRadians: number, endRadians: number): number
 }
 
 function clampArcSweepRadians(radians: number): number {
-  return clamp(Math.abs(radians), Math.PI / 180, Math.PI * 2 - Math.PI / 1800);
+  return clamp(Math.abs(radians), minimumArcSweepRadians, maximumArcSweepRadians);
+}
+
+function arcSweepRadiansFromEndpointDrag(radians: number): number {
+  const sweep = Math.abs(radians);
+  return sweep < minimumArcSweepRadians ? maximumArcSweepRadians : clampArcSweepRadians(sweep);
 }
 
 function samePoint(left: PagePoint | undefined, right: PagePoint | undefined): boolean {

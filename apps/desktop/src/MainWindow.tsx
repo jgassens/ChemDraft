@@ -339,6 +339,7 @@ type GraphicPathEditDragState = {
   pointerId: number;
   objectId: string;
   handle: NativeGraphicPathEditHandle;
+  circularArc: boolean;
   startDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
@@ -615,7 +616,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.14.58-codex";
+const CURRENT_BUILD_STAMP = "6.15.15.5-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -4919,9 +4920,7 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? graphicPathEditDrag.latestPoint;
       if (graphicPathEditDrag.dragging) {
         const changed = commitGraphicPathEdit(graphicPathEditDrag, point);
-        setStatus(changed
-          ? graphicPathEditDrag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint"
-          : "Selected line geometry unchanged");
+        setStatus(graphicPathEditStatus(graphicPathEditDrag, changed));
       } else {
         replacePresentDocument(graphicPathEditDrag.startDocument);
         setStatus("Selected art path");
@@ -5876,7 +5875,8 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event);
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
-    if (!point || object?.type !== "graphic" || !nativeGraphicPathEditPoints(object)) {
+    const editPoints = object?.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+    if (!point || object?.type !== "graphic" || !editPoints) {
       return;
     }
 
@@ -5898,6 +5898,7 @@ export function MainWindow({
       pointerId: event.pointerId,
       objectId,
       handle,
+      circularArc: editPoints.pathKind === "arc" && !object.data.pathControlPoint,
       startDocument: selectedDocument,
       startPoint: point,
       latestPoint: point,
@@ -6373,9 +6374,7 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? graphicPathEditDrag.latestPoint;
       if (graphicPathEditDrag.dragging) {
         const changed = commitGraphicPathEdit(graphicPathEditDrag, point);
-        setStatus(changed
-          ? graphicPathEditDrag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint"
-          : "Selected line geometry unchanged");
+        setStatus(graphicPathEditStatus(graphicPathEditDrag, changed));
       } else {
         replacePresentDocument(graphicPathEditDrag.startDocument);
         setStatus("Selected art path");
@@ -7711,6 +7710,16 @@ function clampObjectResizeScale(scale: number): number {
 
 function capitalizeLabel(label: string): string {
   return label.length > 0 ? `${label[0].toUpperCase()}${label.slice(1)}` : label;
+}
+
+function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean): string {
+  if (!changed) {
+    return drag.circularArc ? "Selected arc geometry unchanged" : "Selected line geometry unchanged";
+  }
+  if (drag.circularArc) {
+    return drag.handle === "middle" ? "Rotated selected arc" : "Adjusted selected arc sweep";
+  }
+  return drag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint";
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {

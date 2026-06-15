@@ -384,14 +384,14 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.lineDashed", "Dashed Line", "bond"],
     ["tool.art.lineWavy", "Wavy Line", "mechanism"],
     ["tool.art.lineBold", "Bold Line", "bond"],
-    ["tool.art.arc270", "270 Degree Arc", "export"],
-    ["tool.art.arc270Dashed", "Dashed 270 Degree Arc", "export"],
-    ["tool.art.arc180", "180 Degree Arc", "export"],
-    ["tool.art.arc180Dashed", "Dashed 180 Degree Arc", "export"],
-    ["tool.art.arc120", "120 Degree Arc", "export"],
-    ["tool.art.arc120Dashed", "Dashed 120 Degree Arc", "export"],
-    ["tool.art.arc90", "90 Degree Arc", "export"],
-    ["tool.art.arc90Dashed", "Dashed 90 Degree Arc", "export"]
+    ["tool.art.arc270", "Three-quarter Arc", "export"],
+    ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export"],
+    ["tool.art.arc180", "Half Arc", "export"],
+    ["tool.art.arc180Dashed", "Dashed Half Arc", "export"],
+    ["tool.art.arc120", "One-third Arc", "export"],
+    ["tool.art.arc120Dashed", "Dashed One-third Arc", "export"],
+    ["tool.art.arc90", "Quarter Arc", "export"],
+    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export"]
   ] as const;
 
   return tools.map(([commandId, title, icon]) => ({
