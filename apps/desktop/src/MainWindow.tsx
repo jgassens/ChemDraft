@@ -434,6 +434,11 @@ type ObjectResizeReadoutState = {
   scaleXPercent: number;
   scaleYPercent: number;
 };
+type ArtTransformQaDraft = {
+  rotationDegrees: string;
+  tiltXDegrees: string;
+  tiltYDegrees: string;
+};
 type ObjectResizeScale = {
   x: number;
   y: number;
@@ -597,7 +602,8 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.10.37-codex";
+const CURRENT_BUILD_STAMP = "6.15.11.28-codex";
+const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -794,6 +800,12 @@ export function MainWindow({
   const [rotationInput, setRotationInput] = useState<RotationInputState | undefined>();
   const [objectResizeInput, setObjectResizeInput] = useState<ObjectResizeInputState | undefined>();
   const [objectResizeReadout, setObjectResizeReadout] = useState<ObjectResizeReadoutState | undefined>();
+  const [artTransformQaDraft, setArtTransformQaDraft] = useState<ArtTransformQaDraft>({
+    rotationDegrees: "28",
+    tiltXDegrees: "35",
+    tiltYDegrees: "-20"
+  });
+  const artTransformQaEnabled = useMemo(() => shouldEnableArtTransformQaLayer(), []);
   const [viewport, setViewport] = useState(() =>
     createViewportState({ rulerUnit: rulerUnitForDocument(initialDocument) })
   );
@@ -942,7 +954,15 @@ export function MainWindow({
       })
     };
   }, [activePage, nativeDoubleBondSidePreview]);
-  const pageSvgRenderPlan = useMemo(() => planPageSvgRender(plannedDisplayPage), [plannedDisplayPage]);
+  const editorSvgDisplayPage = useMemo(() => {
+    const svgObjects = plannedDisplayPage.objects.filter((object) => object.type !== "graphic");
+    if (svgObjects.length === plannedDisplayPage.objects.length) {
+      return plannedDisplayPage;
+    }
+
+    return { ...plannedDisplayPage, objects: svgObjects };
+  }, [plannedDisplayPage]);
+  const pageSvgRenderPlan = useMemo(() => planPageSvgRender(editorSvgDisplayPage), [editorSvgDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
@@ -1086,6 +1106,24 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory]);
+  const applyArtTransformQaScene = useCallback(() => {
+    const changed = commitDocumentChange((current) => artTransformQaSceneDocument(current, artTransformQaDraft));
+    if (changed) {
+      setSelectedNativeMoleculePart(undefined);
+      setStatus("Art QA scene applied");
+    }
+  }, [artTransformQaDraft, commitDocumentChange]);
+  const applyArtTransformQaToSelection = useCallback(() => {
+    const changed = commitDocumentChange((current) =>
+      artTransformQaSelectionDocument(current, artTransformQaDraft)
+    );
+    if (changed) {
+      setSelectedNativeMoleculePart(undefined);
+      setStatus("Art QA transform applied");
+    } else {
+      setStatus("Art QA needs a selected graphic object");
+    }
+  }, [artTransformQaDraft, commitDocumentChange]);
   const updateRotationInput = useCallback((nextInput: RotationInputState | undefined) => {
     rotationInputRef.current = nextInput;
     setRotationInput(nextInput);
@@ -6443,6 +6481,16 @@ export function MainWindow({
                   </>
                   );
                 })()}
+                {artTransformQaEnabled ? (
+                  <ArtTransformQaLayer
+                    draft={artTransformQaDraft}
+                    page={activePage}
+                    selectionObjectIds={document.selection.objectIds}
+                    onApplyScene={applyArtTransformQaScene}
+                    onApplySelection={applyArtTransformQaToSelection}
+                    onDraftChange={setArtTransformQaDraft}
+                  />
+                ) : null}
               </div>
             </div>
           </div>
@@ -8388,6 +8436,144 @@ function GroupSelectionOverlay({
         </button>
       ) : null}
     </div>
+  );
+}
+
+function ArtTransformQaLayer({
+  page,
+  selectionObjectIds,
+  draft,
+  onDraftChange,
+  onApplyScene,
+  onApplySelection
+}: {
+  page: ChemDraftDocument["pages"][number];
+  selectionObjectIds: readonly string[];
+  draft: ArtTransformQaDraft;
+  onDraftChange(nextDraft: ArtTransformQaDraft): void;
+  onApplyScene(): void;
+  onApplySelection(): void;
+}) {
+  const selectionSet = new Set(selectionObjectIds);
+  const graphicTargets = page.objects.filter((object): object is GraphicObject => object.type === "graphic");
+  const targetObjects = graphicTargets.filter((object) =>
+    selectionSet.has(object.id) || ART_TRANSFORM_QA_OBJECT_IDS.includes(object.id as typeof ART_TRANSFORM_QA_OBJECT_IDS[number])
+  );
+  const overlayObjects = targetObjects.length > 0 ? targetObjects : graphicTargets;
+  const selectedGraphicIds = graphicTargets.filter((object) => selectionSet.has(object.id)).map((object) => object.id);
+  const handleDraftChange = (field: keyof ArtTransformQaDraft) => (event: ChangeEvent<HTMLInputElement>) => {
+    onDraftChange({ ...draft, [field]: event.currentTarget.value });
+  };
+
+  return (
+    <>
+      <svg
+        className="art-transform-qa-overlay"
+        data-art-transform-qa-layer="true"
+        data-art-transform-qa-object-count={overlayObjects.length}
+        data-art-transform-qa-selected-ids={selectedGraphicIds.join(",")}
+        aria-hidden="true"
+        viewBox={`0 0 ${page.width} ${page.height}`}
+      >
+        {overlayObjects.map((object) => {
+          const corners = artTransformQaProjectedCorners(object);
+          const projection = documentObjectProjectedPlaneProjection(object);
+          const projectedBounds = projection
+            ? {
+                x: object.x + (Number.parseFloat(`${projection.frameStyle?.left ?? 0}`) || 0),
+                y: object.y + (Number.parseFloat(`${projection.frameStyle?.top ?? 0}`) || 0),
+                width: Number.parseFloat(`${projection.frameStyle?.width ?? object.width}`) || object.width,
+                height: Number.parseFloat(`${projection.frameStyle?.height ?? object.height}`) || object.height
+              }
+            : { x: object.x, y: object.y, width: object.width, height: object.height };
+
+          return (
+            <g data-art-transform-qa-object-id={object.id} key={object.id}>
+              <rect
+                className="art-transform-qa-model-frame"
+                x={object.x}
+                y={object.y}
+                width={object.width}
+                height={object.height}
+              />
+              <polygon
+                className="art-transform-qa-projected-corners"
+                points={corners.map((point) => `${formatSvgNumber(point.x)},${formatSvgNumber(point.y)}`).join(" ")}
+              />
+              <rect
+                className="art-transform-qa-projected-bounds"
+                x={projectedBounds.x}
+                y={projectedBounds.y}
+                width={projectedBounds.width}
+                height={projectedBounds.height}
+              />
+              <text className="art-transform-qa-label" x={object.x} y={Math.max(10, object.y - 8)}>
+                {object.id}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <section
+        className="art-transform-qa-panel"
+        data-art-transform-qa-panel="true"
+        data-art-transform-qa-selected-ids={selectedGraphicIds.join(",")}
+        data-art-transform-qa-target-count={overlayObjects.length}
+        aria-label="Art transform QA"
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerMove={(event) => event.stopPropagation()}
+        onPointerUp={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="art-transform-qa-title">Art QA</div>
+        <div className="art-transform-qa-fields">
+          <label>
+            Z
+            <input
+              aria-label="Art QA Z degrees"
+              data-art-transform-qa-input="z"
+              inputMode="decimal"
+              type="number"
+              value={draft.rotationDegrees}
+              onChange={handleDraftChange("rotationDegrees")}
+            />
+          </label>
+          <label>
+            X
+            <input
+              aria-label="Art QA X degrees"
+              data-art-transform-qa-input="x"
+              inputMode="decimal"
+              type="number"
+              value={draft.tiltXDegrees}
+              onChange={handleDraftChange("tiltXDegrees")}
+            />
+          </label>
+          <label>
+            Y
+            <input
+              aria-label="Art QA Y degrees"
+              data-art-transform-qa-input="y"
+              inputMode="decimal"
+              type="number"
+              value={draft.tiltYDegrees}
+              onChange={handleDraftChange("tiltYDegrees")}
+            />
+          </label>
+        </div>
+        <div className="art-transform-qa-actions">
+          <button type="button" data-art-transform-qa-action="scene" onClick={onApplyScene}>
+            Scene
+          </button>
+          <button type="button" data-art-transform-qa-action="apply" onClick={onApplySelection}>
+            Apply
+          </button>
+        </div>
+        <output className="art-transform-qa-output" data-art-transform-qa-output="true">
+          {selectedGraphicIds.length > 0 ? selectedGraphicIds.join(", ") : "no graphic selected"}
+        </output>
+      </section>
+    </>
   );
 }
 
@@ -10391,20 +10577,53 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
           </radialGradient>
         </defs>
       ) : null}
-      <g className={projectionTransform ? "graphic-glyph-transform" : undefined} transform={projectionTransform}>
-        {effect === "shadow" && object.graphicKind !== "path" ? (
-          <ArtShapePrimitive
-            kind={object.graphicKind}
-            width={width}
-            height={height}
-            rx={cornerRadius}
-            className="graphic-glyph-shadow"
-            fill="#aeb8c2"
-            stroke="none"
-            transform="translate(6 6)"
+      {projection?.matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect") ? (
+        <>
+          {effect === "shadow" ? (
+            <path
+              className="graphic-glyph-shadow graphic-glyph-projected-shape"
+              d={projectedArtShapePathD(
+                object.graphicKind,
+                width,
+                height,
+                object.graphicKind === "rect" ? cornerRadius : 0,
+                projection.matrix,
+                { x: 6, y: 6 }
+              )}
+              fill="#aeb8c2"
+              stroke="none"
+            />
+          ) : null}
+          <path
+            className="graphic-glyph-stroke graphic-glyph-projected-shape"
+            d={projectedArtShapePathD(
+              object.graphicKind,
+              width,
+              height,
+              object.graphicKind === "rect" ? cornerRadius : 0,
+              projection.matrix,
+              undefined,
+              strokeWidth
+            )}
+            fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+            {...sharedStrokeProps}
           />
-        ) : null}
-        {object.graphicKind === "ellipse" ? (
+        </>
+      ) : (
+        <g className={projectionTransform ? "graphic-glyph-transform" : undefined} transform={projectionTransform}>
+          {effect === "shadow" && object.graphicKind !== "path" ? (
+            <ArtShapePrimitive
+              kind={object.graphicKind}
+              width={width}
+              height={height}
+              rx={cornerRadius}
+              className="graphic-glyph-shadow"
+              fill="#aeb8c2"
+              stroke="none"
+              transform="translate(6 6)"
+            />
+          ) : null}
+          {object.graphicKind === "ellipse" ? (
           <ellipse
             className="graphic-glyph-stroke graphic-glyph-shape"
             cx={width / 2}
@@ -10447,7 +10666,8 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
         ) : (
           <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
         )}
-      </g>
+        </g>
+      )}
     </svg>
   );
 }
@@ -10643,6 +10863,246 @@ function artProjectionSvgTransform(
     formatCssNumber(f),
     ")"
   ].join("");
+}
+
+function projectedArtShapePathD(
+  kind: GraphicObject["graphicKind"],
+  width: number,
+  height: number,
+  rx: number,
+  matrix: DocumentObjectProjectionMatrix,
+  offset: { x: number; y: number } = { x: 0, y: 0 },
+  strokeWidth = 0
+): string {
+  const points = kind === "ellipse"
+    ? ellipsePathPoints(width, height, strokeWidth, offset)
+    : roundedRectPathPoints(width, height, rx, strokeWidth, offset);
+  return projectedPointsPathD(points, true, width, height, matrix);
+}
+
+function roundedRectPathPoints(
+  width: number,
+  height: number,
+  rx: number,
+  strokeWidth: number,
+  offset: { x: number; y: number }
+): Array<{ x: number; y: number }> {
+  const inset = Math.max(strokeWidth / 2, 0);
+  const x0 = inset + offset.x;
+  const y0 = inset + offset.y;
+  const x1 = Math.max(width - inset + offset.x, x0 + 0.5);
+  const y1 = Math.max(height - inset + offset.y, y0 + 0.5);
+  const radius = Math.max(0, Math.min(rx, (x1 - x0) / 2, (y1 - y0) / 2));
+  if (radius <= 0.001) {
+    return [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 }
+    ];
+  }
+
+  return [
+    ...arcSamplePoints({ x: x1 - radius, y: y0 + radius }, radius, radius, -90, 0, 8),
+    ...arcSamplePoints({ x: x1 - radius, y: y1 - radius }, radius, radius, 0, 90, 8).slice(1),
+    ...arcSamplePoints({ x: x0 + radius, y: y1 - radius }, radius, radius, 90, 180, 8).slice(1),
+    ...arcSamplePoints({ x: x0 + radius, y: y0 + radius }, radius, radius, 180, 270, 8).slice(1)
+  ];
+}
+
+function ellipsePathPoints(
+  width: number,
+  height: number,
+  strokeWidth: number,
+  offset: { x: number; y: number }
+): Array<{ x: number; y: number }> {
+  const inset = Math.max(strokeWidth / 2, 0);
+  return arcSamplePoints(
+    { x: width / 2 + offset.x, y: height / 2 + offset.y },
+    Math.max(width / 2 - inset, 0.5),
+    Math.max(height / 2 - inset, 0.5),
+    0,
+    360,
+    72
+  );
+}
+
+function projectedPointsPathD(
+  points: Array<{ x: number; y: number }>,
+  closed: boolean,
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix
+): string {
+  const projected = points.map((point) => projectArtPoint(point, width, height, matrix));
+  if (projected.length === 0) {
+    return "";
+  }
+
+  return [
+    `M ${formatSvgNumber(projected[0].x)} ${formatSvgNumber(projected[0].y)}`,
+    ...projected.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`),
+    closed ? "Z" : ""
+  ].filter(Boolean).join(" ");
+}
+
+function artTransformQaProjectedCorners(object: GraphicObject): Array<{ x: number; y: number }> {
+  const projection = documentObjectProjectedPlaneProjection(object);
+  const corners = [
+    { x: 0, y: 0 },
+    { x: object.width, y: 0 },
+    { x: object.width, y: object.height },
+    { x: 0, y: object.height }
+  ];
+  return corners.map((corner) => {
+    const point = projectArtPoint(corner, object.width, object.height, projection?.matrix);
+    return {
+      x: object.x + point.x,
+      y: object.y + point.y
+    };
+  });
+}
+
+function artTransformQaSceneDocument(document: ChemDraftDocument, draft: ArtTransformQaDraft): ChemDraftDocument {
+  const page = document.pages[0];
+  if (!page) {
+    return document;
+  }
+
+  const rotationDegrees = artTransformQaDegrees(draft.rotationDegrees, 28);
+  const tiltXDegrees = artTransformQaDegrees(draft.tiltXDegrees, 35);
+  const tiltYDegrees = artTransformQaDegrees(draft.tiltYDegrees, -20);
+  const objects = [
+    artTransformQaObject({
+      id: ART_TRANSFORM_QA_OBJECT_IDS[0],
+      kind: "rect",
+      x: Math.min(page.width - 112, Math.max(page.margin.left + 238, 190)),
+      y: Math.min(page.height - 120, Math.max(page.margin.top + 520, 430)),
+      width: 96,
+      height: 56,
+      rotationDegrees,
+      tiltXDegrees,
+      tiltYDegrees
+    }),
+    artTransformQaObject({
+      id: ART_TRANSFORM_QA_OBJECT_IDS[1],
+      kind: "ellipse",
+      x: Math.min(page.width - 92, Math.max(page.margin.left + 100, 120)),
+      y: Math.min(page.height - 120, Math.max(page.margin.top + 515, 430)),
+      width: 72,
+      height: 72,
+      rotationDegrees,
+      tiltXDegrees,
+      tiltYDegrees
+    })
+  ];
+  const patches: DocumentPatch[] = objects.flatMap((object): DocumentPatch[] => {
+    const existing = page.objects.find((candidate) => candidate.id === object.id);
+    if (!existing) {
+      return [{ op: "addObject", pageId: page.id, object }];
+    }
+    if (existing.type !== "graphic") {
+      return [
+        { op: "removeObject", objectId: object.id },
+        { op: "addObject", pageId: page.id, object }
+      ];
+    }
+    return [{ op: "updateObject", objectId: object.id, changes: object }];
+  });
+
+  return applyPatches(
+    document,
+    [
+      ...patches,
+      { op: "setSelection", pageId: page.id, objectIds: [ART_TRANSFORM_QA_OBJECT_IDS[0]] }
+    ]
+  );
+}
+
+function artTransformQaSelectionDocument(document: ChemDraftDocument, draft: ArtTransformQaDraft): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.id === document.selection.pageId) ?? document.pages[0];
+  if (!page) {
+    return document;
+  }
+
+  const selectedGraphics = page.objects.filter((object): object is GraphicObject =>
+    object.type === "graphic" && document.selection.objectIds.includes(object.id)
+  );
+  if (selectedGraphics.length === 0) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    selectedGraphics.map((object) => {
+      const currentTiltX = typeof object.style.tiltXDegrees === "number" ? object.style.tiltXDegrees : 0;
+      const currentTiltY = typeof object.style.tiltYDegrees === "number" ? object.style.tiltYDegrees : 0;
+      return {
+        op: "updateObject",
+        objectId: object.id,
+        changes: {
+          rotation: artTransformQaDegrees(draft.rotationDegrees, object.rotation),
+          style: {
+            ...object.style,
+            tiltXDegrees: artTransformQaDegrees(draft.tiltXDegrees, currentTiltX),
+            tiltYDegrees: artTransformQaDegrees(draft.tiltYDegrees, currentTiltY)
+          }
+        }
+      };
+    })
+  );
+}
+
+function artTransformQaObject({
+  id,
+  kind,
+  x,
+  y,
+  width,
+  height,
+  rotationDegrees,
+  tiltXDegrees,
+  tiltYDegrees
+}: {
+  id: string;
+  kind: "ellipse" | "rect";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotationDegrees: number;
+  tiltXDegrees: number;
+  tiltYDegrees: number;
+}): GraphicObject {
+  return {
+    id,
+    type: "graphic",
+    x,
+    y,
+    width,
+    height,
+    rotation: rotationDegrees,
+    graphicKind: kind,
+    style: {
+      source: "chemdraft-art-transform-qa",
+      strokeColor: "#111111",
+      fillColor: "none",
+      strokeWidth: 3,
+      tiltXDegrees,
+      tiltYDegrees
+    },
+    data: kind === "rect" ? { cornerRadiusPx: 9, artToolId: "qa-rounded-rect" } : { artToolId: "qa-ellipse" },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    }
+  };
+}
+
+function artTransformQaDegrees(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function documentObjectToolbarColor(object: DocumentObject): string {
@@ -11531,6 +11991,26 @@ function shouldEnableAgentBridge(): boolean {
     return params.get("agentBridge") === "1" ||
       params.get("chemdraftAgentBridge") === "1" ||
       window.localStorage.getItem("chemdraft.agentBridge") === "enabled";
+  } catch {
+    return false;
+  }
+}
+
+function shouldEnableArtTransformQaLayer(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("artQa") === "0" || params.get("chemdraftArtQa") === "0") {
+      return false;
+    }
+    return params.get("artQa") === "1" ||
+      params.get("chemdraftArtQa") === "1" ||
+      params.get("agentBridge") === "1" ||
+      params.get("chemdraftAgentBridge") === "1" ||
+      window.localStorage.getItem("chemdraft.artTransformQa") === "enabled";
   } catch {
     return false;
   }

@@ -1472,6 +1472,120 @@ textarea:focus-visible,
   overflow: visible;
 }
 
+.art-transform-qa-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.art-transform-qa-model-frame,
+.art-transform-qa-projected-bounds,
+.art-transform-qa-projected-corners {
+  fill: none;
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.art-transform-qa-model-frame {
+  stroke: #d42828;
+  stroke-dasharray: 5 4;
+}
+
+.art-transform-qa-projected-bounds {
+  stroke: #2468d8;
+  stroke-dasharray: 2 3;
+}
+
+.art-transform-qa-projected-corners {
+  stroke: #1d7f68;
+}
+
+.art-transform-qa-label {
+  fill: #1d7f68;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 3px;
+}
+
+.art-transform-qa-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 42px;
+  z-index: 60;
+  display: grid;
+  gap: 6px;
+  width: 212px;
+  padding: 8px;
+  border: 1px solid var(--cd-border-strong);
+  border-radius: var(--cd-radius-panel);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--cd-text-primary);
+  box-shadow: var(--cd-shadow-popover);
+  font-size: 11px;
+}
+
+.art-transform-qa-title {
+  font-weight: 700;
+}
+
+.art-transform-qa-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.art-transform-qa-fields label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.art-transform-qa-fields input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-primary);
+  font: inherit;
+}
+
+.art-transform-qa-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.art-transform-qa-actions button {
+  height: 24px;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-primary);
+  font: inherit;
+}
+
+.art-transform-qa-actions button:hover {
+  background: var(--cd-bg-hover);
+}
+
+.art-transform-qa-output {
+  overflow: hidden;
+  color: var(--cd-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .document-object-overlay {
   pointer-events: none;
 }

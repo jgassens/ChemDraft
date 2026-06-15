@@ -1164,6 +1164,17 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('window.removeEventListener("hashchange", openPayloadFromHash)');
   });
 
+  it("gates the art transform QA helper to local browser QA surfaces", () => {
+    expect(mainWindowSource).toContain("ArtTransformQaLayer");
+    expect(mainWindowSource).toContain("shouldEnableArtTransformQaLayer");
+    expect(mainWindowSource).toContain('params.get("artQa") === "1"');
+    expect(mainWindowSource).toContain('params.get("agentBridge") === "1"');
+    expect(mainWindowSource).toContain('data-art-transform-qa-layer="true"');
+    expect(mainWindowSource).toContain('data-art-transform-qa-action="scene"');
+    expect(appCss).toContain(".art-transform-qa-overlay");
+    expect(appCss).toContain(".art-transform-qa-panel");
+  });
+
   it("keeps transform handle double-clicks out of whole-molecule selection promotion", () => {
     expect(mainWindowSource).toContain("if (object.type === \"molecule\" && doublePress)");
     expect(mainWindowSource).not.toContain("tryWholeMoleculeDoublePress");
@@ -1784,7 +1795,9 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain("graphic-object");
+    expect(markup).not.toContain("art-transform-qa-panel");
     expect(markup).toContain('data-graphic-kind="rect"');
+    expect(markup).not.toContain('data-object-type="graphic"');
     expect(markup).not.toContain("art-object-content");
     expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain("graphic-glyph-shadow");
@@ -1808,9 +1821,9 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    expect(tiltedMarkup).toContain("graphic-glyph-transform");
-    expect(tiltedMarkup).toContain("graphic-glyph-shape");
-    expect(tiltedMarkup).not.toContain("graphic-glyph-projected-shape");
+    expect(tiltedMarkup).toContain("graphic-glyph-projected-shape");
+    expect(tiltedMarkup).not.toContain("graphic-glyph-shape");
+    expect(tiltedMarkup).not.toContain("graphic-glyph-transform");
     expect(tiltedMarkup).not.toContain("perspective(");
     expect(appCss).toContain(".graphic-glyph-transform .graphic-glyph-stroke");
     expect(appCss).toContain("vector-effect: none;");
