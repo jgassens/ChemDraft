@@ -57,6 +57,7 @@ import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   bondRefKey,
   planPageSvgRender,
+  planNativeArtVisual,
   type PageSvgAttributeValue,
   type PageSvgElementFragment,
   type PageSvgFragment,
@@ -614,7 +615,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.13.43-codex";
+const CURRENT_BUILD_STAMP = "6.15.13.57-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -10588,7 +10589,7 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <GraphicGlyph object={object} projection={artObjectProjection} />
+        <GraphicGlyph object={object} />
         {graphicPathEditHandles}
         {artObjectTransformFrame}
       </div>
@@ -10779,23 +10780,22 @@ function bracketPath(kind: BracketObject["bracketKind"], width: number, height: 
   return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
 }
 
-function GraphicGlyph({ object, projection }: { object: GraphicObject; projection?: DocumentObjectProjection }) {
-  const width = Math.max(object.width, 1);
-  const height = Math.max(object.height, 1);
-  const line = object.graphicKind === "line" ? graphicLineGlyphEndpoints(object) : undefined;
-  const strokeColor = metadataColor(object.style.strokeColor, object.style.color, "#111111");
-  const fillColor = metadataFillColor(object.style.fillColor);
-  const strokeWidth = metadataNumberValue(object.style.strokeWidth, 2);
-  const strokeDasharray = metadataStringValue(object.style.strokeDasharray);
-  const cornerRadius = metadataNumberValue(object.data.cornerRadiusPx, 0);
-  const fillMode = metadataStringValue(object.style.fillMode);
-  const effect = metadataStringValue(object.style.effect);
+function GraphicGlyph({ object }: { object: GraphicObject }) {
+  const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const width = plan.width;
+  const height = plan.height;
+  const line = plan.line;
+  const strokeColor = plan.stroke.color;
+  const fillColor = plan.fill.color;
+  const strokeWidth = plan.stroke.width;
+  const strokeDasharray = plan.stroke.dasharray;
+  const cornerRadius = plan.cornerRadius;
+  const fillMode = plan.fill.mode;
+  const effect = plan.effect;
   const gradientId = `graphic-gloss-${object.id}`;
-  const pathD = graphicPathD(object, width, height);
-  const projectionTransform = projection?.matrix
-    ? artProjectionSvgTransform(width, height, projection.matrix)
-    : undefined;
-  const glossGradient = graphicGlossGradient(width, height, projection?.matrix);
+  const pathD = plan.pathD;
+  const projectionTransform = plan.projectionTransform;
+  const glossGradient = plan.glossGradient;
   const sharedStrokeProps = {
     stroke: strokeColor,
     strokeWidth,
@@ -10813,10 +10813,10 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
         <defs>
           <radialGradient
             id={gradientId}
-            cx={glossGradient.cx}
-            cy={glossGradient.cy}
-            r={glossGradient.r}
-            gradientTransform={glossGradient.gradientTransform}
+            cx={glossGradient?.cx}
+            cy={glossGradient?.cy}
+            r={glossGradient?.r}
+            gradientTransform={glossGradient?.gradientTransform}
             gradientUnits="userSpaceOnUse"
           >
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.92" />
@@ -10826,34 +10826,28 @@ function GraphicGlyph({ object, projection }: { object: GraphicObject; projectio
           </radialGradient>
         </defs>
       ) : null}
-      {projection?.matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect") ? (
+      {plan.projectedShapePathD ? (
         <>
           {effect === "shadow" ? (
             <path
               className="graphic-glyph-shadow graphic-glyph-projected-shape"
-              d={projectedArtShapePathD(
-                object.graphicKind,
-                width,
-                height,
-                object.graphicKind === "rect" ? cornerRadius : 0,
-                projection.matrix,
-                { x: 6, y: 6 }
-              )}
+              d={plan.projectionMatrix
+                ? projectedArtShapePathD(
+                    object.graphicKind,
+                    width,
+                    height,
+                    object.graphicKind === "rect" ? cornerRadius : 0,
+                    plan.projectionMatrix,
+                    { x: 6, y: 6 }
+                  )
+                : ""}
               fill="#aeb8c2"
               stroke="none"
             />
           ) : null}
           <path
             className="graphic-glyph-stroke graphic-glyph-projected-shape"
-            d={projectedArtShapePathD(
-              object.graphicKind,
-              width,
-              height,
-              object.graphicKind === "rect" ? cornerRadius : 0,
-              projection.matrix,
-              undefined,
-              strokeWidth
-            )}
+            d={plan.projectedShapePathD}
             fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
             {...sharedStrokeProps}
           />
@@ -10961,19 +10955,6 @@ function GraphicPathEditHandles({
       ))}
     </>
   );
-}
-
-function graphicGlossGradient(
-  width: number,
-  height: number,
-  matrix: DocumentObjectProjectionMatrix | undefined
-): { cx: number; cy: number; r: number; gradientTransform?: string } {
-  return {
-    cx: formatSvgNumber(width * 0.34),
-    cy: formatSvgNumber(height * 0.28),
-    r: formatSvgNumber(Math.max(width, height) * 0.7),
-    gradientTransform: matrix ? artProjectionSvgTransform(width, height, matrix) : undefined
-  };
 }
 
 function ArtShapePrimitive({
@@ -11293,6 +11274,33 @@ function ellipsePathPoints(
   );
 }
 
+function arcSamplePoints(
+  center: { x: number; y: number },
+  rx: number,
+  ry: number,
+  startDegrees: number,
+  endDegrees: number,
+  steps: number
+): Array<{ x: number; y: number }> {
+  return Array.from({ length: steps + 1 }, (_, index) => {
+    const t = steps <= 0 ? 1 : index / steps;
+    return ellipsePointAtDegrees(center, rx, ry, startDegrees + (endDegrees - startDegrees) * t);
+  });
+}
+
+function ellipsePointAtDegrees(
+  center: { x: number; y: number },
+  rx: number,
+  ry: number,
+  degrees: number
+): { x: number; y: number } {
+  const radians = degreesToRadians(degrees);
+  return {
+    x: center.x + Math.cos(radians) * rx,
+    y: center.y + Math.sin(radians) * ry
+  };
+}
+
 function projectedPointsPathD(
   points: Array<{ x: number; y: number }>,
   closed: boolean,
@@ -11496,136 +11504,6 @@ function documentObjectTransformLabel(object: DocumentObject | undefined): strin
   return "selected object";
 }
 
-function graphicPathD(object: GraphicObject, width: number, height: number): string | undefined {
-  const storedPath = metadataStringValue(object.data.pathD);
-  const pathKind = metadataStringValue(object.data.artPathKind);
-  if (storedPath && !pathKind) {
-    return storedPath;
-  }
-
-  const inset = Math.max(3, metadataNumberValue(object.style.strokeWidth, 2) / 2);
-  if (pathKind === "line") {
-    const endpoints = graphicLineGlyphEndpoints(object);
-    if (endpoints) {
-      return `M ${formatSvgNumber(endpoints.x1)} ${formatSvgNumber(endpoints.y1)} L ${formatSvgNumber(endpoints.x2)} ${formatSvgNumber(endpoints.y2)}`;
-    }
-    return `M ${formatSvgNumber(inset)} ${formatSvgNumber(inset)} L ${formatSvgNumber(width - inset)} ${formatSvgNumber(height - inset)}`;
-  }
-
-  if (pathKind === "wavy") {
-    const endpoints = graphicLineGlyphEndpoints(object);
-    if (endpoints) {
-      return wavyLinePathD(
-        { x: endpoints.x1, y: endpoints.y1 },
-        { x: endpoints.x2, y: endpoints.y2 },
-        Math.max(2, Math.min(5, metadataNumberValue(object.style.strokeWidth, 2) * 1.6))
-      );
-    }
-    const midY = height / 2;
-    const amplitude = Math.max(4, Math.min(12, height * 0.24));
-    return [
-      `M ${formatSvgNumber(inset)} ${formatSvgNumber(midY)}`,
-      `C ${formatSvgNumber(width * 0.16)} ${formatSvgNumber(midY - amplitude)}, ${formatSvgNumber(width * 0.28)} ${formatSvgNumber(midY + amplitude)}, ${formatSvgNumber(width * 0.4)} ${formatSvgNumber(midY)}`,
-      `S ${formatSvgNumber(width * 0.64)} ${formatSvgNumber(midY - amplitude)}, ${formatSvgNumber(width * 0.76)} ${formatSvgNumber(midY)}`,
-      `S ${formatSvgNumber(width * 0.92)} ${formatSvgNumber(midY + amplitude)}, ${formatSvgNumber(width - inset)} ${formatSvgNumber(midY)}`
-    ].join(" ");
-  }
-
-  if (pathKind === "arc") {
-    const endpoints = graphicLineGlyphEndpoints(object);
-    const control = graphicPathControlPoint(object);
-    if (endpoints && control) {
-      return [
-        `M ${formatSvgNumber(endpoints.x1)} ${formatSvgNumber(endpoints.y1)}`,
-        `Q ${formatSvgNumber(control.x)} ${formatSvgNumber(control.y)} ${formatSvgNumber(endpoints.x2)} ${formatSvgNumber(endpoints.y2)}`
-      ].join(" ");
-    }
-    return artArcPathD(width, height, metadataNumberValue(object.data.arcAngleDegrees, 180));
-  }
-
-  return storedPath;
-}
-
-function wavyLinePathD(start: { x: number; y: number }, end: { x: number; y: number }, amplitude: number): string {
-  const points = wavyLinePoints(start, end, amplitude);
-  return [
-    `M ${formatSvgNumber(points[0].x)} ${formatSvgNumber(points[0].y)}`,
-    ...points.slice(1).map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
-  ].join(" ");
-}
-
-function wavyLinePoints(start: { x: number; y: number }, end: { x: number; y: number }, amplitude: number): Array<{ x: number; y: number }> {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const length = Math.hypot(dx, dy);
-  if (length < 1) {
-    return [start, end];
-  }
-  const normal = { x: -dy / length, y: dx / length };
-  const steps = Math.max(8, Math.ceil(length / 5));
-  return Array.from({ length: steps + 1 }, (_, index) => {
-    const t = index / steps;
-    const wave = Math.sin(t * Math.PI * 2 * Math.max(2, length / 8)) * amplitude;
-    return {
-      x: start.x + dx * t + normal.x * wave,
-      y: start.y + dy * t + normal.y * wave
-    };
-  });
-}
-
-function artArcPathD(width: number, height: number, degrees: number): string {
-  const points = artArcPoints(width, height, degrees);
-  const start = points[0];
-  const end = points[points.length - 1];
-  const angle = clamp(degrees, 1, 359.9);
-  const rx = Math.max(width / 2 - 4, 1);
-  const ry = Math.max(height / 2 - 4, 1);
-  if (!start || !end) {
-    return "";
-  }
-  return [
-    `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)}`,
-    `A ${formatSvgNumber(rx)} ${formatSvgNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`
-  ].join(" ");
-}
-
-function artArcPoints(width: number, height: number, degrees: number): Array<{ x: number; y: number }> {
-  const angle = clamp(degrees, 1, 359.9);
-  const rx = Math.max(width / 2 - 4, 1);
-  const ry = Math.max(height / 2 - 4, 1);
-  const center = { x: width / 2, y: height / 2 };
-  const startAngle = -90 - angle / 2;
-  const endAngle = -90 + angle / 2;
-  return arcSamplePoints(center, rx, ry, startAngle, endAngle, Math.max(12, Math.ceil(angle / 8)));
-}
-
-function arcSamplePoints(
-  center: { x: number; y: number },
-  rx: number,
-  ry: number,
-  startDegrees: number,
-  endDegrees: number,
-  steps: number
-): Array<{ x: number; y: number }> {
-  return Array.from({ length: steps + 1 }, (_, index) => {
-    const t = steps <= 0 ? 1 : index / steps;
-    return ellipsePointAtDegrees(center, rx, ry, startDegrees + (endDegrees - startDegrees) * t);
-  });
-}
-
-function ellipsePointAtDegrees(
-  center: { x: number; y: number },
-  rx: number,
-  ry: number,
-  degrees: number
-): { x: number; y: number } {
-  const radians = degreesToRadians(degrees);
-  return {
-    x: center.x + Math.cos(radians) * rx,
-    y: center.y + Math.sin(radians) * ry
-  };
-}
-
 function metadataColor(...values: unknown[]): string {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "none") {
@@ -11633,10 +11511,6 @@ function metadataColor(...values: unknown[]): string {
     }
   }
   return "#111111";
-}
-
-function metadataFillColor(value: unknown): string {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : "none";
 }
 
 function metadataStringValue(value: unknown): string | undefined {
@@ -11649,42 +11523,6 @@ function metadataNumberValue(value: unknown, fallback: number): number {
 
 function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
-}
-
-function graphicLineGlyphEndpoints(object: GraphicObject): { x1: number; y1: number; x2: number; y2: number } | undefined {
-  const start = graphicPointMetadata(object.data.lineStart);
-  const end = graphicPointMetadata(object.data.lineEnd);
-  if (!start || !end) {
-    return undefined;
-  }
-  return {
-    x1: start.x - object.x,
-    y1: start.y - object.y,
-    x2: end.x - object.x,
-    y2: end.y - object.y
-  };
-}
-
-function graphicPathControlPoint(object: GraphicObject): { x: number; y: number } | undefined {
-  const point = graphicPointMetadata(object.data.pathControlPoint);
-  return point
-    ? {
-        x: point.x - object.x,
-        y: point.y - object.y
-      }
-    : undefined;
-}
-
-function graphicPointMetadata(value: unknown): { x: number; y: number } | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const point = value as Record<string, unknown>;
-  const x = point.x;
-  const y = point.y;
-  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)
-    ? { x, y }
-    : undefined;
 }
 
 function TextObjectContent({ editing = false, object }: { editing?: boolean; object: TextObject }) {

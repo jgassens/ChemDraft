@@ -5,6 +5,7 @@ import {
   stylePresetToObjectStyle,
   type DocumentObject,
   type DocumentPage,
+  type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import {
@@ -13,6 +14,7 @@ import {
   findNearestBondHit,
   findNearestAtomHit,
   planBondExtension,
+  planNativeArtVisual,
   planPageSvgRender,
   planFreeformBondExtension,
   type BondExtensionPlanningInput,
@@ -985,31 +987,67 @@ describe("layout-engine page SVG planner", () => {
     const plan = planPageSvgRender(page);
     const fragments = plan.fragments.flatMap(elementFragments);
 
-    expect(fragments.map((fragment) => fragment.tag)).toEqual(["path", "ellipse", "rect"]);
-    expect(fragments[0]?.attrs).toMatchObject({
+    const visibleFragments = fragments.filter((fragment) =>
+      fragment.tag !== "defs" && fragment.tag !== "radialGradient" && fragment.tag !== "stop"
+    );
+    const ellipsePath = visibleFragments.find((fragment) => fragment.attrs["data-object-id"] === "art_ellipse");
+    const glossGradient = fragments.find((fragment) => fragment.tag === "radialGradient");
+
+    expect(visibleFragments.map((fragment) => fragment.tag)).toEqual(["path", "path", "rect"]);
+    expect(visibleFragments[0]?.attrs).toMatchObject({
       "data-object-id": "art_arc",
       class: "graphic-glyph-stroke graphic-glyph-path",
       stroke: "#1d7f68",
       "stroke-dasharray": "3 4",
       "stroke-linejoin": "round"
     });
-    expect(String(fragments[0]?.attrs.d)).toContain("A 25 25 0 1 1");
-    expect(fragments[1]?.attrs).toMatchObject({
+    expect(String(visibleFragments[0]?.attrs.d)).toContain("A 25 25 0 1 1");
+    expect(ellipsePath?.attrs).toMatchObject({
       "data-object-id": "art_ellipse",
-      fill: "#b3261e",
+      class: "graphic-glyph-stroke graphic-glyph-projected-shape",
+      fill: "url(#graphic-gloss-art_ellipse)",
       stroke: "#111111"
     });
-    expect(fragments[2]?.attrs).toMatchObject({
+    expect(glossGradient?.attrs).toMatchObject({
+      id: "graphic-gloss-art_ellipse",
+      gradientUnits: "userSpaceOnUse"
+    });
+    expect(String(glossGradient?.attrs.gradientTransform)).toContain("matrix(");
+    expect(visibleFragments[2]?.attrs).toMatchObject({
       "data-object-id": "art_rect",
       fill: "#f8faf9",
       rx: 7,
       ry: 7
     });
-    expect(plan.warnings.map((warning) => warning.code)).toEqual([
-      "export.svg.graphic_gloss_approximation",
-      "export.svg.graphic_tilt_approximation",
-      "export.svg.graphic_effect_approximation"
-    ]);
+    expect(plan.warnings.map((warning) => warning.code)).toEqual(["export.svg.graphic_effect_approximation"]);
+  });
+
+  it("plans native art projection bounds and gloss gradients from the same object transform", () => {
+    const sphere = {
+      id: "gloss_sphere",
+      type: "graphic",
+      x: 120,
+      y: 160,
+      width: 48,
+      height: 48,
+      rotation: 0,
+      style: {
+        fillColor: "#1648ff",
+        fillMode: "gloss",
+        strokeColor: "#1648ff"
+      },
+      graphicKind: "ellipse",
+      data: {}
+    } satisfies GraphicObject;
+
+    const unrotated = planNativeArtVisual(sphere, { coordinateSpace: "local" });
+    const rotated = planNativeArtVisual({ ...sphere, rotation: 90 }, { coordinateSpace: "local" });
+
+    expect(unrotated.frameBounds).toEqual({ x: 0, y: 0, width: 48, height: 48 });
+    expect(rotated.frameBounds).toEqual({ x: 0, y: 0, width: 48, height: 48 });
+    expect(unrotated.glossGradient?.gradientTransform).toBeUndefined();
+    expect(rotated.glossGradient?.gradientTransform).toContain("matrix(");
+    expect(rotated.projectedShapePathD).toContain("M ");
   });
 
   it("exports native bent graphic paths from explicit control-point data", () => {

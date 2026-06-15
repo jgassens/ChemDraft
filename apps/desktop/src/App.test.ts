@@ -1839,6 +1839,8 @@ describe("ChemDraft desktop shell", () => {
     expect(lineMarkup).toContain('data-graphic-path-handle="end"');
     expect(lineMarkup).toContain('data-art-transform-frame="true"');
     expect(lineMarkup).toContain("object-resize-handle");
+    expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
+    expect(mainWindowSource).not.toContain("function graphicPathD(object: GraphicObject");
 
     const rotated = applyPatch(document, {
       op: "updateObject",

@@ -3379,11 +3379,11 @@ describe("Phase 4 document workflow", () => {
 
     const svg = exportPhase4Svg(tilted, { includeWarnings: true });
     expect(svg.contents).toContain('data-object-id="' + objectId + '"');
-    expect(svg.contents).toContain('rx="7"');
-    expect(svg.warnings.map((warning) => warning.code)).toEqual([
-      "export.svg.graphic_gloss_approximation",
-      "export.svg.graphic_tilt_approximation"
-    ]);
+    expect(svg.contents).toContain('id="graphic-gloss-' + objectId + '"');
+    expect(svg.contents).toContain('gradientUnits="userSpaceOnUse"');
+    expect(svg.contents).toContain('gradientTransform="matrix(');
+    expect(svg.contents).toContain('fill="url(#graphic-gloss-' + objectId + ')"');
+    expect(svg.warnings).toEqual([]);
 
     const cdxml = exportPhase4Cdxml(tilted);
     const graphicCdxmlWarnings = cdxml.warnings.filter((warning) => warning.code.startsWith("cdxml.graphic_"));

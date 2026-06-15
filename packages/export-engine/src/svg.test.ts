@@ -160,7 +160,7 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain("&quot;objectId&quot;:&quot;unknown_svg_001&quot;");
   });
 
-  it("reports native graphic visual effects that SVG export approximates", () => {
+  it("exports supported native graphic gloss and tilt while warning for unsupported effects", () => {
     const graphic = {
       id: "art_svg_effects",
       type: "graphic",
@@ -206,15 +206,17 @@ describe("SVG export serialization", () => {
 
     expect(result.contents).toContain('data-object-id="art_svg_effects"');
     expect(result.contents).toContain('data-object-id="art_svg_reflection"');
+    expect(result.contents).toContain('id="graphic-gloss-art_svg_effects"');
+    expect(result.contents).toContain('gradientUnits="userSpaceOnUse"');
+    expect(result.contents).toContain('gradientTransform="matrix(');
     expect(result.warnings.map((warning) => warning.code)).toEqual([
-      "export.svg.graphic_gloss_approximation",
       "export.svg.graphic_effect_approximation",
-      "export.svg.graphic_tilt_approximation",
       "export.svg.graphic_effect_approximation"
     ]);
     expect(result.warnings.map((warning) => warning.message)).toContain(
       "SVG export omitted the native reflection graphic effect."
     );
-    expect(result.contents).toContain("export.svg.graphic_gloss_approximation");
+    expect(result.contents).not.toContain("export.svg.graphic_gloss_approximation");
+    expect(result.contents).not.toContain("export.svg.graphic_tilt_approximation");
   });
 });

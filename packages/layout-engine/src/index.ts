@@ -41,6 +41,52 @@ export interface LayoutBounds {
   height: number;
 }
 
+export type NativeArtVisualCoordinateSpace = "page" | "local";
+
+export interface NativeArtProjectionMatrix {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+}
+
+export interface NativeArtStrokePlan {
+  color: string;
+  width: number;
+  dasharray?: string;
+}
+
+export interface NativeArtFillPlan {
+  color: string;
+  mode?: string;
+}
+
+export interface NativeArtGlossGradientPlan {
+  cx: number;
+  cy: number;
+  r: number;
+  gradientTransform?: string;
+}
+
+export interface NativeArtVisualPlan {
+  objectId: string;
+  kind: GraphicObject["graphicKind"];
+  coordinateSpace: NativeArtVisualCoordinateSpace;
+  width: number;
+  height: number;
+  stroke: NativeArtStrokePlan;
+  fill: NativeArtFillPlan;
+  cornerRadius: number;
+  effect?: string;
+  projectionMatrix?: NativeArtProjectionMatrix;
+  projectionTransform?: string;
+  frameBounds: LayoutBounds;
+  line?: { x1: number; y1: number; x2: number; y2: number };
+  pathD?: string;
+  projectedShapePathD?: string;
+  glossGradient?: NativeArtGlossGradientPlan;
+}
+
 export interface MoleculeLayoutAtom extends LayoutPoint {
   id: string;
 }
@@ -1659,73 +1705,102 @@ function graphicObjectFragment(
   warnings: PageSvgRenderWarning[],
   layerIndex: number
 ): PageSvgElementFragment {
-  warnForGraphicSvgApproximations(object, warnings);
-  const stroke = metadataString(object.style.strokeColor) ?? metadataString(object.style.color) ?? "#111111";
-  const fill = metadataString(object.style.fillColor) ?? "none";
-  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 1.5;
-  const strokeDasharray = metadataString(object.style.strokeDasharray);
-  const transform = rotationTransform(object);
-  if (object.graphicKind === "line") {
-    const endpoints = graphicLineEndpoints(object);
-    return elementFragment("line", `object-${object.id}`, objectAttributes(object, layerIndex, {
-      x1: endpoints.start.x,
-      y1: endpoints.start.y,
-      x2: endpoints.end.x,
-      y2: endpoints.end.y,
-      class: "graphic-glyph-stroke",
-      stroke,
-      "stroke-width": strokeWidth,
-      "stroke-dasharray": strokeDasharray,
+  warnForGraphicSvgEffects(object, warnings);
+  const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
+  const gradientId = `graphic-gloss-${object.id}`;
+  const fill = plan.glossGradient ? `url(#${gradientId})` : plan.fill.color;
+  const strokeAttrs = {
+    class: "graphic-glyph-stroke",
+    stroke: plan.stroke.color,
+    "stroke-width": plan.stroke.width,
+    "stroke-dasharray": plan.stroke.dasharray
+  };
+  const children: PageSvgFragment[] = [
+    ...(plan.glossGradient ? [
+      elementFragment("defs", `graphic-gloss-defs-${object.id}`, {}, [
+        elementFragment("radialGradient", `graphic-gloss-gradient-${object.id}`, {
+          id: gradientId,
+          cx: plan.glossGradient.cx,
+          cy: plan.glossGradient.cy,
+          r: plan.glossGradient.r,
+          gradientTransform: plan.glossGradient.gradientTransform,
+          gradientUnits: "userSpaceOnUse"
+        }, [
+          elementFragment("stop", `graphic-gloss-stop-0-${object.id}`, {
+            offset: "0%",
+            "stop-color": "#ffffff",
+            "stop-opacity": 0.92
+          }),
+          elementFragment("stop", `graphic-gloss-stop-1-${object.id}`, {
+            offset: "28%",
+            "stop-color": "#ffffff",
+            "stop-opacity": 0.42
+          }),
+          elementFragment("stop", `graphic-gloss-stop-2-${object.id}`, {
+            offset: "72%",
+            "stop-color": plan.fill.color === "none" ? plan.stroke.color : plan.fill.color
+          }),
+          elementFragment("stop", `graphic-gloss-stop-3-${object.id}`, {
+            offset: "100%",
+            "stop-color": "#000000",
+            "stop-opacity": 0.78
+          })
+        ])
+      ])
+    ] : [])
+  ];
+
+  if (plan.projectedShapePathD) {
+    children.push(elementFragment("path", `graphic-projected-${object.id}`, {
+      d: plan.projectedShapePathD,
+      ...strokeAttrs,
+      class: "graphic-glyph-stroke graphic-glyph-projected-shape",
+      fill
+    }));
+  } else if (object.graphicKind === "line" && plan.line) {
+    children.push(elementFragment("line", `graphic-line-${object.id}`, {
+      x1: plan.line.x1,
+      y1: plan.line.y1,
+      x2: plan.line.x2,
+      y2: plan.line.y2,
+      ...strokeAttrs,
       "stroke-linecap": "round",
-      transform
+      transform: plan.projectionTransform
     }));
-  }
-
-  if (object.graphicKind === "path") {
-    const pathD = graphicPathD(object);
-    if (pathD) {
-      return elementFragment("path", `object-${object.id}`, objectAttributes(object, layerIndex, {
-        d: pathD,
-        class: "graphic-glyph-stroke graphic-glyph-path",
-        fill: "none",
-        stroke,
-        "stroke-width": strokeWidth,
-        "stroke-dasharray": strokeDasharray,
-        "stroke-linecap": "round",
-        "stroke-linejoin": "round",
-        transform
-      }));
-    }
-  }
-
-  if (object.graphicKind === "rect") {
-    return elementFragment("rect", `object-${object.id}`, objectAttributes(object, layerIndex, {
-      x: object.x + strokeWidth / 2,
-      y: object.y + strokeWidth / 2,
-      width: Math.max(object.width - strokeWidth, 0.5),
-      height: Math.max(object.height - strokeWidth, 0.5),
-      rx: metadataNumber(object.data.cornerRadiusPx),
-      ry: metadataNumber(object.data.cornerRadiusPx),
-      fill,
-      stroke,
-      "stroke-width": strokeWidth,
-      "stroke-dasharray": strokeDasharray,
-      transform
+  } else if (object.graphicKind === "path" && plan.pathD) {
+    children.push(elementFragment("path", `graphic-path-${object.id}`, {
+      d: plan.pathD,
+      ...strokeAttrs,
+      class: "graphic-glyph-stroke graphic-glyph-path",
+      fill: "none",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      transform: plan.projectionTransform
     }));
-  }
-
-  if (object.graphicKind === "ellipse") {
-    return elementFragment("ellipse", `object-${object.id}`, objectAttributes(object, layerIndex, {
+  } else if (object.graphicKind === "rect") {
+    children.push(elementFragment("rect", `graphic-rect-${object.id}`, {
+      x: object.x + plan.stroke.width / 2,
+      y: object.y + plan.stroke.width / 2,
+      width: Math.max(object.width - plan.stroke.width, 0.5),
+      height: Math.max(object.height - plan.stroke.width, 0.5),
+      rx: plan.cornerRadius,
+      ry: plan.cornerRadius,
+      ...strokeAttrs,
+      fill
+    }));
+  } else if (object.graphicKind === "ellipse") {
+    children.push(elementFragment("ellipse", `graphic-ellipse-${object.id}`, {
       cx: object.x + object.width / 2,
       cy: object.y + object.height / 2,
-      rx: Math.max(object.width / 2 - strokeWidth / 2, 0.5),
-      ry: Math.max(object.height / 2 - strokeWidth / 2, 0.5),
-      fill,
-      stroke,
-      "stroke-width": strokeWidth,
-      "stroke-dasharray": strokeDasharray,
-      transform
+      rx: Math.max(object.width / 2 - plan.stroke.width / 2, 0.5),
+      ry: Math.max(object.height / 2 - plan.stroke.width / 2, 0.5),
+      ...strokeAttrs,
+      fill
     }));
+  }
+
+  if (children.length > 0) {
+    return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex), children);
   }
 
   warnings.push({
@@ -1736,15 +1811,7 @@ function graphicObjectFragment(
   return fallbackObjectFragment(object, layerIndex);
 }
 
-function warnForGraphicSvgApproximations(object: GraphicObject, warnings: PageSvgRenderWarning[]): void {
-  if (object.style.fillMode === "gloss") {
-    warnings.push({
-      code: "export.svg.graphic_gloss_approximation",
-      message: "SVG export flattened a native gloss fill to the graphic fill color.",
-      objectId: object.id
-    });
-  }
-
+function warnForGraphicSvgEffects(object: GraphicObject, warnings: PageSvgRenderWarning[]): void {
   if (object.style.effect === "shadow" || object.style.effect === "reflection") {
     warnings.push({
       code: "export.svg.graphic_effect_approximation",
@@ -1752,30 +1819,313 @@ function warnForGraphicSvgApproximations(object: GraphicObject, warnings: PageSv
       objectId: object.id
     });
   }
-
-  const tiltXDegrees = typeof object.style.tiltXDegrees === "number" ? object.style.tiltXDegrees : 0;
-  const tiltYDegrees = typeof object.style.tiltYDegrees === "number" ? object.style.tiltYDegrees : 0;
-  if (Math.abs(tiltXDegrees) >= 0.001 || Math.abs(tiltYDegrees) >= 0.001) {
-    warnings.push({
-      code: "export.svg.graphic_tilt_approximation",
-      message: "SVG export omitted native X/Y tilt because the current SVG path supports only in-plane rotation.",
-      objectId: object.id
-    });
-  }
 }
 
-function graphicLineEndpoints(object: GraphicObject): { start: LayoutPoint; end: LayoutPoint } {
+export function planNativeArtVisual(
+  object: GraphicObject,
+  options: { coordinateSpace?: NativeArtVisualCoordinateSpace } = {}
+): NativeArtVisualPlan {
+  const coordinateSpace = options.coordinateSpace ?? "page";
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  const stroke: NativeArtStrokePlan = {
+    color: graphicColor(object.style.strokeColor, object.style.color, "#111111"),
+    width: metadataNumber(object.style.strokeWidth) ?? 1.5,
+    dasharray: metadataString(object.style.strokeDasharray)
+  };
+  const fill: NativeArtFillPlan = {
+    color: graphicFillColor(object.style.fillColor),
+    mode: metadataString(object.style.fillMode)
+  };
+  const matrix = nativeArtProjectionMatrixForObject(object);
+  const frameBounds = nativeArtFrameBounds(object, matrix, coordinateSpace);
+  const cornerRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
+  const line = object.graphicKind === "line"
+    ? graphicLineEndpoints(object, coordinateSpace)
+    : undefined;
+  const pathD = object.graphicKind === "path"
+    ? graphicPathD(object, coordinateSpace)
+    : undefined;
+  const projectedShapePathD = matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect")
+    ? projectedArtShapePathD(object, coordinateSpace, matrix, stroke.width)
+    : undefined;
+
+  return {
+    objectId: object.id,
+    kind: object.graphicKind,
+    coordinateSpace,
+    width,
+    height,
+    stroke,
+    fill,
+    cornerRadius,
+    effect: metadataString(object.style.effect),
+    projectionMatrix: matrix,
+    projectionTransform: matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined,
+    frameBounds,
+    line,
+    pathD,
+    projectedShapePathD,
+    glossGradient: fill.mode === "gloss" ? nativeArtGlossGradient(object, coordinateSpace, matrix) : undefined
+  };
+}
+
+function nativeArtProjectionMatrixForObject(object: GraphicObject): NativeArtProjectionMatrix | undefined {
+  const tiltXDegrees = metadataNumber(object.style.tiltXDegrees) ?? 0;
+  const tiltYDegrees = metadataNumber(object.style.tiltYDegrees) ?? 0;
+  if (
+    Math.abs(tiltXDegrees) < 0.001 &&
+    Math.abs(tiltYDegrees) < 0.001 &&
+    Math.abs(object.rotation) < 0.001
+  ) {
+    return undefined;
+  }
+
+  return nativeArtProjectionMatrix(tiltXDegrees, tiltYDegrees, object.rotation);
+}
+
+function nativeArtProjectionMatrix(
+  tiltXDegrees: number,
+  tiltYDegrees: number,
+  rotationDegrees: number
+): NativeArtProjectionMatrix {
+  const tiltXRad = degreesToRadians(tiltXDegrees);
+  const tiltYRad = degreesToRadians(tiltYDegrees);
+  const cx = Math.cos(tiltXRad);
+  const sx = Math.sin(tiltXRad);
+  const cy = Math.cos(tiltYRad);
+  const sy = Math.sin(tiltYRad);
+  const zRad = degreesToRadians(rotationDegrees);
+  const cz = Math.cos(zRad);
+  const sz = Math.sin(zRad);
+
+  return {
+    a: cy * cz,
+    b: cx * sz + sx * sy * cz,
+    c: -cy * sz,
+    d: cx * cz - sx * sy * sz
+  };
+}
+
+function nativeArtFrameBounds(
+  object: GraphicObject,
+  matrix: NativeArtProjectionMatrix | undefined,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): LayoutBounds {
+  const unprojected = coordinateSpace === "page"
+    ? { x: object.x, y: object.y, width: object.width, height: object.height }
+    : { x: 0, y: 0, width: object.width, height: object.height };
+  if (!matrix) {
+    return unprojected;
+  }
+
+  const localBounds = nativeArtProjectedLocalBounds(object, matrix);
+  return coordinateSpace === "page"
+    ? { ...localBounds, x: object.x + localBounds.x, y: object.y + localBounds.y }
+    : localBounds;
+}
+
+function nativeArtProjectedLocalBounds(
+  object: GraphicObject,
+  matrix: NativeArtProjectionMatrix
+): LayoutBounds {
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  if (object.graphicKind === "ellipse") {
+    return projectedEllipseBounds(width, height, matrix);
+  }
+
+  if (object.graphicKind === "rect") {
+    return projectedPointsBounds(
+      roundedRectPathPoints(width, height, metadataNumber(object.data.cornerRadiusPx) ?? 0, 0, { x: 0, y: 0 }),
+      width,
+      height,
+      matrix
+    );
+  }
+
+  return projectedRectangleBounds(width, height, matrix);
+}
+
+function projectedEllipseBounds(
+  width: number,
+  height: number,
+  matrix: NativeArtProjectionMatrix
+): LayoutBounds {
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const projectedHalfWidth = Math.hypot(matrix.a * halfWidth, matrix.c * halfHeight);
+  const projectedHalfHeight = Math.hypot(matrix.b * halfWidth, matrix.d * halfHeight);
+  return {
+    x: roundLayoutNumber(halfWidth - projectedHalfWidth),
+    y: roundLayoutNumber(halfHeight - projectedHalfHeight),
+    width: roundLayoutNumber(projectedHalfWidth * 2),
+    height: roundLayoutNumber(projectedHalfHeight * 2)
+  };
+}
+
+function projectedRectangleBounds(
+  width: number,
+  height: number,
+  matrix: NativeArtProjectionMatrix
+): LayoutBounds {
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const points = [
+    { x: 0, y: 0 },
+    { x: width, y: 0 },
+    { x: width, y: height },
+    { x: 0, y: height }
+  ];
+  return projectedPointsBounds(points, width, height, matrix);
+}
+
+function projectedPointsBounds(
+  points: readonly LayoutPoint[],
+  width: number,
+  height: number,
+  matrix: NativeArtProjectionMatrix
+): LayoutBounds {
+  const projected = points.map((point) => projectNativeArtLocalPoint(point, width, height, matrix));
+  const minX = Math.min(...projected.map((point) => point.x));
+  const maxX = Math.max(...projected.map((point) => point.x));
+  const minY = Math.min(...projected.map((point) => point.y));
+  const maxY = Math.max(...projected.map((point) => point.y));
+  return {
+    x: roundLayoutNumber(minX),
+    y: roundLayoutNumber(minY),
+    width: roundLayoutNumber(maxX - minX),
+    height: roundLayoutNumber(maxY - minY)
+  };
+}
+
+function nativeArtProjectionSvgTransform(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  matrix: NativeArtProjectionMatrix
+): string {
+  const originX = coordinateSpace === "page" ? object.x : 0;
+  const originY = coordinateSpace === "page" ? object.y : 0;
+  const centerX = originX + Math.max(object.width, 1) / 2;
+  const centerY = originY + Math.max(object.height, 1) / 2;
+  const e = centerX - matrix.a * centerX - matrix.c * centerY;
+  const f = centerY - matrix.b * centerX - matrix.d * centerY;
+  return [
+    "matrix(",
+    formatNumber(matrix.a),
+    " ",
+    formatNumber(matrix.b),
+    " ",
+    formatNumber(matrix.c),
+    " ",
+    formatNumber(matrix.d),
+    " ",
+    formatNumber(e),
+    " ",
+    formatNumber(f),
+    ")"
+  ].join("");
+}
+
+function nativeArtGlossGradient(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  matrix: NativeArtProjectionMatrix | undefined
+): NativeArtGlossGradientPlan {
+  const originX = coordinateSpace === "page" ? object.x : 0;
+  const originY = coordinateSpace === "page" ? object.y : 0;
+  return {
+    cx: roundLayoutNumber(originX + Math.max(object.width, 1) * 0.34),
+    cy: roundLayoutNumber(originY + Math.max(object.height, 1) * 0.28),
+    r: roundLayoutNumber(Math.max(object.width, object.height, 1) * 0.7),
+    gradientTransform: matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined
+  };
+}
+
+function projectedArtShapePathD(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  matrix: NativeArtProjectionMatrix,
+  strokeWidth: number
+): string {
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  const localPoints = object.graphicKind === "ellipse"
+    ? ellipsePathPoints(width, height, strokeWidth, { x: 0, y: 0 })
+    : roundedRectPathPoints(width, height, metadataNumber(object.data.cornerRadiusPx) ?? 0, strokeWidth, { x: 0, y: 0 });
+  const points = localPoints.map((point) => nativeArtPointForSpace(
+    object,
+    projectNativeArtLocalPoint(point, width, height, matrix),
+    coordinateSpace
+  ));
+  return pointsPathD(points, true);
+}
+
+function projectNativeArtLocalPoint(
+  point: LayoutPoint,
+  width: number,
+  height: number,
+  matrix: NativeArtProjectionMatrix
+): LayoutPoint {
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const dx = point.x - halfWidth;
+  const dy = point.y - halfHeight;
+  return {
+    x: halfWidth + matrix.a * dx + matrix.c * dy,
+    y: halfHeight + matrix.b * dx + matrix.d * dy
+  };
+}
+
+function nativeArtPointForSpace(
+  object: GraphicObject,
+  localPoint: LayoutPoint,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): LayoutPoint {
+  return coordinateSpace === "page"
+    ? { x: object.x + localPoint.x, y: object.y + localPoint.y }
+    : localPoint;
+}
+
+function graphicColor(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "none") {
+      return value.trim();
+    }
+  }
+  return "#111111";
+}
+
+function graphicFillColor(value: unknown): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : "none";
+}
+
+function graphicLineEndpoints(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace = "page"
+): { x1: number; y1: number; x2: number; y2: number } {
   const start = pointMetadata(object.data.lineStart);
   const end = pointMetadata(object.data.lineEnd);
-  return start && end
-    ? { start, end }
-    : {
-        start: { x: object.x, y: object.y },
-        end: { x: object.x + object.width, y: object.y + object.height }
-      };
+  const resolvedStart = start ?? { x: object.x, y: object.y };
+  const resolvedEnd = end ?? { x: object.x + object.width, y: object.y + object.height };
+  const spaceStart = coordinateSpace === "page"
+    ? resolvedStart
+    : { x: resolvedStart.x - object.x, y: resolvedStart.y - object.y };
+  const spaceEnd = coordinateSpace === "page"
+    ? resolvedEnd
+    : { x: resolvedEnd.x - object.x, y: resolvedEnd.y - object.y };
+  return {
+    x1: spaceStart.x,
+    y1: spaceStart.y,
+    x2: spaceEnd.x,
+    y2: spaceEnd.y
+  };
 }
 
-function graphicPathD(object: Extract<DocumentObject, { type: "graphic" }>): string | undefined {
+function graphicPathD(
+  object: Extract<DocumentObject, { type: "graphic" }>,
+  coordinateSpace: NativeArtVisualCoordinateSpace = "page"
+): string | undefined {
   const storedPath = metadataString(object.data.pathD);
   const pathKind = metadataString(object.data.artPathKind);
   if (storedPath && !pathKind) {
@@ -1784,47 +2134,71 @@ function graphicPathD(object: Extract<DocumentObject, { type: "graphic" }>): str
 
   const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
   if (pathKind === "line") {
-    const endpoints = graphicExplicitLineEndpoints(object);
-    if (endpoints) {
-      return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
-    }
-    return `M ${formatNumber(object.x + inset)} ${formatNumber(object.y + inset)} L ${formatNumber(object.x + object.width - inset)} ${formatNumber(object.y + object.height - inset)}`;
+    const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
+    return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
   }
 
   if (pathKind === "wavy") {
-    const endpoints = graphicExplicitLineEndpoints(object);
-    if (endpoints) {
+    const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
+    if (pointMetadata(object.data.lineStart) && pointMetadata(object.data.lineEnd)) {
       return wavyLinePathD(endpoints.start, endpoints.end, Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6)));
     }
-    const midY = object.y + object.height / 2;
+    const originX = coordinateSpace === "page" ? object.x : 0;
+    const originY = coordinateSpace === "page" ? object.y : 0;
+    const midY = originY + object.height / 2;
     const amplitude = Math.max(4, Math.min(12, object.height * 0.24));
     return [
-      `M ${formatNumber(object.x + inset)} ${formatNumber(midY)}`,
-      `C ${formatNumber(object.x + object.width * 0.16)} ${formatNumber(midY - amplitude)}, ${formatNumber(object.x + object.width * 0.28)} ${formatNumber(midY + amplitude)}, ${formatNumber(object.x + object.width * 0.4)} ${formatNumber(midY)}`,
-      `S ${formatNumber(object.x + object.width * 0.64)} ${formatNumber(midY - amplitude)}, ${formatNumber(object.x + object.width * 0.76)} ${formatNumber(midY)}`,
-      `S ${formatNumber(object.x + object.width * 0.92)} ${formatNumber(midY + amplitude)}, ${formatNumber(object.x + object.width - inset)} ${formatNumber(midY)}`
+      `M ${formatNumber(originX + inset)} ${formatNumber(midY)}`,
+      `C ${formatNumber(originX + object.width * 0.16)} ${formatNumber(midY - amplitude)}, ${formatNumber(originX + object.width * 0.28)} ${formatNumber(midY + amplitude)}, ${formatNumber(originX + object.width * 0.4)} ${formatNumber(midY)}`,
+      `S ${formatNumber(originX + object.width * 0.64)} ${formatNumber(midY - amplitude)}, ${formatNumber(originX + object.width * 0.76)} ${formatNumber(midY)}`,
+      `S ${formatNumber(originX + object.width * 0.92)} ${formatNumber(midY + amplitude)}, ${formatNumber(originX + object.width - inset)} ${formatNumber(midY)}`
     ].join(" ");
   }
 
   if (pathKind === "arc") {
-    const endpoints = graphicExplicitLineEndpoints(object);
-    const control = pointMetadata(object.data.pathControlPoint);
-    if (endpoints && control) {
+    const explicitStart = pointMetadata(object.data.lineStart);
+    const explicitEnd = pointMetadata(object.data.lineEnd);
+    const explicitControl = pointMetadata(object.data.pathControlPoint);
+    if (explicitStart && explicitEnd && explicitControl) {
+      const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
+      const control = pointForArtSpace(object, explicitControl, coordinateSpace);
       return [
         `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)}`,
         `Q ${formatNumber(control.x)} ${formatNumber(control.y)} ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`
       ].join(" ");
     }
-    return artArcPathD(object, metadataNumber(object.data.arcAngleDegrees) ?? 180);
+    return artArcPathD(object, metadataNumber(object.data.arcAngleDegrees) ?? 180, coordinateSpace);
   }
 
   return storedPath;
 }
 
-function graphicExplicitLineEndpoints(object: GraphicObject): { start: LayoutPoint; end: LayoutPoint } | undefined {
+function graphicPathEndpoints(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  inset: number
+): { start: LayoutPoint; end: LayoutPoint } {
   const start = pointMetadata(object.data.lineStart);
   const end = pointMetadata(object.data.lineEnd);
-  return start && end ? { start, end } : undefined;
+  return start && end
+    ? {
+        start: pointForArtSpace(object, start, coordinateSpace),
+        end: pointForArtSpace(object, end, coordinateSpace)
+      }
+    : {
+        start: nativeArtPointForSpace(object, { x: inset, y: inset }, coordinateSpace),
+        end: nativeArtPointForSpace(object, { x: object.width - inset, y: object.height - inset }, coordinateSpace)
+      };
+}
+
+function pointForArtSpace(
+  object: GraphicObject,
+  point: LayoutPoint,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): LayoutPoint {
+  return coordinateSpace === "page"
+    ? point
+    : { x: point.x - object.x, y: point.y - object.y };
 }
 
 function wavyLinePathD(start: LayoutPoint, end: LayoutPoint, amplitude: number): string {
@@ -1850,13 +2224,19 @@ function wavyLinePathD(start: LayoutPoint, end: LayoutPoint, amplitude: number):
   ].join(" ");
 }
 
-function artArcPathD(object: Pick<DocumentObject, "x" | "y" | "width" | "height">, degrees: number): string {
+function artArcPathD(
+  object: Pick<DocumentObject, "x" | "y" | "width" | "height">,
+  degrees: number,
+  coordinateSpace: NativeArtVisualCoordinateSpace = "page"
+): string {
   const angle = Math.min(359.9, Math.max(1, degrees));
   const rx = Math.max(object.width / 2 - 4, 1);
   const ry = Math.max(object.height / 2 - 4, 1);
+  const originX = coordinateSpace === "page" ? object.x : 0;
+  const originY = coordinateSpace === "page" ? object.y : 0;
   const center = {
-    x: object.x + object.width / 2,
-    y: object.y + object.height / 2
+    x: originX + object.width / 2,
+    y: originY + object.height / 2
   };
   const start = ellipsePointAtDegrees(center, rx, ry, -90 - angle / 2);
   const end = ellipsePointAtDegrees(center, rx, ry, -90 + angle / 2);
@@ -1864,6 +2244,84 @@ function artArcPathD(object: Pick<DocumentObject, "x" | "y" | "width" | "height"
     `M ${formatNumber(start.x)} ${formatNumber(start.y)}`,
     `A ${formatNumber(rx)} ${formatNumber(ry)} 0 ${angle > 180 ? 1 : 0} 1 ${formatNumber(end.x)} ${formatNumber(end.y)}`
   ].join(" ");
+}
+
+function roundedRectPathPoints(
+  width: number,
+  height: number,
+  rx: number,
+  strokeWidth: number,
+  offset: LayoutPoint
+): LayoutPoint[] {
+  const inset = Math.max(strokeWidth / 2, 0);
+  const x0 = inset + offset.x;
+  const y0 = inset + offset.y;
+  const x1 = Math.max(width - inset + offset.x, x0 + 0.5);
+  const y1 = Math.max(height - inset + offset.y, y0 + 0.5);
+  const radius = Math.max(0, Math.min(rx, (x1 - x0) / 2, (y1 - y0) / 2));
+  if (radius <= 0.001) {
+    return [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 }
+    ];
+  }
+
+  return [
+    ...arcSamplePoints({ x: x1 - radius, y: y0 + radius }, radius, radius, -90, 0, 8),
+    ...arcSamplePoints({ x: x1 - radius, y: y1 - radius }, radius, radius, 0, 90, 8).slice(1),
+    ...arcSamplePoints({ x: x0 + radius, y: y1 - radius }, radius, radius, 90, 180, 8).slice(1),
+    ...arcSamplePoints({ x: x0 + radius, y: y0 + radius }, radius, radius, 180, 270, 8).slice(1)
+  ];
+}
+
+function ellipsePathPoints(
+  width: number,
+  height: number,
+  strokeWidth: number,
+  offset: LayoutPoint
+): LayoutPoint[] {
+  const inset = Math.max(strokeWidth / 2, 0);
+  return arcSamplePoints(
+    { x: width / 2 + offset.x, y: height / 2 + offset.y },
+    Math.max(width / 2 - inset, 0.5),
+    Math.max(height / 2 - inset, 0.5),
+    0,
+    360,
+    72
+  );
+}
+
+function arcSamplePoints(
+  center: LayoutPoint,
+  rx: number,
+  ry: number,
+  startDegrees: number,
+  endDegrees: number,
+  steps: number
+): LayoutPoint[] {
+  return Array.from({ length: steps + 1 }, (_, index) => {
+    const t = steps <= 0 ? 1 : index / steps;
+    return ellipsePointAtDegrees(center, rx, ry, startDegrees + (endDegrees - startDegrees) * t);
+  });
+}
+
+function pointsPathD(points: readonly LayoutPoint[], closed: boolean): string {
+  const first = points[0];
+  if (!first) {
+    return "";
+  }
+
+  return [
+    `M ${formatNumber(first.x)} ${formatNumber(first.y)}`,
+    ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`),
+    closed ? "Z" : ""
+  ].filter(Boolean).join(" ");
+}
+
+function roundLayoutNumber(value: number): number {
+  return Number(value.toFixed(4));
 }
 
 function ellipsePointAtDegrees(
