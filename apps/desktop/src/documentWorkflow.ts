@@ -15,7 +15,9 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
+  type GraphicObjectData,
   type GraphicObject,
+  type GraphicObjectStyle,
   type PageLayout,
   type MoleculeAtom,
   type MoleculeBond,
@@ -205,36 +207,36 @@ export interface NativeArtToolDefinition {
   graphicKind: GraphicObject["graphicKind"];
   width: number;
   height: number;
-  data: Record<string, unknown>;
-  style: Record<string, unknown>;
+  data: GraphicObjectData;
+  style: GraphicObjectStyle;
 }
 
 const artOutlineStyle = {
   strokeColor: "#111111",
   fillColor: "none",
   strokeWidth: 2
-};
+} satisfies GraphicObjectStyle;
 
 const artFilledStyle = {
   strokeColor: "#111111",
   fillColor: "#111111",
   strokeWidth: 1.5,
   fillMode: "solid"
-};
+} satisfies GraphicObjectStyle;
 
 const artGlossStyle = {
   strokeColor: "#111111",
   fillColor: "#111111",
   strokeWidth: 1.5,
   fillMode: "gloss"
-};
+} satisfies GraphicObjectStyle;
 
 const artShadowStyle = {
   strokeColor: "#111111",
   fillColor: "#f8faf9",
   strokeWidth: 2,
   effect: "shadow"
-};
+} satisfies GraphicObjectStyle;
 
 export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artShapeTool("circle", "Circle", "ellipse", 48, 48, {}, artOutlineStyle),
@@ -279,8 +281,8 @@ function artShapeTool(
   graphicKind: GraphicObject["graphicKind"],
   width: number,
   height: number,
-  data: Record<string, unknown>,
-  style: Record<string, unknown>
+  data: GraphicObjectData,
+  style: GraphicObjectStyle
 ): NativeArtToolDefinition {
   return {
     id,
@@ -857,7 +859,6 @@ export function createNativeArtGraphicObject(
     style: {
       ...tool.style,
       source: "chemdraft-native-art",
-      artToolId: tool.id,
       artToolCommandId: tool.commandId
     },
     compatibility: {
@@ -2763,7 +2764,7 @@ export function updateSelectedNativeTextObjectStyle(
   return selected ? updateNativeTextObjectStyle(document, selected.id, style) : document;
 }
 
-export function applyColorToDocumentObjects(
+export function applyObjectColorToDocumentObjects(
   document: ChemDraftDocument,
   color: string,
   objectIds: readonly string[] = document.selection.objectIds
@@ -2867,7 +2868,7 @@ export function applyToolbarColorToSelection(
 
   let nextDocument = document;
   if (targetObjectIds.length > 0) {
-    nextDocument = applyColorToDocumentObjects(nextDocument, color, targetObjectIds);
+    nextDocument = applyObjectColorToDocumentObjects(nextDocument, color, targetObjectIds);
   }
   if (colorMoleculePart) {
     nextDocument = applyColorToNativeMoleculePart(nextDocument, colorMoleculePart, color);
@@ -4097,7 +4098,8 @@ function styleColorChanges(
   object: DocumentObject,
   styleChanges: Record<string, string>
 ): Partial<DocumentObject> | undefined {
-  if (Object.entries(styleChanges).every(([key, value]) => object.style[key] === value)) {
+  const currentStyle = object.style as Record<string, unknown>;
+  if (Object.entries(styleChanges).every(([key, value]) => currentStyle[key] === value)) {
     return undefined;
   }
 

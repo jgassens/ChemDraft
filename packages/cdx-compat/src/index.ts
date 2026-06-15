@@ -397,10 +397,22 @@ function exportVisibleObject(
     return exportReactionArrowObject(object, context.ids, allocator, objectsById);
   }
   if (object.type === "graphic") {
-    return exportGraphicObject(object, context.ids, allocator);
+    return exportGraphicObject(object, context.ids, allocator, warnings);
   }
   if (object.type === "bracket") {
-    return exportGraphicObject({ ...object, type: "graphic", graphicKind: "path", data: { bracketKind: object.bracketKind } }, context.ids, allocator);
+    return exportGraphicObject({
+      id: object.id,
+      type: "graphic",
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height,
+      rotation: object.rotation,
+      style: {},
+      compatibility: object.compatibility,
+      graphicKind: "path",
+      data: {}
+    }, context.ids, allocator, warnings);
   }
   if (object.type === "reaction") {
     warnings.push({
@@ -598,9 +610,55 @@ function exportReactionArrowObject(
   return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(arrow.arrowKind)}" BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
 }
 
-function exportGraphicObject(graphic: GraphicObject, ids: Map<string, string>, allocator: IdAllocator): string {
+function exportGraphicObject(
+  graphic: GraphicObject,
+  ids: Map<string, string>,
+  allocator: IdAllocator,
+  warnings: CompatibilityConversionWarning[]
+): string {
   const graphicId = idFor(ids, graphic.id, allocator);
+  warnForGraphicCdxmlLimitations(graphic, warnings);
   return `<graphic id="${graphicId}" GraphicType="${escapeXmlAttribute(graphic.graphicKind)}" BoundingBox="${formatBoundingBox(graphic)}"/>`;
+}
+
+function warnForGraphicCdxmlLimitations(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const styleFields = [
+    "color",
+    "strokeColor",
+    "fillColor",
+    "strokeWidth",
+    "strokeDasharray",
+    "fillMode",
+    "effect",
+    "tiltXDegrees",
+    "tiltYDegrees"
+  ].filter((field) => graphic.style[field as keyof GraphicObject["style"]] !== undefined);
+  if (styleFields.length > 0) {
+    warnings.push({
+      code: "cdxml.graphic_style_payload_only",
+      message: `Native graphic style fields (${styleFields.join(", ")}) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.`,
+      sourceObjectId: graphic.id
+    });
+  }
+
+  const dataFields = [
+    "lineStart",
+    "lineEnd",
+    "pathD",
+    "artPathKind",
+    "arcAngleDegrees",
+    "cornerRadiusPx"
+  ].filter((field) => graphic.data[field as keyof GraphicObject["data"]] !== undefined);
+  if (dataFields.length > 0) {
+    warnings.push({
+      code: "cdxml.graphic_data_payload_only",
+      message: `Native graphic data fields (${dataFields.join(", ")}) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.`,
+      sourceObjectId: graphic.id
+    });
+  }
 }
 
 function buildMetadataObjectTags(values: {

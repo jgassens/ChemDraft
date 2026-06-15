@@ -1,6 +1,7 @@
 import {
   applyPatch,
   createEmptyDocument,
+  type GraphicObject,
   type MoleculeObject,
   type TextObject,
   type UnknownCompatibilityObject
@@ -157,5 +158,63 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('data-chemdraft-warnings="');
     expect(result.contents).toContain("export.svg.object_fallback");
     expect(result.contents).toContain("&quot;objectId&quot;:&quot;unknown_svg_001&quot;");
+  });
+
+  it("reports native graphic visual effects that SVG export approximates", () => {
+    const graphic = {
+      id: "art_svg_effects",
+      type: "graphic",
+      x: 120,
+      y: 140,
+      width: 72,
+      height: 40,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        fillColor: "#1d7f68",
+        fillMode: "gloss",
+        effect: "shadow",
+        tiltXDegrees: 20,
+        tiltYDegrees: -10
+      },
+      graphicKind: "rect",
+      data: { cornerRadiusPx: 7 }
+    } satisfies GraphicObject;
+    const reflection = {
+      ...graphic,
+      id: "art_svg_reflection",
+      x: 220,
+      style: {
+        ...graphic.style,
+        fillMode: "solid",
+        effect: "reflection",
+        tiltXDegrees: 0,
+        tiltYDegrees: 0
+      }
+    } satisfies GraphicObject;
+    const base = applyPatch(
+      createEmptyDocument({ title: "SVG Graphic Effects", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const document = applyPatch(
+      base,
+      { op: "addObject", pageId: "page_001", object: reflection },
+      { now: timestamp }
+    );
+    const result = exportDocumentToSvg(document, { includeWarnings: true });
+
+    expect(result.contents).toContain('data-object-id="art_svg_effects"');
+    expect(result.contents).toContain('data-object-id="art_svg_reflection"');
+    expect(result.warnings.map((warning) => warning.code)).toEqual([
+      "export.svg.graphic_gloss_approximation",
+      "export.svg.graphic_effect_approximation",
+      "export.svg.graphic_tilt_approximation",
+      "export.svg.graphic_effect_approximation"
+    ]);
+    expect(result.warnings.map((warning) => warning.message)).toContain(
+      "SVG export omitted the native reflection graphic effect."
+    );
+    expect(result.contents).toContain("export.svg.graphic_gloss_approximation");
   });
 });

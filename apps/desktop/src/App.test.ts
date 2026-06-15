@@ -17,6 +17,9 @@ import {
   createQuickActions,
   editActions,
   normalizeHexColor,
+  objectColorForCommand,
+  objectCustomColorCommandId,
+  objectStyleActions,
   pageOrientationActions,
   pageSizeActions,
   paletteGroups,
@@ -31,7 +34,7 @@ import {
 } from "./commands";
 import {
   applyAnalysisToSelectedMolecule,
-  applyColorToDocumentObjects,
+  applyObjectColorToDocumentObjects,
   applyDocumentObjectProjectedPlaneTilt,
   applyFreeformSingleBondToolAtPoint,
   applyNativeAtomElementTarget,
@@ -58,12 +61,12 @@ import {
   ObjectLayerContextMenu,
   SelectionMarqueeOverlay,
   activeNativeTargetShortcutCommand,
-  cumulativeMoleculeResizeScale,
+  cumulativeObjectResizeScale,
   cumulativeRotationReadoutDegrees,
   hoveredNativeTargetShortcutCommand,
-  moleculeResizeReadoutPercent,
-  moleculeResizeInputDraftPercent,
-  moleculeResizeScaleFromDrag,
+  objectResizeReadoutPercent,
+  objectResizeInputDraftPercent,
+  objectResizeScaleFromDrag,
   bondDepthContextFromNativeSelection,
   bondDepthRefsFromNativeSelection,
   crossingClearPatchesForObjectLayerPlacement,
@@ -81,7 +84,7 @@ import {
   nativeSelectionWithHitToggled,
   pagePointFromRenderedPageRect,
   parseRotationInputDegrees,
-  parseMoleculeResizeInputPercent,
+  parseObjectResizeInputPercent,
   projectedPlaneTiltCommitHistory,
   projectedPlaneTiltRadiansFromDrag,
   projectedPlaneTiltReadoutDegrees,
@@ -233,8 +236,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("selectedFragmentBounds ? documentObjectCenter(selectedFragmentBounds) : documentObjectCenter(object)");
     expect(mainWindowSource).toContain('title={`3D rotate ${transformTargetLabel}`}');
     expect(mainWindowSource).toContain('data-tilt3d-icon="circular-arrow"');
-    expect(appCss).toMatch(/\.native-molecule-tilt3d-handle\s*{[^}]*color:\s*var\(--cd-accent\);/s);
-    expect(appCss).toContain(".native-molecule-tilt3d-arrowhead");
+    expect(appCss).toMatch(/\.object-tilt3d-handle\s*{[^}]*color:\s*var\(--cd-accent\);/s);
+    expect(appCss).toContain(".object-tilt3d-arrowhead");
     expect(implementationSource).not.toMatch(/conformerClient|conformerWorker|@chemdraft\/ocl-adapter|OpenChemLib|openchemlib/);
   });
 
@@ -672,7 +675,6 @@ describe("ChemDraft desktop shell", () => {
       },
       style: {
         source: "chemdraft-native-art",
-        artToolId: "rectGloss",
         artToolCommandId: "tool.art.rectGloss",
         fillMode: "gloss",
         strokeColor: "#111111",
@@ -685,7 +687,7 @@ describe("ChemDraft desktop shell", () => {
     const graphic = inserted.pages[0].objects.find((object) => object.id === selectedId);
     expect(graphic).toMatchObject({ type: "graphic", graphicKind: "rect" });
 
-    const colored = applyColorToDocumentObjects(inserted, "#1d7f68");
+    const colored = applyObjectColorToDocumentObjects(inserted, "#1d7f68");
     const coloredGraphic = colored.pages[0].objects.find((object) => object.id === selectedId);
     expect(coloredGraphic?.style).toMatchObject({
       color: "#1d7f68",
@@ -701,7 +703,7 @@ describe("ChemDraft desktop shell", () => {
     });
 
     const outline = insertNativeArtGraphicObject(document, { x: 220, y: 160 }, "tool.art.circle");
-    const recoloredOutline = applyColorToDocumentObjects(outline, "#b3261e");
+    const recoloredOutline = applyObjectColorToDocumentObjects(outline, "#b3261e");
     const outlineId = recoloredOutline.selection.objectIds[0];
     const outlineGraphic = recoloredOutline.pages[0].objects.find((object) => object.id === outlineId);
     expect(outlineGraphic?.style).toMatchObject({
@@ -709,6 +711,9 @@ describe("ChemDraft desktop shell", () => {
       strokeColor: "#b3261e",
       fillColor: "none"
     });
+    expect(mainWindowSource).toContain("const applyNativeArtDocumentAtPoint = useCallback");
+    expect(mainWindowSource).toContain('const selectToolState = createActiveToolState("tool.select");');
+    expect(mainWindowSource).toContain("broadcastToolsetActiveTool(selectToolState.activeCommandId)");
   });
 
   it("routes desktop exports through native save and file-write helpers", () => {
@@ -913,6 +918,20 @@ describe("ChemDraft desktop shell", () => {
     expect(textStylePatchForCommand(textCustomColorCommandId("#A0B1C2"))).toEqual({ color: "#a0b1c2" });
     expect(appCss).toContain(".toolbar-color-swatch:hover,\n.toolbar-color-swatch.active");
     expect(appCss).toContain("background: var(--swatch-color);");
+  });
+
+  it("keeps object color commands explicit and separate from text style patches", () => {
+    expect(objectStyleActions.map((command) => command.id)).toEqual(
+      expect.arrayContaining([
+        "object.color.black",
+        "object.color.green",
+        "object.color.magenta"
+      ])
+    );
+    expect(objectColorForCommand("object.color.green")).toBe("#1d7f68");
+    expect(objectColorForCommand(objectCustomColorCommandId("#A0B1C2"))).toBe("#a0b1c2");
+    expect(textStylePatchForCommand("object.color.green")).toBeUndefined();
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.color.green")).toBe(true);
   });
 
   it("renders mutually exclusive text toolbar active states from current style", () => {
@@ -1142,7 +1161,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("lastTransformHandlePressRef");
     expect(mainWindowSource).toContain("openObjectRotateInput(objectId);");
     expect(mainWindowSource).toContain("openProjectedPlaneTiltInput(objectId);");
-    expect(mainWindowSource).toContain("openMoleculeResizeInput(objectId, corner);");
+    expect(mainWindowSource).toContain("openObjectResizeInput(objectId, corner);");
     expect(mainWindowSource.match(/const selectedDocument = selectedFragmentTarget/g)?.length).toBe(3);
   });
 
@@ -1155,7 +1174,7 @@ describe("ChemDraft desktop shell", () => {
 
   it("centers the paired Z and X/Y rotation handles over the selection box", () => {
     expect(mainWindowSource).toContain('data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}');
-    expect(appCss).toContain('.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotate-handle');
+    expect(appCss).toContain('.object-transform-frame[data-has-tilt3d="true"] .object-rotate-handle');
     expect(appCss).toContain("left: calc(50% - 17px);");
     expect(appCss).toContain("left: calc(50% + 17px);");
     expect(appCss).not.toContain("left: calc(50% + 34px);");
@@ -1165,9 +1184,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-scale-input-popover=\"true\"");
     expect(mainWindowSource).toContain("data-scale-input-corner={input.corner}");
     expect(mainWindowSource).toContain("onDoubleClick={onResizeDoubleClick(corner)}");
-    expect(mainWindowSource).toContain("onMoleculeResizeInputChange={handleMoleculeResizeInputChange}");
-    expect(mainWindowSource).toContain("onMoleculeResizeInputHome={handleMoleculeResizeInputHome}");
-    expect(mainWindowSource).toContain("onMoleculeResizeInputKeep={handleMoleculeResizeInputKeep}");
+    expect(mainWindowSource).toContain("onObjectResizeInputChange={handleObjectResizeInputChange}");
+    expect(mainWindowSource).toContain("onObjectResizeInputHome={handleObjectResizeInputHome}");
+    expect(mainWindowSource).toContain("onObjectResizeInputKeep={handleObjectResizeInputKeep}");
     expect(mainWindowSource).toContain("aria-label=\"Restore stretch home\"");
     expect(mainWindowSource).toContain("aria-label=\"X stretch percent\"");
     expect(mainWindowSource).toContain("aria-label=\"Y stretch percent\"");
@@ -1184,12 +1203,12 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("parses manual stretch percentages", () => {
-    expect(parseMoleculeResizeInputPercent("150")).toBe(150);
-    expect(parseMoleculeResizeInputPercent(" 62.5 ")).toBe(62.5);
-    expect(parseMoleculeResizeInputPercent("0")).toBeUndefined();
-    expect(parseMoleculeResizeInputPercent("-4")).toBeUndefined();
-    expect(parseMoleculeResizeInputPercent("")).toBeUndefined();
-    expect(moleculeResizeInputDraftPercent(1.5)).toBe("150");
+    expect(parseObjectResizeInputPercent("150")).toBe(150);
+    expect(parseObjectResizeInputPercent(" 62.5 ")).toBe(62.5);
+    expect(parseObjectResizeInputPercent("0")).toBeUndefined();
+    expect(parseObjectResizeInputPercent("-4")).toBeUndefined();
+    expect(parseObjectResizeInputPercent("")).toBeUndefined();
+    expect(objectResizeInputDraftPercent(1.5)).toBe("150");
   });
 
   it("commits projected-plane 3D rotate as exactly one history entry", () => {
@@ -1231,16 +1250,16 @@ describe("ChemDraft desktop shell", () => {
     const center = { x: 100, y: 100 };
     const start = { x: 60, y: 60 };
 
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 40, y: 40 }, false)).toEqual({ x: 1.5, y: 1.5 });
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 20, y: 60 }, false)).toEqual({ x: 1.5, y: 1.5 });
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 40, y: 80 }, false)).toEqual({ x: 1, y: 1 });
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 40, y: 80 }, true)).toEqual({ x: 1.5, y: 0.5 });
-    expect(moleculeResizeReadoutPercent(1.254)).toBe(125);
+    expect(objectResizeScaleFromDrag(center, start, { x: 40, y: 40 }, false)).toEqual({ x: 1.5, y: 1.5 });
+    expect(objectResizeScaleFromDrag(center, start, { x: 20, y: 60 }, false)).toEqual({ x: 1.5, y: 1.5 });
+    expect(objectResizeScaleFromDrag(center, start, { x: 40, y: 80 }, false)).toEqual({ x: 1, y: 1 });
+    expect(objectResizeScaleFromDrag(center, start, { x: 40, y: 80 }, true)).toEqual({ x: 1.5, y: 0.5 });
+    expect(objectResizeReadoutPercent(1.254)).toBe(125);
   });
 
   it("multiplies molecule resize readouts by the starting molecule scale", () => {
-    expect(cumulativeMoleculeResizeScale({ x: 2, y: 2 }, { x: 1.5, y: 1.5 })).toEqual({ x: 3, y: 3 });
-    expect(cumulativeMoleculeResizeScale({ x: 2, y: 0.5 }, { x: 1.25, y: 0.8 })).toEqual({ x: 2.5, y: 0.4 });
+    expect(cumulativeObjectResizeScale({ x: 2, y: 2 }, { x: 1.5, y: 1.5 })).toEqual({ x: 3, y: 3 });
+    expect(cumulativeObjectResizeScale({ x: 2, y: 0.5 }, { x: 1.25, y: 0.8 })).toEqual({ x: 2.5, y: 0.4 });
   });
 
   it("renders the text toolbar as a formatting surface", () => {
@@ -1288,7 +1307,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('aria-label="Object color"');
     expect(markup).toContain('aria-label="Open object color picker"');
     expect(markup).toContain('data-color-picker="true"');
+    expect(markup).not.toContain('data-command-id="text.color.black"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
+    expect(toolPaletteSource).toContain("colorCommands={objectColorCommands}");
+    expect(toolPaletteSource).toContain("customColorCommandId={objectCustomColorCommandId}");
     expect(appCss).toContain(".art-tool-icon");
     expect(appCss).toContain(".art-toolbar-style-controls");
   });
@@ -1721,12 +1743,12 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-selection-tilt3d-handle="true"');
     expect(markup).toContain('data-tilt3d-icon="circular-arrow"');
     expect(markup).not.toContain('data-tilt3d-readout="true"');
-    expect(markup.match(/data-molecule-resize-corner=/g) ?? []).toHaveLength(4);
-    expect(markup).toContain('data-molecule-resize-corner="top-left"');
-    expect(markup).toContain('data-molecule-resize-corner="top-right"');
-    expect(markup).toContain('data-molecule-resize-corner="bottom-left"');
-    expect(markup).toContain('data-molecule-resize-corner="bottom-right"');
-    expect(markup).not.toContain('data-molecule-resize-readout="true"');
+    expect(markup.match(/data-object-resize-corner=/g) ?? []).toHaveLength(4);
+    expect(markup).toContain('data-object-resize-corner="top-left"');
+    expect(markup).toContain('data-object-resize-corner="top-right"');
+    expect(markup).toContain('data-object-resize-corner="bottom-left"');
+    expect(markup).toContain('data-object-resize-corner="bottom-right"');
+    expect(markup).not.toContain('data-object-resize-readout="true"');
     expect(markup).not.toContain("data-text-resize-edge");
     expect(markup).toContain("Rotate selected molecule");
     expect(markup).toContain("3D rotate selected molecule");
@@ -1734,6 +1756,34 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("native-atom-hit-target");
     expect(markup).toContain("Molecule C2H6");
     expect(markup).not.toContain("adapter-backed");
+  });
+
+  it("renders selected native art with generic object transform controls", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Art Render"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRectShadow"
+    );
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("graphic-object");
+    expect(markup).toContain('data-graphic-kind="rect"');
+    expect(markup).toContain("graphic-glyph-shadow");
+    expect(markup).toContain('rx="7"');
+    expect(markup).toContain('data-art-transform-frame="true"');
+    expect(markup).toContain("art-object-transform-frame");
+    expect(markup).toContain("object-resize-handle");
+    expect(markup).toContain('data-object-resize-corner="top-left"');
+    expect(markup).toContain("object-rotate-handle");
+    expect(markup).toContain("object-tilt3d-handle");
+    expect(markup).not.toContain("native-molecule-transform-frame");
+    expect(markup).not.toContain("molecule-resize-handle");
   });
 
   it("hides molecule transform handles when the bond tool is active", () => {
@@ -1752,7 +1802,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("native-molecule-selection-blob");
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
-    expect(markup).not.toContain("data-molecule-resize-corner");
+    expect(markup).not.toContain("data-object-resize-corner");
   });
 
   it("keeps selected labeled atoms visibly highlighted above label backgrounds", () => {
@@ -1804,7 +1854,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).not.toContain("data-molecule-transform-frame");
-    expect(markup).not.toContain("data-molecule-resize-corner");
+    expect(markup).not.toContain("data-object-resize-corner");
   });
 
   it("does not treat stale native molecule fragment targets as visible selections", () => {
@@ -2608,7 +2658,7 @@ describe("ChemDraft desktop shell", () => {
     expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
   });
 
-  it("renders the BactVue visible CDXML subset with text, molecules, arrow, and bracket objects", () => {
+  it("renders the BactVue visible CDXML subset with text, molecules, and explicit compatibility fallbacks", () => {
     const opened = openNativeDocument(readFileSync("packages/fixtures/cdxml/bactvue-visible-subset.cdxml", "utf8"));
     if (!opened.document) {
       throw new Error(`Expected BactVue visible CDXML import, got warnings: ${opened.warnings.map((item) => item.code).join(", ")}`);
@@ -2632,11 +2682,11 @@ describe("ChemDraft desktop shell", () => {
     ).toEqual([4, 1, 1]);
     expect(markup).toContain("DIPEA, DMSO");
     expect(markup).toContain("reaction-arrow-object");
-    expect(markup).toContain('data-arrow-kind="forward"');
+    expect(markup).toContain('data-arrow-kind="unknown"');
     expect(markup).toContain("reaction-arrow-line");
-    expect(markup).toContain("bracket-object");
-    expect(markup).toContain('data-bracket-kind="round"');
-    expect(markup).toContain('data-contained-object-ids="cdxml_molecule_1_4"');
+    expect(markup).toContain("graphic-object");
+    expect(markup).toContain('data-graphic-kind="unknown"');
+    expect(markup).toContain("generic-object");
     expect(markup).toContain('data-atom-count="5"');
   });
 

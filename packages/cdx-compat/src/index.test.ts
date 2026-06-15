@@ -6,6 +6,7 @@ import {
   serializeDocument,
   type ArrowObject,
   type ChemDraftDocument,
+  type GraphicObject,
   type MoleculeObject,
   type TextObject
 } from "@chemdraft/chem-core";
@@ -218,6 +219,55 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       "cdxml.reaction_scheme_export_partial",
       "cdxml.mechanism_payload_only"
     ]);
+  });
+
+  it("warns when native graphic style and data are visible-CDXML payload-only", () => {
+    const graphic = {
+      id: "art_cdxml_effects",
+      type: "graphic",
+      x: 120,
+      y: 140,
+      width: 72,
+      height: 40,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        fillColor: "#1d7f68",
+        strokeWidth: 2,
+        strokeDasharray: "3 4",
+        fillMode: "gloss",
+        effect: "shadow",
+        tiltXDegrees: 20,
+        tiltYDegrees: -10
+      },
+      graphicKind: "rect",
+      data: {
+        cornerRadiusPx: 7,
+        artToolId: "roundedRectGloss"
+      }
+    } satisfies GraphicObject;
+    const document = documentWithObjects([graphic]);
+    const result = exportDocumentToCdxml(document, { creationProgram: "Graphic Warning Test" });
+
+    expect(result.contents).toContain('<graphic id="');
+    expect(result.contents).toContain('GraphicType="rect"');
+    expect(result.warnings).toEqual([
+      {
+        code: "cdxml.graphic_style_payload_only",
+        message: "Native graphic style fields (strokeColor, fillColor, strokeWidth, strokeDasharray, fillMode, effect, tiltXDegrees, tiltYDegrees) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.",
+        sourceObjectId: "art_cdxml_effects"
+      },
+      {
+        code: "cdxml.graphic_data_payload_only",
+        message: "Native graphic data fields (cornerRadiusPx) are preserved in the embedded ChemDraft payload but are not yet mapped to visible CDXML.",
+        sourceObjectId: "art_cdxml_effects"
+      }
+    ]);
+    expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
+      type: "graphic",
+      style: { fillMode: "gloss", effect: "shadow" },
+      data: { cornerRadiusPx: 7, artToolId: "roundedRectGloss" }
+    });
   });
 
   it("opens legacy JSON with a BOM and leading whitespace", () => {

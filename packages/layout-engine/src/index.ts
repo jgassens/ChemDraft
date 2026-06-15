@@ -7,6 +7,7 @@ import {
   type DocumentPage,
   type ElectronMarkObject,
   type ArrowObject,
+  type GraphicObject,
   type MoleculeAtom,
   type MoleculeBond as CoreMoleculeBond,
   type MoleculeObject,
@@ -1654,10 +1655,11 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 }
 
 function graphicObjectFragment(
-  object: Extract<DocumentObject, { type: "graphic" }>,
+  object: GraphicObject,
   warnings: PageSvgRenderWarning[],
   layerIndex: number
 ): PageSvgElementFragment {
+  warnForGraphicSvgApproximations(object, warnings);
   const stroke = metadataString(object.style.strokeColor) ?? metadataString(object.style.color) ?? "#111111";
   const fill = metadataString(object.style.fillColor) ?? "none";
   const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 1.5;
@@ -1734,7 +1736,35 @@ function graphicObjectFragment(
   return fallbackObjectFragment(object, layerIndex);
 }
 
-function graphicLineEndpoints(object: Extract<DocumentObject, { type: "graphic" }>): { start: LayoutPoint; end: LayoutPoint } {
+function warnForGraphicSvgApproximations(object: GraphicObject, warnings: PageSvgRenderWarning[]): void {
+  if (object.style.fillMode === "gloss") {
+    warnings.push({
+      code: "export.svg.graphic_gloss_approximation",
+      message: "SVG export flattened a native gloss fill to the graphic fill color.",
+      objectId: object.id
+    });
+  }
+
+  if (object.style.effect === "shadow" || object.style.effect === "reflection") {
+    warnings.push({
+      code: "export.svg.graphic_effect_approximation",
+      message: `SVG export omitted the native ${object.style.effect} graphic effect.`,
+      objectId: object.id
+    });
+  }
+
+  const tiltXDegrees = typeof object.style.tiltXDegrees === "number" ? object.style.tiltXDegrees : 0;
+  const tiltYDegrees = typeof object.style.tiltYDegrees === "number" ? object.style.tiltYDegrees : 0;
+  if (Math.abs(tiltXDegrees) >= 0.001 || Math.abs(tiltYDegrees) >= 0.001) {
+    warnings.push({
+      code: "export.svg.graphic_tilt_approximation",
+      message: "SVG export omitted native X/Y tilt because the current SVG path supports only in-plane rotation.",
+      objectId: object.id
+    });
+  }
+}
+
+function graphicLineEndpoints(object: GraphicObject): { start: LayoutPoint; end: LayoutPoint } {
   const start = pointMetadata(object.data.lineStart);
   const end = pointMetadata(object.data.lineEnd);
   return start && end

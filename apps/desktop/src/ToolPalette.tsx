@@ -13,6 +13,8 @@ import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 import {
   normalizeHexColor,
+  objectColorCommands,
+  objectCustomColorCommandId,
   textCustomColorCommandId,
   textAlignmentCommands,
   textColorCommands,
@@ -48,6 +50,7 @@ export function ToolPalette({
   showMainStyleControls = false,
   showTextStyleControls = false,
   showArtStyleControls = false,
+  currentObjectColor,
   currentTextStyle,
   currentTextScript,
   onColorPickerOpenChange,
@@ -61,6 +64,7 @@ export function ToolPalette({
   showMainStyleControls?: boolean;
   showTextStyleControls?: boolean;
   showArtStyleControls?: boolean;
+  currentObjectColor?: string;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
@@ -130,7 +134,7 @@ export function ToolPalette({
       ) : null}
       {showArtStyleControls ? (
         <ArtToolbarStyleControls
-          currentTextStyle={currentTextStyle}
+          currentObjectColor={currentObjectColor}
           onColorPickerOpenChange={onColorPickerOpenChange}
           onInvoke={onInvoke}
         />
@@ -501,20 +505,22 @@ function TextToolbarStyleControls({
 }
 
 function ArtToolbarStyleControls({
-  currentTextStyle,
+  currentObjectColor,
   onColorPickerOpenChange,
   onInvoke
 }: {
-  currentTextStyle?: NativeTextStyle;
+  currentObjectColor?: string;
   onColorPickerOpenChange?: (open: boolean) => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
+  const currentColor = normalizeHexColor(currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
 
   return (
     <div className="art-toolbar-style-controls" data-toolbar-style-controls="art">
       <ColorPickerControl
         compact
+        colorCommands={objectColorCommands}
+        customColorCommandId={objectCustomColorCommandId}
         currentColor={currentColor}
         label="Object color"
         triggerLabel="Open object color picker"
@@ -527,6 +533,11 @@ function ArtToolbarStyleControls({
 }
 
 type ColorPickerTab = "palette" | "mixer";
+type ColorCommand = {
+  id: string;
+  title: string;
+  color: string;
+};
 
 export interface RgbColor {
   r: number;
@@ -543,7 +554,9 @@ export interface CmykColor {
 
 function ColorPickerControl({
   compact = false,
+  colorCommands = textColorCommands,
   currentColor,
+  customColorCommandId = textCustomColorCommandId,
   label = "Text color",
   triggerLabel = "Open text color picker",
   dialogLabel = "Text color picker",
@@ -551,7 +564,9 @@ function ColorPickerControl({
   onInvoke
 }: {
   compact?: boolean;
+  colorCommands?: readonly ColorCommand[];
   currentColor: string;
+  customColorCommandId?: (color: string) => string;
   label?: string;
   triggerLabel?: string;
   dialogLabel?: string;
@@ -589,10 +604,10 @@ function ColorPickerControl({
     }
 
     setDraftHex(normalized);
-    onInvoke(textCustomColorCommandId(normalized));
+    onInvoke(customColorCommandId(normalized));
   };
 
-  const applyPresetColor = (command: typeof textColorCommands[number]) => {
+  const applyPresetColor = (command: ColorCommand) => {
     setDraftHex(command.color);
     onInvoke(command.id);
   };
@@ -669,7 +684,7 @@ function ColorPickerControl({
           {tab === "palette" ? (
             <div className="color-preset-panel" role="tabpanel" aria-label="Preset colors">
               <div className="color-preset-grid">
-                {textColorCommands.map((command) => (
+                {colorCommands.map((command) => (
                   <ColorPresetSwatchButton
                     active={normalizeHexColor(command.color) === normalizedCurrentColor}
                     command={command}
@@ -778,7 +793,7 @@ function ToolbarColorSwatchButton({
   onInvoke
 }: {
   active: boolean;
-  command: typeof textColorCommands[number];
+  command: ColorCommand;
   onInvoke: (commandId: string) => void;
 }) {
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
@@ -804,8 +819,8 @@ function ColorPresetSwatchButton({
   onApply
 }: {
   active: boolean;
-  command: typeof textColorCommands[number];
-  onApply: (command: typeof textColorCommands[number]) => void;
+  command: ColorCommand;
+  onApply: (command: ColorCommand) => void;
 }) {
   const invokeHandlers = usePaletteButtonInvoke(command.id, () => onApply(command));
 

@@ -1701,7 +1701,7 @@ textarea:focus-visible,
   outline: none;
 }
 
-.native-molecule-transform-frame {
+.object-transform-frame {
   position: absolute;
   z-index: 3;
   pointer-events: none;
@@ -1719,7 +1719,7 @@ textarea:focus-visible,
   border-radius: var(--cd-radius-control);
 }
 
-.native-molecule-rotate-handle {
+.object-rotate-handle {
   position: absolute;
   top: -34px;
   left: 50%;
@@ -1739,7 +1739,7 @@ textarea:focus-visible,
   transform: translateX(-50%);
 }
 
-.native-molecule-rotate-handle::before {
+.object-rotate-handle::before {
   position: absolute;
   top: 100%;
   left: 50%;
@@ -1750,28 +1750,28 @@ textarea:focus-visible,
   transform: translateX(-50%);
 }
 
-.native-molecule-rotate-handle:hover {
+.object-rotate-handle:hover {
   background: var(--cd-bg-active);
   border-color: var(--cd-accent-strong);
   box-shadow: var(--cd-focus-ring);
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M8 10.5a8 8 0 0 1 12-1.2' fill='none' stroke='%231d7f68' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M20.3 5.4l.5 5-5-.4' fill='none' stroke='%231d7f68' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M20 17.5a8 8 0 0 1-12 1.2' fill='none' stroke='%231d7f68' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M7.7 22.6l-.5-5 5 .4' fill='none' stroke='%231d7f68' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") 14 14, grab;
 }
 
-.native-molecule-rotate-handle:active {
+.object-rotate-handle:active {
   cursor: grabbing;
 }
 
-.native-molecule-rotate-handle svg {
+.object-rotate-handle svg {
   width: 19px;
   height: 19px;
   pointer-events: none;
 }
 
-.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotate-handle {
+.object-transform-frame[data-has-tilt3d="true"] .object-rotate-handle {
   left: calc(50% - 17px);
 }
 
-.native-molecule-tilt3d-handle {
+.object-tilt3d-handle {
   position: absolute;
   top: -34px;
   left: calc(50% + 17px);
@@ -1791,7 +1791,7 @@ textarea:focus-visible,
   transform: translateX(-50%);
 }
 
-.native-molecule-tilt3d-handle::before {
+.object-tilt3d-handle::before {
   position: absolute;
   top: 100%;
   left: 50%;
@@ -1802,24 +1802,24 @@ textarea:focus-visible,
   transform: translateX(-50%);
 }
 
-.native-molecule-tilt3d-handle:hover {
+.object-tilt3d-handle:hover {
   background: var(--cd-bg-active);
   border-color: var(--cd-accent-strong);
   box-shadow: var(--cd-focus-ring);
   color: var(--cd-accent-strong);
 }
 
-.native-molecule-tilt3d-handle:active {
+.object-tilt3d-handle:active {
   cursor: grabbing;
 }
 
-.native-molecule-tilt3d-handle svg {
+.object-tilt3d-handle svg {
   width: 19px;
   height: 19px;
   pointer-events: none;
 }
 
-.native-molecule-resize-handle {
+.object-resize-handle {
   position: absolute;
   z-index: 3;
   width: 18px;
@@ -1830,86 +1830,86 @@ textarea:focus-visible,
   pointer-events: all;
 }
 
-.native-molecule-resize-handle::before,
-.native-molecule-resize-handle::after {
+.object-resize-handle::before,
+.object-resize-handle::after {
   position: absolute;
   background: var(--cd-accent);
   box-shadow: 0 0 0 1px var(--cd-bg-control-opaque);
   content: "";
 }
 
-.native-molecule-resize-handle::before {
+.object-resize-handle::before {
   width: 12px;
   height: 2px;
 }
 
-.native-molecule-resize-handle::after {
+.object-resize-handle::after {
   width: 2px;
   height: 12px;
 }
 
-.native-molecule-resize-handle:hover::before,
-.native-molecule-resize-handle:hover::after {
+.object-resize-handle:hover::before,
+.object-resize-handle:hover::after {
   background: var(--cd-accent-strong);
 }
 
-.native-molecule-resize-top-left {
+.object-resize-top-left {
   top: -8px;
   left: -8px;
   cursor: nwse-resize;
 }
 
-.native-molecule-resize-top-left::before,
-.native-molecule-resize-top-left::after {
+.object-resize-top-left::before,
+.object-resize-top-left::after {
   top: 3px;
   left: 3px;
 }
 
-.native-molecule-resize-top-right {
+.object-resize-top-right {
   top: -8px;
   right: -8px;
   cursor: nesw-resize;
 }
 
-.native-molecule-resize-top-right::before {
+.object-resize-top-right::before {
   top: 3px;
   right: 3px;
 }
 
-.native-molecule-resize-top-right::after {
+.object-resize-top-right::after {
   top: 3px;
   right: 3px;
 }
 
-.native-molecule-resize-bottom-left {
+.object-resize-bottom-left {
   bottom: -8px;
   left: -8px;
   cursor: nesw-resize;
 }
 
-.native-molecule-resize-bottom-left::before {
+.object-resize-bottom-left::before {
   bottom: 3px;
   left: 3px;
 }
 
-.native-molecule-resize-bottom-left::after {
+.object-resize-bottom-left::after {
   bottom: 3px;
   left: 3px;
 }
 
-.native-molecule-resize-bottom-right {
+.object-resize-bottom-right {
   right: -8px;
   bottom: -8px;
   cursor: nwse-resize;
 }
 
-.native-molecule-resize-bottom-right::before,
-.native-molecule-resize-bottom-right::after {
+.object-resize-bottom-right::before,
+.object-resize-bottom-right::after {
   right: 3px;
   bottom: 3px;
 }
 
-.native-molecule-resize-readout {
+.object-resize-readout {
   position: absolute;
   top: calc(100% + 8px);
   left: 50%;
@@ -1933,7 +1933,7 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.native-molecule-rotate-readout {
+.object-rotate-readout {
   position: absolute;
   bottom: calc(100% + 5px);
   left: 50%;
@@ -1956,7 +1956,7 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.native-molecule-tilt3d-readout {
+.object-tilt3d-readout {
   position: absolute;
   bottom: calc(100% + 5px);
   left: 50%;
@@ -1979,13 +1979,13 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.native-molecule-tilt3d-readout[data-tilt3d-limited="true"] {
+.object-tilt3d-readout[data-tilt3d-limited="true"] {
   border-color: var(--cd-danger);
   color: var(--cd-danger-strong);
 }
 
-.native-molecule-rotation-input-popover,
-.native-molecule-scale-input-popover {
+.object-rotation-input-popover,
+.object-scale-input-popover {
   position: absolute;
   left: 50%;
   z-index: 5;
@@ -2007,38 +2007,38 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.native-molecule-rotation-input-popover {
+.object-rotation-input-popover {
   bottom: calc(100% + 12px);
 }
 
-.native-molecule-scale-input-popover {
+.object-scale-input-popover {
   top: calc(100% + 8px);
 }
 
-.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotation-input-popover[data-rotation-input-kind="z"] {
+.object-transform-frame[data-has-tilt3d="true"] .object-rotation-input-popover[data-rotation-input-kind="z"] {
   left: calc(50% - 17px);
 }
 
-.native-molecule-rotation-input-popover[data-rotation-input-kind="xy"] {
+.object-rotation-input-popover[data-rotation-input-kind="xy"] {
   left: calc(50% + 17px);
 }
 
-.native-molecule-rotation-input-field,
-.native-molecule-scale-input-field {
+.object-rotation-input-field,
+.object-scale-input-field {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   color: var(--cd-accent-text);
 }
 
-.native-molecule-rotation-input-field span,
-.native-molecule-scale-input-field span {
+.object-rotation-input-field span,
+.object-scale-input-field span {
   min-width: 8px;
   text-align: center;
 }
 
-.native-molecule-rotation-input-field input,
-.native-molecule-scale-input-field input {
+.object-rotation-input-field input,
+.object-scale-input-field input {
   width: 40px;
   height: 20px;
   padding: 0 5px;
@@ -2051,21 +2051,21 @@ textarea:focus-visible,
   text-align: right;
 }
 
-.native-molecule-rotation-input-field input:focus,
-.native-molecule-scale-input-field input:focus {
+.object-rotation-input-field input:focus,
+.object-scale-input-field input:focus {
   border-color: var(--cd-accent-strong);
   box-shadow: 0 0 0 2px rgb(29 127 104 / 18%);
   outline: none;
 }
 
-.native-molecule-rotation-input-unit,
-.native-molecule-scale-input-unit {
+.object-rotation-input-unit,
+.object-scale-input-unit {
   margin-right: 1px;
   color: var(--cd-muted);
 }
 
-.native-molecule-rotation-input-action,
-.native-molecule-scale-input-action {
+.object-rotation-input-action,
+.object-scale-input-action {
   display: inline-grid;
   width: 20px;
   height: 20px;
@@ -2078,15 +2078,15 @@ textarea:focus-visible,
   place-items: center;
 }
 
-.native-molecule-rotation-input-action:hover,
-.native-molecule-scale-input-action:hover {
+.object-rotation-input-action:hover,
+.object-scale-input-action:hover {
   border-color: var(--cd-accent-border);
   background: var(--cd-bg-active);
   color: var(--cd-accent-strong);
 }
 
-.native-molecule-rotation-input-action svg,
-.native-molecule-scale-input-action svg {
+.object-rotation-input-action svg,
+.object-scale-input-action svg {
   width: 14px;
   height: 14px;
   fill: none;
@@ -2096,8 +2096,8 @@ textarea:focus-visible,
   stroke-linejoin: round;
 }
 
-.native-molecule-rotate-arc,
-.native-molecule-rotate-arrow {
+.object-rotate-arc,
+.object-rotate-arrow {
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -2105,8 +2105,8 @@ textarea:focus-visible,
   stroke-linejoin: round;
 }
 
-.native-molecule-tilt3d-loop,
-.native-molecule-tilt3d-return {
+.object-tilt3d-loop,
+.object-tilt3d-return {
   fill: none;
   stroke: currentColor;
   stroke-width: 3;
@@ -2114,7 +2114,7 @@ textarea:focus-visible,
   stroke-linejoin: round;
 }
 
-.native-molecule-tilt3d-arrowhead {
+.object-tilt3d-arrowhead {
   fill: currentColor;
   stroke: none;
 }

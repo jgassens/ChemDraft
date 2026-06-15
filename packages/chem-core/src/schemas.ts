@@ -60,6 +60,37 @@ const BaseObjectSchema = z
   })
   .strict();
 
+export const GraphicObjectStyleSchema = z
+  .object({
+    source: z.string().optional(),
+    color: z.string().optional(),
+    strokeColor: z.string().optional(),
+    fillColor: z.string().optional(),
+    strokeWidth: z.number().finite().positive().optional(),
+    strokeDasharray: z.string().optional(),
+    fillMode: z.enum(["solid", "gloss"]).optional(),
+    effect: z.enum(["shadow", "reflection"]).optional(),
+    tiltXDegrees: z.number().finite().optional(),
+    tiltYDegrees: z.number().finite().optional(),
+    artToolId: z.string().optional(),
+    artToolCommandId: z.string().optional()
+  })
+  .strict();
+
+export const GraphicObjectDataSchema = z
+  .object({
+    lineStart: PointSchema.optional(),
+    lineEnd: PointSchema.optional(),
+    pathD: z.string().optional(),
+    artPathKind: z.enum(["line", "wavy", "arc"]).optional(),
+    arcAngleDegrees: z.number().finite().positive().optional(),
+    cornerRadiusPx: z.number().finite().nonnegative().optional(),
+    imageHref: z.string().optional(),
+    imageMimeType: z.string().optional(),
+    artToolId: z.string().optional()
+  })
+  .strict();
+
 export const ChemicalMetadataSchema = z
   .object({
     formula: z.string().min(1).optional(),
@@ -246,7 +277,8 @@ export const BracketObjectSchema = BaseObjectSchema.extend({
 export const GraphicObjectSchema = BaseObjectSchema.extend({
   type: z.literal("graphic"),
   graphicKind: z.enum(["line", "rect", "ellipse", "path", "image", "unknown"]),
-  data: MetadataSchema.default({})
+  style: GraphicObjectStyleSchema.default({}),
+  data: GraphicObjectDataSchema.default({})
 }).strict();
 
 export const PlusObjectSchema = BaseObjectSchema.extend({
@@ -407,6 +439,8 @@ export type ElectronMarkObject = z.infer<typeof ElectronMarkObjectSchema>;
 export type TextSpan = z.infer<typeof TextSpanSchema>;
 export type TextObject = z.infer<typeof TextObjectSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
+export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
+export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;
 export type PlusObject = z.infer<typeof PlusObjectSchema>;
 export type GroupObject = z.infer<typeof GroupObjectSchema>;

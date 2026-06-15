@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, type ChemDraftDocument, type ElectronMarkObject, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
+import {
+  applyPatchWithHistory,
+  applyPatches,
+  createDocumentHistory,
+  redo,
+  undo,
+  type ChemDraftDocument,
+  type ElectronMarkObject,
+  type GraphicObject,
+  type MoleculeObject,
+  type TextObject
+} from "@chemdraft/chem-core";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
-  applyColorToDocumentObjects,
+  applyObjectColorToDocumentObjects,
   applyColorToNativeMoleculePart,
   applyToolbarColorToSelection,
   applyAnalysisToSelectedMolecule,
@@ -24,11 +35,13 @@ import {
   applyNativeTemplatePlacementPlan,
   applyNativeTemplateToolAtPoint,
   applyNativeTemplateToolAtTarget,
+  applyDocumentObjectProjectedPlaneTilt,
   planNativeTemplatePlacement,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   cleanUpNativeMolecules2d,
   cleanUpSelectedNativeMolecule2d,
+  createNativeArtGraphicObject,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
   createPhase4Document,
@@ -38,6 +51,7 @@ import {
   findNativeMoleculeDeleteHit,
   findNativeMoleculeAtomHit,
   getSelectedMolecule,
+  insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
   insertNativeTextObject,
   insertNativeMolfileMolecule,
@@ -111,6 +125,16 @@ function moleculeById(document: ChemDraftDocument, objectId: string): MoleculeOb
     throw new Error(`Expected molecule "${objectId}".`);
   }
   return molecule;
+}
+
+function graphicById(document: ChemDraftDocument, objectId: string): GraphicObject {
+  const graphic = document.pages
+    .flatMap((page) => page.objects)
+    .find((object): object is GraphicObject => object.id === objectId && object.type === "graphic");
+  if (!graphic) {
+    throw new Error(`Expected graphic "${objectId}".`);
+  }
+  return graphic;
 }
 
 function growFromAtom(document: ChemDraftDocument, atomId: string, angleDegrees: number): ChemDraftDocument {
@@ -3246,7 +3270,7 @@ describe("Phase 4 document workflow", () => {
       pageId: withText.pages[0].id,
       objectIds: [molecule.id, textObject.id]
     }]);
-    const colored = applyColorToDocumentObjects(selected, "#1f5fbf");
+    const colored = applyObjectColorToDocumentObjects(selected, "#1f5fbf");
     const coloredMolecule = moleculeById(colored, molecule.id);
     const coloredText = colored.pages[0].objects.find((object): object is TextObject => object.id === textObject.id && object.type === "text");
 
@@ -3256,6 +3280,112 @@ describe("Phase 4 document workflow", () => {
     });
     expect(coloredText?.style).toMatchObject({ color: "#1f5fbf" });
     expect(colored.selection.objectIds).toEqual([molecule.id, textObject.id]);
+  });
+
+  it("keeps native art graphics editable, persistent, undoable, and warning-backed", () => {
+    const document = createPhase4Document("Native Graphic Workflow");
+    const inserted = insertNativeArtGraphicObject(document, { x: 220, y: 180 }, "tool.art.roundedRectGloss");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+
+    const insertedGraphic = graphicById(inserted, objectId);
+    expect(insertedGraphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "rect",
+      data: {
+        artToolId: "roundedRectGloss",
+        cornerRadiusPx: 7
+      },
+      style: {
+        source: "chemdraft-native-art",
+        artToolCommandId: "tool.art.roundedRectGloss",
+        fillMode: "gloss",
+        strokeColor: "#111111",
+        fillColor: "#111111"
+      }
+    });
+
+    const insertionCandidate = createNativeArtGraphicObject(document, { x: 360, y: 200 }, "tool.art.lineWavy");
+    if (!insertionCandidate) {
+      throw new Error("Expected native art tool to create a graphic object.");
+    }
+    const insertedHistory = applyPatchWithHistory(
+      createDocumentHistory(document),
+      { op: "addObject", pageId: document.pages[0].id, object: insertionCandidate }
+    );
+    expect(undo(insertedHistory).present.pages[0].objects).toHaveLength(0);
+    expect(redo(undo(insertedHistory)).present.pages[0].objects[0]).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "wavy"
+      }
+    });
+
+    const colored = applyObjectColorToDocumentObjects(inserted, "#1d7f68");
+    const coloredGraphic = graphicById(colored, objectId);
+    expect(coloredGraphic.style).toMatchObject({
+      color: "#1d7f68",
+      strokeColor: "#1d7f68",
+      fillColor: "#1d7f68"
+    });
+    const colorHistory = {
+      past: [inserted],
+      present: colored,
+      future: []
+    };
+    expect(graphicById(undo(colorHistory).present, objectId).style.strokeColor).toBe("#111111");
+    expect(graphicById(redo(undo(colorHistory)).present, objectId).style.strokeColor).toBe("#1d7f68");
+
+    const center = {
+      x: coloredGraphic.x + coloredGraphic.width / 2,
+      y: coloredGraphic.y + coloredGraphic.height / 2
+    };
+    const stretched = scaleDocumentObjectsAroundPoint(colored, [objectId], center, 1.5, 0.5);
+    const stretchedGraphic = graphicById(stretched, objectId);
+    expect(stretchedGraphic.width).toBeCloseTo(108, 3);
+    expect(stretchedGraphic.height).toBeCloseTo(20, 3);
+
+    const rotated = rotateDocumentObject(stretched, objectId, 37);
+    expect(graphicById(rotated, objectId).rotation).toBeCloseTo(37, 3);
+
+    const tilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 21, -13);
+    const tiltedGraphic = graphicById(tilted, objectId);
+    expect(tiltedGraphic.style).toMatchObject({
+      tiltXDegrees: 21,
+      tiltYDegrees: -13
+    });
+    const transformHistory = {
+      past: [colored],
+      present: tilted,
+      future: []
+    };
+    expect(graphicById(undo(transformHistory).present, objectId).width).toBeCloseTo(72, 3);
+    expect(graphicById(redo(undo(transformHistory)).present, objectId).style.tiltYDegrees).toBe(-13);
+
+    const payload = createNativeSavePayload(tilted);
+    const reopened = openNativeDocument(payload.contents);
+    expect(reopened.source).toBe("native-payload");
+    expect(graphicById(reopened.document ?? document, objectId)).toEqual(tiltedGraphic);
+
+    const svg = exportPhase4Svg(tilted, { includeWarnings: true });
+    expect(svg.contents).toContain('data-object-id="' + objectId + '"');
+    expect(svg.contents).toContain('rx="7"');
+    expect(svg.warnings.map((warning) => warning.code)).toEqual([
+      "export.svg.graphic_gloss_approximation",
+      "export.svg.graphic_tilt_approximation"
+    ]);
+
+    const cdxml = exportPhase4Cdxml(tilted);
+    const graphicCdxmlWarnings = cdxml.warnings.filter((warning) => warning.code.startsWith("cdxml.graphic_"));
+    expect(cdxml.contents).toContain('GraphicType="rect"');
+    expect(graphicCdxmlWarnings.map((warning) => warning.code)).toEqual([
+      "cdxml.graphic_style_payload_only",
+      "cdxml.graphic_data_payload_only"
+    ]);
+    expect(graphicCdxmlWarnings.every((warning) => warning.objectId === objectId)).toBe(true);
   });
 
   it("applies selected colors to native molecule atom labels and bonds without recoloring the whole molecule", () => {

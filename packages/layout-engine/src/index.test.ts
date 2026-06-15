@@ -951,7 +951,9 @@ describe("layout-engine page SVG planner", () => {
           strokeColor: "#111111",
           fillColor: "#b3261e",
           strokeWidth: 1.5,
-          fillMode: "gloss"
+          fillMode: "gloss",
+          tiltXDegrees: 18,
+          tiltYDegrees: -12
         },
         graphicKind: "ellipse",
         data: {
@@ -980,7 +982,8 @@ describe("layout-engine page SVG planner", () => {
       }
     ]);
 
-    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const plan = planPageSvgRender(page);
+    const fragments = plan.fragments.flatMap(elementFragments);
 
     expect(fragments.map((fragment) => fragment.tag)).toEqual(["path", "ellipse", "rect"]);
     expect(fragments[0]?.attrs).toMatchObject({
@@ -1002,5 +1005,10 @@ describe("layout-engine page SVG planner", () => {
       rx: 7,
       ry: 7
     });
+    expect(plan.warnings.map((warning) => warning.code)).toEqual([
+      "export.svg.graphic_gloss_approximation",
+      "export.svg.graphic_tilt_approximation",
+      "export.svg.graphic_effect_approximation"
+    ]);
   });
 });

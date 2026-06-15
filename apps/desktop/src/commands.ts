@@ -242,10 +242,25 @@ export const textColorCommands = [
   { id: "text.color.purple", title: "Color: Purple", color: "#6046a8" }
 ] as const;
 
+export const objectColorCommands = textColorCommands.map((command) => ({
+  ...command,
+  id: command.id.replace("text.color.", "object.color."),
+  title: command.title.replace("Color:", "Object Color:")
+})) as readonly {
+  id: `object.color.${string}`;
+  title: string;
+  color: string;
+}[];
+
 export const customTextColorCommandPrefix = "text.color.custom.";
+export const customObjectColorCommandPrefix = "object.color.custom.";
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
+}
+
+export function objectCustomColorCommandId(color: string): string {
+  return `${customObjectColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
 }
 
 export function textColorForCommand(commandId: string): string | undefined {
@@ -256,6 +271,19 @@ export function textColorForCommand(commandId: string): string | undefined {
 
   const customColor = commandId.startsWith(customTextColorCommandPrefix)
     ? `#${commandId.slice(customTextColorCommandPrefix.length)}`
+    : undefined;
+
+  return normalizeHexColor(customColor);
+}
+
+export function objectColorForCommand(commandId: string): string | undefined {
+  const color = objectColorCommands.find((command) => command.id === commandId);
+  if (color) {
+    return color.color;
+  }
+
+  const customColor = commandId.startsWith(customObjectColorCommandPrefix)
+    ? `#${commandId.slice(customObjectColorCommandPrefix.length)}`
     : undefined;
 
   return normalizeHexColor(customColor);
@@ -317,6 +345,16 @@ export const textToolbarActions: CommandSpec[] = [
   { id: "text.italic", title: "Italic Text", icon: "text", source: "core", category: "text" },
   { id: "text.underline", title: "Underline Text", icon: "text", source: "core", category: "text" },
   ...textScriptCommands.map(({ id, title }) => ({ id, title, icon: "text", source: "core", category: "text" } satisfies CommandSpec))
+];
+
+export const objectStyleActions: CommandSpec[] = [
+  ...objectColorCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec))
 ];
 
 export function textScriptForCommand(commandId: string): TextSpan["script"] | undefined {
@@ -508,6 +546,7 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...pageSizeActions,
     ...pageOrientationActions,
     ...textToolbarActions,
+    ...objectStyleActions,
     ...toolbarCustomizationActions,
     ...getToolsetToggleActions(),
     ...styleActions

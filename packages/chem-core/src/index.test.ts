@@ -25,6 +25,7 @@ import {
   validateDocument,
   type AnnotationObject,
   type CrossingOverride,
+  type GraphicObject,
   type MoleculeObject
 } from "./index";
 
@@ -606,6 +607,56 @@ describe("native document validation and serialization", () => {
         rotationDegrees: 45,
         tiltXDegrees: 40,
         tiltYDegrees: -15
+      }
+    });
+  });
+
+  it("formalizes native graphic style and data fields", () => {
+    const graphic = {
+      id: "graphic_contract",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 40,
+      rotation: 15,
+      graphicKind: "rect",
+      style: {
+        strokeColor: "#1d7f68",
+        fillColor: "#f8faf9",
+        strokeWidth: 2,
+        strokeDasharray: "3 4",
+        fillMode: "gloss",
+        effect: "shadow",
+        tiltXDegrees: 12,
+        tiltYDegrees: -8,
+        artToolCommandId: "tool.art.roundedRectGloss"
+      },
+      data: {
+        cornerRadiusPx: 7,
+        artPathKind: "arc",
+        arcAngleDegrees: 180,
+        artToolId: "roundedRectGloss"
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      type: "graphic",
+      style: {
+        strokeColor: "#1d7f68",
+        fillMode: "gloss",
+        effect: "shadow",
+        tiltXDegrees: 12,
+        tiltYDegrees: -8
+      },
+      data: {
+        cornerRadiusPx: 7,
+        arcAngleDegrees: 180
       }
     });
   });
