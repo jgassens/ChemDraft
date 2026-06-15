@@ -602,7 +602,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.11.28-codex";
+const CURRENT_BUILD_STAMP = "6.15.11.57-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -10744,7 +10744,7 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): Documen
   }
 
   const matrix = documentObjectProjectedPlaneMatrix(tilt.tiltXDegrees, tilt.tiltYDegrees, object.rotation);
-  const bounds = documentObjectProjectedPlaneBounds(object.width, object.height, matrix);
+  const bounds = documentObjectProjectedPlaneBoundsForObject(object, matrix);
   return {
     frameStyle: {
       left: `${bounds.x}px`,
@@ -10754,6 +10754,30 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): Documen
     },
     matrix
   };
+}
+
+function documentObjectProjectedPlaneBoundsForObject(
+  object: DocumentObject,
+  matrix: DocumentObjectProjectionMatrix
+): { x: number; y: number; width: number; height: number } {
+  if (object.type === "graphic" && (object.graphicKind === "ellipse" || object.graphicKind === "rect")) {
+    const width = Math.max(object.width, 1);
+    const height = Math.max(object.height, 1);
+    if (object.graphicKind === "ellipse") {
+      return documentObjectProjectedEllipseBounds(width, height, matrix);
+    }
+
+    const points = roundedRectPathPoints(
+      width,
+      height,
+      metadataNumberValue(object.data.cornerRadiusPx, 0),
+      0,
+      { x: 0, y: 0 }
+    );
+    return documentObjectProjectedPointsBounds(points, width, height, matrix);
+  }
+
+  return documentObjectProjectedPlaneBounds(object.width, object.height, matrix);
 }
 
 function documentObjectProjectedPlaneMatrix(
@@ -10779,6 +10803,44 @@ function documentObjectProjectedPlaneMatrix(
     b: cx * sz + sx * sy * cz,
     c: -cy * sz,
     d: cx * cz - sx * sy * sz
+  };
+}
+
+function documentObjectProjectedEllipseBounds(
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix
+): { x: number; y: number; width: number; height: number } {
+  const halfWidth = Math.max(width, 1) / 2;
+  const halfHeight = Math.max(height, 1) / 2;
+  const projectedHalfWidth = Math.hypot(matrix.a * halfWidth, matrix.c * halfHeight);
+  const projectedHalfHeight = Math.hypot(matrix.b * halfWidth, matrix.d * halfHeight);
+
+  return {
+    x: roundCssCoordinate(halfWidth - projectedHalfWidth),
+    y: roundCssCoordinate(halfHeight - projectedHalfHeight),
+    width: roundCssCoordinate(projectedHalfWidth * 2),
+    height: roundCssCoordinate(projectedHalfHeight * 2)
+  };
+}
+
+function documentObjectProjectedPointsBounds(
+  points: Array<{ x: number; y: number }>,
+  width: number,
+  height: number,
+  matrix: DocumentObjectProjectionMatrix
+): { x: number; y: number; width: number; height: number } {
+  const projected = points.map((point) => projectArtPoint(point, width, height, matrix));
+  const minX = Math.min(...projected.map((point) => point.x));
+  const maxX = Math.max(...projected.map((point) => point.x));
+  const minY = Math.min(...projected.map((point) => point.y));
+  const maxY = Math.max(...projected.map((point) => point.y));
+
+  return {
+    x: roundCssCoordinate(minX),
+    y: roundCssCoordinate(minY),
+    width: roundCssCoordinate(maxX - minX),
+    height: roundCssCoordinate(maxY - minY)
   };
 }
 

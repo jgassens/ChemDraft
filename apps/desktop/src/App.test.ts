@@ -1813,6 +1813,45 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
 
+    const rotated = applyPatch(document, {
+      op: "updateObject",
+      objectId: document.selection.objectIds[0] ?? "",
+      changes: { rotation: 45 }
+    });
+    const rotatedMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: rotated,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(rotatedMarkup).not.toContain("transform:rotate(45deg)");
+    expect(rotatedMarkup).toContain("graphic-glyph-projected-shape");
+    expect(rotatedMarkup).not.toContain("graphic-glyph-shape");
+    expect(rotatedMarkup).not.toContain('data-object-type="graphic"');
+
+    const sphere = insertNativeArtGraphicObject(
+      createPhase4Document("Sphere Rotation"),
+      { x: 160, y: 160 },
+      "tool.art.circleGloss"
+    );
+    const rotatedSphere = applyPatch(sphere, {
+      op: "updateObject",
+      objectId: sphere.selection.objectIds[0] ?? "",
+      changes: { rotation: 45 }
+    });
+    const rotatedSphereMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: rotatedSphere,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(rotatedSphereMarkup).toContain("graphic-glyph-projected-shape");
+    expect(rotatedSphereMarkup).not.toContain("transform:rotate(45deg)");
+    expect(rotatedSphereMarkup).toContain("left:0px;top:0px;width:48px;height:48px");
+    expect(rotatedSphereMarkup).not.toContain("66.423");
+
     const tilted = applyDocumentObjectProjectedPlaneTilt(document, document.selection.objectIds[0] ?? "", 35, -20);
     const tiltedMarkup = renderToStaticMarkup(
       createElement(MainWindow, {
