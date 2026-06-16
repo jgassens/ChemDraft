@@ -13,6 +13,7 @@ Key architecture notes:
 - `design-language.md`
 - `editor-adapter-hardening.md`
 - `grouped-object-transform-entry.md`
+- `native-art-toolbar-chrome-plan.md`
 - `pointer-picking-hardening.md`
 - `toolbars-and-toolsets.md`
 - `viewport-and-rulers.md`

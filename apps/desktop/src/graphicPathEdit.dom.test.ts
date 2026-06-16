@@ -110,6 +110,14 @@ describe("graphic path direct editing interactions", () => {
     return button;
   }
 
+  function resizeHandle(corner: "top-left" | "top-right" | "bottom-left" | "bottom-right"): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-object-resize-corner="${corner}"]`);
+    if (!button) {
+      throw new Error(`Expected ${corner} resize handle.`);
+    }
+    return button;
+  }
+
   function debugArtObject(objectId: string): Extract<DebugArtResult, { ok: true }> {
     const bridge = window.__CHEMDRAFT_AGENT__;
     if (!bridge) {
@@ -167,7 +175,8 @@ describe("graphic path direct editing interactions", () => {
     target: EventTarget,
     type: "pointerdown" | "pointermove" | "pointerup",
     point: { x: number; y: number },
-    pointerId: number
+    pointerId: number,
+    detail = 1
   ) {
     const event = new MouseEvent(type, {
       bubbles: true,
@@ -176,7 +185,7 @@ describe("graphic path direct editing interactions", () => {
       cancelable: true,
       clientX: point.x,
       clientY: point.y,
-      detail: 1
+      detail
     });
     Object.defineProperties(event, {
       isPrimary: { value: true },
@@ -507,5 +516,110 @@ describe("graphic path direct editing interactions", () => {
     expect(pathHandleLocalPosition("start")).toEqual(beforeHandles.start);
     expect(pathHandleLocalPosition("middle")).toEqual(beforeHandles.middle);
     expect(pathHandleLocalPosition("end")).toEqual(beforeHandles.end);
+  });
+
+  it("resizes a bent line with its visible curve, hit target, handles, and box still aligned", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Quadratic Resize Alignment"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const middle = debugArtObject(objectId).projectedEditPoints?.middle;
+    if (!middle) {
+      throw new Error("Expected projected middle handle.");
+    }
+
+    await act(async () => {
+      dispatchPointer(pathHandle("middle"), "pointerdown", middle, 14);
+      dispatchPointer(pageElement(), "pointermove", { x: middle.x + 12, y: middle.y - 30 }, 14);
+      dispatchPointer(pageElement(), "pointerup", { x: middle.x + 12, y: middle.y - 30 }, 14);
+    });
+    const bent = debugArtObject(objectId);
+    const transformPress = bent.projectedEditPoints?.middle;
+    const hitTarget = container.querySelector<SVGElement>(".graphic-glyph-hit-target");
+    if (!transformPress || !hitTarget) {
+      throw new Error("Expected quadratic hit target and transform press point.");
+    }
+
+    await act(async () => {
+      dispatchPointer(hitTarget, "pointerdown", transformPress, 15, 2);
+      dispatchPointer(hitTarget, "pointerup", transformPress, 15, 2);
+    });
+    expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    expect(container.querySelector("[data-graphic-path-handle]")).toBeNull();
+
+    const beforeResize = debugArtObject(objectId);
+    const beforePathD = pathD(".graphic-glyph-path");
+    const beforeLineStart = beforeResize.object.data.lineStart;
+    const beforeLineEnd = beforeResize.object.data.lineEnd;
+    const beforeControl = beforeResize.object.data.pathControlPoint;
+    if (!beforeLineStart || !beforeLineEnd || !beforeControl) {
+      throw new Error("Expected explicit quadratic geometry before resize.");
+    }
+    const dragStart = {
+      x: beforeResize.object.x + beforeResize.object.width,
+      y: beforeResize.object.y + beforeResize.object.height
+    };
+    const dragEnd = { x: dragStart.x + 44, y: dragStart.y + 26 };
+
+    await act(async () => {
+      dispatchPointer(resizeHandle("bottom-right"), "pointerdown", dragStart, 16);
+      dispatchPointer(pageElement(), "pointermove", dragEnd, 16);
+      dispatchPointer(pageElement(), "pointerup", dragEnd, 16);
+    });
+    const afterResize = debugArtObject(objectId);
+
+    expect(afterResize.object.data.artPathKind).toBe("quadratic");
+    expect(afterResize.object.width).toBeGreaterThan(beforeResize.object.width);
+    expect(afterResize.object.height).toBeGreaterThan(beforeResize.object.height);
+    expect(afterResize.object.data.lineStart?.x).not.toBeCloseTo(beforeLineStart.x, 3);
+    expect(afterResize.object.data.lineEnd?.x).not.toBeCloseTo(beforeLineEnd.x, 3);
+    expect(afterResize.object.data.pathControlPoint?.y).not.toBeCloseTo(beforeControl.y, 3);
+    expect(pathD(".graphic-glyph-path")).not.toBe(beforePathD);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 20, y: 20 }, 17);
+      dispatchPointer(pageElement(), "pointerup", { x: 20, y: 20 }, 17);
+    });
+    expect(container.querySelector("[data-graphic-path-handle]")).toBeNull();
+
+    const reselectPoint = debugArtObject(objectId).projectedEditPoints?.middle;
+    const resizedHitTarget = container.querySelector<SVGElement>(".graphic-glyph-hit-target");
+    if (!reselectPoint || !resizedHitTarget) {
+      throw new Error("Expected resized quadratic hit target and middle point.");
+    }
+    await act(async () => {
+      dispatchPointer(resizedHitTarget, "pointerdown", reselectPoint, 18);
+      dispatchPointer(resizedHitTarget, "pointerup", reselectPoint, 18);
+    });
+    expect(container.querySelector('[data-graphic-path-handle="middle"]')).not.toBeNull();
+    await waitPastDoublePressWindow();
+
+    const beforeDrag = debugArtObject(objectId);
+    const dragPoint = beforeDrag.projectedEditPoints?.middle;
+    if (!dragPoint || !beforeDrag.projectedEditPoints) {
+      throw new Error("Expected resized quadratic edit points before object drag.");
+    }
+    const dx = 18;
+    const dy = -22;
+    const postResizePathD = pathD(".graphic-glyph-path");
+
+    await act(async () => {
+      dispatchPointer(resizedHitTarget, "pointerdown", dragPoint, 19);
+      dispatchPointer(pageElement(), "pointermove", { x: dragPoint.x + dx, y: dragPoint.y + dy }, 19);
+      dispatchPointer(pageElement(), "pointerup", { x: dragPoint.x + dx, y: dragPoint.y + dy }, 19);
+    });
+    const afterDrag = debugArtObject(objectId);
+
+    expect(afterDrag.object.x).toBeCloseTo(beforeDrag.object.x + dx, 3);
+    expect(afterDrag.object.y).toBeCloseTo(beforeDrag.object.y + dy, 3);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.start, beforeDrag.projectedEditPoints.start, dx, dy);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.middle, beforeDrag.projectedEditPoints.middle, dx, dy);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.end, beforeDrag.projectedEditPoints.end, dx, dy);
+    expect(pathD(".graphic-glyph-path")).toBe(postResizePathD);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
   });
 });

@@ -441,6 +441,32 @@ export function unprojectGraphicObjectPoint(
     : unprojected;
 }
 
+export function graphicObjectIntersectsRect(object: GraphicObject, rect: NativeArtBounds): boolean {
+  const objectRect = { x: object.x, y: object.y, width: object.width, height: object.height };
+  if (!nativeArtCapabilities(object).isOpenStroke) {
+    return nativeArtRectangleContainsRect(rect, objectRect);
+  }
+
+  const pagePoints = graphicOpenStrokePageSamplePoints(object);
+  if (pagePoints.length < 2) {
+    return nativeArtRectangleContainsRect(rect, objectRect);
+  }
+
+  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
+  const hitRect = expandNativeArtRect(rect, Math.max(1, strokeWidth / 2));
+  if (pagePoints.some((point) => nativeArtPointInRect(point, hitRect))) {
+    return true;
+  }
+
+  for (let index = 1; index < pagePoints.length; index += 1) {
+    if (nativeArtLineIntersectsRect(pagePoints[index - 1], pagePoints[index], hitRect)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function nativeArtProjectionMatrixForObject(object: GraphicObject): NativeArtProjectionMatrix | undefined {
   const tiltXDegrees = metadataNumber(object.style.tiltXDegrees) ?? 0;
   const tiltYDegrees = metadataNumber(object.style.tiltYDegrees) ?? 0;
@@ -1210,6 +1236,19 @@ function graphicLineLocalPoints(object: GraphicObject): NativeArtPoint[] {
   ];
 }
 
+function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
+  const localPoints = object.graphicKind === "line"
+    ? graphicLineLocalPoints(object)
+    : object.graphicKind === "path" ? graphicPathLocalSamplePoints(object) : [];
+  return localPoints.map((point) => {
+    const projected = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+    return {
+      x: object.x + projected.x,
+      y: object.y + projected.y
+    };
+  });
+}
+
 function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   const pathKind = graphicPathKind(object);
   const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
@@ -1654,6 +1693,73 @@ function ellipsePointAtDegrees(
     x: center.x + Math.cos(radians) * rx,
     y: center.y + Math.sin(radians) * ry
   };
+}
+
+function expandNativeArtRect(rect: NativeArtBounds, amount: number): NativeArtBounds {
+  return {
+    x: rect.x - amount,
+    y: rect.y - amount,
+    width: rect.width + amount * 2,
+    height: rect.height + amount * 2
+  };
+}
+
+function nativeArtRectangleContainsRect(outer: NativeArtBounds, inner: NativeArtBounds): boolean {
+  return (
+    inner.x >= outer.x &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y >= outer.y &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
+}
+
+function nativeArtPointInRect(point: NativeArtPoint, rect: NativeArtBounds): boolean {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+function nativeArtLineIntersectsRect(start: NativeArtPoint, end: NativeArtPoint, rect: NativeArtBounds): boolean {
+  const left = rect.x;
+  const right = rect.x + rect.width;
+  const top = rect.y;
+  const bottom = rect.y + rect.height;
+  return (
+    nativeArtSegmentsIntersect(start, end, { x: left, y: top }, { x: right, y: top }) ||
+    nativeArtSegmentsIntersect(start, end, { x: right, y: top }, { x: right, y: bottom }) ||
+    nativeArtSegmentsIntersect(start, end, { x: right, y: bottom }, { x: left, y: bottom }) ||
+    nativeArtSegmentsIntersect(start, end, { x: left, y: bottom }, { x: left, y: top })
+  );
+}
+
+function nativeArtSegmentsIntersect(
+  a: NativeArtPoint,
+  b: NativeArtPoint,
+  c: NativeArtPoint,
+  d: NativeArtPoint
+): boolean {
+  const orientation = (p: NativeArtPoint, q: NativeArtPoint, r: NativeArtPoint) =>
+    Math.sign((q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y));
+  const onSegment = (p: NativeArtPoint, q: NativeArtPoint, r: NativeArtPoint) =>
+    q.x >= Math.min(p.x, r.x) - 0.000001 &&
+    q.x <= Math.max(p.x, r.x) + 0.000001 &&
+    q.y >= Math.min(p.y, r.y) - 0.000001 &&
+    q.y <= Math.max(p.y, r.y) + 0.000001;
+
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+  return (
+    (o1 !== o2 && o3 !== o4) ||
+    (o1 === 0 && onSegment(a, c, b)) ||
+    (o2 === 0 && onSegment(a, d, b)) ||
+    (o3 === 0 && onSegment(c, a, d)) ||
+    (o4 === 0 && onSegment(c, b, d))
+  );
 }
 
 function ellipsePointAtRadians(

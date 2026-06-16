@@ -4749,6 +4749,40 @@ function translateGraphicObjectData(
   };
 }
 
+function resizeGraphicObjectDataForFrame(
+  data: GraphicObjectData,
+  oldCenter: PagePoint,
+  newCenter: PagePoint,
+  scaleX: number,
+  scaleY: number
+): GraphicObjectData {
+  const resizePoint = (point: PagePoint | undefined): PagePoint | undefined =>
+    point
+      ? {
+          x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+          y: newCenter.y + (point.y - oldCenter.y) * scaleY
+        }
+      : undefined;
+
+  const nextData: GraphicObjectData = {
+    ...data,
+    lineStart: resizePoint(data.lineStart),
+    lineEnd: resizePoint(data.lineEnd),
+    pathControlPoint: resizePoint(data.pathControlPoint),
+    arcCenter: resizePoint(data.arcCenter)
+  };
+
+  if (typeof data.arcRadiusX === "number" && Number.isFinite(data.arcRadiusX)) {
+    nextData.arcRadiusX = Math.max(1, data.arcRadiusX * scaleX);
+  }
+
+  if (typeof data.arcRadiusY === "number" && Number.isFinite(data.arcRadiusY)) {
+    nextData.arcRadiusY = Math.max(1, data.arcRadiusY * scaleY);
+  }
+
+  return nextData;
+}
+
 export function rotateNativeMoleculeParts(
   document: ChemDraftDocument,
   target: NativeMoleculePartMoveTarget,
@@ -5623,6 +5657,9 @@ function transformOtherObjectAroundPoint(
   };
   if (object.type === "electron-mark" && object.markKind === "charge") {
     changes.anchor = { ...object.anchor, kind: "point", point: { x: newCenter.x, y: newCenter.y } };
+  }
+  if (object.type === "graphic") {
+    changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
   }
 
   return applyPatch(

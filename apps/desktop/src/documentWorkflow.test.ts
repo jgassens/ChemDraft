@@ -235,6 +235,44 @@ function translatedPoint(point: { x: number; y: number }, dx: number, dy: number
   };
 }
 
+function scaledPoint(
+  point: { x: number; y: number },
+  oldCenter: { x: number; y: number },
+  newCenter: { x: number; y: number },
+  scaleX: number,
+  scaleY: number
+): { x: number; y: number } {
+  return {
+    x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+    y: newCenter.y + (point.y - oldCenter.y) * scaleY
+  };
+}
+
+function rotatedPointAround(
+  point: { x: number; y: number },
+  center: { x: number; y: number },
+  degrees: number
+): { x: number; y: number } {
+  const radians = degToRad(degrees);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
+  };
+}
+
+function expectPointToBeClose(
+  actual: { x: number; y: number } | undefined,
+  expected: { x: number; y: number },
+  precision = 6
+): void {
+  expect(actual?.x).toBeCloseTo(expected.x, precision);
+  expect(actual?.y).toBeCloseTo(expected.y, precision);
+}
+
 function degToRad(degrees: number): number {
   return degrees * Math.PI / 180;
 }
@@ -3904,6 +3942,307 @@ describe("Phase 4 document workflow", () => {
     expect(movedPoints?.end).toEqual(translatedPoint(beforePoints.end, dx, dy));
   });
 
+  it("scales edited line graphic endpoints with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const endpointEdited = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      { x: points.end.x + 42, y: points.end.y + 12 }
+    );
+    const editedGraphic = graphicById(endpointEdited, objectId);
+    const oldCenter = {
+      x: editedGraphic.x + editedGraphic.width / 2,
+      y: editedGraphic.y + editedGraphic.height / 2
+    };
+    const scaleX = 1.5;
+    const scaleY = 0.5;
+
+    const scaled = scaleDocumentObjectsAroundPoint(endpointEdited, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.width).toBeCloseTo(editedGraphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(editedGraphic.height * scaleY, 6);
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(editedGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(editedGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expect(scaledGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("scales quadratic graphic explicit points with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Quadratic Graphic"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 44 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+    const scaleX = 1.35;
+    const scaleY = 0.6;
+
+    const scaled = scaleDocumentObjectsAroundPoint(bent, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const scaledPoints = nativeGraphicPathEditPoints(scaledGraphic);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.artPathKind).toBe("quadratic");
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.start, scaledPoint(beforePoints!.start, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.middle, scaledPoint(beforePoints!.middle, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.end, scaledPoint(beforePoints!.end, oldCenter, newCenter, scaleX, scaleY));
+  });
+
+  it("scales legacy quadratic arc explicit points with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Legacy Quadratic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 10, y: points.middle.y - 36 }
+    );
+    const legacy = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        data: {
+          ...graphicById(bent, objectId).data,
+          artPathKind: "arc"
+        }
+      }
+    });
+    const legacyGraphic = graphicById(legacy, objectId);
+    const oldCenter = {
+      x: legacyGraphic.x + legacyGraphic.width / 2,
+      y: legacyGraphic.y + legacyGraphic.height / 2
+    };
+    const scaleX = 0.8;
+    const scaleY = 1.4;
+
+    const scaled = scaleDocumentObjectsAroundPoint(legacy, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.artPathKind).toBe("arc");
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(legacyGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(legacyGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.pathControlPoint, scaledPoint(legacyGraphic.data.pathControlPoint!, oldCenter, newCenter, scaleX, scaleY));
+  });
+
+  it("scales semantic arc center and radii with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const editedGraphic = graphicById(edited, objectId);
+    const oldCenter = {
+      x: editedGraphic.x + editedGraphic.width / 2,
+      y: editedGraphic.y + editedGraphic.height / 2
+    };
+    const scaleX = 1.25;
+    const scaleY = 0.75;
+
+    const scaled = scaleDocumentObjectsAroundPoint(edited, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(scaledGraphic.data.artPathKind).toBe("arc");
+    expectPointToBeClose(scaledGraphic.data.arcCenter, scaledPoint(editedGraphic.data.arcCenter!, oldCenter, newCenter, scaleX, scaleY));
+    expect(scaledGraphic.data.arcRadiusX).toBeCloseTo((editedGraphic.data.arcRadiusX ?? 0) * scaleX, 6);
+    expect(scaledGraphic.data.arcRadiusY).toBeCloseTo((editedGraphic.data.arcRadiusY ?? 0) * scaleY, 6);
+    expect(scaledGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("scales unedited line graphics through object bounds fallback", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Unedited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(graphic);
+    if (!beforePoints) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const oldCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const scaleX = 1.4;
+    const scaleY = 0.7;
+
+    const scaled = scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const scaledPoints = nativeGraphicPathEditPoints(scaledGraphic);
+
+    expect(scaledGraphic.data.lineStart).toBeUndefined();
+    expect(scaledGraphic.data.lineEnd).toBeUndefined();
+    expect(scaledGraphic.data.pathControlPoint).toBeUndefined();
+    expect(scaledGraphic.width).toBeCloseTo(graphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(graphic.height * scaleY, 6);
+    for (const point of [scaledPoints?.start, scaledPoints?.middle, scaledPoints?.end]) {
+      expect(point?.x).toBeGreaterThanOrEqual(scaledGraphic.x);
+      expect(point?.x).toBeLessThanOrEqual(scaledGraphic.x + scaledGraphic.width);
+      expect(point?.y).toBeGreaterThanOrEqual(scaledGraphic.y);
+      expect(point?.y).toBeLessThanOrEqual(scaledGraphic.y + scaledGraphic.height);
+    }
+    expect(pointDistance(scaledPoints!.start, beforePoints.start)).toBeGreaterThan(0.5);
+    expect(pointDistance(scaledPoints!.end, beforePoints.end)).toBeGreaterThan(0.5);
+  });
+
+  it("does not rewrite local pathD data while scaling graphic frames", () => {
+    const baseDocument = createPhase4Document("Scale Local Path D");
+    const page = baseDocument.pages[0];
+    if (!page) {
+      throw new Error("Expected a page.");
+    }
+    const graphic: GraphicObject = {
+      type: "graphic",
+      id: "local_path_d",
+      x: 180,
+      y: 160,
+      width: 96,
+      height: 54,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "none",
+        strokeWidth: 3
+      },
+      data: {
+        pathD: "M 0 0 C 12 24 48 24 96 54"
+      }
+    };
+    const document = applyPatches(baseDocument, [
+      { op: "addObject", pageId: page.id, object: graphic },
+      { op: "setSelection", pageId: page.id, objectIds: [graphic.id] }
+    ]);
+    const oldCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+
+    const scaled = scaleDocumentObjectsAroundPoint(document, [graphic.id], oldCenter, 1.5, 0.5);
+    const scaledGraphic = graphicById(scaled, graphic.id);
+
+    expect(scaledGraphic.width).toBeCloseTo(graphic.width * 1.5, 6);
+    expect(scaledGraphic.height).toBeCloseTo(graphic.height * 0.5, 6);
+    expect(scaledGraphic.data.pathD).toBe(graphic.data.pathD);
+  });
+
+  it("rotates a single edited graphic line around its object box center without rewriting explicit geometry", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Single Graphic Rotation Pivot"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 12, y: points.middle.y - 36 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+
+    const rotated = rotateDocumentObject(bent, objectId, 47);
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const newCenter = {
+      x: rotatedGraphic.x + rotatedGraphic.width / 2,
+      y: rotatedGraphic.y + rotatedGraphic.height / 2
+    };
+
+    expectPointToBeClose(newCenter, oldCenter);
+    expect(rotatedGraphic.rotation).toBeCloseTo(47, 6);
+    expect(rotatedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
+    expect(rotatedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
+    expectPointToBeClose(rotatedGraphic.data.lineStart, bentGraphic.data.lineStart!);
+    expectPointToBeClose(rotatedGraphic.data.lineEnd, bentGraphic.data.lineEnd!);
+    expectPointToBeClose(rotatedGraphic.data.pathControlPoint, bentGraphic.data.pathControlPoint!);
+  });
+
   it("edits circular art arcs by changing radian sweep around the same ellipse", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Native Circular Arc Edit"),
@@ -6177,6 +6516,140 @@ describe("group transforms (multi-object selection)", () => {
     expect(editedGraphic.data.arcCenter).toBeDefined();
     expect(movedGraphic.data.arcCenter).toEqual(translatedPoint(editedGraphic.data.arcCenter!, dx, dy));
     expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("group-resizes edited graphic path geometry with the selection frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Resize Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 38 }
+    );
+    const withText = insertNativeTextObject(bent, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const bentGraphic = graphicById(withText, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const bounds = selectionBounds(withText.pages[0].objects, [objectId, textId]);
+    if (!bounds || !beforePoints) {
+      throw new Error("Expected group bounds and quadratic edit points.");
+    }
+    const scaleX = 1.3;
+    const scaleY = 0.65;
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+
+    const scaled = scaleDocumentObjectsAroundPoint(withText, [objectId, textId], groupCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const scaledPoints = nativeGraphicPathEditPoints(scaledGraphic);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.width).toBeCloseTo(bentGraphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(bentGraphic.height * scaleY, 6);
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.start, scaledPoint(beforePoints.start, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.middle, scaledPoint(beforePoints.middle, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.end, scaledPoint(beforePoints.end, oldCenter, newCenter, scaleX, scaleY));
+  });
+
+  it("group-rotates edited graphic path geometry by moving explicit data with the object center only", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Rotate Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 12, y: points.middle.y - 36 }
+    );
+    const withText = insertNativeTextObject(bent, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const bentGraphic = graphicById(withText, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const bounds = selectionBounds(withText.pages[0].objects, [objectId, textId]);
+    if (!bounds || !beforePoints) {
+      throw new Error("Expected group bounds and quadratic edit points.");
+    }
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+    const oldStartVector = {
+      x: bentGraphic.data.lineStart!.x - oldCenter.x,
+      y: bentGraphic.data.lineStart!.y - oldCenter.y
+    };
+    const oldControlVector = {
+      x: bentGraphic.data.pathControlPoint!.x - oldCenter.x,
+      y: bentGraphic.data.pathControlPoint!.y - oldCenter.y
+    };
+
+    const rotated = rotateDocumentObjectsAroundPoint(withText, [objectId, textId], groupCenter, 90);
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    const newCenter = {
+      x: rotatedGraphic.x + rotatedGraphic.width / 2,
+      y: rotatedGraphic.y + rotatedGraphic.height / 2
+    };
+    const expectedCenter = rotatedPointAround(oldCenter, groupCenter, 90);
+    const expectedStart = translatedPoint(bentGraphic.data.lineStart!, newCenter.x - oldCenter.x, newCenter.y - oldCenter.y);
+    const expectedEnd = translatedPoint(bentGraphic.data.lineEnd!, newCenter.x - oldCenter.x, newCenter.y - oldCenter.y);
+    const expectedControl = translatedPoint(
+      bentGraphic.data.pathControlPoint!,
+      newCenter.x - oldCenter.x,
+      newCenter.y - oldCenter.y
+    );
+
+    expectPointToBeClose(newCenter, expectedCenter);
+    expect(rotatedGraphic.rotation).toBeCloseTo(90, 6);
+    expect(rotatedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
+    expect(rotatedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
+    expectPointToBeClose(rotatedGraphic.data.lineStart, expectedStart);
+    expectPointToBeClose(rotatedGraphic.data.lineEnd, expectedEnd);
+    expectPointToBeClose(rotatedGraphic.data.pathControlPoint, expectedControl);
+    expectPointToBeClose(rotatedPoints?.start, expectedStart);
+    expectPointToBeClose(rotatedPoints?.middle, expectedControl);
+    expectPointToBeClose(rotatedPoints?.end, expectedEnd);
+    expect((rotatedGraphic.data.lineStart?.x ?? 0) - newCenter.x).toBeCloseTo(oldStartVector.x, 6);
+    expect((rotatedGraphic.data.lineStart?.y ?? 0) - newCenter.y).toBeCloseTo(oldStartVector.y, 6);
+    expect((rotatedGraphic.data.pathControlPoint?.x ?? 0) - newCenter.x).toBeCloseTo(oldControlVector.x, 6);
+    expect((rotatedGraphic.data.pathControlPoint?.y ?? 0) - newCenter.y).toBeCloseTo(oldControlVector.y, 6);
   });
 
   it("rotates the selection 180° about the group center: members reverse and move, identity preserved", () => {

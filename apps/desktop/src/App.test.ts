@@ -11,9 +11,13 @@ import {
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
   type DocumentObject,
+  type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
+import {
+  projectGraphicObjectPoint
+} from "@chemdraft/art-engine";
 import {
   allShellCommands,
   atomElementActions,
@@ -53,11 +57,13 @@ import {
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
+  nativeGraphicPathEditPoints,
   openNativeDocument,
   reorderSelectedDocumentObject,
   setDocumentPageOrientation,
   setDocumentPageSize,
-  tiltNativeMoleculeProjectedPlane
+  tiltNativeMoleculeProjectedPlane,
+  updateNativeGraphicPathHandle
 } from "./documentWorkflow";
 import {
   MainWindow,
@@ -546,6 +552,164 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(selection.nativeSelection?.kind).not.toBe("molecule");
+  });
+
+  it("selects a straight graphic line when the marquee crosses the stroke, not the whole bounds", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Line Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0];
+    const graphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!objectId || !graphic) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const rectCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: rectCenter.x - 5,
+      y: rectCenter.y - 5
+    }, {
+      x: rectCenter.x + 5,
+      y: rectCenter.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a rotated graphic line where its projected stroke crosses the marquee", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotated Line Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const graphic = inserted.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!graphic) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const document = applyPatch(inserted, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 90
+      }
+    });
+    const rotatedGraphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!rotatedGraphic) {
+      throw new Error("Expected rotated line graphic fixture.");
+    }
+    const projectedStrokePoint = projectGraphicObjectPoint(
+      rotatedGraphic,
+      { x: rotatedGraphic.x + 3, y: rotatedGraphic.y + 3 },
+      { coordinateSpace: "page" }
+    );
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: projectedStrokePoint.x - 5,
+      y: projectedStrokePoint.y - 5
+    }, {
+      x: projectedStrokePoint.x + 5,
+      y: projectedStrokePoint.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a quadratic graphic when the marquee crosses the sampled curve", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Quadratic Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const graphic = inserted.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    const points = graphic ? nativeGraphicPathEditPoints(graphic) : undefined;
+    if (!points) {
+      throw new Error("Expected line edit points.");
+    }
+    const middle = { x: points.middle.x + 12, y: points.middle.y - 34 };
+    const document = updateNativeGraphicPathHandle(inserted, objectId, "middle", middle);
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: middle.x - 5,
+      y: middle.y - 5
+    }, {
+      x: middle.x + 5,
+      y: middle.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a semantic arc graphic when the marquee crosses the sampled arc", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arc Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = document.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected arc graphic fixture.");
+    }
+    const object = document.pages[0].objects.find((candidate) => candidate.id === objectId);
+    const points = object?.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+    const middle = points?.middle;
+    if (!middle) {
+      throw new Error("Expected arc edit points.");
+    }
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: middle.x - 5,
+      y: middle.y - 5
+    }, {
+      x: middle.x + 5,
+      y: middle.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a wavy graphic line when the marquee crosses its sampled stroke", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Wavy Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.lineWavy"
+    );
+    const objectId = document.selection.objectIds[0];
+    const graphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!objectId || !graphic) {
+      throw new Error("Expected wavy graphic fixture.");
+    }
+    const strokePoint = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: strokePoint.x - 5,
+      y: strokePoint.y - 5
+    }, {
+      x: strokePoint.x + 5,
+      y: strokePoint.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
   });
 
   it("toggles discontiguous native molecule atoms and bonds with selection hits", () => {
