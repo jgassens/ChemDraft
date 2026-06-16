@@ -29,6 +29,7 @@
     "allow-focus-toolset-window",
     "allow-toggle-toolset-window",
     "allow-list-toolset-window-states",
+    "allow-load-toolset-customization-state",
     "allow-focus-main-document-window",
     "allow-route-toolset-command",
     "allow-read-clipboard-payload",

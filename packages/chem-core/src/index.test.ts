@@ -658,6 +658,9 @@ describe("native document validation and serialization", () => {
       data: {
         cornerRadiusPx: 7,
         artPathKind: "arc",
+        arcCenter: { x: 136, y: 140 },
+        arcRadiusX: 32,
+        arcRadiusY: 24,
         arcStartRadians: -5 * Math.PI / 4,
         arcSweepRadians: Math.PI,
         lineStart: { x: 100, y: 160 },
@@ -698,6 +701,9 @@ describe("native document validation and serialization", () => {
       },
       data: {
         cornerRadiusPx: 7,
+        arcCenter: { x: 136, y: 140 },
+        arcRadiusX: 32,
+        arcRadiusY: 24,
         arcStartRadians: -5 * Math.PI / 4,
         arcSweepRadians: Math.PI,
         pathControlPoint: { x: 136, y: 104 }

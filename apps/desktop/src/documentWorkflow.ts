@@ -1,7 +1,10 @@
 import {
+  editGraphicCornerRadius,
   editGraphicPathGeometry,
+  graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
   planNativeArtVisual,
+  type NativeArtPoint,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints
 } from "@chemdraft/art-engine";
@@ -221,6 +224,7 @@ export interface NativeArtToolDefinition {
 
 export type NativeGraphicPathEditHandle = GraphicPathEditHandle;
 export type NativeGraphicPathEditPoints = GraphicPathEditPoints;
+export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
 
 const artOutlineStyle = {
   strokeColor: "#111111",
@@ -911,6 +915,12 @@ export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphi
   return graphicPathEditPoints(object);
 }
 
+export function nativeGraphicCornerRadiusEditPoint(
+  object: GraphicObject
+): NativeGraphicCornerRadiusEditPoint | undefined {
+  return graphicCornerRadiusEditPoint(object);
+}
+
 export function updateNativeGraphicPathHandle(
   document: ChemDraftDocument,
   objectId: string,
@@ -923,6 +933,32 @@ export function updateNativeGraphicPathHandle(
   }
 
   const edited = editGraphicPathGeometry(object, handle, point);
+  if (!edited || edited === object) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: edited
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function updateNativeGraphicCornerRadius(
+  document: ChemDraftDocument,
+  objectId: string,
+  point: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (!object || object.type !== "graphic") {
+    return document;
+  }
+
+  const edited = editGraphicCornerRadius(object, point);
   if (!edited || edited === object) {
     return document;
   }

@@ -1491,6 +1491,7 @@ Rules:
 - Preserve legacy fields such as `fillColor`, `strokeColor`, `strokeWidth`, `strokeDasharray`, `fillMode`, and `effect`.
 - Resolve paint backward-compatibly: if `fillPaint`/`strokePaint` exists, use it; otherwise synthesize paint from the legacy fields.
 - Browser rendering and SVG export must consume the same art-engine paint plan.
+- In editor mode, `GraphicObject` instances remain filtered out of `PageSvgSurface` and render only through the overlay; do not reintroduce duplicate or frozen graphic rendering.
 - Gradient coordinates, gloss highlights, and gradient transforms must follow object Z rotation and X/Y tilt so exported output and editor output match the visible object.
 - Live style edits may preview continuously, but history should commit one undo entry on change end.
 
@@ -1522,9 +1523,15 @@ Inspector controls, first slice:
 - Object opacity, fill opacity, and stroke opacity.
 - Stroke width.
 - Dash pattern.
-- Line cap.
-- Line join.
 - Solid fill/stroke only at first.
+
+Direct shape editing, current hardening slice:
+
+- Circular arcs use semantic `GraphicObject.data.arcCenter`, `arcRadiusX`, `arcRadiusY`, `arcStartRadians`, and `arcSweepRadians` once edited. Existing arcs without semantic center/radii synthesize them from bounds for rendering and handles, but do not persist the synthesized values until a user edits the arc.
+- Arc start/end handles change start/sweep only. The arc middle handle changes midpoint angle and radius while preserving sweep, then object bounds are recomputed from sampled arc points plus stroke padding.
+- Rectangle corner radius is edited directly on the selected rectangle with a small projected handle, not through a generic "Corners" dropdown.
+- Corner-radius editing stays native to `GraphicObject.data.cornerRadiusPx`, clamps to `0..min(width,height)/2`, preserves `graphicKind: "rect"`, and uses art-engine projection/unprojection helpers for rotated or tilted shapes.
+- Line-end/corner join commands can remain tested command behavior, but the main art toolbar should hide those controls until an advanced inspector surface makes their applicability clear.
 
 Gradient controls, second slice:
 
@@ -1578,6 +1585,14 @@ Suggested product sequence:
 5. Gradient editor UI.
 6. Appearance presets and copy/paste appearance.
 7. Optional advanced features: eyedropper, style library, freehand, arrowheads, and blend modes.
+
+Future arrowhead direction:
+
+- Add native `markerStart` and `markerEnd` metadata under `GraphicObject.data`; do not overload stroke line caps.
+- Marker kinds should start with `none`, `open-arrow`, `filled-arrow`, `bar`, and `dot`, with explicit size and angle/spread fields.
+- Marker endpoints should be editable through overlay handles owned by the native art editing path.
+- SVG export should emit real marker definitions from the art-engine plan.
+- Keep this as a follow-up; do not implement arrowheads as part of the corner-radius/popover hardening slice.
 
 ### Phase 8: Import/export and Office-friendly clipboard MVP
 

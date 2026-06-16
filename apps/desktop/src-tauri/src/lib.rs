@@ -25,6 +25,7 @@ const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+const RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP: bool = false;
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
@@ -196,8 +197,11 @@ pub fn run() {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
                     WindowEvent::Focused(true) => {
-                        if let Err(error) = restore_visible_toolset_windows(window.app_handle()) {
-                            eprintln!("Could not restore ChemDraft toolbar windows: {error}");
+                        if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
+                            if let Err(error) = restore_visible_toolset_windows(window.app_handle())
+                            {
+                                eprintln!("Could not restore ChemDraft toolbar windows: {error}");
+                            }
                         }
                     }
                     WindowEvent::CloseRequested { api, .. } => {
@@ -272,13 +276,15 @@ pub fn run() {
                 eprintln!("Could not show ChemDraft main window: {error}");
             }
 
-            for toolset in startup_manifest.toolsets {
-                let visible = toolset_visible(&toolset, &layout_state);
-                if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
-                    eprintln!(
-                        "Could not initialize ChemDraft toolbar state {}: {error}",
-                        toolset.id
-                    );
+            if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
+                for toolset in startup_manifest.toolsets {
+                    let visible = toolset_visible(&toolset, &layout_state);
+                    if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
+                        eprintln!(
+                            "Could not initialize ChemDraft toolbar state {}: {error}",
+                            toolset.id
+                        );
+                    }
                 }
             }
 
@@ -1708,6 +1714,11 @@ mod tests {
     }
 
     #[test]
+    fn native_toolset_windows_do_not_restore_on_startup_by_default() {
+        expect_false(RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP);
+    }
+
+    #[test]
     fn customization_state_adds_and_orders_user_toolsets() {
         let toolsets = vec![toolset("core.main", true), toolset("plugin.fixture", false)];
         let customization = ToolsetCustomizationState {
@@ -1827,6 +1838,31 @@ mod tests {
                 .as_str()
                 .is_some_and(|permission| permission == "allow-rasterize-svg")
         }));
+    }
+
+    #[test]
+    fn default_capability_allows_toolset_startup_commands() {
+        let capability = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("default capability should parse");
+        let permissions = parsed
+            .pointer("/permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("default capability should declare permissions");
+
+        for expected_permission in [
+            "allow-load-toolset-customization-state",
+            "allow-list-toolset-window-states",
+            "allow-route-toolset-command",
+            "allow-open-toolset-window",
+            "allow-toggle-toolset-window",
+        ] {
+            expect_true(permissions.iter().any(|permission| {
+                permission
+                    .as_str()
+                    .is_some_and(|permission| permission == expected_permission)
+            }));
+        }
     }
 
     #[test]

@@ -80,6 +80,7 @@ import {
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
+  nativeGraphicCornerRadiusEditPoint,
   nativeGraphicPathEditPoints,
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
@@ -114,6 +115,7 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
+  updateNativeGraphicCornerRadius,
   updateNativeGraphicPathHandle
 } from "./documentWorkflow";
 
@@ -230,13 +232,13 @@ function degToRad(degrees: number): number {
 }
 
 function pointOnGraphicEllipse(graphic: GraphicObject, radians: number): { x: number; y: number } {
-  const center = {
+  const center = graphic.data.arcCenter ?? {
     x: graphic.x + graphic.width / 2,
     y: graphic.y + graphic.height / 2
   };
   return {
-    x: center.x + Math.cos(radians) * Math.max(graphic.width / 2 - 4, 1),
-    y: center.y + Math.sin(radians) * Math.max(graphic.height / 2 - 4, 1)
+    x: center.x + Math.cos(radians) * Math.max(graphic.data.arcRadiusX ?? graphic.width / 2 - 4, 1),
+    y: center.y + Math.sin(radians) * Math.max(graphic.data.arcRadiusY ?? graphic.height / 2 - 4, 1)
   };
 }
 
@@ -3599,7 +3601,53 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("edits native graphic path endpoints and bends straight lines into explicit arcs", () => {
+  it("edits rectangle corner radius through native graphic workflow helpers", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Corner Radius Edit"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted rectangle art object to be selected.");
+    }
+    const rect = graphicById(inserted, objectId);
+
+    expect(nativeGraphicCornerRadiusEditPoint(rect)).toEqual({ x: 0, y: 0 });
+
+    const maxed = updateNativeGraphicCornerRadius(inserted, objectId, { x: 200, y: 0 });
+    const maxedRect = graphicById(maxed, objectId);
+    expect(maxedRect.data.cornerRadiusPx).toBeCloseTo(Math.min(rect.width, rect.height) / 2, 3);
+    expect(maxedRect.graphicKind).toBe("rect");
+    expect(maxedRect.x).toBe(rect.x);
+    expect(maxedRect.y).toBe(rect.y);
+    expect(maxedRect.width).toBe(rect.width);
+    expect(maxedRect.height).toBe(rect.height);
+
+    const reset = updateNativeGraphicCornerRadius(maxed, objectId, { x: -20, y: 0 });
+    expect(graphicById(reset, objectId).data.cornerRadiusPx).toBe(0);
+
+    const ellipseInserted = insertNativeArtGraphicObject(reset, { x: 320, y: 180 }, "tool.art.circle");
+    const ellipseId = ellipseInserted.selection.objectIds[0];
+    if (!ellipseId) {
+      throw new Error("Expected inserted ellipse art object.");
+    }
+    expect(nativeGraphicCornerRadiusEditPoint(graphicById(ellipseInserted, ellipseId))).toBeUndefined();
+    expect(updateNativeGraphicCornerRadius(ellipseInserted, ellipseId, { x: 12, y: 0 })).toBe(ellipseInserted);
+
+    const radiusHistory = {
+      past: [inserted],
+      present: maxed,
+      future: []
+    };
+    expect(graphicById(undo(radiusHistory).present, objectId).data.cornerRadiusPx).toBeUndefined();
+    expect(graphicById(redo(undo(radiusHistory)).present, objectId).data.cornerRadiusPx).toBe(maxedRect.data.cornerRadiusPx);
+
+    const reopened = openNativeDocument(createNativeSavePayload(maxed).contents);
+    expect(graphicById(reopened.document ?? inserted, objectId).data.cornerRadiusPx).toBe(maxedRect.data.cornerRadiusPx);
+  });
+
+  it("edits native graphic path endpoints and bends straight lines into freeform curves", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Native Path Edit"),
       { x: 220, y: 180 },
@@ -3637,12 +3685,18 @@ describe("Phase 4 document workflow", () => {
     };
     const bent = updateNativeGraphicPathHandle(endpointEdited, objectId, "middle", bentControl);
     const bentGraphic = graphicById(bent, objectId);
-    expect(bentGraphic.data).toMatchObject({
-      artPathKind: "arc",
-      lineStart: originalPoints.start,
-      lineEnd: extendedEnd,
-      pathControlPoint: bentControl
-    });
+    const bentPoints = nativeGraphicPathEditPoints(bentGraphic);
+    expect(bentGraphic.data.artPathKind).toBe("arc");
+    expect(bentGraphic.data.arcCenter).toBeUndefined();
+    expect(bentGraphic.data.arcRadiusX).toBeUndefined();
+    expect(bentGraphic.data.arcRadiusY).toBeUndefined();
+    expect(bentGraphic.data.arcStartRadians).toBeUndefined();
+    expect(bentGraphic.data.arcSweepRadians).toBeUndefined();
+    expect(bentGraphic.data.lineStart).toEqual(originalPoints.start);
+    expect(bentGraphic.data.lineEnd).toEqual(extendedEnd);
+    expect(bentGraphic.data.pathControlPoint).toEqual(bentControl);
+    expect(bentPoints?.middle.x).toBeCloseTo(bentControl.x, 3);
+    expect(bentPoints?.middle.y).toBeCloseTo(bentControl.y, 3);
     expect(bentGraphic.y).toBeLessThan(endpointGraphic.y);
 
     const pathEditHistory = {
@@ -3651,7 +3705,7 @@ describe("Phase 4 document workflow", () => {
       future: []
     };
     expect(graphicById(undo(pathEditHistory).present, objectId).data.artPathKind).toBe("line");
-    expect(graphicById(redo(undo(pathEditHistory)).present, objectId).data.pathControlPoint).toEqual(bentControl);
+    expect(nativeGraphicPathEditPoints(graphicById(redo(undo(pathEditHistory)).present, objectId))?.middle.x).toBeCloseTo(bentControl.x, 3);
   });
 
   it("edits circular art arcs by changing radian sweep around the same ellipse", () => {
@@ -3678,12 +3732,15 @@ describe("Phase 4 document workflow", () => {
       originalPoints.start
     );
     const completedGraphic = graphicById(completed, objectId);
+    const originalCenter = {
+      x: originalGraphic.x + originalGraphic.width / 2,
+      y: originalGraphic.y + originalGraphic.height / 2
+    };
 
-    expect(completedGraphic.x).toBeCloseTo(originalGraphic.x, 3);
-    expect(completedGraphic.y).toBeCloseTo(originalGraphic.y, 3);
-    expect(completedGraphic.width).toBeCloseTo(originalGraphic.width, 3);
-    expect(completedGraphic.height).toBeCloseTo(originalGraphic.height, 3);
     expect(completedGraphic.data.artPathKind).toBe("arc");
+    expect(completedGraphic.data.arcCenter).toEqual(originalCenter);
+    expect(completedGraphic.data.arcRadiusX).toBeCloseTo(originalGraphic.width / 2 - 4, 6);
+    expect(completedGraphic.data.arcRadiusY).toBeCloseTo(originalGraphic.height / 2 - 4, 6);
     expect(completedGraphic.data.arcStartRadians).toBeCloseTo(degToRad(-225), 6);
     expect(completedGraphic.data.arcSweepRadians).toBeGreaterThan(degToRad(358));
     expect(completedGraphic.data.lineStart).toBeUndefined();
@@ -3724,6 +3781,54 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedPoints.middle.y).toBeCloseTo(pointOnGraphicEllipse(originalGraphic, 0).y, 3);
   });
 
+  it("keeps a rectangular circular arc middle handle attached through document workflow edits", () => {
+    const baseDocument = createPhase4Document("Native Rectangular Circular Arc Attachment");
+    const page = baseDocument.pages[0];
+    if (!page) {
+      throw new Error("Expected a page.");
+    }
+    const arcSweepRadians = Math.PI * 1.36;
+    const graphic: GraphicObject = {
+      type: "graphic",
+      id: "rectangular_arc",
+      x: 180,
+      y: 160,
+      width: 96,
+      height: 54,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "none",
+        strokeWidth: 3
+      },
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: Math.PI * 0.18,
+        arcSweepRadians
+      }
+    };
+    const document = applyPatches(baseDocument, [
+      { op: "addObject", pageId: page.id, object: graphic },
+      { op: "setSelection", pageId: page.id, objectIds: [graphic.id] }
+    ]);
+    const originalPoints = nativeGraphicPathEditPoints(graphic);
+    if (!originalPoints) {
+      throw new Error("Expected rectangular arc edit points.");
+    }
+    const target = {
+      x: originalPoints.middle.x + 31,
+      y: originalPoints.middle.y - 17
+    };
+
+    const edited = updateNativeGraphicPathHandle(document, graphic.id, "middle", target);
+    const editedPoints = nativeGraphicPathEditPoints(graphicById(edited, graphic.id));
+
+    expect(editedPoints?.middle.x).toBeCloseTo(target.x, 3);
+    expect(editedPoints?.middle.y).toBeCloseTo(target.y, 3);
+    expect(graphicById(edited, graphic.id).data.arcSweepRadians).toBeCloseTo(arcSweepRadians, 6);
+  });
+
   it("expands circular art arc radius from the middle handle and preserves edits through history and reopen", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Native Circular Arc Radius"),
@@ -3756,9 +3861,10 @@ describe("Phase 4 document workflow", () => {
     const expandedGraphic = graphicById(expanded, objectId);
 
     expect(expandedGraphic.width).toBeGreaterThan(originalGraphic.width);
-    expect(expandedGraphic.height).toBeCloseTo(expandedGraphic.width, 3);
-    expect(expandedGraphic.x + expandedGraphic.width / 2).toBeCloseTo(center.x, 3);
-    expect(expandedGraphic.y + expandedGraphic.height / 2).toBeCloseTo(center.y, 3);
+    expect(expandedGraphic.height).toBeGreaterThan(originalGraphic.height);
+    expect(expandedGraphic.data.arcCenter).toEqual(center);
+    expect(expandedGraphic.data.arcRadiusX).toBeCloseTo(length + 26, 3);
+    expect(expandedGraphic.data.arcRadiusY).toBeCloseTo(length + 26, 3);
     expect(expandedGraphic.data.arcSweepRadians).toBeCloseTo(degToRad(270), 6);
     expect(expandedGraphic.data.pathControlPoint).toBeUndefined();
 
@@ -3784,7 +3890,7 @@ describe("Phase 4 document workflow", () => {
     if (!transformedPoints) {
       throw new Error("Expected transformed arc art object to remain editable.");
     }
-    const transformedCenter = {
+    const transformedCenter = transformedGraphic.data.arcCenter ?? {
       x: transformedGraphic.x + transformedGraphic.width / 2,
       y: transformedGraphic.y + transformedGraphic.height / 2
     };

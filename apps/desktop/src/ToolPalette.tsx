@@ -587,8 +587,10 @@ function ArtToolbarStyleControls({
     ? currentArtStyle?.values.fillColor.value
     : currentArtStyle?.values.strokeColor.value;
   const currentColor = normalizeHexColor(activeColor ?? currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
+  const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
+  const selectedGraphicIdsKey = currentArtStyle?.selectedGraphicIds.join("\u0000") ?? "";
   const objectOpacity = currentArtStyle?.values.objectOpacity.value ?? 1;
   const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
   const strokeOpacity = currentArtStyle?.values.strokeOpacity.value ?? 1;
@@ -596,6 +598,7 @@ function ArtToolbarStyleControls({
   const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.values.dash.value ?? undefined);
   const strokeCap = currentArtStyle?.values.lineEnds.value ?? "butt";
   const strokeJoin = currentArtStyle?.values.corners.value ?? "miter";
+  const showAdvancedStrokeControls = false;
 
   useEffect(() => {
     onColorPickerOpenChange?.(colorOpen);
@@ -606,6 +609,44 @@ function ArtToolbarStyleControls({
       setDraftColor(currentColor);
     }
   }, [colorOpen, currentColor]);
+
+  useEffect(() => {
+    if (!colorOpen) {
+      return undefined;
+    }
+
+    const closeForOutsidePointer = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && colorPickerRef.current?.contains(target)) {
+        return;
+      }
+      setColorOpen(false);
+    };
+    const closeForEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setColorOpen(false);
+      onCancel?.();
+    };
+    const closeForWindowBlur = () => {
+      setColorOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeForOutsidePointer, true);
+    document.addEventListener("keydown", closeForEscape, true);
+    window.addEventListener("blur", closeForWindowBlur);
+    return () => {
+      document.removeEventListener("pointerdown", closeForOutsidePointer, true);
+      document.removeEventListener("keydown", closeForEscape, true);
+      window.removeEventListener("blur", closeForWindowBlur);
+    };
+  }, [colorOpen, onCancel]);
+
+  useEffect(() => {
+    setColorOpen(false);
+  }, [selectedGraphicIdsKey]);
 
   const invokeOrCommit = (commandId: string) => {
     if (onCommit) {
@@ -783,9 +824,9 @@ function ArtToolbarStyleControls({
           className="art-color-picker"
           role="group"
           aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} color`}
+          ref={colorPickerRef}
           data-color-picker="true"
           data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
         >
           <button
             type="button"
@@ -799,7 +840,7 @@ function ArtToolbarStyleControls({
               effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
             )} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
-            onClick={() => setColorOpen(!colorOpen)}
+            onClick={() => setColorOpen((open) => !open)}
           >
             <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
             <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
@@ -844,7 +885,7 @@ function ArtToolbarStyleControls({
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
-      {supportsStroke || supportsDash || supportsLineEnds || supportsCorners ? (
+      {supportsStroke || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
         {supportsStroke ? (
         <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
@@ -888,7 +929,7 @@ function ArtToolbarStyleControls({
           </select>
         </label>
         ) : null}
-        {supportsLineEnds ? (
+        {showAdvancedStrokeControls && supportsLineEnds ? (
         <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
           <span className="art-stroke-control-label">Line ends</span>
           <select
@@ -909,7 +950,7 @@ function ArtToolbarStyleControls({
           </select>
         </label>
         ) : null}
-        {supportsCorners ? (
+        {showAdvancedStrokeControls && supportsCorners ? (
         <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
           <span className="art-stroke-control-label">Corners</span>
           <select

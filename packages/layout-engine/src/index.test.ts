@@ -1295,7 +1295,7 @@ describe("layout-engine page SVG planner", () => {
     expect(plan.frameBounds).not.toEqual({ x: 18, y: -18, width: 46, height: 82 });
   });
 
-  it("exports native bent graphic paths from explicit control-point data", () => {
+  it("exports native bent graphic paths through the explicit middle handle", () => {
     const page = pageWithObjects([
       {
         id: "art_bent_line",
@@ -1323,7 +1323,10 @@ describe("layout-engine page SVG planner", () => {
     expect(fragments[0]?.attrs).toMatchObject({
       "data-object-id": "art_bent_line",
       class: "graphic-glyph-stroke graphic-glyph-path",
-      d: "M 100 170 Q 160 90 220 170"
+      d: "M 100 170 Q 160 10 220 170"
     });
+
+    const midpointY = 0.25 * 170 + 0.5 * 10 + 0.25 * 170;
+    expect(midpointY).toBe(90);
   });
 });

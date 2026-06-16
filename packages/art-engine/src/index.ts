@@ -127,6 +127,61 @@ export interface GraphicPathEditPoints {
   pathKind: GraphicPathKind;
 }
 
+interface CircularGraphicArcGeometry {
+  center: NativeArtPoint;
+  radiusX: number;
+  radiusY: number;
+  startRadians: number;
+  sweepRadians: number;
+  endRadians: number;
+}
+
+export function maxGraphicCornerRadius(object: GraphicObject): number {
+  if (object.graphicKind !== "rect") {
+    return 0;
+  }
+  const width = Math.max(object.width, 0);
+  const height = Math.max(object.height, 0);
+  return roundLayoutNumber(Math.min(width, height) / 2);
+}
+
+export function graphicCornerRadiusEditPoint(object: GraphicObject): NativeArtPoint | undefined {
+  if (object.graphicKind !== "rect") {
+    return undefined;
+  }
+  return {
+    x: graphicCornerRadius(object),
+    y: 0
+  };
+}
+
+export function editGraphicCornerRadius(
+  object: GraphicObject,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  if (object.graphicKind !== "rect") {
+    return undefined;
+  }
+
+  const maxRadius = maxGraphicCornerRadius(object);
+  const clampedRadius = clamp(point.x, 0, maxRadius);
+  const nextRadius = roundLayoutNumber(
+    clampedRadius <= 1 ? 0 : maxRadius - clampedRadius <= 1 ? maxRadius : clampedRadius
+  );
+  const currentRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
+  if (Math.abs(currentRadius - nextRadius) < 0.001) {
+    return object;
+  }
+
+  return {
+    ...object,
+    data: {
+      ...object.data,
+      cornerRadiusPx: nextRadius
+    }
+  };
+}
+
 export function planNativeArtVisual(
   object: GraphicObject,
   options: { coordinateSpace?: NativeArtVisualCoordinateSpace } = {}
@@ -157,7 +212,7 @@ export function planNativeArtVisual(
       : { kind: "none", opacity: 1 }
   };
   const frameBounds = nativeArtFrameBounds(object, matrix, coordinateSpace);
-  const cornerRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
+  const cornerRadius = graphicCornerRadius(object);
   const line = object.graphicKind === "line"
     ? graphicLineEndpoints(object, coordinateSpace)
     : undefined;
@@ -276,6 +331,17 @@ function nativeArtCapabilityPlan(
     ...capabilities,
     isOpenStroke: capabilities.supportsStroke && !capabilities.isClosedShape
   };
+}
+
+function graphicCornerRadius(object: GraphicObject): number {
+  if (object.graphicKind !== "rect") {
+    return 0;
+  }
+  return roundLayoutNumber(clamp(
+    metadataNumber(object.data.cornerRadiusPx) ?? 0,
+    0,
+    maxGraphicCornerRadius(object)
+  ));
 }
 
 export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoints | undefined {
@@ -454,7 +520,10 @@ function graphicPathKind(object: GraphicObject): GraphicPathKind | undefined {
 }
 
 function isCircularGraphicArc(object: GraphicObject): boolean {
-  return graphicPathKind(object) === "arc" && !pointMetadata(object.data.pathControlPoint);
+  if (graphicPathKind(object) !== "arc") {
+    return false;
+  }
+  return !pointMetadata(object.data.pathControlPoint);
 }
 
 function editCircularGraphicArcGeometry(
@@ -462,22 +531,29 @@ function editCircularGraphicArcGeometry(
   handle: GraphicPathEditHandle,
   point: NativeArtPoint
 ): GraphicObject {
-  const currentAngles = nativeArtArcAngles(object);
-  const center = objectCenter(object);
-  const rx = Math.max(object.width / 2 - 4, 1);
-  const ry = Math.max(object.height / 2 - 4, 1);
-  const targetRadians = ellipseAngleRadiansForPoint(center, rx, ry, point);
+  const current = circularGraphicArcGeometry(object);
+  const targetRadians = handle === "middle"
+    ? angleRadiansForPoint(current.center, point)
+    : ellipseAngleRadiansForPoint(current.center, current.radiusX, current.radiusY, point);
   const nextSweepRadians = handle === "start"
-    ? arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(targetRadians, currentAngles.endRadians))
+    ? arcSweepRadiansForEndpointDrag(targetRadians, current.endRadians, current.sweepRadians)
     : handle === "end"
-      ? arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(currentAngles.startRadians, targetRadians))
-      : currentAngles.sweepRadians;
+      ? arcSweepRadiansForEndpointDrag(current.startRadians, targetRadians, current.sweepRadians)
+      : current.sweepRadians;
   const nextStartRadians = handle === "start"
     ? targetRadians
-    : handle === "middle" ? targetRadians - nextSweepRadians / 2 : currentAngles.startRadians;
+    : handle === "middle" ? targetRadians - nextSweepRadians / 2 : current.startRadians;
+  const nextRadius = handle === "middle"
+    ? Math.max(Math.hypot(point.x - current.center.x, point.y - current.center.y), 1)
+    : undefined;
+  const nextRadiusX = nextRadius ?? current.radiusX;
+  const nextRadiusY = nextRadius ?? current.radiusY;
   const nextData: GraphicObject["data"] = {
     ...object.data,
     artPathKind: "arc",
+    arcCenter: current.center,
+    arcRadiusX: nextRadiusX,
+    arcRadiusY: nextRadiusY,
     arcStartRadians: nextStartRadians,
     arcSweepRadians: nextSweepRadians
   };
@@ -485,42 +561,82 @@ function editCircularGraphicArcGeometry(
   delete nextData.lineEnd;
   delete nextData.pathControlPoint;
 
-  const radiusChanges = handle === "middle"
-    ? circularArcRadiusChanges(object, center, point)
-    : undefined;
+  const nextBounds = boundsForCircularGraphicArc(object, nextData);
   const unchanged =
-    Math.abs((object.data.arcStartRadians ?? currentAngles.startRadians) - nextStartRadians) < 0.001 &&
-    Math.abs((object.data.arcSweepRadians ?? currentAngles.sweepRadians) - nextSweepRadians) < 0.001 &&
+    samePoint(pointMetadata(object.data.arcCenter), nextData.arcCenter) &&
+    Math.abs((metadataNumber(object.data.arcRadiusX) ?? current.radiusX) - nextRadiusX) < 0.001 &&
+    Math.abs((metadataNumber(object.data.arcRadiusY) ?? current.radiusY) - nextRadiusY) < 0.001 &&
+    Math.abs((object.data.arcStartRadians ?? current.startRadians) - nextStartRadians) < 0.001 &&
+    Math.abs((object.data.arcSweepRadians ?? current.sweepRadians) - nextSweepRadians) < 0.001 &&
     !pointMetadata(object.data.lineStart) &&
     !pointMetadata(object.data.lineEnd) &&
-    !radiusChanges;
+    Math.abs(object.x - nextBounds.x) < 0.001 &&
+    Math.abs(object.y - nextBounds.y) < 0.001 &&
+    Math.abs(object.width - nextBounds.width) < 0.001 &&
+    Math.abs(object.height - nextBounds.height) < 0.001;
   if (unchanged) {
     return object;
   }
 
   return {
     ...object,
-    ...(radiusChanges ?? {}),
+    ...nextBounds,
     data: nextData
   };
 }
 
-function circularArcRadiusChanges(
+function circularGraphicArcGeometry(
   object: GraphicObject,
-  center: NativeArtPoint,
-  point: NativeArtPoint
-): Pick<GraphicObject, "x" | "y" | "width" | "height"> | undefined {
-  const currentRadius = Math.max(Math.max(object.width, object.height) / 2 - 4, 1);
-  const nextRadius = Math.max(Math.hypot(point.x - center.x, point.y - center.y), 1);
-  if (Math.abs(nextRadius - currentRadius) < 0.001) {
-    return undefined;
-  }
-  const nextSize = roundLayoutNumber(nextRadius * 2 + 8);
+  data: GraphicObject["data"] = object.data
+): CircularGraphicArcGeometry {
+  const angles = nativeArtArcAngles({ ...object, data });
+  const center = pointMetadata(data.arcCenter) ?? objectCenter(object);
+  const radiusX = Math.max(metadataNumber(data.arcRadiusX) ?? object.width / 2 - 4, 1);
+  const radiusY = Math.max(metadataNumber(data.arcRadiusY) ?? object.height / 2 - 4, 1);
   return {
-    x: roundLayoutNumber(center.x - nextSize / 2),
-    y: roundLayoutNumber(center.y - nextSize / 2),
-    width: nextSize,
-    height: nextSize
+    center,
+    radiusX,
+    radiusY,
+    startRadians: angles.startRadians,
+    sweepRadians: angles.sweepRadians,
+    endRadians: angles.endRadians
+  };
+}
+
+function boundsForCircularGraphicArc(
+  object: GraphicObject,
+  data: GraphicObject["data"]
+): NativeArtBounds {
+  const geometry = circularGraphicArcGeometry(object, data);
+  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
+  const padding = Math.max(6, strokeWidth * 2);
+  const points = [
+    ...circularArcBoundsPoints(geometry),
+    pointMetadata(data.pathControlPoint)
+  ].filter((point): point is NativeArtPoint => point !== undefined);
+  return boundsForPoints(points, padding, { x: object.x, y: object.y, width: object.width, height: object.height });
+}
+
+function boundsForPoints(
+  points: readonly NativeArtPoint[],
+  padding: number,
+  fallback: NativeArtBounds
+): NativeArtBounds {
+  const finitePoints = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (finitePoints.length === 0) {
+    return fallback;
+  }
+
+  const minX = Math.min(...finitePoints.map((point) => point.x));
+  const minY = Math.min(...finitePoints.map((point) => point.y));
+  const maxX = Math.max(...finitePoints.map((point) => point.x));
+  const maxY = Math.max(...finitePoints.map((point) => point.y));
+  const minSize = padding * 2;
+  return {
+    x: roundLayoutNumber(minX - padding),
+    y: roundLayoutNumber(minY - padding),
+    width: roundLayoutNumber(Math.max(maxX - minX + padding * 2, minSize)),
+    height: roundLayoutNumber(Math.max(maxY - minY + padding * 2, minSize))
   };
 }
 
@@ -529,14 +645,12 @@ function graphicPathFallbackPoints(
   pathKind: GraphicPathKind
 ): GraphicPathEditPoints {
   if (pathKind === "arc") {
-    const angles = nativeArtArcAngles(object);
-    const rx = Math.max(object.width / 2 - 4, 1);
-    const ry = Math.max(object.height / 2 - 4, 1);
-    const center = objectCenter(object);
+    const geometry = circularGraphicArcGeometry(object);
     return {
-      start: ellipsePointAtRadians(center, rx, ry, angles.startRadians),
-      middle: ellipsePointAtRadians(center, rx, ry, angles.startRadians + angles.sweepRadians / 2),
-      end: ellipsePointAtRadians(center, rx, ry, angles.endRadians),
+      start: ellipsePointAtRadians(geometry.center, geometry.radiusX, geometry.radiusY, geometry.startRadians),
+      middle: pointMetadata(object.data.pathControlPoint) ??
+        ellipsePointAtRadians(geometry.center, geometry.radiusX, geometry.radiusY, geometry.startRadians + geometry.sweepRadians / 2),
+      end: ellipsePointAtRadians(geometry.center, geometry.radiusX, geometry.radiusY, geometry.endRadians),
       pathKind
     };
   }
@@ -553,11 +667,12 @@ function graphicPathFallbackPoints(
 }
 
 function boundsForGraphicPath(object: GraphicObject, data: GraphicObject["data"]): NativeArtBounds {
-  const points = [
-    pointMetadata(data.lineStart),
-    pointMetadata(data.lineEnd),
-    pointMetadata(data.pathControlPoint)
-  ].filter((point): point is NativeArtPoint => point !== undefined);
+  const start = pointMetadata(data.lineStart);
+  const end = pointMetadata(data.lineEnd);
+  const middle = pointMetadata(data.pathControlPoint);
+  const points = data.artPathKind === "arc" && start && end && middle
+    ? quadraticBezierSamplePoints(start, quadraticControlForMiddlePoint(start, middle, end), end, 24)
+    : [start, end, middle].filter((point): point is NativeArtPoint => point !== undefined);
   if (points.length === 0) {
     return {
       x: object.x,
@@ -605,9 +720,23 @@ function ellipseAngleRadiansForPoint(
   return Math.atan2((point.y - center.y) / Math.max(ry, 1), (point.x - center.x) / Math.max(rx, 1));
 }
 
+function angleRadiansForPoint(center: NativeArtPoint, point: NativeArtPoint): number {
+  return Math.atan2(point.y - center.y, point.x - center.x);
+}
+
 function clockwiseDeltaRadians(startRadians: number, endRadians: number): number {
   const delta = (endRadians - startRadians) % (Math.PI * 2);
   return delta < 0 ? delta + Math.PI * 2 : delta;
+}
+
+function arcSweepRadiansForEndpointDrag(
+  startRadians: number,
+  endRadians: number,
+  currentSweepRadians: number
+): number {
+  return currentSweepRadians < 0
+    ? -arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(endRadians, startRadians))
+    : arcSweepRadiansFromEndpointDrag(clockwiseDeltaRadians(startRadians, endRadians));
 }
 
 function arcSweepRadiansFromEndpointDrag(radians: number): number {
@@ -652,7 +781,7 @@ function nativeArtProjectedLocalBounds(
 
   if (object.graphicKind === "rect") {
     return projectedPointsBounds(
-      roundedRectPathPoints(width, height, metadataNumber(object.data.cornerRadiusPx) ?? 0, 0, { x: 0, y: 0 }),
+      roundedRectPathPoints(width, height, graphicCornerRadius(object), 0, { x: 0, y: 0 }),
       width,
       height,
       matrix
@@ -776,7 +905,7 @@ function projectedArtShapePathD(
   const height = Math.max(object.height, 1);
   const localPoints = object.graphicKind === "ellipse"
     ? ellipsePathPoints(width, height, strokeWidth, { x: 0, y: 0 })
-    : roundedRectPathPoints(width, height, metadataNumber(object.data.cornerRadiusPx) ?? 0, strokeWidth, { x: 0, y: 0 });
+    : roundedRectPathPoints(width, height, graphicCornerRadius(object), strokeWidth, { x: 0, y: 0 });
   const points = localPoints.map((point) => nativeArtPointForSpace(
     object,
     projectNativeArtLocalPoint(point, width, height, matrix),
@@ -967,6 +1096,10 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 function normalizeGraphicHexColor(color: string | undefined): string | undefined {
   const normalized = color?.trim().replace(/^#/, "").toLowerCase();
   if (!normalized || normalized === "none") {
@@ -1031,19 +1164,24 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   }
 
   if (pathKind === "arc") {
+    if (isCircularGraphicArc(object)) {
+      return artArcSamplePoints(object, "local");
+    }
+
     const explicitStart = pointMetadata(object.data.lineStart);
     const explicitEnd = pointMetadata(object.data.lineEnd);
-    const explicitControl = pointMetadata(object.data.pathControlPoint);
-    if (explicitStart && explicitEnd && explicitControl) {
+    const explicitMiddle = pointMetadata(object.data.pathControlPoint);
+    if (explicitStart && explicitEnd && explicitMiddle) {
+      const start = pointForArtSpace(object, explicitStart, "local");
+      const middle = pointForArtSpace(object, explicitMiddle, "local");
+      const end = pointForArtSpace(object, explicitEnd, "local");
       return quadraticBezierSamplePoints(
-        pointForArtSpace(object, explicitStart, "local"),
-        pointForArtSpace(object, explicitControl, "local"),
-        pointForArtSpace(object, explicitEnd, "local"),
+        start,
+        quadraticControlForMiddlePoint(start, middle, end),
+        end,
         24
       );
     }
-
-    return artArcSamplePoints(object, "local");
   }
 
   return [];
@@ -1165,18 +1303,22 @@ function graphicPathD(
   }
 
   if (pathKind === "arc") {
+    if (isCircularGraphicArc(object)) {
+      return artArcPathD(object, coordinateSpace);
+    }
+
     const explicitStart = pointMetadata(object.data.lineStart);
     const explicitEnd = pointMetadata(object.data.lineEnd);
-    const explicitControl = pointMetadata(object.data.pathControlPoint);
-    if (explicitStart && explicitEnd && explicitControl) {
+    const explicitMiddle = pointMetadata(object.data.pathControlPoint);
+    if (explicitStart && explicitEnd && explicitMiddle) {
       const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
-      const control = pointForArtSpace(object, explicitControl, coordinateSpace);
+      const middle = pointForArtSpace(object, explicitMiddle, coordinateSpace);
+      const control = quadraticControlForMiddlePoint(endpoints.start, middle, endpoints.end);
       return [
         `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)}`,
         `Q ${formatNumber(control.x)} ${formatNumber(control.y)} ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`
       ].join(" ");
     }
-    return artArcPathD(object, coordinateSpace);
   }
 
   return storedPath;
@@ -1241,20 +1383,13 @@ function artArcPathD(
   object: GraphicObject,
   coordinateSpace: NativeArtVisualCoordinateSpace = "page"
 ): string {
-  const angles = nativeArtArcAngles(object);
-  const rx = Math.max(object.width / 2 - 4, 1);
-  const ry = Math.max(object.height / 2 - 4, 1);
-  const originX = coordinateSpace === "page" ? object.x : 0;
-  const originY = coordinateSpace === "page" ? object.y : 0;
-  const center = {
-    x: originX + object.width / 2,
-    y: originY + object.height / 2
-  };
-  const start = ellipsePointAtRadians(center, rx, ry, angles.startRadians);
-  const end = ellipsePointAtRadians(center, rx, ry, angles.endRadians);
+  const geometry = circularGraphicArcGeometry(object);
+  const center = pointForArtSpace(object, geometry.center, coordinateSpace);
+  const start = ellipsePointAtRadians(center, geometry.radiusX, geometry.radiusY, geometry.startRadians);
+  const end = ellipsePointAtRadians(center, geometry.radiusX, geometry.radiusY, geometry.endRadians);
   return [
     `M ${formatNumber(start.x)} ${formatNumber(start.y)}`,
-    `A ${formatNumber(rx)} ${formatNumber(ry)} 0 ${angles.sweepRadians > Math.PI ? 1 : 0} 1 ${formatNumber(end.x)} ${formatNumber(end.y)}`
+    `A ${formatNumber(geometry.radiusX)} ${formatNumber(geometry.radiusY)} 0 ${Math.abs(geometry.sweepRadians) > Math.PI ? 1 : 0} ${geometry.sweepRadians < 0 ? 0 : 1} ${formatNumber(end.x)} ${formatNumber(end.y)}`
   ].join(" ");
 }
 
@@ -1262,26 +1397,19 @@ function artArcSamplePoints(
   object: GraphicObject,
   coordinateSpace: NativeArtVisualCoordinateSpace = "page"
 ): NativeArtPoint[] {
-  const angles = nativeArtArcAngles(object);
-  const rx = Math.max(object.width / 2 - 4, 1);
-  const ry = Math.max(object.height / 2 - 4, 1);
-  const originX = coordinateSpace === "page" ? object.x : 0;
-  const originY = coordinateSpace === "page" ? object.y : 0;
+  const geometry = circularGraphicArcGeometry(object);
   return arcSamplePointsRadians(
-    {
-      x: originX + object.width / 2,
-      y: originY + object.height / 2
-    },
-    rx,
-    ry,
-    angles.startRadians,
-    angles.endRadians,
+    pointForArtSpace(object, geometry.center, coordinateSpace),
+    geometry.radiusX,
+    geometry.radiusY,
+    geometry.startRadians,
+    geometry.endRadians,
     32
   );
 }
 
 function nativeArtArcAngles(object: GraphicObject): { startRadians: number; sweepRadians: number; endRadians: number } {
-  const sweepRadians = clampArcSweepRadians(metadataNumber(object.data.arcSweepRadians) ?? Math.PI);
+  const sweepRadians = clampSignedArcSweepRadians(metadataNumber(object.data.arcSweepRadians) ?? Math.PI);
   const startRadians = metadataNumber(object.data.arcStartRadians) ?? -Math.PI / 2 - sweepRadians / 2;
   return {
     startRadians,
@@ -1304,6 +1432,17 @@ function quadraticBezierSamplePoints(
       y: inverseT * inverseT * start.y + 2 * inverseT * t * control.y + t * t * end.y
     };
   });
+}
+
+function quadraticControlForMiddlePoint(
+  start: NativeArtPoint,
+  middle: NativeArtPoint,
+  end: NativeArtPoint
+): NativeArtPoint {
+  return {
+    x: 2 * middle.x - (start.x + end.x) / 2,
+    y: 2 * middle.y - (start.y + end.y) / 2
+  };
 }
 
 function roundedRectPathPoints(
@@ -1381,6 +1520,39 @@ function arcSamplePointsRadians(
   });
 }
 
+function circularArcBoundsPoints(geometry: CircularGraphicArcGeometry): NativeArtPoint[] {
+  const arcPoints = arcSamplePointsRadians(
+    geometry.center,
+    geometry.radiusX,
+    geometry.radiusY,
+    geometry.startRadians,
+    geometry.endRadians,
+    48
+  );
+  const extremaPoints = [0, Math.PI / 2, Math.PI, Math.PI * 1.5]
+    .filter((angle) => angleWithinSweptArc(angle, geometry.startRadians, geometry.sweepRadians))
+    .map((angle) => ellipsePointAtRadians(geometry.center, geometry.radiusX, geometry.radiusY, angle));
+  const middle = ellipsePointAtRadians(
+    geometry.center,
+    geometry.radiusX,
+    geometry.radiusY,
+    geometry.startRadians + geometry.sweepRadians / 2
+  );
+  return [...arcPoints, ...extremaPoints, middle];
+}
+
+function angleWithinSweptArc(angle: number, startRadians: number, sweepRadians: number): boolean {
+  return sweepRadians < 0
+    ? clockwiseDeltaRadians(normalizeRadians(angle), normalizeRadians(startRadians)) <= Math.abs(sweepRadians) + 0.000001
+    : clockwiseDeltaRadians(normalizeRadians(startRadians), normalizeRadians(angle)) <= sweepRadians + 0.000001;
+}
+
+function normalizeRadians(radians: number): number {
+  const fullCircle = Math.PI * 2;
+  const normalized = radians % fullCircle;
+  return normalized < 0 ? normalized + fullCircle : normalized;
+}
+
 function pointsPathD(points: readonly NativeArtPoint[], closed: boolean): string {
   const first = points[0];
   if (!first) {
@@ -1425,6 +1597,11 @@ function ellipsePointAtRadians(
 
 function clampArcSweepRadians(radians: number): number {
   return Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(radians)));
+}
+
+function clampSignedArcSweepRadians(radians: number): number {
+  const clamped = clampArcSweepRadians(radians);
+  return radians < 0 ? -clamped : clamped;
 }
 
 function pointMetadata(value: unknown): NativeArtPoint | undefined {

@@ -402,6 +402,16 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("font-variant-numeric: tabular-nums;");
   });
 
+  it("renders in-window fallback palette titles as explicit drag surfaces", () => {
+    const markup = renderToStaticMarkup(createElement(MainWindow, { nativePalette: false }));
+
+    expect(markup).toContain('aria-label="Floating Main Toolbar"');
+    expect(markup).toContain('aria-label="Floating Art Toolbar"');
+    expect(markup).toContain('data-palette-title-drag-surface="true"');
+    expect(markup).toContain('data-web-palette-drag-region="true"');
+    expect(markup).toContain("palette-title-label");
+  });
+
   it("keeps every non-canvas panel out of the document window by default", () => {
     const markup = renderToStaticMarkup(
       createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
@@ -1412,7 +1422,7 @@ describe("ChemDraft desktop shell", () => {
     expect(lineInspectorMarkup).not.toContain('data-command-id="object.style.target.fill"');
     expect(lineInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
     expect(lineInspectorMarkup).toContain('aria-label="Stroke color"');
-    expect(lineInspectorMarkup).toContain("Line ends");
+    expect(lineInspectorMarkup).not.toContain("Line ends");
     expect(lineInspectorMarkup).not.toContain("Corners");
     expect(markup).not.toContain('data-command-id="text.color.black"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
@@ -1902,6 +1912,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain("graphic-glyph-shadow");
     expect(markup).toContain('rx="7"');
+    expect(markup).toContain('data-graphic-corner-radius-handle="true"');
+    expect(markup).toContain('data-graphic-corner-radius-readout="true"');
+    expect(markup).toContain("Radius: 7 px");
     expect(markup).toContain('data-art-transform-frame="true"');
     expect(markup).toContain('data-has-tilt3d="true"');
     expect(markup).not.toContain("art-object-transform-frame");
@@ -1930,12 +1943,27 @@ describe("ChemDraft desktop shell", () => {
     expect(lineMarkup).toContain('data-graphic-path-handle="start"');
     expect(lineMarkup).toContain('data-graphic-path-handle="middle"');
     expect(lineMarkup).toContain('data-graphic-path-handle="end"');
+    expect(lineMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
     expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
     expect(lineMarkup).not.toContain("object-resize-handle");
+    const ellipseDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Ellipse Art Render"),
+      { x: 260, y: 220 },
+      "tool.art.circle"
+    );
+    const ellipseMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: ellipseDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
+    expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
     expect(mainWindowSource).toContain('const svgObjects = plannedDisplayPage.objects.filter((object) => object.type !== "graphic")');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: `${plan.frameBounds.x}px`");
-    expect(mainWindowSource).toContain('data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints');
+    expect(mainWindowSource).toContain('data-graphic-corner-radius-handle="true"');
     expect(mainWindowSource).toContain('setActiveGraphicTransformObjectId(objectId)');
     expect(mainWindowSource).not.toContain("function graphicPathD(object: GraphicObject");
     expect(mainWindowSource).not.toContain("function documentObjectProjectedEllipseBounds");

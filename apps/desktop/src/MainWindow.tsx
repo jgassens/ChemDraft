@@ -14,6 +14,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import {
+  maxGraphicCornerRadius,
   projectGraphicObjectPoint,
   unprojectGraphicObjectPoint,
   type NativeArtPoint
@@ -167,6 +168,7 @@ import {
   nativeElementFromKeyboardKey,
   nativeMoleculeInvalidAtomStates,
   nativeMoleculePartBounds,
+  nativeGraphicCornerRadiusEditPoint,
   nativeGraphicPathEditPoints,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
@@ -207,10 +209,12 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
+  updateNativeGraphicCornerRadius,
   updateNativeGraphicPathHandle,
   swapGraphicObjectFillAndStroke,
   type GraphicStylePaintTarget,
   type NativeGraphicPathEditHandle,
+  type NativeGraphicPathEditPoints,
   type NativeTextSelectionRange,
   type ToolbarColorSelection,
   type NativeBondDisplayStyle,
@@ -370,6 +374,18 @@ type GraphicPathEditDragState = {
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
+};
+type GraphicCornerRadiusDragState = {
+  pointerId: number;
+  objectId: string;
+  startDocument: ChemDraftDocument;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  dragging: boolean;
+};
+type GraphicCornerRadiusReadoutState = {
+  objectId: string;
+  radius: number;
 };
 type ObjectRotateDragState = {
   pointerId: number;
@@ -642,7 +658,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.22.38-codex";
+const CURRENT_BUILD_STAMP = "6.16.14.16-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -747,9 +763,24 @@ interface ChemDraftAgentSnapshot {
   compatibilityWarnings: number;
 }
 
+interface ChemDraftAgentArtDebugSnapshot {
+  ok: true;
+  object: GraphicObject;
+  editPoints?: NativeGraphicPathEditPoints;
+  projectedEditPoints?: NativeGraphicPathEditPoints;
+  plan: {
+    pathD?: string;
+    frameBounds: ReturnType<typeof planNativeArtVisual>["frameBounds"];
+    projectionTransform?: string;
+    width: number;
+    height: number;
+  };
+}
+
 interface ChemDraftAgentBridge {
   openDocument(payload: { contents: string; displayName?: string; path?: string }): ChemDraftAgentOpenResult;
   snapshot(): ChemDraftAgentSnapshot;
+  debugArtObject(objectId: string): ChemDraftAgentArtDebugSnapshot | { ok: false; error: string };
   waitForIdle(): Promise<void>;
 }
 
@@ -774,7 +805,7 @@ export function MainWindow({
   initialCrosshairsVisible = true,
   initialDocument,
   initialActiveToolCommandId,
-  nativePalette = isDesktopRuntime()
+  nativePalette = false
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
@@ -785,6 +816,7 @@ export function MainWindow({
   const nativeBondEditDragRef = useRef<NativeBondEditDragState | null>(null);
   const nativePartDragRef = useRef<NativePartDragState | null>(null);
   const objectDragRef = useRef<ObjectDragState | null>(null);
+  const graphicCornerRadiusDragRef = useRef<GraphicCornerRadiusDragState | null>(null);
   const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
@@ -825,6 +857,8 @@ export function MainWindow({
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
+  const [webPaletteFallback, setWebPaletteFallback] = useState(false);
+  const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
@@ -840,6 +874,7 @@ export function MainWindow({
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
+  const [graphicCornerRadiusReadout, setGraphicCornerRadiusReadout] = useState<GraphicCornerRadiusReadoutState | undefined>();
   const [objectRotateReadout, setObjectRotateReadout] = useState<ObjectRotateReadoutState | undefined>();
   const [projectedPlaneTiltReadout, setProjectedPlaneTiltReadout] = useState<ProjectedPlaneTiltReadoutState | undefined>();
   const [rotationInput, setRotationInput] = useState<RotationInputState | undefined>();
@@ -1292,7 +1327,9 @@ export function MainWindow({
         });
       })
       .catch((error: unknown) => {
-        setStatus(`Toolbar layout unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        setWebPaletteFallback(true);
+        setVisibleToolsetIds(createDefaultVisibleToolsetIds(desktopToolsetRegistry));
+        setStatus(`Native toolbar layout unavailable; using in-window toolbars (${error instanceof Error ? error.message : String(error)})`);
       });
 
     return () => {
@@ -1566,7 +1603,7 @@ export function MainWindow({
       return;
     }
 
-    if (nativePalette) {
+    if (effectiveNativePalette) {
       const nextState = await toggleToolsetWindow(toolsetId);
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
       setStatus(nextState.open ? `${toolsetRegistry.require(toolsetId).title} open` : `${toolsetRegistry.require(toolsetId).title} closed`);
@@ -1575,7 +1612,7 @@ export function MainWindow({
 
     setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
-  }, [nativePalette, toolsetRegistry]);
+  }, [effectiveNativePalette, toolsetRegistry]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -2590,6 +2627,36 @@ export function MainWindow({
           compatibilityWarnings: currentDocument.compatibility?.warnings.length ?? 0
         };
       },
+      debugArtObject: (objectId) => {
+        const currentDocument = documentRef.current;
+        const object = findDocumentObject(currentDocument, objectId);
+        if (object?.type !== "graphic") {
+          return { ok: false, error: `Graphic object not found: ${objectId}` };
+        }
+        const editPoints = nativeGraphicPathEditPoints(object);
+        const projectedEditPoints = editPoints
+          ? {
+              pathKind: editPoints.pathKind,
+              start: projectGraphicObjectPoint(object, editPoints.start),
+              middle: projectGraphicObjectPoint(object, editPoints.middle),
+              end: projectGraphicObjectPoint(object, editPoints.end)
+            }
+          : undefined;
+        const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+        return {
+          ok: true,
+          object,
+          editPoints,
+          projectedEditPoints,
+          plan: {
+            pathD: plan.pathD,
+            frameBounds: plan.frameBounds,
+            projectionTransform: plan.projectionTransform,
+            width: plan.width,
+            height: plan.height
+          }
+        };
+      },
       waitForIdle: async () => {
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       }
@@ -3231,6 +3298,20 @@ export function MainWindow({
         return;
       }
 
+      if (event.key === "Escape" && graphicCornerRadiusDragRef.current) {
+        const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+        event.preventDefault();
+        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
+        graphicCornerRadiusDragRef.current = null;
+        setGraphicCornerRadiusReadout(undefined);
+        const page = pageRef.current;
+        if (page?.hasPointerCapture(graphicCornerRadiusDrag.pointerId)) {
+          page.releasePointerCapture(graphicCornerRadiusDrag.pointerId);
+        }
+        setStatus("Corner radius canceled");
+        return;
+      }
+
       if (event.key === "Escape" && projectedPlaneTiltDragRef.current) {
         const projectedPlaneTiltDrag = projectedPlaneTiltDragRef.current;
         event.preventDefault();
@@ -3273,23 +3354,29 @@ export function MainWindow({
   }, [clearProjectedPlaneTiltDrag, replacePresentDocument, selectedNativeMoleculePart, shortcutRegistry]);
 
   useEffect(() => {
-    if (!nativePalette) {
+    if (!effectiveNativePalette) {
       return;
     }
 
     void listToolsetWindowStates()
       .then((states) => {
-        setVisibleToolsetIds(new Set(
-          states
-            .filter((state) => state.open && toolsetRegistry.get(state.toolsetId))
-            .map((state) => state.toolsetId)
-        ));
+        const openToolsetIds = states
+          .filter((state) => state.open && toolsetRegistry.get(state.toolsetId))
+          .map((state) => state.toolsetId);
+        if (openToolsetIds.length === 0) {
+          setWebPaletteFallback(true);
+          setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
+          setStatus("Native toolset windows unavailable; using in-window toolbars");
+          return;
+        }
+        setVisibleToolsetIds(new Set(openToolsetIds));
       })
       .catch(() => {
-        setVisibleToolsetIds(new Set());
-        setStatus("Native toolset windows unavailable");
+        setWebPaletteFallback(true);
+        setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
+        setStatus("Native toolset windows unavailable; using in-window toolbars");
       });
-  }, [nativePalette, toolsetRegistry]);
+  }, [effectiveNativePalette, toolsetRegistry]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -3369,6 +3456,7 @@ export function MainWindow({
       startX: position.x,
       startY: position.y
     };
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
   }, [toolsetRegistry, webPalettePositions]);
 
@@ -3810,6 +3898,26 @@ export function MainWindow({
     replacePresentDocument(objectDragDocument(drag, point));
   }, [objectDragDocument, replacePresentDocument]);
 
+  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
+    updateNativeGraphicCornerRadius(
+      drag.startDocument,
+      drag.objectId,
+      nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
+    ), []);
+
+  const previewGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    const nextDocument = graphicCornerRadiusDocumentFromDrag(drag, point);
+    const object = findDocumentObject(nextDocument, drag.objectId);
+    if (object?.type === "graphic") {
+      setGraphicCornerRadiusReadout({
+        objectId: drag.objectId,
+        radius: graphicCornerRadiusReadoutValue(object)
+      });
+    }
+    replacePresentDocument(nextDocument);
+  }, [graphicCornerRadiusDocumentFromDrag, replacePresentDocument]);
+
   const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument =>
     updateNativeGraphicPathHandle(
       drag.startDocument,
@@ -4001,6 +4109,22 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory, objectDragDocument, replacePresentDocument]);
+
+  const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
+    const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
+    if (edited === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: edited,
+      future: []
+    });
+    return true;
+  }, [graphicCornerRadiusDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
 
   const commitGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): boolean => {
     const edited = graphicPathEditDocumentFromDrag(drag, point);
@@ -4465,6 +4589,21 @@ export function MainWindow({
     }
   }, []);
 
+  const clearGraphicCornerRadiusDrag = useCallback((event: ObjectPointerEvent) => {
+    const drag = graphicCornerRadiusDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      graphicCornerRadiusDragRef.current = null;
+      setGraphicCornerRadiusReadout(undefined);
+      const page = pageRef.current;
+      if (page?.hasPointerCapture(event.pointerId)) {
+        page.releasePointerCapture(event.pointerId);
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
   const clearGraphicPathEditDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = graphicPathEditDragRef.current;
     if (drag?.pointerId === event.pointerId) {
@@ -4921,6 +5060,33 @@ export function MainWindow({
       return;
     }
 
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicCornerRadiusDrag.latestPoint = point;
+      if (!graphicCornerRadiusDrag.dragging && clientPointDistance(graphicCornerRadiusDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        graphicCornerRadiusDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (graphicCornerRadiusDrag.dragging) {
+        previewGraphicCornerRadius(graphicCornerRadiusDrag, point);
+      }
+      return;
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -5046,6 +5212,7 @@ export function MainWindow({
     previewObjectRotateDrag,
     previewProjectedPlaneTilt,
     previewObjectResize,
+    previewGraphicCornerRadius,
     previewGraphicPathEdit,
     previewNativePartDrag,
     previewNativePlacementDrag,
@@ -5154,6 +5321,21 @@ export function MainWindow({
       return;
     }
 
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicCornerRadiusDrag.latestPoint;
+      if (graphicCornerRadiusDrag.dragging) {
+        const changed = commitGraphicCornerRadius(graphicCornerRadiusDrag, point);
+        setStatus(changed ? "Adjusted corner radius" : "Corner radius unchanged");
+      } else {
+        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
+        setStatus("Selected rounded rectangle");
+      }
+      clearGraphicCornerRadiusDrag(event);
+      return;
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -5243,10 +5425,12 @@ export function MainWindow({
     clearObjectDrag,
     clearObjectRotateDrag,
     clearObjectResizeDrag,
+    clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
     clearProjectedPlaneTiltDrag,
     clearNativePlacementDrag,
     clearTextResize,
+    commitGraphicCornerRadius,
     commitGraphicPathEdit,
     commitNativePlacementDrag,
     commitNativePartDrag,
@@ -6101,6 +6285,101 @@ export function MainWindow({
     return true;
   }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
+  const handleGraphicCornerRadiusPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can be unavailable if the browser has already canceled the press.
+    }
+
+    const point = pagePointFromPointerEvent(event);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    const editPoint = object?.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
+    if (!point || object?.type !== "graphic" || !editPoint) {
+      return;
+    }
+
+    const selectedDocument = currentDocument.selection.objectIds.includes(objectId)
+      ? currentDocument
+      : selectDocumentObject(currentDocument, objectId);
+    replacePresentDocument(selectedDocument);
+    handleRotationInputKeep();
+    handleObjectResizeInputKeep();
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setGraphicCornerRadiusReadout({
+      objectId,
+      radius: graphicCornerRadiusReadoutValue(object)
+    });
+    graphicCornerRadiusDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      startDocument: selectedDocument,
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus("Adjust selected rectangle corner radius");
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    handleObjectResizeInputKeep,
+    handleRotationInputKeep,
+    pagePointFromPointerEvent,
+    replacePresentDocument
+  ]);
+
+  const handleGraphicCornerRadiusDoubleClick = useCallback((objectId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (activeToolState.activeKind !== "selection") {
+      return;
+    }
+
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type !== "graphic" || !nativeGraphicCornerRadiusEditPoint(object)) {
+      return;
+    }
+
+    const selectedDocument = currentDocument.selection.objectIds.includes(objectId)
+      ? currentDocument
+      : selectDocumentObject(currentDocument, objectId);
+    const currentRadius = graphicCornerRadiusReadoutValue(object);
+    const nextRadius = currentRadius <= 0.001 ? maxGraphicCornerRadius(object) : 0;
+    const edited = updateNativeGraphicCornerRadius(selectedDocument, objectId, { x: nextRadius, y: 0 });
+    if (edited === selectedDocument) {
+      replacePresentDocument(selectedDocument);
+      setStatus("Corner radius unchanged");
+      return;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, selectedDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: edited,
+      future: []
+    });
+    setGraphicCornerRadiusReadout({
+      objectId,
+      radius: nextRadius
+    });
+    setStatus(nextRadius <= 0.001 ? "Reset corner radius" : "Maxed corner radius");
+  }, [activeToolState.activeKind, installDocumentHistory, replacePresentDocument]);
+
   const handleGraphicPathEditPointerDown = useCallback((
     objectId: string,
     handle: NativeGraphicPathEditHandle,
@@ -6143,16 +6422,16 @@ export function MainWindow({
       pointerId: event.pointerId,
       objectId,
       handle,
-      circularArc: editPoints.pathKind === "arc" && !object.data.pathControlPoint,
+      circularArc: isSemanticCircularGraphicArc(object, editPoints),
       startDocument: selectedDocument,
       startPoint: point,
       latestPoint: point,
       dragging: false
     };
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
-    setStatus(editPoints.pathKind === "arc" && !object.data.pathControlPoint
+    setStatus(isSemanticCircularGraphicArc(object, editPoints)
       ? handle === "middle" ? "Adjust selected arc radius" : "Adjust selected arc sweep"
-      : handle === "middle" ? "Bend selected line into an arc" : "Adjust selected line endpoint");
+      : handle === "middle" ? "Bend selected line into a curve" : "Adjust selected line endpoint");
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
@@ -6453,6 +6732,32 @@ export function MainWindow({
       return;
     }
 
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId && graphicCornerRadiusDrag.objectId === objectId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicCornerRadiusDrag.latestPoint = point;
+      if (!graphicCornerRadiusDrag.dragging && clientPointDistance(graphicCornerRadiusDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+        graphicCornerRadiusDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (graphicCornerRadiusDrag.dragging) {
+        previewGraphicCornerRadius(graphicCornerRadiusDrag, point);
+      }
+      return;
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.objectId === objectId) {
       const point = pagePointFromPointerEvent(event);
@@ -6531,6 +6836,7 @@ export function MainWindow({
     previewObjectDrag,
     previewObjectRotateDrag,
     previewObjectResize,
+    previewGraphicCornerRadius,
     previewGraphicPathEdit,
     previewNativeDoubleBondSideDrag,
     previewNativePartDrag,
@@ -6615,6 +6921,21 @@ export function MainWindow({
       return;
     }
 
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId && graphicCornerRadiusDrag.objectId === objectId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicCornerRadiusDrag.latestPoint;
+      if (graphicCornerRadiusDrag.dragging) {
+        const changed = commitGraphicCornerRadius(graphicCornerRadiusDrag, point);
+        setStatus(changed ? "Adjusted corner radius" : "Corner radius unchanged");
+      } else {
+        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
+        setStatus("Selected rounded rectangle");
+      }
+      clearGraphicCornerRadiusDrag(event);
+      return;
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.objectId === objectId) {
       event.stopPropagation();
@@ -6674,12 +6995,14 @@ export function MainWindow({
     clearObjectDrag,
     clearObjectRotateDrag,
     clearObjectResizeDrag,
+    clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
     clearTextResize,
     commitGraphicPathEdit,
     commitNativeDoubleBondSideDrag,
     commitNativePartDrag,
     commitObjectResize,
+    commitGraphicCornerRadius,
     commitTextResize,
     commitObjectDrag,
     commitObjectRotateDrag,
@@ -6716,6 +7039,11 @@ export function MainWindow({
       setObjectResizeReadout(undefined);
     }
 
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId && graphicCornerRadiusDrag.dragging) {
+      replacePresentDocument(graphicCornerRadiusDrag.startDocument);
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.dragging) {
       replacePresentDocument(graphicPathEditDrag.startDocument);
@@ -6728,6 +7056,7 @@ export function MainWindow({
     clearNativePartDrag(event);
     clearObjectRotateDrag(event);
     clearObjectResizeDrag(event);
+    clearGraphicCornerRadiusDrag(event);
     clearGraphicPathEditDrag(event);
     clearObjectDrag(event);
     clearNativeBondEditDrag(event);
@@ -6740,6 +7069,7 @@ export function MainWindow({
     clearNativeBondDrag,
     clearNativeBondEditDrag,
     clearNativePartDrag,
+    clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
     clearObjectResizeDrag,
     clearObjectDrag,
@@ -6754,6 +7084,7 @@ export function MainWindow({
       nativeBondEditDragRef.current?.objectId === objectId ||
       nativePartDragRef.current?.objectId === objectId ||
       objectDragRef.current?.objectId === objectId ||
+      graphicCornerRadiusDragRef.current?.objectId === objectId ||
       graphicPathEditDragRef.current?.objectId === objectId ||
       objectRotateDragRef.current?.objectId === objectId ||
       objectResizeDragRef.current?.objectId === objectId
@@ -6774,7 +7105,7 @@ export function MainWindow({
 
   return (
     <main
-      className={["app-shell", nativePalette ? "native-shell" : "web-shell"].join(" ")}
+      className={["app-shell", effectiveNativePalette ? "native-shell" : "web-shell"].join(" ")}
       aria-label="ChemDraft desktop workspace"
       data-active-tool={activeToolState.activeCommandId}
       data-active-tool-kind={activeToolState.activeKind}
@@ -6790,7 +7121,7 @@ export function MainWindow({
         onChange={handleOpenFile}
       />
 
-      {!nativePalette
+      {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             return (
@@ -6812,7 +7143,20 @@ export function MainWindow({
                 onPointerUp={stopWebPaletteDrag}
                 onPointerCancel={stopWebPaletteDrag}
               >
-                <div className="palette-title">{toolset.title.replace(/ Toolbar$/, "")}</div>
+                <div
+                  className="palette-title"
+                  data-palette-title-drag-surface="true"
+                  data-web-palette-drag-region="true"
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    startWebPaletteDrag(toolset.id, event);
+                  }}
+                  onPointerMove={moveWebPalette}
+                  onPointerUp={stopWebPaletteDrag}
+                  onPointerCancel={stopWebPaletteDrag}
+                >
+                  <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
+                </div>
                 <ToolPalette
                   groups={getToolsetCommandGroups(toolset.id, toolsetRegistry)}
                   activeTool={activeTool}
@@ -6952,6 +7296,9 @@ export function MainWindow({
                       rotationInput={rotationInput?.objectId === object.id ? rotationInput : undefined}
                       resizeReadout={objectResizeReadout?.objectId === object.id ? objectResizeReadout : undefined}
                       resizeInput={objectResizeInput?.objectId === object.id ? objectResizeInput : undefined}
+                      graphicCornerRadiusReadout={
+                        graphicCornerRadiusReadout?.objectId === object.id ? graphicCornerRadiusReadout : undefined
+                      }
                       onPointerDown={handleObjectPointerDown}
                       onPointerMove={handleObjectPointerMove}
                       onPointerUp={handleObjectPointerUp}
@@ -6961,6 +7308,8 @@ export function MainWindow({
                       onRotateDoubleClick={handleObjectRotateDoubleClick}
                       onProjectedPlaneTiltPointerDown={handleProjectedPlaneTiltPointerDown}
                       onProjectedPlaneTiltDoubleClick={handleProjectedPlaneTiltDoubleClick}
+                      onGraphicCornerRadiusPointerDown={handleGraphicCornerRadiusPointerDown}
+                      onGraphicCornerRadiusDoubleClick={handleGraphicCornerRadiusDoubleClick}
                       onGraphicPathEditPointerDown={handleGraphicPathEditPointerDown}
                       onRotationInputChange={handleRotationInputChange}
                       onRotationInputKeep={handleRotationInputKeep}
@@ -7980,7 +8329,7 @@ function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean)
   if (drag.circularArc) {
     return drag.handle === "middle" ? "Adjusted selected arc radius" : "Adjusted selected arc sweep";
   }
-  return drag.handle === "middle" ? "Bent selected line into an arc" : "Adjusted selected line endpoint";
+  return drag.handle === "middle" ? "Bent selected line into a curve" : "Adjusted selected line endpoint";
 }
 
 function nativeGraphicPathEditPointFromProjectedDrag(
@@ -7995,12 +8344,45 @@ function nativeGraphicPathEditPointFromProjectedDrag(
   return unprojectGraphicObjectPoint(object, point);
 }
 
+function nativeGraphicCornerRadiusPointFromProjectedDrag(
+  document: ChemDraftDocument,
+  objectId: string,
+  point: ClientPoint
+): ClientPoint {
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "graphic") {
+    return point;
+  }
+  const unprojected = unprojectGraphicObjectPoint(object, point);
+  return {
+    x: unprojected.x - object.x,
+    y: unprojected.y - object.y
+  };
+}
+
+function graphicCornerRadiusReadoutValue(object: GraphicObject): number {
+  const point = nativeGraphicCornerRadiusEditPoint(object);
+  return point ? point.x : 0;
+}
+
 function graphicArcSweepRadiansLabel(object: GraphicObject): string {
   const rawSweep = typeof object.data.arcSweepRadians === "number" && Number.isFinite(object.data.arcSweepRadians)
     ? object.data.arcSweepRadians
     : Math.PI;
   const sweep = Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(rawSweep)));
   return `${sweep.toFixed(3)} rad`;
+}
+
+function isSemanticCircularGraphicArc(
+  object: GraphicObject,
+  points: NativeGraphicPathEditPoints
+): boolean {
+  return points.pathKind === "arc" && (
+    !object.data.pathControlPoint ||
+    object.data.arcCenter !== undefined ||
+    object.data.arcRadiusX !== undefined ||
+    object.data.arcRadiusY !== undefined
+  );
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {
@@ -10116,6 +10498,7 @@ function DocumentObjectView({
   rotationInput,
   resizeReadout,
   resizeInput,
+  graphicCornerRadiusReadout,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -10125,6 +10508,8 @@ function DocumentObjectView({
   onRotateDoubleClick,
   onProjectedPlaneTiltPointerDown,
   onProjectedPlaneTiltDoubleClick,
+  onGraphicCornerRadiusPointerDown,
+  onGraphicCornerRadiusDoubleClick,
   onGraphicPathEditPointerDown,
   onRotationInputChange,
   onRotationInputKeep,
@@ -10167,6 +10552,7 @@ function DocumentObjectView({
   rotationInput?: RotationInputState;
   resizeReadout?: ObjectResizeReadoutState;
   resizeInput?: ObjectResizeInputState;
+  graphicCornerRadiusReadout?: GraphicCornerRadiusReadoutState;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
@@ -10176,6 +10562,8 @@ function DocumentObjectView({
   onRotateDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
+  onGraphicCornerRadiusPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
+  onGraphicCornerRadiusDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
   onRotationInputKeep(input: RotationInputState): void;
@@ -10244,6 +10632,12 @@ function DocumentObjectView({
   };
   const handleProjectedPlaneTiltDoubleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     onProjectedPlaneTiltDoubleClick(object.id, event);
+  };
+  const handleGraphicCornerRadiusPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    onGraphicCornerRadiusPointerDown(object.id, event);
+  };
+  const handleGraphicCornerRadiusDoubleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    onGraphicCornerRadiusDoubleClick(object.id, event);
   };
   const handleGraphicPathEditPointerDown = (handle: NativeGraphicPathEditHandle) => (event: PointerEvent<HTMLButtonElement>) => {
     onGraphicPathEditPointerDown(object.id, handle, event);
@@ -10356,10 +10750,24 @@ function DocumentObjectView({
     : undefined;
   const artObjectTransformFrameStyle = artObjectProjection?.frameStyle;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+  const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
   const pathGraphicInEditMode = selected &&
     object.type === "graphic" &&
     graphicPathEditPoints !== undefined &&
     !graphicTransformActive;
+  const showGraphicCornerRadiusHandle = selected &&
+    object.type === "graphic" &&
+    graphicCornerRadiusEditPoint !== undefined &&
+    !inGroupSelection &&
+    !graphicTransformActive &&
+    !pathGraphicInEditMode &&
+    !editingText &&
+    !editingAtomLabel &&
+    !rotateReadout &&
+    !projectedPlaneTiltReadout &&
+    !rotationInput &&
+    !resizeReadout &&
+    !resizeInput;
   const showArtObjectTransformFrame = selected &&
     !inGroupSelection &&
     documentObjectSupportsArtTransform(object) &&
@@ -10958,6 +11366,14 @@ function DocumentObjectView({
         onPointerDown={handleGraphicPathEditPointerDown}
       />
     ) : null;
+    const graphicCornerRadiusHandle = showGraphicCornerRadiusHandle ? (
+      <GraphicCornerRadiusHandle
+        object={object}
+        readout={graphicCornerRadiusReadout}
+        onDoubleClick={handleGraphicCornerRadiusDoubleClick}
+        onPointerDown={handleGraphicCornerRadiusPointerDown}
+      />
+    ) : null;
     return (
       <div
         className={["document-object", "document-object-overlay", "graphic-object"].join(" ")}
@@ -10967,6 +11383,7 @@ function DocumentObjectView({
         data-graphic-kind={object.graphicKind}
         data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints
           ? pathGraphicInEditMode ? "path-edit" : "object-transform"
+          : selected && !inGroupSelection && graphicCornerRadiusEditPoint ? "corner-radius-edit"
           : undefined}
         aria-label={`${object.graphicKind} graphic`}
         onPointerDown={handleObjectPointerDown}
@@ -10977,6 +11394,7 @@ function DocumentObjectView({
         onContextMenu={handleObjectContextMenu}
       >
         <GraphicGlyph object={object} />
+        {graphicCornerRadiusHandle}
         {graphicPathEditHandles}
         {artObjectTransformFrame}
       </div>
@@ -11391,6 +11809,56 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   );
 }
 
+function GraphicCornerRadiusHandle({
+  object,
+  readout,
+  onPointerDown,
+  onDoubleClick
+}: {
+  object: GraphicObject;
+  readout?: GraphicCornerRadiusReadoutState;
+  onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
+  onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
+}) {
+  const point = nativeGraphicCornerRadiusEditPoint(object);
+  if (!point) {
+    return null;
+  }
+
+  const radius = readout?.radius ?? graphicCornerRadiusReadoutValue(object);
+  const projectedPoint = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+  const label = `Radius: ${Math.round(radius)} px`;
+
+  return (
+    <>
+      <button
+        type="button"
+        className="graphic-corner-radius-handle"
+        aria-label="Adjust corner radius"
+        data-graphic-corner-radius-handle="true"
+        data-graphic-corner-radius-value={String(Math.round(radius))}
+        style={{
+          left: `${projectedPoint.x}px`,
+          top: `${projectedPoint.y}px`
+        }}
+        title="Adjust corner radius"
+        onPointerDown={onPointerDown}
+        onDoubleClick={onDoubleClick}
+      />
+      <div
+        className="graphic-corner-radius-readout"
+        data-graphic-corner-radius-readout="true"
+        style={{
+          left: `${projectedPoint.x}px`,
+          top: `${projectedPoint.y}px`
+        }}
+      >
+        {label}
+      </div>
+    </>
+  );
+}
+
 function GraphicPathEditHandles({
   object,
   onPointerDown
@@ -11403,7 +11871,7 @@ function GraphicPathEditHandles({
     return null;
   }
 
-  const circularArc = points.pathKind === "arc" && !object.data.pathControlPoint;
+  const circularArc = isSemanticCircularGraphicArc(object, points);
   const projectedPoints = {
     start: projectGraphicObjectPoint(object, points.start),
     middle: projectGraphicObjectPoint(object, points.middle),
@@ -11418,7 +11886,7 @@ function GraphicPathEditHandles({
       ]
     : [
         { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
-        { handle: "middle", point: projectedPoints.middle, label: "Bend line into arc" },
+        { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
         { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
       ];
 

@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import type { GraphicObject } from "@chemdraft/chem-core";
 import {
+  editGraphicCornerRadius,
   editGraphicPathGeometry,
+  graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
+  maxGraphicCornerRadius,
   planNativeArtVisual,
   projectGraphicObjectPoint,
   unprojectGraphicObjectPoint
@@ -260,6 +263,96 @@ describe("art-engine native art planning", () => {
     });
   });
 
+  it("clamps rectangle corner radius and exposes a direct local edit point", () => {
+    const square = {
+      ...baseGraphic,
+      graphicKind: "rect",
+      width: 48,
+      height: 48,
+      data: {
+        cornerRadiusPx: 200
+      }
+    } satisfies GraphicObject;
+    const wide = {
+      ...baseGraphic,
+      graphicKind: "rect",
+      width: 120,
+      height: 32,
+      data: {
+        cornerRadiusPx: 18
+      }
+    } satisfies GraphicObject;
+    const ellipse = {
+      ...baseGraphic,
+      graphicKind: "ellipse",
+      width: 48,
+      height: 48,
+      data: {
+        cornerRadiusPx: 20
+      }
+    } satisfies GraphicObject;
+
+    expect(maxGraphicCornerRadius(square)).toBe(24);
+    expect(maxGraphicCornerRadius(wide)).toBe(16);
+    expect(maxGraphicCornerRadius(ellipse)).toBe(0);
+    expect(planNativeArtVisual(square, { coordinateSpace: "local" }).cornerRadius).toBe(24);
+    expect(graphicCornerRadiusEditPoint(square)).toEqual({ x: 24, y: 0 });
+    expect(graphicCornerRadiusEditPoint(ellipse)).toBeUndefined();
+
+    const reset = editGraphicCornerRadius(square, { x: -12, y: 0 });
+    expect(reset?.graphicKind).toBe("rect");
+    expect(reset?.data).toEqual({ cornerRadiusPx: 0 });
+
+    expect(editGraphicCornerRadius(square, { x: 0.46, y: 0 })?.data).toEqual({ cornerRadiusPx: 0 });
+
+    const pill = editGraphicCornerRadius(wide, { x: 200, y: 0 });
+    expect(pill?.data).toEqual({ cornerRadiusPx: 16 });
+    expect(editGraphicCornerRadius(wide, { x: 15.6, y: 0 })?.data).toEqual({ cornerRadiusPx: 16 });
+    expect(pill).toMatchObject({
+      x: wide.x,
+      y: wide.y,
+      width: wide.width,
+      height: wide.height,
+      graphicKind: "rect"
+    });
+  });
+
+  it("keeps projected rectangle corner radius editing object-local after Z rotation and X/Y tilt", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "rect",
+      width: 84,
+      height: 42,
+      rotation: 28,
+      style: {
+        ...baseGraphic.style,
+        tiltXDegrees: 24,
+        tiltYDegrees: -14
+      },
+      data: {
+        cornerRadiusPx: 6
+      }
+    } satisfies GraphicObject;
+    const maxRadius = maxGraphicCornerRadius(graphic);
+    const projectedLocal = projectGraphicObjectPoint(
+      graphic,
+      { x: maxRadius, y: 0 },
+      { coordinateSpace: "local" }
+    );
+    const projectedPage = {
+      x: graphic.x + projectedLocal.x,
+      y: graphic.y + projectedLocal.y
+    };
+    const unprojectedPage = unprojectGraphicObjectPoint(graphic, projectedPage);
+    const edited = editGraphicCornerRadius(graphic, {
+      x: unprojectedPage.x - graphic.x,
+      y: unprojectedPage.y - graphic.y
+    });
+
+    expect(edited?.data.cornerRadiusPx).toBeCloseTo(maxRadius, 3);
+    expect(planNativeArtVisual(edited ?? graphic, { coordinateSpace: "local" }).cornerRadius).toBeCloseTo(maxRadius, 3);
+  });
+
   it("keeps projected bounds, matrix, and gradient data in one render plan", () => {
     const graphic = {
       ...baseGraphic,
@@ -333,11 +426,100 @@ describe("art-engine native art planning", () => {
     }
 
     const completed = editGraphicPathGeometry(graphic, "end", points.start);
+    const center = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
 
     expect(completed?.data.artPathKind).toBe("arc");
+    expect(completed?.data.arcCenter).toEqual(center);
+    expect(completed?.data.arcRadiusX).toBeCloseTo(25, 6);
+    expect(completed?.data.arcRadiusY).toBeCloseTo(25, 6);
     expect(completed?.data.arcSweepRadians).toBeGreaterThan(Math.PI * 1.99);
-    expect(completed?.x).toBe(graphic.x);
-    expect(completed?.y).toBe(graphic.y);
+    expect(completed?.x).toBeLessThanOrEqual(center.x - 25);
+    expect(completed?.y).toBeLessThanOrEqual(center.y - 25);
+  });
+
+  it("bends a line middle handle into a freeform quadratic curve with the handle on the curve", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+    const points = graphicPathEditPoints(graphic);
+    if (!points) {
+      throw new Error("Expected line edit points.");
+    }
+    const target = {
+      x: (points.start.x + points.end.x) / 2,
+      y: points.start.y - 42
+    };
+
+    const bent = editGraphicPathGeometry(graphic, "middle", target);
+    const bentPoints = graphicPathEditPoints(bent as GraphicObject);
+    const plan = planNativeArtVisual(bent as GraphicObject, { coordinateSpace: "page" });
+    const pathMatch = plan.pathD?.match(/^M\s+([\d.-]+)\s+([\d.-]+)\s+Q\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)/);
+    if (!pathMatch) {
+      throw new Error(`Expected a quadratic path, received ${plan.pathD}`);
+    }
+    const [, startX, startY, controlX, controlY, endX, endY] = pathMatch.map(Number);
+    const visibleMiddle = {
+      x: 0.25 * startX + 0.5 * controlX + 0.25 * endX,
+      y: 0.25 * startY + 0.5 * controlY + 0.25 * endY
+    };
+
+    expect(bent?.data.artPathKind).toBe("arc");
+    expect(bent?.data.pathControlPoint).toEqual(target);
+    expect(bent?.data.lineStart).toEqual(points.start);
+    expect(bent?.data.lineEnd).toEqual(points.end);
+    expect(bent?.data.arcCenter).toBeUndefined();
+    expect(bent?.data.arcRadiusX).toBeUndefined();
+    expect(bent?.data.arcRadiusY).toBeUndefined();
+    expect(bent?.data.arcSweepRadians).toBeUndefined();
+    expect(bentPoints?.middle.x).toBeCloseTo(target.x, 3);
+    expect(bentPoints?.middle.y).toBeCloseTo(target.y, 3);
+    expect(plan.pathD).toContain(" Q ");
+    expect(plan.pathD).not.toContain(" A ");
+    expect(visibleMiddle.x).toBeCloseTo(target.x, 3);
+    expect(visibleMiddle.y).toBeCloseTo(target.y, 3);
+  });
+
+  it("preserves the side of the segment used to bend a line into a freeform curve", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+    const points = graphicPathEditPoints(graphic);
+    if (!points) {
+      throw new Error("Expected line edit points.");
+    }
+    const upwardTarget = {
+      x: (points.start.x + points.end.x) / 2,
+      y: points.start.y - 42
+    };
+    const downwardTarget = {
+      x: (points.start.x + points.end.x) / 2,
+      y: points.end.y + 42
+    };
+
+    const upward = editGraphicPathGeometry(graphic, "middle", upwardTarget);
+    const downward = editGraphicPathGeometry(graphic, "middle", downwardTarget);
+
+    expect(graphicPathEditPoints(upward as GraphicObject)?.middle.y).toBeCloseTo(upwardTarget.y, 3);
+    expect(graphicPathEditPoints(downward as GraphicObject)?.middle.y).toBeCloseTo(downwardTarget.y, 3);
+    expect(upward?.data.arcSweepRadians).toBeUndefined();
+    expect(downward?.data.arcSweepRadians).toBeUndefined();
+    expect(planNativeArtVisual(upward as GraphicObject, { coordinateSpace: "page" }).pathD).toContain(" Q ");
+    expect(planNativeArtVisual(downward as GraphicObject, { coordinateSpace: "page" }).pathD).toContain(" Q ");
   });
 
   it("expands and contracts circular arc radius from the middle handle around the same center", () => {
@@ -368,12 +550,47 @@ describe("art-engine native art planning", () => {
     };
 
     const expanded = editGraphicPathGeometry(graphic, "middle", outward);
+    const expandedPoints = graphicPathEditPoints(expanded as GraphicObject);
 
     expect(expanded?.width).toBeGreaterThan(graphic.width);
-    expect(expanded?.height).toBe(expanded?.width);
-    expect((expanded?.x ?? 0) + (expanded?.width ?? 0) / 2).toBeCloseTo(center.x, 4);
-    expect((expanded?.y ?? 0) + (expanded?.height ?? 0) / 2).toBeCloseTo(center.y, 4);
+    expect(expanded?.height).toBeGreaterThan(graphic.height);
+    expect(expanded?.data.arcCenter).toEqual(center);
+    expect(expanded?.data.arcRadiusX).toBeCloseTo(length + 18, 4);
+    expect(expanded?.data.arcRadiusY).toBeCloseTo(length + 18, 4);
+    expect(expandedPoints?.middle.x).toBeCloseTo(outward.x, 3);
+    expect(expandedPoints?.middle.y).toBeCloseTo(outward.y, 3);
     expect(expanded?.data.arcSweepRadians).toBeCloseTo(Math.PI * 1.5, 6);
+  });
+
+  it("keeps the circular arc middle handle attached when a rectangular arc becomes circular", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 96,
+      height: 54,
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: Math.PI * 0.18,
+        arcSweepRadians: Math.PI * 1.36
+      }
+    } satisfies GraphicObject;
+    const points = graphicPathEditPoints(graphic);
+    if (!points) {
+      throw new Error("Expected arc edit points.");
+    }
+    const target = {
+      x: points.middle.x + 31,
+      y: points.middle.y - 17
+    };
+
+    const edited = editGraphicPathGeometry(graphic, "middle", target);
+    const editedPoints = graphicPathEditPoints(edited as GraphicObject);
+
+    expect(edited?.data.arcSweepRadians).toBeCloseTo(graphic.data.arcSweepRadians, 6);
+    expect(edited?.data.arcRadiusX).toBeCloseTo(edited?.data.arcRadiusY as number, 6);
+    expect(editedPoints?.middle.x).toBeCloseTo(target.x, 3);
+    expect(editedPoints?.middle.y).toBeCloseTo(target.y, 3);
+    expect(planNativeArtVisual(edited as GraphicObject, { coordinateSpace: "page" }).pathD).toContain(" A ");
   });
 
   it("keeps transformed and tilted circular arcs editable through projected handle points", () => {

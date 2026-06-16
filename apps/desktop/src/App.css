@@ -1888,6 +1888,30 @@ textarea:focus-visible,
   border-color: var(--cd-accent-strong);
 }
 
+.graphic-corner-radius-handle {
+  position: absolute;
+  z-index: 4;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  background: var(--cd-bg-control-opaque);
+  border: 1.5px solid var(--cd-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 78%);
+  cursor: ew-resize;
+  pointer-events: all;
+  transform: translate(-50%, -50%);
+}
+
+.graphic-corner-radius-handle:hover {
+  background: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+}
+
+.graphic-corner-radius-handle:active {
+  cursor: grabbing;
+}
+
 .graphic-path-edit-handle-start,
 .graphic-path-edit-handle-end {
   cursor: grab;
@@ -1928,6 +1952,24 @@ textarea:focus-visible,
   pointer-events: none;
   text-align: center;
   transform: translate(-50%, calc(-100% - 12px));
+  white-space: nowrap;
+}
+
+.graphic-corner-radius-readout {
+  position: absolute;
+  z-index: 5;
+  min-width: 58px;
+  padding: 2px 4px;
+  border: 1px solid rgb(29 127 104 / 54%);
+  border-radius: 3px;
+  background: rgb(255 255 255 / 94%);
+  color: var(--cd-text);
+  font-size: 10px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  text-align: center;
+  transform: translate(-50%, calc(-100% - 10px));
   white-space: nowrap;
 }
 
