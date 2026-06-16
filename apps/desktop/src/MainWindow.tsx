@@ -136,6 +136,13 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   cleanUpNativeMolecules2d,
+  attachSpin3dModel,
+  buildSpin3dModel,
+  conformerGraphSignature,
+  spin3dModelCoordsForMolecule,
+  validSpin3dModelFor,
+  type ProjectedPlaneTiltDocumentResult,
+  type Spin3dEngineProvenance,
   flattenSpunMolecule,
   deleteSelectedDocumentObjects,
   exportPhase4Cdxml,
@@ -237,7 +244,15 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
-import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
+import {
+  applyTrackballDrag,
+  quatFromAxisAngle,
+  quatMultiply,
+  quatNormalize,
+  quatToViewMatrix,
+  type Quaternion,
+  type Vec3
+} from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import {
@@ -372,6 +387,17 @@ type ObjectDragState = {
   groupObjectIds?: readonly string[];
   dragging: boolean;
 };
+// Captured at pointer-down when a whole molecule carries a valid persisted Spin 3D
+// model, so the rotate handles re-project the real conformer instead of shearing the
+// flattened 2D drawing. Snapshotting here avoids re-reading/re-validating per frame.
+type Spin3dRotateSnapshot = {
+  /** Committed orientation at pointer-down; per-drag deltas compose onto this (no drift). */
+  startOrientation: Quaternion;
+  /** Conformer (math frame, y-up), reordered into the current molecule's atom order. */
+  coords3d: Float64Array;
+  atomIds: string[];
+  engine?: Spin3dEngineProvenance;
+};
 type ObjectRotateDragState = {
   pointerId: number;
   objectId: string;
@@ -382,6 +408,7 @@ type ObjectRotateDragState = {
   startRotationDegrees: number;
   latestPoint: ClientPoint;
   dragging: boolean;
+  spin3dModel?: Spin3dRotateSnapshot;
 };
 type ObjectRotateReadoutState = {
   objectId: string;
@@ -403,6 +430,11 @@ type ProjectedPlaneTiltDragState = {
   latestTiltYRad: number;
   clamped: boolean;
   dragging: boolean;
+  spin3dModel?: Spin3dRotateSnapshot;
+  /** Last flatten that committed (depth-cued 2D + the orientation that produced it).
+   *  On a stereo-refused frame the preview holds this instead of snapping back. */
+  lastValidPreviewDocument?: ChemDraftDocument;
+  lastValidOrientation?: Quaternion;
 };
 type ProjectedPlaneTiltReadoutState = {
   objectId: string;
@@ -652,15 +684,11 @@ const SPIN_IN_PAGE_MAX_ATOMS = 30;
 
 // Identity of the 3D conformer a molecule would embed to — connectivity, elements,
 // charges, and bond orders, in atom-array order (coords3d is indexed by that order).
-// Deliberately position-independent: dragging or flattening a molecule (which only
-// moves its 2D x/y) keeps the signature stable, so the spin model memo survives those.
-// Editing the graph (add/remove atom, change element/charge/bond order) changes it,
-// invalidating a stale memo.
-function conformerGraphSignature(molecule: MoleculeObject): string {
-  const atoms = molecule.atoms.map((atom) => `${atom.id}:${atom.element}:${atom.formalCharge}`).join(",");
-  const bonds = molecule.bonds.map((bond) => `${bond.fromAtomId}>${bond.toAtomId}:${bond.order}`).join(",");
-  return `${atoms}|${bonds}`;
-}
+// Unit axes (math frame: x right, y up, z toward viewer) for composing the per-drag
+// rotation quaternion that 3D-backed X/Y/Z rotation feeds into flattenSpunMolecule.
+const SPIN_AXIS_X: Vec3 = [1, 0, 0];
+const SPIN_AXIS_Y: Vec3 = [0, 1, 0];
+const SPIN_AXIS_Z: Vec3 = [0, 0, 1];
 const DOCUMENT_HISTORY_LIMIT = 100;
 const CURRENT_BUILD_STAMP = "6.14.22.26-opus";
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -1799,20 +1827,31 @@ export function MainWindow({
       applySpin({ ...state, dragging: false, lastClient: undefined });
       return;
     }
-    commitDocumentChange(outcome.document);
-    // Remember this conformer + orientation so a later re-spin of the same (unedited)
-    // structure reopens here instead of re-snapping to a fresh embed. The graph is
-    // unchanged by the flatten, so signing the just-committed molecule is equivalent.
+    // Persist the conformer + committed orientation ON the molecule (under
+    // compatibility.unknown) so the ordinary X/Y/Z rotate handles re-project this real 3D
+    // model — durable across save/reload. The graph is unchanged by the flatten, so signing
+    // the just-committed molecule is equivalent. Also kept in the session memo so a re-spin
+    // reopens here instead of re-snapping to a fresh embed.
     const flattened = outcome.document.pages
       .flatMap((page) => page.objects)
       .find((object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule");
+    let committedDocument = outcome.document;
     if (flattened) {
-      spin3dModelCacheRef.current.set(state.objectId, {
-        signature: conformerGraphSignature(flattened),
+      const model = buildSpin3dModel({
+        molecule: flattened,
         coords3d: state.coords3d,
-        quat: state.quat
+        orientation: state.quat,
+        engine: state.engine
+      });
+      committedDocument = attachSpin3dModel(outcome.document, state.objectId, model);
+      spin3dModelCacheRef.current.set(state.objectId, {
+        signature: model.graphSignature,
+        coords3d: state.coords3d,
+        quat: state.quat,
+        engine: state.engine
       });
     }
+    commitDocumentChange(committedDocument);
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
     setStatus(
@@ -1831,7 +1870,7 @@ export function MainWindow({
   // of re-snapping to a fresh embed's readable angle — letting the user fine-tune position.
   // Self-invalidating: the stored signature keys on graph identity, so editing the molecule
   // forces a fresh embed (treated as first-time again). Not persisted across reload.
-  const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion }>>(
+  const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance }>>(
     new Map()
   );
   // The generation currently awaited (no overlay yet): repeated Spin 3D clicks for
@@ -1981,31 +2020,44 @@ export function MainWindow({
 
     // Already-modeled structure: reopen the stored conformer at its committed orientation
     // so the overlay lands exactly on the current drawing (no re-snap), letting the user
-    // fine-tune. Only when the graph is unchanged since the flatten (signature match).
+    // fine-tune. Prefer the session memo, then the model persisted on the molecule (which
+    // survives reload), and only fall through to a fresh embed if neither is valid. Both are
+    // graph-signature gated, so an edited structure re-embeds.
     const memo = spin3dModelCacheRef.current.get(objectId);
-    if (memo && memo.signature === conformerGraphSignature(molecule)) {
+    const memoHit = memo && memo.signature === conformerGraphSignature(molecule) ? memo : undefined;
+    let reopen: { coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance } | undefined =
+      memoHit ? { coords3d: memoHit.coords3d, quat: memoHit.quat, engine: memoHit.engine } : undefined;
+    if (!reopen) {
+      const documentModel = validSpin3dModelFor(molecule);
+      const coords3d = documentModel ? spin3dModelCoordsForMolecule(documentModel, molecule) : undefined;
+      if (documentModel && coords3d) {
+        reopen = { coords3d, quat: documentModel.orientation, engine: documentModel.engine };
+      }
+    }
+    if (reopen) {
       // Supersede any in-flight generation and invalidate stale async callbacks.
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, memo.coords3d);
+      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d);
       applySpin({
         objectId,
-        quat: memo.quat,
-        coords3d: memo.coords3d,
+        quat: reopen.quat,
+        coords3d: reopen.coords3d,
         bondPairs,
         bondRender,
         atomLabels,
         atoms,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
-        dragging: false
+        dragging: false,
+        engine: reopen.engine
       });
       traceInfo("spin.reused", {
         atomCount: molecule.atoms.length,
-        message: "cached model — reopened at committed orientation (no re-snap)"
+        message: "reused stored model — reopened at committed orientation (no re-snap)"
       });
-      commandSpan.complete({ message: "reused cached model" });
+      commandSpan.complete({ message: "reused stored model" });
       setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
       return;
     }
@@ -2087,7 +2139,8 @@ export function MainWindow({
         atoms,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
-        dragging: false
+        dragging: false,
+        engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
       });
       setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
     };
@@ -2105,7 +2158,15 @@ export function MainWindow({
       });
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
       const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
-      applySpin({ ...state, coords3d, bondPairs, bondRender, atomLabels, placement });
+      applySpin({
+        ...state,
+        coords3d,
+        bondPairs,
+        bondRender,
+        atomLabels,
+        placement,
+        engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
+      });
     };
 
     const runInPage = async (): Promise<void> => {
@@ -4143,10 +4204,63 @@ export function MainWindow({
       : rotateDocumentObject(drag.startDocument, drag.objectId, degrees);
   }, []);
 
+  // Snapshot the molecule's persisted Spin 3D model for a whole-molecule rotate drag.
+  // Returns undefined unless a valid (graph-matching) model is present and its conformer
+  // maps cleanly onto the current atoms — callers then fall back to the legacy 2.5D tilt.
+  const spin3dRotateSnapshotFor = useCallback((molecule: MoleculeObject): Spin3dRotateSnapshot | undefined => {
+    const model = validSpin3dModelFor(molecule);
+    if (!model) return undefined;
+    const coords3d = spin3dModelCoordsForMolecule(model, molecule);
+    if (!coords3d) return undefined;
+    return {
+      startOrientation: model.orientation,
+      coords3d,
+      atomIds: molecule.atoms.map((atom) => atom.id),
+      engine: model.engine
+    };
+  }, []);
+
   const projectedPlaneTiltFromDrag = useCallback((
     drag: ProjectedPlaneTiltDragState,
     point: ClientPoint
-  ) => {
+  ): ProjectedPlaneTiltDocumentResult => {
+    // 3D-backed whole-molecule rotation: re-project the stored conformer through the
+    // SAME flattenSpunMolecule pipeline Spin 3D commits, so atom positions, wedges,
+    // crossings AND bond depth cues all move together for the current orientation.
+    if (drag.spin3dModel && !drag.target) {
+      const model = drag.spin3dModel;
+      const delta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
+      // Delta is always measured from drag start and composed onto the start orientation,
+      // so repeated moves never accumulate drift. Vertical drag → X axis, horizontal → Y.
+      const deltaQuat = quatMultiply(
+        quatFromAxisAngle(SPIN_AXIS_Y, delta.yRad),
+        quatFromAxisAngle(SPIN_AXIS_X, delta.xRad)
+      );
+      const nextQuat = quatNormalize(quatMultiply(deltaQuat, model.startOrientation));
+      let document = drag.lastValidPreviewDocument ?? drag.startDocument;
+      let changed = document !== drag.startDocument;
+      try {
+        const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat));
+        if (outcome.status === "committed" && outcome.document !== drag.startDocument) {
+          drag.lastValidPreviewDocument = outcome.document;
+          drag.lastValidOrientation = nextQuat;
+          document = outcome.document;
+          changed = true;
+        }
+        // status !== "committed": a stereo-refused view — keep the last valid preview.
+      } catch {
+        // A flatten guard threw (e.g. a stale atom reference) — hold the last valid preview.
+      }
+      return {
+        document,
+        tiltRad: delta.xRad,
+        tiltXRad: delta.xRad,
+        tiltYRad: delta.yRad,
+        rotationDegrees: 0,
+        clamped: false,
+        changed
+      };
+    }
     const tiltDelta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
     const tiltXRad = drag.startTiltXRad + tiltDelta.xRad;
     const tiltYRad = drag.startTiltYRad + tiltDelta.yRad;
@@ -4287,10 +4401,33 @@ export function MainWindow({
       return false;
     }
 
+    // 3D-backed whole-molecule Z rotate: a pure in-plane (screen-Z) rotation is identical
+    // to the existing 2D atom rotation — depth ordering, wedges and bond depthWeight are
+    // unchanged, so we keep that cheap path (no re-flatten, no new stereo-refusal risk) and
+    // only fold a screen-Z quaternion into the stored orientation so the next X/Y drag
+    // re-projects from a consistent source instead of jumping.
+    let committed = rotated;
+    if (drag.spin3dModel && !drag.target) {
+      const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      const nextQuat = quatNormalize(quatMultiply(
+        quatFromAxisAngle(SPIN_AXIS_Z, degrees * Math.PI / 180),
+        drag.spin3dModel.startOrientation
+      ));
+      const flattened = findDocumentObject(rotated, drag.objectId);
+      if (flattened?.type === "molecule") {
+        committed = attachSpin3dModel(rotated, drag.objectId, buildSpin3dModel({
+          molecule: flattened,
+          coords3d: drag.spin3dModel.coords3d,
+          orientation: nextQuat,
+          engine: drag.spin3dModel.engine
+        }));
+      }
+    }
+
     const currentHistory = documentHistoryRef.current;
     installDocumentHistory({
       past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: rotated,
+      present: committed,
       future: []
     });
     return true;
@@ -4308,6 +4445,33 @@ export function MainWindow({
       result.clamped,
       true
     );
+
+    // 3D-backed commit: attach the updated 3D model AND keep its orientation in lock-step
+    // with the depth-cued geometry actually committed. If the final frame was refused, we
+    // commit the last valid preview and attach lastValidOrientation (NOT the refused quat),
+    // so the stored model never drifts away from the displayed depth/wedge/crossing state.
+    if (drag.spin3dModel) {
+      const finalDocument = drag.lastValidPreviewDocument;
+      const finalOrientation = drag.lastValidOrientation;
+      if (!result.changed || !finalDocument || !finalOrientation || finalDocument === drag.startDocument) {
+        replacePresentDocument(drag.startDocument);
+        return false;
+      }
+      const flattened = findDocumentObject(finalDocument, drag.objectId);
+      const modeled = flattened?.type === "molecule"
+        ? attachSpin3dModel(finalDocument, drag.objectId, buildSpin3dModel({
+          molecule: flattened,
+          coords3d: drag.spin3dModel.coords3d,
+          orientation: finalOrientation,
+          engine: drag.spin3dModel.engine
+        }))
+        : finalDocument;
+      const currentHistory = documentHistoryRef.current;
+      installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, modeled));
+      setStatus("3D rotation applied");
+      return true;
+    }
+
     if (!result.changed || result.document === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -6082,7 +6246,12 @@ export function MainWindow({
         ? selectedFragmentTarget ? 0 : nativeMoleculeTransformState(object).rotationDegrees
         : object.rotation,
       latestPoint: point,
-      dragging: false
+      dragging: false,
+      // Keep the stored conformer's orientation in sync when Z-rotating a modeled
+      // whole molecule (whole-molecule only; fragments/text stay on the legacy path).
+      spin3dModel: !selectedFragmentTarget && object.type === "molecule"
+        ? spin3dRotateSnapshotFor(object)
+        : undefined
     };
     objectRotateMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-rotate" });
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
@@ -6101,6 +6270,7 @@ export function MainWindow({
     replacePresentDocument,
     openObjectRotateInput,
     selectedNativeMoleculePart,
+    spin3dRotateSnapshotFor,
   ]);
 
   const handleObjectRotateDoubleClick = useCallback((objectId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -6217,6 +6387,9 @@ export function MainWindow({
       ? 0
       : (transform.tiltYDegrees ?? 0) * Math.PI / 180;
     const startRotationDegrees = selectedFragmentTarget ? 0 : transform.rotationDegrees;
+    // Whole molecule with a stored Spin 3D model → rotate the real conformer (v1 is
+    // whole-molecule only; fragments stay on the legacy projected-plane tilt).
+    const spin3dModel = selectedFragmentTarget ? undefined : spin3dRotateSnapshotFor(object);
     projectedPlaneTiltDragRef.current = {
       pointerId: event.pointerId,
       objectId,
@@ -6232,7 +6405,10 @@ export function MainWindow({
       latestTiltXRad: startTiltXRad,
       latestTiltYRad: startTiltYRad,
       clamped: false,
-      dragging: false
+      dragging: false,
+      spin3dModel,
+      lastValidPreviewDocument: selectedDocument,
+      lastValidOrientation: spin3dModel?.startOrientation
     };
     projectedPlaneTiltMachineRef.current = interactionReducer(initialInteractionState(), {
       type: "pointerDown",
@@ -6253,6 +6429,7 @@ export function MainWindow({
     openProjectedPlaneTiltInput,
     replacePresentDocument,
     selectedNativeMoleculePart,
+    spin3dRotateSnapshotFor,
   ]);
 
   const handleProjectedPlaneTiltDoubleClick = useCallback((objectId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -8618,6 +8795,8 @@ interface Spin3dState {
   selectionBox: { x: number; y: number; width: number; height: number };
   dragging: boolean;
   lastClient?: { x: number; y: number };
+  /** Engine provenance recorded into the persisted 3D model on flatten (best-effort). */
+  engine?: Spin3dEngineProvenance;
 }
 
 /**

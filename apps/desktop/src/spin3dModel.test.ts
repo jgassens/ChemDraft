@@ -1,0 +1,196 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  applyPatches,
+  deserializeDocument,
+  serializeDocument,
+  type ChemDraftDocument,
+  type MoleculeObject,
+  type ViewMatrix
+} from "@chemdraft/chem-core";
+
+import {
+  SPIN3D_MODEL_KEY,
+  attachSpin3dModel,
+  buildSpin3dModel,
+  conformerGraphSignature,
+  createPhase4Document,
+  flattenSpunMolecule,
+  readSpin3dModel,
+  spin3dModelCoordsForMolecule,
+  validSpin3dModelFor,
+  type Spin3dDocumentModelV1
+} from "./documentWorkflow";
+import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
+
+// Butane-ish chain (achiral → flatten never refuses) with a genuinely non-planar conformer
+// so projecting it from different orientations produces different depth cues.
+const CHAIN_ATOMS: MoleculeObject["atoms"] = [
+  { id: "a0", element: "C", x: 100, y: 100, formalCharge: 0 },
+  { id: "a1", element: "C", x: 130, y: 100, formalCharge: 0 },
+  { id: "a2", element: "C", x: 160, y: 100, formalCharge: 0 },
+  { id: "a3", element: "C", x: 190, y: 100, formalCharge: 0 }
+];
+const CHAIN_BONDS: MoleculeObject["bonds"] = [
+  { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" },
+  { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" },
+  { id: "b2", fromAtomId: "a2", toAtomId: "a3", order: "single" }
+];
+// Zig-zag spread along x (with vertical spread so projections stay non-degenerate in
+// every view) and alternating z; rotating about Y converts the wide x-spread into depth.
+const CHAIN_COORDS3D = [0, 0, 0, 1, 0.8, 0.3, 2, 0, -0.3, 3, 0.8, 0.3];
+
+function molecule(atoms = CHAIN_ATOMS, bonds = CHAIN_BONDS): MoleculeObject {
+  return {
+    id: "mol",
+    type: "molecule",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    rotation: 0,
+    style: {},
+    structureFormat: "molfile-v2000",
+    structure: "",
+    atoms,
+    bonds,
+    superatoms: [],
+    rGroups: []
+  };
+}
+
+function documentWith(mol: MoleculeObject): ChemDraftDocument {
+  const base = createPhase4Document("Spin 3D model fixture");
+  return applyPatches(base, [
+    { op: "addObject", pageId: base.pages[0].id, object: mol },
+    { op: "setSelection", pageId: base.pages[0].id, objectIds: [mol.id] }
+  ]);
+}
+
+function moleculeOf(document: ChemDraftDocument, id = "mol"): MoleculeObject {
+  const found = document.pages[0].objects.find((object) => object.id === id);
+  if (!found || found.type !== "molecule") throw new Error("molecule missing");
+  return found;
+}
+
+const IDENTITY_QUAT = { x: 0, y: 0, z: 0, w: 1 } as const;
+
+function modelFor(mol: MoleculeObject): Spin3dDocumentModelV1 {
+  return buildSpin3dModel({
+    molecule: mol,
+    coords3d: CHAIN_COORDS3D,
+    orientation: IDENTITY_QUAT,
+    engine: { name: "rdkit-wasm", version: "test", forceField: "MMFF94" }
+  });
+}
+
+describe("spin3d model — attach / read / validate", () => {
+  it("round-trips through compatibility.unknown without clobbering other metadata", () => {
+    const mol: MoleculeObject = {
+      ...molecule(),
+      compatibility: { sourceFormat: "smiles", warnings: [], unknown: { keep: "me" } }
+    };
+    const document = documentWith(mol);
+    const attached = attachSpin3dModel(document, "mol", modelFor(mol));
+    const next = moleculeOf(attached);
+
+    // Other compatibility fields survive the merge.
+    expect(next.compatibility?.sourceFormat).toBe("smiles");
+    expect(next.compatibility?.unknown?.keep).toBe("me");
+
+    const read = readSpin3dModel(next);
+    expect(read?.kind).toBe(SPIN3D_MODEL_KEY);
+    expect(read?.atomIds).toEqual(["a0", "a1", "a2", "a3"]);
+    expect(read?.coords3d).toEqual(CHAIN_COORDS3D);
+    expect(read?.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+    expect(read?.engine).toEqual({ name: "rdkit-wasm", version: "test", forceField: "MMFF94" });
+  });
+
+  it("survives document serialize → deserialize (strict schema)", () => {
+    const mol = molecule();
+    const attached = attachSpin3dModel(documentWith(mol), "mol", modelFor(mol));
+    const reloaded = deserializeDocument(serializeDocument(attached));
+    expect(readSpin3dModel(moleculeOf(reloaded))?.coords3d).toEqual(CHAIN_COORDS3D);
+  });
+
+  it("validSpin3dModelFor honors the graph-signature gate", () => {
+    const mol = molecule();
+    const attached = attachSpin3dModel(documentWith(mol), "mol", modelFor(mol));
+    expect(validSpin3dModelFor(moleculeOf(attached))?.kind).toBe(SPIN3D_MODEL_KEY);
+
+    // Edit the graph (add an atom) → the stored model is still readable but now stale.
+    const edited = applyPatches(attached, [
+      {
+        op: "updateObject",
+        objectId: "mol",
+        changes: { atoms: [...CHAIN_ATOMS, { id: "a4", element: "C", x: 220, y: 100, formalCharge: 0 }] }
+      }
+    ]);
+    const editedMol = moleculeOf(edited);
+    expect(readSpin3dModel(editedMol)?.kind).toBe(SPIN3D_MODEL_KEY); // still present
+    expect(validSpin3dModelFor(editedMol)).toBeUndefined(); // but rejected by the gate
+  });
+
+  it("readSpin3dModel rejects malformed models", () => {
+    const base = molecule();
+    const bad = (model: unknown): MoleculeObject => ({
+      ...base,
+      compatibility: { warnings: [], unknown: { [SPIN3D_MODEL_KEY]: model } }
+    });
+    expect(readSpin3dModel(bad({ kind: "other" }))).toBeUndefined();
+    expect(readSpin3dModel(bad({ kind: SPIN3D_MODEL_KEY, graphSignature: "x", atomIds: ["a0"], coords3d: [0, 0], orientation: IDENTITY_QUAT, updatedAt: "now" }))).toBeUndefined(); // coords len mismatch
+    expect(readSpin3dModel(bad({ kind: SPIN3D_MODEL_KEY, graphSignature: "x", atomIds: ["a0"], coords3d: [0, 0, 0], updatedAt: "now" }))).toBeUndefined(); // missing orientation
+  });
+
+  it("spin3dModelCoordsForMolecule reorders coords into the molecule's atom order", () => {
+    const mol = molecule();
+    const model = modelFor(mol);
+    // Same atoms, reversed order.
+    const reversed = molecule([...CHAIN_ATOMS].reverse(), CHAIN_BONDS);
+    const coords = spin3dModelCoordsForMolecule(model, reversed);
+    expect(coords).toBeDefined();
+    // a3 is now first; its coords (index 3 in the model) should lead.
+    expect(Array.from(coords!).slice(0, 3)).toEqual([3, 0.8, 0.3]);
+
+    // An atom id the model doesn't know about → cannot map.
+    const renamed = molecule(
+      CHAIN_ATOMS.map((atom, index) => (index === 0 ? { ...atom, id: "zzz" } : atom)),
+      CHAIN_BONDS
+    );
+    expect(spin3dModelCoordsForMolecule(model, renamed)).toBeUndefined();
+  });
+
+  it("buildSpin3dModel signs the current graph", () => {
+    const mol = molecule();
+    expect(buildSpin3dModel({ molecule: mol, coords3d: CHAIN_COORDS3D, orientation: IDENTITY_QUAT }).graphSignature)
+      .toBe(conformerGraphSignature(mol));
+  });
+});
+
+describe("spin3d model — depth-cue invariant", () => {
+  it("re-projecting the conformer at different orientations moves the bond depth cues", () => {
+    const document = documentWith(molecule());
+
+    const flatA = flattenSpunMolecule(document, "mol", CHAIN_COORDS3D, quatToViewMatrix(IDENTITY_QUAT));
+    // ~60° about Y turns the chain's x-spread into depth.
+    const flatB = flattenSpunMolecule(
+      document,
+      "mol",
+      CHAIN_COORDS3D,
+      quatToViewMatrix(quatFromAxisAngle([0, 1, 0], Math.PI / 3))
+    );
+
+    expect(flatA.status).toBe("committed");
+    expect(flatB.status).toBe("committed");
+
+    const weights = (outcome: typeof flatA): (number | null)[] =>
+      moleculeOf(outcome.document).bonds.map((bond) => bond.display?.depthWeight ?? null);
+    const weightsA = weights(flatA);
+    const weightsB = weights(flatB);
+
+    // The tilted view has real, non-uniform depth cues that differ from the flat view.
+    expect(weightsB.some((value) => typeof value === "number")).toBe(true);
+    expect(new Set(weightsB.filter((value): value is number => typeof value === "number")).size).toBeGreaterThan(1);
+    expect(JSON.stringify(weightsA)).not.toEqual(JSON.stringify(weightsB));
+  });
+});
