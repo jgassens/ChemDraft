@@ -1,0 +1,11 @@
+--- a/Code/MinimalLib/jswrapper.cpp	2026-06-15 18:16:46
++++ b/Code/MinimalLib/jswrapper.cpp	2026-06-15 18:58:43
+@@ -747,6 +747,8 @@
+                     &JSMolBase::condense_abbreviations))
+       .function("add_hs", &JSMolBase::add_hs)
+       .function("add_hs_in_place", &JSMolBase::add_hs_in_place)
++      .function("generate_3d_embed", &JSMolBase::generate_3d_embed)
++      .function("optimize_3d_conformer", &JSMolBase::optimize_3d_conformer)
+       .function("remove_hs",
+                 select_overload<std::string(const std::string &) const>(
+                     &JSMolBase::remove_hs))

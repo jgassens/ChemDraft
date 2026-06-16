@@ -162,7 +162,19 @@ export const atomElementActions: CommandSpec[] = nativeSingleLetterElements.map(
   description: `Set the hovered native atom to ${element}`
 }));
 
+/** Opens the Preferences window (Spin 3D refinement mode, future app settings). */
+export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
+
 export const viewActions: CommandSpec[] = [
+  {
+    id: PREFERENCES_COMMAND_ID,
+    title: "Preferences…",
+    icon: "inspector",
+    source: "core",
+    shortcut: "Cmd+,",
+    category: "view",
+    description: "Open or close the Preferences window"
+  },
   {
     id: SPIN3D_DEBUGGER_COMMAND_ID,
     title: "Toggle 3D Debugger",

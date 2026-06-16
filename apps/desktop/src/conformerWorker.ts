@@ -18,8 +18,9 @@ import {
   setOclResourcesUrl,
   withOclConformerTrace
 } from "@chemdraft/ocl-adapter";
-import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
+import type { Generate3DConformerOptions, Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import { oclResourcesUrl } from "./oclResources";
+import { qualityRefineIterationsFor } from "./spin3dRefineCaps";
 import {
   createSpin3dTraceEvent,
   createSpin3dTraceEventFromOcl,
@@ -33,6 +34,10 @@ export interface ConformerWorkRequest {
   molfile?: string;
   originalAtomCount?: number;
   sessionId?: string;
+  /** Conformer refinement options for this request (Spin 3D mode → engine options).
+   *  Embedding ignores these (it is force-field-independent and cached by molfile);
+   *  only the refinement stage reads `optimize` / `maxMinimiseIterations`. */
+  options?: Generate3DConformerOptions;
 }
 
 export interface ConformerWorkResponse {
@@ -43,36 +48,39 @@ export interface ConformerWorkResponse {
   trace?: Spin3dTraceEvent;
 }
 
-/**
- * Depiction-grade minimisation caps, scaled by size: MMFF94 cost per iteration grows
- * with the atom-pair count, and the planarising/strain-relief work happens in the
- * early iterations. 800 on a 63-atom branched chain measured ~9s of uninterruptible
- * worker time; these caps bound the worst case while keeping small molecules ideal.
- */
-function refineIterationsFor(atomCount: number | undefined): number {
-  const n = atomCount ?? 0;
-  if (n <= 30) return 800;
-  if (n <= 60) return 400;
-  return 240;
-}
-
 /** Speculative work only: structures above this never prefetch-refine in the
  *  background — the (size-capped) refine runs on demand when actually spun. */
 const BACKGROUND_REFINE_MAX_ATOMS = 40;
 const CACHE_LIMIT = 6;
 
+/**
+ * Stable key for a refined result within a single embedded conformer. Embedding is
+ * force-field-independent, so the cache holds ONE embed per molfile and memoises the
+ * refined coordinates per refinement mode here — switching Fast/Balanced/Quality
+ * reuses the embed and never reuses another mode's refined geometry. `"none"` (Fast)
+ * is never stored: it has no refined stage. All OCL force fields collapse to MMFF94
+ * today, so the key is just the iteration cap.
+ */
+function refinementKeyFor(
+  options: Generate3DConformerOptions | undefined,
+  atomCount: number | undefined
+): string {
+  const optimize = options?.optimize ?? "auto";
+  if (optimize === "none") return "none";
+  const maxIts = options?.maxMinimiseIterations ?? qualityRefineIterationsFor(atomCount);
+  return `mmff94:${maxIts}`;
+}
+
 interface CacheEntry {
   embedded: Generate3DConformerResult;
-  refined?: Generate3DConformerResult;
   traceSessionId?: string;
   traceRequestId?: number;
-  /** Pending MMFF94 minimisation on the live OCL conformer. Held until consumed —
-   *  run by a background refine job (after a prefetch) or on demand when a real
-   *  generate hits this entry. NOTE: OCL's minimise() is single-shot (not resumable),
-   *  so this thunk is meant to be invoked exactly ONCE with the size cap; it is cleared
-   *  immediately after, or KEPT only when a background run is skipped because a click is
-   *  waiting (an on-demand re-spin then runs it). */
-  refine?: (maxIts?: number) => Generate3DConformerResult;
+  /** Refined coordinates memoised per refinement mode (see refinementKeyFor). */
+  refinedByMode: Map<string, Generate3DConformerResult>;
+  /** Re-runnable MMFF94 minimisation from the embedded coordinates (restores the
+   *  pristine embed before each run), so different modes can be derived from the one
+   *  embed without re-embedding. Absent only when the embed itself failed. */
+  refineFromEmbedded?: (maxIts?: number) => Generate3DConformerResult;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -84,7 +92,7 @@ function cachePut(molfile: string, entry: CacheEntry): void {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
     cache.delete(oldest);
-    if (pendingRefine === oldest) pendingRefine = null; // evicted — nothing left to refine
+    if (pendingRefine?.molfile === oldest) pendingRefine = null; // evicted — nothing left to refine
   }
 }
 
@@ -155,12 +163,13 @@ function postOclTrace(request: ConformerWorkRequest, event: Parameters<typeof cr
 let running = false;
 const pendingGenerates: ConformerWorkRequest[] = [];
 let pendingPrefetch: ConformerWorkRequest | null = null;
-let pendingRefine: string | null = null; // molfile with a cached entry awaiting idle refinement
+// molfile with a cached entry awaiting idle refinement, plus the mode to refine it in
+let pendingRefine: { molfile: string; options?: Generate3DConformerOptions } | null = null;
 let pendingWarmup: ConformerWorkRequest | null = null;
 
 type WorkItem =
   | { kind: "request"; request: ConformerWorkRequest }
-  | { kind: "refine"; molfile: string };
+  | { kind: "refine"; molfile: string; options?: Generate3DConformerOptions };
 
 function takeNextWorkItem(): WorkItem | null {
   const generate = pendingGenerates.shift();
@@ -171,9 +180,9 @@ function takeNextWorkItem(): WorkItem | null {
     return { kind: "request", request: prefetch };
   }
   if (pendingRefine !== null) {
-    const refineMolfile = pendingRefine;
+    const { molfile: refineMolfile, options: refineOptions } = pendingRefine;
     pendingRefine = null;
-    return { kind: "refine", molfile: refineMolfile };
+    return { kind: "refine", molfile: refineMolfile, options: refineOptions };
   }
   if (pendingWarmup) {
     const warmup = pendingWarmup;
@@ -184,39 +193,42 @@ function takeNextWorkItem(): WorkItem | null {
 }
 
 /**
- * Run the entry's MMFF94 minimisation as ONE size-capped call, upgrading the cache
- * entry in place and returning the refined result.
+ * Run the requested mode's MMFF94 minimisation as ONE size-capped call, memoising the
+ * refined result on the entry (per mode) and returning it.
  *
- * CRITICAL: OCL's `ForceFieldMMFF94.minimise()` is NOT resumable. Only the FIRST call
- * on a force-field instance moves atoms; any later call (capped or not) is a no-op that
- * returns rc 1 with the energy frozen. An earlier "chunked" design called minimise in
- * small batches to stay responsive — it left every structure at ~6 iterations of polish
- * (i.e. the raw, often non-planar embed), which is why flat aromatics came out warped.
- * So the minimisation cannot be split, time-boxed, or resumed across calls: a single
- * `minimise({maxIts: cap})` is the only thing that actually converges the geometry.
+ * CRITICAL: OCL's `ForceFieldMMFF94.minimise()` runs to termination in a single,
+ * uninterruptible call — it cannot be time-boxed or split into resumable batches (an
+ * earlier "chunked" design left structures at ~6 iterations, i.e. the raw non-planar
+ * embed, warping flat aromatics). `refineFromEmbedded(cap)` is therefore one capped
+ * call. It IS re-runnable across modes because it restores the pristine embed first,
+ * so deriving a second mode from the same embed is safe (and cheap — no re-embed).
  *
- *   • cap  — size-based iteration ceiling (refineIterationsFor). Bounds how long this one
- *            uninterruptible call blocks the worker; small/medium molecules converge well
- *            inside it (e.g. pentacene at ~240 in <100ms).
+ *   • cap  — iteration ceiling for this mode (request options, else the size default).
  *
  * `preemptible` only governs whether we START: if a user `generate` is already queued we
- * skip and KEEP the thunk (an on-demand re-spin will refine then), rather than block the
- * click behind a minimisation we can't interrupt once begun. The embedded conformer is
- * already on screen, so this stage-2 polish hot-swaps under the live overlay when done.
+ * skip and KEEP the embed's refine capability (an on-demand re-spin refines then), rather
+ * than block the click behind a minimisation we can't interrupt once begun. The embedded
+ * conformer is already on screen, so this stage-2 polish hot-swaps under the live overlay.
  */
 async function runRefine(
   entry: CacheEntry,
   request: ConformerWorkRequest,
   options: { preemptible: boolean; stage: string }
 ): Promise<Generate3DConformerResult | undefined> {
-  const refine = entry.refine;
-  if (!refine) return entry.refined; // already refined (or no refinement)
-  if (options.preemptible && pendingGenerates.length > 0) {
-    return entry.refined; // a click is waiting — refine this on demand instead of blocking it
-  }
+  if ((request.options?.optimize ?? "auto") === "none") return undefined; // Fast — no refine stage
 
   const atomCount = entry.embedded.originalAtomCount;
-  const cap = refineIterationsFor(atomCount);
+  const key = refinementKeyFor(request.options, atomCount);
+  const cached = entry.refinedByMode.get(key);
+  if (cached) return cached; // this mode already refined for this embed
+
+  const refine = entry.refineFromEmbedded;
+  if (!refine) return undefined; // embed produced no refinement capability
+  if (options.preemptible && pendingGenerates.length > 0) {
+    return undefined; // a click is waiting — refine this on demand instead of blocking it
+  }
+
+  const cap = request.options?.maxMinimiseIterations ?? qualityRefineIterationsFor(atomCount);
   const span = startSpin3dTraceSpan({
     sessionId: traceSessionId(request),
     requestId: request.id,
@@ -228,24 +240,25 @@ async function runRefine(
 
   const startedAt = Date.now();
   let status: "converged" | "capped" | "error" = "capped";
+  let refined: Generate3DConformerResult | undefined;
   try {
-    entry.refined = refine(cap);
-    status = entry.refined.forceField?.returnCode === 0 ? "converged" : "capped";
+    refined = refine(cap);
+    entry.refinedByMode.set(key, refined);
+    status = refined.forceField?.returnCode === 0 ? "converged" : "capped";
   } catch {
     status = "error"; // leave the entry at its embedded coords
   }
-  entry.refine = undefined; // single shot — minimise can't be resumed, so the thunk is spent
   span.complete({
-    message: `${cap} iters · ${status} · ${Date.now() - startedAt}ms`,
-    warningCount: entry.refined?.warnings.length
+    message: `${cap} iters · ${status} · ${Date.now() - startedAt}ms · ${key}`,
+    warningCount: refined?.warnings.length
   });
-  return entry.refined;
+  return refined;
 }
 
-function scheduleBackgroundRefine(molfile: string): void {
-  // Newest wins: a superseded molecule keeps its refine thunk in the cache and
-  // refines on demand if the user actually spins it.
-  pendingRefine = molfile;
+function scheduleBackgroundRefine(molfile: string, options: Generate3DConformerOptions | undefined): void {
+  // Newest wins: a superseded molecule keeps its embed (and refine capability) in the
+  // cache and refines on demand if the user actually spins it.
+  pendingRefine = { molfile, options };
 }
 
 async function drain(): Promise<void> {
@@ -262,7 +275,8 @@ async function drain(): Promise<void> {
             id: entry.traceRequestId ?? 0,
             sessionId: entry.traceSessionId ?? "background-refine",
             molfile: item.molfile,
-            originalAtomCount: entry.embedded.originalAtomCount
+            originalAtomCount: entry.embedded.originalAtomCount,
+            options: item.options
           };
           await runRefine(entry, request, {
             preemptible: true,
@@ -383,7 +397,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       // user-priority job) so double bonds/conjugation reach planar MMFF94
       // geometry; it hot-swaps under the live overlay. The user spun THIS molecule,
       // so refine it even if another generate is queued (not preemptible).
-      if (pendingRefine === molfile) pendingRefine = null; // consuming it here
+      if (pendingRefine?.molfile === molfile) pendingRefine = null; // consuming it here
       const refined = await runRefine(hit, request, {
         preemptible: false,
         stage: "worker.refine"
@@ -403,11 +417,14 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       atomCount: request.originalAtomCount,
       queueDepth: queueDepth()
     });
-    const { embedded, refine } = await withOclConformerTrace(
+    const { embedded, refineFromEmbedded } = await withOclConformerTrace(
       (event) => postOclTrace(request, event),
       () => generate3DConformerProgressive(
         { molfile, originalAtomCount: request.originalAtomCount },
-        { optimize: "auto", maxMinimiseIterations: refineIterationsFor(request.originalAtomCount) }
+        // Embedding is force-field-independent; always request the refine capability so
+        // any mode can be derived from this one embed. The per-mode iteration cap is
+        // applied later, per request, in runRefine.
+        { optimize: "auto" }
       )
     );
     if (embedded.embed.status !== "ok") {
@@ -418,7 +435,8 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
     if (!isPrefetch) post({ id: request.id, stage: "embedded", result: embedded });
     const entry: CacheEntry = {
       embedded,
-      refine,
+      refineFromEmbedded,
+      refinedByMode: new Map(),
       traceSessionId: traceSessionId(request),
       traceRequestId: request.id
     };
@@ -430,7 +448,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       // priority background job; large ones only refine on demand when actually
       // spun, so speculative work can never occupy the worker for many seconds.
       if ((request.originalAtomCount ?? 0) <= BACKGROUND_REFINE_MAX_ATOMS) {
-        scheduleBackgroundRefine(molfile);
+        scheduleBackgroundRefine(molfile, request.options);
       } else {
         postTrace(request, {
           kind: "worker",

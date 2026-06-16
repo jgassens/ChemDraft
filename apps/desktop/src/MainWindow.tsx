@@ -99,6 +99,7 @@ import {
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
+  PREFERENCES_COMMAND_ID,
   type CommandSpec
 } from "./commands";
 import {
@@ -217,7 +218,9 @@ import {
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
+  togglePreferencesWindow,
   toggleToolsetWindow
 } from "./window-manager";
 import {
@@ -237,6 +240,11 @@ import { clientToPage, pageToClient } from "./interaction/camera";
 import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
+import {
+  conformerOptionsForSpin3d,
+  loadSpin3dSettings,
+  type Spin3dSettings
+} from "./spin3dSettings";
 import {
   SPIN3D_DEBUGGER_COMMAND_ID,
   broadcastSpin3dTraceEvent,
@@ -1828,6 +1836,36 @@ export function MainWindow({
   // the same structure are absorbed instead of stacking engine jobs in the worker.
   const spin3dPendingRef = useRef<{ molfile: string; objectId: string; cancel: () => void } | undefined>(undefined);
 
+  // Molfile of the last speculative prefetch, so a stable selection doesn't re-prefetch.
+  const lastSpinPrefetchRef = useRef<string | undefined>(undefined);
+
+  // User-chosen 3D refinement mode (Fast/Balanced/Quality), loaded from localStorage and
+  // updated live from the Preferences window via a cross-window event. Mirrored into a ref
+  // so the spin/prefetch callbacks can read the latest value without re-creating on change.
+  const [spin3dSettings, setSpin3dSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
+  const spin3dSettingsRef = useRef(spin3dSettings);
+  useEffect(() => {
+    spin3dSettingsRef.current = spin3dSettings;
+    // A mode change must invalidate the last speculative prefetch so the next
+    // selection re-prefetches under the new mode.
+    lastSpinPrefetchRef.current = undefined;
+  }, [spin3dSettings]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForSpin3dSettings((next) => setSpin3dSettings(next)).then((listener) => {
+      if (disposed) {
+        listener();
+        return;
+      }
+      unlisten = listener;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
   const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array): {
     bondPairs: [number, number][];
@@ -1933,6 +1971,11 @@ export function MainWindow({
       setStatus("Spin 3D already active: drag the molecule to rotate · Esc to cancel");
       return;
     }
+
+    // Refinement mode (Fast/Balanced/Quality) for this spin — read from the ref so the
+    // callback need not re-create when the setting changes. Shared by the worker path
+    // and the in-page fallback so both honour the user's choice.
+    const conformerOptions = conformerOptionsForSpin3d(spin3dSettingsRef.current, molecule.atoms.length);
 
     // Already-modeled structure: reopen the stored conformer at its committed orientation
     // so the overlay lands exactly on the current drawing (no re-snap), letting the user
@@ -2085,17 +2128,17 @@ export function MainWindow({
           path,
           atomCount: molecule.atoms.length
         }, emitTrace);
-        const { embedded, refine } = await ocl.withOclConformerTrace(
+        const { embedded, refineFromEmbedded } = await ocl.withOclConformerTrace(
           (event) => emitTrace(createSpin3dTraceEventFromOcl(event, { sessionId, requestId: requestToken, path })),
           () => ocl.generate3DConformerProgressive(
             { molfile, originalAtomCount: molecule.atoms.length },
-            { optimize: "auto", maxMinimiseIterations: 800 }
+            conformerOptions
           )
         );
         generateSpan.complete({ warningCount: embedded.warnings.length });
         if (spin3dRequestRef.current !== requestToken) return;
         handleEmbedded(embedded);
-        if (embedded.embed.status !== "ok" || !refine) return;
+        if (embedded.embed.status !== "ok" || !refineFromEmbedded) return;
         // Let the overlay paint before the synchronous minimise blocks this thread.
         await new Promise((resolve) => setTimeout(resolve, 30));
         if (spin3dRequestRef.current !== requestToken) return;
@@ -2109,7 +2152,7 @@ export function MainWindow({
         }, emitTrace);
         const refined = await ocl.withOclConformerTrace(
           (event) => emitTrace(createSpin3dTraceEventFromOcl(event, { sessionId, requestId: requestToken, path })),
-          async () => refine()
+          async () => refineFromEmbedded()
         );
         refineSpan.complete({ warningCount: refined.warnings.length });
         handleRefined(refined);
@@ -2129,7 +2172,7 @@ export function MainWindow({
       traceInfo("worker.client", { path: "worker", message: "available" });
       let retriedAfterCrash = false;
       const dispatch = (): void => {
-        const cancel = client.generate(molfile, molecule.atoms.length, {
+        const cancel = client.generate(molfile, molecule.atoms.length, conformerOptions, {
           onEmbedded: (result) => {
             if (spin3dRequestRef.current === requestToken) handleEmbedded(result);
           },
@@ -2178,7 +2221,6 @@ export function MainWindow({
 
   // Speculatively generate the conformer when a single eligible molecule is selected:
   // by the time the user reaches the Spin 3D button the result is usually cached.
-  const lastSpinPrefetchRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (spin3dState) return;
     const selectedIds = [
@@ -2211,10 +2253,11 @@ export function MainWindow({
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
       client.warmup({ sessionId: `warmup:${Date.now()}` });
-      client.prefetch(molfile, molecule.atoms.length, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
+      const options = conformerOptionsForSpin3d(spin3dSettings, molecule.atoms.length);
+      client.prefetch(molfile, molecule.atoms.length, options, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
     }, 250);
     return () => clearTimeout(timer);
-  }, [document, selectedNativeMoleculePart, spin3dState]);
+  }, [document, selectedNativeMoleculePart, spin3dState, spin3dSettings]);
 
   const handleSpinOverlayPointerDown = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
@@ -3289,6 +3332,13 @@ export function MainWindow({
 
     viewActions.forEach((action) => {
       register(action, () => {
+        if (action.id === PREFERENCES_COMMAND_ID) {
+          void togglePreferencesWindow().catch(() => {
+            setStatus("Preferences unavailable");
+          });
+          return;
+        }
+
         if (action.id === SPIN3D_DEBUGGER_COMMAND_ID) {
           void toggleSpin3dDebuggerWindow().catch(() => {
             setStatus("3D debugger unavailable");

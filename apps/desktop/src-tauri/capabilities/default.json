@@ -14,7 +14,8 @@
     "toolset-core-layout",
     "toolset-core-style",
     "toolset-plugin-fixture",
-    "spin3d-debugger"
+    "spin3d-debugger",
+    "preferences"
   ],
   "permissions": [
     "core:default",
@@ -40,6 +41,7 @@
     "allow-tool-palette-state",
     "allow-route-palette-command",
     "allow-toggle-spin3d-debugger-window",
+    "allow-toggle-preferences-window",
     "allow-rasterize-svg",
     "dialog:allow-open",
     "dialog:allow-save",

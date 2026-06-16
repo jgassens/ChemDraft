@@ -1,4 +1,5 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+import { isSpin3dRefinementMode, type Spin3dSettings } from "../spin3dSettings";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
@@ -102,6 +103,59 @@ export async function toggleSpin3dDebuggerWindow(): Promise<void> {
 
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("toggle_spin3d_debugger_window");
+}
+
+/** Route param identifying the Preferences webview (see App.tsx). */
+export const PREFERENCES_WINDOW_KIND = "preferences";
+/** Cross-window event carrying updated Spin 3D settings from Preferences → main. */
+export const SPIN3D_SETTINGS_EVENT = "chemdraft://spin3d-settings";
+
+export async function togglePreferencesWindow(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("toggle_preferences_window");
+}
+
+/** Broadcast a settings change so the main document window updates live. localStorage is
+ *  the source of truth across reloads; this event is the explicit live-sync channel (the
+ *  cross-window `storage` event is unreliable in webviews and is not relied upon). */
+export async function broadcastSpin3dSettings(settings: Spin3dSettings): Promise<void> {
+  dispatchDomToolsetEvent(SPIN3D_SETTINGS_EVENT, settings);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, settings);
+}
+
+export async function listenForSpin3dSettings(handler: (settings: Spin3dSettings) => void): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(SPIN3D_SETTINGS_EVENT, (event) => {
+    if (isSpin3dSettingsPayload(event.detail)) handler(event.detail);
+  });
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, (event) => {
+    if (isSpin3dSettingsPayload(event.payload)) handler(event.payload);
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+function isSpin3dSettingsPayload(payload: unknown): payload is Spin3dSettings {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    isSpin3dRefinementMode((payload as { refinementMode?: unknown }).refinementMode)
+  );
 }
 
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {

@@ -81,8 +81,12 @@ export interface ConformerAtomMapping {
 }
 
 export interface ConformerForceFieldReport {
-  name: "MMFF94" | "MMFF94s" | "UFF" | "none";
-  status: "not-run" | "converged" | "not-converged" | "setup-failed";
+  /** MMFF94 family is OpenChemLib (in-process); UFF/GAFF/Ghemical come from the
+   *  OpenBabel sidecar (Phase 3). */
+  name: "MMFF94" | "MMFF94s" | "UFF" | "GAFF" | "Ghemical" | "none";
+  /** `"unsupported"` = the requested engine/force field is unavailable (e.g. the
+   *  OpenBabel binary is absent, or it changed the structure during minimisation). */
+  status: "not-run" | "converged" | "not-converged" | "setup-failed" | "unsupported";
   returnCode?: number;
   energy?: number;
   iterations?: number;
@@ -118,25 +122,39 @@ export interface Generate3DConformerOptions {
 }
 
 /**
+ * Per-refinement overrides. The force field is chosen here (not at embed time) so a
+ * single embedded conformer can be polished under different force fields — e.g. the
+ * worker derives MMFF94 and UFF modes from one embed. Engines that expose only one
+ * force field (OpenChemLib = MMFF94) ignore `forceField`.
+ */
+export interface ConformerRefineOptions {
+  forceField?: "mmff94" | "mmff94s" | "uff";
+}
+
+/**
  * Two-stage conformer delivery for latency-sensitive UI: the embedded conformer is
  * usable (collision-free, parities respected) the moment it exists; force-field
- * refinement is strictly cosmetic polish and can land later. `refine` is absent
- * when the embed failed or refinement was disabled (`optimize: "none"`).
+ * refinement is strictly cosmetic polish and can land later. `refineFromEmbedded`
+ * is absent when the embed failed or refinement was disabled (`optimize: "none"`).
  */
 export interface ProgressiveConformerResult {
   embedded: Generate3DConformerResult;
   /**
-   * Run force-field refinement on the conformer ONCE, reading back the result.
-   * With no argument, runs the full `maxMinimiseIterations`-capped minimisation; pass
-   * `maxIts` to cap this single run to that many steps.
+   * Run force-field refinement starting from the *embedded* coordinates, reading
+   * back the result. With no argument, runs the full `maxMinimiseIterations`-capped
+   * minimisation; pass `maxIts` to cap a run to that many steps, and `options` to pick
+   * the force field (engines with a single force field ignore it).
    *
-   * SINGLE-USE: MMFF94 minimisation is single-shot and is NOT reliably resumable —
-   * re-minimising from already-relaxed coordinates can warp geometry (e.g. flatten
-   * aromatic rings). `refine` therefore runs at most once; any later call returns the
-   * SAME cached result without re-minimising. Drive it as one capped call, not in batches.
-   * `forceField.returnCode === 0` means MMFF94 converged.
+   * RE-RUNNABLE FROM EMBED: minimisation is single-shot and mutates the conformer in
+   * place, and re-minimising from already-relaxed coordinates can warp geometry (e.g.
+   * flatten aromatic rings). To let callers compare iteration caps / refinement modes
+   * without re-embedding, each call starts from the pristine embedded coordinates — so
+   * every call is independent and reproducible (same args ⇒ same geometry). Callers that
+   * want to avoid recomputation should memoise per mode themselves.
+   * `forceField.returnCode === 0` means the in-process field converged. Absent when the
+   * embed failed or `optimize: "none"`.
    */
-  refine?: (maxIts?: number) => Generate3DConformerResult;
+  refineFromEmbedded?: (maxIts?: number, options?: ConformerRefineOptions) => Generate3DConformerResult;
 }
 
 export interface ConformerInput {
@@ -158,4 +176,128 @@ export interface ConformerGenerator3D {
     input: ConformerInput,
     options?: Generate3DConformerOptions
   ): Promise<Generate3DConformerResult>;
+}
+
+// ---------------------------------------------------------------------------
+// External (sidecar) refinement round-trip — OpenBabel UFF/GAFF/Ghemical (Phase 3)
+//
+// The embed + atom mapping stay with the in-process engine (OpenChemLib): we serialise
+// the embedded conformer to a molfile, hand it to the sidecar to MINIMISE only, then map
+// the returned coordinates back by engine-atom index. This is engine-neutral and pure, so
+// it lives in the contract package and is fully unit-testable without any binary.
+// ---------------------------------------------------------------------------
+
+export interface ParsedMolfileAtom {
+  element: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Parse a V2000 molfile's atom block by fixed columns (the spec layout both OpenChemLib
+ * and OpenBabel emit): x/y/z in three 10-char fields, the atom symbol at columns 32–34.
+ * Returns `null` if the molfile is not well-formed V2000 (missing counts/atom lines,
+ * non-numeric coordinates, or an empty element) so callers can reject rather than guess.
+ */
+export function parseV2000AtomBlock(molfile: string): ParsedMolfileAtom[] | null {
+  const lines = molfile.split(/\r?\n/);
+  // Header is 3 lines (title, program, comment); the counts line is the 4th.
+  if (lines.length < 4) return null;
+  const atomCount = Number.parseInt(lines[3].slice(0, 3), 10);
+  if (!Number.isInteger(atomCount) || atomCount < 0) return null;
+  if (lines.length < 4 + atomCount) return null;
+
+  const atoms: ParsedMolfileAtom[] = [];
+  for (let i = 0; i < atomCount; i++) {
+    const line = lines[4 + i];
+    if (line.length < 34) return null;
+    const x = Number.parseFloat(line.slice(0, 10));
+    const y = Number.parseFloat(line.slice(10, 20));
+    const z = Number.parseFloat(line.slice(20, 30));
+    const element = line.slice(31, 34).trim();
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || element.length === 0) {
+      return null;
+    }
+    atoms.push({ element, x, y, z });
+  }
+  return atoms;
+}
+
+export interface ExternalForceFieldReport {
+  /** Force field the sidecar used, e.g. "UFF" / "GAFF" / "Ghemical". */
+  name: ConformerForceFieldReport["name"];
+  /** Convergence as reported by the sidecar. */
+  status: "converged" | "not-converged";
+  returnCode?: number;
+  energy?: number;
+  iterations?: number;
+}
+
+export type ApplyExternalMinimizeOutcome =
+  | { status: "ok"; result: Generate3DConformerResult }
+  | { status: "rejected"; reason: string };
+
+/**
+ * Map a sidecar-minimised molfile's coordinates back onto the embedded conformer.
+ *
+ * SAFETY (do not silently corrupt geometry): the minimised structure is accepted ONLY if
+ * its atom COUNT and ELEMENT SEQUENCE match the embedded molfile exactly (the molfile we
+ * sent to the sidecar). OpenBabel makes hydrogens explicit before minimising, so an OCL
+ * molfile that already carries all explicit H should round-trip unchanged — but if it does
+ * not, we reject and let the caller fall back to the in-process force field rather than
+ * scatter coordinates against a reordered atom list. Coordinates are mapped by engine-atom
+ * index (the molfile's atom order == the embedded engine order) through
+ * `embedded.mapping.engineToOriginalAtom`.
+ */
+export function applyExternalMinimizedMolfile(
+  embedded: Generate3DConformerResult,
+  embeddedMolfile: string,
+  minimizedMolfile: string,
+  report: ExternalForceFieldReport
+): ApplyExternalMinimizeOutcome {
+  const embeddedAtoms = parseV2000AtomBlock(embeddedMolfile);
+  const minimizedAtoms = parseV2000AtomBlock(minimizedMolfile);
+  if (!embeddedAtoms) return { status: "rejected", reason: "embedded molfile is not valid V2000" };
+  if (!minimizedAtoms) return { status: "rejected", reason: "minimised molfile is not valid V2000" };
+
+  const engineCount = embedded.mapping.engineToOriginalAtom.length;
+  if (embeddedAtoms.length !== engineCount) {
+    return { status: "rejected", reason: `embedded molfile has ${embeddedAtoms.length} atoms but the mapping has ${engineCount}` };
+  }
+  if (minimizedAtoms.length !== embeddedAtoms.length) {
+    return { status: "rejected", reason: `sidecar changed the atom count (${embeddedAtoms.length} → ${minimizedAtoms.length})` };
+  }
+  for (let i = 0; i < minimizedAtoms.length; i++) {
+    if (minimizedAtoms[i].element !== embeddedAtoms[i].element) {
+      return { status: "rejected", reason: `sidecar changed atom order at index ${i} (${embeddedAtoms[i].element} → ${minimizedAtoms[i].element})` };
+    }
+  }
+
+  const coords = Float64Array.from(embedded.mapping.coords3dByOriginalAtom);
+  for (let engineIdx = 0; engineIdx < minimizedAtoms.length; engineIdx++) {
+    const originalIdx = embedded.mapping.engineToOriginalAtom[engineIdx];
+    if (originalIdx < 0) continue; // sidecar-side generated/extra atom — not an original
+    const atom = minimizedAtoms[engineIdx];
+    coords[originalIdx * 3] = atom.x;
+    coords[originalIdx * 3 + 1] = atom.y;
+    coords[originalIdx * 3 + 2] = atom.z;
+  }
+
+  return {
+    status: "ok",
+    result: {
+      ...embedded,
+      mapping: { ...embedded.mapping, coords3dByOriginalAtom: coords },
+      forceField: {
+        name: report.name,
+        status: report.status,
+        returnCode: report.returnCode,
+        energy: report.energy,
+        iterations: report.iterations
+      },
+      unsupportedFeatures: [...embedded.unsupportedFeatures],
+      warnings: [...embedded.warnings]
+    }
+  };
 }

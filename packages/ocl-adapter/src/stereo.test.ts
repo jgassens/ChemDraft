@@ -90,7 +90,7 @@ describe("2D→3D stereochemistry fidelity", () => {
         const centers = stereoCenters(m).map((c) => ({ ...c, nbrs: heavyNeighbors(m, c.atom) }));
         const molfile = m.toMolfile();
         const prog = await generate3DConformerProgressive({ molfile }, { seed: SEED, optimize: "auto" });
-        const refined = prog.refine!(800); // single capped minimise, as the app ships
+        const refined = prog.refineFromEmbedded!(800); // single capped minimise, as the app ships
         return { coords: refined.mapping.coords3dByOriginalAtom, centers };
       };
       const A = await make(iso);

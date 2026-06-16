@@ -7,7 +7,7 @@
  * fired once at app idle so the worker's OCL module load, torsion-resource fetch
  * and JIT warmup all happen before the user's first spin click.
  */
-import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
+import type { Generate3DConformerOptions, Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import type { ConformerWorkRequest, ConformerWorkResponse } from "./conformerWorker";
 import {
   broadcastSpin3dTraceEvent,
@@ -32,11 +32,17 @@ export interface ConformerWorkerClient {
   generate(
     molfile: string,
     originalAtomCount: number,
+    options: Generate3DConformerOptions,
     handlers: ConformerStageHandlers,
     traceContext?: ConformerTraceContext
   ): () => void;
   /** Fire-and-forget: compute + cache so a subsequent generate is instant. */
-  prefetch(molfile: string, originalAtomCount: number, traceContext?: ConformerTraceContext): void;
+  prefetch(
+    molfile: string,
+    originalAtomCount: number,
+    options: Generate3DConformerOptions,
+    traceContext?: ConformerTraceContext
+  ): void;
   /** Preload OCL + resources + JIT in the worker (idempotent, best-effort). */
   warmup(traceContext?: ConformerTraceContext): void;
 }
@@ -170,7 +176,7 @@ export function createConformerWorkerClient(
   };
 
   return {
-    generate(molfile, originalAtomCount, handlers, traceContext) {
+    generate(molfile, originalAtomCount, options, handlers, traceContext) {
       const id = nextId++;
       pending.set(id, { handlers, traceContext });
       broadcastSpin3dTraceEvent(createSpin3dTraceEvent({
@@ -182,7 +188,7 @@ export function createConformerWorkerClient(
         atomCount: originalAtomCount,
         path: "worker"
       }));
-      if (!send({ kind: "generate", id, molfile, originalAtomCount, sessionId: traceContext?.sessionId })) {
+      if (!send({ kind: "generate", id, molfile, originalAtomCount, options, sessionId: traceContext?.sessionId })) {
         pending.delete(id);
         // Crash-looped beyond the restart budget — report asynchronously so the
         // caller's handler wiring is complete before the callback fires.
@@ -196,9 +202,9 @@ export function createConformerWorkerClient(
         send({ kind: "cancel", id });
       };
     },
-    prefetch(molfile, originalAtomCount, traceContext) {
+    prefetch(molfile, originalAtomCount, options, traceContext) {
       const id = nextId++;
-      send({ kind: "prefetch", id, molfile, originalAtomCount, sessionId: traceContext?.sessionId ?? `prefetch:${id}` });
+      send({ kind: "prefetch", id, molfile, originalAtomCount, options, sessionId: traceContext?.sessionId ?? `prefetch:${id}` });
     },
     warmup(traceContext) {
       if (warmed) return;

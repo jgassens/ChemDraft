@@ -19,6 +19,9 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
 const SPIN3D_DEBUGGER_WINDOW_ROUTE: &str = "/?window=spin3d-debugger";
 const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
+const PREFERENCES_WINDOW_LABEL: &str = "preferences";
+const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
+const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
@@ -50,6 +53,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "view.toggleRulers",
     "view.toggleCrosshairs",
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
+    PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
     "chemistry.validateSelection",
 ];
@@ -320,6 +324,7 @@ pub fn run() {
             tool_palette_state,
             route_palette_command,
             toggle_spin3d_debugger_window,
+            toggle_preferences_window,
             agent_bridge_status,
             take_pending_open_document,
             export::rasterize_svg
@@ -763,6 +768,43 @@ fn spin3d_debugger_window_route() -> &'static str {
 }
 
 #[tauri::command]
+fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
+        if window.is_visible().unwrap_or(false) {
+            return window.hide().map_err(|error| error.to_string());
+        }
+    }
+
+    ensure_preferences_window(&app).map(|_| ())
+}
+
+fn ensure_preferences_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
+        window.show().map_err(|error| error.to_string())?;
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(window);
+    }
+
+    WebviewWindowBuilder::new(
+        app,
+        PREFERENCES_WINDOW_LABEL,
+        WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
+    )
+    .title("ChemDraft Preferences")
+    .inner_size(460.0, 360.0)
+    .min_inner_size(360.0, 280.0)
+    .resizable(true)
+    .accept_first_mouse(true)
+    .visible(true)
+    .center()
+    .build()
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn agent_bridge_status() -> AgentBridgeStatus {
     let env_value = std::env::var(AGENT_BRIDGE_ENV_VAR).ok();
     agent_bridge_status_from(env_value.as_deref(), std::env::args())
@@ -1100,6 +1142,14 @@ fn create_view_menu<R: Runtime>(
     toolset_manifest: &ToolsetManifest,
     layout_state: &ToolsetLayoutState,
 ) -> tauri::Result<Submenu<R>> {
+    let preferences = MenuItem::with_id(
+        app,
+        PREFERENCES_TOGGLE_COMMAND_ID,
+        "Preferences…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+    let preferences_separator = PredefinedMenuItem::separator(app)?;
     let show_rulers = CheckMenuItem::with_id(
         app,
         "view.toggleRulers",
@@ -1139,6 +1189,8 @@ fn create_view_menu<R: Runtime>(
         "View",
         true,
         &[
+            &preferences,
+            &preferences_separator,
             &show_rulers,
             &show_crosshairs,
             &separator,
