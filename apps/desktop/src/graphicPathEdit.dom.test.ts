@@ -5,7 +5,12 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import {
+  createPhase4Document,
+  insertNativeArtGraphicObject,
+  nativeGraphicPathEditPoints,
+  updateNativeGraphicPathHandle
+} from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -155,6 +160,17 @@ describe("graphic path direct editing interactions", () => {
   ) {
     expect(actual?.x).toBeCloseTo(before.x + dx, 3);
     expect(actual?.y).toBeCloseTo(before.y + dy, 3);
+  }
+
+  function expectProjectedPointPinned(
+    actual: { x: number; y: number } | undefined,
+    before: { x: number; y: number },
+    tolerance = 0.75
+  ) {
+    expect(Math.hypot(
+      (actual?.x ?? 0) - before.x,
+      (actual?.y ?? 0) - before.y
+    )).toBeLessThan(tolerance);
   }
 
   async function waitPastDoublePressWindow() {
@@ -731,5 +747,75 @@ describe("graphic path direct editing interactions", () => {
     expect(undone.object.data.lineStart).toBeUndefined();
     expect(undone.object.data.lineEnd).toBeUndefined();
     expect(undone.object.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("bakes X/Y projected quadratic geometry before endpoint length edits so the opposite endpoint stays pinned", async () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Tilted Quadratic Endpoint Drag"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const linePoints = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!linePoints) {
+      throw new Error("Expected inserted line edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: linePoints.middle.x - 36, y: linePoints.middle.y + 58 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const tilted = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 28,
+        style: {
+          ...bentGraphic.style,
+          tiltXDegrees: 128,
+          tiltYDegrees: -94
+        }
+      }
+    });
+    await renderMainWindow(tilted);
+
+    const before = debugArtObject(objectId);
+    const start = before.projectedEditPoints?.start;
+    const end = before.projectedEditPoints?.end;
+    if (!start || !end) {
+      throw new Error("Expected projected tilted quadratic endpoints.");
+    }
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    const target = {
+      x: end.x + dx / length * 145,
+      y: end.y + dy / length * 145
+    };
+
+    await act(async () => {
+      dispatchPointer(pathHandle("end"), "pointerdown", end, 24);
+      dispatchPointer(pageElement(), "pointermove", {
+        x: end.x + (target.x - end.x) * 0.5,
+        y: end.y + (target.y - end.y) * 0.5
+      }, 24);
+      dispatchPointer(pageElement(), "pointermove", target, 24);
+      dispatchPointer(pageElement(), "pointerup", target, 24);
+    });
+    const after = debugArtObject(objectId);
+
+    expect(after.object.data.artPathKind).toBe("quadratic");
+    expect(after.object.rotation).toBeCloseTo(0, 3);
+    expect(after.object.style.tiltXDegrees).toBeUndefined();
+    expect(after.object.style.tiltYDegrees).toBeUndefined();
+    expectProjectedPointPinned(after.projectedEditPoints?.start, start);
+    expectProjectedPointPinned(after.projectedEditPoints?.middle, before.projectedEditPoints!.middle, 6);
+    expect(Math.hypot(
+      (after.projectedEditPoints?.end.x ?? 0) - target.x,
+      (after.projectedEditPoints?.end.y ?? 0) - target.y
+    )).toBeLessThan(0.75);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
   });
 });

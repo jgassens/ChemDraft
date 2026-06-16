@@ -432,7 +432,7 @@ const defaultNativeMoleculeTransform: MoleculeTransformState = {
 };
 
 const projectedPlaneTiltMaxDegrees = 360;
-export const documentObjectProjectedPlaneTiltMaxDegrees = 75;
+export const documentObjectProjectedPlaneTiltMaxDegrees = projectedPlaneTiltMaxDegrees;
 
 export const projectedPlaneTiltMaxRadians = projectedPlaneTiltMaxDegrees * Math.PI / 180;
 
@@ -6383,11 +6383,7 @@ function normalizeProjectedPlaneTiltDegrees(degrees: number | undefined): number
 
 function normalizeDocumentObjectProjectedPlaneTiltDegrees(degrees: number | undefined): number | undefined {
   const finiteDegrees = Number.isFinite(degrees) ? degrees ?? 0 : 0;
-  const normalized = Number(clamp(
-    finiteDegrees,
-    -documentObjectProjectedPlaneTiltMaxDegrees,
-    documentObjectProjectedPlaneTiltMaxDegrees
-  ).toFixed(3));
+  const normalized = Number(wrapProjectedPlaneTiltValue(finiteDegrees, documentObjectProjectedPlaneTiltMaxDegrees).toFixed(3));
   return Math.abs(normalized) < 0.001 ? undefined : normalized;
 }
 

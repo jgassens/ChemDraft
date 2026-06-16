@@ -1301,14 +1301,17 @@ describe("ChemDraft desktop shell", () => {
     expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
   });
 
-  it("maps native art X/Y rotate drags to a clamped visible tilt range", () => {
+  it("maps native art X/Y rotate drags to the same wrapping full-turn tilt range as molecules", () => {
     const start = { x: 80, y: 100 };
-    const diagonal = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 215, y: -15 });
-    const clamped = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 1000, y: -1000 });
+    const diagonal = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 150, y: 30 });
+    const moleculeDiagonal = projectedPlaneTiltVectorFromDrag(start, { x: 150, y: 30 });
+    const beyondSixty = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 170, y: 10 });
+    const wrapped = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 500, y: -300 });
 
-    expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 29° / Y 34°");
-    expect(projectedPlaneTiltReadoutDegrees(clamped.xRad)).toBe(60);
-    expect(projectedPlaneTiltReadoutDegrees(clamped.yRad)).toBe(60);
+    expect(diagonal).toEqual(moleculeDiagonal);
+    expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 70° / Y 70°");
+    expect(projectedPlaneTiltReadoutLabel(beyondSixty.xRad, beyondSixty.yRad)).toBe("X 90° / Y 90°");
+    expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
   });
 
   it("keeps projected-plane 3D rotate handle scoped to X/Y tilt", () => {

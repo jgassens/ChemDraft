@@ -8,6 +8,7 @@ import {
   graphicPathEditPoints,
   maxGraphicCornerRadius,
   planNativeArtVisual,
+  prepareGraphicPathForDirectEdit,
   projectGraphicObjectPoint,
   unprojectGraphicObjectPoint
 } from "./index";
@@ -833,5 +834,47 @@ describe("art-engine native art planning", () => {
     expect(edited?.data.arcSweepRadians).toBeCloseTo(Math.PI, 6);
     expect(edited?.width).toBeGreaterThan(graphic.width);
     expect(graphicPathEditPoints(edited as GraphicObject)?.middle.x).toBeCloseTo(unprojectedDrag.x, 3);
+  });
+
+  it("bakes transformed and tilted quadratic paths into page-space geometry before direct editing", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 112,
+      height: 84,
+      rotation: 28,
+      style: {
+        ...baseGraphic.style,
+        tiltXDegrees: 128,
+        tiltYDegrees: -94
+      },
+      data: {
+        artPathKind: "quadratic",
+        lineStart: { x: 130, y: 96 },
+        pathControlPoint: { x: 170, y: 92 },
+        lineEnd: { x: 218, y: 152 }
+      }
+    } satisfies GraphicObject;
+    const points = graphicPathEditPoints(graphic);
+    if (!points) {
+      throw new Error("Expected quadratic edit points.");
+    }
+    const projectedStart = projectGraphicObjectPoint(graphic, points.start);
+    const projectedMiddle = projectGraphicObjectPoint(graphic, points.middle);
+    const projectedEnd = projectGraphicObjectPoint(graphic, points.end);
+
+    const prepared = prepareGraphicPathForDirectEdit(graphic);
+    const preparedPoints = graphicPathEditPoints(prepared);
+
+    expect(prepared.rotation).toBe(0);
+    expect(prepared.style.tiltXDegrees).toBeUndefined();
+    expect(prepared.style.tiltYDegrees).toBeUndefined();
+    expect(prepared.data.artPathKind).toBe("quadratic");
+    expect(preparedPoints?.start.x).toBeCloseTo(projectedStart.x, 3);
+    expect(preparedPoints?.start.y).toBeCloseTo(projectedStart.y, 3);
+    expect(preparedPoints?.middle.x).toBeCloseTo(projectedMiddle.x, 3);
+    expect(preparedPoints?.middle.y).toBeCloseTo(projectedMiddle.y, 3);
+    expect(preparedPoints?.end.x).toBeCloseTo(projectedEnd.x, 3);
+    expect(preparedPoints?.end.y).toBeCloseTo(projectedEnd.y, 3);
   });
 });

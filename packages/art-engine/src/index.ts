@@ -476,9 +476,9 @@ export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicO
   const tiltXDegrees = metadataNumber(object.style.tiltXDegrees) ?? 0;
   const tiltYDegrees = metadataNumber(object.style.tiltYDegrees) ?? 0;
   if (
-    Math.abs(object.rotation) < 0.001 ||
-    Math.abs(tiltXDegrees) >= 0.001 ||
-    Math.abs(tiltYDegrees) >= 0.001
+    Math.abs(object.rotation) < 0.001 &&
+    Math.abs(tiltXDegrees) < 0.001 &&
+    Math.abs(tiltYDegrees) < 0.001
   ) {
     return object;
   }
@@ -501,7 +501,15 @@ export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicO
   }
   deleteSemanticArcData(nextData);
 
-  return updateGraphicPathObject({ ...object, rotation: 0 }, nextData) ?? object;
+  const nextStyle = { ...object.style };
+  delete nextStyle.tiltXDegrees;
+  delete nextStyle.tiltYDegrees;
+
+  return updateGraphicPathObject({
+    ...object,
+    rotation: 0,
+    style: nextStyle
+  }, nextData) ?? object;
 }
 
 function nativeArtProjectionMatrixForObject(object: GraphicObject): NativeArtProjectionMatrix | undefined {

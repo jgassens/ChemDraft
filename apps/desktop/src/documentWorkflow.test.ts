@@ -3426,10 +3426,15 @@ describe("Phase 4 document workflow", () => {
       tiltXDegrees: 21,
       tiltYDegrees: -13
     });
-    const clampedTilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 180, -180);
-    expect(graphicById(clampedTilted, objectId).style).toMatchObject({
-      tiltXDegrees: 75,
-      tiltYDegrees: -75
+    const beyondSixtyTilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 180, -180);
+    expect(graphicById(beyondSixtyTilted, objectId).style).toMatchObject({
+      tiltXDegrees: 180,
+      tiltYDegrees: -180
+    });
+    const wrappedTilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 420, -370);
+    expect(graphicById(wrappedTilted, objectId).style).toMatchObject({
+      tiltXDegrees: 60,
+      tiltYDegrees: -10
     });
     const transformHistory = {
       past: [colored],

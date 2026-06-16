@@ -162,7 +162,6 @@ import {
   insertNativeArtGraphicObject,
   nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
-  documentObjectProjectedPlaneTiltMaxDegrees,
   nativeChargeAssociationsForMolecule,
   nativeChargeByAtomIdFromAssociations,
   nativeBondStyleForToolCommand,
@@ -653,15 +652,11 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
 const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
-const DOCUMENT_OBJECT_TILT_DRAG_PX = 300;
-const DOCUMENT_OBJECT_INTERACTIVE_TILT_MAX_DEGREES = 60;
-const documentObjectProjectedPlaneTiltMaxRadians = documentObjectProjectedPlaneTiltMaxDegrees * Math.PI / 180;
-const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT_MAX_DEGREES * Math.PI / 180;
 const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.16.46-codex";
+const CURRENT_BUILD_STAMP = "6.16.17.21-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -3952,16 +3947,9 @@ export function MainWindow({
     const rawTiltXRad = drag.startTiltXRad + tiltDelta.xRad;
     const rawTiltYRad = drag.startTiltYRad + tiltDelta.yRad;
     if (object && object.type !== "molecule") {
-      const tiltXRad = clamp(
-        rawTiltXRad,
-        -documentObjectInteractiveTiltMaxRadians,
-        documentObjectInteractiveTiltMaxRadians
-      );
-      const tiltYRad = clamp(
-        rawTiltYRad,
-        -documentObjectInteractiveTiltMaxRadians,
-        documentObjectInteractiveTiltMaxRadians
-      );
+      const wrappedTilt = wrapProjectedPlaneTiltVectorRadians(rawTiltXRad, rawTiltYRad);
+      const tiltXRad = wrappedTilt.tiltXRad;
+      const tiltYRad = wrappedTilt.tiltYRad;
       const document = applyDocumentObjectProjectedPlaneTilt(
         drag.startDocument,
         drag.objectId,
@@ -3972,11 +3960,7 @@ export function MainWindow({
         document,
         tiltXRad,
         tiltYRad,
-        clamped:
-          Math.abs(tiltXRad - rawTiltXRad) >= 0.000001 ||
-          Math.abs(tiltYRad - rawTiltYRad) >= 0.000001 ||
-          Math.abs(tiltXRad) >= documentObjectInteractiveTiltMaxRadians - 0.000001 ||
-          Math.abs(tiltYRad) >= documentObjectInteractiveTiltMaxRadians - 0.000001,
+        clamped: wrappedTilt.clamped,
         changed: document !== drag.startDocument
       };
     }
@@ -4216,16 +4200,12 @@ export function MainWindow({
     }
 
     if (object.type !== "molecule") {
-      const tiltXDegrees = clamp(
-        xDegrees,
-        -documentObjectProjectedPlaneTiltMaxDegrees,
-        documentObjectProjectedPlaneTiltMaxDegrees
+      const wrappedTilt = wrapProjectedPlaneTiltVectorRadians(
+        degreesToRadians(xDegrees),
+        degreesToRadians(yDegrees)
       );
-      const tiltYDegrees = clamp(
-        yDegrees,
-        -documentObjectProjectedPlaneTiltMaxDegrees,
-        documentObjectProjectedPlaneTiltMaxDegrees
-      );
+      const tiltXDegrees = radiansToDegrees(wrappedTilt.tiltXRad);
+      const tiltYDegrees = radiansToDegrees(wrappedTilt.tiltYRad);
       return {
         kind: "xy",
         document: applyDocumentObjectProjectedPlaneTilt(
@@ -4236,7 +4216,7 @@ export function MainWindow({
         ),
         tiltXRad: degreesToRadians(tiltXDegrees),
         tiltYRad: degreesToRadians(tiltYDegrees),
-        clamped: tiltXDegrees !== xDegrees || tiltYDegrees !== yDegrees
+        clamped: wrappedTilt.clamped
       };
     }
 
@@ -8225,20 +8205,7 @@ export function documentObjectProjectedPlaneTiltVectorFromDrag(
   start: ClientPoint,
   latest: ClientPoint
 ): { xRad: number; yRad: number } {
-  const rawXTilt = (start.y - latest.y) / DOCUMENT_OBJECT_TILT_DRAG_PX * documentObjectProjectedPlaneTiltMaxRadians;
-  const rawYTilt = (latest.x - start.x) / DOCUMENT_OBJECT_TILT_DRAG_PX * documentObjectProjectedPlaneTiltMaxRadians;
-  return {
-    xRad: Number(clamp(
-      rawXTilt,
-      -documentObjectInteractiveTiltMaxRadians,
-      documentObjectInteractiveTiltMaxRadians
-    ).toFixed(6)),
-    yRad: Number(clamp(
-      rawYTilt,
-      -documentObjectInteractiveTiltMaxRadians,
-      documentObjectInteractiveTiltMaxRadians
-    ).toFixed(6))
-  };
+  return projectedPlaneTiltVectorFromDrag(start, latest);
 }
 
 export function projectedPlaneTiltReadoutDegrees(tiltRad: number): number {
