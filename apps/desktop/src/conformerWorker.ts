@@ -29,6 +29,7 @@ import type {
   ProgressiveConformerResult
 } from "@chemdraft/chemistry-adapter";
 import { oclResourcesUrl } from "./oclResources";
+import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { qualityRefineIterationsFor } from "./spin3dRefineCaps";
 import {
   createSpin3dTraceEvent,
@@ -562,6 +563,9 @@ async function runWarmup(request: ConformerWorkRequest): Promise<void> {
 }
 
 setOclResourcesUrl(oclResourcesUrl);
+// Register the RDKit ETKDG WASM loader so currentEngine() can select it. If the vendored
+// module is absent or fails to init, currentEngine() falls back to OCL (transparently).
+registerRdkitWasmLoader();
 
 globalThis.addEventListener("message", (event: MessageEvent<ConformerWorkRequest>) => {
   submit(event.data);
