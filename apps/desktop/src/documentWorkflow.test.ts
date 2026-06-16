@@ -3686,7 +3686,7 @@ describe("Phase 4 document workflow", () => {
     const bent = updateNativeGraphicPathHandle(endpointEdited, objectId, "middle", bentControl);
     const bentGraphic = graphicById(bent, objectId);
     const bentPoints = nativeGraphicPathEditPoints(bentGraphic);
-    expect(bentGraphic.data.artPathKind).toBe("arc");
+    expect(bentGraphic.data.artPathKind).toBe("quadratic");
     expect(bentGraphic.data.arcCenter).toBeUndefined();
     expect(bentGraphic.data.arcRadiusX).toBeUndefined();
     expect(bentGraphic.data.arcRadiusY).toBeUndefined();

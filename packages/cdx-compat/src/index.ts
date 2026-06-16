@@ -741,7 +741,7 @@ function exportGraphicAsCdxmlArrow(
   warnings: CompatibilityConversionWarning[]
 ): string {
   const line = graphicLineEndpointsForCdxml(graphic);
-  const isArc = graphic.data.artPathKind === "arc";
+  const isArc = graphic.data.artPathKind === "arc" && !pointMetadata(graphic.data.pathControlPoint);
   const attrs = [
     `id="${graphicId}"`,
     `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, [line.start, line.end]))}"`,
@@ -764,10 +764,15 @@ function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line
   if (graphic.graphicKind === "rect") {
     return "Rectangle";
   }
-  if (graphic.data.artPathKind === "arc") {
+  if (graphic.data.artPathKind === "arc" && !pointMetadata(graphic.data.pathControlPoint)) {
     return "Arc";
   }
-  if (graphic.graphicKind === "line" || graphic.data.artPathKind === "line" || graphic.data.artPathKind === "wavy") {
+  if (
+    graphic.graphicKind === "line" ||
+    graphic.data.artPathKind === "line" ||
+    graphic.data.artPathKind === "wavy" ||
+    graphic.data.artPathKind === "quadratic"
+  ) {
     return "Line";
   }
   return "Unknown";
@@ -925,7 +930,7 @@ function cdxmlGraphicLineAttributes(graphic: GraphicObject): string[] {
   return [
     `Start="${formatPoint(line.start)}"`,
     `End="${formatPoint(line.end)}"`,
-    ...(graphic.data.artPathKind === "arc" ? [`AngularSize="${escapeXmlAttribute(cdxmlAngularSizeForGraphic(graphic))}"`] : [])
+    ...(graphic.data.artPathKind === "arc" && !pointMetadata(graphic.data.pathControlPoint) ? [`AngularSize="${escapeXmlAttribute(cdxmlAngularSizeForGraphic(graphic))}"`] : [])
   ];
 }
 

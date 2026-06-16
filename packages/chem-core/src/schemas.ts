@@ -140,7 +140,7 @@ export const GraphicObjectDataSchema = z
     lineEnd: PointSchema.optional(),
     pathControlPoint: PointSchema.optional(),
     pathD: z.string().optional(),
-    artPathKind: z.enum(["line", "wavy", "arc"]).optional(),
+    artPathKind: z.enum(["line", "wavy", "arc", "quadratic"]).optional(),
     arcCenter: PointSchema.optional(),
     arcRadiusX: z.number().finite().positive().optional(),
     arcRadiusY: z.number().finite().positive().optional(),

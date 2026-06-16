@@ -1859,6 +1859,10 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
+.graphic-glyph-hit-target {
+  pointer-events: stroke;
+}
+
 .graphic-glyph-transform .graphic-glyph-stroke {
   vector-effect: none;
 }

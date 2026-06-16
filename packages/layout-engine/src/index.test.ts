@@ -1311,7 +1311,7 @@ describe("layout-engine page SVG planner", () => {
         },
         graphicKind: "path",
         data: {
-          artPathKind: "arc",
+          artPathKind: "quadratic",
           lineStart: { x: 100, y: 170 },
           pathControlPoint: { x: 160, y: 90 },
           lineEnd: { x: 220, y: 170 }

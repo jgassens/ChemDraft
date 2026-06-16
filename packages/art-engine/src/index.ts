@@ -118,7 +118,7 @@ export interface NativeArtVisualPlan {
 
 export type GraphicPathEditHandle = "start" | "middle" | "end";
 
-export type GraphicPathKind = "line" | "wavy" | "arc";
+export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic";
 
 export interface GraphicPathEditPoints {
   start: NativeArtPoint;
@@ -287,7 +287,7 @@ export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilit
 
   if (kind === "path") {
     const pathKind = graphicPathKind(object);
-    if (pathKind === "line" || pathKind === "wavy" || pathKind === "arc") {
+    if (pathKind === "line" || pathKind === "wavy" || pathKind === "arc" || pathKind === "quadratic") {
       return nativeArtCapabilityPlan({
         supportsFill: false,
         supportsStroke: true,
@@ -350,13 +350,13 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
     return undefined;
   }
 
+  const fallback = graphicPathFallbackPoints(object, pathKind);
+  if (isSemanticArc(object)) {
+    return fallback;
+  }
   const explicitStart = pointMetadata(object.data.lineStart);
   const explicitEnd = pointMetadata(object.data.lineEnd);
   const explicitControl = pointMetadata(object.data.pathControlPoint);
-  const fallback = graphicPathFallbackPoints(object, pathKind);
-  if (isCircularGraphicArc(object)) {
-    return fallback;
-  }
   const start = explicitStart ?? fallback.start;
   const end = explicitEnd ?? fallback.end;
   return {
@@ -372,53 +372,20 @@ export function editGraphicPathGeometry(
   handle: GraphicPathEditHandle,
   point: NativeArtPoint
 ): GraphicObject | undefined {
-  const editPoints = graphicPathEditPoints(object);
-  if (!editPoints) {
-    return undefined;
+  const kind = graphicPathKind(object);
+  if (kind === "line" && handle === "middle") {
+    return promoteLineToQuadraticCurve(object, point);
   }
-
-  if (isCircularGraphicArc(object)) {
-    return editCircularGraphicArcGeometry(object, handle, point);
+  if (kind === "quadratic" || isLegacyQuadraticArc(object)) {
+    return editQuadraticCurveGeometry(object, handle, point);
   }
-
-  const nextStart = handle === "start" ? point : editPoints.start;
-  const nextEnd = handle === "end" ? point : editPoints.end;
-  const nextControl = handle === "middle"
-    ? point
-    : editPoints.pathKind === "arc" ? editPoints.middle : pointMetadata(object.data.pathControlPoint);
-  const nextPathKind = handle === "middle" ? "arc" : editPoints.pathKind;
-  const nextData: GraphicObject["data"] = {
-    ...object.data,
-    artPathKind: nextPathKind,
-    lineStart: nextStart,
-    lineEnd: nextEnd
-  };
-
-  if (nextControl) {
-    nextData.pathControlPoint = nextControl;
-  } else {
-    delete nextData.pathControlPoint;
+  if (kind === "arc") {
+    return editSemanticArcGeometry(object, handle, point);
   }
-
-  const nextBounds = boundsForGraphicPath(object, nextData);
-  const unchanged =
-    samePoint(pointMetadata(object.data.lineStart), nextData.lineStart) &&
-    samePoint(pointMetadata(object.data.lineEnd), nextData.lineEnd) &&
-    samePoint(pointMetadata(object.data.pathControlPoint), nextData.pathControlPoint) &&
-    object.data.artPathKind === nextData.artPathKind &&
-    Math.abs(object.x - nextBounds.x) < 0.001 &&
-    Math.abs(object.y - nextBounds.y) < 0.001 &&
-    Math.abs(object.width - nextBounds.width) < 0.001 &&
-    Math.abs(object.height - nextBounds.height) < 0.001;
-  if (unchanged) {
-    return object;
+  if (kind === "line" || kind === "wavy") {
+    return editOpenSegmentGeometry(object, handle, point);
   }
-
-  return {
-    ...object,
-    ...nextBounds,
-    data: nextData
-  };
+  return undefined;
 }
 
 export function projectGraphicObjectPoint(
@@ -513,20 +480,135 @@ function nativeArtProjectionMatrix(
 
 function graphicPathKind(object: GraphicObject): GraphicPathKind | undefined {
   const kind = object.data.artPathKind;
-  if (kind === "line" || kind === "wavy" || kind === "arc") {
+  if (kind === "arc" && pointMetadata(object.data.pathControlPoint)) {
+    return "quadratic";
+  }
+  if (kind === "line" || kind === "wavy" || kind === "arc" || kind === "quadratic") {
     return kind;
   }
   return object.graphicKind === "line" ? "line" : undefined;
 }
 
-function isCircularGraphicArc(object: GraphicObject): boolean {
-  if (graphicPathKind(object) !== "arc") {
-    return false;
-  }
-  return !pointMetadata(object.data.pathControlPoint);
+function isSemanticArc(object: GraphicObject): boolean {
+  return graphicPathKind(object) === "arc" && !pointMetadata(object.data.pathControlPoint);
 }
 
-function editCircularGraphicArcGeometry(
+function isLegacyQuadraticArc(object: GraphicObject): boolean {
+  return object.data.artPathKind === "arc" && pointMetadata(object.data.pathControlPoint) !== undefined;
+}
+
+function isQuadraticCurve(object: GraphicObject): boolean {
+  return object.data.artPathKind === "quadratic" || isLegacyQuadraticArc(object);
+}
+
+function promoteLineToQuadraticCurve(
+  object: GraphicObject,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const editPoints = graphicPathEditPoints(object);
+  if (!editPoints) {
+    return undefined;
+  }
+
+  return updateQuadraticCurveObject(object, editPoints.start, editPoints.end, point);
+}
+
+function editQuadraticCurveGeometry(
+  object: GraphicObject,
+  handle: GraphicPathEditHandle,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const editPoints = graphicPathEditPoints(object);
+  if (!editPoints) {
+    return undefined;
+  }
+
+  const currentControl = pointMetadata(object.data.pathControlPoint) ?? editPoints.middle;
+  return updateQuadraticCurveObject(
+    object,
+    handle === "start" ? point : editPoints.start,
+    handle === "end" ? point : editPoints.end,
+    handle === "middle" ? point : currentControl
+  );
+}
+
+function editOpenSegmentGeometry(
+  object: GraphicObject,
+  handle: GraphicPathEditHandle,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  if (handle === "middle") {
+    return undefined;
+  }
+
+  const editPoints = graphicPathEditPoints(object);
+  if (!editPoints) {
+    return undefined;
+  }
+
+  const nextData: GraphicObject["data"] = {
+    ...object.data,
+    artPathKind: editPoints.pathKind,
+    lineStart: handle === "start" ? point : editPoints.start,
+    lineEnd: handle === "end" ? point : editPoints.end
+  };
+  delete nextData.pathControlPoint;
+  deleteSemanticArcData(nextData);
+
+  return updateGraphicPathObject(object, nextData);
+}
+
+function updateQuadraticCurveObject(
+  object: GraphicObject,
+  lineStart: NativeArtPoint,
+  lineEnd: NativeArtPoint,
+  pathControlPoint: NativeArtPoint
+): GraphicObject | undefined {
+  const nextData: GraphicObject["data"] = {
+    ...object.data,
+    artPathKind: "quadratic",
+    lineStart,
+    lineEnd,
+    pathControlPoint
+  };
+  deleteSemanticArcData(nextData);
+  return updateGraphicPathObject(object, nextData);
+}
+
+function updateGraphicPathObject(
+  object: GraphicObject,
+  nextData: GraphicObject["data"]
+): GraphicObject | undefined {
+  const nextBounds = boundsForGraphicPath(object, nextData);
+  const unchanged =
+    samePoint(pointMetadata(object.data.lineStart), nextData.lineStart) &&
+    samePoint(pointMetadata(object.data.lineEnd), nextData.lineEnd) &&
+    samePoint(pointMetadata(object.data.pathControlPoint), nextData.pathControlPoint) &&
+    object.data.artPathKind === nextData.artPathKind &&
+    Math.abs(object.x - nextBounds.x) < 0.001 &&
+    Math.abs(object.y - nextBounds.y) < 0.001 &&
+    Math.abs(object.width - nextBounds.width) < 0.001 &&
+    Math.abs(object.height - nextBounds.height) < 0.001;
+  if (unchanged) {
+    return object;
+  }
+
+  return {
+    ...object,
+    ...nextBounds,
+    data: nextData
+  };
+}
+
+function deleteSemanticArcData(data: GraphicObject["data"]): void {
+  delete data.arcCenter;
+  delete data.arcRadiusX;
+  delete data.arcRadiusY;
+  delete data.arcStartRadians;
+  delete data.arcSweepRadians;
+}
+
+function editSemanticArcGeometry(
   object: GraphicObject,
   handle: GraphicPathEditHandle,
   point: NativeArtPoint
@@ -610,10 +692,7 @@ function boundsForCircularGraphicArc(
   const geometry = circularGraphicArcGeometry(object, data);
   const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
   const padding = Math.max(6, strokeWidth * 2);
-  const points = [
-    ...circularArcBoundsPoints(geometry),
-    pointMetadata(data.pathControlPoint)
-  ].filter((point): point is NativeArtPoint => point !== undefined);
+  const points = circularArcBoundsPoints(geometry);
   return boundsForPoints(points, padding, { x: object.x, y: object.y, width: object.width, height: object.height });
 }
 
@@ -670,7 +749,7 @@ function boundsForGraphicPath(object: GraphicObject, data: GraphicObject["data"]
   const start = pointMetadata(data.lineStart);
   const end = pointMetadata(data.lineEnd);
   const middle = pointMetadata(data.pathControlPoint);
-  const points = data.artPathKind === "arc" && start && end && middle
+  const points = data.artPathKind === "quadratic" && start && end && middle
     ? quadraticBezierSamplePoints(start, quadraticControlForMiddlePoint(start, middle, end), end, 24)
     : [start, end, middle].filter((point): point is NativeArtPoint => point !== undefined);
   if (points.length === 0) {
@@ -684,17 +763,7 @@ function boundsForGraphicPath(object: GraphicObject, data: GraphicObject["data"]
 
   const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
   const padding = Math.max(6, strokeWidth * 2);
-  const minX = Math.min(...points.map((point) => point.x));
-  const minY = Math.min(...points.map((point) => point.y));
-  const maxX = Math.max(...points.map((point) => point.x));
-  const maxY = Math.max(...points.map((point) => point.y));
-  const minSize = padding * 2;
-  return {
-    x: minX - padding,
-    y: minY - padding,
-    width: Math.max(maxX - minX + padding * 2, minSize),
-    height: Math.max(maxY - minY + padding * 2, minSize)
-  };
+  return boundsForPoints(points, padding, { x: object.x, y: object.y, width: object.width, height: object.height });
 }
 
 function objectCenter(object: Pick<GraphicObject, "x" | "y" | "width" | "height">): NativeArtPoint {
@@ -1142,7 +1211,7 @@ function graphicLineLocalPoints(object: GraphicObject): NativeArtPoint[] {
 }
 
 function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
-  const pathKind = metadataString(object.data.artPathKind);
+  const pathKind = graphicPathKind(object);
   const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
   const storedPath = metadataString(object.data.pathD);
   if (storedPath && !pathKind) {
@@ -1164,10 +1233,12 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   }
 
   if (pathKind === "arc") {
-    if (isCircularGraphicArc(object)) {
+    if (isSemanticArc(object)) {
       return artArcSamplePoints(object, "local");
     }
+  }
 
+  if (pathKind === "quadratic" || isQuadraticCurve(object)) {
     const explicitStart = pointMetadata(object.data.lineStart);
     const explicitEnd = pointMetadata(object.data.lineEnd);
     const explicitMiddle = pointMetadata(object.data.pathControlPoint);
@@ -1270,7 +1341,7 @@ function graphicPathD(
   coordinateSpace: NativeArtVisualCoordinateSpace = "page"
 ): string | undefined {
   const storedPath = metadataString(object.data.pathD);
-  const pathKind = metadataString(object.data.artPathKind);
+  const pathKind = graphicPathKind(object);
   if (storedPath && !pathKind) {
     return storedPath;
   }
@@ -1303,10 +1374,12 @@ function graphicPathD(
   }
 
   if (pathKind === "arc") {
-    if (isCircularGraphicArc(object)) {
+    if (isSemanticArc(object)) {
       return artArcPathD(object, coordinateSpace);
     }
+  }
 
+  if (pathKind === "quadratic" || isQuadraticCurve(object)) {
     const explicitStart = pointMetadata(object.data.lineStart);
     const explicitEnd = pointMetadata(object.data.lineEnd);
     const explicitMiddle = pointMetadata(object.data.pathControlPoint);

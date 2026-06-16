@@ -224,6 +224,7 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.native-bond-hover\s*{[^}]*stroke-opacity:\s*0\.32;/s);
     expect(appCss).not.toContain(".native-bond-hit-target:hover");
     expect(appCss).not.toContain(".native-atom-hit-target:hover");
+    expect(appCss).toMatch(/\.graphic-glyph-hit-target\s*{[^}]*pointer-events:\s*stroke;/s);
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
@@ -1943,6 +1944,8 @@ describe("ChemDraft desktop shell", () => {
     expect(lineMarkup).toContain('data-graphic-path-handle="start"');
     expect(lineMarkup).toContain('data-graphic-path-handle="middle"');
     expect(lineMarkup).toContain('data-graphic-path-handle="end"');
+    expect(lineMarkup).toContain("graphic-glyph-hit-target");
+    expect(lineMarkup).toContain('pointer-events="stroke"');
     expect(lineMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
     expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
     expect(lineMarkup).not.toContain("object-resize-handle");
@@ -2025,6 +2028,15 @@ describe("ChemDraft desktop shell", () => {
     expect(tiltedMarkup).not.toContain("perspective(");
     expect(appCss).toContain(".graphic-glyph-transform .graphic-glyph-stroke");
     expect(appCss).toContain("vector-effect: none;");
+  });
+
+  it("keeps graphic path handle edits immediate and rollback-free", () => {
+    expect(mainWindowSource).toContain("const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1");
+    expect(mainWindowSource).toContain("workingDocument: selectedDocument");
+    expect(mainWindowSource).toContain("drag.workingDocument");
+    expect(mainWindowSource).toContain("drag.workingDocument = nextDocument");
+    expect(mainWindowSource).not.toMatch(/clientPointDistance\(graphicPathEditDrag\.startPoint,\s*point\)\s*>=\s*OBJECT_DRAG_THRESHOLD/);
+    expect(mainWindowSource).not.toMatch(/else\s*{\s*replacePresentDocument\(graphicPathEditDrag\.startDocument\);/);
   });
 
   it("renders native art paint plans in the editor glyph", () => {

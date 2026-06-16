@@ -369,8 +369,8 @@ type GraphicPathEditDragState = {
   pointerId: number;
   objectId: string;
   handle: NativeGraphicPathEditHandle;
-  circularArc: boolean;
   startDocument: ChemDraftDocument;
+  workingDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
@@ -656,9 +656,10 @@ const DOCUMENT_OBJECT_INTERACTIVE_TILT_MAX_DEGREES = 60;
 const documentObjectProjectedPlaneTiltMaxRadians = documentObjectProjectedPlaneTiltMaxDegrees * Math.PI / 180;
 const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT_MAX_DEGREES * Math.PI / 180;
 const OBJECT_DRAG_THRESHOLD = 4;
+const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.14.16-codex";
+const CURRENT_BUILD_STAMP = "6.16.14.53-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -3920,15 +3921,17 @@ export function MainWindow({
 
   const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument =>
     updateNativeGraphicPathHandle(
-      drag.startDocument,
+      drag.workingDocument,
       drag.objectId,
       drag.handle,
-      nativeGraphicPathEditPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
+      nativeGraphicPathEditPointFromProjectedDrag(drag.workingDocument, drag.objectId, point)
     ), []);
 
   const previewGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint) => {
     drag.latestPoint = point;
-    replacePresentDocument(graphicPathEditDocumentFromDrag(drag, point));
+    const nextDocument = graphicPathEditDocumentFromDrag(drag, point);
+    drag.workingDocument = nextDocument;
+    replacePresentDocument(nextDocument);
   }, [graphicPathEditDocumentFromDrag, replacePresentDocument]);
 
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
@@ -4127,7 +4130,9 @@ export function MainWindow({
   }, [graphicCornerRadiusDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
 
   const commitGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): boolean => {
-    const edited = graphicPathEditDocumentFromDrag(drag, point);
+    const edited = drag.workingDocument === drag.startDocument
+      ? graphicPathEditDocumentFromDrag(drag, point)
+      : drag.workingDocument;
     if (edited === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -5069,7 +5074,7 @@ export function MainWindow({
       }
 
       graphicCornerRadiusDrag.latestPoint = point;
-      if (!graphicCornerRadiusDrag.dragging && clientPointDistance(graphicCornerRadiusDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      if (!graphicCornerRadiusDrag.dragging && clientPointDistance(graphicCornerRadiusDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD) {
         graphicCornerRadiusDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -5096,7 +5101,13 @@ export function MainWindow({
       }
 
       graphicPathEditDrag.latestPoint = point;
-      if (!graphicPathEditDrag.dragging && clientPointDistance(graphicPathEditDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      if (
+        !graphicPathEditDrag.dragging &&
+        (
+          graphicPathEditDrag.handle === "middle" ||
+          clientPointDistance(graphicPathEditDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD
+        )
+      ) {
         graphicPathEditDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -5329,7 +5340,6 @@ export function MainWindow({
         const changed = commitGraphicCornerRadius(graphicCornerRadiusDrag, point);
         setStatus(changed ? "Adjusted corner radius" : "Corner radius unchanged");
       } else {
-        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
         setStatus("Selected rounded rectangle");
       }
       clearGraphicCornerRadiusDrag(event);
@@ -5344,7 +5354,6 @@ export function MainWindow({
         const changed = commitGraphicPathEdit(graphicPathEditDrag, point);
         setStatus(graphicPathEditStatus(graphicPathEditDrag, changed));
       } else {
-        replacePresentDocument(graphicPathEditDrag.startDocument);
         setStatus("Selected art path");
       }
       clearGraphicPathEditDrag(event);
@@ -6422,8 +6431,8 @@ export function MainWindow({
       pointerId: event.pointerId,
       objectId,
       handle,
-      circularArc: isSemanticCircularGraphicArc(object, editPoints),
       startDocument: selectedDocument,
+      workingDocument: selectedDocument,
       startPoint: point,
       latestPoint: point,
       dragging: false
@@ -6740,7 +6749,7 @@ export function MainWindow({
       }
 
       graphicCornerRadiusDrag.latestPoint = point;
-      if (!graphicCornerRadiusDrag.dragging && clientPointDistance(graphicCornerRadiusDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      if (!graphicCornerRadiusDrag.dragging && clientPointDistance(graphicCornerRadiusDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD) {
         graphicCornerRadiusDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -6766,7 +6775,13 @@ export function MainWindow({
       }
 
       graphicPathEditDrag.latestPoint = point;
-      if (!graphicPathEditDrag.dragging && clientPointDistance(graphicPathEditDrag.startPoint, point) >= OBJECT_DRAG_THRESHOLD) {
+      if (
+        !graphicPathEditDrag.dragging &&
+        (
+          graphicPathEditDrag.handle === "middle" ||
+          clientPointDistance(graphicPathEditDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD
+        )
+      ) {
         graphicPathEditDrag.dragging = true;
         setActiveEditorObjectId(undefined);
         setActiveTextEditObjectId(undefined);
@@ -6929,7 +6944,6 @@ export function MainWindow({
         const changed = commitGraphicCornerRadius(graphicCornerRadiusDrag, point);
         setStatus(changed ? "Adjusted corner radius" : "Corner radius unchanged");
       } else {
-        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
         setStatus("Selected rounded rectangle");
       }
       clearGraphicCornerRadiusDrag(event);
@@ -6944,7 +6958,6 @@ export function MainWindow({
         const changed = commitGraphicPathEdit(graphicPathEditDrag, point);
         setStatus(graphicPathEditStatus(graphicPathEditDrag, changed));
       } else {
-        replacePresentDocument(graphicPathEditDrag.startDocument);
         setStatus("Selected art path");
       }
       clearGraphicPathEditDrag(event);
@@ -8323,13 +8336,21 @@ function capitalizeLabel(label: string): string {
 }
 
 function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean): string {
+  const semanticArc = graphicPathEditDragIsSemanticArc(drag);
   if (!changed) {
-    return drag.circularArc ? "Selected arc geometry unchanged" : "Selected line geometry unchanged";
+    return semanticArc ? "Selected arc geometry unchanged" : "Selected line geometry unchanged";
   }
-  if (drag.circularArc) {
+  if (semanticArc) {
     return drag.handle === "middle" ? "Adjusted selected arc radius" : "Adjusted selected arc sweep";
   }
   return drag.handle === "middle" ? "Bent selected line into a curve" : "Adjusted selected line endpoint";
+}
+
+function graphicPathEditDragIsSemanticArc(drag: GraphicPathEditDragState): boolean {
+  const object = findDocumentObject(drag.workingDocument, drag.objectId) ??
+    findDocumentObject(drag.startDocument, drag.objectId);
+  const points = object?.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+  return object?.type === "graphic" && points !== undefined && isSemanticCircularGraphicArc(object, points);
 }
 
 function nativeGraphicPathEditPointFromProjectedDrag(
@@ -8341,7 +8362,7 @@ function nativeGraphicPathEditPointFromProjectedDrag(
   if (object?.type !== "graphic") {
     return point;
   }
-  return unprojectGraphicObjectPoint(object, point);
+  return unprojectGraphicObjectPoint(object, point, { coordinateSpace: "page" });
 }
 
 function nativeGraphicCornerRadiusPointFromProjectedDrag(
@@ -8377,12 +8398,7 @@ function isSemanticCircularGraphicArc(
   object: GraphicObject,
   points: NativeGraphicPathEditPoints
 ): boolean {
-  return points.pathKind === "arc" && (
-    !object.data.pathControlPoint ||
-    object.data.arcCenter !== undefined ||
-    object.data.arcRadiusX !== undefined ||
-    object.data.arcRadiusY !== undefined
-  );
+  return points.pathKind === "arc" && object.data.pathControlPoint === undefined;
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {
@@ -11785,21 +11801,48 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             {...sharedStrokeProps}
           />
         ) : object.graphicKind === "path" && pathD ? (
-          <path
-            className="graphic-glyph-stroke graphic-glyph-path"
-            d={pathD}
-            {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
-            {...sharedStrokeProps}
-          />
+          <>
+            <path
+              className="graphic-glyph-hit-target"
+              d={pathD}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={Math.max(strokeWidth + 10, 14)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="stroke"
+            />
+            <path
+              className="graphic-glyph-stroke graphic-glyph-path"
+              d={pathD}
+              {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
+              {...sharedStrokeProps}
+            />
+          </>
         ) : line ? (
-          <line
-            className="graphic-glyph-stroke"
-            x1={line.x1}
-            y1={line.y1}
-            x2={line.x2}
-            y2={line.y2}
-            {...sharedStrokeProps}
-          />
+          <>
+            <line
+              className="graphic-glyph-hit-target"
+              x1={line.x1}
+              y1={line.y1}
+              x2={line.x2}
+              y2={line.y2}
+              stroke="transparent"
+              strokeWidth={Math.max(strokeWidth + 10, 14)}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="stroke"
+            />
+            <line
+              className="graphic-glyph-stroke"
+              x1={line.x1}
+              y1={line.y1}
+              x2={line.x2}
+              y2={line.y2}
+              {...sharedStrokeProps}
+            />
+          </>
         ) : (
           <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
         )}
@@ -12461,7 +12504,10 @@ function artStyleQaStressDocument(document: ChemDraftDocument, runCount: number)
     }
 
     const step = runCount + index;
-    const fillColor = object.graphicKind === "line" || object.data.artPathKind === "arc"
+    const fillColor = object.graphicKind === "line" ||
+      object.data.artPathKind === "arc" ||
+      object.data.artPathKind === "quadratic" ||
+      object.data.artPathKind === "wavy"
       ? "none"
       : fillColors[step % fillColors.length];
     const strokeColor = strokeColors[(step * 2) % strokeColors.length];

@@ -280,7 +280,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       },
       graphicKind: "path",
       data: {
-        artPathKind: "arc",
+        artPathKind: "quadratic",
         lineStart: { x: 100, y: 170 },
         pathControlPoint: { x: 160, y: 90 },
         lineEnd: { x: 220, y: 170 }
@@ -290,7 +290,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       creationProgram: "Graphic Bend Warning Test"
     });
 
-    expect(result.contents).toContain('GraphicType="Arc"');
+    expect(result.contents).toContain('GraphicType="Line"');
     expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
       type: "graphic",
       data: {

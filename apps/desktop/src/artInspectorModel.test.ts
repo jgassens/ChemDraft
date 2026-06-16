@@ -16,8 +16,8 @@ const baseGraphic = {
 } satisfies Omit<GraphicObject, "id" | "graphicKind" | "width" | "height">;
 
 describe("ArtInspectorModel", () => {
-  it("derives a serializable stroke-only model for line, arc, and wavy path graphics", () => {
-    for (const artPathKind of ["line", "arc", "wavy"] as const) {
+  it("derives a serializable stroke-only model for line, arc, wavy, and quadratic path graphics", () => {
+    for (const artPathKind of ["line", "arc", "wavy", "quadratic"] as const) {
       const graphic = pathGraphic(`graphic_${artPathKind}`, artPathKind);
       const model = createArtInspectorModel({
         document: documentWithSelectedGraphics([graphic]),
@@ -268,7 +268,7 @@ function documentWithSelectedGraphics(
 
 function pathGraphic(
   id: string,
-  artPathKind?: "line" | "arc" | "wavy",
+  artPathKind?: "line" | "arc" | "wavy" | "quadratic",
   overrides: Partial<GraphicObject> = {}
 ): GraphicObject {
   return {

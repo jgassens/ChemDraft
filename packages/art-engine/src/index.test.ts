@@ -472,7 +472,7 @@ describe("art-engine native art planning", () => {
       y: 0.25 * startY + 0.5 * controlY + 0.25 * endY
     };
 
-    expect(bent?.data.artPathKind).toBe("arc");
+    expect(bent?.data.artPathKind).toBe("quadratic");
     expect(bent?.data.pathControlPoint).toEqual(target);
     expect(bent?.data.lineStart).toEqual(points.start);
     expect(bent?.data.lineEnd).toEqual(points.end);
@@ -486,6 +486,91 @@ describe("art-engine native art planning", () => {
     expect(plan.pathD).not.toContain(" A ");
     expect(visibleMiddle.x).toBeCloseTo(target.x, 3);
     expect(visibleMiddle.y).toBeCloseTo(target.y, 3);
+  });
+
+  it("treats legacy arc paths with control points as quadratic curves and rewrites them on edit", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 132,
+      height: 92,
+      data: {
+        artPathKind: "arc",
+        lineStart: { x: 100, y: 170 },
+        pathControlPoint: { x: 160, y: 90 },
+        lineEnd: { x: 220, y: 170 }
+      }
+    } satisfies GraphicObject;
+    const target = { x: 165, y: 82 };
+
+    const points = graphicPathEditPoints(graphic);
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const edited = editGraphicPathGeometry(graphic, "middle", target);
+
+    expect(points?.pathKind).toBe("quadratic");
+    expect(points?.middle).toEqual(graphic.data.pathControlPoint);
+    expect(plan.pathD).toContain(" Q ");
+    expect(plan.pathD).not.toContain(" A ");
+    expect(edited?.data.artPathKind).toBe("quadratic");
+    expect(edited?.data.pathControlPoint).toEqual(target);
+    expect(edited?.data.arcCenter).toBeUndefined();
+    expect(edited?.data.arcRadiusX).toBeUndefined();
+    expect(edited?.data.arcRadiusY).toBeUndefined();
+    expect(edited?.data.arcStartRadians).toBeUndefined();
+    expect(edited?.data.arcSweepRadians).toBeUndefined();
+  });
+
+  it("updates quadratic start, middle, and end handles without changing semantic arc fields", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 132,
+      height: 92,
+      data: {
+        artPathKind: "quadratic",
+        lineStart: { x: 100, y: 170 },
+        pathControlPoint: { x: 160, y: 90 },
+        lineEnd: { x: 220, y: 170 },
+        arcCenter: { x: 160, y: 130 },
+        arcRadiusX: 40,
+        arcRadiusY: 40,
+        arcStartRadians: 0,
+        arcSweepRadians: Math.PI
+      }
+    } satisfies GraphicObject;
+    const nextStart = { x: 92, y: 166 };
+    const nextMiddle = { x: 168, y: 74 };
+    const nextEnd = { x: 236, y: 162 };
+
+    const startEdited = editGraphicPathGeometry(graphic, "start", nextStart);
+    const middleEdited = editGraphicPathGeometry(graphic, "middle", nextMiddle);
+    const endEdited = editGraphicPathGeometry(graphic, "end", nextEnd);
+
+    expect(startEdited?.data).toMatchObject({
+      artPathKind: "quadratic",
+      lineStart: nextStart,
+      pathControlPoint: graphic.data.pathControlPoint,
+      lineEnd: graphic.data.lineEnd
+    });
+    expect(middleEdited?.data).toMatchObject({
+      artPathKind: "quadratic",
+      lineStart: graphic.data.lineStart,
+      pathControlPoint: nextMiddle,
+      lineEnd: graphic.data.lineEnd
+    });
+    expect(endEdited?.data).toMatchObject({
+      artPathKind: "quadratic",
+      lineStart: graphic.data.lineStart,
+      pathControlPoint: graphic.data.pathControlPoint,
+      lineEnd: nextEnd
+    });
+    for (const edited of [startEdited, middleEdited, endEdited]) {
+      expect(edited?.data.arcCenter).toBeUndefined();
+      expect(edited?.data.arcRadiusX).toBeUndefined();
+      expect(edited?.data.arcRadiusY).toBeUndefined();
+      expect(edited?.data.arcStartRadians).toBeUndefined();
+      expect(edited?.data.arcSweepRadians).toBeUndefined();
+    }
   });
 
   it("preserves the side of the segment used to bend a line into a freeform curve", () => {
@@ -520,6 +605,35 @@ describe("art-engine native art planning", () => {
     expect(downward?.data.arcSweepRadians).toBeUndefined();
     expect(planNativeArtVisual(upward as GraphicObject, { coordinateSpace: "page" }).pathD).toContain(" Q ");
     expect(planNativeArtVisual(downward as GraphicObject, { coordinateSpace: "page" }).pathD).toContain(" Q ");
+  });
+
+  it("recomputes quadratic bounds from sampled curve geometry", () => {
+    const graphic = {
+      ...baseGraphic,
+      x: 0,
+      y: 0,
+      graphicKind: "path",
+      width: 100,
+      height: 20,
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+    const points = graphicPathEditPoints(graphic);
+    if (!points) {
+      throw new Error("Expected line edit points.");
+    }
+    const target = {
+      x: (points.start.x + points.end.x) / 2,
+      y: -40
+    };
+
+    const bent = editGraphicPathGeometry(graphic, "middle", target);
+
+    expect(bent?.data.artPathKind).toBe("quadratic");
+    expect(bent?.x).toBeCloseTo(points.start.x - 6, 3);
+    expect(bent?.y).toBeLessThanOrEqual(target.y - 6);
+    expect(bent?.height).toBeGreaterThan(graphic.height);
   });
 
   it("expands and contracts circular arc radius from the middle handle around the same center", () => {
@@ -562,6 +676,63 @@ describe("art-engine native art planning", () => {
     expect(expanded?.data.arcSweepRadians).toBeCloseTo(Math.PI * 1.5, 6);
   });
 
+  it("keeps semantic arc start and end drags from changing radius", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "arc",
+        arcCenter: { x: 180, y: 140 },
+        arcRadiusX: 48,
+        arcRadiusY: 32,
+        arcStartRadians: 0,
+        arcSweepRadians: Math.PI
+      }
+    } satisfies GraphicObject;
+    const startTarget = { x: 180, y: 108 };
+    const endTarget = { x: 180, y: 172 };
+
+    const startEdited = editGraphicPathGeometry(graphic, "start", startTarget);
+    const endEdited = editGraphicPathGeometry(graphic, "end", endTarget);
+
+    expect(startEdited?.data.arcRadiusX).toBe(48);
+    expect(startEdited?.data.arcRadiusY).toBe(32);
+    expect(endEdited?.data.arcRadiusX).toBe(48);
+    expect(endEdited?.data.arcRadiusY).toBe(32);
+    expect(startEdited?.data.pathControlPoint).toBeUndefined();
+    expect(endEdited?.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("derives semantic arc handles from arc metadata instead of object bounds", () => {
+    const graphic = {
+      ...baseGraphic,
+      x: 10,
+      y: 10,
+      graphicKind: "path",
+      width: 22,
+      height: 18,
+      data: {
+        artPathKind: "arc",
+        arcCenter: { x: 300, y: 240 },
+        arcRadiusX: 40,
+        arcRadiusY: 20,
+        arcStartRadians: 0,
+        arcSweepRadians: Math.PI / 2
+      }
+    } satisfies GraphicObject;
+
+    const points = graphicPathEditPoints(graphic);
+
+    expect(points?.start.x).toBeCloseTo(340, 6);
+    expect(points?.start.y).toBeCloseTo(240, 6);
+    expect(points?.middle.x).toBeCloseTo(300 + Math.cos(Math.PI / 4) * 40, 6);
+    expect(points?.middle.y).toBeCloseTo(240 + Math.sin(Math.PI / 4) * 20, 6);
+    expect(points?.end.x).toBeCloseTo(300, 6);
+    expect(points?.end.y).toBeCloseTo(260, 6);
+  });
+
   it("keeps the circular arc middle handle attached when a rectangular arc becomes circular", () => {
     const graphic = {
       ...baseGraphic,
@@ -591,6 +762,36 @@ describe("art-engine native art planning", () => {
     expect(editedPoints?.middle.x).toBeCloseTo(target.x, 3);
     expect(editedPoints?.middle.y).toBeCloseTo(target.y, 3);
     expect(planNativeArtVisual(edited as GraphicObject, { coordinateSpace: "page" }).pathD).toContain(" A ");
+  });
+
+  it("recomputes semantic arc bounds from sampled arc geometry", () => {
+    const graphic = {
+      ...baseGraphic,
+      x: 100,
+      y: 100,
+      graphicKind: "path",
+      width: 58,
+      height: 58,
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: 0,
+        arcSweepRadians: Math.PI / 2
+      }
+    } satisfies GraphicObject;
+    const center = { x: 129, y: 129 };
+    const target = { x: center.x + 42, y: center.y + 42 };
+
+    const edited = editGraphicPathGeometry(graphic, "middle", target);
+
+    expect(edited?.data.artPathKind).toBe("arc");
+    expect(edited?.data.arcCenter).toEqual(center);
+    expect(edited?.data.arcRadiusX).toBeCloseTo(Math.hypot(42, 42), 6);
+    expect(edited?.data.arcRadiusY).toBeCloseTo(Math.hypot(42, 42), 6);
+    expect(edited?.data.pathControlPoint).toBeUndefined();
+    expect(edited?.x).toBeLessThanOrEqual(center.x - 6);
+    expect(edited?.y).toBeLessThanOrEqual(center.y - 6);
+    expect(edited?.width).toBeGreaterThan(graphic.width);
+    expect(edited?.height).toBeGreaterThan(graphic.height);
   });
 
   it("keeps transformed and tilted circular arcs editable through projected handle points", () => {
