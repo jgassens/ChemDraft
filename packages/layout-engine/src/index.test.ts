@@ -1178,6 +1178,70 @@ describe("layout-engine page SVG planner", () => {
     expect(fragments[0]?.attrs.fill).toBe("none");
   });
 
+  it("exports open-stroke native graphics without stale fill paint", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_line",
+        type: "graphic",
+        x: 40,
+        y: 60,
+        width: 82,
+        height: 46,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          strokeWidth: 6,
+          strokeDasharray: "0 6",
+          strokeLineCap: "round",
+          fillColor: "#ff0000",
+          fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.5 },
+          fillOpacity: 0.4
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "line"
+        }
+      },
+      {
+        id: "art_wavy",
+        type: "graphic",
+        x: 140,
+        y: 60,
+        width: 82,
+        height: 46,
+        rotation: 0,
+        style: {
+          strokeColor: "#1648ff",
+          strokeWidth: 2,
+          fillColor: "#ff0000",
+          fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.5 }
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "wavy"
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const line = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_line");
+    const wavy = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_wavy");
+
+    expect(line?.attrs).toMatchObject({
+      fill: "none",
+      stroke: "#111111",
+      "stroke-width": 6,
+      "stroke-dasharray": "0 6",
+      "stroke-linecap": "round"
+    });
+    expect(line?.attrs["fill-opacity"]).toBeUndefined();
+    expect(wavy?.attrs).toMatchObject({
+      fill: "none",
+      stroke: "#1648ff"
+    });
+    expect(wavy?.attrs["fill-opacity"]).toBeUndefined();
+  });
+
   it("plans native art projection bounds and gloss gradients from the same object transform", () => {
     const sphere = {
       id: "gloss_sphere",

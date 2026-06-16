@@ -1,4 +1,5 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
@@ -42,25 +43,8 @@ export interface ToolsetTextStylePayload {
   currentArtStyleTarget?: ToolsetArtPaintTarget;
 }
 
-export type ToolsetArtPaintTarget = "fill" | "stroke";
-
-export interface ToolsetArtStylePayload {
-  selectedCount: number;
-  fillSupportedCount: number;
-  strokeSupportedCount: number;
-  dashSupportedCount: number;
-  lineCapSupportedCount: number;
-  lineJoinSupportedCount: number;
-  fillColor?: string;
-  strokeColor?: string;
-  objectOpacity?: number;
-  fillOpacity?: number;
-  strokeOpacity?: number;
-  strokeWidth?: number;
-  strokeDasharray?: string;
-  strokeLineCap?: "butt" | "round" | "square";
-  strokeLineJoin?: "miter" | "round" | "bevel";
-}
+export type ToolsetArtPaintTarget = ArtInspectorPaintTarget;
+export type ToolsetArtStylePayload = ArtInspectorModel;
 
 type Unlisten = () => void;
 

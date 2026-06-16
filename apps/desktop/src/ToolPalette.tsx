@@ -569,28 +569,33 @@ function ArtToolbarStyleControls({
   const fillSupportedCount = currentArtStyle?.fillSupportedCount ?? 0;
   const strokeSupportedCount = currentArtStyle?.strokeSupportedCount ?? 0;
   const dashSupportedCount = currentArtStyle?.dashSupportedCount ?? 0;
-  const lineCapSupportedCount = currentArtStyle?.lineCapSupportedCount ?? 0;
-  const lineJoinSupportedCount = currentArtStyle?.lineJoinSupportedCount ?? 0;
-  const supportsFill = fillSupportedCount > 0;
-  const supportsStroke = strokeSupportedCount > 0;
-  const supportsDash = dashSupportedCount > 0;
-  const supportsLineCap = lineCapSupportedCount > 0;
-  const supportsLineJoin = lineJoinSupportedCount > 0;
-  const effectiveArtStyleTarget: ToolsetArtPaintTarget = currentArtStyleTarget === "fill" && !supportsFill && supportsStroke
-    ? "stroke"
-    : currentArtStyleTarget === "stroke" && !supportsStroke && supportsFill ? "fill" : currentArtStyleTarget;
+  const lineEndsSupportedCount = currentArtStyle?.lineEndsSupportedCount ?? 0;
+  const cornersSupportedCount = currentArtStyle?.cornersSupportedCount ?? 0;
+  const supportsFill = currentArtStyle?.supportsFillAny ?? false;
+  const supportsStroke = currentArtStyle?.supportsStrokeAny ?? false;
+  const supportsDash = currentArtStyle?.supportsDashAny ?? false;
+  const supportsLineEnds = currentArtStyle?.supportsLineEndsAny ?? false;
+  const supportsCorners = currentArtStyle?.supportsCornersAny ?? false;
+  const supportsFillAll = currentArtStyle?.supportsFillAll ?? false;
+  const supportsStrokeAll = currentArtStyle?.supportsStrokeAll ?? false;
+  const supportsDashAll = currentArtStyle?.supportsDashAll ?? false;
+  const supportsLineEndsAll = currentArtStyle?.supportsLineEndsAll ?? false;
+  const supportsCornersAll = currentArtStyle?.supportsCornersAll ?? false;
+  const effectiveArtStyleTarget: ToolsetArtPaintTarget = currentArtStyle?.activePaintTarget ?? currentArtStyleTarget;
   const activeTargetSupported = effectiveArtStyleTarget === "fill" ? supportsFill : supportsStroke;
-  const activeColor = effectiveArtStyleTarget === "fill" ? currentArtStyle?.fillColor : currentArtStyle?.strokeColor;
+  const activeColor = effectiveArtStyleTarget === "fill"
+    ? currentArtStyle?.values.fillColor.value
+    : currentArtStyle?.values.strokeColor.value;
   const currentColor = normalizeHexColor(activeColor ?? currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
   const [colorOpen, setColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
-  const objectOpacity = currentArtStyle?.objectOpacity ?? 1;
-  const fillOpacity = currentArtStyle?.fillOpacity ?? 1;
-  const strokeOpacity = currentArtStyle?.strokeOpacity ?? 1;
-  const strokeWidthCommandId = closestObjectStrokeWidthCommandId(currentArtStyle?.strokeWidth);
-  const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.strokeDasharray);
-  const strokeCap = currentArtStyle?.strokeLineCap ?? "butt";
-  const strokeJoin = currentArtStyle?.strokeLineJoin ?? "miter";
+  const objectOpacity = currentArtStyle?.values.objectOpacity.value ?? 1;
+  const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
+  const strokeOpacity = currentArtStyle?.values.strokeOpacity.value ?? 1;
+  const strokeWidthCommandId = closestObjectStrokeWidthCommandId(currentArtStyle?.values.strokeWidth.value ?? undefined);
+  const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.values.dash.value ?? undefined);
+  const strokeCap = currentArtStyle?.values.lineEnds.value ?? "butt";
+  const strokeJoin = currentArtStyle?.values.corners.value ?? "miter";
 
   useEffect(() => {
     onColorPickerOpenChange?.(colorOpen);
@@ -601,17 +606,6 @@ function ArtToolbarStyleControls({
       setDraftColor(currentColor);
     }
   }, [colorOpen, currentColor]);
-
-  useEffect(() => {
-    if (!selected) {
-      return;
-    }
-    if (currentArtStyleTarget === "fill" && !supportsFill && supportsStroke) {
-      onInvoke("object.style.target.stroke");
-    } else if (currentArtStyleTarget === "stroke" && !supportsStroke && supportsFill) {
-      onInvoke("object.style.target.fill");
-    }
-  }, [currentArtStyleTarget, onInvoke, selected, supportsFill, supportsStroke]);
 
   const invokeOrCommit = (commandId: string) => {
     if (onCommit) {
@@ -625,8 +619,8 @@ function ArtToolbarStyleControls({
     onPreview?.(commandId);
   };
 
-  const supportTitle = (label: string, supportedCount: number) =>
-    selected && supportedCount > 0 && supportedCount < selectedCount
+  const supportTitle = (label: string, supportedCount: number, supportsAll = supportedCount === selectedCount) =>
+    selected && supportedCount > 0 && !supportsAll
       ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
       : label;
 
@@ -738,8 +732,13 @@ function ArtToolbarStyleControls({
       data-art-fill-supported-count={fillSupportedCount}
       data-art-stroke-supported-count={strokeSupportedCount}
       data-art-dash-supported-count={dashSupportedCount}
-      data-art-line-ends-supported-count={lineCapSupportedCount}
-      data-art-corners-supported-count={lineJoinSupportedCount}
+      data-art-line-ends-supported-count={lineEndsSupportedCount}
+      data-art-corners-supported-count={cornersSupportedCount}
+      data-art-fill-support-all={currentArtStyle?.supportsFillAll ?? false}
+      data-art-stroke-support-all={currentArtStyle?.supportsStrokeAll ?? false}
+      data-art-dash-support-all={currentArtStyle?.supportsDashAll ?? false}
+      data-art-line-ends-support-all={currentArtStyle?.supportsLineEndsAll ?? false}
+      data-art-corners-support-all={currentArtStyle?.supportsCornersAll ?? false}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           onCancel?.();
@@ -754,7 +753,7 @@ function ArtToolbarStyleControls({
               type="button"
               className={effectiveArtStyleTarget === "fill" ? "active" : ""}
               aria-label="Target fill"
-              title={supportTitle("Target fill color", fillSupportedCount)}
+              title={supportTitle("Target fill color", fillSupportedCount, supportsFillAll)}
               disabled={!selected}
               data-command-id="object.style.target.fill"
               data-palette-control="true"
@@ -769,7 +768,7 @@ function ArtToolbarStyleControls({
               type="button"
               className={effectiveArtStyleTarget === "stroke" ? "active" : ""}
               aria-label="Target stroke"
-              title={supportTitle("Target stroke color", strokeSupportedCount)}
+              title={supportTitle("Target stroke color", strokeSupportedCount, supportsStrokeAll)}
               disabled={!selected}
               data-command-id="object.style.target.stroke"
               data-palette-control="true"
@@ -794,7 +793,11 @@ function ArtToolbarStyleControls({
             aria-label="Open object color picker"
             aria-expanded={colorOpen}
             disabled={!selected || !activeTargetSupported}
-            title={`Pick ${supportTitle(effectiveArtStyleTarget, effectiveArtStyleTarget === "fill" ? fillSupportedCount : strokeSupportedCount)} color`}
+            title={`Pick ${supportTitle(
+              effectiveArtStyleTarget,
+              effectiveArtStyleTarget === "fill" ? fillSupportedCount : strokeSupportedCount,
+              effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
+            )} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
             onClick={() => setColorOpen(!colorOpen)}
           >
@@ -811,7 +814,9 @@ function ArtToolbarStyleControls({
           type="button"
           className="art-inspector-symbol-button"
           aria-label={effectiveArtStyleTarget === "fill" ? "No fill" : "No stroke"}
-          title={effectiveArtStyleTarget === "fill" ? supportTitle("No fill", fillSupportedCount) : supportTitle("No stroke", strokeSupportedCount)}
+          title={effectiveArtStyleTarget === "fill"
+            ? supportTitle("No fill", fillSupportedCount, supportsFillAll)
+            : supportTitle("No stroke", strokeSupportedCount, supportsStrokeAll)}
           disabled={!selected || !activeTargetSupported}
           data-command-id={effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
           data-palette-control="true"
@@ -839,7 +844,7 @@ function ArtToolbarStyleControls({
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
-      {supportsStroke || supportsDash || supportsLineCap || supportsLineJoin ? (
+      {supportsStroke || supportsDash || supportsLineEnds || supportsCorners ? (
       <div className="art-inspector-row art-inspector-stroke-row">
         {supportsStroke ? (
         <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
@@ -849,7 +854,7 @@ function ArtToolbarStyleControls({
             value={strokeWidthCommandId}
             aria-label="Stroke width"
             disabled={!selected}
-            title={supportTitle("Stroke width", strokeSupportedCount)}
+            title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
@@ -870,7 +875,7 @@ function ArtToolbarStyleControls({
             value={strokeDashCommandId}
             aria-label="Dash pattern"
             disabled={!selected}
-            title={supportTitle("Dash pattern", dashSupportedCount)}
+            title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
@@ -883,7 +888,7 @@ function ArtToolbarStyleControls({
           </select>
         </label>
         ) : null}
-        {supportsLineCap ? (
+        {supportsLineEnds ? (
         <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
           <span className="art-stroke-control-label">Line ends</span>
           <select
@@ -891,7 +896,7 @@ function ArtToolbarStyleControls({
             value={`object.stroke.cap.${strokeCap}`}
             aria-label="Line ends"
             disabled={!selected}
-            title={supportTitle("Line ends", lineCapSupportedCount)}
+            title={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
@@ -904,7 +909,7 @@ function ArtToolbarStyleControls({
           </select>
         </label>
         ) : null}
-        {supportsLineJoin ? (
+        {supportsCorners ? (
         <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
           <span className="art-stroke-control-label">Corners</span>
           <select
@@ -912,7 +917,7 @@ function ArtToolbarStyleControls({
             value={`object.stroke.join.${strokeJoin}`}
             aria-label="Corners"
             disabled={!selected}
-            title={supportTitle("Corners", lineJoinSupportedCount)}
+            title={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}

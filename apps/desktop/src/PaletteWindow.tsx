@@ -109,18 +109,10 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listenForToolsetTextStyle((payload) => {
-      const nextArtStyleTarget = payload.currentArtStyleTarget ?? "fill";
       setCurrentTextStyle(payload.currentTextStyle);
       setCurrentTextScript(payload.currentTextScript);
       setCurrentArtStyle(payload.currentArtStyle);
-      setCurrentArtStyleTarget(
-        payload.currentArtStyle &&
-        nextArtStyleTarget === "fill" &&
-        payload.currentArtStyle.fillSupportedCount === 0 &&
-        payload.currentArtStyle.strokeSupportedCount > 0
-          ? "stroke"
-          : nextArtStyleTarget
-      );
+      setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
     })
       .then((cleanup) => {
         unlisten = cleanup;

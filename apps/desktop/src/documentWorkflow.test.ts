@@ -3468,10 +3468,10 @@ describe("Phase 4 document workflow", () => {
       strokePaint: { kind: "solid", color: "#aabbcc", opacity: 1 },
       strokeWidth: 5,
       strokeDasharray: "8 6",
-      strokeLineCap: "square",
-      strokeLineJoin: "bevel",
-      strokeMiterLimit: 6
+      strokeLineCap: "square"
     });
+    expect(graphicById(styled, objectId).style.strokeLineJoin).toBeUndefined();
+    expect(graphicById(styled, objectId).style.strokeMiterLimit).toBeUndefined();
 
     const transparent = applyGraphicObjectOpacityToSelection(styled, "fillOpacity", 0.35);
     expect(graphicById(transparent, objectId).style.fillOpacity).toBe(0.35);
@@ -3547,6 +3547,56 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(dotted, objectId).style.strokeDasharray).toBe("0 6");
     expect(graphicById(dotted, objectId).style.strokeDasharray).not.toBe(graphicById(dashed, objectId).style.strokeDasharray);
     expect(graphicById(dotted, objectId).style.strokeLineCap).toBe("round");
+  });
+
+  it("applies mixed graphic style commands only to supported objects", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Mixed Graphic Styles"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const lineId = withLine.selection.objectIds[0];
+    const withCircle = insertNativeArtGraphicObject(withLine, { x: 320, y: 180 }, "tool.art.circle");
+    const circleId = withCircle.selection.objectIds[0];
+    if (!lineId || !circleId) {
+      throw new Error("Expected line and circle graphics.");
+    }
+    const selected = applyPatches(withCircle, [{
+      op: "setSelection",
+      pageId: withCircle.pages[0].id,
+      objectIds: [lineId, circleId]
+    }]);
+
+    const filled = applyGraphicObjectColorToSelection(selected, "fill", "#1d7f68");
+    expect(graphicById(filled, lineId).style.fillColor).toBe("none");
+    expect(graphicById(filled, lineId).style.fillPaint).toBeUndefined();
+    expect(graphicById(filled, circleId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 1 }
+    });
+
+    const stroked = applyGraphicObjectColorToSelection(filled, "stroke", "#b3261e");
+    expect(graphicById(stroked, lineId).style.strokeColor).toBe("#b3261e");
+    expect(graphicById(stroked, circleId).style.strokeColor).toBe("#b3261e");
+
+    const lineEnded = applyGraphicObjectStrokeStyleToSelection(stroked, {
+      strokeLineCap: "square"
+    });
+    expect(graphicById(lineEnded, lineId).style.strokeLineCap).toBe("square");
+    expect(graphicById(lineEnded, circleId).style.strokeLineCap).toBeUndefined();
+
+    const dotted = applyGraphicObjectStrokeStyleToSelection(lineEnded, {
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+    expect(graphicById(dotted, lineId).style).toMatchObject({
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+    expect(graphicById(dotted, circleId).style).toMatchObject({
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
   });
 
   it("edits native graphic path endpoints and bends straight lines into explicit arcs", () => {

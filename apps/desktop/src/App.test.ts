@@ -106,6 +106,7 @@ import {
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { ToolPalette, cmykToRgbColor, hexToRgbColor, rgbToCmykColor, rgbToHexColor } from "./ToolPalette";
+import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DEFAULT_TOOLSET_ID,
@@ -1335,6 +1336,26 @@ describe("ChemDraft desktop shell", () => {
   it("renders the art toolbar as a command-backed object surface", () => {
     const markup = renderToStaticMarkup(createElement(PaletteWindow, { toolsetId: "core.art" }));
     const artGroups = getToolsetCommandGroups("core.art");
+    const rectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Inspector Rect"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const rectArtStyle = createArtInspectorModel({
+      document: rectDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(rectDocument),
+      requestedPaintTarget: "fill"
+    });
+    const lineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Inspector Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const lineArtStyle = createArtInspectorModel({
+      document: lineDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(lineDocument),
+      requestedPaintTarget: "fill"
+    });
     const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
       groups: artGroups,
       activeTool: "tool.select",
@@ -1343,22 +1364,7 @@ describe("ChemDraft desktop shell", () => {
       showArtStyleControls: true,
       currentObjectColor: "#111111",
       currentArtStyleTarget: "fill",
-      currentArtStyle: {
-        selectedCount: 1,
-        fillSupportedCount: 1,
-        strokeSupportedCount: 1,
-        dashSupportedCount: 1,
-        lineCapSupportedCount: 0,
-        lineJoinSupportedCount: 1,
-        fillColor: "#1d7f68",
-        strokeColor: "#111111",
-        objectOpacity: 1,
-        fillOpacity: 1,
-        strokeOpacity: 1,
-        strokeWidth: 2,
-        strokeDasharray: "solid",
-        strokeLineJoin: "miter"
-      },
+      currentArtStyle: rectArtStyle,
       onInvoke: () => undefined
     }));
     const lineInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
@@ -1369,20 +1375,7 @@ describe("ChemDraft desktop shell", () => {
       showArtStyleControls: true,
       currentObjectColor: "#111111",
       currentArtStyleTarget: "fill",
-      currentArtStyle: {
-        selectedCount: 1,
-        fillSupportedCount: 0,
-        strokeSupportedCount: 1,
-        dashSupportedCount: 1,
-        lineCapSupportedCount: 1,
-        lineJoinSupportedCount: 0,
-        strokeColor: "#111111",
-        objectOpacity: 1,
-        strokeOpacity: 1,
-        strokeWidth: 2,
-        strokeDasharray: "solid",
-        strokeLineCap: "round"
-      },
+      currentArtStyle: lineArtStyle,
       onInvoke: () => undefined
     }));
 
@@ -1410,9 +1403,12 @@ describe("ChemDraft desktop shell", () => {
     expect(rectInspectorMarkup).toContain("Stroke");
     expect(rectInspectorMarkup).toContain("Width");
     expect(rectInspectorMarkup).toContain("Dash");
-    expect(rectInspectorMarkup).toContain("Corners");
+    expect(rectInspectorMarkup).not.toContain("Corners");
     expect(rectInspectorMarkup).not.toContain("Line ends");
     expect(lineInspectorMarkup).toContain('data-art-fill-supported-count="0"');
+    expect(lineInspectorMarkup).toContain('data-art-line-ends-supported-count="1"');
+    expect(lineInspectorMarkup).toContain('data-art-fill-support-all="false"');
+    expect(lineInspectorMarkup).toContain('data-art-line-ends-support-all="true"');
     expect(lineInspectorMarkup).not.toContain('data-command-id="object.style.target.fill"');
     expect(lineInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
     expect(lineInspectorMarkup).toContain('aria-label="Stroke color"');
@@ -1423,7 +1419,7 @@ describe("ChemDraft desktop shell", () => {
     expect(toolPaletteSource).toContain("HexColorPicker");
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");
-    expect(toolPaletteSource).toContain("fillSupportedCount");
+    expect(toolPaletteSource).toContain("supportsFillAny");
     expect(appCss).toContain(".art-tool-icon");
     expect(appCss).toContain(".art-toolbar-style-controls");
     expect(appCss).toContain("grid-template-rows: 24px minmax(35px, auto) minmax(38px, auto);");
@@ -1936,6 +1932,7 @@ describe("ChemDraft desktop shell", () => {
     expect(lineMarkup).toContain('data-graphic-path-handle="end"');
     expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
     expect(lineMarkup).not.toContain("object-resize-handle");
+    expect(mainWindowSource).toContain('const svgObjects = plannedDisplayPage.objects.filter((object) => object.type !== "graphic")');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: `${plan.frameBounds.x}px`");
     expect(mainWindowSource).toContain('data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints');

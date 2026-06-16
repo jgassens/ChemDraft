@@ -219,16 +219,14 @@ export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilit
   }
 
   if (kind === "rect") {
-    const cornerRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
-    const hasCorners = cornerRadius <= 0.001;
     return nativeArtCapabilityPlan({
       supportsFill: true,
       supportsStroke: true,
       supportsDash: true,
       supportsLineCap: false,
-      supportsLineJoin: hasCorners,
+      supportsLineJoin: false,
       isClosedShape: true,
-      hasCorners
+      hasCorners: false
     });
   }
 

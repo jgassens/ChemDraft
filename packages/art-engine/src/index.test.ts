@@ -211,6 +211,13 @@ describe("art-engine native art planning", () => {
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {
+    const rectangle = {
+      ...baseGraphic,
+      graphicKind: "rect",
+      width: 80,
+      height: 48,
+      data: {}
+    } satisfies GraphicObject;
     const closedCornered = {
       ...baseGraphic,
       graphicKind: "path",
@@ -230,6 +237,13 @@ describe("art-engine native art planning", () => {
       }
     } satisfies GraphicObject;
 
+    expect(planNativeArtVisual(rectangle, { coordinateSpace: "local" }).capabilities).toMatchObject({
+      supportsFill: true,
+      supportsLineCap: false,
+      supportsLineJoin: false,
+      isClosedShape: true,
+      hasCorners: false
+    });
     expect(planNativeArtVisual(closedCornered, { coordinateSpace: "local" }).capabilities).toMatchObject({
       supportsFill: true,
       supportsLineCap: false,

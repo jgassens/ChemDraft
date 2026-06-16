@@ -242,7 +242,6 @@ import {
   listenForToolsetWindowStates,
   toggleToolsetWindow,
   type ToolsetArtPaintTarget,
-  type ToolsetArtStylePayload
 } from "./window-manager";
 import {
   createDefaultVisibleToolsetIds,
@@ -267,6 +266,7 @@ import {
   nativeMoleculeTemplateHoverTarget,
   type TemplateHoverSample
 } from "./interaction/hitTest";
+import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 
 // Re-exported so existing tests can keep importing it from "./MainWindow" while the
 // implementation lives in the pure, separately-tested interaction layer.
@@ -642,7 +642,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.21.2-codex";
+const CURRENT_BUILD_STAMP = "6.15.22.38-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -978,7 +978,14 @@ export function MainWindow({
     selectedToolbarObject,
     textStyleDefaults.color
   ]);
-  const currentArtStyle = useMemo(() => toolsetArtStylePayloadForDocument(document), [document]);
+  const currentArtStyle = useMemo(() => {
+    const model = createArtInspectorModel({
+      document,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(document),
+      requestedPaintTarget: activeArtPaintTarget
+    });
+    return model.selectedCount > 0 ? model : undefined;
+  }, [activeArtPaintTarget, document]);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
 
   useEffect(() => {
@@ -986,10 +993,8 @@ export function MainWindow({
       return;
     }
 
-    if (activeArtPaintTarget === "fill" && currentArtStyle.fillSupportedCount === 0 && currentArtStyle.strokeSupportedCount > 0) {
-      setActiveArtPaintTarget("stroke");
-    } else if (activeArtPaintTarget === "stroke" && currentArtStyle.strokeSupportedCount === 0 && currentArtStyle.fillSupportedCount > 0) {
-      setActiveArtPaintTarget("fill");
+    if (activeArtPaintTarget !== currentArtStyle.activePaintTarget) {
+      setActiveArtPaintTarget(currentArtStyle.activePaintTarget);
     }
   }, [activeArtPaintTarget, currentArtStyle]);
 
@@ -2367,12 +2372,12 @@ export function MainWindow({
   const applyObjectStyleCommand = useCallback((commandId: string): boolean => {
     const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);
     if (targetCommand) {
-      if (targetCommand.target === "fill" && currentArtStyle?.fillSupportedCount === 0 && currentArtStyle.strokeSupportedCount > 0) {
+      if (targetCommand.target === "fill" && currentArtStyle && !currentArtStyle.supportsFillAny && currentArtStyle.supportsStrokeAny) {
         setActiveArtPaintTarget("stroke");
         setStatus("Selected graphic uses stroke only");
         return true;
       }
-      if (targetCommand.target === "stroke" && currentArtStyle?.strokeSupportedCount === 0 && currentArtStyle.fillSupportedCount > 0) {
+      if (targetCommand.target === "stroke" && currentArtStyle && !currentArtStyle.supportsStrokeAny && currentArtStyle.supportsFillAny) {
         setActiveArtPaintTarget("fill");
         setStatus("Selected graphic uses fill only");
         return true;
@@ -12136,98 +12141,6 @@ function documentObjectToolbarColor(object: DocumentObject): string {
   }
 
   return metadataColor(object.style.color, object.style.strokeColor, object.style.fillColor, "#111111");
-}
-
-function toolsetArtStylePayloadForDocument(document: ChemDraftDocument): ToolsetArtStylePayload | undefined {
-  const selectedIds = new Set(document.selection.objectIds);
-  const graphics = document.pages.flatMap((page) =>
-    page.objects.filter((object): object is GraphicObject => object.type === "graphic" && selectedIds.has(object.id))
-  );
-  if (graphics.length === 0) {
-    return undefined;
-  }
-
-  return {
-    selectedCount: graphics.length,
-    fillSupportedCount: countGraphicsWithCapability(graphics, "supportsFill"),
-    strokeSupportedCount: countGraphicsWithCapability(graphics, "supportsStroke"),
-    dashSupportedCount: countGraphicsWithCapability(graphics, "supportsDash"),
-    lineCapSupportedCount: countGraphicsWithCapability(graphics, "supportsLineCap"),
-    lineJoinSupportedCount: countGraphicsWithCapability(graphics, "supportsLineJoin"),
-    fillColor: uniformGraphicValue(graphics, graphicFillToolbarColor),
-    strokeColor: uniformGraphicValue(graphics, graphicStrokeToolbarColor),
-    objectOpacity: uniformGraphicValue(graphics, (object) => metadataNumberValue(object.style.opacity, 1)),
-    fillOpacity: uniformGraphicValue(graphics, graphicFillToolbarOpacity),
-    strokeOpacity: uniformGraphicValue(graphics, graphicStrokeToolbarOpacity),
-    strokeWidth: uniformGraphicValue(graphics, (object) => metadataNumberValue(object.style.strokeWidth, 1.5)),
-    strokeDasharray: uniformGraphicValue(graphics, (object) => metadataStringValue(object.style.strokeDasharray) ?? "solid"),
-    strokeLineCap: uniformGraphicValue(graphics, (object) => {
-      const value = metadataStringValue(object.style.strokeLineCap);
-      if (value === "butt" || value === "round" || value === "square") {
-        return value;
-      }
-      return object.graphicKind === "line" || object.graphicKind === "path" ? "round" : "butt";
-    }),
-    strokeLineJoin: uniformGraphicValue(graphics, (object) => {
-      const value = metadataStringValue(object.style.strokeLineJoin);
-      if (value === "miter" || value === "round" || value === "bevel") {
-        return value;
-      }
-      return object.graphicKind === "path" ? "round" : "miter";
-    })
-  };
-}
-
-function countGraphicsWithCapability(
-  graphics: readonly GraphicObject[],
-  capability: keyof ReturnType<typeof planNativeArtVisual>["capabilities"]
-): number {
-  return graphics.filter((object) =>
-    Boolean(planNativeArtVisual(object, { coordinateSpace: "local" }).capabilities[capability])
-  ).length;
-}
-
-function uniformGraphicValue<T>(objects: readonly GraphicObject[], read: (object: GraphicObject) => T): T | undefined {
-  const [first, ...rest] = objects;
-  if (!first) {
-    return undefined;
-  }
-  const firstValue = read(first);
-  return rest.every((object) => Object.is(read(object), firstValue)) ? firstValue : undefined;
-}
-
-function graphicFillToolbarColor(object: GraphicObject): string | undefined {
-  if (object.style.fillPaint?.kind === "solid") {
-    return normalizeToolbarHexColor(object.style.fillPaint.color);
-  }
-  const fillColor = metadataStringValue(object.style.fillColor);
-  return fillColor?.toLowerCase() === "none" ? undefined : normalizeToolbarHexColor(fillColor);
-}
-
-function graphicStrokeToolbarColor(object: GraphicObject): string | undefined {
-  if (object.style.strokePaint?.kind === "solid") {
-    return normalizeToolbarHexColor(object.style.strokePaint.color);
-  }
-  return normalizeToolbarHexColor(metadataColor(object.style.strokeColor, object.style.color, "#111111"));
-}
-
-function graphicFillToolbarOpacity(object: GraphicObject): number {
-  return metadataNumberValue(object.style.fillOpacity, 1);
-}
-
-function graphicStrokeToolbarOpacity(object: GraphicObject): number {
-  return metadataNumberValue(object.style.strokeOpacity, 1);
-}
-
-function normalizeToolbarHexColor(color: string | undefined): string | undefined {
-  const normalized = color?.trim().replace(/^#/, "").toLowerCase();
-  if (!normalized || normalized === "none") {
-    return undefined;
-  }
-  if (/^[0-9a-f]{3}$/.test(normalized)) {
-    return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
-  }
-  return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
 }
 
 function documentObjectTransformLabel(object: DocumentObject | undefined): string {
