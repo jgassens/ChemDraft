@@ -48,6 +48,13 @@ export const coreDrawingToolDefinitions = [
     disabledReason: EDITOR_ADAPTER_UNAVAILABLE
   },
   {
+    commandId: "tool.art.directEdit",
+    title: "Direct Edit",
+    kind: "selection",
+    category: "art",
+    icon: "select"
+  },
+  {
     commandId: "tool.eraser",
     title: "Eraser Tool",
     kind: "selection",

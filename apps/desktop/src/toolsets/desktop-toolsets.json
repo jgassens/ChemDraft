@@ -188,55 +188,39 @@
       "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [
         {
-          "id": "core.art.circles",
+          "id": "core.art.selection",
           "items": [
-            { "commandId": "tool.art.circle", "title": "Circle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.circleDashed", "title": "Dashed Circle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.circleGloss", "title": "Gloss Circle", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.circleFilled", "title": "Filled Circle", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.circleShadow", "title": "Shadow Circle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.ellipse", "title": "Ellipse", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.ellipseDashed", "title": "Dashed Ellipse", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.ellipseGloss", "title": "Gloss Ellipse", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.ellipseFilled", "title": "Filled Ellipse", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.ellipseShadow", "title": "Shadow Ellipse", "icon": "bracket", "category": "art" }
+            { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
+            { "commandId": "tool.art.directEdit", "title": "Direct Edit", "icon": "select", "assetName": "Custom_Select", "category": "art" },
+            { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
         {
-          "id": "core.art.rectangles",
+          "id": "core.art.shapes",
           "items": [
-            { "commandId": "tool.art.roundedRect", "title": "Rounded Rectangle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.roundedRectDashed", "title": "Dashed Rounded Rectangle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.roundedRectGloss", "title": "Gloss Rounded Rectangle", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.roundedRectFilled", "title": "Filled Rounded Rectangle", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.roundedRectShadow", "title": "Shadow Rounded Rectangle", "icon": "bracket", "category": "art" },
             { "commandId": "tool.art.rect", "title": "Rectangle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.rectDashed", "title": "Dashed Rectangle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.rectGloss", "title": "Gloss Rectangle", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.rectFilled", "title": "Filled Rectangle", "icon": "style", "category": "art" },
-            { "commandId": "tool.art.rectShadow", "title": "Shadow Rectangle", "icon": "bracket", "category": "art" }
+            { "commandId": "tool.art.roundedRect", "title": "Rounded Rectangle", "icon": "bracket", "category": "art" },
+            { "commandId": "tool.art.circle", "title": "Circle", "icon": "bracket", "category": "art" },
+            { "commandId": "tool.art.ellipse", "title": "Ellipse", "icon": "bracket", "category": "art" }
           ]
         },
         {
-          "id": "core.art.lines",
+          "id": "core.art.paths",
           "items": [
             { "commandId": "tool.art.line", "title": "Line", "icon": "bond", "category": "art" },
-            { "commandId": "tool.art.lineDashed", "title": "Dashed Line", "icon": "bond", "category": "art" },
             { "commandId": "tool.art.lineWavy", "title": "Wavy Line", "icon": "mechanism", "category": "art" },
-            { "commandId": "tool.art.lineBold", "title": "Bold Line", "icon": "bond", "category": "art" }
+            { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" }
           ]
         },
         {
-          "id": "core.art.arcs",
+          "id": "core.art.arrange",
           "items": [
-            { "commandId": "tool.art.arc270", "title": "Three-quarter Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc270Dashed", "title": "Dashed Three-quarter Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc180Dashed", "title": "Dashed Half Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc120", "title": "One-third Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc120Dashed", "title": "Dashed One-third Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc90Dashed", "title": "Dashed Quarter Arc", "icon": "export", "category": "art" }
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
           ]
         }
       ]

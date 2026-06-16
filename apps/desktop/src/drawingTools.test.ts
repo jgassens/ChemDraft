@@ -17,6 +17,7 @@ describe("Phase 7 drawing tool activation", () => {
       coreDrawingToolDefinitions.filter((definition) => definition.kind === kind).map((definition) => definition.commandId);
 
     expect(commandsForKind("selection")).toContain("tool.select");
+    expect(commandsForKind("selection")).toContain("tool.art.directEdit");
     expect(commandsForKind("bond")).toContain("tool.bond");
     expect(commandsForKind("atom")).toContain("tool.atom");
     expect(commandsForKind("ring")).toContain("tool.cyclopentane");
@@ -87,18 +88,46 @@ describe("Phase 7 drawing tool activation", () => {
   });
 
   it("activates manifest-backed art tools without requiring an editor adapter", () => {
-    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.circleGloss");
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.circle");
     if (!command) {
-      throw new Error("Expected tool.art.circleGloss to be registered by the toolset manifest.");
+      throw new Error("Expected tool.art.circle to be registered by the toolset manifest.");
     }
 
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Gloss Circle active");
-    expect(result.state.activeCommandId).toBe("tool.art.circleGloss");
+    expect(result.status).toBe("Circle active");
+    expect(result.state.activeCommandId).toBe("tool.art.circle");
     expect(result.state.activeKind).toBe("art");
     expect(command.enabled).toBe(true);
+  });
+
+  it("activates direct edit as a selection-mode art toolbar command", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.directEdit");
+    if (!command) {
+      throw new Error("Expected tool.art.directEdit to be registered by the art toolset manifest.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState("tool.art.circle"), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Direct Edit active");
+    expect(result.state.activeCommandId).toBe("tool.art.directEdit");
+    expect(result.state.activeKind).toBe("selection");
+    expect(command.enabled).toBe(true);
+  });
+
+  it("keeps preset art variants registered for compatibility without showing them in the primary art toolbar", () => {
+    const toolsetCommands = getToolsetCommandSpecs();
+    const withStandalone = withStandaloneDrawingToolCommands(toolsetCommands);
+
+    expect(toolsetCommands.some((command) => command.id === "tool.art.circleGloss")).toBe(false);
+    expect(toolsetCommands.some((command) => command.id === "tool.art.rectShadow")).toBe(false);
+    expect(withStandalone.find((command) => command.id === "tool.art.circleGloss")).toMatchObject({
+      id: "tool.art.circleGloss",
+      title: "Gloss Circle",
+      enabled: true
+    });
   });
 
   it("keeps unavailable tools from changing the active tool", () => {
@@ -150,6 +179,7 @@ describe("Phase 7 drawing tool activation", () => {
     expect(drawingCommands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.benzene")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.reactionArrow")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "tool.art.directEdit")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.art.rectShadow")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "plugin.fixture.toolset.ping")).toBe(false);
   });
