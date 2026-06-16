@@ -1,4 +1,4 @@
-import type { GraphicObject } from "@chemdraft/chem-core";
+import type { GraphicGradientStop, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
 import {
   getPathBBox,
   getPointAtLength,
@@ -28,15 +28,53 @@ export interface NativeArtProjectionMatrix {
   d: number;
 }
 
+export interface NativeArtGradientStopPlan {
+  offset: number;
+  color: string;
+  opacity: number;
+}
+
+export type NativeArtPaintPlan =
+  | { kind: "none"; opacity: number }
+  | { kind: "solid"; color: string; opacity: number }
+  | {
+      kind: "linear-gradient";
+      idHint: string;
+      stops: NativeArtGradientStopPlan[];
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      gradientTransform?: string;
+    }
+  | {
+      kind: "radial-gradient";
+      idHint: string;
+      stops: NativeArtGradientStopPlan[];
+      cx: number;
+      cy: number;
+      r: number;
+      fx?: number;
+      fy?: number;
+      gradientTransform?: string;
+    };
+
 export interface NativeArtStrokePlan {
   color: string;
   width: number;
   dasharray?: string;
+  opacity: number;
+  lineCap: "butt" | "round" | "square";
+  lineJoin: "miter" | "round" | "bevel";
+  miterLimit: number;
+  paint: NativeArtPaintPlan;
 }
 
 export interface NativeArtFillPlan {
   color: string;
   mode?: string;
+  opacity: number;
+  paint: NativeArtPaintPlan;
 }
 
 export interface NativeArtGlossGradientPlan {
@@ -52,6 +90,7 @@ export interface NativeArtVisualPlan {
   coordinateSpace: NativeArtVisualCoordinateSpace;
   width: number;
   height: number;
+  opacity: number;
   stroke: NativeArtStrokePlan;
   fill: NativeArtFillPlan;
   cornerRadius: number;
@@ -83,16 +122,25 @@ export function planNativeArtVisual(
   const coordinateSpace = options.coordinateSpace ?? "page";
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
+  const matrix = nativeArtProjectionMatrixForObject(object);
+  const projectionTransform = matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined;
+  const opacity = clampUnit(metadataNumber(object.style.opacity) ?? 1);
   const stroke: NativeArtStrokePlan = {
     color: graphicColor(object.style.strokeColor, object.style.color, "#111111"),
     width: metadataNumber(object.style.strokeWidth) ?? 1.5,
-    dasharray: metadataString(object.style.strokeDasharray)
+    dasharray: metadataString(object.style.strokeDasharray),
+    opacity: graphicStrokeOpacity(object),
+    lineCap: graphicStrokeLineCap(object),
+    lineJoin: graphicStrokeLineJoin(object),
+    miterLimit: metadataNumber(object.style.strokeMiterLimit) ?? 4,
+    paint: nativeArtStrokePaint(object, coordinateSpace, projectionTransform)
   };
   const fill: NativeArtFillPlan = {
     color: graphicFillColor(object.style.fillColor),
-    mode: metadataString(object.style.fillMode)
+    mode: metadataString(object.style.fillMode),
+    opacity: graphicFillOpacity(object),
+    paint: nativeArtFillPaint(object, coordinateSpace, projectionTransform)
   };
-  const matrix = nativeArtProjectionMatrixForObject(object);
   const frameBounds = nativeArtFrameBounds(object, matrix, coordinateSpace);
   const cornerRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
   const line = object.graphicKind === "line"
@@ -111,12 +159,13 @@ export function planNativeArtVisual(
     coordinateSpace,
     width,
     height,
+    opacity,
     stroke,
     fill,
     cornerRadius,
     effect: metadataString(object.style.effect),
     projectionMatrix: matrix,
-    projectionTransform: matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined,
+    projectionTransform,
     frameBounds,
     line,
     pathD,
@@ -669,6 +718,160 @@ function graphicColor(...values: unknown[]): string {
 
 function graphicFillColor(value: unknown): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : "none";
+}
+
+function nativeArtFillPaint(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  projectionTransform?: string
+): NativeArtPaintPlan {
+  const opacity = graphicFillOpacity(object);
+  const explicitPaint = graphicPaintMetadata(object.style.fillPaint);
+  if (explicitPaint) {
+    return nativeArtPaintPlan(object, "fill", explicitPaint, coordinateSpace, projectionTransform, "#111111", opacity);
+  }
+
+  const color = graphicFillColor(object.style.fillColor);
+  if (color.toLowerCase() === "none") {
+    return { kind: "none", opacity };
+  }
+
+  return {
+    kind: "solid",
+    color: normalizeGraphicHexColor(color) ?? color,
+    opacity
+  };
+}
+
+function nativeArtStrokePaint(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  projectionTransform?: string
+): NativeArtPaintPlan {
+  const opacity = graphicStrokeOpacity(object);
+  const explicitPaint = graphicPaintMetadata(object.style.strokePaint);
+  if (explicitPaint) {
+    return nativeArtPaintPlan(object, "stroke", explicitPaint, coordinateSpace, projectionTransform, "#111111", opacity);
+  }
+
+  const color = graphicColor(object.style.strokeColor, object.style.color, "#111111");
+  return {
+    kind: "solid",
+    color: normalizeGraphicHexColor(color) ?? color,
+    opacity
+  };
+}
+
+function nativeArtPaintPlan(
+  object: GraphicObject,
+  target: "fill" | "stroke",
+  paint: GraphicPaint,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  projectionTransform: string | undefined,
+  fallbackColor: string,
+  targetOpacity: number
+): NativeArtPaintPlan {
+  if (paint.kind === "none") {
+    return { kind: "none", opacity: targetOpacity };
+  }
+
+  if (paint.kind === "solid") {
+    return {
+      kind: "solid",
+      color: normalizeGraphicHexColor(paint.color) ?? fallbackColor,
+      opacity: clampUnit((paint.opacity ?? 1) * targetOpacity)
+    };
+  }
+
+  const idHint = `graphic-${target}-${object.id}`;
+  const stops = paint.stops
+    .map((stop) => nativeArtGradientStopPlan(stop, targetOpacity))
+    .sort((a, b) => a.offset - b.offset);
+  const base = coordinateSpace === "page" ? { x: object.x, y: object.y } : { x: 0, y: 0 };
+
+  if (paint.kind === "linear-gradient") {
+    return {
+      kind: "linear-gradient",
+      idHint,
+      stops,
+      x1: base.x + paint.x1 * object.width,
+      y1: base.y + paint.y1 * object.height,
+      x2: base.x + paint.x2 * object.width,
+      y2: base.y + paint.y2 * object.height,
+      gradientTransform: projectionTransform
+    };
+  }
+
+  return {
+    kind: "radial-gradient",
+    idHint,
+    stops,
+    cx: base.x + paint.cx * object.width,
+    cy: base.y + paint.cy * object.height,
+    r: paint.r * Math.max(object.width, object.height, 1),
+    fx: typeof paint.fx === "number" ? base.x + paint.fx * object.width : undefined,
+    fy: typeof paint.fy === "number" ? base.y + paint.fy * object.height : undefined,
+    gradientTransform: projectionTransform
+  };
+}
+
+function nativeArtGradientStopPlan(stop: GraphicGradientStop, targetOpacity = 1): NativeArtGradientStopPlan {
+  return {
+    offset: clampUnit(stop.offset),
+    color: normalizeGraphicHexColor(stop.color) ?? "#111111",
+    opacity: clampUnit((stop.opacity ?? 1) * targetOpacity)
+  };
+}
+
+function graphicPaintMetadata(value: unknown): GraphicPaint | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const paint = value as GraphicPaint;
+  return typeof paint.kind === "string" ? paint : undefined;
+}
+
+function graphicFillOpacity(object: GraphicObject): number {
+  return clampUnit(metadataNumber(object.style.fillOpacity) ?? 1);
+}
+
+function graphicStrokeOpacity(object: GraphicObject): number {
+  return clampUnit(metadataNumber(object.style.strokeOpacity) ?? 1);
+}
+
+function graphicStrokeLineCap(object: GraphicObject): NativeArtStrokePlan["lineCap"] {
+  const value = metadataString(object.style.strokeLineCap);
+  if (value === "butt" || value === "round" || value === "square") {
+    return value;
+  }
+  return object.graphicKind === "line" || object.graphicKind === "path" ? "round" : "butt";
+}
+
+function graphicStrokeLineJoin(object: GraphicObject): NativeArtStrokePlan["lineJoin"] {
+  const value = metadataString(object.style.strokeLineJoin);
+  if (value === "miter" || value === "round" || value === "bevel") {
+    return value;
+  }
+  return object.graphicKind === "path" ? "round" : "miter";
+}
+
+function clampUnit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeGraphicHexColor(color: string | undefined): string | undefined {
+  const normalized = color?.trim().replace(/^#/, "").toLowerCase();
+  if (!normalized || normalized === "none") {
+    return undefined;
+  }
+  if (/^[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
+  }
+  return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
 }
 
 function graphicLineEndpoints(

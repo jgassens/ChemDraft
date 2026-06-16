@@ -18,6 +18,10 @@ import {
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
+  applyGraphicObjectColorToSelection,
+  applyGraphicObjectNoneToSelection,
+  applyGraphicObjectOpacityToSelection,
+  applyGraphicObjectStrokeStyleToSelection,
   applyColorToNativeMoleculePart,
   applyToolbarColorToSelection,
   applyAnalysisToSelectedMolecule,
@@ -103,6 +107,8 @@ import {
   scaleDocumentObjectsAroundPoint,
   selectionBounds,
   selectAllDocumentObjects,
+  selectedGraphicObjectIds,
+  swapGraphicObjectFillAndStroke,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
@@ -3407,6 +3413,78 @@ describe("Phase 4 document workflow", () => {
       "cdxml.graphic_tilt_payload_only"
     ]);
     expect(graphicCdxmlWarnings.every((warning) => warning.objectId === objectId)).toBe(true);
+  });
+
+  it("applies object-style commands to selected graphics without mutating text or molecules", () => {
+    const withGraphic = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Style Selection"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = withGraphic.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+    const withMolecule = insertNativeSingleBondMolecule(withGraphic, { x: 300, y: 260 });
+    const molecule = selectedMolecule(withMolecule);
+    const withText = insertNativeTextObject(withMolecule, { x: 120, y: 140 }, "label");
+    const textObject = getSelectedTextObject(withText);
+    if (!textObject) {
+      throw new Error("Expected text object.");
+    }
+    const selected = applyPatches(withText, [{
+      op: "setSelection",
+      pageId: withText.pages[0].id,
+      objectIds: [objectId, molecule.id, textObject.id]
+    }]);
+
+    expect(selectedGraphicObjectIds(selected)).toEqual([objectId]);
+
+    const filled = applyGraphicObjectColorToSelection(selected, "fill", "#1D7F68");
+    expect(graphicById(filled, objectId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 1 },
+      strokeColor: "#111111"
+    });
+    expect(moleculeById(filled, molecule.id).style).not.toMatchObject({ fillColor: "#1d7f68" });
+    expect(filled.pages[0].objects.find((object): object is TextObject => object.id === textObject.id && object.type === "text")?.style.color).toBe(textObject.style.color);
+
+    const noStroke = applyGraphicObjectNoneToSelection(filled, "stroke");
+    expect(graphicById(noStroke, objectId).style).toMatchObject({
+      strokeColor: "none",
+      strokePaint: { kind: "none" }
+    });
+
+    const stroked = applyGraphicObjectColorToSelection(noStroke, "stroke", "#abc");
+    const styled = applyGraphicObjectStrokeStyleToSelection(stroked, {
+      strokeWidth: 5,
+      strokeDasharray: "6 4",
+      strokeLineCap: "square",
+      strokeLineJoin: "bevel",
+      strokeMiterLimit: 6
+    });
+    expect(graphicById(styled, objectId).style).toMatchObject({
+      strokeColor: "#aabbcc",
+      strokePaint: { kind: "solid", color: "#aabbcc", opacity: 1 },
+      strokeWidth: 5,
+      strokeDasharray: "6 4",
+      strokeLineCap: "square",
+      strokeLineJoin: "bevel",
+      strokeMiterLimit: 6
+    });
+
+    const transparent = applyGraphicObjectOpacityToSelection(styled, "fillOpacity", 0.35);
+    expect(graphicById(transparent, objectId).style.fillOpacity).toBe(0.35);
+
+    const swapped = swapGraphicObjectFillAndStroke(transparent);
+    expect(graphicById(swapped, objectId).style).toMatchObject({
+      fillColor: "#aabbcc",
+      strokeColor: "#1d7f68"
+    });
+
+    const history = { past: [selected], present: swapped, future: [] };
+    expect(graphicById(undo(history).present, objectId).style.fillColor).not.toBe("#aabbcc");
+    expect(graphicById(redo(undo(history)).present, objectId).style.fillColor).toBe("#aabbcc");
   });
 
   it("edits native graphic path endpoints and bends straight lines into explicit arcs", () => {

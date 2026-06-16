@@ -67,6 +67,7 @@ import {
   type PageSvgElementFragment,
   type PageSvgFragment,
   type PageSvgRenderPlan,
+  type NativeArtPaintPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
@@ -87,7 +88,18 @@ import {
   createQuickActions,
   editActions,
   objectColorForCommand,
+  objectFillOpacityCommandId,
+  objectOpacityCommandId,
+  objectOpacityForCommand,
   objectStyleActions,
+  objectStrokeDashCommands,
+  objectStrokeLineCapCommands,
+  objectStrokeLineJoinCommands,
+  objectStrokeOpacityCommandId,
+  objectStrokeWidthCommands,
+  objectStyleNoneCommands,
+  objectStyleSwapCommand,
+  objectStyleTargetCommands,
   pageOrientationActions,
   pageSizeActions,
   structureCleanup3dCommandId,
@@ -131,6 +143,10 @@ import {
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
+  applyGraphicObjectColorToSelection,
+  applyGraphicObjectNoneToSelection,
+  applyGraphicObjectOpacityToSelection,
+  applyGraphicObjectStrokeStyleToSelection,
   createNativeSavePayload,
   createPhase4Document,
   cleanUpNativeMolecules2d,
@@ -174,6 +190,7 @@ import {
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   resolveToolbarColorSelection,
+  selectedGraphicObjectIds,
   rotateNativeMoleculeParts,
   rotateDocumentObject,
   rotateNativeMoleculeObjectAroundPoint,
@@ -191,6 +208,8 @@ import {
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
   updateNativeGraphicPathHandle,
+  swapGraphicObjectFillAndStroke,
+  type GraphicStylePaintTarget,
   type NativeGraphicPathEditHandle,
   type NativeTextSelectionRange,
   type ToolbarColorSelection,
@@ -221,7 +240,9 @@ import {
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
-  toggleToolsetWindow
+  toggleToolsetWindow,
+  type ToolsetArtPaintTarget,
+  type ToolsetArtStylePayload
 } from "./window-manager";
 import {
   createDefaultVisibleToolsetIds,
@@ -621,8 +642,9 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.17.10-codex";
+const CURRENT_BUILD_STAMP = "6.15.20.4-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
+const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -772,6 +794,7 @@ export function MainWindow({
   const objectResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
+  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
@@ -794,6 +817,7 @@ export function MainWindow({
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
   const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
+  const [activeArtPaintTarget, setActiveArtPaintTarget] = useState<GraphicStylePaintTarget>("fill");
   const [activeAtomLabelEdit, setActiveAtomLabelEdit] = useState<AtomLabelEditState | undefined>();
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
@@ -827,6 +851,8 @@ export function MainWindow({
     tiltYDegrees: "-20"
   });
   const artTransformQaEnabled = useMemo(() => shouldEnableArtTransformQaLayer(), []);
+  const artStyleQaEnabled = useMemo(() => shouldEnableArtStyleQaLayer(), []);
+  const [artStyleQaRunCount, setArtStyleQaRunCount] = useState(0);
   const [viewport, setViewport] = useState(() =>
     createViewportState({ rulerUnit: rulerUnitForDocument(initialDocument) })
   );
@@ -952,13 +978,16 @@ export function MainWindow({
     selectedToolbarObject,
     textStyleDefaults.color
   ]);
+  const currentArtStyle = useMemo(() => toolsetArtStylePayloadForDocument(document), [document]);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
   const currentToolbarTextStateRef = useRef(
-    createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript)
+    createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
     currentToolbarTextStyle,
-    currentToolbarTextScript
+    currentToolbarTextScript,
+    currentArtStyle,
+    activeArtPaintTarget
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -1164,6 +1193,25 @@ export function MainWindow({
       setStatus("Art QA needs a selected graphic object");
     }
   }, [artTransformQaDraft, commitDocumentChange]);
+  const applyArtStyleQaScene = useCallback(() => {
+    const changed = commitDocumentChange(artStyleQaSceneDocument);
+    setArtStyleQaRunCount(0);
+    if (changed) {
+      setSelectedNativeMoleculePart(undefined);
+      setStatus("Art style QA scene applied");
+    }
+  }, [commitDocumentChange]);
+  const runArtStyleQaStress = useCallback(() => {
+    const nextRunCount = artStyleQaRunCount + 1;
+    const changed = commitDocumentChange((current) => artStyleQaStressDocument(current, nextRunCount));
+    if (changed) {
+      setSelectedNativeMoleculePart(undefined);
+      setArtStyleQaRunCount(nextRunCount);
+      setStatus(`Art style QA stress pass ${nextRunCount}`);
+    } else {
+      setStatus("Art style QA stress could not create graphics");
+    }
+  }, [artStyleQaRunCount, commitDocumentChange]);
   const updateRotationInput = useCallback((nextInput: RotationInputState | undefined) => {
     rotationInputRef.current = nextInput;
     setRotationInput(nextInput);
@@ -1256,9 +1304,9 @@ export function MainWindow({
 
   useEffect(() => {
     void broadcastToolsetTextStyle(
-      createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript)
+      createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
     ).catch(() => undefined);
-  }, [currentToolbarTextScript, currentToolbarTextStyle]);
+  }, [activeArtPaintTarget, currentArtStyle, currentToolbarTextScript, currentToolbarTextStyle]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -2178,13 +2226,101 @@ export function MainWindow({
     return true;
   }, [activeTextEditObjectId, commitDocumentChange, selectedNativeMoleculePart, textStyleDefaults]);
 
-  const applyObjectStyleCommand = useCallback((commandId: string): boolean => {
-    const selectedColor = objectColorForCommand(commandId);
-    if (!selectedColor) {
-      return false;
+  const applyObjectStyleCommandToDocument = useCallback((
+    currentDocument: ChemDraftDocument,
+    commandId: string,
+    target: GraphicStylePaintTarget
+  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string } => {
+    const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);
+    if (targetCommand) {
+      return { document: currentDocument, handled: true, targeted: true, message: `Targeting ${targetCommand.target}` };
     }
 
-    const currentDocument = documentRef.current;
+    const graphicObjectIds = selectedGraphicObjectIds(currentDocument);
+
+    const noneCommand = objectStyleNoneCommands.find((command) => command.id === commandId);
+    if (noneCommand) {
+      return {
+        document: applyGraphicObjectNoneToSelection(currentDocument, noneCommand.target, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: noneCommand.target === "fill" ? "Removed selected graphic fill" : "Removed selected graphic stroke"
+      };
+    }
+
+    if (commandId === objectStyleSwapCommand.id) {
+      return {
+        document: swapGraphicObjectFillAndStroke(currentDocument, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: "Swapped selected graphic fill and stroke"
+      };
+    }
+
+    const opacity = objectOpacityForCommand(commandId);
+    if (opacity) {
+      return {
+        document: applyGraphicObjectOpacityToSelection(currentDocument, opacity.key, opacity.value, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: "Updated selected graphic opacity"
+      };
+    }
+
+    const strokeWidth = objectStrokeWidthCommands.find((command) => command.id === commandId);
+    if (strokeWidth) {
+      return {
+        document: applyGraphicObjectStrokeStyleToSelection(currentDocument, { strokeWidth: strokeWidth.strokeWidth }, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: "Updated selected graphic stroke width"
+      };
+    }
+
+    const strokeDash = objectStrokeDashCommands.find((command) => command.id === commandId);
+    if (strokeDash) {
+      return {
+        document: applyGraphicObjectStrokeStyleToSelection(currentDocument, { strokeDasharray: strokeDash.strokeDasharray }, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: "Updated selected graphic dash"
+      };
+    }
+
+    const strokeCap = objectStrokeLineCapCommands.find((command) => command.id === commandId);
+    if (strokeCap) {
+      return {
+        document: applyGraphicObjectStrokeStyleToSelection(currentDocument, { strokeLineCap: strokeCap.strokeLineCap }, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: "Updated selected graphic cap"
+      };
+    }
+
+    const strokeJoin = objectStrokeLineJoinCommands.find((command) => command.id === commandId);
+    if (strokeJoin) {
+      return {
+        document: applyGraphicObjectStrokeStyleToSelection(currentDocument, { strokeLineJoin: strokeJoin.strokeLineJoin }, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: "Updated selected graphic join"
+      };
+    }
+
+    const selectedColor = objectColorForCommand(commandId);
+    if (!selectedColor) {
+      return { document: currentDocument, handled: false, targeted: false, message: "" };
+    }
+
+    if (graphicObjectIds.length > 0) {
+      return {
+        document: applyGraphicObjectColorToSelection(currentDocument, target, selectedColor, graphicObjectIds),
+        handled: true,
+        targeted: true,
+        message: target === "fill" ? "Updated selected graphic fill" : "Updated selected graphic stroke"
+      };
+    }
+
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
     const objectStyleObjectIds = currentDocument.selection.objectIds.filter((objectId) =>
       findDocumentObject(currentDocument, objectId)?.type !== "text"
@@ -2203,17 +2339,79 @@ export function MainWindow({
     };
     const colorSelection = resolveToolbarColorSelection(currentDocument, liveColorSelection, objectStyleTarget);
     const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
+    return {
+      document: colorResult.document,
+      handled: true,
+      targeted: colorResult.targetedSelection,
+      message: colorResult.changed ? "Updated selected object color" : "Selected object color unchanged"
+    };
+  }, [selectedNativeMoleculePart]);
 
-    if (!colorResult.targetedSelection) {
-      setStatus("Select an object before changing object color");
+  const applyObjectStyleCommand = useCallback((commandId: string): boolean => {
+    const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);
+    if (targetCommand) {
+      setActiveArtPaintTarget(targetCommand.target);
+      setStatus(targetCommand.target === "fill" ? "Targeting graphic fill" : "Targeting graphic stroke");
       return true;
     }
 
-    const changed = commitDocumentChange(colorResult.document);
+    const result = applyObjectStyleCommandToDocument(documentRef.current, commandId, activeArtPaintTarget);
+    if (!result.handled) {
+      return false;
+    }
+
+    if (!result.targeted) {
+      setStatus("Select a graphic before changing object style");
+      return true;
+    }
+
+    const changed = commitDocumentChange(result.document);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? "Updated selected object color" : "Selected object color unchanged");
+    setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
-  }, [commitDocumentChange, selectedNativeMoleculePart]);
+  }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, commitDocumentChange]);
+
+  const previewObjectStyleCommand = useCallback((commandId: string) => {
+    const session = artStylePreviewRef.current ?? { startDocument: documentRef.current };
+    artStylePreviewRef.current = session;
+    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, activeArtPaintTarget);
+    if (!result.handled || !result.targeted) {
+      return;
+    }
+
+    replacePresentDocument(result.document);
+  }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, replacePresentDocument]);
+
+  const commitObjectStylePreview = useCallback((commandId: string) => {
+    const session = artStylePreviewRef.current;
+    if (!session) {
+      applyObjectStyleCommand(commandId);
+      return;
+    }
+
+    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, activeArtPaintTarget);
+    artStylePreviewRef.current = null;
+    replacePresentDocument(session.startDocument);
+    if (!result.handled || !result.targeted) {
+      setStatus("Select a graphic before changing object style");
+      return;
+    }
+
+    const changed = commitDocumentChange(result.document);
+    setActiveEditorObjectId(undefined);
+    setStatus(changed ? result.message : "Selected object style unchanged");
+  }, [activeArtPaintTarget, applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentChange, replacePresentDocument]);
+
+  const cancelObjectStylePreview = useCallback(() => {
+    const session = artStylePreviewRef.current;
+    if (!session) {
+      return;
+    }
+
+    artStylePreviewRef.current = null;
+    replacePresentDocument(session.startDocument);
+    setStatus("Canceled graphic style edit");
+  }, [replacePresentDocument]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
     const currentHistory = documentHistoryRef.current;
@@ -6593,8 +6791,13 @@ export function MainWindow({
                   showTextStyleControls={toolset.id === "core.text"}
                   showArtStyleControls={toolset.id === "core.art"}
                   currentObjectColor={currentToolbarObjectColor}
+                  currentArtStyle={currentArtStyle}
+                  currentArtStyleTarget={activeArtPaintTarget}
                   currentTextStyle={currentToolbarTextStyle}
                   currentTextScript={currentToolbarTextScript}
+                  onArtStylePreview={previewObjectStyleCommand}
+                  onArtStyleCommit={commitObjectStylePreview}
+                  onArtStyleCancel={cancelObjectStylePreview}
                   onInvoke={invoke}
                 />
               </section>
@@ -6769,6 +6972,15 @@ export function MainWindow({
                     onApplyScene={applyArtTransformQaScene}
                     onApplySelection={applyArtTransformQaToSelection}
                     onDraftChange={setArtTransformQaDraft}
+                  />
+                ) : null}
+                {artStyleQaEnabled ? (
+                  <ArtStyleQaLayer
+                    page={activePage}
+                    runCount={artStyleQaRunCount}
+                    selectionObjectIds={document.selection.objectIds}
+                    onApplyScene={applyArtStyleQaScene}
+                    onRunStress={runArtStyleQaStress}
                   />
                 ) : null}
               </div>
@@ -8887,6 +9099,55 @@ function ArtTransformQaLayer({
   );
 }
 
+function ArtStyleQaLayer({
+  page,
+  runCount,
+  selectionObjectIds,
+  onApplyScene,
+  onRunStress
+}: {
+  page: ChemDraftDocument["pages"][number];
+  runCount: number;
+  selectionObjectIds: readonly string[];
+  onApplyScene(): void;
+  onRunStress(): void;
+}) {
+  const styleObjectCount = page.objects.filter((object) =>
+    object.type === "graphic" && ART_STYLE_QA_OBJECT_IDS.includes(object.id as typeof ART_STYLE_QA_OBJECT_IDS[number])
+  ).length;
+  const selectedStyleObjectIds = selectionObjectIds.filter((objectId) =>
+    ART_STYLE_QA_OBJECT_IDS.includes(objectId as typeof ART_STYLE_QA_OBJECT_IDS[number])
+  );
+
+  return (
+    <section
+      className="art-style-qa-panel"
+      data-art-style-qa-panel="true"
+      data-art-style-qa-count={styleObjectCount}
+      data-art-style-qa-run-count={runCount}
+      data-art-style-qa-selected-ids={selectedStyleObjectIds.join(",")}
+      aria-label="Art style QA"
+      onPointerDown={(event) => event.stopPropagation()}
+      onPointerMove={(event) => event.stopPropagation()}
+      onPointerUp={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div className="art-style-qa-title">Art Style QA</div>
+      <div className="art-style-qa-actions">
+        <button type="button" data-art-style-qa-action="scene" onClick={onApplyScene}>
+          Scene
+        </button>
+        <button type="button" data-art-style-qa-action="stress" onClick={onRunStress}>
+          Stress
+        </button>
+      </div>
+      <output className="art-style-qa-output" data-art-style-qa-output="true">
+        {styleObjectCount} graphics / pass {runCount}
+      </output>
+    </section>
+  );
+}
+
 export function ObjectLayerContextMenu({
   objectId,
   objectIndex,
@@ -10874,6 +11135,86 @@ function bracketPath(kind: BracketObject["bracketKind"], width: number, height: 
   return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
 }
 
+function reactSvgPaintAttrs(
+  attribute: "fill" | "stroke",
+  paint: NativeArtPaintPlan,
+  id: string
+): Record<string, string | number | undefined> {
+  const value = reactSvgPaintValue(paint, id);
+  if (paint.kind === "solid") {
+    return {
+      [attribute]: value,
+      [`${attribute}Opacity`]: paint.opacity === 1 ? undefined : paint.opacity
+    };
+  }
+  return { [attribute]: value };
+}
+
+function reactSvgPaintValue(paint: NativeArtPaintPlan, id: string): string {
+  if (paint.kind === "none") {
+    return "none";
+  }
+  if (paint.kind === "solid") {
+    return paint.color;
+  }
+  return `url(#${id})`;
+}
+
+function reactSvgPaintDefinitions(paint: NativeArtPaintPlan, id: string) {
+  if (paint.kind === "linear-gradient") {
+    return (
+      <defs key={`${id}-defs`}>
+        <linearGradient
+          id={id}
+          x1={paint.x1}
+          y1={paint.y1}
+          x2={paint.x2}
+          y2={paint.y2}
+          gradientTransform={paint.gradientTransform}
+          gradientUnits="userSpaceOnUse"
+        >
+          {paint.stops.map((stop, index) => (
+            <stop
+              key={`${id}-stop-${index}`}
+              offset={`${Number((stop.offset * 100).toFixed(4))}%`}
+              stopColor={stop.color}
+              stopOpacity={stop.opacity === 1 ? undefined : stop.opacity}
+            />
+          ))}
+        </linearGradient>
+      </defs>
+    );
+  }
+
+  if (paint.kind === "radial-gradient") {
+    return (
+      <defs key={`${id}-defs`}>
+        <radialGradient
+          id={id}
+          cx={paint.cx}
+          cy={paint.cy}
+          r={paint.r}
+          fx={paint.fx}
+          fy={paint.fy}
+          gradientTransform={paint.gradientTransform}
+          gradientUnits="userSpaceOnUse"
+        >
+          {paint.stops.map((stop, index) => (
+            <stop
+              key={`${id}-stop-${index}`}
+              offset={`${Number((stop.offset * 100).toFixed(4))}%`}
+              stopColor={stop.color}
+              stopOpacity={stop.opacity === 1 ? undefined : stop.opacity}
+            />
+          ))}
+        </radialGradient>
+      </defs>
+    );
+  }
+
+  return null;
+}
+
 function GraphicGlyph({ object }: { object: GraphicObject }) {
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
   const width = plan.width;
@@ -10887,13 +11228,21 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const fillMode = plan.fill.mode;
   const effect = plan.effect;
   const gradientId = `graphic-gloss-${object.id}`;
+  const fillPaintId = `graphic-fill-${object.id}`;
+  const strokePaintId = `graphic-stroke-${object.id}`;
   const pathD = plan.pathD;
   const projectionTransform = plan.projectionTransform;
   const glossGradient = plan.glossGradient;
+  const fillPaintProps = fillMode === "gloss"
+    ? { fill: `url(#${gradientId})` }
+    : reactSvgPaintAttrs("fill", plan.fill.paint, fillPaintId);
   const sharedStrokeProps = {
-    stroke: strokeColor,
+    ...reactSvgPaintAttrs("stroke", plan.stroke.paint, strokePaintId),
     strokeWidth,
     strokeDasharray,
+    strokeLinecap: plan.stroke.lineCap,
+    strokeLinejoin: plan.stroke.lineJoin,
+    strokeMiterlimit: plan.stroke.miterLimit,
     vectorEffect: "non-scaling-stroke" as const
   };
   return (
@@ -10901,8 +11250,11 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
       className="graphic-glyph"
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
+      opacity={plan.opacity === 1 ? undefined : plan.opacity}
       aria-hidden="true"
     >
+      {reactSvgPaintDefinitions(plan.fill.paint, fillPaintId)}
+      {reactSvgPaintDefinitions(plan.stroke.paint, strokePaintId)}
       {fillMode === "gloss" ? (
         <defs>
           <radialGradient
@@ -10942,7 +11294,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
           <path
             className="graphic-glyph-stroke graphic-glyph-projected-shape"
             d={plan.projectedShapePathD}
-            fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+            {...fillPaintProps}
             {...sharedStrokeProps}
           />
         </>
@@ -10967,7 +11319,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             cy={height / 2}
             rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
             ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
-            fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+            {...fillPaintProps}
             {...sharedStrokeProps}
           />
         ) : object.graphicKind === "rect" ? (
@@ -10979,7 +11331,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             height={Math.max(height - strokeWidth, 0.5)}
             rx={cornerRadius}
             ry={cornerRadius}
-            fill={fillMode === "gloss" ? `url(#${gradientId})` : fillColor}
+            {...fillPaintProps}
             {...sharedStrokeProps}
           />
         ) : object.graphicKind === "path" && pathD ? (
@@ -10987,8 +11339,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             className="graphic-glyph-stroke graphic-glyph-path"
             d={pathD}
             fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
             {...sharedStrokeProps}
           />
         ) : line ? (
@@ -11502,6 +11852,201 @@ function artTransformQaSelectionDocument(document: ChemDraftDocument, draft: Art
   );
 }
 
+function artStyleQaSceneDocument(document: ChemDraftDocument): ChemDraftDocument {
+  const page = document.pages[0];
+  if (!page) {
+    return document;
+  }
+
+  const baseX = Math.min(page.width - 360, Math.max(page.margin.left + 145, 135));
+  const baseY = Math.min(page.height - 250, Math.max(page.margin.top + 430, 360));
+  const objects = [
+    artStyleQaObject({
+      id: ART_STYLE_QA_OBJECT_IDS[0],
+      kind: "rect",
+      x: baseX,
+      y: baseY,
+      width: 84,
+      height: 48,
+      fillColor: "#f8faf9",
+      strokeColor: "#1d7f68",
+      strokeWidth: 2,
+      data: { cornerRadiusPx: 8, artToolId: "qa-style-rounded-rect" }
+    }),
+    artStyleQaObject({
+      id: ART_STYLE_QA_OBJECT_IDS[1],
+      kind: "ellipse",
+      x: baseX + 120,
+      y: baseY - 6,
+      width: 58,
+      height: 58,
+      fillColor: "#1648ff",
+      strokeColor: "#111111",
+      strokeWidth: 2,
+      data: { artToolId: "qa-style-ellipse" }
+    }),
+    artStyleQaObject({
+      id: ART_STYLE_QA_OBJECT_IDS[2],
+      kind: "line",
+      x: baseX + 215,
+      y: baseY + 12,
+      width: 92,
+      height: 30,
+      fillColor: "none",
+      strokeColor: "#b3261e",
+      strokeWidth: 3,
+      data: {
+        lineStart: { x: baseX + 215, y: baseY + 42 },
+        lineEnd: { x: baseX + 307, y: baseY + 12 },
+        artToolId: "qa-style-line"
+      }
+    }),
+    artStyleQaObject({
+      id: ART_STYLE_QA_OBJECT_IDS[3],
+      kind: "path",
+      x: baseX + 90,
+      y: baseY + 95,
+      width: 64,
+      height: 64,
+      fillColor: "none",
+      strokeColor: "#111111",
+      strokeWidth: 3,
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: Math.PI * 0.15,
+        arcSweepRadians: Math.PI * 1.45,
+        artToolId: "qa-style-arc"
+      }
+    })
+  ];
+  const patches: DocumentPatch[] = objects.flatMap((object): DocumentPatch[] => {
+    const existing = page.objects.find((candidate) => candidate.id === object.id);
+    if (!existing) {
+      return [{ op: "addObject", pageId: page.id, object }];
+    }
+    if (existing.type !== "graphic") {
+      return [
+        { op: "removeObject", objectId: object.id },
+        { op: "addObject", pageId: page.id, object }
+      ];
+    }
+    return [{ op: "updateObject", objectId: object.id, changes: object }];
+  });
+
+  return applyPatches(document, [
+    ...patches,
+    { op: "setSelection", pageId: page.id, objectIds: [ART_STYLE_QA_OBJECT_IDS[0]] }
+  ]);
+}
+
+function artStyleQaStressDocument(document: ChemDraftDocument, runCount: number): ChemDraftDocument {
+  const seededDocument = artStyleQaSceneDocument(document);
+  const page = seededDocument.pages[0];
+  if (!page) {
+    return seededDocument;
+  }
+
+  const fillColors = ["#1d7f68", "#1648ff", "#b3261e", "#6cb155", "#f8faf9"];
+  const strokeColors = ["#111111", "#1d7f68", "#b3261e", "#1648ff", "#4b5563"];
+  const strokeWidths = [1, 1.5, 2, 3, 5];
+  const strokeDasharrays: Array<string | undefined> = [undefined, "6 4", "1 4"];
+  const strokeLineCaps: Array<NonNullable<GraphicObject["style"]["strokeLineCap"]>> = ["butt", "round", "square"];
+  const strokeLineJoins: Array<NonNullable<GraphicObject["style"]["strokeLineJoin"]>> = ["miter", "round", "bevel"];
+  const patches = ART_STYLE_QA_OBJECT_IDS.flatMap((objectId, index): DocumentPatch[] => {
+    const object = page.objects.find((candidate): candidate is GraphicObject =>
+      candidate.id === objectId && candidate.type === "graphic"
+    );
+    if (!object) {
+      return [];
+    }
+
+    const step = runCount + index;
+    const fillColor = object.graphicKind === "line" || object.data.artPathKind === "arc"
+      ? "none"
+      : fillColors[step % fillColors.length];
+    const strokeColor = strokeColors[(step * 2) % strokeColors.length];
+    const fillOpacity = Number((0.35 + (step % 5) * 0.13).toFixed(2));
+    const strokeOpacity = Number((0.42 + (step % 4) * 0.15).toFixed(2));
+    return [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          ...object.style,
+          opacity: Number((0.68 + (step % 3) * 0.12).toFixed(2)),
+          fillColor,
+          strokeColor,
+          fillOpacity,
+          strokeOpacity,
+          fillPaint: fillColor === "none"
+            ? { kind: "none" }
+            : { kind: "solid", color: fillColor, opacity: fillOpacity },
+          strokePaint: { kind: "solid", color: strokeColor, opacity: strokeOpacity },
+          strokeWidth: strokeWidths[step % strokeWidths.length],
+          strokeDasharray: strokeDasharrays[step % strokeDasharrays.length],
+          strokeLineCap: strokeLineCaps[step % strokeLineCaps.length],
+          strokeLineJoin: strokeLineJoins[(step + 1) % strokeLineJoins.length],
+          strokeMiterLimit: 4 + step % 5
+        }
+      }
+    }];
+  });
+
+  return applyPatches(seededDocument, [
+    ...patches,
+    { op: "setSelection", pageId: page.id, objectIds: [ART_STYLE_QA_OBJECT_IDS[0]] }
+  ]);
+}
+
+function artStyleQaObject({
+  id,
+  kind,
+  x,
+  y,
+  width,
+  height,
+  fillColor,
+  strokeColor,
+  strokeWidth,
+  data
+}: {
+  id: string;
+  kind: GraphicObject["graphicKind"];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fillColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  data: GraphicObject["data"];
+}): GraphicObject {
+  return {
+    id,
+    type: "graphic",
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    graphicKind: kind,
+    style: {
+      source: "chemdraft-art-style-qa",
+      strokeColor,
+      fillColor,
+      strokeWidth,
+      strokePaint: { kind: "solid", color: strokeColor, opacity: 1 },
+      fillPaint: fillColor === "none" ? { kind: "none" } : { kind: "solid", color: fillColor, opacity: 1 }
+    },
+    data,
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    }
+  };
+}
+
 function artTransformQaObject({
   id,
   kind,
@@ -11564,6 +12109,84 @@ function documentObjectToolbarColor(object: DocumentObject): string {
   }
 
   return metadataColor(object.style.color, object.style.strokeColor, object.style.fillColor, "#111111");
+}
+
+function toolsetArtStylePayloadForDocument(document: ChemDraftDocument): ToolsetArtStylePayload | undefined {
+  const selectedIds = new Set(document.selection.objectIds);
+  const graphics = document.pages.flatMap((page) =>
+    page.objects.filter((object): object is GraphicObject => object.type === "graphic" && selectedIds.has(object.id))
+  );
+  if (graphics.length === 0) {
+    return undefined;
+  }
+
+  return {
+    selectedCount: graphics.length,
+    fillColor: uniformGraphicValue(graphics, graphicFillToolbarColor),
+    strokeColor: uniformGraphicValue(graphics, graphicStrokeToolbarColor),
+    objectOpacity: uniformGraphicValue(graphics, (object) => metadataNumberValue(object.style.opacity, 1)),
+    fillOpacity: uniformGraphicValue(graphics, graphicFillToolbarOpacity),
+    strokeOpacity: uniformGraphicValue(graphics, graphicStrokeToolbarOpacity),
+    strokeWidth: uniformGraphicValue(graphics, (object) => metadataNumberValue(object.style.strokeWidth, 1.5)),
+    strokeDasharray: uniformGraphicValue(graphics, (object) => metadataStringValue(object.style.strokeDasharray) ?? "solid"),
+    strokeLineCap: uniformGraphicValue(graphics, (object) => {
+      const value = metadataStringValue(object.style.strokeLineCap);
+      if (value === "butt" || value === "round" || value === "square") {
+        return value;
+      }
+      return object.graphicKind === "line" || object.graphicKind === "path" ? "round" : "butt";
+    }),
+    strokeLineJoin: uniformGraphicValue(graphics, (object) => {
+      const value = metadataStringValue(object.style.strokeLineJoin);
+      if (value === "miter" || value === "round" || value === "bevel") {
+        return value;
+      }
+      return object.graphicKind === "path" ? "round" : "miter";
+    })
+  };
+}
+
+function uniformGraphicValue<T>(objects: readonly GraphicObject[], read: (object: GraphicObject) => T): T | undefined {
+  const [first, ...rest] = objects;
+  if (!first) {
+    return undefined;
+  }
+  const firstValue = read(first);
+  return rest.every((object) => Object.is(read(object), firstValue)) ? firstValue : undefined;
+}
+
+function graphicFillToolbarColor(object: GraphicObject): string | undefined {
+  if (object.style.fillPaint?.kind === "solid") {
+    return normalizeToolbarHexColor(object.style.fillPaint.color);
+  }
+  const fillColor = metadataStringValue(object.style.fillColor);
+  return fillColor?.toLowerCase() === "none" ? undefined : normalizeToolbarHexColor(fillColor);
+}
+
+function graphicStrokeToolbarColor(object: GraphicObject): string | undefined {
+  if (object.style.strokePaint?.kind === "solid") {
+    return normalizeToolbarHexColor(object.style.strokePaint.color);
+  }
+  return normalizeToolbarHexColor(metadataColor(object.style.strokeColor, object.style.color, "#111111"));
+}
+
+function graphicFillToolbarOpacity(object: GraphicObject): number {
+  return metadataNumberValue(object.style.fillOpacity, 1);
+}
+
+function graphicStrokeToolbarOpacity(object: GraphicObject): number {
+  return metadataNumberValue(object.style.strokeOpacity, 1);
+}
+
+function normalizeToolbarHexColor(color: string | undefined): string | undefined {
+  const normalized = color?.trim().replace(/^#/, "").toLowerCase();
+  if (!normalized || normalized === "none") {
+    return undefined;
+  }
+  if (/^[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
+  }
+  return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
 }
 
 function documentObjectTransformLabel(object: DocumentObject | undefined): string {
@@ -12308,6 +12931,24 @@ function shouldEnableArtTransformQaLayer(): boolean {
       params.get("agentBridge") === "1" ||
       params.get("chemdraftAgentBridge") === "1" ||
       window.localStorage.getItem("chemdraft.artTransformQa") === "enabled";
+  } catch {
+    return false;
+  }
+}
+
+function shouldEnableArtStyleQaLayer(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("artStyleQa") === "0" || params.get("chemdraftArtStyleQa") === "0") {
+      return false;
+    }
+    return params.get("artStyleQa") === "1" ||
+      params.get("chemdraftArtStyleQa") === "1" ||
+      window.localStorage.getItem("chemdraft.artStyleQa") === "enabled";
   } catch {
     return false;
   }

@@ -1,9 +1,12 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   DefaultNativeTextStyle,
   applyPatch,
+  applyPatches,
   createDocumentHistory,
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
@@ -155,6 +158,7 @@ const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.ur
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
 const desktopToolsetsSource = readFileSync(new URL("./toolsets/desktop-toolsets.json", import.meta.url), "utf8");
+const require = createRequire(import.meta.url);
 const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="External CDXML Fixture">
@@ -1175,12 +1179,19 @@ describe("ChemDraft desktop shell", () => {
   it("gates the art transform QA helper to local browser QA surfaces", () => {
     expect(mainWindowSource).toContain("ArtTransformQaLayer");
     expect(mainWindowSource).toContain("shouldEnableArtTransformQaLayer");
+    expect(mainWindowSource).toContain("ArtStyleQaLayer");
+    expect(mainWindowSource).toContain("shouldEnableArtStyleQaLayer");
+    expect(mainWindowSource).toContain("artStyleQaStressDocument");
     expect(mainWindowSource).toContain('params.get("artQa") === "1"');
+    expect(mainWindowSource).toContain('params.get("artStyleQa") === "1"');
     expect(mainWindowSource).toContain('params.get("agentBridge") === "1"');
     expect(mainWindowSource).toContain('data-art-transform-qa-layer="true"');
     expect(mainWindowSource).toContain('data-art-transform-qa-action="scene"');
+    expect(mainWindowSource).toContain('data-art-style-qa-panel="true"');
+    expect(mainWindowSource).toContain('data-art-style-qa-action="stress"');
     expect(appCss).toContain(".art-transform-qa-overlay");
     expect(appCss).toContain(".art-transform-qa-panel");
+    expect(appCss).toContain(".art-style-qa-panel");
   });
 
   it("keeps transform handle double-clicks out of whole-molecule selection promotion", () => {
@@ -1337,12 +1348,39 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('aria-label="Object color"');
     expect(markup).toContain('aria-label="Open object color picker"');
     expect(markup).toContain('data-color-picker="true"');
+    expect(markup).toContain('data-command-id="object.style.target.fill"');
+    expect(markup).toContain('data-command-id="object.style.swapFillStroke"');
+    expect(markup).toContain('aria-label="Stroke width"');
+    expect(markup).toContain('data-art-inspector-slider="object-opacity"');
+    expect(markup).toContain('data-art-inspector-slider="fill-opacity"');
+    expect(markup).toContain('data-art-inspector-slider="stroke-opacity"');
+    expect(markup).toContain("Obj");
+    expect(markup).toContain("Fill");
+    expect(markup).toContain("Stroke");
+    expect(markup).toContain("Width");
+    expect(markup).toContain("Dash");
+    expect(markup).toContain("Cap");
+    expect(markup).toContain("Join");
     expect(markup).not.toContain('data-command-id="text.color.black"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
-    expect(toolPaletteSource).toContain("colorCommands={objectColorCommands}");
-    expect(toolPaletteSource).toContain("customColorCommandId={objectCustomColorCommandId}");
+    expect(toolPaletteSource).toContain("HexColorPicker");
+    expect(toolPaletteSource).toContain("objectOpacityCommandId");
+    expect(toolPaletteSource).toContain("objectStrokeDashCommands");
     expect(appCss).toContain(".art-tool-icon");
     expect(appCss).toContain(".art-toolbar-style-controls");
+    expect(appCss).toContain("grid-template-rows: 24px 35px 38px;");
+    expect(appCss).toContain(".art-inspector-slider-value");
+    expect(appCss).toContain(".art-stroke-control-label");
+    expect(appCss).toContain(".art-color-popover .react-colorful");
+  });
+
+  it("keeps the art inspector color picker dependency license acceptable", () => {
+    const reactColorfulPackage = JSON.parse(readFileSync(
+      join(dirname(require.resolve("react-colorful")), "../package.json"),
+      "utf8"
+    )) as { license: string };
+
+    expect(reactColorfulPackage.license).toBe("MIT");
   });
 
   it("registers built-in and plugin fixture toolsets", () => {
@@ -1904,6 +1942,67 @@ describe("ChemDraft desktop shell", () => {
     expect(tiltedMarkup).not.toContain("perspective(");
     expect(appCss).toContain(".graphic-glyph-transform .graphic-glyph-stroke");
     expect(appCss).toContain("vector-effect: none;");
+  });
+
+  it("renders native art paint plans in the editor glyph", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Art Paint Render"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          opacity: 0.75,
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1648ff", opacity: 0.5 }
+            ]
+          },
+          strokePaint: {
+            kind: "solid",
+            color: "#1d7",
+            opacity: 0.65
+          },
+          strokeWidth: 5,
+          strokeLineCap: "square",
+          strokeLineJoin: "bevel",
+          strokeMiterLimit: 7
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain(`id="graphic-fill-${objectId}"`);
+    expect(markup).toContain(`fill="url(#graphic-fill-${objectId})"`);
+    expect(markup).toContain('stroke="#11dd77"');
+    expect(markup).toContain('stroke-opacity="0.65"');
+    expect(markup).toContain('stroke-width="5"');
+    expect(markup).toContain('stroke-linecap="square"');
+    expect(markup).toContain('stroke-linejoin="bevel"');
+    expect(markup).toContain('stroke-miterlimit="7"');
+    expect(markup).toContain('opacity="0.75"');
+    expect(markup).toContain('gradientUnits="userSpaceOnUse"');
+    expect(markup).toContain('stop-color="#1648ff"');
+    expect(markup).toContain('stop-opacity="0.5"');
+    expect(markup).not.toContain('id="graphic-gloss-');
   });
 
   it("hides molecule transform handles when the bond tool is active", () => {

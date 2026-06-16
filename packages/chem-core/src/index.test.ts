@@ -623,9 +623,32 @@ describe("native document validation and serialization", () => {
       graphicKind: "rect",
       style: {
         strokeColor: "#1d7f68",
+        strokePaint: {
+          kind: "solid",
+          color: "#1d7f68",
+          opacity: 0.8
+        },
         fillColor: "#f8faf9",
+        fillPaint: {
+          kind: "linear-gradient",
+          units: "object",
+          x1: 0,
+          y1: 0,
+          x2: 1,
+          y2: 1,
+          stops: [
+            { offset: 0, color: "#ffffff", opacity: 0.9 },
+            { offset: 1, color: "#1d7f68", opacity: 0.4 }
+          ]
+        },
+        opacity: 0.75,
+        fillOpacity: 0.6,
+        strokeOpacity: 0.8,
         strokeWidth: 2,
         strokeDasharray: "3 4",
+        strokeLineCap: "round",
+        strokeLineJoin: "bevel",
+        strokeMiterLimit: 3,
         fillMode: "gloss",
         effect: "shadow",
         tiltXDegrees: 12,
@@ -653,6 +676,21 @@ describe("native document validation and serialization", () => {
       type: "graphic",
       style: {
         strokeColor: "#1d7f68",
+        strokePaint: {
+          kind: "solid",
+          color: "#1d7f68",
+          opacity: 0.8
+        },
+        fillPaint: {
+          kind: "linear-gradient",
+          stops: [
+            { offset: 0, color: "#ffffff", opacity: 0.9 },
+            { offset: 1, color: "#1d7f68", opacity: 0.4 }
+          ]
+        },
+        opacity: 0.75,
+        strokeLineCap: "round",
+        strokeLineJoin: "bevel",
         fillMode: "gloss",
         effect: "shadow",
         tiltXDegrees: 12,

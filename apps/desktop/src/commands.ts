@@ -242,18 +242,70 @@ export const textColorCommands = [
   { id: "text.color.purple", title: "Color: Purple", color: "#6046a8" }
 ] as const;
 
-export const objectColorCommands = textColorCommands.map((command) => ({
-  ...command,
-  id: command.id.replace("text.color.", "object.color."),
-  title: command.title.replace("Color:", "Object Color:")
-})) as readonly {
+export const objectColorCommands = [
+  { id: "object.color.black", title: "Object Color: Black", color: "#111111" },
+  { id: "object.color.white", title: "Object Color: White", color: "#ffffff" },
+  { id: "object.color.blue", title: "Object Color: Blue", color: "#1f5fbf" },
+  { id: "object.color.red", title: "Object Color: Red", color: "#b3261e" },
+  { id: "object.color.green", title: "Object Color: Green", color: "#1d7f68" },
+  { id: "object.color.gray", title: "Object Color: Gray", color: "#52616b" },
+  { id: "object.color.cyan", title: "Object Color: Cyan", color: "#087ea4" },
+  { id: "object.color.magenta", title: "Object Color: Magenta", color: "#9b287b" },
+  { id: "object.color.yellow", title: "Object Color: Yellow", color: "#d9a400" },
+  { id: "object.color.orange", title: "Object Color: Orange", color: "#c75c12" },
+  { id: "object.color.purple", title: "Object Color: Purple", color: "#6046a8" }
+] as const satisfies readonly {
   id: `object.color.${string}`;
   title: string;
   color: string;
 }[];
 
+export const objectStyleTargetCommands = [
+  { id: "object.style.target.fill", title: "Target Fill", target: "fill" },
+  { id: "object.style.target.stroke", title: "Target Stroke", target: "stroke" }
+] as const satisfies readonly { id: string; title: string; target: "fill" | "stroke" }[];
+
+export const objectStyleNoneCommands = [
+  { id: "object.style.fill.none", title: "No Fill", target: "fill" },
+  { id: "object.style.stroke.none", title: "No Stroke", target: "stroke" }
+] as const satisfies readonly { id: string; title: string; target: "fill" | "stroke" }[];
+
+export const objectStyleSwapCommand = {
+  id: "object.style.swapFillStroke",
+  title: "Swap Fill and Stroke"
+} as const;
+
+export const objectStrokeWidthCommands = [
+  { id: "object.stroke.width.1", title: "Stroke Width: 1 px", strokeWidth: 1 },
+  { id: "object.stroke.width.1_5", title: "Stroke Width: 1.5 px", strokeWidth: 1.5 },
+  { id: "object.stroke.width.2", title: "Stroke Width: 2 px", strokeWidth: 2 },
+  { id: "object.stroke.width.3", title: "Stroke Width: 3 px", strokeWidth: 3 },
+  { id: "object.stroke.width.5", title: "Stroke Width: 5 px", strokeWidth: 5 }
+] as const satisfies readonly { id: string; title: string; strokeWidth: number }[];
+
+export const objectStrokeDashCommands = [
+  { id: "object.stroke.dash.solid", title: "Solid Stroke", strokeDasharray: undefined },
+  { id: "object.stroke.dash.dashed", title: "Dashed Stroke", strokeDasharray: "6 4" },
+  { id: "object.stroke.dash.dotted", title: "Dotted Stroke", strokeDasharray: "1 4" }
+] as const satisfies readonly { id: string; title: string; strokeDasharray?: string }[];
+
+export const objectStrokeLineCapCommands = [
+  { id: "object.stroke.cap.butt", title: "Cap: Butt", strokeLineCap: "butt" },
+  { id: "object.stroke.cap.round", title: "Cap: Round", strokeLineCap: "round" },
+  { id: "object.stroke.cap.square", title: "Cap: Square", strokeLineCap: "square" }
+] as const satisfies readonly { id: string; title: string; strokeLineCap: "butt" | "round" | "square" }[];
+
+export const objectStrokeLineJoinCommands = [
+  { id: "object.stroke.join.miter", title: "Join: Miter", strokeLineJoin: "miter" },
+  { id: "object.stroke.join.round", title: "Join: Round", strokeLineJoin: "round" },
+  { id: "object.stroke.join.bevel", title: "Join: Bevel", strokeLineJoin: "bevel" }
+] as const satisfies readonly { id: string; title: string; strokeLineJoin: "miter" | "round" | "bevel" }[];
+
 export const customTextColorCommandPrefix = "text.color.custom.";
 export const customObjectColorCommandPrefix = "object.color.custom.";
+export const customObjectOpacityCommandPrefix = "object.opacity.custom.";
+export const customObjectFillOpacityCommandPrefix = "object.fillOpacity.custom.";
+export const customObjectStrokeOpacityCommandPrefix = "object.strokeOpacity.custom.";
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
@@ -261,6 +313,31 @@ export function textCustomColorCommandId(color: string): string {
 
 export function objectCustomColorCommandId(color: string): string {
   return `${customObjectColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
+}
+
+export function objectOpacityCommandId(opacity: number): string {
+  return `${customObjectOpacityCommandPrefix}${opacityPercent(opacity)}`;
+}
+
+export function objectFillOpacityCommandId(opacity: number): string {
+  return `${customObjectFillOpacityCommandPrefix}${opacityPercent(opacity)}`;
+}
+
+export function objectStrokeOpacityCommandId(opacity: number): string {
+  return `${customObjectStrokeOpacityCommandPrefix}${opacityPercent(opacity)}`;
+}
+
+export function objectOpacityForCommand(commandId: string): { key: "opacity" | "fillOpacity" | "strokeOpacity"; value: number } | undefined {
+  if (commandId.startsWith(customObjectOpacityCommandPrefix)) {
+    return { key: "opacity", value: opacityFromCommandSuffix(commandId.slice(customObjectOpacityCommandPrefix.length)) };
+  }
+  if (commandId.startsWith(customObjectFillOpacityCommandPrefix)) {
+    return { key: "fillOpacity", value: opacityFromCommandSuffix(commandId.slice(customObjectFillOpacityCommandPrefix.length)) };
+  }
+  if (commandId.startsWith(customObjectStrokeOpacityCommandPrefix)) {
+    return { key: "strokeOpacity", value: opacityFromCommandSuffix(commandId.slice(customObjectStrokeOpacityCommandPrefix.length)) };
+  }
+  return undefined;
 }
 
 export function textColorForCommand(commandId: string): string | undefined {
@@ -300,6 +377,15 @@ export function normalizeHexColor(color: string | undefined): string | undefined
   }
 
   return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
+}
+
+function opacityPercent(opacity: number): number {
+  return Math.round(Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 1)) * 100);
+}
+
+function opacityFromCommandSuffix(value: string): number {
+  const parsed = Number(value);
+  return Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed / 100 : 1));
 }
 
 export const textLetterSpacingCommands = [
@@ -348,7 +434,56 @@ export const textToolbarActions: CommandSpec[] = [
 ];
 
 export const objectStyleActions: CommandSpec[] = [
+  ...objectStyleTargetCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStyleNoneCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  {
+    id: objectStyleSwapCommand.id,
+    title: objectStyleSwapCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
   ...objectColorCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeWidthCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeDashCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeLineCapCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeLineJoinCommands.map(({ id, title }) => ({
     id,
     title,
     icon: "style",

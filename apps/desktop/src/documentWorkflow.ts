@@ -23,6 +23,7 @@ import {
   type ElectronMarkObject,
   type GraphicObjectData,
   type GraphicObject,
+  type GraphicPaint,
   type GraphicObjectStyle,
   type PageLayout,
   type MoleculeAtom,
@@ -2829,6 +2830,110 @@ export function applyObjectColorToDocumentObjects(
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
+export type GraphicStylePaintTarget = "fill" | "stroke";
+
+export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] {
+  const selectedIds = new Set(document.selection.objectIds);
+  if (selectedIds.size === 0) {
+    return [];
+  }
+
+  return document.pages.flatMap((page) =>
+    page.objects
+      .filter((object): object is GraphicObject => object.type === "graphic" && selectedIds.has(object.id))
+      .map((object) => object.id)
+  );
+}
+
+export function applyGraphicObjectColorToSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  color: string,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const normalized = normalizeWorkflowHexColor(color);
+  if (!normalized) {
+    return document;
+  }
+
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const opacity = target === "fill" ? graphicFillPaintOpacity(object) : graphicStrokePaintOpacity(object);
+    const paint: GraphicPaint = { kind: "solid", color: normalized, opacity };
+    return target === "fill"
+      ? {
+          ...object.style,
+          fillColor: normalized,
+          fillPaint: paint
+        }
+      : {
+          ...object.style,
+          strokeColor: normalized,
+          strokePaint: paint
+        };
+  });
+}
+
+export function applyGraphicObjectNoneToSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => target === "fill"
+    ? {
+        ...object.style,
+        fillColor: "none",
+        fillPaint: { kind: "none" }
+      }
+    : {
+        ...object.style,
+        strokeColor: "none",
+        strokePaint: { kind: "none" }
+      });
+}
+
+export function swapGraphicObjectFillAndStroke(
+  document: ChemDraftDocument,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const fillPaint = graphicFillPaintForObject(object);
+    const strokePaint = graphicStrokePaintForObject(object);
+    return {
+      ...object.style,
+      fillPaint: strokePaint,
+      strokePaint: fillPaint,
+      fillColor: legacyColorForGraphicPaint(strokePaint, "none"),
+      strokeColor: legacyColorForGraphicPaint(fillPaint, "#111111"),
+      fillOpacity: object.style.strokeOpacity,
+      strokeOpacity: object.style.fillOpacity
+    };
+  });
+}
+
+export function applyGraphicObjectOpacityToSelection(
+  document: ChemDraftDocument,
+  key: "opacity" | "fillOpacity" | "strokeOpacity",
+  opacity: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const value = clampWorkflowUnit(opacity);
+  return updateGraphicObjects(document, objectIds, (object) => ({
+    ...object.style,
+    [key]: value
+  }));
+}
+
+export function applyGraphicObjectStrokeStyleToSelection(
+  document: ChemDraftDocument,
+  style: Pick<GraphicObjectStyle, "strokeWidth" | "strokeDasharray" | "strokeLineCap" | "strokeLineJoin" | "strokeMiterLimit">,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => ({
+    ...object.style,
+    ...style
+  }));
+}
+
 export function applyColorToNativeMoleculePart(
   document: ChemDraftDocument,
   target: NativeMoleculeColorTarget,
@@ -4133,6 +4238,99 @@ function graphicObjectHasVisibleFill(object: GraphicObject): boolean {
     object.style.fillMode === "solid" ||
     object.style.fillMode === "gloss" ||
     object.style.effect === "shadow";
+}
+
+function updateGraphicObjects(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  updateStyle: (object: GraphicObject) => GraphicObjectStyle
+): ChemDraftDocument {
+  const targetIds = new Set(objectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "graphic" || !targetIds.has(object.id)) {
+        return [];
+      }
+
+      const nextStyle = updateStyle(object);
+      return graphicStylesEqual(object.style, nextStyle)
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              style: nextStyle
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+function graphicFillPaintForObject(object: GraphicObject): GraphicPaint {
+  if (object.style.fillPaint) {
+    return object.style.fillPaint;
+  }
+
+  const fillColor = typeof object.style.fillColor === "string" ? object.style.fillColor : "none";
+  const color = normalizeWorkflowHexColor(fillColor);
+  return color
+    ? { kind: "solid", color, opacity: graphicFillPaintOpacity(object) }
+    : { kind: "none" };
+}
+
+function graphicStrokePaintForObject(object: GraphicObject): GraphicPaint {
+  if (object.style.strokePaint) {
+    return object.style.strokePaint;
+  }
+
+  const color = normalizeWorkflowHexColor(
+    typeof object.style.strokeColor === "string" ? object.style.strokeColor : undefined
+  ) ?? "#111111";
+  return { kind: "solid", color, opacity: graphicStrokePaintOpacity(object) };
+}
+
+function graphicFillPaintOpacity(object: GraphicObject): number {
+  return object.style.fillPaint?.kind === "solid"
+    ? clampWorkflowUnit(object.style.fillPaint.opacity ?? 1)
+    : clampWorkflowUnit(object.style.fillOpacity ?? 1);
+}
+
+function graphicStrokePaintOpacity(object: GraphicObject): number {
+  return object.style.strokePaint?.kind === "solid"
+    ? clampWorkflowUnit(object.style.strokePaint.opacity ?? 1)
+    : clampWorkflowUnit(object.style.strokeOpacity ?? 1);
+}
+
+function legacyColorForGraphicPaint(paint: GraphicPaint, fallback: string): string {
+  return paint.kind === "solid" ? paint.color : fallback;
+}
+
+function graphicStylesEqual(first: GraphicObjectStyle, second: GraphicObjectStyle): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
+function normalizeWorkflowHexColor(color: string | undefined): string | undefined {
+  const normalized = color?.trim().replace(/^#/, "").toLowerCase();
+  if (!normalized || normalized === "none") {
+    return undefined;
+  }
+  if (/^[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
+  }
+  return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
+}
+
+function clampWorkflowUnit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(1, value));
 }
 
 function styleColorChanges(

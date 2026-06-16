@@ -38,6 +38,23 @@ export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 export interface ToolsetTextStylePayload {
   currentTextStyle: NativeTextStyle;
   currentTextScript: TextSpan["script"];
+  currentArtStyle?: ToolsetArtStylePayload;
+  currentArtStyleTarget?: ToolsetArtPaintTarget;
+}
+
+export type ToolsetArtPaintTarget = "fill" | "stroke";
+
+export interface ToolsetArtStylePayload {
+  selectedCount: number;
+  fillColor?: string;
+  strokeColor?: string;
+  objectOpacity?: number;
+  fillOpacity?: number;
+  strokeOpacity?: number;
+  strokeWidth?: number;
+  strokeDasharray?: string;
+  strokeLineCap?: "butt" | "round" | "square";
+  strokeLineJoin?: "miter" | "round" | "bevel";
 }
 
 type Unlisten = () => void;
@@ -65,9 +82,13 @@ export function createToolsetActiveToolPayload(commandId: string): ToolsetActive
 
 export function createToolsetTextStylePayload(
   currentTextStyle: NativeTextStyle,
-  currentTextScript: TextSpan["script"] = "normal"
+  currentTextScript: TextSpan["script"] = "normal",
+  currentArtStyle?: ToolsetArtStylePayload,
+  currentArtStyleTarget: ToolsetArtPaintTarget = "fill"
 ): ToolsetTextStylePayload {
-  return { currentTextStyle, currentTextScript };
+  return currentArtStyle
+    ? { currentTextStyle, currentTextScript, currentArtStyle, currentArtStyleTarget }
+    : { currentTextStyle, currentTextScript };
 }
 
 export function createToolsetWindowStatePayload(

@@ -18,6 +18,8 @@ import {
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   startPaletteWindowDrag,
+  type ToolsetArtPaintTarget,
+  type ToolsetArtStylePayload,
   type ToolsetWindowPosition
 } from "./window-manager";
 
@@ -40,6 +42,8 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
+  const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
+  const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
   const shortcutRegistry = useMemo(
@@ -107,6 +111,8 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
     void listenForToolsetTextStyle((payload) => {
       setCurrentTextStyle(payload.currentTextStyle);
       setCurrentTextScript(payload.currentTextScript);
+      setCurrentArtStyle(payload.currentArtStyle);
+      setCurrentArtStyleTarget(payload.currentArtStyleTarget ?? "fill");
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -362,6 +368,8 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         showTextStyleControls={toolset.id === "core.text"}
         showArtStyleControls={toolset.id === "core.art"}
         currentObjectColor={currentTextStyle.color}
+        currentArtStyle={currentArtStyle}
+        currentArtStyleTarget={currentArtStyleTarget}
         currentTextStyle={currentTextStyle}
         currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}

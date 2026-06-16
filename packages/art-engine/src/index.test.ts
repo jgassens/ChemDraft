@@ -76,6 +76,83 @@ describe("art-engine native art planning", () => {
     });
   });
 
+  it("resolves explicit solid paints while preserving legacy fill and stroke fields", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "rect",
+      width: 80,
+      height: 48,
+      style: {
+        ...baseGraphic.style,
+        opacity: 0.7,
+        fillColor: "#111111",
+        strokeColor: "#222222",
+        fillPaint: { kind: "solid", color: "#1d7", opacity: 0.45 },
+        strokePaint: { kind: "solid", color: "#abc", opacity: 0.8 },
+        fillOpacity: 0.5,
+        strokeOpacity: 0.25,
+        strokeLineCap: "square",
+        strokeLineJoin: "bevel",
+        strokeMiterLimit: 6
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.opacity).toBe(0.7);
+    expect(plan.fill.color).toBe("#111111");
+    expect(plan.fill.opacity).toBe(0.5);
+    expect(plan.fill.paint).toEqual({ kind: "solid", color: "#11dd77", opacity: 0.225 });
+    expect(plan.stroke.color).toBe("#222222");
+    expect(plan.stroke.opacity).toBe(0.25);
+    expect(plan.stroke.paint).toEqual({ kind: "solid", color: "#aabbcc", opacity: 0.2 });
+    expect(plan.stroke.lineCap).toBe("square");
+    expect(plan.stroke.lineJoin).toBe("bevel");
+    expect(plan.stroke.miterLimit).toBe(6);
+  });
+
+  it("resolves object-local gradient paint into render-space coordinates and projection data", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "ellipse",
+      width: 100,
+      height: 50,
+      style: {
+        ...baseGraphic.style,
+        fillPaint: {
+          kind: "linear-gradient",
+          units: "object",
+          x1: 0,
+          y1: 0,
+          x2: 1,
+          y2: 0.5,
+          stops: [
+            { offset: 1, color: "#00f", opacity: 0.4 },
+            { offset: 0, color: "#fff" }
+          ]
+        },
+        fillOpacity: 0.5,
+        tiltXDegrees: 20
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+
+    expect(plan.fill.paint).toMatchObject({
+      kind: "linear-gradient",
+      idHint: `graphic-fill-${graphic.id}`,
+      x1: graphic.x,
+      y1: graphic.y,
+      x2: graphic.x + graphic.width,
+      y2: graphic.y + graphic.height / 2,
+      gradientTransform: plan.projectionTransform
+    });
+    expect(plan.fill.paint.kind === "linear-gradient" ? plan.fill.paint.stops : []).toEqual([
+      { offset: 0, color: "#ffffff", opacity: 0.5 },
+      { offset: 1, color: "#0000ff", opacity: 0.2 }
+    ]);
+  });
+
   it("plans circular arc path geometry from native arc metadata", () => {
     const graphic = {
       ...baseGraphic,

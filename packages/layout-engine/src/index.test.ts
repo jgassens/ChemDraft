@@ -1022,6 +1022,130 @@ describe("layout-engine page SVG planner", () => {
     expect(plan.warnings.map((warning) => warning.code)).toEqual(["export.svg.graphic_effect_approximation"]);
   });
 
+  it("exports native graphic paint plans as SVG gradients and stroke metadata", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_gradient_rect",
+        type: "graphic",
+        x: 50,
+        y: 70,
+        width: 120,
+        height: 80,
+        rotation: 0,
+        style: {
+          opacity: 0.82,
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0.5,
+            stops: [
+              { offset: 1, color: "#1648ff", opacity: 0.35 },
+              { offset: 0, color: "#ffffff" }
+            ]
+          },
+          strokePaint: {
+            kind: "solid",
+            color: "#1d7",
+            opacity: 0.6
+          },
+          strokeWidth: 4,
+          strokeLineCap: "square",
+          strokeLineJoin: "bevel",
+          strokeMiterLimit: 8
+        },
+        graphicKind: "rect",
+        data: {
+          cornerRadiusPx: 10
+        }
+      },
+      {
+        id: "art_gradient_line",
+        type: "graphic",
+        x: 200,
+        y: 90,
+        width: 80,
+        height: 1,
+        rotation: 0,
+        style: {
+          strokePaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0,
+            stops: [
+              { offset: 0, color: "#111111" },
+              { offset: 1, color: "#b3261e", opacity: 0.7 }
+            ]
+          },
+          strokeWidth: 3,
+          strokeLineCap: "round",
+          fillPaint: { kind: "none" }
+        },
+        graphicKind: "line",
+        data: {
+          lineStart: { x: 200, y: 90 },
+          lineEnd: { x: 280, y: 90 }
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const rect = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_gradient_rect" && fragment.tag === "rect");
+    const line = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_gradient_line" && fragment.tag === "line");
+    const rectFillGradient = fragments.find((fragment) => fragment.attrs.id === "graphic-fill-art_gradient_rect");
+    const lineStrokeGradient = fragments.find((fragment) => fragment.attrs.id === "graphic-stroke-art_gradient_line");
+    const rectFillStops = fragments.filter((fragment) => String(fragment.key).startsWith("graphic-fill-art_gradient_rect-stop-"));
+    const lineStrokeStops = fragments.filter((fragment) => String(fragment.key).startsWith("graphic-stroke-art_gradient_line-stop-"));
+
+    expect(rect?.attrs).toMatchObject({
+      "data-object-id": "art_gradient_rect",
+      fill: "url(#graphic-fill-art_gradient_rect)",
+      stroke: "#11dd77",
+      "stroke-opacity": 0.6,
+      "stroke-linecap": "square",
+      "stroke-linejoin": "bevel",
+      "stroke-miterlimit": 8,
+      rx: 10,
+      ry: 10
+    });
+    expect(fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_gradient_rect")?.attrs.opacity).toBe(0.82);
+    expect(rectFillGradient?.attrs).toMatchObject({
+      id: "graphic-fill-art_gradient_rect",
+      x1: 50,
+      y1: 70,
+      x2: 170,
+      y2: 110,
+      gradientUnits: "userSpaceOnUse"
+    });
+    expect(rectFillStops.map((stop) => stop.attrs)).toEqual([
+      { offset: "0%", "stop-color": "#ffffff", "stop-opacity": undefined },
+      { offset: "100%", "stop-color": "#1648ff", "stop-opacity": 0.35 }
+    ]);
+
+    expect(line?.attrs).toMatchObject({
+      "data-object-id": "art_gradient_line",
+      stroke: "url(#graphic-stroke-art_gradient_line)",
+      "stroke-linecap": "round"
+    });
+    expect(lineStrokeGradient?.attrs).toMatchObject({
+      id: "graphic-stroke-art_gradient_line",
+      x1: 200,
+      y1: 90,
+      x2: 280,
+      y2: 90,
+      gradientUnits: "userSpaceOnUse"
+    });
+    expect(lineStrokeStops.map((stop) => stop.attrs)).toEqual([
+      { offset: "0%", "stop-color": "#111111", "stop-opacity": undefined },
+      { offset: "100%", "stop-color": "#b3261e", "stop-opacity": 0.7 }
+    ]);
+  });
+
   it("renders circular arc graphics from radian start and sweep metadata", () => {
     const page = pageWithObjects([
       {

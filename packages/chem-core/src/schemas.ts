@@ -37,6 +37,55 @@ export const PointSchema = z
   })
   .strict();
 
+const OpacitySchema = z.number().finite().min(0).max(1);
+const NormalizedCoordinateSchema = z.number().finite().min(0).max(1);
+
+export const GraphicGradientStopSchema = z
+  .object({
+    offset: NormalizedCoordinateSchema,
+    color: z.string(),
+    opacity: OpacitySchema.optional()
+  })
+  .strict();
+
+export const GraphicPaintSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("none")
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("solid"),
+      color: z.string(),
+      opacity: OpacitySchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("linear-gradient"),
+      stops: z.array(GraphicGradientStopSchema).min(2),
+      x1: NormalizedCoordinateSchema,
+      y1: NormalizedCoordinateSchema,
+      x2: NormalizedCoordinateSchema,
+      y2: NormalizedCoordinateSchema,
+      units: z.literal("object")
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("radial-gradient"),
+      stops: z.array(GraphicGradientStopSchema).min(2),
+      cx: NormalizedCoordinateSchema,
+      cy: NormalizedCoordinateSchema,
+      r: z.number().finite().nonnegative(),
+      fx: NormalizedCoordinateSchema.optional(),
+      fy: NormalizedCoordinateSchema.optional(),
+      units: z.literal("object")
+    })
+    .strict()
+]);
+
 export const AnchorSchema = z
   .object({
     kind: z.enum(["point", "object", "atom", "bond"]),
@@ -66,8 +115,16 @@ export const GraphicObjectStyleSchema = z
     color: z.string().optional(),
     strokeColor: z.string().optional(),
     fillColor: z.string().optional(),
+    strokePaint: GraphicPaintSchema.optional(),
+    fillPaint: GraphicPaintSchema.optional(),
+    opacity: OpacitySchema.optional(),
+    strokeOpacity: OpacitySchema.optional(),
+    fillOpacity: OpacitySchema.optional(),
     strokeWidth: z.number().finite().positive().optional(),
     strokeDasharray: z.string().optional(),
+    strokeLineCap: z.enum(["butt", "round", "square"]).optional(),
+    strokeLineJoin: z.enum(["miter", "round", "bevel"]).optional(),
+    strokeMiterLimit: z.number().finite().positive().optional(),
     fillMode: z.enum(["solid", "gloss"]).optional(),
     effect: z.enum(["shadow", "reflection"]).optional(),
     tiltXDegrees: z.number().finite().optional(),
@@ -441,6 +498,8 @@ export type ElectronMarkObject = z.infer<typeof ElectronMarkObjectSchema>;
 export type TextSpan = z.infer<typeof TextSpanSchema>;
 export type TextObject = z.infer<typeof TextObjectSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
+export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
+export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
 export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
 export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;

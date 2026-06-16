@@ -5,16 +5,25 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
+import { HexColorPicker } from "react-colorful";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 import {
   normalizeHexColor,
+  objectFillOpacityCommandId,
+  objectOpacityCommandId,
   objectColorCommands,
   objectCustomColorCommandId,
+  objectStrokeDashCommands,
+  objectStrokeLineCapCommands,
+  objectStrokeLineJoinCommands,
+  objectStrokeOpacityCommandId,
+  objectStrokeWidthCommands,
   textCustomColorCommandId,
   textAlignmentCommands,
   textColorCommands,
@@ -27,6 +36,7 @@ import {
 } from "./commands";
 import { Icon } from "./icons";
 import { toolbarAsset } from "./toolbarAssets";
+import type { ToolsetArtPaintTarget, ToolsetArtStylePayload } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -51,9 +61,14 @@ export function ToolPalette({
   showTextStyleControls = false,
   showArtStyleControls = false,
   currentObjectColor,
+  currentArtStyle,
+  currentArtStyleTarget = "fill",
   currentTextStyle,
   currentTextScript,
   onColorPickerOpenChange,
+  onArtStylePreview,
+  onArtStyleCommit,
+  onArtStyleCancel,
   onInvoke
 }: {
   groups: CommandSpec[][];
@@ -65,9 +80,14 @@ export function ToolPalette({
   showTextStyleControls?: boolean;
   showArtStyleControls?: boolean;
   currentObjectColor?: string;
+  currentArtStyle?: ToolsetArtStylePayload;
+  currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
+  onArtStylePreview?: (commandId: string) => void;
+  onArtStyleCommit?: (commandId: string) => void;
+  onArtStyleCancel?: () => void;
   onInvoke: (commandId: string) => void;
 }) {
   const {
@@ -135,7 +155,12 @@ export function ToolPalette({
       {showArtStyleControls ? (
         <ArtToolbarStyleControls
           currentObjectColor={currentObjectColor}
+          currentArtStyle={currentArtStyle}
+          currentArtStyleTarget={currentArtStyleTarget}
           onColorPickerOpenChange={onColorPickerOpenChange}
+          onPreview={onArtStylePreview}
+          onCommit={onArtStyleCommit}
+          onCancel={onArtStyleCancel}
           onInvoke={onInvoke}
         />
       ) : null}
@@ -504,30 +529,349 @@ function TextToolbarStyleControls({
   );
 }
 
+function closestObjectStrokeWidthCommandId(strokeWidth: number | undefined): string {
+  if (strokeWidth === undefined) {
+    return objectStrokeWidthCommands[1]?.id ?? objectStrokeWidthCommands[0].id;
+  }
+
+  return objectStrokeWidthCommands.reduce((best, command) => (
+    Math.abs(command.strokeWidth - strokeWidth) < Math.abs(best.strokeWidth - strokeWidth) ? command : best
+  ), objectStrokeWidthCommands[0]).id;
+}
+
+function objectStrokeDashCommandId(strokeDasharray: string | undefined): string {
+  const normalized = strokeDasharray === undefined || strokeDasharray === "solid" ? undefined : strokeDasharray;
+  return objectStrokeDashCommands.find((command) => command.strokeDasharray === normalized)?.id ??
+    objectStrokeDashCommands[0].id;
+}
+
 function ArtToolbarStyleControls({
   currentObjectColor,
+  currentArtStyle,
+  currentArtStyleTarget,
   onColorPickerOpenChange,
+  onPreview,
+  onCommit,
+  onCancel,
   onInvoke
 }: {
   currentObjectColor?: string;
+  currentArtStyle?: ToolsetArtStylePayload;
+  currentArtStyleTarget: ToolsetArtPaintTarget;
   onColorPickerOpenChange?: (open: boolean) => void;
+  onPreview?: (commandId: string) => void;
+  onCommit?: (commandId: string) => void;
+  onCancel?: () => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const currentColor = normalizeHexColor(currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
+  const selected = (currentArtStyle?.selectedCount ?? 0) > 0;
+  const activeColor = currentArtStyleTarget === "fill" ? currentArtStyle?.fillColor : currentArtStyle?.strokeColor;
+  const currentColor = normalizeHexColor(activeColor ?? currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
+  const [colorOpen, setColorOpen] = useState(false);
+  const [draftColor, setDraftColor] = useState(currentColor);
+  const objectOpacity = currentArtStyle?.objectOpacity ?? 1;
+  const fillOpacity = currentArtStyle?.fillOpacity ?? 1;
+  const strokeOpacity = currentArtStyle?.strokeOpacity ?? 1;
+  const strokeWidthCommandId = closestObjectStrokeWidthCommandId(currentArtStyle?.strokeWidth);
+  const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.strokeDasharray);
+  const strokeCap = currentArtStyle?.strokeLineCap ?? "butt";
+  const strokeJoin = currentArtStyle?.strokeLineJoin ?? "miter";
+
+  useEffect(() => {
+    onColorPickerOpenChange?.(colorOpen);
+  }, [colorOpen, onColorPickerOpenChange]);
+
+  useEffect(() => {
+    if (!colorOpen) {
+      setDraftColor(currentColor);
+    }
+  }, [colorOpen, currentColor]);
+
+  const invokeOrCommit = (commandId: string) => {
+    if (onCommit) {
+      onCommit(commandId);
+      return;
+    }
+    onInvoke(commandId);
+  };
+
+  const previewCommand = (commandId: string) => {
+    onPreview?.(commandId);
+  };
+
+  const updateColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+    setDraftColor(normalized);
+    previewCommand(objectCustomColorCommandId(normalized));
+  };
+
+  const commitColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+    setDraftColor(normalized);
+    invokeOrCommit(objectCustomColorCommandId(normalized));
+  };
+
+  const opacitySlider = (
+    label: string,
+    shortLabel: string,
+    value: number,
+    commandId: (opacity: number) => string
+  ) => {
+    const percent = Math.round(value * 100);
+    const applySliderPercent = (nextPercent: number, commit: boolean) => {
+      const normalizedPercent = Math.max(0, Math.min(100, Math.round(nextPercent)));
+      const command = commandId(normalizedPercent / 100);
+      if (commit) {
+        invokeOrCommit(command);
+      } else {
+        previewCommand(command);
+      }
+    };
+    const applySliderPointer = (event: ReactPointerEvent<HTMLInputElement>, commit: boolean) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const nextPercent = rect.width > 0 ? (event.clientX - rect.left) / rect.width * 100 : percent;
+      event.currentTarget.value = `${Math.max(0, Math.min(100, Math.round(nextPercent)))}`;
+      applySliderPercent(nextPercent, commit);
+    };
+    const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      const currentPercent = Number(event.currentTarget.value);
+      const basePercent = Number.isFinite(currentPercent) ? currentPercent : percent;
+      let nextPercent = basePercent;
+      if (event.key === "Home") {
+        nextPercent = 0;
+      } else if (event.key === "End") {
+        nextPercent = 100;
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+        nextPercent = basePercent - (event.shiftKey ? 10 : 5);
+      } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+        nextPercent = basePercent + (event.shiftKey ? 10 : 5);
+      } else {
+        return;
+      }
+      event.preventDefault();
+      event.currentTarget.value = `${Math.max(0, Math.min(100, Math.round(nextPercent)))}`;
+      applySliderPercent(nextPercent, true);
+    };
+    return (
+      <label className="art-inspector-slider" data-art-inspector-slider={label.toLowerCase().replace(/\s+/g, "-")}>
+        <span className="art-inspector-slider-header">
+          <span className="art-inspector-slider-label">{shortLabel}</span>
+          <span className="art-inspector-slider-value">{percent}%</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={percent}
+          disabled={!selected}
+          aria-label={label}
+          title={`${label}: ${percent}%`}
+          data-palette-control="true"
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            applySliderPointer(event, false);
+          }}
+          onPointerMove={(event) => {
+            if (event.buttons === 1) {
+              applySliderPointer(event, false);
+            }
+          }}
+          onPointerUp={(event) => {
+            event.stopPropagation();
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            applySliderPointer(event, true);
+          }}
+          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value) / 100))}
+          onKeyDown={applySliderKey}
+          onBlur={(event) => invokeOrCommit(commandId(Number(event.currentTarget.value) / 100))}
+        />
+      </label>
+    );
+  };
 
   return (
-    <div className="art-toolbar-style-controls" data-toolbar-style-controls="art">
-      <ColorPickerControl
-        compact
-        colorCommands={objectColorCommands}
-        customColorCommandId={objectCustomColorCommandId}
-        currentColor={currentColor}
-        label="Object color"
-        triggerLabel="Open object color picker"
-        dialogLabel="Object color picker"
-        onOpenChange={onColorPickerOpenChange}
-        onInvoke={onInvoke}
-      />
+    <div
+      className="art-toolbar-style-controls"
+      data-toolbar-style-controls="art"
+      data-art-selection-count={currentArtStyle?.selectedCount ?? 0}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          onCancel?.();
+          setColorOpen(false);
+        }
+      }}
+    >
+      <div className="art-inspector-row">
+        <div className="art-target-toggle" role="group" aria-label="Art paint target">
+          <button
+            type="button"
+            className={currentArtStyleTarget === "fill" ? "active" : ""}
+            aria-label="Target fill"
+            title="Target fill color"
+            disabled={!selected}
+            data-command-id="object.style.target.fill"
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke("object.style.target.fill")}
+          >
+            <span className="art-target-fill-glyph" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={currentArtStyleTarget === "stroke" ? "active" : ""}
+            aria-label="Target stroke"
+            title="Target stroke color"
+            disabled={!selected}
+            data-command-id="object.style.target.stroke"
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke("object.style.target.stroke")}
+          >
+            <span className="art-target-stroke-glyph" aria-hidden="true" />
+          </button>
+        </div>
+        <div
+          className="art-color-picker"
+          role="group"
+          aria-label="Object color"
+          data-color-picker="true"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="toolbar-color-trigger"
+            aria-label="Open object color picker"
+            aria-expanded={colorOpen}
+            disabled={!selected}
+            title={`Pick ${currentArtStyleTarget} color`}
+            style={{ "--picker-color": currentColor } as CSSProperties}
+            onClick={() => setColorOpen(!colorOpen)}
+          >
+            <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+            <span className="toolbar-color-trigger-label">{currentArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
+          </button>
+          {colorOpen ? (
+            <div className="art-color-popover" role="dialog" aria-label="Art color picker">
+              <HexColorPicker color={draftColor} onChange={updateColor} onChangeEnd={commitColor} />
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="art-inspector-symbol-button"
+          aria-label={currentArtStyleTarget === "fill" ? "No fill" : "No stroke"}
+          title={currentArtStyleTarget === "fill" ? "No fill" : "No stroke"}
+          disabled={!selected}
+          data-command-id={currentArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onInvoke(currentArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none")}
+        >
+          ∅
+        </button>
+        <button
+          type="button"
+          className="art-inspector-symbol-button"
+          aria-label="Swap fill and stroke"
+          title="Swap fill and stroke"
+          disabled={!selected}
+          data-command-id="object.style.swapFillStroke"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onInvoke("object.style.swapFillStroke")}
+        >
+          ⇄
+        </button>
+      </div>
+      <div className="art-inspector-row art-inspector-opacity-row">
+        {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}
+        {opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId)}
+        {opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId)}
+      </div>
+      <div className="art-inspector-row art-inspector-stroke-row">
+        <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
+          <span className="art-stroke-control-label">Width</span>
+          <select
+            className="toolbar-select"
+            value={strokeWidthCommandId}
+            aria-label="Stroke width"
+            disabled={!selected}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeWidthCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.strokeWidth}px
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
+          <span className="art-stroke-control-label">Dash</span>
+          <select
+            className="toolbar-select"
+            value={strokeDashCommandId}
+            aria-label="Dash pattern"
+            disabled={!selected}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeDashCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.title.replace(" Stroke", "")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
+          <span className="art-stroke-control-label">Cap</span>
+          <select
+            className="toolbar-select"
+            value={`object.stroke.cap.${strokeCap}`}
+            aria-label="Line cap"
+            disabled={!selected}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeLineCapCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.strokeLineCap}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
+          <span className="art-stroke-control-label">Join</span>
+          <select
+            className="toolbar-select"
+            value={`object.stroke.join.${strokeJoin}`}
+            aria-label="Line join"
+            disabled={!selected}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeLineJoinCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.strokeLineJoin}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
     </div>
   );
 }

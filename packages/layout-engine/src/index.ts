@@ -18,7 +18,9 @@ import {
 import { planNativeArtVisual as planNativeArtVisualFromArtEngine } from "@chemdraft/art-engine";
 import type {
   NativeArtFillPlan,
+  NativeArtGradientStopPlan,
   NativeArtGlossGradientPlan,
+  NativeArtPaintPlan,
   NativeArtProjectionMatrix,
   NativeArtStrokePlan,
   NativeArtVisualCoordinateSpace,
@@ -27,7 +29,9 @@ import type {
 
 export type {
   NativeArtFillPlan,
+  NativeArtGradientStopPlan,
   NativeArtGlossGradientPlan,
+  NativeArtPaintPlan,
   NativeArtProjectionMatrix,
   NativeArtStrokePlan,
   NativeArtVisualCoordinateSpace,
@@ -1680,14 +1684,21 @@ function graphicObjectFragment(
   warnForGraphicSvgEffects(object, warnings);
   const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
   const gradientId = `graphic-gloss-${object.id}`;
-  const fill = plan.glossGradient ? `url(#${gradientId})` : plan.fill.color;
+  const fillAttrs = plan.glossGradient
+    ? { fill: `url(#${gradientId})` }
+    : svgPaintAttrs("fill", plan.fill.paint, `graphic-fill-${object.id}`);
   const strokeAttrs = {
     class: "graphic-glyph-stroke",
-    stroke: plan.stroke.color,
+    ...svgPaintAttrs("stroke", plan.stroke.paint, `graphic-stroke-${object.id}`),
     "stroke-width": plan.stroke.width,
-    "stroke-dasharray": plan.stroke.dasharray
+    "stroke-dasharray": plan.stroke.dasharray,
+    "stroke-linecap": plan.stroke.lineCap,
+    "stroke-linejoin": plan.stroke.lineJoin,
+    "stroke-miterlimit": plan.stroke.miterLimit
   };
   const children: PageSvgFragment[] = [
+    ...svgPaintDefinitionFragments(plan.fill.paint, `graphic-fill-${object.id}`),
+    ...svgPaintDefinitionFragments(plan.stroke.paint, `graphic-stroke-${object.id}`),
     ...(plan.glossGradient ? [
       elementFragment("defs", `graphic-gloss-defs-${object.id}`, {}, [
         elementFragment("radialGradient", `graphic-gloss-gradient-${object.id}`, {
@@ -1721,35 +1732,37 @@ function graphicObjectFragment(
       ])
     ] : [])
   ];
+  let renderedGraphic = false;
 
   if (plan.projectedShapePathD) {
+    renderedGraphic = true;
     children.push(elementFragment("path", `graphic-projected-${object.id}`, {
       d: plan.projectedShapePathD,
       ...strokeAttrs,
       class: "graphic-glyph-stroke graphic-glyph-projected-shape",
-      fill
+      ...fillAttrs
     }));
   } else if (object.graphicKind === "line" && plan.line) {
+    renderedGraphic = true;
     children.push(elementFragment("line", `graphic-line-${object.id}`, {
       x1: plan.line.x1,
       y1: plan.line.y1,
       x2: plan.line.x2,
       y2: plan.line.y2,
       ...strokeAttrs,
-      "stroke-linecap": "round",
       transform: plan.projectionTransform
     }));
   } else if (object.graphicKind === "path" && plan.pathD) {
+    renderedGraphic = true;
     children.push(elementFragment("path", `graphic-path-${object.id}`, {
       d: plan.pathD,
       ...strokeAttrs,
       class: "graphic-glyph-stroke graphic-glyph-path",
       fill: "none",
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
       transform: plan.projectionTransform
     }));
   } else if (object.graphicKind === "rect") {
+    renderedGraphic = true;
     children.push(elementFragment("rect", `graphic-rect-${object.id}`, {
       x: object.x + plan.stroke.width / 2,
       y: object.y + plan.stroke.width / 2,
@@ -1758,21 +1771,24 @@ function graphicObjectFragment(
       rx: plan.cornerRadius,
       ry: plan.cornerRadius,
       ...strokeAttrs,
-      fill
+      ...fillAttrs
     }));
   } else if (object.graphicKind === "ellipse") {
+    renderedGraphic = true;
     children.push(elementFragment("ellipse", `graphic-ellipse-${object.id}`, {
       cx: object.x + object.width / 2,
       cy: object.y + object.height / 2,
       rx: Math.max(object.width / 2 - plan.stroke.width / 2, 0.5),
       ry: Math.max(object.height / 2 - plan.stroke.width / 2, 0.5),
       ...strokeAttrs,
-      fill
+      ...fillAttrs
     }));
   }
 
-  if (children.length > 0) {
-    return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex), children);
+  if (renderedGraphic) {
+    return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+      opacity: plan.opacity === 1 ? undefined : plan.opacity
+    }), children);
   }
 
   warnings.push({
@@ -1781,6 +1797,79 @@ function graphicObjectFragment(
     objectId: object.id
   });
   return fallbackObjectFragment(object, layerIndex);
+}
+
+function svgPaintAttrs(
+  attribute: "fill" | "stroke",
+  paint: NativeArtPaintPlan,
+  id: string
+): Record<string, PageSvgAttributeValue> {
+  const value = svgPaintValue(paint, id);
+  if (paint.kind === "solid") {
+    return {
+      [attribute]: value,
+      [`${attribute}-opacity`]: paint.opacity === 1 ? undefined : paint.opacity
+    };
+  }
+
+  return { [attribute]: value };
+}
+
+function svgPaintValue(paint: NativeArtPaintPlan, id: string): string {
+  if (paint.kind === "none") {
+    return "none";
+  }
+  if (paint.kind === "solid") {
+    return paint.color;
+  }
+  return `url(#${id})`;
+}
+
+function svgPaintDefinitionFragments(paint: NativeArtPaintPlan, id: string): PageSvgFragment[] {
+  if (paint.kind === "linear-gradient") {
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("linearGradient", `${id}-gradient`, {
+          id,
+          x1: paint.x1,
+          y1: paint.y1,
+          x2: paint.x2,
+          y2: paint.y2,
+          gradientTransform: paint.gradientTransform,
+          gradientUnits: "userSpaceOnUse"
+        }, svgGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  if (paint.kind === "radial-gradient") {
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("radialGradient", `${id}-gradient`, {
+          id,
+          cx: paint.cx,
+          cy: paint.cy,
+          r: paint.r,
+          fx: paint.fx,
+          fy: paint.fy,
+          gradientTransform: paint.gradientTransform,
+          gradientUnits: "userSpaceOnUse"
+        }, svgGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  return [];
+}
+
+function svgGradientStopFragments(stops: readonly NativeArtGradientStopPlan[], id: string): PageSvgFragment[] {
+  return stops.map((stop, index) => {
+    return elementFragment("stop", `${id}-stop-${index}`, {
+      offset: `${Number((stop.offset * 100).toFixed(4))}%`,
+      "stop-color": stop.color,
+      "stop-opacity": stop.opacity === 1 ? undefined : stop.opacity
+    });
+  });
 }
 
 function warnForGraphicSvgEffects(object: GraphicObject, warnings: PageSvgRenderWarning[]): void {
