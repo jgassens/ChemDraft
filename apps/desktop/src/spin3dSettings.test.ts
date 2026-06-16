@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SPIN3D_SETTINGS,
   conformerOptionsForSpin3d,
+  isSpin3dEnginePreference,
+  isSpin3dForceField,
   isSpin3dRefinementMode,
+  isSpin3dSettings,
   loadSpin3dSettings,
   saveSpin3dSettings,
   type Spin3dSettings
@@ -46,53 +49,62 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const settings = (patch: Partial<Spin3dSettings> = {}): Spin3dSettings => ({ ...DEFAULT_SPIN3D_SETTINGS, ...patch });
+
 describe("spin3dSettings", () => {
-  it("defaults to quality (preserves historical Spin 3D behaviour)", () => {
-    expect(DEFAULT_SPIN3D_SETTINGS.refinementMode).toBe("quality");
-    expect(loadSpin3dSettings()).toEqual({ refinementMode: "quality" });
+  it("defaults to quality + auto engine + MMFF94 (preserves historical chemistry)", () => {
+    expect(DEFAULT_SPIN3D_SETTINGS).toEqual({ refinementMode: "quality", enginePreference: "auto", forceField: "mmff94" });
+    expect(loadSpin3dSettings()).toEqual(DEFAULT_SPIN3D_SETTINGS);
   });
 
-  it("persists and reloads a chosen mode", () => {
-    saveSpin3dSettings({ refinementMode: "fast" });
-    expect(loadSpin3dSettings()).toEqual({ refinementMode: "fast" });
+  it("persists and reloads all three fields", () => {
+    const chosen = settings({ refinementMode: "fast", enginePreference: "openchemlib", forceField: "uff" });
+    saveSpin3dSettings(chosen);
+    expect(loadSpin3dSettings()).toEqual(chosen);
   });
 
-  it("falls back to the default on corrupt or unknown stored values", () => {
+  it("loads older settings (mode only) forward-compatibly, defaulting new fields", () => {
+    storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "balanced" }));
+    expect(loadSpin3dSettings()).toEqual(settings({ refinementMode: "balanced" }));
+  });
+
+  it("defaults individual invalid fields without discarding valid ones", () => {
+    storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "fast", enginePreference: "nope", forceField: "uff" }));
+    expect(loadSpin3dSettings()).toEqual(settings({ refinementMode: "fast", forceField: "uff" }));
+  });
+
+  it("falls back to the default on corrupt JSON", () => {
     storage.setItem(STORAGE_KEY, "{not json");
     expect(loadSpin3dSettings()).toEqual(DEFAULT_SPIN3D_SETTINGS);
-    storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "turbo" }));
-    expect(loadSpin3dSettings()).toEqual(DEFAULT_SPIN3D_SETTINGS);
   });
 
-  it("validates the mode discriminant", () => {
+  it("validates the discriminants", () => {
     expect(isSpin3dRefinementMode("fast")).toBe(true);
-    expect(isSpin3dRefinementMode("balanced")).toBe(true);
-    expect(isSpin3dRefinementMode("quality")).toBe(true);
     expect(isSpin3dRefinementMode("uff")).toBe(false);
-    expect(isSpin3dRefinementMode(undefined)).toBe(false);
+    expect(isSpin3dEnginePreference("auto")).toBe(true);
+    expect(isSpin3dEnginePreference("rdkit")).toBe(true);
+    expect(isSpin3dEnginePreference("openchemlib")).toBe(true);
+    expect(isSpin3dEnginePreference("ocl")).toBe(false);
+    expect(isSpin3dForceField("mmff94")).toBe(true);
+    expect(isSpin3dForceField("uff")).toBe(true);
+    expect(isSpin3dForceField("gaff")).toBe(false);
+    expect(isSpin3dSettings(DEFAULT_SPIN3D_SETTINGS)).toBe(true);
+    expect(isSpin3dSettings({ refinementMode: "fast" })).toBe(false); // missing fields
   });
 
   describe("conformerOptionsForSpin3d", () => {
-    const opts = (mode: Spin3dSettings["refinementMode"], atomCount: number) =>
-      conformerOptionsForSpin3d({ refinementMode: mode }, atomCount);
-
-    it("fast disables refinement", () => {
-      expect(opts("fast", 20)).toEqual({ optimize: "none" });
+    it("fast disables refinement (force field irrelevant)", () => {
+      expect(conformerOptionsForSpin3d(settings({ refinementMode: "fast", forceField: "uff" }), 20)).toEqual({ optimize: "none" });
     });
 
-    it("balanced uses MMFF94 with the low (balanced) cap", () => {
+    it("balanced/quality request the chosen force field with the size-scaled cap", () => {
       for (const n of [10, 45, 90]) {
-        expect(opts("balanced", n)).toEqual({
+        expect(conformerOptionsForSpin3d(settings({ refinementMode: "balanced" }), n)).toEqual({
           optimize: "mmff94",
           maxMinimiseIterations: balancedRefineIterationsFor(n)
         });
-      }
-    });
-
-    it("quality uses MMFF94 with the historical (full) cap", () => {
-      for (const n of [10, 45, 90]) {
-        expect(opts("quality", n)).toEqual({
-          optimize: "mmff94",
+        expect(conformerOptionsForSpin3d(settings({ refinementMode: "quality", forceField: "uff" }), n)).toEqual({
+          optimize: "uff",
           maxMinimiseIterations: qualityRefineIterationsFor(n)
         });
       }

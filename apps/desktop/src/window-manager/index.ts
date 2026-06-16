@@ -1,5 +1,5 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
-import { isSpin3dRefinementMode, type Spin3dSettings } from "../spin3dSettings";
+import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
@@ -151,11 +151,7 @@ export async function listenForSpin3dSettings(handler: (settings: Spin3dSettings
 }
 
 function isSpin3dSettingsPayload(payload: unknown): payload is Spin3dSettings {
-  return (
-    typeof payload === "object" &&
-    payload !== null &&
-    isSpin3dRefinementMode((payload as { refinementMode?: unknown }).refinementMode)
-  );
+  return isSpin3dSettings(payload);
 }
 
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {

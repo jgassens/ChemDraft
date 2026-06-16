@@ -55,14 +55,14 @@ describe("conformer worker client tracing", () => {
     const fake = new FakeWorker();
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
 
-    client?.generate("mol", 2, OPTS, noopHandlers(), { sessionId: "spin:generate" });
-    client?.prefetch("prefetch-mol", 3, OPTS, { sessionId: "spin:prefetch" });
+    client?.generate("mol", 2, OPTS, "auto", noopHandlers(), { sessionId: "spin:generate" });
+    client?.prefetch("prefetch-mol", 3, OPTS, "rdkit", { sessionId: "spin:prefetch" });
     client?.warmup({ sessionId: "spin:warmup" });
 
-    // The refinement options must ride along to the worker on both generate and prefetch.
+    // The refinement options + engine preference must ride along to the worker on both.
     expect(fake.posted).toEqual([
-      expect.objectContaining({ kind: "generate", sessionId: "spin:generate", originalAtomCount: 2, options: OPTS }),
-      expect.objectContaining({ kind: "prefetch", sessionId: "spin:prefetch", originalAtomCount: 3, options: OPTS }),
+      expect.objectContaining({ kind: "generate", sessionId: "spin:generate", originalAtomCount: 2, options: OPTS, enginePreference: "auto" }),
+      expect.objectContaining({ kind: "prefetch", sessionId: "spin:prefetch", originalAtomCount: 3, options: OPTS, enginePreference: "rdkit" }),
       expect.objectContaining({ kind: "warmup", sessionId: "spin:warmup" })
     ]);
   });
@@ -76,7 +76,7 @@ describe("conformer worker client tracing", () => {
     });
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
 
-    client?.prefetch("mol", 2, OPTS, { sessionId: "spin:prefetch" });
+    client?.prefetch("mol", 2, OPTS, "auto", { sessionId: "spin:prefetch" });
     fake.emit({
       id: 1,
       stage: "trace",
@@ -113,7 +113,7 @@ describe("conformer worker client tracing", () => {
     });
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
 
-    client?.generate("mol", 2, OPTS, {
+    client?.generate("mol", 2, OPTS, "auto", {
       onEmbedded: embedded,
       onRefined: refined,
       onError: error
@@ -124,7 +124,7 @@ describe("conformer worker client tracing", () => {
     expect(embedded).toHaveBeenCalledWith(expect.objectContaining({ forceField: { name: "MMFF94", status: "not-run" } }));
     expect(refined).toHaveBeenCalledWith(expect.objectContaining({ forceField: { name: "MMFF94", status: "converged" } }));
 
-    client?.generate("mol2", 2, OPTS, noopHandlers(error), { sessionId: "spin:crash" });
+    client?.generate("mol2", 2, OPTS, "auto", noopHandlers(error), { sessionId: "spin:crash" });
     fake.crash();
 
     expect(error).toHaveBeenCalledWith("conformer worker crashed", { workerCrashed: true });
@@ -145,13 +145,13 @@ describe("conformer worker client tracing", () => {
       return next as unknown as Worker;
     });
 
-    client?.generate("mol", 2, OPTS, noopHandlers(), { sessionId: "spin:1" });
+    client?.generate("mol", 2, OPTS, "auto", noopHandlers(), { sessionId: "spin:1" });
     expect(workers).toHaveLength(1);
     workers[0].crash();
     expect(workers[0].terminated).toBe(true);
     expect(workers).toHaveLength(2); // recreated eagerly
 
-    client?.generate("mol2", 2, OPTS, noopHandlers(), { sessionId: "spin:2" });
+    client?.generate("mol2", 2, OPTS, "auto", noopHandlers(), { sessionId: "spin:2" });
     expect(workers[1].posted).toContainEqual(
       expect.objectContaining({ kind: "generate", sessionId: "spin:2" })
     );
@@ -168,9 +168,9 @@ describe("conformer worker client tracing", () => {
     // and recreate the worker BEFORE firing onError, or this retry would be wiped by
     // pending.clear() and posted to the dead worker.
     const onError = vi.fn(() => {
-      client?.generate("retry", 2, OPTS, noopHandlers(), { sessionId: "spin:retry" });
+      client?.generate("retry", 2, OPTS, "auto", noopHandlers(), { sessionId: "spin:retry" });
     });
-    client?.generate("mol", 2, OPTS, noopHandlers(onError), { sessionId: "spin:initial" });
+    client?.generate("mol", 2, OPTS, "auto", noopHandlers(onError), { sessionId: "spin:initial" });
     workers[0].crash();
 
     expect(workers).toHaveLength(2); // recreated before onError ran
@@ -182,7 +182,7 @@ describe("conformer worker client tracing", () => {
   it("posts a cancel message when the returned canceller runs", () => {
     const fake = new FakeWorker();
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
-    const cancel = client!.generate("mol", 2, OPTS, noopHandlers(), { sessionId: "spin:cancel" });
+    const cancel = client!.generate("mol", 2, OPTS, "auto", noopHandlers(), { sessionId: "spin:cancel" });
     cancel();
     expect(fake.posted).toContainEqual(expect.objectContaining({ kind: "cancel" }));
   });
@@ -192,7 +192,7 @@ describe("conformer worker client tracing", () => {
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
     const refined = vi.fn();
     // Wire `refined` as the actual onRefined handler so the assertion below is meaningful.
-    client?.generate("mol", 2, OPTS, { onEmbedded: vi.fn(), onRefined: refined, onError: vi.fn() }, { sessionId: "spin:complete" });
+    client?.generate("mol", 2, OPTS, "auto", { onEmbedded: vi.fn(), onRefined: refined, onError: vi.fn() }, { sessionId: "spin:complete" });
     // complete is terminal bookkeeping — no handler fires, but a later stray
     // refined for the same id must not reach a (now-forgotten) handler.
     fake.emit({ id: 1, stage: "complete" });
@@ -204,7 +204,7 @@ describe("conformer worker client tracing", () => {
     const fake = new FakeWorker();
     const client = createConformerWorkerClient(() => fake as unknown as Worker);
     const onError = vi.fn();
-    client?.generate("mol", 2, OPTS, noopHandlers(onError), { sessionId: "spin:messageerror" });
+    client?.generate("mol", 2, OPTS, "auto", noopHandlers(onError), { sessionId: "spin:messageerror" });
     fake.messageError();
     expect(onError).toHaveBeenCalledWith("conformer worker crashed", { workerCrashed: true });
   });

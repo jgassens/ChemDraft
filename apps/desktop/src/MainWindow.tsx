@@ -641,9 +641,11 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DR
 const OBJECT_DRAG_THRESHOLD = 4;
 const LASSO_POINT_SPACING = 3;
 const MOLECULE_RESIZE_MIN_SCALE = 0.12;
-// Spin 3D speculative-work caps. Prefetch is a surprise cost: above this size the
-// conformer is only computed when the user actually clicks Spin 3D.
-const SPIN_PREFETCH_MAX_ATOMS = 40;
+// Spin 3D speculative-work cap. RDKit ETKDG embeds even large polycyclics in ~1-2 s, so
+// prefetching them on selection (to make the Spin 3D click instant) is cheap. The worker
+// independently refuses a speculative embed for a large structure on the OCL engine (where
+// it would be ~45 s and uninterruptible), so this generous cap is safe under either engine.
+const SPIN_PREFETCH_MAX_ATOMS = 200;
 // The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
 // fine for small structures, catastrophic for a 60-atom branched chain.
 const SPIN_IN_PAGE_MAX_ATOMS = 30;
@@ -2172,7 +2174,7 @@ export function MainWindow({
       traceInfo("worker.client", { path: "worker", message: "available" });
       let retriedAfterCrash = false;
       const dispatch = (): void => {
-        const cancel = client.generate(molfile, molecule.atoms.length, conformerOptions, {
+        const cancel = client.generate(molfile, molecule.atoms.length, conformerOptions, spin3dSettingsRef.current.enginePreference, {
           onEmbedded: (result) => {
             if (spin3dRequestRef.current === requestToken) handleEmbedded(result);
           },
@@ -2254,7 +2256,7 @@ export function MainWindow({
       lastSpinPrefetchRef.current = molfile;
       client.warmup({ sessionId: `warmup:${Date.now()}` });
       const options = conformerOptionsForSpin3d(spin3dSettings, molecule.atoms.length);
-      client.prefetch(molfile, molecule.atoms.length, options, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
+      client.prefetch(molfile, molecule.atoms.length, options, spin3dSettings.enginePreference, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
     }, 250);
     return () => clearTimeout(timer);
   }, [document, selectedNativeMoleculePart, spin3dState, spin3dSettings]);

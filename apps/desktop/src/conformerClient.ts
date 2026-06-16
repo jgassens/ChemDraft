@@ -9,6 +9,7 @@
  */
 import type { Generate3DConformerOptions, Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import type { ConformerWorkRequest, ConformerWorkResponse } from "./conformerWorker";
+import type { Spin3dEnginePreference } from "./spin3dSettings";
 import {
   broadcastSpin3dTraceEvent,
   createSpin3dTraceEvent
@@ -33,6 +34,7 @@ export interface ConformerWorkerClient {
     molfile: string,
     originalAtomCount: number,
     options: Generate3DConformerOptions,
+    enginePreference: Spin3dEnginePreference,
     handlers: ConformerStageHandlers,
     traceContext?: ConformerTraceContext
   ): () => void;
@@ -41,6 +43,7 @@ export interface ConformerWorkerClient {
     molfile: string,
     originalAtomCount: number,
     options: Generate3DConformerOptions,
+    enginePreference: Spin3dEnginePreference,
     traceContext?: ConformerTraceContext
   ): void;
   /** Preload OCL + resources + JIT in the worker (idempotent, best-effort). */
@@ -176,7 +179,7 @@ export function createConformerWorkerClient(
   };
 
   return {
-    generate(molfile, originalAtomCount, options, handlers, traceContext) {
+    generate(molfile, originalAtomCount, options, enginePreference, handlers, traceContext) {
       const id = nextId++;
       pending.set(id, { handlers, traceContext });
       broadcastSpin3dTraceEvent(createSpin3dTraceEvent({
@@ -188,7 +191,7 @@ export function createConformerWorkerClient(
         atomCount: originalAtomCount,
         path: "worker"
       }));
-      if (!send({ kind: "generate", id, molfile, originalAtomCount, options, sessionId: traceContext?.sessionId })) {
+      if (!send({ kind: "generate", id, molfile, originalAtomCount, options, enginePreference, sessionId: traceContext?.sessionId })) {
         pending.delete(id);
         // Crash-looped beyond the restart budget — report asynchronously so the
         // caller's handler wiring is complete before the callback fires.
@@ -202,9 +205,9 @@ export function createConformerWorkerClient(
         send({ kind: "cancel", id });
       };
     },
-    prefetch(molfile, originalAtomCount, options, traceContext) {
+    prefetch(molfile, originalAtomCount, options, enginePreference, traceContext) {
       const id = nextId++;
-      send({ kind: "prefetch", id, molfile, originalAtomCount, options, sessionId: traceContext?.sessionId ?? `prefetch:${id}` });
+      send({ kind: "prefetch", id, molfile, originalAtomCount, options, enginePreference, sessionId: traceContext?.sessionId ?? `prefetch:${id}` });
     },
     warmup(traceContext) {
       if (warmed) return;

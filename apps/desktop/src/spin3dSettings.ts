@@ -1,28 +1,36 @@
 /**
- * User setting for Spin 3D conformer refinement.
+ * User settings for Spin 3D conformer generation.
  *
- * Three modes trade speed for geometry quality, all on the engine ChemDraft
- * actually ships today (OpenChemLib MMFF94 — OCL 9.22.1 exposes no other force
- * field). The "force field" framing is deliberately avoided in the UI until an
- * external engine (OpenBabel) lands; see PLAN-spin3d-forcefields.md.
- *
- *   fast      — embedded conformer only, no force-field refinement (fastest).
- *   balanced  — quick MMFF94 cleanup with a low iteration cap.
- *   quality   — full MMFF94 cleanup (the historical Spin 3D behaviour; default).
+ *   refinementMode   — how much force-field cleanup runs after embedding:
+ *                        fast      — embedded conformer only (no refinement).
+ *                        balanced  — quick refinement with a low iteration cap.
+ *                        quality   — full refinement (historical behaviour; default).
+ *   enginePreference — which engine embeds the conformer:
+ *                        auto        — RDKit ETKDG when its WASM is available, else OCL.
+ *                        rdkit       — RDKit ETKDG (falls back to OCL if it can't load).
+ *                        openchemlib — force the legacy OpenChemLib engine (rollback path).
+ *   forceField       — refinement force field: MMFF94 (both engines) or UFF (RDKit only;
+ *                        OCL refines with MMFF94 regardless, since it ships no UFF).
  */
 import type { Generate3DConformerOptions } from "@chemdraft/chemistry-adapter";
 import { balancedRefineIterationsFor, qualityRefineIterationsFor } from "./spin3dRefineCaps";
 
 export type Spin3dRefinementMode = "fast" | "balanced" | "quality";
+export type Spin3dEnginePreference = "auto" | "rdkit" | "openchemlib";
+export type Spin3dForceField = "mmff94" | "uff";
 
 export interface Spin3dSettings {
   refinementMode: Spin3dRefinementMode;
+  enginePreference: Spin3dEnginePreference;
+  forceField: Spin3dForceField;
 }
 
 export const DEFAULT_SPIN3D_SETTINGS: Spin3dSettings = {
-  // Default preserves the historical behaviour — existing users see no change
-  // unless they opt into a faster mode.
-  refinementMode: "quality"
+  // Defaults preserve historical geometry: full MMFF94 cleanup, RDKit-first embedding
+  // (with transparent OCL fallback). Existing users see faster Spin 3D, same chemistry.
+  refinementMode: "quality",
+  enginePreference: "auto",
+  forceField: "mmff94"
 };
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
@@ -31,12 +39,32 @@ export function isSpin3dRefinementMode(value: unknown): value is Spin3dRefinemen
   return value === "fast" || value === "balanced" || value === "quality";
 }
 
+export function isSpin3dEnginePreference(value: unknown): value is Spin3dEnginePreference {
+  return value === "auto" || value === "rdkit" || value === "openchemlib";
+}
+
+export function isSpin3dForceField(value: unknown): value is Spin3dForceField {
+  return value === "mmff94" || value === "uff";
+}
+
 export function loadSpin3dSettings(): Spin3dSettings {
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
     const parsed = raw ? (JSON.parse(raw) as Partial<Spin3dSettings> | null) : null;
-    if (parsed && isSpin3dRefinementMode(parsed.refinementMode)) {
-      return { refinementMode: parsed.refinementMode };
+    if (parsed && typeof parsed === "object") {
+      // Each field is validated independently and defaulted if absent/invalid, so older
+      // persisted settings (refinementMode only) load forward-compatibly.
+      return {
+        refinementMode: isSpin3dRefinementMode(parsed.refinementMode)
+          ? parsed.refinementMode
+          : DEFAULT_SPIN3D_SETTINGS.refinementMode,
+        enginePreference: isSpin3dEnginePreference(parsed.enginePreference)
+          ? parsed.enginePreference
+          : DEFAULT_SPIN3D_SETTINGS.enginePreference,
+        forceField: isSpin3dForceField(parsed.forceField)
+          ? parsed.forceField
+          : DEFAULT_SPIN3D_SETTINGS.forceField
+      };
     }
   } catch {
     // Corrupt/blocked storage — fall back to the default.
@@ -52,10 +80,20 @@ export function saveSpin3dSettings(settings: Spin3dSettings): void {
   }
 }
 
+export function isSpin3dSettings(value: unknown): value is Spin3dSettings {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<Spin3dSettings>;
+  return (
+    isSpin3dRefinementMode(v.refinementMode) &&
+    isSpin3dEnginePreference(v.enginePreference) &&
+    isSpin3dForceField(v.forceField)
+  );
+}
+
 /**
- * Resolve a mode + molecule size to the conformer options sent to the worker (and
- * the in-page fallback). `fast` disables refinement; `balanced`/`quality` request
- * MMFF94 with an explicit, size-scaled iteration cap from the shared cap policy.
+ * Resolve a mode + force field + molecule size to the conformer options sent to the worker
+ * (and the in-page fallback). `fast` disables refinement; `balanced`/`quality` request the
+ * chosen force field with an explicit, size-scaled iteration cap from the shared cap policy.
  */
 export function conformerOptionsForSpin3d(
   settings: Spin3dSettings,
@@ -65,9 +103,9 @@ export function conformerOptionsForSpin3d(
     case "fast":
       return { optimize: "none" };
     case "balanced":
-      return { optimize: "mmff94", maxMinimiseIterations: balancedRefineIterationsFor(atomCount) };
+      return { optimize: settings.forceField, maxMinimiseIterations: balancedRefineIterationsFor(atomCount) };
     case "quality":
     default:
-      return { optimize: "mmff94", maxMinimiseIterations: qualityRefineIterationsFor(atomCount) };
+      return { optimize: settings.forceField, maxMinimiseIterations: qualityRefineIterationsFor(atomCount) };
   }
 }
