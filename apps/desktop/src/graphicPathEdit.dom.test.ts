@@ -622,4 +622,114 @@ describe("graphic path direct editing interactions", () => {
     expect(pathD(".graphic-glyph-path")).toBe(postResizePathD);
     expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
   });
+
+  it("does not bake a rotated line on a non-drag path handle click", async () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotated Handle Click"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const document = applyPatch(inserted, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 38
+      }
+    });
+    await renderMainWindow(document);
+    const end = debugArtObject(objectId).projectedEditPoints?.end;
+    if (!end) {
+      throw new Error("Expected projected end handle.");
+    }
+
+    await act(async () => {
+      dispatchPointer(pathHandle("end"), "pointerdown", end, 20);
+      dispatchPointer(pageElement(), "pointerup", end, 20);
+    });
+    const afterClick = debugArtObject(objectId);
+
+    expect(afterClick.object.rotation).toBeCloseTo(38, 3);
+    expect(afterClick.object.data.lineStart).toBeUndefined();
+    expect(afterClick.object.data.lineEnd).toBeUndefined();
+    expect(afterClick.object.data.pathControlPoint).toBeUndefined();
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
+
+  it("bakes a rotated line before endpoint drag and keeps handles attached through reselect and undo", async () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotated Endpoint Drag"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const document = applyPatch(inserted, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 41
+      }
+    });
+    await renderMainWindow(document);
+    const before = debugArtObject(objectId);
+    const start = before.projectedEditPoints?.start;
+    const end = before.projectedEditPoints?.end;
+    if (!start || !end) {
+      throw new Error("Expected rotated line edit points.");
+    }
+    const target = { x: end.x + 32, y: end.y + 12 };
+
+    await act(async () => {
+      dispatchPointer(pathHandle("end"), "pointerdown", end, 21);
+      dispatchPointer(pageElement(), "pointermove", target, 21);
+      dispatchPointer(pageElement(), "pointerup", target, 21);
+    });
+    const afterDrag = debugArtObject(objectId);
+
+    expect(afterDrag.object.rotation).toBeCloseTo(0, 3);
+    expect(afterDrag.object.data.artPathKind).toBe("line");
+    expect(afterDrag.object.data.lineStart).toBeDefined();
+    expect(afterDrag.object.data.lineEnd).toBeDefined();
+    expect(Math.hypot(
+      (afterDrag.projectedEditPoints?.start.x ?? 0) - start.x,
+      (afterDrag.projectedEditPoints?.start.y ?? 0) - start.y
+    )).toBeLessThan(0.75);
+    expect(Math.hypot(
+      (afterDrag.projectedEditPoints?.end.x ?? 0) - target.x,
+      (afterDrag.projectedEditPoints?.end.y ?? 0) - target.y
+    )).toBeLessThan(0.75);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 20, y: 20 }, 22);
+      dispatchPointer(pageElement(), "pointerup", { x: 20, y: 20 }, 22);
+    });
+    expect(container.querySelector("[data-graphic-path-handle]")).toBeNull();
+
+    const hitTarget = container.querySelector<SVGElement>(".graphic-glyph-hit-target");
+    const reselectPoint = debugArtObject(objectId).projectedEditPoints?.end;
+    if (!hitTarget || !reselectPoint) {
+      throw new Error("Expected baked line hit target.");
+    }
+    await act(async () => {
+      dispatchPointer(hitTarget, "pointerdown", reselectPoint, 23);
+      dispatchPointer(hitTarget, "pointerup", reselectPoint, 23);
+    });
+    expect(container.querySelector('[data-graphic-path-handle="end"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+    const undone = debugArtObject(objectId);
+
+    expect(undone.object.rotation).toBeCloseTo(41, 3);
+    expect(undone.object.data.lineStart).toBeUndefined();
+    expect(undone.object.data.lineEnd).toBeUndefined();
+    expect(undone.object.data.pathControlPoint).toBeUndefined();
+  });
 });

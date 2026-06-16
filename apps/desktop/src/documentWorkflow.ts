@@ -4,6 +4,7 @@ import {
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
   planNativeArtVisual,
+  prepareGraphicPathForDirectEdit as prepareGraphicPathObjectForDirectEdit,
   type NativeArtPoint,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints
@@ -943,6 +944,31 @@ export function updateNativeGraphicPathHandle(
       op: "updateObject",
       objectId,
       changes: edited
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function prepareGraphicPathForDirectEdit(
+  document: ChemDraftDocument,
+  objectId: string
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (!object || object.type !== "graphic") {
+    return document;
+  }
+
+  const prepared = prepareGraphicPathObjectForDirectEdit(object);
+  if (prepared === object) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: prepared
     },
     { now: phase4Timestamp }
   );

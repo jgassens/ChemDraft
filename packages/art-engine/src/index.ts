@@ -467,6 +467,43 @@ export function graphicObjectIntersectsRect(object: GraphicObject, rect: NativeA
   return false;
 }
 
+export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicObject {
+  const pathKind = graphicPathKind(object);
+  if (!pathKind || pathKind === "arc") {
+    return object;
+  }
+
+  const tiltXDegrees = metadataNumber(object.style.tiltXDegrees) ?? 0;
+  const tiltYDegrees = metadataNumber(object.style.tiltYDegrees) ?? 0;
+  if (
+    Math.abs(object.rotation) < 0.001 ||
+    Math.abs(tiltXDegrees) >= 0.001 ||
+    Math.abs(tiltYDegrees) >= 0.001
+  ) {
+    return object;
+  }
+
+  const points = graphicPathEditPoints(object);
+  if (!points || points.pathKind === "arc") {
+    return object;
+  }
+
+  const nextData: GraphicObject["data"] = {
+    ...object.data,
+    artPathKind: points.pathKind,
+    lineStart: projectGraphicObjectPoint(object, points.start),
+    lineEnd: projectGraphicObjectPoint(object, points.end)
+  };
+  if (points.pathKind === "quadratic") {
+    nextData.pathControlPoint = projectGraphicObjectPoint(object, points.middle);
+  } else {
+    delete nextData.pathControlPoint;
+  }
+  deleteSemanticArcData(nextData);
+
+  return updateGraphicPathObject({ ...object, rotation: 0 }, nextData) ?? object;
+}
+
 function nativeArtProjectionMatrixForObject(object: GraphicObject): NativeArtProjectionMatrix | undefined {
   const tiltXDegrees = metadataNumber(object.style.tiltXDegrees) ?? 0;
   const tiltYDegrees = metadataNumber(object.style.tiltYDegrees) ?? 0;

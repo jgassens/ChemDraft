@@ -187,6 +187,7 @@ import {
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
+  prepareGraphicPathForDirectEdit,
   recommendImportedPageFit,
   reorderSelectedDocumentObject,
   resizeNativeMoleculeParts,
@@ -660,7 +661,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.16.34-codex";
+const CURRENT_BUILD_STAMP = "6.16.16.46-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -3920,13 +3921,11 @@ export function MainWindow({
     replacePresentDocument(nextDocument);
   }, [graphicCornerRadiusDocumentFromDrag, replacePresentDocument]);
 
-  const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument =>
-    updateNativeGraphicPathHandle(
-      drag.workingDocument,
-      drag.objectId,
-      drag.handle,
-      nativeGraphicPathEditPointFromProjectedDrag(drag.workingDocument, drag.objectId, point)
-    ), []);
+  const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument => {
+    const preparedDocument = prepareGraphicPathForDirectEdit(drag.workingDocument, drag.objectId);
+    const editPoint = nativeGraphicPathEditPointFromProjectedDrag(preparedDocument, drag.objectId, point);
+    return updateNativeGraphicPathHandle(preparedDocument, drag.objectId, drag.handle, editPoint);
+  }, []);
 
   const previewGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint) => {
     drag.latestPoint = point;

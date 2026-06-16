@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import {
   applyPatch,
   applyPatchWithHistory,
@@ -84,6 +85,7 @@ import {
   nativeGraphicCornerRadiusEditPoint,
   nativeGraphicPathEditPoints,
   openNativeDocument,
+  prepareGraphicPathForDirectEdit,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
   recommendImportedPageFit,
@@ -4241,6 +4243,93 @@ describe("Phase 4 document workflow", () => {
     expectPointToBeClose(rotatedGraphic.data.lineStart, bentGraphic.data.lineStart!);
     expectPointToBeClose(rotatedGraphic.data.lineEnd, bentGraphic.data.lineEnd!);
     expectPointToBeClose(rotatedGraphic.data.pathControlPoint, bentGraphic.data.pathControlPoint!);
+  });
+
+  it("prepares a rotated straight graphic line for direct editing without moving visible endpoints", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Prepare Rotated Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const rotated = rotateDocumentObject(inserted, objectId, 42);
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    if (!rotatedPoints) {
+      throw new Error("Expected rotated line edit points.");
+    }
+    const projectedStart = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.start);
+    const projectedEnd = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.end);
+
+    const prepared = prepareGraphicPathForDirectEdit(rotated, objectId);
+    const preparedGraphic = graphicById(prepared, objectId);
+    const preparedPoints = nativeGraphicPathEditPoints(preparedGraphic);
+
+    expect(preparedGraphic.rotation).toBe(0);
+    expect(preparedGraphic.data.artPathKind).toBe("line");
+    expectPointToBeClose(preparedGraphic.data.lineStart, projectedStart);
+    expectPointToBeClose(preparedGraphic.data.lineEnd, projectedEnd);
+    expect(preparedGraphic.data.pathControlPoint).toBeUndefined();
+    expectPointToBeClose(preparedPoints?.start, projectedStart);
+    expectPointToBeClose(preparedPoints?.end, projectedEnd);
+  });
+
+  it("prepares rotated quadratic and legacy quadratic graphics as unrotated explicit curves", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Prepare Rotated Quadratic"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 10, y: points.middle.y - 34 }
+    );
+    const legacy = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 32,
+        data: {
+          ...graphicById(bent, objectId).data,
+          artPathKind: "arc"
+        }
+      }
+    });
+    const rotatedGraphic = graphicById(legacy, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    if (!rotatedPoints) {
+      throw new Error("Expected rotated quadratic edit points.");
+    }
+    const projectedStart = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.start);
+    const projectedMiddle = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.middle);
+    const projectedEnd = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.end);
+
+    const prepared = prepareGraphicPathForDirectEdit(legacy, objectId);
+    const preparedGraphic = graphicById(prepared, objectId);
+    const preparedPoints = nativeGraphicPathEditPoints(preparedGraphic);
+
+    expect(preparedGraphic.rotation).toBe(0);
+    expect(preparedGraphic.data.artPathKind).toBe("quadratic");
+    expectPointToBeClose(preparedGraphic.data.lineStart, projectedStart);
+    expectPointToBeClose(preparedGraphic.data.pathControlPoint, projectedMiddle);
+    expectPointToBeClose(preparedGraphic.data.lineEnd, projectedEnd);
+    expect(preparedGraphic.data.arcCenter).toBeUndefined();
+    expectPointToBeClose(preparedPoints?.start, projectedStart);
+    expectPointToBeClose(preparedPoints?.middle, projectedMiddle);
+    expectPointToBeClose(preparedPoints?.end, projectedEnd);
   });
 
   it("edits circular art arcs by changing radian sweep around the same ellipse", () => {
