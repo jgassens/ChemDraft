@@ -1334,6 +1334,57 @@ describe("ChemDraft desktop shell", () => {
 
   it("renders the art toolbar as a command-backed object surface", () => {
     const markup = renderToStaticMarkup(createElement(PaletteWindow, { toolsetId: "core.art" }));
+    const artGroups = getToolsetCommandGroups("core.art");
+    const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: {
+        selectedCount: 1,
+        fillSupportedCount: 1,
+        strokeSupportedCount: 1,
+        dashSupportedCount: 1,
+        lineCapSupportedCount: 0,
+        lineJoinSupportedCount: 1,
+        fillColor: "#1d7f68",
+        strokeColor: "#111111",
+        objectOpacity: 1,
+        fillOpacity: 1,
+        strokeOpacity: 1,
+        strokeWidth: 2,
+        strokeDasharray: "solid",
+        strokeLineJoin: "miter"
+      },
+      onInvoke: () => undefined
+    }));
+    const lineInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: {
+        selectedCount: 1,
+        fillSupportedCount: 0,
+        strokeSupportedCount: 1,
+        dashSupportedCount: 1,
+        lineCapSupportedCount: 1,
+        lineJoinSupportedCount: 0,
+        strokeColor: "#111111",
+        objectOpacity: 1,
+        strokeOpacity: 1,
+        strokeWidth: 2,
+        strokeDasharray: "solid",
+        strokeLineCap: "round"
+      },
+      onInvoke: () => undefined
+    }));
 
     expect(markup).toContain('aria-label="ChemDraft floating Art Toolbar"');
     expect(markup).toContain('data-toolset-id="core.art"');
@@ -1344,31 +1395,38 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="tool.art.arc90Dashed"');
     expect(markup).toContain('data-art-tool-icon="circleGloss"');
     expect(markup).toContain('data-art-tool-icon="arc90Dashed"');
-    expect(markup).toContain('data-toolbar-style-controls="art"');
-    expect(markup).toContain('aria-label="Object color"');
-    expect(markup).toContain('aria-label="Open object color picker"');
-    expect(markup).toContain('data-color-picker="true"');
-    expect(markup).toContain('data-command-id="object.style.target.fill"');
-    expect(markup).toContain('data-command-id="object.style.swapFillStroke"');
-    expect(markup).toContain('aria-label="Stroke width"');
-    expect(markup).toContain('data-art-inspector-slider="object-opacity"');
-    expect(markup).toContain('data-art-inspector-slider="fill-opacity"');
-    expect(markup).toContain('data-art-inspector-slider="stroke-opacity"');
-    expect(markup).toContain("Obj");
-    expect(markup).toContain("Fill");
-    expect(markup).toContain("Stroke");
-    expect(markup).toContain("Width");
-    expect(markup).toContain("Dash");
-    expect(markup).toContain("Cap");
-    expect(markup).toContain("Join");
+    expect(rectInspectorMarkup).toContain('data-toolbar-style-controls="art"');
+    expect(rectInspectorMarkup).toContain('aria-label="Fill color"');
+    expect(rectInspectorMarkup).toContain('aria-label="Open object color picker"');
+    expect(rectInspectorMarkup).toContain('data-color-picker="true"');
+    expect(rectInspectorMarkup).toContain('data-command-id="object.style.target.fill"');
+    expect(rectInspectorMarkup).toContain('data-command-id="object.style.swapFillStroke"');
+    expect(rectInspectorMarkup).toContain('aria-label="Stroke width"');
+    expect(rectInspectorMarkup).toContain('data-art-inspector-slider="object-opacity"');
+    expect(rectInspectorMarkup).toContain('data-art-inspector-slider="fill-opacity"');
+    expect(rectInspectorMarkup).toContain('data-art-inspector-slider="stroke-opacity"');
+    expect(rectInspectorMarkup).toContain("Obj");
+    expect(rectInspectorMarkup).toContain("Fill");
+    expect(rectInspectorMarkup).toContain("Stroke");
+    expect(rectInspectorMarkup).toContain("Width");
+    expect(rectInspectorMarkup).toContain("Dash");
+    expect(rectInspectorMarkup).toContain("Corners");
+    expect(rectInspectorMarkup).not.toContain("Line ends");
+    expect(lineInspectorMarkup).toContain('data-art-fill-supported-count="0"');
+    expect(lineInspectorMarkup).not.toContain('data-command-id="object.style.target.fill"');
+    expect(lineInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
+    expect(lineInspectorMarkup).toContain('aria-label="Stroke color"');
+    expect(lineInspectorMarkup).toContain("Line ends");
+    expect(lineInspectorMarkup).not.toContain("Corners");
     expect(markup).not.toContain('data-command-id="text.color.black"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
     expect(toolPaletteSource).toContain("HexColorPicker");
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");
+    expect(toolPaletteSource).toContain("fillSupportedCount");
     expect(appCss).toContain(".art-tool-icon");
     expect(appCss).toContain(".art-toolbar-style-controls");
-    expect(appCss).toContain("grid-template-rows: 24px 35px 38px;");
+    expect(appCss).toContain("grid-template-rows: 24px minmax(35px, auto) minmax(38px, auto);");
     expect(appCss).toContain(".art-inspector-slider-value");
     expect(appCss).toContain(".art-stroke-control-label");
     expect(appCss).toContain(".art-color-popover .react-colorful");

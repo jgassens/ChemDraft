@@ -1158,7 +1158,10 @@ describe("layout-engine page SVG planner", () => {
         rotation: 0,
         style: {
           strokeColor: "#111111",
-          strokeWidth: 2
+          strokeWidth: 2,
+          fillColor: "#ff0000",
+          fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.4 },
+          fillOpacity: 0.5
         },
         graphicKind: "path",
         data: {
@@ -1172,6 +1175,7 @@ describe("layout-engine page SVG planner", () => {
     const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
 
     expect(fragments[0]?.attrs.d).toBe("M 94 89 A 25 25 0 1 1 69 64");
+    expect(fragments[0]?.attrs.fill).toBe("none");
   });
 
   it("plans native art projection bounds and gloss gradients from the same object transform", () => {

@@ -642,7 +642,7 @@ const documentObjectInteractiveTiltMaxRadians = DOCUMENT_OBJECT_INTERACTIVE_TILT
 const OBJECT_DRAG_THRESHOLD = 4;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.15.20.4-codex";
+const CURRENT_BUILD_STAMP = "6.15.21.2-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -980,6 +980,19 @@ export function MainWindow({
   ]);
   const currentArtStyle = useMemo(() => toolsetArtStylePayloadForDocument(document), [document]);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
+
+  useEffect(() => {
+    if (!currentArtStyle || currentArtStyle.selectedCount === 0) {
+      return;
+    }
+
+    if (activeArtPaintTarget === "fill" && currentArtStyle.fillSupportedCount === 0 && currentArtStyle.strokeSupportedCount > 0) {
+      setActiveArtPaintTarget("stroke");
+    } else if (activeArtPaintTarget === "stroke" && currentArtStyle.strokeSupportedCount === 0 && currentArtStyle.fillSupportedCount > 0) {
+      setActiveArtPaintTarget("fill");
+    }
+  }, [activeArtPaintTarget, currentArtStyle]);
+
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
   );
@@ -2279,8 +2292,12 @@ export function MainWindow({
 
     const strokeDash = objectStrokeDashCommands.find((command) => command.id === commandId);
     if (strokeDash) {
+      const strokeStyle = {
+        strokeDasharray: strokeDash.strokeDasharray,
+        ...("strokeLineCap" in strokeDash && strokeDash.strokeLineCap ? { strokeLineCap: strokeDash.strokeLineCap } : {})
+      };
       return {
-        document: applyGraphicObjectStrokeStyleToSelection(currentDocument, { strokeDasharray: strokeDash.strokeDasharray }, graphicObjectIds),
+        document: applyGraphicObjectStrokeStyleToSelection(currentDocument, strokeStyle, graphicObjectIds),
         handled: true,
         targeted: graphicObjectIds.length > 0,
         message: "Updated selected graphic dash"
@@ -2350,6 +2367,16 @@ export function MainWindow({
   const applyObjectStyleCommand = useCallback((commandId: string): boolean => {
     const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);
     if (targetCommand) {
+      if (targetCommand.target === "fill" && currentArtStyle?.fillSupportedCount === 0 && currentArtStyle.strokeSupportedCount > 0) {
+        setActiveArtPaintTarget("stroke");
+        setStatus("Selected graphic uses stroke only");
+        return true;
+      }
+      if (targetCommand.target === "stroke" && currentArtStyle?.strokeSupportedCount === 0 && currentArtStyle.fillSupportedCount > 0) {
+        setActiveArtPaintTarget("fill");
+        setStatus("Selected graphic uses fill only");
+        return true;
+      }
       setActiveArtPaintTarget(targetCommand.target);
       setStatus(targetCommand.target === "fill" ? "Targeting graphic fill" : "Targeting graphic stroke");
       return true;
@@ -2369,7 +2396,7 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
-  }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, commitDocumentChange]);
+  }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle]);
 
   const previewObjectStyleCommand = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current ?? { startDocument: documentRef.current };
@@ -11338,7 +11365,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
           <path
             className="graphic-glyph-stroke graphic-glyph-path"
             d={pathD}
-            fill="none"
+            {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
             {...sharedStrokeProps}
           />
         ) : line ? (
@@ -11859,7 +11886,7 @@ function artStyleQaSceneDocument(document: ChemDraftDocument): ChemDraftDocument
   }
 
   const baseX = Math.min(page.width - 360, Math.max(page.margin.left + 145, 135));
-  const baseY = Math.min(page.height - 250, Math.max(page.margin.top + 430, 360));
+  const baseY = Math.min(page.height - 250, Math.max(page.margin.top + 820, 560));
   const objects = [
     artStyleQaObject({
       id: ART_STYLE_QA_OBJECT_IDS[0],
@@ -11949,7 +11976,7 @@ function artStyleQaStressDocument(document: ChemDraftDocument, runCount: number)
   const fillColors = ["#1d7f68", "#1648ff", "#b3261e", "#6cb155", "#f8faf9"];
   const strokeColors = ["#111111", "#1d7f68", "#b3261e", "#1648ff", "#4b5563"];
   const strokeWidths = [1, 1.5, 2, 3, 5];
-  const strokeDasharrays: Array<string | undefined> = [undefined, "6 4", "1 4"];
+  const strokeDasharrays: Array<string | undefined> = [undefined, "8 6", "14 7", "0 6", "8 5 0 5"];
   const strokeLineCaps: Array<NonNullable<GraphicObject["style"]["strokeLineCap"]>> = ["butt", "round", "square"];
   const strokeLineJoins: Array<NonNullable<GraphicObject["style"]["strokeLineJoin"]>> = ["miter", "round", "bevel"];
   const patches = ART_STYLE_QA_OBJECT_IDS.flatMap((objectId, index): DocumentPatch[] => {
@@ -12122,6 +12149,11 @@ function toolsetArtStylePayloadForDocument(document: ChemDraftDocument): Toolset
 
   return {
     selectedCount: graphics.length,
+    fillSupportedCount: countGraphicsWithCapability(graphics, "supportsFill"),
+    strokeSupportedCount: countGraphicsWithCapability(graphics, "supportsStroke"),
+    dashSupportedCount: countGraphicsWithCapability(graphics, "supportsDash"),
+    lineCapSupportedCount: countGraphicsWithCapability(graphics, "supportsLineCap"),
+    lineJoinSupportedCount: countGraphicsWithCapability(graphics, "supportsLineJoin"),
     fillColor: uniformGraphicValue(graphics, graphicFillToolbarColor),
     strokeColor: uniformGraphicValue(graphics, graphicStrokeToolbarColor),
     objectOpacity: uniformGraphicValue(graphics, (object) => metadataNumberValue(object.style.opacity, 1)),
@@ -12144,6 +12176,15 @@ function toolsetArtStylePayloadForDocument(document: ChemDraftDocument): Toolset
       return object.graphicKind === "path" ? "round" : "miter";
     })
   };
+}
+
+function countGraphicsWithCapability(
+  graphics: readonly GraphicObject[],
+  capability: keyof ReturnType<typeof planNativeArtVisual>["capabilities"]
+): number {
+  return graphics.filter((object) =>
+    Boolean(planNativeArtVisual(object, { coordinateSpace: "local" }).capabilities[capability])
+  ).length;
 }
 
 function uniformGraphicValue<T>(objects: readonly GraphicObject[], read: (object: GraphicObject) => T): T | undefined {

@@ -46,6 +46,11 @@ export type ToolsetArtPaintTarget = "fill" | "stroke";
 
 export interface ToolsetArtStylePayload {
   selectedCount: number;
+  fillSupportedCount: number;
+  strokeSupportedCount: number;
+  dashSupportedCount: number;
+  lineCapSupportedCount: number;
+  lineJoinSupportedCount: number;
   fillColor?: string;
   strokeColor?: string;
   objectOpacity?: number;

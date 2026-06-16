@@ -77,6 +77,17 @@ export interface NativeArtFillPlan {
   paint: NativeArtPaintPlan;
 }
 
+export interface NativeArtCapabilities {
+  supportsFill: boolean;
+  supportsStroke: boolean;
+  supportsDash: boolean;
+  supportsLineCap: boolean;
+  supportsLineJoin: boolean;
+  isOpenStroke: boolean;
+  isClosedShape: boolean;
+  hasCorners: boolean;
+}
+
 export interface NativeArtGlossGradientPlan {
   cx: number;
   cy: number;
@@ -91,6 +102,7 @@ export interface NativeArtVisualPlan {
   width: number;
   height: number;
   opacity: number;
+  capabilities: NativeArtCapabilities;
   stroke: NativeArtStrokePlan;
   fill: NativeArtFillPlan;
   cornerRadius: number;
@@ -125,6 +137,7 @@ export function planNativeArtVisual(
   const matrix = nativeArtProjectionMatrixForObject(object);
   const projectionTransform = matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined;
   const opacity = clampUnit(metadataNumber(object.style.opacity) ?? 1);
+  const capabilities = nativeArtCapabilities(object);
   const stroke: NativeArtStrokePlan = {
     color: graphicColor(object.style.strokeColor, object.style.color, "#111111"),
     width: metadataNumber(object.style.strokeWidth) ?? 1.5,
@@ -136,10 +149,12 @@ export function planNativeArtVisual(
     paint: nativeArtStrokePaint(object, coordinateSpace, projectionTransform)
   };
   const fill: NativeArtFillPlan = {
-    color: graphicFillColor(object.style.fillColor),
-    mode: metadataString(object.style.fillMode),
-    opacity: graphicFillOpacity(object),
-    paint: nativeArtFillPaint(object, coordinateSpace, projectionTransform)
+    color: capabilities.supportsFill ? graphicFillColor(object.style.fillColor) : "none",
+    mode: capabilities.supportsFill ? metadataString(object.style.fillMode) : undefined,
+    opacity: capabilities.supportsFill ? graphicFillOpacity(object) : 1,
+    paint: capabilities.supportsFill
+      ? nativeArtFillPaint(object, coordinateSpace, projectionTransform)
+      : { kind: "none", opacity: 1 }
   };
   const frameBounds = nativeArtFrameBounds(object, matrix, coordinateSpace);
   const cornerRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
@@ -160,6 +175,7 @@ export function planNativeArtVisual(
     width,
     height,
     opacity,
+    capabilities,
     stroke,
     fill,
     cornerRadius,
@@ -170,7 +186,97 @@ export function planNativeArtVisual(
     line,
     pathD,
     projectedShapePathD,
-    glossGradient: fill.mode === "gloss" ? nativeArtGlossGradient(object, coordinateSpace, matrix) : undefined
+    glossGradient: capabilities.supportsFill && fill.mode === "gloss"
+      ? nativeArtGlossGradient(object, coordinateSpace, matrix)
+      : undefined
+  };
+}
+
+export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilities {
+  const kind = object.graphicKind;
+  if (kind === "line") {
+    return nativeArtCapabilityPlan({
+      supportsFill: false,
+      supportsStroke: true,
+      supportsDash: true,
+      supportsLineCap: true,
+      supportsLineJoin: false,
+      isClosedShape: false,
+      hasCorners: false
+    });
+  }
+
+  if (kind === "ellipse") {
+    return nativeArtCapabilityPlan({
+      supportsFill: true,
+      supportsStroke: true,
+      supportsDash: true,
+      supportsLineCap: false,
+      supportsLineJoin: false,
+      isClosedShape: true,
+      hasCorners: false
+    });
+  }
+
+  if (kind === "rect") {
+    const cornerRadius = metadataNumber(object.data.cornerRadiusPx) ?? 0;
+    const hasCorners = cornerRadius <= 0.001;
+    return nativeArtCapabilityPlan({
+      supportsFill: true,
+      supportsStroke: true,
+      supportsDash: true,
+      supportsLineCap: false,
+      supportsLineJoin: hasCorners,
+      isClosedShape: true,
+      hasCorners
+    });
+  }
+
+  if (kind === "path") {
+    const pathKind = graphicPathKind(object);
+    if (pathKind === "line" || pathKind === "wavy" || pathKind === "arc") {
+      return nativeArtCapabilityPlan({
+        supportsFill: false,
+        supportsStroke: true,
+        supportsDash: true,
+        supportsLineCap: true,
+        supportsLineJoin: false,
+        isClosedShape: false,
+        hasCorners: false
+      });
+    }
+
+    const pathD = metadataString(object.data.pathD);
+    const isClosedShape = pathD ? svgPathLooksClosed(pathD) : false;
+    const hasCorners = pathD ? svgPathLooksCornered(pathD) : false;
+    return nativeArtCapabilityPlan({
+      supportsFill: isClosedShape,
+      supportsStroke: true,
+      supportsDash: true,
+      supportsLineCap: !isClosedShape,
+      supportsLineJoin: hasCorners,
+      isClosedShape,
+      hasCorners
+    });
+  }
+
+  return nativeArtCapabilityPlan({
+    supportsFill: false,
+    supportsStroke: false,
+    supportsDash: false,
+    supportsLineCap: false,
+    supportsLineJoin: false,
+    isClosedShape: false,
+    hasCorners: false
+  });
+}
+
+function nativeArtCapabilityPlan(
+  capabilities: Omit<NativeArtCapabilities, "isOpenStroke">
+): NativeArtCapabilities {
+  return {
+    ...capabilities,
+    isOpenStroke: capabilities.supportsStroke && !capabilities.isClosedShape
   };
 }
 
@@ -1013,6 +1119,14 @@ function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
   } catch {
     return [];
   }
+}
+
+function svgPathLooksClosed(pathD: string): boolean {
+  return /[Zz]/.test(pathD);
+}
+
+function svgPathLooksCornered(pathD: string): boolean {
+  return /[LlHhVv]/.test(pathD);
 }
 
 function graphicPathD(

@@ -564,8 +564,23 @@ function ArtToolbarStyleControls({
   onCancel?: () => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const selected = (currentArtStyle?.selectedCount ?? 0) > 0;
-  const activeColor = currentArtStyleTarget === "fill" ? currentArtStyle?.fillColor : currentArtStyle?.strokeColor;
+  const selectedCount = currentArtStyle?.selectedCount ?? 0;
+  const selected = selectedCount > 0;
+  const fillSupportedCount = currentArtStyle?.fillSupportedCount ?? 0;
+  const strokeSupportedCount = currentArtStyle?.strokeSupportedCount ?? 0;
+  const dashSupportedCount = currentArtStyle?.dashSupportedCount ?? 0;
+  const lineCapSupportedCount = currentArtStyle?.lineCapSupportedCount ?? 0;
+  const lineJoinSupportedCount = currentArtStyle?.lineJoinSupportedCount ?? 0;
+  const supportsFill = fillSupportedCount > 0;
+  const supportsStroke = strokeSupportedCount > 0;
+  const supportsDash = dashSupportedCount > 0;
+  const supportsLineCap = lineCapSupportedCount > 0;
+  const supportsLineJoin = lineJoinSupportedCount > 0;
+  const effectiveArtStyleTarget: ToolsetArtPaintTarget = currentArtStyleTarget === "fill" && !supportsFill && supportsStroke
+    ? "stroke"
+    : currentArtStyleTarget === "stroke" && !supportsStroke && supportsFill ? "fill" : currentArtStyleTarget;
+  const activeTargetSupported = effectiveArtStyleTarget === "fill" ? supportsFill : supportsStroke;
+  const activeColor = effectiveArtStyleTarget === "fill" ? currentArtStyle?.fillColor : currentArtStyle?.strokeColor;
   const currentColor = normalizeHexColor(activeColor ?? currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
   const [colorOpen, setColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -587,6 +602,17 @@ function ArtToolbarStyleControls({
     }
   }, [colorOpen, currentColor]);
 
+  useEffect(() => {
+    if (!selected) {
+      return;
+    }
+    if (currentArtStyleTarget === "fill" && !supportsFill && supportsStroke) {
+      onInvoke("object.style.target.stroke");
+    } else if (currentArtStyleTarget === "stroke" && !supportsStroke && supportsFill) {
+      onInvoke("object.style.target.fill");
+    }
+  }, [currentArtStyleTarget, onInvoke, selected, supportsFill, supportsStroke]);
+
   const invokeOrCommit = (commandId: string) => {
     if (onCommit) {
       onCommit(commandId);
@@ -598,6 +624,11 @@ function ArtToolbarStyleControls({
   const previewCommand = (commandId: string) => {
     onPreview?.(commandId);
   };
+
+  const supportTitle = (label: string, supportedCount: number) =>
+    selected && supportedCount > 0 && supportedCount < selectedCount
+      ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
+      : label;
 
   const updateColor = (color: string) => {
     const normalized = normalizeHexColor(color);
@@ -621,7 +652,8 @@ function ArtToolbarStyleControls({
     label: string,
     shortLabel: string,
     value: number,
-    commandId: (opacity: number) => string
+    commandId: (opacity: number) => string,
+    supportedCount = selectedCount
   ) => {
     const percent = Math.round(value * 100);
     const applySliderPercent = (nextPercent: number, commit: boolean) => {
@@ -669,9 +701,9 @@ function ArtToolbarStyleControls({
           min={0}
           max={100}
           value={percent}
-          disabled={!selected}
+          disabled={!selected || supportedCount === 0}
           aria-label={label}
-          title={`${label}: ${percent}%`}
+          title={`${supportTitle(label, supportedCount)}: ${percent}%`}
           data-palette-control="true"
           onPointerDown={(event) => {
             event.stopPropagation();
@@ -703,6 +735,11 @@ function ArtToolbarStyleControls({
       className="art-toolbar-style-controls"
       data-toolbar-style-controls="art"
       data-art-selection-count={currentArtStyle?.selectedCount ?? 0}
+      data-art-fill-supported-count={fillSupportedCount}
+      data-art-stroke-supported-count={strokeSupportedCount}
+      data-art-dash-supported-count={dashSupportedCount}
+      data-art-line-ends-supported-count={lineCapSupportedCount}
+      data-art-corners-supported-count={lineJoinSupportedCount}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           onCancel?.();
@@ -712,37 +749,41 @@ function ArtToolbarStyleControls({
     >
       <div className="art-inspector-row">
         <div className="art-target-toggle" role="group" aria-label="Art paint target">
-          <button
-            type="button"
-            className={currentArtStyleTarget === "fill" ? "active" : ""}
-            aria-label="Target fill"
-            title="Target fill color"
-            disabled={!selected}
-            data-command-id="object.style.target.fill"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke("object.style.target.fill")}
-          >
-            <span className="art-target-fill-glyph" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className={currentArtStyleTarget === "stroke" ? "active" : ""}
-            aria-label="Target stroke"
-            title="Target stroke color"
-            disabled={!selected}
-            data-command-id="object.style.target.stroke"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke("object.style.target.stroke")}
-          >
-            <span className="art-target-stroke-glyph" aria-hidden="true" />
-          </button>
+          {supportsFill ? (
+            <button
+              type="button"
+              className={effectiveArtStyleTarget === "fill" ? "active" : ""}
+              aria-label="Target fill"
+              title={supportTitle("Target fill color", fillSupportedCount)}
+              disabled={!selected}
+              data-command-id="object.style.target.fill"
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke("object.style.target.fill")}
+            >
+              <span className="art-target-fill-glyph" aria-hidden="true" />
+            </button>
+          ) : null}
+          {supportsStroke ? (
+            <button
+              type="button"
+              className={effectiveArtStyleTarget === "stroke" ? "active" : ""}
+              aria-label="Target stroke"
+              title={supportTitle("Target stroke color", strokeSupportedCount)}
+              disabled={!selected}
+              data-command-id="object.style.target.stroke"
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke("object.style.target.stroke")}
+            >
+              <span className="art-target-stroke-glyph" aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
         <div
           className="art-color-picker"
           role="group"
-          aria-label="Object color"
+          aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} color`}
           data-color-picker="true"
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
@@ -752,13 +793,13 @@ function ArtToolbarStyleControls({
             className="toolbar-color-trigger"
             aria-label="Open object color picker"
             aria-expanded={colorOpen}
-            disabled={!selected}
-            title={`Pick ${currentArtStyleTarget} color`}
+            disabled={!selected || !activeTargetSupported}
+            title={`Pick ${supportTitle(effectiveArtStyleTarget, effectiveArtStyleTarget === "fill" ? fillSupportedCount : strokeSupportedCount)} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
             onClick={() => setColorOpen(!colorOpen)}
           >
             <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
-            <span className="toolbar-color-trigger-label">{currentArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
+            <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
           </button>
           {colorOpen ? (
             <div className="art-color-popover" role="dialog" aria-label="Art color picker">
@@ -769,13 +810,13 @@ function ArtToolbarStyleControls({
         <button
           type="button"
           className="art-inspector-symbol-button"
-          aria-label={currentArtStyleTarget === "fill" ? "No fill" : "No stroke"}
-          title={currentArtStyleTarget === "fill" ? "No fill" : "No stroke"}
-          disabled={!selected}
-          data-command-id={currentArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
+          aria-label={effectiveArtStyleTarget === "fill" ? "No fill" : "No stroke"}
+          title={effectiveArtStyleTarget === "fill" ? supportTitle("No fill", fillSupportedCount) : supportTitle("No stroke", strokeSupportedCount)}
+          disabled={!selected || !activeTargetSupported}
+          data-command-id={effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onInvoke(currentArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none")}
+          onClick={() => onInvoke(effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none")}
         >
           ∅
         </button>
@@ -784,7 +825,7 @@ function ArtToolbarStyleControls({
           className="art-inspector-symbol-button"
           aria-label="Swap fill and stroke"
           title="Swap fill and stroke"
-          disabled={!selected}
+          disabled={!selected || !supportsFill || !supportsStroke}
           data-command-id="object.style.swapFillStroke"
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
@@ -795,10 +836,12 @@ function ArtToolbarStyleControls({
       </div>
       <div className="art-inspector-row art-inspector-opacity-row">
         {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}
-        {opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId)}
-        {opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId)}
+        {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
+        {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
+      {supportsStroke || supportsDash || supportsLineCap || supportsLineJoin ? (
       <div className="art-inspector-row art-inspector-stroke-row">
+        {supportsStroke ? (
         <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
           <span className="art-stroke-control-label">Width</span>
           <select
@@ -806,6 +849,7 @@ function ArtToolbarStyleControls({
             value={strokeWidthCommandId}
             aria-label="Stroke width"
             disabled={!selected}
+            title={supportTitle("Stroke width", strokeSupportedCount)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
@@ -817,6 +861,8 @@ function ArtToolbarStyleControls({
             ))}
           </select>
         </label>
+        ) : null}
+        {supportsDash ? (
         <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
           <span className="art-stroke-control-label">Dash</span>
           <select
@@ -824,6 +870,7 @@ function ArtToolbarStyleControls({
             value={strokeDashCommandId}
             aria-label="Dash pattern"
             disabled={!selected}
+            title={supportTitle("Dash pattern", dashSupportedCount)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
@@ -835,45 +882,73 @@ function ArtToolbarStyleControls({
             ))}
           </select>
         </label>
+        ) : null}
+        {supportsLineCap ? (
         <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
-          <span className="art-stroke-control-label">Cap</span>
+          <span className="art-stroke-control-label">Line ends</span>
           <select
             className="toolbar-select"
             value={`object.stroke.cap.${strokeCap}`}
-            aria-label="Line cap"
+            aria-label="Line ends"
             disabled={!selected}
+            title={supportTitle("Line ends", lineCapSupportedCount)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
           >
             {objectStrokeLineCapCommands.map((command) => (
               <option key={command.id} value={command.id}>
-                {command.strokeLineCap}
+                {lineCapLabel(command.strokeLineCap)}
               </option>
             ))}
           </select>
         </label>
+        ) : null}
+        {supportsLineJoin ? (
         <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
-          <span className="art-stroke-control-label">Join</span>
+          <span className="art-stroke-control-label">Corners</span>
           <select
             className="toolbar-select"
             value={`object.stroke.join.${strokeJoin}`}
-            aria-label="Line join"
+            aria-label="Corners"
             disabled={!selected}
+            title={supportTitle("Corners", lineJoinSupportedCount)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}
           >
             {objectStrokeLineJoinCommands.map((command) => (
               <option key={command.id} value={command.id}>
-                {command.strokeLineJoin}
+                {lineJoinLabel(command.strokeLineJoin)}
               </option>
             ))}
           </select>
         </label>
+        ) : null}
       </div>
+      ) : null}
     </div>
   );
+}
+
+function lineCapLabel(value: "butt" | "round" | "square"): string {
+  if (value === "butt") {
+    return "Flat";
+  }
+  if (value === "round") {
+    return "Round";
+  }
+  return "Square";
+}
+
+function lineJoinLabel(value: "miter" | "round" | "bevel"): string {
+  if (value === "miter") {
+    return "Sharp";
+  }
+  if (value === "round") {
+    return "Round";
+  }
+  return "Bevel";
 }
 
 type ColorPickerTab = "palette" | "mixer";

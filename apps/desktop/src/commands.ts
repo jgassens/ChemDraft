@@ -285,20 +285,27 @@ export const objectStrokeWidthCommands = [
 
 export const objectStrokeDashCommands = [
   { id: "object.stroke.dash.solid", title: "Solid Stroke", strokeDasharray: undefined },
-  { id: "object.stroke.dash.dashed", title: "Dashed Stroke", strokeDasharray: "6 4" },
-  { id: "object.stroke.dash.dotted", title: "Dotted Stroke", strokeDasharray: "1 4" }
-] as const satisfies readonly { id: string; title: string; strokeDasharray?: string }[];
+  { id: "object.stroke.dash.dashed", title: "Dashed Stroke", strokeDasharray: "8 6" },
+  { id: "object.stroke.dash.long", title: "Long Dash Stroke", strokeDasharray: "14 7" },
+  { id: "object.stroke.dash.dotted", title: "Dotted Stroke", strokeDasharray: "0 6", strokeLineCap: "round" },
+  { id: "object.stroke.dash.dashDot", title: "Dash-Dot Stroke", strokeDasharray: "8 5 0 5", strokeLineCap: "round" }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  strokeDasharray?: string;
+  strokeLineCap?: "round";
+}[];
 
 export const objectStrokeLineCapCommands = [
-  { id: "object.stroke.cap.butt", title: "Cap: Butt", strokeLineCap: "butt" },
-  { id: "object.stroke.cap.round", title: "Cap: Round", strokeLineCap: "round" },
-  { id: "object.stroke.cap.square", title: "Cap: Square", strokeLineCap: "square" }
+  { id: "object.stroke.cap.butt", title: "Line Ends: Flat", strokeLineCap: "butt" },
+  { id: "object.stroke.cap.round", title: "Line Ends: Round", strokeLineCap: "round" },
+  { id: "object.stroke.cap.square", title: "Line Ends: Square", strokeLineCap: "square" }
 ] as const satisfies readonly { id: string; title: string; strokeLineCap: "butt" | "round" | "square" }[];
 
 export const objectStrokeLineJoinCommands = [
-  { id: "object.stroke.join.miter", title: "Join: Miter", strokeLineJoin: "miter" },
-  { id: "object.stroke.join.round", title: "Join: Round", strokeLineJoin: "round" },
-  { id: "object.stroke.join.bevel", title: "Join: Bevel", strokeLineJoin: "bevel" }
+  { id: "object.stroke.join.miter", title: "Corners: Sharp", strokeLineJoin: "miter" },
+  { id: "object.stroke.join.round", title: "Corners: Round", strokeLineJoin: "round" },
+  { id: "object.stroke.join.bevel", title: "Corners: Bevel", strokeLineJoin: "bevel" }
 ] as const satisfies readonly { id: string; title: string; strokeLineJoin: "miter" | "round" | "bevel" }[];
 
 export const customTextColorCommandPrefix = "text.color.custom.";

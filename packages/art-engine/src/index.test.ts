@@ -174,6 +174,78 @@ describe("art-engine native art planning", () => {
     expect(plan.frameBounds).toEqual({ x: 0, y: 0, width: 58, height: 58 });
   });
 
+  it("marks open stroke graphics as non-fillable and resolves stale fill as none", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#ff0000",
+        fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.5 },
+        fillOpacity: 0.4
+      },
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.capabilities).toMatchObject({
+      supportsFill: false,
+      supportsStroke: true,
+      supportsDash: true,
+      supportsLineCap: true,
+      supportsLineJoin: false,
+      isOpenStroke: true,
+      isClosedShape: false,
+      hasCorners: false
+    });
+    expect(plan.fill).toMatchObject({
+      color: "none",
+      opacity: 1,
+      paint: { kind: "none", opacity: 1 }
+    });
+  });
+
+  it("derives fill and corner capabilities for custom path topology", () => {
+    const closedCornered = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 80,
+      height: 48,
+      data: {
+        pathD: "M 4 4 L 76 4 L 76 44 L 4 44 Z"
+      }
+    } satisfies GraphicObject;
+    const openCurved = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 80,
+      height: 48,
+      data: {
+        pathD: "M 4 44 C 22 2, 58 2, 76 44"
+      }
+    } satisfies GraphicObject;
+
+    expect(planNativeArtVisual(closedCornered, { coordinateSpace: "local" }).capabilities).toMatchObject({
+      supportsFill: true,
+      supportsLineCap: false,
+      supportsLineJoin: true,
+      isClosedShape: true,
+      hasCorners: true
+    });
+    expect(planNativeArtVisual(openCurved, { coordinateSpace: "local" }).capabilities).toMatchObject({
+      supportsFill: false,
+      supportsLineCap: true,
+      supportsLineJoin: false,
+      isOpenStroke: true,
+      hasCorners: false
+    });
+  });
+
   it("keeps projected bounds, matrix, and gradient data in one render plan", () => {
     const graphic = {
       ...baseGraphic,

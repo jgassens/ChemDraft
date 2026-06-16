@@ -3419,7 +3419,7 @@ describe("Phase 4 document workflow", () => {
     const withGraphic = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Style Selection"),
       { x: 220, y: 180 },
-      "tool.art.roundedRect"
+      "tool.art.rect"
     );
     const objectId = withGraphic.selection.objectIds[0];
     if (!objectId) {
@@ -3458,7 +3458,7 @@ describe("Phase 4 document workflow", () => {
     const stroked = applyGraphicObjectColorToSelection(noStroke, "stroke", "#abc");
     const styled = applyGraphicObjectStrokeStyleToSelection(stroked, {
       strokeWidth: 5,
-      strokeDasharray: "6 4",
+      strokeDasharray: "8 6",
       strokeLineCap: "square",
       strokeLineJoin: "bevel",
       strokeMiterLimit: 6
@@ -3467,7 +3467,7 @@ describe("Phase 4 document workflow", () => {
       strokeColor: "#aabbcc",
       strokePaint: { kind: "solid", color: "#aabbcc", opacity: 1 },
       strokeWidth: 5,
-      strokeDasharray: "6 4",
+      strokeDasharray: "8 6",
       strokeLineCap: "square",
       strokeLineJoin: "bevel",
       strokeMiterLimit: 6
@@ -3485,6 +3485,68 @@ describe("Phase 4 document workflow", () => {
     const history = { past: [selected], present: swapped, future: [] };
     expect(graphicById(undo(history).present, objectId).style.fillColor).not.toBe("#aabbcc");
     expect(graphicById(redo(undo(history)).present, objectId).style.fillColor).toBe("#aabbcc");
+  });
+
+  it("skips fill and corner-only style fields for open-stroke graphics", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Open Stroke Style"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = withLine.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line graphic to be selected.");
+    }
+
+    const fillAttempt = applyGraphicObjectColorToSelection(withLine, "fill", "#1d7f68");
+    expect(graphicById(fillAttempt, objectId).style.fillColor).toBe("none");
+    expect(graphicById(fillAttempt, objectId).style.fillPaint).toBeUndefined();
+
+    const stroked = applyGraphicObjectColorToSelection(fillAttempt, "stroke", "#a94324");
+    expect(graphicById(stroked, objectId).style).toMatchObject({
+      strokeColor: "#a94324",
+      strokePaint: { kind: "solid", color: "#a94324", opacity: 1 }
+    });
+
+    const fillOpacityAttempt = applyGraphicObjectOpacityToSelection(stroked, "fillOpacity", 0.25);
+    expect(graphicById(fillOpacityAttempt, objectId).style.fillOpacity).toBeUndefined();
+
+    const lineEnded = applyGraphicObjectStrokeStyleToSelection(fillOpacityAttempt, {
+      strokeLineCap: "square"
+    });
+    expect(graphicById(lineEnded, objectId).style.strokeLineCap).toBe("square");
+
+    const cornerAttempt = applyGraphicObjectStrokeStyleToSelection(lineEnded, {
+      strokeLineJoin: "bevel",
+      strokeMiterLimit: 6
+    });
+    expect(graphicById(cornerAttempt, objectId).style.strokeLineJoin).toBeUndefined();
+    expect(graphicById(cornerAttempt, objectId).style.strokeMiterLimit).toBeUndefined();
+  });
+
+  it("uses distinct dashed and dotted stroke presets and round dots", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Dash Presets"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = withLine.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line graphic to be selected.");
+    }
+
+    const dashed = applyGraphicObjectStrokeStyleToSelection(withLine, {
+      strokeDasharray: "8 6"
+    });
+    const dotted = applyGraphicObjectStrokeStyleToSelection(dashed, {
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+
+    expect(graphicById(dashed, objectId).style.strokeDasharray).toBe("8 6");
+    expect(graphicById(dotted, objectId).style.strokeDasharray).toBe("0 6");
+    expect(graphicById(dotted, objectId).style.strokeDasharray).not.toBe(graphicById(dashed, objectId).style.strokeDasharray);
+    expect(graphicById(dotted, objectId).style.strokeLineCap).toBe("round");
   });
 
   it("edits native graphic path endpoints and bends straight lines into explicit arcs", () => {

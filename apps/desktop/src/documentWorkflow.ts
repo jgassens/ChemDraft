@@ -1,6 +1,7 @@
 import {
   editGraphicPathGeometry,
   graphicPathEditPoints,
+  planNativeArtVisual,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints
 } from "@chemdraft/art-engine";
@@ -2870,7 +2871,7 @@ export function applyGraphicObjectColorToSelection(
           strokeColor: normalized,
           strokePaint: paint
         };
-  });
+  }, (object) => graphicObjectSupportsStyleCapability(object, target));
 }
 
 export function applyGraphicObjectNoneToSelection(
@@ -2888,7 +2889,7 @@ export function applyGraphicObjectNoneToSelection(
         ...object.style,
         strokeColor: "none",
         strokePaint: { kind: "none" }
-      });
+      }, (object) => graphicObjectSupportsStyleCapability(object, target));
 }
 
 export function swapGraphicObjectFillAndStroke(
@@ -2907,7 +2908,10 @@ export function swapGraphicObjectFillAndStroke(
       fillOpacity: object.style.strokeOpacity,
       strokeOpacity: object.style.fillOpacity
     };
-  });
+  }, (object) =>
+    graphicObjectSupportsStyleCapability(object, "fill") &&
+    graphicObjectSupportsStyleCapability(object, "stroke")
+  );
 }
 
 export function applyGraphicObjectOpacityToSelection(
@@ -2920,7 +2924,10 @@ export function applyGraphicObjectOpacityToSelection(
   return updateGraphicObjects(document, objectIds, (object) => ({
     ...object.style,
     [key]: value
-  }));
+  }), (object) => key === "opacity" || graphicObjectSupportsStyleCapability(
+    object,
+    key === "fillOpacity" ? "fill" : "stroke"
+  ));
 }
 
 export function applyGraphicObjectStrokeStyleToSelection(
@@ -2930,8 +2937,8 @@ export function applyGraphicObjectStrokeStyleToSelection(
 ): ChemDraftDocument {
   return updateGraphicObjects(document, objectIds, (object) => ({
     ...object.style,
-    ...style
-  }));
+    ...graphicObjectSupportedStrokeStyle(object, style)
+  }), (object) => Object.keys(graphicObjectSupportedStrokeStyle(object, style)).length > 0);
 }
 
 export function applyColorToNativeMoleculePart(
@@ -4229,6 +4236,10 @@ function documentObjectColorChanges(object: DocumentObject, color: string): Part
 }
 
 function graphicObjectHasVisibleFill(object: GraphicObject): boolean {
+  if (!graphicObjectSupportsStyleCapability(object, "fill")) {
+    return false;
+  }
+
   const fillColor = object.style.fillColor;
   if (typeof fillColor === "string" && fillColor.toLowerCase() === "none") {
     return false;
@@ -4240,10 +4251,63 @@ function graphicObjectHasVisibleFill(object: GraphicObject): boolean {
     object.style.effect === "shadow";
 }
 
+type GraphicStyleCapability = "fill" | "stroke" | "dash" | "lineCap" | "lineJoin";
+
+function graphicObjectSupportsStyleCapability(object: GraphicObject, capability: GraphicStyleCapability): boolean {
+  const capabilities = planNativeArtVisual(object, { coordinateSpace: "local" }).capabilities;
+  if (capability === "fill") {
+    return capabilities.supportsFill;
+  }
+  if (capability === "stroke") {
+    return capabilities.supportsStroke;
+  }
+  if (capability === "dash") {
+    return capabilities.supportsDash;
+  }
+  if (capability === "lineCap") {
+    return capabilities.supportsLineCap;
+  }
+  return capabilities.supportsLineJoin;
+}
+
+function graphicObjectSupportedStrokeStyle(
+  object: GraphicObject,
+  style: Pick<GraphicObjectStyle, "strokeWidth" | "strokeDasharray" | "strokeLineCap" | "strokeLineJoin" | "strokeMiterLimit">
+): Partial<GraphicObjectStyle> {
+  const changesDash = hasGraphicStyleKey(style, "strokeDasharray");
+  const next: Partial<GraphicObjectStyle> = {};
+  if (hasGraphicStyleKey(style, "strokeWidth") && graphicObjectSupportsStyleCapability(object, "stroke")) {
+    next.strokeWidth = style.strokeWidth;
+  }
+  if (changesDash && graphicObjectSupportsStyleCapability(object, "dash")) {
+    next.strokeDasharray = style.strokeDasharray;
+  }
+  if (
+    hasGraphicStyleKey(style, "strokeLineCap") &&
+    (changesDash
+      ? graphicObjectSupportsStyleCapability(object, "dash")
+      : graphicObjectSupportsStyleCapability(object, "lineCap"))
+  ) {
+    next.strokeLineCap = style.strokeLineCap;
+  }
+  if (hasGraphicStyleKey(style, "strokeLineJoin") && graphicObjectSupportsStyleCapability(object, "lineJoin")) {
+    next.strokeLineJoin = style.strokeLineJoin;
+  }
+  if (hasGraphicStyleKey(style, "strokeMiterLimit") && graphicObjectSupportsStyleCapability(object, "lineJoin")) {
+    next.strokeMiterLimit = style.strokeMiterLimit;
+  }
+  return next;
+}
+
+function hasGraphicStyleKey(style: Partial<GraphicObjectStyle>, key: keyof GraphicObjectStyle): boolean {
+  return Object.prototype.hasOwnProperty.call(style, key);
+}
+
 function updateGraphicObjects(
   document: ChemDraftDocument,
   objectIds: readonly string[],
-  updateStyle: (object: GraphicObject) => GraphicObjectStyle
+  updateStyle: (object: GraphicObject) => GraphicObjectStyle,
+  supportsUpdate: (object: GraphicObject) => boolean = () => true
 ): ChemDraftDocument {
   const targetIds = new Set(objectIds);
   if (targetIds.size === 0) {
@@ -4252,7 +4316,7 @@ function updateGraphicObjects(
 
   const patches = document.pages.flatMap((page) =>
     page.objects.flatMap((object) => {
-      if (object.type !== "graphic" || !targetIds.has(object.id)) {
+      if (object.type !== "graphic" || !targetIds.has(object.id) || !supportsUpdate(object)) {
         return [];
       }
 

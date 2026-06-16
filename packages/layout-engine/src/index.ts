@@ -1758,7 +1758,7 @@ function graphicObjectFragment(
       d: plan.pathD,
       ...strokeAttrs,
       class: "graphic-glyph-stroke graphic-glyph-path",
-      fill: "none",
+      ...(plan.capabilities.supportsFill ? fillAttrs : { fill: "none" }),
       transform: plan.projectionTransform
     }));
   } else if (object.graphicKind === "rect") {
