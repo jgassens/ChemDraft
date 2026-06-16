@@ -122,6 +122,39 @@ describe("graphic path direct editing interactions", () => {
     return result;
   }
 
+  function pathD(selector: ".graphic-glyph-hit-target" | ".graphic-glyph-path"): string {
+    const path = container.querySelector<SVGElement>(selector);
+    const d = path?.getAttribute("d");
+    if (!d) {
+      throw new Error(`Expected ${selector} path d.`);
+    }
+    return d;
+  }
+
+  function pathHandleLocalPosition(handle: "start" | "middle" | "end"): { left: string; top: string } {
+    const button = pathHandle(handle);
+    return {
+      left: button.style.left,
+      top: button.style.top
+    };
+  }
+
+  function expectProjectedPointShift(
+    actual: { x: number; y: number } | undefined,
+    before: { x: number; y: number },
+    dx: number,
+    dy: number
+  ) {
+    expect(actual?.x).toBeCloseTo(before.x + dx, 3);
+    expect(actual?.y).toBeCloseTo(before.y + dy, 3);
+  }
+
+  async function waitPastDoublePressWindow() {
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 410));
+    });
+  }
+
   function graphicById(document: ChemDraftDocument, objectId: string): GraphicObject {
     const object = document.pages.flatMap((page) => page.objects).find((candidate) => candidate.id === objectId);
     if (object?.type !== "graphic") {
@@ -344,5 +377,135 @@ describe("graphic path direct editing interactions", () => {
       (after.projectedEditPoints?.middle.x ?? 0) - target.x,
       (after.projectedEditPoints?.middle.y ?? 0) - target.y
     )).toBeLessThan(0.75);
+  });
+
+  it("moves the visible stroke with the object after endpoint editing", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Endpoint Edit Object Drag"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const end = debugArtObject(objectId).projectedEditPoints?.end;
+    if (!end) {
+      throw new Error("Expected projected end handle.");
+    }
+    const editedEnd = { x: end.x + 34, y: end.y + 10 };
+
+    await act(async () => {
+      dispatchPointer(pathHandle("end"), "pointerdown", end, 8);
+      dispatchPointer(pageElement(), "pointermove", editedEnd, 8);
+      dispatchPointer(pageElement(), "pointerup", editedEnd, 8);
+    });
+    const beforeDrag = debugArtObject(objectId);
+    const beforePathD = pathD(".graphic-glyph-path");
+    const beforeHitD = pathD(".graphic-glyph-hit-target");
+    const dragStart = beforeDrag.projectedEditPoints?.middle;
+    if (!dragStart || !beforeDrag.projectedEditPoints) {
+      throw new Error("Expected projected line edit points.");
+    }
+    const dx = 30;
+    const dy = 18;
+    const hitTarget = container.querySelector<SVGElement>(".graphic-glyph-hit-target");
+    if (!hitTarget) {
+      throw new Error("Expected graphic hit target.");
+    }
+
+    await act(async () => {
+      dispatchPointer(hitTarget, "pointerdown", dragStart, 9);
+      dispatchPointer(pageElement(), "pointermove", { x: dragStart.x + dx, y: dragStart.y + dy }, 9);
+      dispatchPointer(pageElement(), "pointerup", { x: dragStart.x + dx, y: dragStart.y + dy }, 9);
+    });
+    const afterDrag = debugArtObject(objectId);
+
+    expect(afterDrag.object.x).toBeCloseTo(beforeDrag.object.x + dx, 3);
+    expect(afterDrag.object.y).toBeCloseTo(beforeDrag.object.y + dy, 3);
+    expect(afterDrag.object.data.lineStart?.x).toBeCloseTo((beforeDrag.object.data.lineStart?.x ?? 0) + dx, 3);
+    expect(afterDrag.object.data.lineStart?.y).toBeCloseTo((beforeDrag.object.data.lineStart?.y ?? 0) + dy, 3);
+    expect(afterDrag.object.data.lineEnd?.x).toBeCloseTo((beforeDrag.object.data.lineEnd?.x ?? 0) + dx, 3);
+    expect(afterDrag.object.data.lineEnd?.y).toBeCloseTo((beforeDrag.object.data.lineEnd?.y ?? 0) + dy, 3);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.start, beforeDrag.projectedEditPoints.start, dx, dy);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.end, beforeDrag.projectedEditPoints.end, dx, dy);
+    expect(pathD(".graphic-glyph-path")).toBe(beforePathD);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(beforeHitD);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
+  });
+
+  it("keeps quadratic stroke, hit target, handles, and box aligned after reselect and object drag", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Quadratic Drag Alignment"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const middle = debugArtObject(objectId).projectedEditPoints?.middle;
+    if (!middle) {
+      throw new Error("Expected projected middle handle.");
+    }
+
+    await act(async () => {
+      dispatchPointer(pathHandle("middle"), "pointerdown", middle, 10);
+      dispatchPointer(pageElement(), "pointermove", { x: middle.x + 8, y: middle.y - 28 }, 10);
+      dispatchPointer(pageElement(), "pointerup", { x: middle.x + 8, y: middle.y - 28 }, 10);
+    });
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 20, y: 20 }, 11);
+      dispatchPointer(pageElement(), "pointerup", { x: 20, y: 20 }, 11);
+    });
+    expect(container.querySelector("[data-graphic-path-handle]")).toBeNull();
+
+    const reselectPoint = debugArtObject(objectId).projectedEditPoints?.middle;
+    const hitTarget = container.querySelector<SVGElement>(".graphic-glyph-hit-target");
+    if (!reselectPoint || !hitTarget) {
+      throw new Error("Expected quadratic hit target and middle point.");
+    }
+    await act(async () => {
+      dispatchPointer(hitTarget, "pointerdown", reselectPoint, 12);
+      dispatchPointer(hitTarget, "pointerup", reselectPoint, 12);
+    });
+    expect(container.querySelector('[data-graphic-path-handle="middle"]')).not.toBeNull();
+    await waitPastDoublePressWindow();
+
+    const beforeDrag = debugArtObject(objectId);
+    if (!beforeDrag.projectedEditPoints) {
+      throw new Error("Expected projected quadratic edit points.");
+    }
+    const beforePathD = pathD(".graphic-glyph-path");
+    const beforeHitD = pathD(".graphic-glyph-hit-target");
+    const beforeHandles = {
+      start: pathHandleLocalPosition("start"),
+      middle: pathHandleLocalPosition("middle"),
+      end: pathHandleLocalPosition("end")
+    };
+    const dx = -24;
+    const dy = 32;
+
+    await act(async () => {
+      dispatchPointer(hitTarget, "pointerdown", beforeDrag.projectedEditPoints!.middle, 13);
+      dispatchPointer(pageElement(), "pointermove", {
+        x: beforeDrag.projectedEditPoints!.middle.x + dx,
+        y: beforeDrag.projectedEditPoints!.middle.y + dy
+      }, 13);
+      dispatchPointer(pageElement(), "pointerup", {
+        x: beforeDrag.projectedEditPoints!.middle.x + dx,
+        y: beforeDrag.projectedEditPoints!.middle.y + dy
+      }, 13);
+    });
+    const afterDrag = debugArtObject(objectId);
+
+    expect(afterDrag.object.data.artPathKind).toBe("quadratic");
+    expect(afterDrag.object.x).toBeCloseTo(beforeDrag.object.x + dx, 3);
+    expect(afterDrag.object.y).toBeCloseTo(beforeDrag.object.y + dy, 3);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.start, beforeDrag.projectedEditPoints.start, dx, dy);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.middle, beforeDrag.projectedEditPoints.middle, dx, dy);
+    expectProjectedPointShift(afterDrag.projectedEditPoints?.end, beforeDrag.projectedEditPoints.end, dx, dy);
+    expect(pathD(".graphic-glyph-path")).toBe(beforePathD);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(beforeHitD);
+    expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
+    expect(pathHandleLocalPosition("start")).toEqual(beforeHandles.start);
+    expect(pathHandleLocalPosition("middle")).toEqual(beforeHandles.middle);
+    expect(pathHandleLocalPosition("end")).toEqual(beforeHandles.end);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPatch,
   applyPatchWithHistory,
   applyPatches,
   createDocumentHistory,
@@ -225,6 +226,13 @@ function expectNoDuplicateAtomPositions(molecule: MoleculeObject): void {
 
 function pointDistance(left: { x: number; y: number }, right: { x: number; y: number }): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function translatedPoint(point: { x: number; y: number }, dx: number, dy: number): { x: number; y: number } {
+  return {
+    x: point.x + dx,
+    y: point.y + dy
+  };
 }
 
 function degToRad(degrees: number): number {
@@ -3708,6 +3716,194 @@ describe("Phase 4 document workflow", () => {
     expect(nativeGraphicPathEditPoints(graphicById(redo(undo(pathEditHistory)).present, objectId))?.middle.x).toBeCloseTo(bentControl.x, 3);
   });
 
+  it("moves edited line graphic endpoints with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const endpointEdited = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      { x: points.end.x + 42, y: points.end.y + 12 }
+    );
+    const editedGraphic = graphicById(endpointEdited, objectId);
+    const dx = 36;
+    const dy = 22;
+
+    const moved = moveDocumentObject(endpointEdited, objectId, {
+      x: editedGraphic.x + dx,
+      y: editedGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(movedGraphic.x).toBeCloseTo(editedGraphic.x + dx, 6);
+    expect(movedGraphic.y).toBeCloseTo(editedGraphic.y + dy, 6);
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(editedGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(editedGraphic.data.lineEnd!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("moves quadratic graphic explicit points with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Quadratic Graphic"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 44 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const dx = 28;
+    const dy = -18;
+
+    const moved = moveDocumentObject(bent, objectId, {
+      x: bentGraphic.x + dx,
+      y: bentGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+    const movedPoints = nativeGraphicPathEditPoints(movedGraphic);
+
+    expect(movedGraphic.data.artPathKind).toBe("quadratic");
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(bentGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(bentGraphic.data.lineEnd!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toEqual(translatedPoint(bentGraphic.data.pathControlPoint!, dx, dy));
+    expect(movedPoints?.start).toEqual(translatedPoint(beforePoints!.start, dx, dy));
+    expect(movedPoints?.middle).toEqual(translatedPoint(beforePoints!.middle, dx, dy));
+    expect(movedPoints?.end).toEqual(translatedPoint(beforePoints!.end, dx, dy));
+  });
+
+  it("moves legacy quadratic arc explicit points with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Legacy Quadratic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 10, y: points.middle.y - 36 }
+    );
+    const legacy = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        data: {
+          ...graphicById(bent, objectId).data,
+          artPathKind: "arc"
+        }
+      }
+    });
+    const legacyGraphic = graphicById(legacy, objectId);
+    const dx = 18;
+    const dy = 24;
+
+    const moved = moveDocumentObject(legacy, objectId, {
+      x: legacyGraphic.x + dx,
+      y: legacyGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(movedGraphic.data.artPathKind).toBe("arc");
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(legacyGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(legacyGraphic.data.lineEnd!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toEqual(translatedPoint(legacyGraphic.data.pathControlPoint!, dx, dy));
+  });
+
+  it("moves semantic arc center with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const editedGraphic = graphicById(edited, objectId);
+    const dx = 31;
+    const dy = 17;
+
+    const moved = moveDocumentObject(edited, objectId, {
+      x: editedGraphic.x + dx,
+      y: editedGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(movedGraphic.data.artPathKind).toBe("arc");
+    expect(movedGraphic.data.arcCenter).toEqual(translatedPoint(editedGraphic.data.arcCenter!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("moves unedited line graphics through object bounds fallback", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Unedited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(graphic);
+    if (!beforePoints) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const dx = 40;
+    const dy = -12;
+
+    const moved = moveDocumentObject(inserted, objectId, {
+      x: graphic.x + dx,
+      y: graphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+    const movedPoints = nativeGraphicPathEditPoints(movedGraphic);
+
+    expect(movedGraphic.data.lineStart).toBeUndefined();
+    expect(movedGraphic.data.lineEnd).toBeUndefined();
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+    expect(movedPoints?.start).toEqual(translatedPoint(beforePoints.start, dx, dy));
+    expect(movedPoints?.middle).toEqual(translatedPoint(beforePoints.middle, dx, dy));
+    expect(movedPoints?.end).toEqual(translatedPoint(beforePoints.end, dx, dy));
+  });
+
   it("edits circular art arcs by changing radian sweep around the same ellipse", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Native Circular Arc Edit"),
@@ -5904,6 +6100,83 @@ describe("group transforms (multi-object selection)", () => {
     expect(n2.y - m2.y).toBeCloseTo(-25);
     expect(n2.x - n1.x).toBeCloseTo(m2.x - m1.x); // relative layout unchanged
     expect(moleculeAtomTotal(moved)).toBe(atomsBefore);
+  });
+
+  it("group-moves edited line graphic path geometry with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Move Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      { x: points.end.x + 44, y: points.end.y + 18 }
+    );
+    const withText = insertNativeTextObject(edited, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const editedGraphic = graphicById(withText, objectId);
+    const text = withText.pages[0].objects.find((object) => object.id === textId);
+    if (!text) {
+      throw new Error("Expected text object.");
+    }
+    const dx = 34;
+    const dy = -21;
+
+    const moved = moveDocumentObjects(withText, [objectId, textId], dx, dy);
+    const movedGraphic = graphicById(moved, objectId);
+    const movedText = moved.pages[0].objects.find((object) => object.id === textId);
+
+    expect(movedGraphic.x).toBeCloseTo(editedGraphic.x + dx, 6);
+    expect(movedGraphic.y).toBeCloseTo(editedGraphic.y + dy, 6);
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(editedGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(editedGraphic.data.lineEnd!, dx, dy));
+    expect(movedText?.x).toBeCloseTo(text.x + dx, 6);
+    expect(movedText?.y).toBeCloseTo(text.y + dy, 6);
+  });
+
+  it("group-moves semantic arc center with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Move Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const withText = insertNativeTextObject(edited, { x: 420, y: 260 }, "Arc group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const editedGraphic = graphicById(withText, objectId);
+    const dx = -26;
+    const dy = 33;
+
+    const moved = moveDocumentObjects(withText, [objectId, textId], dx, dy);
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(movedGraphic.data.arcCenter).toEqual(translatedPoint(editedGraphic.data.arcCenter!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
   });
 
   it("rotates the selection 180° about the group center: members reverse and move, identity preserved", () => {

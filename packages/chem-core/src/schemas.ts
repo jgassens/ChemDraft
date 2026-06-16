@@ -145,7 +145,7 @@ export const GraphicObjectDataSchema = z
     arcRadiusX: z.number().finite().positive().optional(),
     arcRadiusY: z.number().finite().positive().optional(),
     arcStartRadians: z.number().finite().optional(),
-    arcSweepRadians: z.number().finite().positive().optional(),
+    arcSweepRadians: z.number().finite().optional(),
     cornerRadiusPx: z.number().finite().nonnegative().optional(),
     imageHref: z.string().optional(),
     imageMimeType: z.string().optional(),

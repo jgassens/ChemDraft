@@ -711,6 +711,38 @@ describe("native document validation and serialization", () => {
     });
   });
 
+  it("round-trips signed semantic arc sweep metadata", () => {
+    const graphic = {
+      id: "graphic_signed_arc",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 72,
+      rotation: 0,
+      graphicKind: "path",
+      style: {},
+      data: {
+        artPathKind: "arc",
+        arcCenter: { x: 136, y: 156 },
+        arcRadiusX: 32,
+        arcRadiusY: 32,
+        arcStartRadians: Math.PI / 2,
+        arcSweepRadians: -Math.PI / 2
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const reopenedGraphic = deserializeDocument(serializeDocument(document)).pages[0].objects[0] as GraphicObject;
+
+    expect(reopenedGraphic.data.artPathKind).toBe("arc");
+    expect(reopenedGraphic.data.arcSweepRadians).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
   it("migrates branch-era graphic arc degree metadata to radians", () => {
     const graphic = {
       id: "graphic_legacy_arc",

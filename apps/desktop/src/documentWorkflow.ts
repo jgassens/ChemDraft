@@ -4705,6 +4705,22 @@ export function moveDocumentObject(
     );
   }
 
+  if (object.type === "graphic") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          data: translateGraphicObjectData(object.data, dx, dy)
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
   return applyPatch(
     document,
     {
@@ -4715,6 +4731,22 @@ export function moveDocumentObject(
     },
     { now: phase4Timestamp }
   );
+}
+
+function translateGraphicObjectData(
+  data: GraphicObjectData,
+  dx: number,
+  dy: number
+): GraphicObjectData {
+  const translatePoint = (point: PagePoint | undefined): PagePoint | undefined =>
+    point ? { x: point.x + dx, y: point.y + dy } : undefined;
+  return {
+    ...data,
+    lineStart: translatePoint(data.lineStart),
+    lineEnd: translatePoint(data.lineEnd),
+    pathControlPoint: translatePoint(data.pathControlPoint),
+    arcCenter: translatePoint(data.arcCenter)
+  };
 }
 
 export function rotateNativeMoleculeParts(
@@ -5458,6 +5490,22 @@ function translateDocumentObjectBy(
             kind: "point",
             point: { x: nextX + object.width / 2, y: nextY + object.height / 2 }
           }
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
+  if (object.type === "graphic") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          data: translateGraphicObjectData(object.data, dx, dy)
         }
       },
       { now: phase4Timestamp }
