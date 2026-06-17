@@ -545,7 +545,6 @@ type ObjectResizeDragState = {
   latestPoint: ClientPoint;
   latestScale: ObjectResizeScale;
   latestCumulativeScale: ObjectResizeScale;
-  artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   stretching: boolean;
   dragging: boolean;
 };
@@ -740,7 +739,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.14.23-codex";
+const CURRENT_BUILD_STAMP = "6.17.14.52-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5108,26 +5107,10 @@ export function MainWindow({
       drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching);
       drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
       showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale);
-      if (canUseCssResizePreview(drag)) {
-        scheduleObjectTransformPreview({
-          pointerId: drag.pointerId,
-          objectIds: [drag.objectId],
-          mode: "resize",
-          origin: drag.centerPoint,
-          translateX: 0,
-          translateY: 0,
-          rotationDegrees: 0,
-          scaleX: drag.latestScale.x,
-          scaleY: drag.latestScale.y,
-          artPreviewProxies: drag.artPreviewProxies
-        });
-        return;
-      }
-
       clearObjectTransformPreview(drag.pointerId);
       replacePresentDocument(objectResizeDocumentFromDrag(drag, point, stretching));
     });
-  }, [clearObjectTransformPreview, objectResizeDocumentFromDrag, replacePresentDocument, scheduleObjectTransformPreview, showObjectResizeReadout]);
+  }, [clearObjectTransformPreview, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const commitObjectResize = useCallback((drag: ObjectResizeDragState, point: ClientPoint): boolean => {
     drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, drag.stretching);
@@ -7424,7 +7407,6 @@ export function MainWindow({
       latestPoint: point,
       latestScale: { x: 1, y: 1 },
       latestCumulativeScale: startCumulativeScale,
-      artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
       stretching: event.shiftKey,
       dragging: false
     };
@@ -9294,10 +9276,6 @@ function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | un
   return objectIds.every((objectId) => findDocumentObject(drag.startDocument, objectId)?.type === "graphic")
     ? objectIds
     : undefined;
-}
-
-function canUseCssResizePreview(drag: ObjectResizeDragState): boolean {
-  return !drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic";
 }
 
 function createArtTransformDragPreviewProxies(

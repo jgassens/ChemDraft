@@ -211,6 +211,12 @@ describe("graphic path direct editing interactions", () => {
     });
   }
 
+  async function flushScheduledPreview() {
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  }
+
   function graphicById(document: ChemDraftDocument, objectId: string): GraphicObject {
     const object = document.pages.flatMap((page) => page.objects).find((candidate) => candidate.id === objectId);
     if (object?.type !== "graphic") {
@@ -374,6 +380,50 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
     expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).toBeNull();
     expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).toBeNull();
+  });
+
+  it("resizes selected graphic shapes with live geometry instead of scaling selection chrome", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Shape Resize Chrome"),
+      { x: 260, y: 210 },
+      "tool.art.rect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const before = debugArtObject(objectId);
+    const beforeFrame = container.querySelector<HTMLElement>('[data-art-transform-frame="true"]');
+    if (!beforeFrame) {
+      throw new Error("Expected art transform frame before resize.");
+    }
+    expectFrameUsesPlanBounds(beforeFrame, before.plan);
+
+    const dragStart = {
+      x: before.object.x + before.object.width,
+      y: before.object.y + before.object.height
+    };
+    const dragEnd = { x: dragStart.x + 38, y: dragStart.y + 32 };
+
+    await act(async () => {
+      dispatchPointer(resizeHandle("bottom-right"), "pointerdown", dragStart, 33);
+      dispatchPointer(pageElement(), "pointermove", dragEnd, 33);
+    });
+    await flushScheduledPreview();
+
+    const duringObjectElement = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"].graphic-object`);
+    expect(duringObjectElement?.dataset.artTransformPreview).toBeUndefined();
+    const during = debugArtObject(objectId);
+    expect(during.object.width).toBeGreaterThan(before.object.width);
+    expect(during.object.height).toBeGreaterThan(before.object.height);
+    const duringFrame = container.querySelector<HTMLElement>('[data-art-transform-frame="true"]');
+    if (!duringFrame) {
+      throw new Error("Expected art transform frame during resize.");
+    }
+    expectFrameUsesPlanBounds(duringFrame, during.plan);
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", dragEnd, 33);
+    });
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
   });
 
   it("drags a selected polyline node as one undoable path edit", async () => {

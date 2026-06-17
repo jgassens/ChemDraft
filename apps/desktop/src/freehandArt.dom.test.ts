@@ -315,7 +315,7 @@ describe("freehand native art interactions", () => {
     expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
   });
 
-  it("previews freehand object resize without mutating geometry until pointer up", async () => {
+  it("resizes freehand objects with live geometry instead of scaled preview chrome", async () => {
     await renderMainWindow("tool.art.pencil");
     const objectId = await drawPencilStroke(71);
     const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
@@ -340,23 +340,23 @@ describe("freehand native art interactions", () => {
     });
     await waitForPreviewFrame();
 
-    expect(debugArtObject(objectId).object.width).toBeCloseTo(before.width, 3);
-    expect(debugArtObject(objectId).object.height).toBeCloseTo(before.height, 3);
-    expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
-    expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("resize");
-    expect(graphic.getAttribute("data-art-transform-preview-proxy")).toBe("svg-image");
-    expect(graphic.querySelector("[data-art-transform-drag-preview='image']")).not.toBeNull();
-    expect(graphic.querySelector(".graphic-glyph-shell")?.getAttribute("data-art-vector-hidden")).toBe("true");
-    expect(graphic.querySelector(".graphic-glyph")).toBeNull();
-    expect(graphic.style.transform).toContain("scale");
+    const during = debugArtObject(objectId).object;
+    const duringGraphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    expect(during.width).toBeGreaterThan(before.width);
+    expect(during.height).toBeGreaterThan(before.height);
+    expect(duringGraphic?.getAttribute("data-art-transform-preview")).toBeNull();
+    expect(duringGraphic?.querySelector("[data-art-transform-drag-preview='image']")).toBeNull();
+    expect(duringGraphic?.querySelector(".graphic-glyph-shell")?.getAttribute("data-art-vector-hidden")).toBeNull();
+    expect(duringGraphic?.querySelector(".graphic-glyph")).not.toBeNull();
+    expect(duringGraphic?.style.transform).not.toContain("scale");
 
     await act(async () => {
       dispatchPointer(pageElement(), "pointerup", dragEnd, 72, 0.5);
     });
 
     const after = debugArtObject(objectId).object;
-    expect(after.width).toBeGreaterThan(before.width);
-    expect(after.height).toBeGreaterThan(before.height);
+    expect(after.width).toBeCloseTo(during.width, 3);
+    expect(after.height).toBeCloseTo(during.height, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
   });
 
