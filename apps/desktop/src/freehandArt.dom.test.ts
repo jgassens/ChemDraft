@@ -308,4 +308,88 @@ describe("freehand native art interactions", () => {
     expect(after.y).toBeCloseTo(before.y + dy, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
   });
+
+  it("previews freehand object resize without mutating geometry until pointer up", async () => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(71);
+    const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    const resizeHandle = container.querySelector<HTMLButtonElement>('[data-object-resize-corner="bottom-right"]');
+    if (!graphic || !resizeHandle) {
+      throw new Error("Expected selected freehand graphic with resize handle.");
+    }
+
+    const before = debugArtObject(objectId).object;
+    const dragStart = {
+      x: before.x + before.width,
+      y: before.y + before.height
+    };
+    const dragEnd = {
+      x: dragStart.x + 44,
+      y: dragStart.y + 30
+    };
+
+    await act(async () => {
+      dispatchPointer(resizeHandle, "pointerdown", dragStart, 72, 0.5);
+      dispatchPointer(pageElement(), "pointermove", dragEnd, 72, 0.5);
+    });
+    await waitForPreviewFrame();
+
+    expect(debugArtObject(objectId).object.width).toBeCloseTo(before.width, 3);
+    expect(debugArtObject(objectId).object.height).toBeCloseTo(before.height, 3);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
+    expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("resize");
+    expect(graphic.style.transform).toContain("scale");
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", dragEnd, 72, 0.5);
+    });
+
+    const after = debugArtObject(objectId).object;
+    expect(after.width).toBeGreaterThan(before.width);
+    expect(after.height).toBeGreaterThan(before.height);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
+  });
+
+  it("previews freehand object rotation without mutating rotation until pointer up", async () => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(81);
+    const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    const rotateHandle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
+    if (!graphic || !rotateHandle) {
+      throw new Error("Expected selected freehand graphic with rotate handle.");
+    }
+
+    const before = debugArtObject(objectId).object;
+    const center = {
+      x: before.x + before.width / 2,
+      y: before.y + before.height / 2
+    };
+    const dragStart = {
+      x: center.x + before.width / 2 + 20,
+      y: center.y
+    };
+    const dragEnd = {
+      x: center.x + before.width / 2 + 20,
+      y: center.y + 36
+    };
+
+    await act(async () => {
+      dispatchPointer(rotateHandle, "pointerdown", dragStart, 82, 0.5);
+      dispatchPointer(pageElement(), "pointermove", dragEnd, 82, 0.5);
+    });
+    await waitForPreviewFrame();
+
+    expect(debugArtObject(objectId).object.rotation).toBeCloseTo(before.rotation, 3);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
+    expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("rotate");
+    expect(graphic.style.transform).toContain("rotate");
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", dragEnd, 82, 0.5);
+    });
+
+    const after = debugArtObject(objectId).object;
+    expect(after.rotation).not.toBeCloseTo(before.rotation, 3);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
+  });
 });

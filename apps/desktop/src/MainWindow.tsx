@@ -524,6 +524,18 @@ type ObjectResizeScale = {
   x: number;
   y: number;
 };
+type ObjectTransformPreviewMode = "move" | "rotate" | "resize";
+type ObjectTransformPreviewState = {
+  pointerId: number;
+  objectIds: readonly string[];
+  mode: ObjectTransformPreviewMode;
+  origin: ClientPoint;
+  translateX: number;
+  translateY: number;
+  rotationDegrees: number;
+  scaleX: number;
+  scaleY: number;
+};
 // One drag that rotates or scales a whole multi-object selection about its shared center.
 type GroupTransformDragState = {
   pointerId: number;
@@ -680,7 +692,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.8.5-codex";
+const CURRENT_BUILD_STAMP = "6.17.8.43-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -845,8 +857,8 @@ export function MainWindow({
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
-  const artObjectTransformPreviewFrameRef = useRef<number | undefined>(undefined);
-  const artObjectTransformPreviewIdsRef = useRef<Set<string>>(new Set());
+  const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
+  const objectTransformPreviewRafRef = useRef<number | undefined>(undefined);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -873,6 +885,7 @@ export function MainWindow({
     createDocumentHistory(initialDocument ?? createPhase4Document())
   );
   const document = documentHistory.present;
+  const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
@@ -3369,12 +3382,41 @@ export function MainWindow({
     }
   }, [clearFreehandArtPreview]);
 
-  const clearArtObjectTransformPreview = useCallback(() => {
-    clearArtObjectTransformCssPreview(
-      pageRef.current,
-      artObjectTransformPreviewIdsRef.current,
-      artObjectTransformPreviewFrameRef
-    );
+  const scheduleObjectTransformPreview = useCallback((nextPreview: ObjectTransformPreviewState | undefined) => {
+    pendingObjectTransformPreviewRef.current = nextPreview;
+    if (objectTransformPreviewRafRef.current !== undefined) {
+      return;
+    }
+
+    objectTransformPreviewRafRef.current = window.requestAnimationFrame(() => {
+      objectTransformPreviewRafRef.current = undefined;
+      setObjectTransformPreview(pendingObjectTransformPreviewRef.current);
+    });
+  }, []);
+
+  const clearObjectTransformPreview = useCallback((pointerId?: number) => {
+    const pendingPreview = pendingObjectTransformPreviewRef.current;
+    if (!pendingPreview || pointerId === undefined || pendingPreview.pointerId === pointerId) {
+      pendingObjectTransformPreviewRef.current = undefined;
+    }
+
+    if (objectTransformPreviewRafRef.current !== undefined) {
+      window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
+      objectTransformPreviewRafRef.current = undefined;
+    }
+
+    setObjectTransformPreview((current) => {
+      if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) {
+        return current;
+      }
+      return undefined;
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (objectTransformPreviewRafRef.current !== undefined) {
+      window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
+    }
   }, []);
 
   const clearProjectedPlaneTiltDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
@@ -4088,23 +4130,23 @@ export function MainWindow({
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
     if (previewObjectIds) {
-      const dx = point.x - drag.startPoint.x;
-      const dy = point.y - drag.startPoint.y;
-      scheduleArtObjectTransformCssPreview(artObjectTransformPreviewFrameRef, () => {
-        applyArtObjectMoveCssPreview(
-          pageRef.current,
-          artObjectTransformPreviewIdsRef.current,
-          previewObjectIds,
-          dx,
-          dy
-        );
+      scheduleObjectTransformPreview({
+        pointerId: drag.pointerId,
+        objectIds: previewObjectIds,
+        mode: "move",
+        origin: drag.startPoint,
+        translateX: point.x - drag.startPoint.x,
+        translateY: point.y - drag.startPoint.y,
+        rotationDegrees: 0,
+        scaleX: 1,
+        scaleY: 1
       });
       return;
     }
 
-    clearArtObjectTransformPreview();
+    clearObjectTransformPreview(drag.pointerId);
     replacePresentDocument(objectDragDocument(drag, point));
-  }, [clearArtObjectTransformPreview, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
     updateNativeGraphicCornerRadius(
@@ -4249,8 +4291,24 @@ export function MainWindow({
       objectRotateReadoutTimeoutRef.current = undefined;
       setObjectRotateReadout(undefined);
     }, 1200);
+    if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic") {
+      scheduleObjectTransformPreview({
+        pointerId: drag.pointerId,
+        objectIds: [drag.objectId],
+        mode: "rotate",
+        origin: drag.centerPoint,
+        translateX: 0,
+        translateY: 0,
+        rotationDegrees: degrees,
+        scaleX: 1,
+        scaleY: 1
+      });
+      return;
+    }
+
+    clearObjectTransformPreview(drag.pointerId);
     replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
-  }, [objectRotateDocumentFromDrag, replacePresentDocument]);
+  }, [clearObjectTransformPreview, objectRotateDocumentFromDrag, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const showProjectedPlaneTiltReadout = useCallback((
     objectId: string,
@@ -4319,7 +4377,7 @@ export function MainWindow({
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
     const moved = objectDragDocument(drag, point);
-    clearArtObjectTransformPreview();
+    clearObjectTransformPreview(drag.pointerId);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -4332,7 +4390,7 @@ export function MainWindow({
       future: []
     });
     return true;
-  }, [clearArtObjectTransformPreview, installDocumentHistory, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, installDocumentHistory, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -4370,6 +4428,7 @@ export function MainWindow({
 
   const commitObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): boolean => {
     const rotated = objectRotateDocumentFromDrag(drag, point);
+    clearObjectTransformPreview(drag.pointerId);
     if (rotated === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -4382,7 +4441,7 @@ export function MainWindow({
       future: []
     });
     return true;
-  }, [installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
+  }, [clearObjectTransformPreview, installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
 
   const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
     const result = projectedPlaneTiltFromDrag(drag, point);
@@ -4678,9 +4737,11 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
+    clearObjectTransformPreview();
     assignHoveredNativeDeleteTarget(undefined);
   }, [
     assignHoveredNativeDeleteTarget,
+    clearObjectTransformPreview,
     handleObjectResizeInputKeep,
     handleRotationInputKeep
   ]);
@@ -4708,27 +4769,30 @@ export function MainWindow({
     drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
     showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale);
     if (canUseCssResizePreview(drag)) {
-      scheduleArtObjectTransformCssPreview(artObjectTransformPreviewFrameRef, () => {
-        applyArtObjectResizeCssPreview(
-          pageRef.current,
-          artObjectTransformPreviewIdsRef.current,
-          drag.objectId,
-          drag.latestScale
-        );
+      scheduleObjectTransformPreview({
+        pointerId: drag.pointerId,
+        objectIds: [drag.objectId],
+        mode: "resize",
+        origin: drag.centerPoint,
+        translateX: 0,
+        translateY: 0,
+        rotationDegrees: 0,
+        scaleX: drag.latestScale.x,
+        scaleY: drag.latestScale.y
       });
       return;
     }
 
-    clearArtObjectTransformPreview();
+    clearObjectTransformPreview(drag.pointerId);
     replacePresentDocument(objectResizeDocumentFromDrag(drag, point, stretching));
-  }, [clearArtObjectTransformPreview, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+  }, [clearObjectTransformPreview, objectResizeDocumentFromDrag, replacePresentDocument, scheduleObjectTransformPreview, showObjectResizeReadout]);
 
   const commitObjectResize = useCallback((drag: ObjectResizeDragState, point: ClientPoint): boolean => {
     drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, drag.stretching);
     drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
     const resized = objectResizeDocumentFromDrag(drag, point, drag.stretching);
     showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale, true);
-    clearArtObjectTransformPreview();
+    clearObjectTransformPreview(drag.pointerId);
     if (resized === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -4741,7 +4805,7 @@ export function MainWindow({
       future: []
     });
     return true;
-  }, [clearArtObjectTransformPreview, installDocumentHistory, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+  }, [clearObjectTransformPreview, installDocumentHistory, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
     moveNativeMoleculeParts(drag.startDocument, drag.target, {
@@ -4819,12 +4883,12 @@ export function MainWindow({
     const drag = objectDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectDragRef.current = null;
-      clearArtObjectTransformPreview();
+      clearObjectTransformPreview(event.pointerId);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearArtObjectTransformPreview]);
+  }, [clearObjectTransformPreview]);
 
   const clearGraphicCornerRadiusDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = graphicCornerRadiusDragRef.current;
@@ -4873,6 +4937,7 @@ export function MainWindow({
     const drag = objectRotateDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectRotateDragRef.current = null;
+      clearObjectTransformPreview(event.pointerId);
       const page = pageRef.current;
       if (page?.hasPointerCapture(event.pointerId)) {
         page.releasePointerCapture(event.pointerId);
@@ -4881,13 +4946,13 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, []);
+  }, [clearObjectTransformPreview]);
 
   const clearObjectResizeDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectResizeDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectResizeDragRef.current = null;
-      clearArtObjectTransformPreview();
+      clearObjectTransformPreview(event.pointerId);
       const page = pageRef.current;
       if (page?.hasPointerCapture(event.pointerId)) {
         page.releasePointerCapture(event.pointerId);
@@ -4896,7 +4961,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearArtObjectTransformPreview]);
+  }, [clearObjectTransformPreview]);
 
   const clearNativePartDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativePartDragRef.current;
@@ -7784,6 +7849,9 @@ export function MainWindow({
                       rotationInput={rotationInput?.objectId === object.id ? rotationInput : undefined}
                       resizeReadout={objectResizeReadout?.objectId === object.id ? objectResizeReadout : undefined}
                       resizeInput={objectResizeInput?.objectId === object.id ? objectResizeInput : undefined}
+                      objectTransformPreview={
+                        objectTransformPreview?.objectIds.includes(object.id) ? objectTransformPreview : undefined
+                      }
                       graphicCornerRadiusReadout={
                         graphicCornerRadiusReadout?.objectId === object.id ? graphicCornerRadiusReadout : undefined
                       }
@@ -8601,131 +8669,8 @@ function canUseCssResizePreview(drag: ObjectResizeDragState): boolean {
   return !drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic";
 }
 
-function applyArtObjectMoveCssPreview(
-  root: HTMLElement | null,
-  previewObjectIds: Set<string>,
-  objectIds: readonly string[],
-  dx: number,
-  dy: number
-): void {
-  if (!root) {
-    return;
-  }
-
-  const transform = `translate(${pageScaledCssPx(formatSvgNumber(dx))}, ${pageScaledCssPx(formatSvgNumber(dy))})`;
-  for (const objectId of objectIds) {
-    const element = artObjectPreviewElement(root, objectId);
-    if (!element) {
-      continue;
-    }
-    primeArtObjectTransformPreview(element);
-    element.style.transform = artObjectPreviewTransform(element, transform);
-    element.setAttribute("data-art-transform-preview-mode", "move");
-    previewObjectIds.add(objectId);
-  }
-}
-
-function applyArtObjectResizeCssPreview(
-  root: HTMLElement | null,
-  previewObjectIds: Set<string>,
-  objectId: string,
-  scale: ObjectResizeScale
-): void {
-  if (!root) {
-    return;
-  }
-
-  const element = artObjectPreviewElement(root, objectId);
-  if (!element) {
-    return;
-  }
-
-  primeArtObjectTransformPreview(element);
-  element.style.transformOrigin = "50% 50%";
-  element.style.transform = artObjectPreviewTransform(
-    element,
-    `scale(${formatSvgNumber(scale.x)}, ${formatSvgNumber(scale.y)})`
-  );
-  element.setAttribute("data-art-transform-preview-mode", "resize");
-  previewObjectIds.add(objectId);
-}
-
-function clearArtObjectTransformCssPreview(
-  root: HTMLElement | null,
-  previewObjectIds: Set<string>,
-  frameRef: { current: number | undefined }
-): void {
-  if (frameRef.current !== undefined) {
-    window.cancelAnimationFrame(frameRef.current);
-    frameRef.current = undefined;
-  }
-
-  if (!root) {
-    previewObjectIds.clear();
-    return;
-  }
-
-  const previewElements = [
-    ...[...previewObjectIds]
-      .map((objectId) => artObjectPreviewElement(root, objectId))
-      .filter((element): element is HTMLElement => element !== null),
-    ...Array.from(root.querySelectorAll<HTMLElement>("[data-art-transform-preview='true']"))
-  ];
-  for (const element of new Set(previewElements)) {
-    restoreArtObjectTransformPreview(element);
-  }
-  previewObjectIds.clear();
-}
-
-function scheduleArtObjectTransformCssPreview(
-  frameRef: { current: number | undefined },
-  applyPreview: () => void
-): void {
-  if (frameRef.current !== undefined) {
-    window.cancelAnimationFrame(frameRef.current);
-  }
-  frameRef.current = window.requestAnimationFrame(() => {
-    frameRef.current = undefined;
-    applyPreview();
-  });
-}
-
 function artObjectPreviewElement(root: HTMLElement, objectId: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`[data-object-id="${cssEscapeIdentifier(objectId)}"].graphic-object`);
-}
-
-function primeArtObjectTransformPreview(element: HTMLElement): void {
-  if (element.getAttribute("data-art-transform-preview") === "true") {
-    return;
-  }
-
-  element.setAttribute("data-art-transform-preview", "true");
-  element.setAttribute("data-art-transform-preview-base-transform", element.style.transform);
-  element.setAttribute("data-art-transform-preview-base-origin", element.style.transformOrigin);
-}
-
-function artObjectPreviewTransform(element: HTMLElement, previewTransform: string): string {
-  const baseTransform = element.getAttribute("data-art-transform-preview-base-transform") ?? "";
-  return baseTransform ? `${baseTransform} ${previewTransform}` : previewTransform;
-}
-
-function restoreArtObjectTransformPreview(element: HTMLElement): void {
-  const baseTransform = element.getAttribute("data-art-transform-preview-base-transform");
-  const baseOrigin = element.getAttribute("data-art-transform-preview-base-origin");
-  if (baseTransform) {
-    element.style.transform = baseTransform;
-  } else {
-    element.style.removeProperty("transform");
-  }
-  if (baseOrigin) {
-    element.style.transformOrigin = baseOrigin;
-  } else {
-    element.style.removeProperty("transform-origin");
-  }
-  element.removeAttribute("data-art-transform-preview");
-  element.removeAttribute("data-art-transform-preview-mode");
-  element.removeAttribute("data-art-transform-preview-base-transform");
-  element.removeAttribute("data-art-transform-preview-base-origin");
 }
 
 function previewGraphicObjectColorOnDom(
@@ -11260,6 +11205,7 @@ function DocumentObjectView({
   rotationInput,
   resizeReadout,
   resizeInput,
+  objectTransformPreview,
   graphicCornerRadiusReadout,
   onPointerDown,
   onPointerMove,
@@ -11315,6 +11261,7 @@ function DocumentObjectView({
   rotationInput?: RotationInputState;
   resizeReadout?: ObjectResizeReadoutState;
   resizeInput?: ObjectResizeInputState;
+  objectTransformPreview?: ObjectTransformPreviewState;
   graphicCornerRadiusReadout?: GraphicCornerRadiusReadoutState;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
@@ -11504,13 +11451,17 @@ function DocumentObjectView({
       onAtomLabelCancel(state);
     }
   };
+  const transformPreviewCss = objectTransformPreview
+    ? objectTransformPreviewCssTransform(objectTransformPreview)
+    : "";
   const style = {
     left: `${(object.x / pageWidth) * 100}%`,
     top: `${(object.y / pageHeight) * 100}%`,
     width: `${(object.width / pageWidth) * 100}%`,
     height: `${(object.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
-    transform: documentObjectSupportsArtTransform(object) ? undefined : documentObjectCssTransform(object)
+    transform: transformPreviewCss || (documentObjectSupportsArtTransform(object) ? undefined : documentObjectCssTransform(object)),
+    transformOrigin: objectTransformPreview ? objectTransformPreviewCssOrigin(object, objectTransformPreview) : undefined
   } as CSSProperties;
   const artObjectProjection = documentObjectSupportsArtTransform(object)
     ? documentObjectProjectedPlaneProjection(object)
@@ -12151,6 +12102,8 @@ function DocumentObjectView({
         data-object-id={object.id}
         data-layer-index={layerIndex}
         data-graphic-kind={object.graphicKind}
+        data-art-transform-preview={objectTransformPreview ? "true" : undefined}
+        data-art-transform-preview-mode={objectTransformPreview?.mode}
         data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints
           ? pathGraphicInEditMode ? "path-edit" : "object-transform"
           : selected && !inGroupSelection && graphicCornerRadiusEditPoint ? "corner-radius-edit"
@@ -12912,6 +12865,37 @@ function documentObjectCssTransform(object: DocumentObject): string {
 
 function pageScaledCssPx(value: number): string {
   return `calc(${value}px * var(--page-scale))`;
+}
+
+function objectTransformPreviewCssTransform(preview: ObjectTransformPreviewState): string {
+  const transforms: string[] = [];
+  if (Math.abs(preview.translateX) > 0.001 || Math.abs(preview.translateY) > 0.001) {
+    transforms.push(`translate(${pageScaledCssPx(formatSvgNumber(preview.translateX))}, ${pageScaledCssPx(formatSvgNumber(preview.translateY))})`);
+  }
+  if (Math.abs(preview.rotationDegrees) > 0.001) {
+    transforms.push(`rotate(${formatSvgNumber(preview.rotationDegrees)}deg)`);
+  }
+  if (Math.abs(preview.scaleX - 1) > 0.001 || Math.abs(preview.scaleY - 1) > 0.001) {
+    transforms.push(`scale(${formatSvgNumber(preview.scaleX)}, ${formatSvgNumber(preview.scaleY)})`);
+  }
+  return transforms.join(" ");
+}
+
+function objectTransformPreviewCssOrigin(
+  object: Pick<DocumentObject, "x" | "y" | "width" | "height">,
+  preview: ObjectTransformPreviewState
+): string | undefined {
+  if (preview.mode === "move") {
+    return undefined;
+  }
+
+  const originX = object.width > 0.001
+    ? ((preview.origin.x - object.x) / object.width) * 100
+    : 50;
+  const originY = object.height > 0.001
+    ? ((preview.origin.y - object.y) / object.height) * 100
+    : 50;
+  return `${formatSvgNumber(originX)}% ${formatSvgNumber(originY)}%`;
 }
 
 function documentObjectProjectedPlaneProjection(object: DocumentObject): DocumentObjectProjection | undefined {
