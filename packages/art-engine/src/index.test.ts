@@ -416,6 +416,7 @@ describe("art-engine native art planning", () => {
 
     expect(localPlan.pathD).toBe("M 12 28 L 56 52 L 88 24");
     expect(pagePlan.pathD).toBe("M 132 108 L 176 132 L 208 104");
+    expect(localPlan.frameBounds).toEqual({ x: 6, y: 18, width: 88, height: 40 });
     expect(localPlan.capabilities).toMatchObject({
       supportsFill: false,
       supportsLineCap: true,

@@ -1392,9 +1392,10 @@ function nativeArtFrameBounds(
   matrix: NativeArtProjectionMatrix | undefined,
   coordinateSpace: NativeArtVisualCoordinateSpace
 ): NativeArtBounds {
+  const unprojectedLocal = nativeArtUnprojectedLocalFrameBounds(object);
   const unprojected = coordinateSpace === "page"
-    ? { x: object.x, y: object.y, width: object.width, height: object.height }
-    : { x: 0, y: 0, width: object.width, height: object.height };
+    ? { ...unprojectedLocal, x: object.x + unprojectedLocal.x, y: object.y + unprojectedLocal.y }
+    : unprojectedLocal;
   if (!matrix) {
     return unprojected;
   }
@@ -1403,6 +1404,23 @@ function nativeArtFrameBounds(
   return coordinateSpace === "page"
     ? { ...localBounds, x: object.x + localBounds.x, y: object.y + localBounds.y }
     : localBounds;
+}
+
+function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtBounds {
+  const defaultBounds = { x: 0, y: 0, width: object.width, height: object.height };
+  const pathKind = graphicPathKind(object);
+  if (object.graphicKind !== "path" || (pathKind !== "polyline" && pathKind !== "bezier")) {
+    return defaultBounds;
+  }
+
+  const points = graphicPathLocalSamplePoints(object);
+  if (points.length === 0) {
+    return defaultBounds;
+  }
+
+  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
+  const padding = Math.max(6, strokeWidth * 2);
+  return boundsForPoints(points, padding, defaultBounds);
 }
 
 function nativeArtProjectedLocalBounds(

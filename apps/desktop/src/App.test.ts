@@ -2164,7 +2164,7 @@ describe("ChemDraft desktop shell", () => {
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
     expect(mainWindowSource).toContain('const svgObjects = plannedDisplayPage.objects.filter((object) => object.type !== "graphic")');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
-    expect(mainWindowSource).toContain("left: `${plan.frameBounds.x}px`");
+    expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
     expect(mainWindowSource).toContain('data-graphic-corner-radius-handle="true"');
     expect(mainWindowSource).toContain('setActiveGraphicTransformObjectId(objectId)');
     expect(mainWindowSource).not.toContain("function graphicPathD(object: GraphicObject");
@@ -2206,7 +2206,9 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(rotatedSphereMarkup).toContain("graphic-glyph-projected-shape");
     expect(rotatedSphereMarkup).not.toContain("transform:rotate(45deg)");
-    expect(rotatedSphereMarkup).toContain("left:0px;top:0px;width:48px;height:48px");
+    expect(rotatedSphereMarkup).toContain(
+      "left:calc(0px * var(--page-scale));top:calc(0px * var(--page-scale));width:calc(48px * var(--page-scale));height:calc(48px * var(--page-scale))"
+    );
     expect(rotatedSphereMarkup).toContain('gradientUnits="userSpaceOnUse"');
     expect(rotatedSphereMarkup).toContain('gradientTransform="matrix(');
     expect(rotatedSphereMarkup).not.toContain('cx="34%"');

@@ -165,6 +165,13 @@ describe("graphic path direct editing interactions", () => {
     expect(element.style.top).toContain("var(--page-scale)");
   }
 
+  function expectFrameUsesPlanBounds(element: HTMLElement, plan: Extract<DebugArtResult, { ok: true }>["plan"]) {
+    expect(element.style.left).toBe(`calc(${plan.frameBounds.x}px * var(--page-scale))`);
+    expect(element.style.top).toBe(`calc(${plan.frameBounds.y}px * var(--page-scale))`);
+    expect(element.style.width).toBe(`calc(${plan.frameBounds.width}px * var(--page-scale))`);
+    expect(element.style.height).toBe(`calc(${plan.frameBounds.height}px * var(--page-scale))`);
+  }
+
   function expectProjectedPointShift(
     actual: { x: number; y: number } | undefined,
     before: { x: number; y: number },
@@ -656,7 +663,12 @@ describe("graphic path direct editing interactions", () => {
       dispatchPointer(hitTarget, "pointerdown", transformPress, 15, 2);
       dispatchPointer(hitTarget, "pointerup", transformPress, 15, 2);
     });
-    expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    const transformFrame = container.querySelector<HTMLElement>('[data-art-transform-frame="true"]');
+    expect(transformFrame).not.toBeNull();
+    if (!transformFrame) {
+      throw new Error("Expected art transform frame.");
+    }
+    expectFrameUsesPlanBounds(transformFrame, debugArtObject(objectId).plan);
     expect(container.querySelector("[data-graphic-path-handle]")).toBeNull();
 
     const beforeResize = debugArtObject(objectId);
