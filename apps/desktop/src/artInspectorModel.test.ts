@@ -268,7 +268,7 @@ function documentWithSelectedGraphics(
 
 function pathGraphic(
   id: string,
-  artPathKind?: "line" | "arc" | "wavy" | "quadratic" | "polyline" | "bezier",
+  artPathKind?: "line" | "arc" | "wavy" | "quadratic" | "polyline" | "bezier" | "freehand",
   overrides: Partial<GraphicObject> = {}
 ): GraphicObject {
   return {

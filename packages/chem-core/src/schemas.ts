@@ -150,15 +150,35 @@ export const GraphicPathNodeSchema = z
   })
   .strict();
 
+export const GraphicFreehandPointSchema = z
+  .object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    pressure: z.number().finite().min(0).max(1).optional()
+  })
+  .strict();
+
+export const GraphicFreehandOptionsSchema = z
+  .object({
+    size: z.number().finite().positive().optional(),
+    thinning: z.number().finite().optional(),
+    smoothing: NormalizedCoordinateSchema.optional(),
+    streamline: NormalizedCoordinateSchema.optional(),
+    simulatePressure: z.boolean().optional()
+  })
+  .strict();
+
 export const GraphicObjectDataSchema = z
   .object({
     lineStart: PointSchema.optional(),
     lineEnd: PointSchema.optional(),
     pathControlPoint: PointSchema.optional(),
     pathD: z.string().optional(),
-    artPathKind: z.enum(["line", "wavy", "arc", "quadratic", "polyline", "bezier"]).optional(),
+    artPathKind: z.enum(["line", "wavy", "arc", "quadratic", "polyline", "bezier", "freehand"]).optional(),
     pathNodes: z.array(GraphicPathNodeSchema).min(1).optional(),
     pathClosed: z.boolean().optional(),
+    freehandPoints: z.array(GraphicFreehandPointSchema).min(1).optional(),
+    freehandOptions: GraphicFreehandOptionsSchema.optional(),
     arcCenter: PointSchema.optional(),
     arcRadiusX: z.number().finite().positive().optional(),
     arcRadiusY: z.number().finite().positive().optional(),
@@ -525,6 +545,8 @@ export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
 export type GraphicMarker = z.infer<typeof GraphicMarkerSchema>;
 export type GraphicPathNode = z.infer<typeof GraphicPathNodeSchema>;
+export type GraphicFreehandPoint = z.infer<typeof GraphicFreehandPointSchema>;
+export type GraphicFreehandOptions = z.infer<typeof GraphicFreehandOptionsSchema>;
 export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
 export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;

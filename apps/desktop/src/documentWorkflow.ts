@@ -28,6 +28,8 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
+  type GraphicFreehandOptions,
+  type GraphicFreehandPoint,
   type GraphicObjectData,
   type GraphicObject,
   type GraphicPaint,
@@ -206,6 +208,8 @@ export type NativeArtToolId =
   | "lineWavy"
   | "lineBold"
   | "polyline"
+  | "pencil"
+  | "brush"
   | "arrow"
   | "arc270"
   | "arc270Dashed"
@@ -292,6 +296,26 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
       { point: { x: 88, y: 46 } }
     ]
   }, artOutlineStyle),
+  artShapeTool("pencil", "Pencil", "path", 1, 1, {
+    artPathKind: "freehand",
+    freehandOptions: {
+      size: 5,
+      thinning: 0.25,
+      smoothing: 0.35,
+      streamline: 0.25,
+      simulatePressure: false
+    }
+  }, { strokeColor: "#111111", fillColor: "none" }),
+  artShapeTool("brush", "Brush", "path", 1, 1, {
+    artPathKind: "freehand",
+    freehandOptions: {
+      size: 16,
+      thinning: 0.65,
+      smoothing: 0.58,
+      streamline: 0.42,
+      simulatePressure: false
+    }
+  }, { strokeColor: "#111111", fillColor: "none" }),
   artShapeTool("arrow", "Arrow", "path", 82, 46, {
     artPathKind: "line",
     markerEnd: { kind: "filled-arrow", sizePx: 10 }
@@ -869,6 +893,10 @@ export function nativeArtToolForCommand(commandId: string): NativeArtToolDefinit
   return nativeArtToolByCommandId.get(commandId);
 }
 
+export function nativeArtToolIsFreehand(commandId: string): boolean {
+  return nativeArtToolForCommand(commandId)?.data.artPathKind === "freehand";
+}
+
 export function createNativeArtGraphicObject(
   document: ChemDraftDocument,
   point: PagePoint,
@@ -909,6 +937,72 @@ export function createNativeArtGraphicObject(
   };
 }
 
+export function createNativeFreehandGraphicObject(
+  document: ChemDraftDocument,
+  points: readonly GraphicFreehandPoint[],
+  commandId: string
+): GraphicObject | undefined {
+  const tool = nativeArtToolForCommand(commandId);
+  if (!tool || tool.data.artPathKind !== "freehand") {
+    return undefined;
+  }
+
+  const cleanPoints = normalizeFreehandPoints(points);
+  if (cleanPoints.length < 2) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const options = tool.data.freehandOptions ?? {};
+  const bounds = nativeFreehandBounds(cleanPoints, options, page.width, page.height);
+  return {
+    id: nextObjectId(document, `art_${tool.id}`),
+    type: "graphic",
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    rotation: 0,
+    style: {
+      ...tool.style,
+      source: "chemdraft-native-art",
+      artToolCommandId: tool.commandId
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    graphicKind: tool.graphicKind,
+    data: {
+      ...tool.data,
+      freehandPoints: cleanPoints,
+      artToolId: tool.id
+    }
+  };
+}
+
+export function nativeFreehandStrokeDocument(
+  document: ChemDraftDocument,
+  points: readonly GraphicFreehandPoint[],
+  commandId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeFreehandGraphicObject(document, points, commandId);
+  if (!object) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 function nativeArtToolDataForPlacement(
   data: GraphicObjectData,
   x: number,
@@ -933,6 +1027,47 @@ function offsetPagePoint(point: PagePoint, x: number, y: number): PagePoint {
     x: point.x + x,
     y: point.y + y
   };
+}
+
+function normalizeFreehandPoints(points: readonly GraphicFreehandPoint[]): GraphicFreehandPoint[] {
+  return points
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .map((point) => ({
+      x: roundFreehandNumber(point.x),
+      y: roundFreehandNumber(point.y),
+      ...(typeof point.pressure === "number" && Number.isFinite(point.pressure)
+        ? { pressure: roundFreehandNumber(clamp(point.pressure, 0, 1)) }
+        : {})
+    }));
+}
+
+function nativeFreehandBounds(
+  points: readonly GraphicFreehandPoint[],
+  options: GraphicFreehandOptions,
+  pageWidth: number,
+  pageHeight: number
+): { x: number; y: number; width: number; height: number } {
+  const size = typeof options.size === "number" && Number.isFinite(options.size) ? options.size : 8;
+  const thinning = typeof options.thinning === "number" && Number.isFinite(options.thinning) ? Math.abs(options.thinning) : 0.5;
+  const padding = Math.max(8, size * (1 + thinning) * 0.75);
+  const minX = Math.min(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const maxY = Math.max(...points.map((point) => point.y));
+  const x = clamp(minX - padding, 0, Math.max(0, pageWidth - 1));
+  const y = clamp(minY - padding, 0, Math.max(0, pageHeight - 1));
+  const right = clamp(maxX + padding, x + 1, pageWidth);
+  const bottom = clamp(maxY + padding, y + 1, pageHeight);
+  return {
+    x: roundFreehandNumber(x),
+    y: roundFreehandNumber(y),
+    width: roundFreehandNumber(right - x),
+    height: roundFreehandNumber(bottom - y)
+  };
+}
+
+function roundFreehandNumber(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 export function insertNativeArtGraphicObject(
@@ -4843,7 +4978,8 @@ function translateGraphicObjectData(
     lineEnd: translatePoint(data.lineEnd),
     pathControlPoint: translatePoint(data.pathControlPoint),
     arcCenter: translatePoint(data.arcCenter),
-    pathNodes: transformGraphicPathNodes(data.pathNodes, translatePoint)
+    pathNodes: transformGraphicPathNodes(data.pathNodes, translatePoint),
+    freehandPoints: transformGraphicFreehandPoints(data.freehandPoints, translatePoint)
   };
 }
 
@@ -4868,7 +5004,8 @@ function resizeGraphicObjectDataForFrame(
     lineEnd: resizePoint(data.lineEnd),
     pathControlPoint: resizePoint(data.pathControlPoint),
     arcCenter: resizePoint(data.arcCenter),
-    pathNodes: transformGraphicPathNodes(data.pathNodes, resizePoint)
+    pathNodes: transformGraphicPathNodes(data.pathNodes, resizePoint),
+    freehandPoints: transformGraphicFreehandPoints(data.freehandPoints, resizePoint)
   };
 
   if (typeof data.arcRadiusX === "number" && Number.isFinite(data.arcRadiusX)) {
@@ -4891,6 +5028,20 @@ function transformGraphicPathNodes(
     ...(node.inControl ? { inControl: transformPoint(node.inControl) ?? node.inControl } : {}),
     ...(node.outControl ? { outControl: transformPoint(node.outControl) ?? node.outControl } : {})
   }));
+}
+
+function transformGraphicFreehandPoints(
+  points: GraphicObjectData["freehandPoints"],
+  transformPoint: (point: PagePoint | undefined) => PagePoint | undefined
+): GraphicObjectData["freehandPoints"] {
+  return points?.map((point) => {
+    const transformed = transformPoint(point);
+    return {
+      x: transformed?.x ?? point.x,
+      y: transformed?.y ?? point.y,
+      ...(typeof point.pressure === "number" ? { pressure: point.pressure } : {})
+    };
+  });
 }
 
 export function rotateNativeMoleculeParts(

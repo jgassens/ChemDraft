@@ -35,6 +35,7 @@ import {
   type DocumentHistory,
   type DocumentObject,
   type DocumentPatch,
+  type GraphicFreehandPoint,
   type GraphicObject,
   type MoleculeObject,
   type NativeDrawingStyle,
@@ -161,6 +162,8 @@ import {
   getSelectedTextObject,
   insertNativeTextObject,
   insertNativeArtGraphicObject,
+  nativeArtToolIsFreehand,
+  nativeFreehandStrokeDocument,
   nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
   nativeChargeAssociationsForMolecule,
@@ -399,6 +402,15 @@ type GraphicCornerRadiusDragState = {
 type GraphicCornerRadiusReadoutState = {
   objectId: string;
   radius: number;
+};
+type FreehandArtDragState = {
+  pointerId: number;
+  commandId: string;
+  startDocument: ChemDraftDocument;
+  points: GraphicFreehandPoint[];
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  dragging: boolean;
 };
 type ObjectRotateDragState = {
   pointerId: number;
@@ -668,7 +680,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.22.16-codex";
+const CURRENT_BUILD_STAMP = "6.16.22.53-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -830,6 +842,7 @@ export function MainWindow({
   const graphicCornerRadiusDragRef = useRef<GraphicCornerRadiusDragState | null>(null);
   const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
   const graphicMarkerDragRef = useRef<GraphicMarkerDragState | null>(null);
+  const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -3288,6 +3301,23 @@ export function MainWindow({
     };
   }, [applyDetectedClipboardPayload]);
 
+  const clearNativeFreehandArtDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
+    const drag = freehandArtDragRef.current;
+    if (!drag || (event && drag.pointerId !== event.pointerId)) {
+      return;
+    }
+
+    freehandArtDragRef.current = null;
+    const page = pageRef.current;
+    if (page?.hasPointerCapture(drag.pointerId)) {
+      page.releasePointerCapture(drag.pointerId);
+    }
+    const currentTarget = event?.currentTarget;
+    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
+      currentTarget.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
   const clearProjectedPlaneTiltDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = projectedPlaneTiltDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -3322,6 +3352,15 @@ export function MainWindow({
           page.releasePointerCapture(graphicCornerRadiusDrag.pointerId);
         }
         setStatus("Corner radius canceled");
+        return;
+      }
+
+      if (event.key === "Escape" && freehandArtDragRef.current) {
+        const freehandArtDrag = freehandArtDragRef.current;
+        event.preventDefault();
+        replacePresentDocument(freehandArtDrag.startDocument);
+        clearNativeFreehandArtDrag();
+        setStatus("Freehand stroke canceled");
         return;
       }
 
@@ -3364,7 +3403,7 @@ export function MainWindow({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [clearProjectedPlaneTiltDrag, replacePresentDocument, selectedNativeMoleculePart, shortcutRegistry]);
+  }, [clearNativeFreehandArtDrag, clearProjectedPlaneTiltDrag, replacePresentDocument, selectedNativeMoleculePart, shortcutRegistry]);
 
   useEffect(() => {
     if (!effectiveNativePalette) {
@@ -3895,6 +3934,85 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory, nativePlacementDocumentFromDrag, replacePresentDocument]);
+
+  const startNativeFreehandArtDrag = useCallback((
+    event: ObjectPointerEvent,
+    point: ClientPoint,
+    commandId: string
+  ) => {
+    const startDocument = documentRef.current;
+    freehandArtDragRef.current = {
+      pointerId: event.pointerId,
+      commandId,
+      startDocument,
+      points: [freehandPointFromPointerEvent(point, event)],
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setStatus("Drawing freehand stroke");
+  }, [assignHoveredNativeDeleteTarget]);
+
+  const previewNativeFreehandArtDrag = useCallback((
+    drag: FreehandArtDragState,
+    point: ClientPoint,
+    event: ObjectPointerEvent
+  ) => {
+    drag.latestPoint = point;
+    appendFreehandDragPoint(drag, freehandPointFromPointerEvent(point, event));
+    if (!drag.dragging && clientPointDistance(drag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD) {
+      drag.dragging = true;
+    }
+    if (!drag.dragging) {
+      return;
+    }
+
+    replacePresentDocument(nativeFreehandStrokeDocument(drag.startDocument, drag.points, drag.commandId));
+  }, [replacePresentDocument]);
+
+  const commitNativeFreehandArtDrag = useCallback((
+    drag: FreehandArtDragState,
+    point: ClientPoint,
+    event: ObjectPointerEvent
+  ): boolean => {
+    appendFreehandDragPoint(drag, freehandPointFromPointerEvent(point, event));
+    if (!drag.dragging || drag.points.length < 2) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const nextDocument = nativeFreehandStrokeDocument(drag.startDocument, drag.points, drag.commandId);
+    if (nextDocument === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: nextDocument,
+      future: []
+    });
+    setFileState((current) => {
+      const nextFileState = { ...current, dirty: true };
+      fileStateRef.current = nextFileState;
+      return nextFileState;
+    });
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    return true;
+  }, [installDocumentHistory, replacePresentDocument]);
 
   const objectDragDocument = useCallback((drag: ObjectDragState, point: ClientPoint): ChemDraftDocument => {
     const dx = point.x - drag.startPoint.x;
@@ -4930,6 +5048,10 @@ export function MainWindow({
     if (activeNativeArtTool) {
       event.preventDefault();
       event.stopPropagation();
+      if (nativeArtToolIsFreehand(activeNativeArtTool.commandId)) {
+        startNativeFreehandArtDrag(event, point, activeNativeArtTool.commandId);
+        return;
+      }
       applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
       return;
     }
@@ -4962,6 +5084,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
+    startNativeFreehandArtDrag,
     startNativePlacementDrag
   ]);
 
@@ -5260,6 +5383,17 @@ export function MainWindow({
       return;
     }
 
+    const freehandArtDrag = freehandArtDragRef.current;
+    if (freehandArtDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+      previewNativeFreehandArtDrag(freehandArtDrag, point, event);
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -5288,6 +5422,7 @@ export function MainWindow({
     previewGraphicCornerRadius,
     previewGraphicPathEdit,
     previewGraphicMarkerDrag,
+    previewNativeFreehandArtDrag,
     previewNativePartDrag,
     previewNativePlacementDrag,
     previewTextResize,
@@ -5482,6 +5617,16 @@ export function MainWindow({
       return;
     }
 
+    const freehandArtDrag = freehandArtDragRef.current;
+    if (freehandArtDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? freehandArtDrag.latestPoint;
+      const changed = commitNativeFreehandArtDrag(freehandArtDrag, point, event);
+      setStatus(changed ? "Inserted freehand stroke" : "Freehand stroke canceled");
+      clearNativeFreehandArtDrag(event);
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (!marquee || marquee.pointerId !== event.pointerId) {
       return;
@@ -5514,12 +5659,14 @@ export function MainWindow({
     clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
     clearGraphicMarkerDrag,
+    clearNativeFreehandArtDrag,
     clearProjectedPlaneTiltDrag,
     clearNativePlacementDrag,
     clearTextResize,
     commitGraphicCornerRadius,
     commitGraphicPathEdit,
     commitGraphicMarkerDrag,
+    commitNativeFreehandArtDrag,
     commitNativePlacementDrag,
     commitNativePartDrag,
     commitTextResize,
@@ -5608,6 +5755,13 @@ export function MainWindow({
       clearNativePlacementDrag(event);
     }
 
+    const freehandArtDrag = freehandArtDragRef.current;
+    if (freehandArtDrag?.pointerId === event.pointerId) {
+      replacePresentDocument(freehandArtDrag.startDocument);
+      clearNativeFreehandArtDrag(event);
+      setStatus("Freehand stroke canceled");
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
       marqueeMachineRef.current = initialInteractionState();
@@ -5617,7 +5771,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -8264,6 +8418,29 @@ function clamp(value: number, min: number, max: number): number {
 
 function clientPointDistance(left: ClientPoint, right: ClientPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function freehandPointFromPointerEvent(point: ClientPoint, event: Pick<ObjectPointerEvent, "pressure">): GraphicFreehandPoint {
+  const pressure = typeof event.pressure === "number" && Number.isFinite(event.pressure) && event.pressure > 0
+    ? clamp(event.pressure, 0, 1)
+    : 0.5;
+  return {
+    x: point.x,
+    y: point.y,
+    pressure
+  };
+}
+
+function appendFreehandDragPoint(drag: FreehandArtDragState, point: GraphicFreehandPoint): void {
+  const previous = drag.points[drag.points.length - 1];
+  if (
+    previous &&
+    Math.hypot(previous.x - point.x, previous.y - point.y) < 0.75 &&
+    Math.abs((previous.pressure ?? 0.5) - (point.pressure ?? 0.5)) < 0.01
+  ) {
+    return;
+  }
+  drag.points.push(point);
 }
 
 function findNearestCrossingHit(
@@ -12100,13 +12277,13 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             <path
               className="graphic-glyph-hit-target"
               d={pathD}
-              fill="none"
+              fill={plan.capabilities.supportsStroke ? "none" : "transparent"}
               stroke="transparent"
               strokeWidth={Math.max(strokeWidth + 10, 14)}
               strokeLinecap="round"
               strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
-              pointerEvents="stroke"
+              pointerEvents={plan.capabilities.supportsStroke ? "stroke" : "all"}
             />
             <path
               className="graphic-glyph-stroke graphic-glyph-path"

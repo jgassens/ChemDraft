@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import type { GraphicObject } from "@chemdraft/chem-core";
-import { getPointAtLength, getTotalLength } from "svg-path-commander/util";
+import { getPathBBox, getPointAtLength, getTotalLength } from "svg-path-commander/util";
 import {
   editGraphicCornerRadius,
   editGraphicMarkerSize,
@@ -36,16 +37,20 @@ describe("art-engine native art planning", () => {
     const artEnginePackage = require("../package.json") as { dependencies?: Record<string, string> };
     const pathCommanderPackage = require("svg-path-commander/package.json") as { license: string };
     const domMatrixPackage = require("@thednp/dommatrix/package.json") as { license: string };
+    const perfectFreehandPackage = JSON.parse(readFileSync(
+      require.resolve("perfect-freehand").replace(/dist\/cjs\/index\.js$/, "package.json"),
+      "utf8"
+    )) as { license: string };
 
     expect(pathCommanderPackage.license).toBe("MIT");
     expect(domMatrixPackage.license).toBe("MIT");
+    expect(perfectFreehandPackage.license).toBe("MIT");
     expect(Object.keys(artEnginePackage.dependencies ?? {})).not.toEqual(expect.arrayContaining([
       "makerjs",
       "d3-path",
       "@flatten-js/core",
       "bezier-js",
       "svg-pathdata",
-      "perfect-freehand",
       "roughjs"
     ]));
   });
@@ -489,6 +494,54 @@ describe("art-engine native art planning", () => {
       supportsLineJoin: false,
       isOpenStroke: true
     });
+  });
+
+  it("plans pressure-sensitive native freehand strokes as filled outline paths", () => {
+    const lowPressure = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "freehand",
+        freehandOptions: {
+          size: 18,
+          thinning: 0.75,
+          smoothing: 0.5,
+          streamline: 0.35,
+          simulatePressure: false
+        },
+        freehandPoints: [
+          { x: 132, y: 112, pressure: 0.18 },
+          { x: 164, y: 118, pressure: 0.18 },
+          { x: 200, y: 112, pressure: 0.18 }
+        ]
+      }
+    } satisfies GraphicObject;
+    const highPressure = {
+      ...lowPressure,
+      id: "graphic_high_pressure",
+      data: {
+        ...lowPressure.data,
+        freehandPoints: lowPressure.data.freehandPoints.map((point) => ({ ...point, pressure: 0.92 }))
+      }
+    } satisfies GraphicObject;
+
+    const lowPlan = planNativeArtVisual(lowPressure, { coordinateSpace: "local" });
+    const highPlan = planNativeArtVisual(highPressure, { coordinateSpace: "local" });
+
+    expect(lowPlan.pathD).toMatch(/^M /);
+    expect(lowPlan.pathD).toContain(" Z");
+    expect(lowPlan.capabilities).toMatchObject({
+      supportsFill: true,
+      supportsStroke: false,
+      isClosedShape: true,
+      isOpenStroke: false
+    });
+    expect(lowPlan.fill.color).toBe("#111111");
+    expect(lowPlan.stroke.paint).toEqual({ kind: "none", opacity: 0 });
+    expect(graphicPathEditPoints(lowPressure)).toBeUndefined();
+    expect(getPathBBox(highPlan.pathD ?? "").height).toBeGreaterThan(getPathBBox(lowPlan.pathD ?? "").height);
   });
 
   it("clamps rectangle corner radius and exposes a direct local edit point", () => {

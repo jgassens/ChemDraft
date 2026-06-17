@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@chemdraft/chem-core": "workspace:*",
+    "perfect-freehand": "1.2.3",
     "svg-path-commander": "2.2.1"
   },
   "exports": {

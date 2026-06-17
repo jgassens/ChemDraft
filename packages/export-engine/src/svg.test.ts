@@ -6,6 +6,7 @@ import {
   type TextObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
+import { planNativeArtVisual } from "@chemdraft/layout-engine";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToSvg } from "./svg";
 
@@ -295,5 +296,51 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('data-object-id="art_svg_polyline"');
     expect(result.contents).toContain('d="M 132 152 L 204 164 L 168 204 Z"');
     expect(result.contents).toContain('fill="#1d7f68"');
+  });
+
+  it("exports native freehand strokes with the same outline path as the editor plan", () => {
+    const freehand = {
+      id: "art_svg_freehand",
+      type: "graphic",
+      x: 116,
+      y: 134,
+      width: 112,
+      height: 74,
+      rotation: 0,
+      style: {
+        strokeColor: "#1d7f68",
+        fillColor: "none"
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "freehand",
+        freehandOptions: {
+          size: 14,
+          thinning: 0.65,
+          smoothing: 0.5,
+          streamline: 0.35,
+          simulatePressure: false
+        },
+        freehandPoints: [
+          { x: 132, y: 152, pressure: 0.2 },
+          { x: 168, y: 178, pressure: 0.9 },
+          { x: 212, y: 158, pressure: 0.5 }
+        ]
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "SVG Freehand Stroke", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: freehand },
+      { now: timestamp }
+    );
+    const plan = planNativeArtVisual(freehand, { coordinateSpace: "page" });
+    const result = exportDocumentToSvg(document, { includeWarnings: true });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.contents).toContain('data-object-id="art_svg_freehand"');
+    expect(plan.pathD).toBeDefined();
+    expect(result.contents).toContain(`d="${plan.pathD}"`);
+    expect(result.contents).toContain('fill="#1d7f68"');
+    expect(result.contents).toContain('stroke="none"');
   });
 });

@@ -48,6 +48,7 @@ import {
   cleanUpNativeMolecules2d,
   cleanUpSelectedNativeMolecule2d,
   createNativeArtGraphicObject,
+  createNativeFreehandGraphicObject,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
   createPhase4Document,
@@ -84,6 +85,8 @@ import {
   nativeMoleculeTransformState,
   nativeGraphicCornerRadiusEditPoint,
   nativeGraphicPathEditPoints,
+  nativeArtToolIsFreehand,
+  nativeFreehandStrokeDocument,
   openNativeDocument,
   prepareGraphicPathForDirectEdit,
   previewNativeMoleculeBondGrowth,
@@ -3529,6 +3532,94 @@ describe("Phase 4 document workflow", () => {
         strokeColor: "#111111",
         fillColor: "none"
       }
+    });
+  });
+
+  it("creates native freehand pencil and brush strokes from raw pressure points", () => {
+    const document = createPhase4Document("Native Freehand Stroke");
+    const points = [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ];
+
+    const pencil = nativeFreehandStrokeDocument(document, points, "tool.art.pencil");
+    const objectId = pencil.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+    const pencilGraphic = graphicById(pencil, objectId);
+    const brushGraphic = createNativeFreehandGraphicObject(document, points, "tool.art.brush");
+
+    expect(nativeArtToolIsFreehand("tool.art.pencil")).toBe(true);
+    expect(nativeArtToolIsFreehand("tool.art.brush")).toBe(true);
+    expect(pencilGraphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "freehand",
+        artToolId: "pencil",
+        freehandOptions: {
+          size: 5,
+          simulatePressure: false
+        },
+        freehandPoints: points
+      },
+      style: {
+        artToolCommandId: "tool.art.pencil",
+        strokeColor: "#111111"
+      }
+    });
+    expect(brushGraphic?.data.freehandOptions?.size).toBeGreaterThan(pencilGraphic.data.freehandOptions?.size ?? 0);
+    expect(brushGraphic?.width).toBeGreaterThan(pencilGraphic.width);
+    expect(brushGraphic?.height).toBeGreaterThan(pencilGraphic.height);
+    expect(nativeFreehandStrokeDocument(document, points.slice(0, 1), "tool.art.pencil")).toBe(document);
+  });
+
+  it("moves and scales native freehand point geometry with the object frame", () => {
+    const document = createPhase4Document("Native Freehand Transform");
+    const points = [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ];
+    const inserted = nativeFreehandStrokeDocument(document, points, "tool.art.pencil");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const dx = 36;
+    const dy = -18;
+
+    const moved = moveDocumentObject(inserted, objectId, { x: graphic.x + dx, y: graphic.y + dy });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(movedGraphic.data.freehandPoints).toHaveLength(points.length);
+    movedGraphic.data.freehandPoints?.forEach((point, index) => {
+      const expected = translatedPoint(points[index]!, dx, dy);
+      expectPointToBeClose(point, expected);
+      expect(point.pressure).toBe(points[index]!.pressure);
+    });
+
+    const oldCenter = {
+      x: movedGraphic.x + movedGraphic.width / 2,
+      y: movedGraphic.y + movedGraphic.height / 2
+    };
+    const scaleX = 1.4;
+    const scaleY = 0.6;
+    const scaled = scaleDocumentObjectsAroundPoint(moved, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.freehandPoints).toHaveLength(points.length);
+    scaledGraphic.data.freehandPoints?.forEach((point, index) => {
+      const expected = scaledPoint(movedGraphic.data.freehandPoints![index]!, oldCenter, newCenter, scaleX, scaleY);
+      expectPointToBeClose(point, expected);
+      expect(point.pressure).toBe(points[index]!.pressure);
     });
   });
 

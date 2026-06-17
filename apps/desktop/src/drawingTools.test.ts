@@ -199,5 +199,13 @@ describe("Phase 7 drawing tool activation", () => {
       kind: "art",
       category: "art"
     });
+    expect(getDrawingToolDefinition("tool.art.pencil")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.brush")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
   });
 });

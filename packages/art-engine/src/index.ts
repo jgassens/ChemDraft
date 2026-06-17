@@ -1,4 +1,5 @@
-import type { GraphicGradientStop, GraphicMarker, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
+import type { GraphicFreehandOptions, GraphicFreehandPoint, GraphicGradientStop, GraphicMarker, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
+import { getStroke, type StrokeOptions } from "perfect-freehand";
 import {
   getPathBBox,
   getPointAtLength,
@@ -147,7 +148,7 @@ export interface NativeArtVisualPlan {
 
 export type GraphicPathEditHandle = "start" | "middle" | "end";
 
-export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic" | "polyline" | "bezier";
+export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic" | "polyline" | "bezier" | "freehand";
 
 interface NativeGraphicPathNode {
   point: NativeArtPoint;
@@ -228,23 +229,30 @@ export function planNativeArtVisual(
   const projectionTransform = matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined;
   const opacity = clampUnit(metadataNumber(object.style.opacity) ?? 1);
   const capabilities = nativeArtCapabilities(object);
+  const freehandPath = object.graphicKind === "path" && graphicPathKind(object) === "freehand";
+  const strokePaint = nativeArtStrokePaint(object, coordinateSpace, projectionTransform);
+  const fillPaint = freehandPath
+    ? strokePaint
+    : capabilities.supportsFill
+      ? nativeArtFillPaint(object, coordinateSpace, projectionTransform)
+      : { kind: "none" as const, opacity: 1 };
   const stroke: NativeArtStrokePlan = {
-    color: graphicColor(object.style.strokeColor, object.style.color, "#111111"),
-    width: metadataNumber(object.style.strokeWidth) ?? 1.5,
-    dasharray: metadataString(object.style.strokeDasharray),
-    opacity: graphicStrokeOpacity(object),
+    color: capabilities.supportsStroke ? graphicColor(object.style.strokeColor, object.style.color, "#111111") : "none",
+    width: capabilities.supportsStroke ? metadataNumber(object.style.strokeWidth) ?? 1.5 : 0,
+    dasharray: capabilities.supportsStroke ? metadataString(object.style.strokeDasharray) : undefined,
+    opacity: capabilities.supportsStroke ? graphicStrokeOpacity(object) : 0,
     lineCap: graphicStrokeLineCap(object),
     lineJoin: graphicStrokeLineJoin(object),
     miterLimit: metadataNumber(object.style.strokeMiterLimit) ?? 4,
-    paint: nativeArtStrokePaint(object, coordinateSpace, projectionTransform)
+    paint: capabilities.supportsStroke ? strokePaint : { kind: "none", opacity: 0 }
   };
   const fill: NativeArtFillPlan = {
-    color: capabilities.supportsFill ? graphicFillColor(object.style.fillColor) : "none",
-    mode: capabilities.supportsFill ? metadataString(object.style.fillMode) : undefined,
-    opacity: capabilities.supportsFill ? graphicFillOpacity(object) : 1,
-    paint: capabilities.supportsFill
-      ? nativeArtFillPaint(object, coordinateSpace, projectionTransform)
-      : { kind: "none", opacity: 1 }
+    color: freehandPath
+      ? graphicColor(object.style.strokeColor, object.style.color, "#111111")
+      : capabilities.supportsFill ? graphicFillColor(object.style.fillColor) : "none",
+    mode: freehandPath ? undefined : capabilities.supportsFill ? metadataString(object.style.fillMode) : undefined,
+    opacity: freehandPath ? graphicStrokeOpacity(object) : capabilities.supportsFill ? graphicFillOpacity(object) : 1,
+    paint: fillPaint
   };
   const frameBounds = nativeArtFrameBounds(object, matrix, coordinateSpace);
   const cornerRadius = graphicCornerRadius(object);
@@ -743,6 +751,17 @@ export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilit
         hasCorners: pathKind === "polyline" && nodes.length >= 3
       });
     }
+    if (pathKind === "freehand") {
+      return nativeArtCapabilityPlan({
+        supportsFill: true,
+        supportsStroke: false,
+        supportsDash: false,
+        supportsLineCap: false,
+        supportsLineJoin: false,
+        isClosedShape: true,
+        hasCorners: false
+      });
+    }
 
     const pathD = metadataString(object.data.pathD);
     const isClosedShape = pathD ? svgPathLooksClosed(pathD) : false;
@@ -794,7 +813,7 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
   if (!pathKind) {
     return undefined;
   }
-  if (pathKind === "polyline" || pathKind === "bezier") {
+  if (pathKind === "polyline" || pathKind === "bezier" || pathKind === "freehand") {
     return undefined;
   }
 
@@ -1008,7 +1027,8 @@ function graphicPathKind(object: GraphicObject): GraphicPathKind | undefined {
     kind === "arc" ||
     kind === "quadratic" ||
     kind === "polyline" ||
-    kind === "bezier"
+    kind === "bezier" ||
+    kind === "freehand"
   ) {
     return kind;
   }
@@ -1409,7 +1429,7 @@ function nativeArtFrameBounds(
 function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtBounds {
   const defaultBounds = { x: 0, y: 0, width: object.width, height: object.height };
   const pathKind = graphicPathKind(object);
-  if (object.graphicKind !== "path" || (pathKind !== "polyline" && pathKind !== "bezier")) {
+  if (object.graphicKind !== "path" || (pathKind !== "polyline" && pathKind !== "bezier" && pathKind !== "freehand")) {
     return defaultBounds;
   }
 
@@ -1418,8 +1438,8 @@ function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtB
     return defaultBounds;
   }
 
-  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
-  const padding = Math.max(6, strokeWidth * 2);
+  const strokeWidth = pathKind === "freehand" ? 0 : metadataNumber(object.style.strokeWidth) ?? 2;
+  const padding = pathKind === "freehand" ? 4 : Math.max(6, strokeWidth * 2);
   return boundsForPoints(points, padding, defaultBounds);
 }
 
@@ -1873,6 +1893,11 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
     return pathD ? svgPathSamplePoints(pathD) : [];
   }
 
+  if (pathKind === "freehand") {
+    const pathD = graphicFreehandPathD(object, "local");
+    return pathD ? svgPathSamplePoints(pathD) : [];
+  }
+
   if (pathKind === "line") {
     const endpoints = graphicPathEndpoints(object, "local", inset);
     return [endpoints.start, endpoints.end];
@@ -2006,6 +2031,10 @@ function graphicPathD(
     return graphicNodePathD(object, pathKind, coordinateSpace);
   }
 
+  if (pathKind === "freehand") {
+    return graphicFreehandPathD(object, coordinateSpace);
+  }
+
   if (pathKind === "line") {
     const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
     return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
@@ -2054,6 +2083,71 @@ function graphicPathD(
   }
 
   return storedPath;
+}
+
+function graphicFreehandPathD(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): string | undefined {
+  const outline = graphicFreehandOutlinePoints(object, coordinateSpace);
+  if (outline.length < 2) {
+    return undefined;
+  }
+
+  return `${nativeArtPointsPathD(outline)} Z`;
+}
+
+function graphicFreehandOutlinePoints(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): NativeArtPoint[] {
+  const points = graphicFreehandPoints(object);
+  if (points.length === 0) {
+    return [];
+  }
+
+  const input = points.map((point) => {
+    const resolved = pointForArtSpace(object, point, coordinateSpace);
+    return {
+      x: resolved.x,
+      y: resolved.y,
+      pressure: typeof point.pressure === "number" && Number.isFinite(point.pressure)
+        ? clampUnit(point.pressure)
+        : 0.5
+    };
+  });
+  const outline = getStroke(input, graphicFreehandStrokeOptions(object.data.freehandOptions));
+  return outline
+    .map(([x, y]) => ({ x: roundLayoutNumber(x), y: roundLayoutNumber(y) }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function graphicFreehandPoints(object: GraphicObject): GraphicFreehandPoint[] {
+  const points = object.data.freehandPoints;
+  if (!Array.isArray(points)) {
+    return [];
+  }
+
+  return points
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .map((point) => ({
+      x: point.x,
+      y: point.y,
+      ...(typeof point.pressure === "number" && Number.isFinite(point.pressure)
+        ? { pressure: clampUnit(point.pressure) }
+        : {})
+    }));
+}
+
+function graphicFreehandStrokeOptions(options: GraphicFreehandOptions | undefined): StrokeOptions {
+  return {
+    size: clamp(metadataNumber(options?.size) ?? 8, 1, 128),
+    thinning: clamp(metadataNumber(options?.thinning) ?? 0.5, -1, 1),
+    smoothing: clampUnit(metadataNumber(options?.smoothing) ?? 0.5),
+    streamline: clampUnit(metadataNumber(options?.streamline) ?? 0.5),
+    simulatePressure: options?.simulatePressure ?? true,
+    last: true
+  };
 }
 
 function graphicNodePathD(

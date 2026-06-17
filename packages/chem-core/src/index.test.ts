@@ -810,6 +810,61 @@ describe("native document validation and serialization", () => {
     });
   });
 
+  it("round-trips native freehand graphic points and options", () => {
+    const graphic = {
+      id: "graphic_freehand_points",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 120,
+      height: 80,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "none"
+      },
+      data: {
+        artPathKind: "freehand",
+        freehandOptions: {
+          size: 14,
+          thinning: 0.65,
+          smoothing: 0.5,
+          streamline: 0.35,
+          simulatePressure: false
+        },
+        freehandPoints: [
+          { x: 112, y: 144, pressure: 0.25 },
+          { x: 148, y: 158, pressure: 0.75 },
+          { x: 196, y: 138, pressure: 0.55 }
+        ]
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const reopenedGraphic = deserializeDocument(serializeDocument(document)).pages[0].objects[0] as GraphicObject;
+
+    expect(reopenedGraphic.data).toMatchObject({
+      artPathKind: "freehand",
+      freehandOptions: {
+        size: 14,
+        thinning: 0.65,
+        smoothing: 0.5,
+        streamline: 0.35,
+        simulatePressure: false
+      },
+      freehandPoints: [
+        { x: 112, y: 144, pressure: 0.25 },
+        { x: 148, y: 158, pressure: 0.75 },
+        { x: 196, y: 138, pressure: 0.55 }
+      ]
+    });
+  });
+
   it("migrates branch-era graphic arc degree metadata to radians", () => {
     const graphic = {
       id: "graphic_legacy_arc",
