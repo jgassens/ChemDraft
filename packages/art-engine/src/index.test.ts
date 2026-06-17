@@ -280,6 +280,43 @@ describe("art-engine native art planning", () => {
     expect(plan.visiblePathD).not.toContain("L 79 43");
   });
 
+  it("keeps resized curved arrow shafts inside filled heads without adding connector strokes", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 100,
+      y: 90,
+      width: 730,
+      height: 210,
+      style: {
+        ...baseGraphic.style,
+        strokeColor: "#b3261e",
+        strokeWidth: 8,
+        strokeDasharray: "0 6",
+        strokeLineCap: "round"
+      },
+      data: {
+        artPathKind: "quadratic",
+        lineStart: { x: 120, y: 100 },
+        pathControlPoint: { x: 235, y: 134 },
+        lineEnd: { x: 825, y: 258 },
+        markerEnd: { kind: "filled-arrow", sizePx: 80 }
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+    if (!plan.visiblePathD || !plan.markerEnd || !plan.markerEndTerminal) {
+      throw new Error("Expected visible curved arrowhead path.");
+    }
+
+    const visibleEnd = getPointAtLength(plan.visiblePathD, getTotalLength(plan.visiblePathD));
+    const terminal = plan.markerEndTerminal.point;
+    const visibleInset = Math.hypot(visibleEnd.x - terminal.x, visibleEnd.y - terminal.y);
+
+    expect(visibleInset).toBeLessThan(plan.markerEnd.sizePx * 0.55);
+    expect(visibleInset).toBeGreaterThan(8);
+  });
+
   it("edits arrowhead marker size from marker handle drag distance", () => {
     const graphic = {
       ...baseGraphic,
@@ -306,47 +343,6 @@ describe("art-engine native art planning", () => {
       kind: "filled-arrow",
       sizePx: 24
     });
-  });
-
-  it("plans an undashed curved terminal connector under resized dashed arrowheads", () => {
-    const graphic = {
-      ...baseGraphic,
-      graphicKind: "path",
-      x: 100,
-      y: 90,
-      width: 730,
-      height: 210,
-      style: {
-        ...baseGraphic.style,
-        strokeColor: "#12d64f",
-        strokeWidth: 8,
-        strokeDasharray: "32 16",
-        strokeLineCap: "round"
-      },
-      data: {
-        artPathKind: "quadratic",
-        lineStart: { x: 120, y: 100 },
-        pathControlPoint: { x: 235, y: 134 },
-        lineEnd: { x: 825, y: 258 },
-        markerEnd: { kind: "filled-arrow", sizePx: 80 }
-      }
-    } satisfies GraphicObject;
-
-    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
-    const connectorPathD = plan.markerEndConnectorPathD;
-    if (!plan.pathD || !plan.visiblePathD || !plan.markerEnd || !plan.markerEndTerminal || !connectorPathD) {
-      throw new Error("Expected planned dashed arrowhead connector.");
-    }
-
-    const connectorLength = getTotalLength(connectorPathD);
-    const connectorStart = getPointAtLength(connectorPathD, 0);
-    const connectorEnd = getPointAtLength(connectorPathD, connectorLength);
-    const visibleEnd = getPointAtLength(plan.visiblePathD, getTotalLength(plan.visiblePathD));
-
-    expect(connectorEnd.x).toBeCloseTo(plan.markerEndTerminal.point.x, 3);
-    expect(connectorEnd.y).toBeCloseTo(plan.markerEndTerminal.point.y, 3);
-    expect(connectorLength).toBeGreaterThan(plan.markerEnd.sizePx * 0.92);
-    expect(Math.hypot(connectorStart.x - visibleEnd.x, connectorStart.y - visibleEnd.y)).toBeLessThan(plan.markerEnd.sizePx);
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {

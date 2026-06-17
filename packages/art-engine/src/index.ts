@@ -136,8 +136,6 @@ export interface NativeArtVisualPlan {
   visibleLine?: { x1: number; y1: number; x2: number; y2: number };
   pathD?: string;
   visiblePathD?: string;
-  markerStartConnectorPathD?: string;
-  markerEndConnectorPathD?: string;
   markerStart?: NativeArtMarkerPlan;
   markerEnd?: NativeArtMarkerPlan;
   markerStartTerminal?: NativeArtStrokeTerminalPlan;
@@ -250,27 +248,23 @@ export function planNativeArtVisual(
   const pathD = object.graphicKind === "path"
     ? graphicPathD(object, coordinateSpace)
     : undefined;
+  const pathPoints = object.graphicKind === "path"
+    ? graphicPathSamplePoints(object, coordinateSpace)
+    : undefined;
   const markerStart = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
   const markerEnd = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
   const openStrokeTerminals = capabilities.isOpenStroke
-    ? nativeArtOpenStrokeTerminals(line, pathD)
+    ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
     : undefined;
   const visibleStroke = nativeArtVisibleOpenStroke({
     line,
     pathD,
-    markerStart,
-    markerEnd,
-    markerStartTerminal: openStrokeTerminals?.start,
-    markerEndTerminal: openStrokeTerminals?.end
-  });
-  const markerConnectors = nativeArtMarkerConnectorPaths({
-    line,
-    pathD,
+    pathPoints,
     markerStart,
     markerEnd,
     markerStartTerminal: openStrokeTerminals?.start,
     markerEndTerminal: openStrokeTerminals?.end,
-    stroke
+    strokeWidth: stroke.width
   });
   const projectedShapePathD = matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect")
     ? projectedArtShapePathD(object, coordinateSpace, matrix, stroke.width)
@@ -295,8 +289,6 @@ export function planNativeArtVisual(
     visibleLine: visibleStroke?.line,
     pathD,
     visiblePathD: visibleStroke?.pathD,
-    markerStartConnectorPathD: markerConnectors.start,
-    markerEndConnectorPathD: markerConnectors.end,
     markerStart,
     markerEnd,
     markerStartTerminal: markerStart ? openStrokeTerminals?.start : undefined,
@@ -386,16 +378,18 @@ export function editGraphicMarkerSize(
 function nativeArtVisibleOpenStroke(input: {
   line: NativeArtVisualPlan["line"];
   pathD: string | undefined;
+  pathPoints: NativeArtPoint[] | undefined;
   markerStart: NativeArtMarkerPlan | undefined;
   markerEnd: NativeArtMarkerPlan | undefined;
   markerStartTerminal: NativeArtStrokeTerminalPlan | undefined;
   markerEndTerminal: NativeArtStrokeTerminalPlan | undefined;
+  strokeWidth: number;
 }): { line?: NonNullable<NativeArtVisualPlan["line"]>; pathD?: string } | undefined {
   const startInset = input.markerStart && input.markerStartTerminal
-    ? nativeArtMarkerShaftInset(input.markerStart)
+    ? nativeArtMarkerShaftInset(input.markerStart, input.strokeWidth)
     : 0;
   const endInset = input.markerEnd && input.markerEndTerminal
-    ? nativeArtMarkerShaftInset(input.markerEnd)
+    ? nativeArtMarkerShaftInset(input.markerEnd, input.strokeWidth)
     : 0;
   if (startInset <= 0 && endInset <= 0) {
     return undefined;
@@ -440,6 +434,15 @@ function nativeArtVisibleOpenStroke(input: {
     return undefined;
   }
 
+  if (input.pathPoints && input.pathPoints.length >= 2) {
+    const points = trimNativeArtPolyline(input.pathPoints, startInset, endInset);
+    if (points.length >= 2) {
+      return {
+        pathD: nativeArtPointsPathD(points)
+      };
+    }
+  }
+
   try {
     if (!isValidPath(input.pathD)) {
       return undefined;
@@ -470,125 +473,91 @@ function nativeArtVisibleOpenStroke(input: {
   }
 }
 
-function nativeArtMarkerConnectorPaths(input: {
-  line: NativeArtVisualPlan["line"];
-  pathD: string | undefined;
-  markerStart: NativeArtMarkerPlan | undefined;
-  markerEnd: NativeArtMarkerPlan | undefined;
-  markerStartTerminal: NativeArtStrokeTerminalPlan | undefined;
-  markerEndTerminal: NativeArtStrokeTerminalPlan | undefined;
-  stroke: NativeArtStrokePlan;
-}): { start?: string; end?: string } {
-  return {
-    start: input.markerStart && input.markerStartTerminal
-      ? nativeArtMarkerConnectorPath(
-          input.line,
-          input.pathD,
-          input.markerStart,
-          input.markerStartTerminal,
-          "start",
-          input.stroke
-        )
-      : undefined,
-    end: input.markerEnd && input.markerEndTerminal
-      ? nativeArtMarkerConnectorPath(
-          input.line,
-          input.pathD,
-          input.markerEnd,
-          input.markerEndTerminal,
-          "end",
-          input.stroke
-        )
-      : undefined
-  };
+function nativeArtMarkerShaftInset(marker: NativeArtMarkerPlan, strokeWidth: number): number {
+  if (marker.kind === "filled-arrow" || marker.kind === "chevron" || marker.kind === "diamond") {
+    return Math.max(strokeWidth * 1.5, marker.sizePx * 0.42);
+  }
+  if (marker.kind === "dot") {
+    return marker.sizePx * 0.38;
+  }
+  return 0;
 }
 
-function nativeArtMarkerConnectorPath(
-  line: NativeArtVisualPlan["line"],
-  pathD: string | undefined,
-  marker: NativeArtMarkerPlan,
-  terminal: NativeArtStrokeTerminalPlan,
-  placement: "start" | "end",
-  stroke: NativeArtStrokePlan
-): string | undefined {
-  const length = nativeArtMarkerConnectorLength(marker, stroke);
+function trimNativeArtPolyline(
+  points: readonly NativeArtPoint[],
+  startInset: number,
+  endInset: number
+): NativeArtPoint[] {
+  const length = nativeArtPolylineLength(points);
   if (!Number.isFinite(length) || length <= 0.001) {
-    return undefined;
+    return [];
   }
 
-  if (pathD) {
-    return nativeArtPathTerminalSegment(pathD, length, placement);
-  }
+  const scaled = scaleTerminalInsets(startInset, endInset, length);
+  const startDistance = scaled.start;
+  const endDistance = Math.max(startDistance + 0.5, length - scaled.end);
+  const trimmed = [
+    nativeArtPolylinePointAtLength(points, startDistance),
+    ...nativeArtPolylineInteriorPoints(points, startDistance, endDistance),
+    nativeArtPolylinePointAtLength(points, endDistance)
+  ].filter((point): point is NativeArtPoint => point !== undefined);
 
-  if (!line) {
-    return undefined;
-  }
-
-  const inward = markerInwardDirection(terminal);
-  if (!inward) {
-    return undefined;
-  }
-  const inner = {
-    x: terminal.point.x + inward.x * length,
-    y: terminal.point.y + inward.y * length
-  };
-  const points = placement === "start"
-    ? [terminal.point, inner]
-    : [inner, terminal.point];
-  return nativeArtPointsPathD(points);
+  return trimmed.filter((point, index) => index === 0 || !samePoint(point, trimmed[index - 1]));
 }
 
-function nativeArtMarkerConnectorLength(marker: NativeArtMarkerPlan, stroke: NativeArtStrokePlan): number {
-  const shaftInset = nativeArtMarkerShaftInset(marker);
-  const overlap = nativeArtDashTerminalOverlap(stroke.dasharray, stroke.width);
-  return shaftInset + overlap;
-}
-
-function nativeArtDashTerminalOverlap(dasharray: string | undefined, strokeWidth: number): number {
-  const fallback = Math.max(1, strokeWidth * 0.75);
-  if (!dasharray) {
-    return fallback;
-  }
-
-  const values = dasharray
-    .split(/[\s,]+/)
-    .map((part) => Number(part))
-    .filter((value) => Number.isFinite(value) && value >= 0);
-  if (values.length === 0) {
-    return fallback;
-  }
-
-  const pattern = values.length % 2 === 1 ? [...values, ...values] : values;
-  const gaps = pattern.filter((_, index) => index % 2 === 1);
-  const maxGap = gaps.length > 0 ? Math.max(...gaps) : 0;
-  return Math.max(fallback, Math.min(maxGap + strokeWidth * 0.5, 64));
-}
-
-function nativeArtPathTerminalSegment(
-  pathD: string,
-  connectorLength: number,
-  placement: "start" | "end"
-): string | undefined {
-  try {
-    if (!isValidPath(pathD)) {
-      return undefined;
+function nativeArtPolylineInteriorPoints(
+  points: readonly NativeArtPoint[],
+  startDistance: number,
+  endDistance: number
+): NativeArtPoint[] {
+  const interior: NativeArtPoint[] = [];
+  let cursor = 0;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = points[index - 1];
+    const point = points[index];
+    const segmentLength = Math.hypot(point.x - previous.x, point.y - previous.y);
+    cursor += segmentLength;
+    if (cursor > startDistance && cursor < endDistance) {
+      interior.push(point);
     }
-    const totalLength = getTotalLength(pathD);
-    if (!Number.isFinite(totalLength) || totalLength <= 0.001) {
-      return undefined;
-    }
-    const length = Math.min(connectorLength, totalLength);
-    const startLength = placement === "start" ? 0 : Math.max(0, totalLength - length);
-    const endLength = placement === "start" ? Math.min(totalLength, length) : totalLength;
-    const segmentLength = Math.max(0.001, endLength - startLength);
-    const steps = Math.max(2, Math.min(48, Math.ceil(segmentLength / 5)));
-    const points = Array.from({ length: steps + 1 }, (_, index) =>
-      finiteSvgPathPoint(getPointAtLength(pathD, startLength + segmentLength * index / steps))
-    ).filter((point): point is NativeArtPoint => point !== undefined);
-    return points.length >= 2 ? nativeArtPointsPathD(points) : undefined;
-  } catch {
+  }
+  return interior;
+}
+
+function nativeArtPolylineLength(points: readonly NativeArtPoint[]): number {
+  return points.slice(1).reduce((length, point, index) => {
+    const previous = points[index];
+    return length + Math.hypot(point.x - previous.x, point.y - previous.y);
+  }, 0);
+}
+
+function nativeArtPolylinePointAtLength(
+  points: readonly NativeArtPoint[],
+  targetLength: number
+): NativeArtPoint | undefined {
+  if (points.length === 0) {
     return undefined;
   }
+  if (targetLength <= 0) {
+    return points[0];
+  }
+
+  let cursor = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const point = points[index];
+    const segmentLength = Math.hypot(point.x - previous.x, point.y - previous.y);
+    if (cursor + segmentLength >= targetLength) {
+      const t = segmentLength <= 0.001 ? 0 : (targetLength - cursor) / segmentLength;
+      return {
+        x: previous.x + (point.x - previous.x) * t,
+        y: previous.y + (point.y - previous.y) * t
+      };
+    }
+    cursor += segmentLength;
+  }
+
+  return points[points.length - 1];
 }
 
 function nativeArtPointsPathD(points: readonly NativeArtPoint[]): string {
@@ -596,16 +565,6 @@ function nativeArtPointsPathD(points: readonly NativeArtPoint[]): string {
     `M ${formatNumber(points[0]?.x ?? 0)} ${formatNumber(points[0]?.y ?? 0)}`,
     ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`)
   ].join(" ");
-}
-
-function nativeArtMarkerShaftInset(marker: NativeArtMarkerPlan): number {
-  if (marker.kind === "filled-arrow" || marker.kind === "chevron" || marker.kind === "diamond") {
-    return marker.sizePx * 0.92;
-  }
-  if (marker.kind === "dot") {
-    return marker.sizePx * 0.38;
-  }
-  return 0;
 }
 
 function scaleTerminalInsets(startInset: number, endInset: number, length: number): { start: number; end: number } {
@@ -627,7 +586,8 @@ function markerInwardDirection(terminal: NativeArtStrokeTerminalPlan): NativeArt
 
 function nativeArtOpenStrokeTerminals(
   line: NativeArtVisualPlan["line"],
-  pathD: string | undefined
+  pathD: string | undefined,
+  pathPoints?: NativeArtPoint[]
 ): { start: NativeArtStrokeTerminalPlan; end: NativeArtStrokeTerminalPlan } | undefined {
   if (line) {
     const start = { x: line.x1, y: line.y1 };
@@ -644,6 +604,29 @@ function nativeArtOpenStrokeTerminals(
 
   if (!pathD) {
     return undefined;
+  }
+
+  if (pathPoints && pathPoints.length >= 2) {
+    const length = nativeArtPolylineLength(pathPoints);
+    if (!Number.isFinite(length) || length <= 0.001) {
+      return undefined;
+    }
+    const sampleOffset = Math.min(length, Math.max(1, length * 0.02));
+    const start = pathPoints[0];
+    const startNear = nativeArtPolylinePointAtLength(pathPoints, sampleOffset);
+    const end = pathPoints[pathPoints.length - 1];
+    const endNear = nativeArtPolylinePointAtLength(pathPoints, Math.max(0, length - sampleOffset));
+    if (!startNear || !endNear) {
+      return undefined;
+    }
+    const startDirection = normalizedVector({ x: start.x - startNear.x, y: start.y - startNear.y });
+    const endDirection = normalizedVector({ x: end.x - endNear.x, y: end.y - endNear.y });
+    return startDirection && endDirection
+      ? {
+          start: { point: start, direction: startDirection },
+          end: { point: end, direction: endDirection }
+        }
+      : undefined;
   }
 
   try {
@@ -1773,6 +1756,20 @@ function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoin
       y: object.y + projected.y
     };
   });
+}
+
+function graphicPathSamplePoints(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): NativeArtPoint[] | undefined {
+  if (!graphicPathKind(object)) {
+    return undefined;
+  }
+
+  const localPoints = graphicPathLocalSamplePoints(object);
+  return coordinateSpace === "page"
+    ? localPoints.map((point) => ({ x: object.x + point.x, y: object.y + point.y }))
+    : localPoints;
 }
 
 function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {

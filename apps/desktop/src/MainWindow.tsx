@@ -668,7 +668,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.21.14-codex";
+const CURRENT_BUILD_STAMP = "6.16.21.25-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -11984,8 +11984,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const markerEndId = `graphic-marker-end-${object.id}`;
   const pathD = plan.pathD;
   const visiblePathD = plan.visiblePathD ?? pathD;
-  const markerStartConnectorPathD = plan.markerStartConnectorPathD;
-  const markerEndConnectorPathD = plan.markerEndConnectorPathD;
   const projectionTransform = plan.projectionTransform;
   const glossGradient = plan.glossGradient;
   const fillPaintProps = fillMode === "gloss"
@@ -11999,11 +11997,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     strokeLinejoin: plan.stroke.lineJoin,
     strokeMiterlimit: plan.stroke.miterLimit,
     vectorEffect: "non-scaling-stroke" as const
-  };
-  const markerConnectorStrokeProps = {
-    ...sharedStrokeProps,
-    strokeDasharray: undefined,
-    fill: "none"
   };
   const markerStart = plan.markerStart && plan.markerStartTerminal
     ? reactSvgFlattenedMarker(plan.markerStart, plan.markerStartTerminal, markerStartId, "start", strokeColor, plan.stroke.opacity)
@@ -12119,22 +12112,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
               {...sharedStrokeProps}
             />
-            {markerStartConnectorPathD ? (
-              <path
-                className="graphic-glyph-stroke graphic-glyph-marker-connector"
-                d={markerStartConnectorPathD}
-                data-graphic-marker-connector="start"
-                {...markerConnectorStrokeProps}
-              />
-            ) : null}
-            {markerEndConnectorPathD ? (
-              <path
-                className="graphic-glyph-stroke graphic-glyph-marker-connector"
-                d={markerEndConnectorPathD}
-                data-graphic-marker-connector="end"
-                {...markerConnectorStrokeProps}
-              />
-            ) : null}
             {markerStart}
             {markerEnd}
           </>
@@ -12160,22 +12137,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               y2={visibleLine.y2}
               {...sharedStrokeProps}
             />
-            {markerStartConnectorPathD ? (
-              <path
-                className="graphic-glyph-stroke graphic-glyph-marker-connector"
-                d={markerStartConnectorPathD}
-                data-graphic-marker-connector="start"
-                {...markerConnectorStrokeProps}
-              />
-            ) : null}
-            {markerEndConnectorPathD ? (
-              <path
-                className="graphic-glyph-stroke graphic-glyph-marker-connector"
-                d={markerEndConnectorPathD}
-                data-graphic-marker-connector="end"
-                {...markerConnectorStrokeProps}
-              />
-            ) : null}
             {markerStart}
             {markerEnd}
           </>
