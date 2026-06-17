@@ -703,7 +703,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.10.11-codex";
+const CURRENT_BUILD_STAMP = "6.17.10.25-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -3156,6 +3156,12 @@ export function MainWindow({
         if (result.outcome === "activated") {
           setActiveTextEditObjectId(undefined);
           setActiveAtomLabelEdit(undefined);
+          if (tool.id === "tool.art.directEdit") {
+            pendingObjectTransformPreviewRef.current = undefined;
+            setObjectTransformPreview(undefined);
+            setActiveGraphicTransformObjectId(undefined);
+            setSelectedNativeMoleculePart(undefined);
+          }
         }
         setStatus(result.status);
       });
@@ -7862,6 +7868,7 @@ export function MainWindow({
                       selected={selected}
                       inGroupSelection={inGroupSelection}
                       graphicTransformActive={activeGraphicTransformObjectId === object.id}
+                      graphicDirectEditActive={activeToolState.activeCommandId === "tool.art.directEdit"}
                       selectedPart={selectedPart}
                       editingText={activeTextEditObjectId === object.id}
                       editingAtomLabel={activeAtomLabelEdit?.objectId === object.id ? activeAtomLabelEdit : undefined}
@@ -11361,6 +11368,7 @@ function DocumentObjectView({
   selected,
   inGroupSelection,
   graphicTransformActive,
+  graphicDirectEditActive,
   selectedPart,
   editingText,
   editingAtomLabel,
@@ -11417,6 +11425,7 @@ function DocumentObjectView({
   selected: boolean;
   inGroupSelection: boolean;
   graphicTransformActive: boolean;
+  graphicDirectEditActive: boolean;
   selectedPart?: NativeMoleculeSelectionPart;
   editingText: boolean;
   editingAtomLabel?: AtomLabelEditState;
@@ -11638,15 +11647,16 @@ function DocumentObjectView({
     : undefined;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
+  const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
   const pathGraphicInEditMode = selected &&
     object.type === "graphic" &&
     graphicPathEditPoints !== undefined &&
-    !graphicTransformActive;
+    graphicEditHandlesActive;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
     graphicCornerRadiusEditPoint !== undefined &&
     !inGroupSelection &&
-    !graphicTransformActive &&
+    graphicEditHandlesActive &&
     !pathGraphicInEditMode &&
     !editingText &&
     !editingAtomLabel &&

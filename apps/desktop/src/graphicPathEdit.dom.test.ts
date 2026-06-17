@@ -4,7 +4,7 @@ import { applyPatch, type ChemDraftDocument, type GraphicObject } from "@chemdra
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MainWindow } from "./MainWindow";
+import { MainWindow, type MainWindowProps } from "./MainWindow";
 import {
   createPhase4Document,
   insertNativeArtGraphicObject,
@@ -82,14 +82,18 @@ describe("graphic path direct editing interactions", () => {
     }
   });
 
-  async function renderMainWindow(initialDocument: ChemDraftDocument) {
+  async function renderMainWindow(
+    initialDocument: ChemDraftDocument,
+    options: Pick<MainWindowProps, "initialActiveToolCommandId" | "initialPaletteMode" | "nativePalette"> = {}
+  ) {
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialDocument,
+        initialActiveToolCommandId: options.initialActiveToolCommandId,
         initialCrosshairsVisible: false,
-        initialPaletteMode: "hidden",
+        initialPaletteMode: options.initialPaletteMode ?? "hidden",
         initialRulersVisible: false,
-        nativePalette: true
+        nativePalette: options.nativePalette ?? true
       }));
     });
     const page = pageElement();
@@ -127,6 +131,14 @@ describe("graphic path direct editing interactions", () => {
     const button = container.querySelector<HTMLButtonElement>(`[data-object-resize-corner="${corner}"]`);
     if (!button) {
       throw new Error(`Expected ${corner} resize handle.`);
+    }
+    return button;
+  }
+
+  function commandButton(commandId: string): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-command-id="${commandId}"]`);
+    if (!button) {
+      throw new Error(`Expected ${commandId} toolbar button.`);
     }
     return button;
   }
@@ -742,6 +754,58 @@ describe("graphic path direct editing interactions", () => {
     expectProjectedPointShift(afterDrag.projectedEditPoints?.end, beforeDrag.projectedEditPoints.end, dx, dy);
     expect(pathD(".graphic-glyph-path")).toBe(postResizePathD);
     expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
+  });
+
+  it("uses Direct Edit to restore graphic path handles from object transform mode", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Direct Edit Restores Path Handles"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, {
+      initialPaletteMode: "floating",
+      nativePalette: false
+    });
+    const middle = debugArtObject(objectId).projectedEditPoints?.middle;
+    const hitTarget = container.querySelector<SVGElement>(".graphic-glyph-hit-target");
+    if (!middle || !hitTarget) {
+      throw new Error("Expected selected line path and hit target.");
+    }
+
+    await act(async () => {
+      dispatchPointer(hitTarget, "pointerdown", middle, 25, 2);
+      dispatchPointer(hitTarget, "pointerup", middle, 25, 2);
+    });
+
+    expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    expect(container.querySelector("[data-graphic-path-handle]")).toBeNull();
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode).toBe("object-transform");
+
+    const directEditButton = commandButton("tool.art.directEdit");
+    await act(async () => {
+      dispatchPointer(directEditButton, "pointerdown", { x: 1, y: 1 }, 26);
+      dispatchPointer(directEditButton, "pointerup", { x: 1, y: 1 }, 26);
+      directEditButton.click();
+    });
+
+    expect(container.querySelector('[data-active-tool="tool.art.directEdit"]')).not.toBeNull();
+    expect(commandButton("tool.art.directEdit").dataset.active).toBe("true");
+    expect(container.querySelector('[data-art-transform-frame="true"]')).toBeNull();
+    expect(container.querySelector('[data-graphic-path-handle="middle"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode).toBe("path-edit");
+
+    const selectButton = commandButton("tool.select");
+    await act(async () => {
+      dispatchPointer(selectButton, "pointerdown", { x: 1, y: 1 }, 27);
+      dispatchPointer(selectButton, "pointerup", { x: 1, y: 1 }, 27);
+      selectButton.click();
+    });
+
+    expect(container.querySelector('[data-active-tool="tool.select"]')).not.toBeNull();
+    expect(container.querySelector('[data-art-transform-frame="true"]')).toBeNull();
+    expect(container.querySelector('[data-graphic-path-handle="middle"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode).toBe("path-edit");
   });
 
   it("does not bake a rotated line on a non-drag path handle click", async () => {
