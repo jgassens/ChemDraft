@@ -735,7 +735,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.12.28-codex";
+const CURRENT_BUILD_STAMP = "6.17.12.36-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -9683,6 +9683,10 @@ function capitalizeLabel(label: string): string {
 }
 
 function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean): string {
+  if (/^node:\d+:(in|out)$/.test(drag.handle)) {
+    return changed ? "Adjusted Bezier control handle" : "Bezier control handle unchanged";
+  }
+
   if (drag.handle.startsWith("node:")) {
     return changed ? "Moved selected path node" : "Selected path node unchanged";
   }
@@ -13524,8 +13528,55 @@ function GraphicPathEditHandles({
     point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
   }));
   if (nodeEditPoints) {
+    const bezierControlHandles = nodeEditPoints.pathKind === "bezier"
+      ? bezierControlHandlePlans(nodeEditPoints)
+      : [];
     return (
       <>
+        {bezierControlHandles.length > 0 ? (
+          <svg
+            className="graphic-bezier-control-layer"
+            aria-hidden="true"
+            focusable="false"
+          >
+            {bezierControlHandles.map((control) => {
+              const anchor = projectGraphicObjectPoint(object, control.anchor);
+              const point = projectGraphicObjectPoint(object, control.point);
+              return (
+                <line
+                  className="graphic-bezier-control-line"
+                  data-graphic-path-control-line={control.handle}
+                  key={`${control.handle}:line`}
+                  x1={pageScaledCssPx(anchor.x - object.x)}
+                  y1={pageScaledCssPx(anchor.y - object.y)}
+                  x2={pageScaledCssPx(point.x - object.x)}
+                  y2={pageScaledCssPx(point.y - object.y)}
+                />
+              );
+            })}
+          </svg>
+        ) : null}
+        {bezierControlHandles.map((control) => {
+          const point = projectGraphicObjectPoint(object, control.point);
+          const label = `${control.kind === "in" ? "Adjust incoming" : "Adjust outgoing"} Bezier handle ${control.index + 1}`;
+          return (
+            <button
+              type="button"
+              className="graphic-path-edit-handle graphic-bezier-control-handle"
+              aria-label={label}
+              data-graphic-path-control={control.kind}
+              data-graphic-path-control-index={control.index}
+              data-graphic-path-handle={control.handle}
+              key={control.handle}
+              style={{
+                left: pageScaledCssPx(point.x - object.x),
+                top: pageScaledCssPx(point.y - object.y)
+              }}
+              title={label}
+              onPointerDown={onPointerDown(control.handle)}
+            />
+          );
+        })}
         {nodeEditPoints.nodes.map((node) => {
           const point = projectGraphicObjectPoint(object, node.point);
           const handle = `node:${node.index}` as const;
@@ -13649,6 +13700,69 @@ function GraphicPathEditHandles({
       ) : null}
     </>
   );
+}
+
+function bezierControlHandlePlans(
+  editPoints: NativeGraphicPathNodeEditPoints
+): Array<{
+  anchor: NativeArtPoint;
+  handle: Extract<NativeGraphicPathEditHandle, `node:${number}:in` | `node:${number}:out`>;
+  index: number;
+  kind: "in" | "out";
+  point: NativeArtPoint;
+}> {
+  const nodes = editPoints.nodes;
+  return nodes.flatMap((node, index) => {
+    const previous = index > 0
+      ? nodes[index - 1]
+      : editPoints.pathClosed ? nodes[nodes.length - 1] : undefined;
+    const next = index < nodes.length - 1
+      ? nodes[index + 1]
+      : editPoints.pathClosed ? nodes[0] : undefined;
+    const controls: Array<{
+      anchor: NativeArtPoint;
+      handle: Extract<NativeGraphicPathEditHandle, `node:${number}:in` | `node:${number}:out`>;
+      index: number;
+      kind: "in" | "out";
+      point: NativeArtPoint;
+    }> = [];
+
+    if (previous) {
+      controls.push({
+        anchor: node.point,
+        handle: `node:${index}:in`,
+        index,
+        kind: "in",
+        point: node.inControl ?? defaultBezierControlPoint(node.point, previous.point)
+      });
+    }
+    if (next) {
+      controls.push({
+        anchor: node.point,
+        handle: `node:${index}:out`,
+        index,
+        kind: "out",
+        point: node.outControl ?? defaultBezierControlPoint(node.point, next.point)
+      });
+    }
+
+    return controls;
+  });
+}
+
+function defaultBezierControlPoint(anchor: NativeArtPoint, target: NativeArtPoint): NativeArtPoint {
+  const dx = target.x - anchor.x;
+  const dy = target.y - anchor.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance < 0.001) {
+    return anchor;
+  }
+
+  const length = Math.min(40, Math.max(18, distance / 3));
+  return {
+    x: anchor.x + dx / distance * length,
+    y: anchor.y + dy / distance * length
+  };
 }
 
 function ArtShapePrimitive({

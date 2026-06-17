@@ -533,6 +533,33 @@ describe("art-engine native art planning", () => {
     });
   });
 
+  it("adds and moves native Bezier control handles", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "bezier",
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 208, y: 148 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const edited = editGraphicPathGeometry(graphic, "node:0:out", { x: 178, y: 92 });
+
+    expect(edited?.data.pathNodes).toEqual([
+      {
+        point: { x: 132, y: 108 },
+        outControl: { x: 178, y: 92 }
+      },
+      { point: { x: 208, y: 148 } }
+    ]);
+    expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 C 178 92 208 148 208 148");
+  });
+
   it("plans pressure-sensitive native freehand strokes as filled outline paths", () => {
     const lowPressure = {
       ...baseGraphic,

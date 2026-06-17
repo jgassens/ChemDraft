@@ -155,7 +155,7 @@ export interface NativeArtVisualPlan {
   glossGradient?: NativeArtGlossGradientPlan;
 }
 
-export type GraphicPathEditHandle = "start" | "middle" | "end" | `node:${number}`;
+export type GraphicPathEditHandle = "start" | "middle" | "end" | `node:${number}` | `node:${number}:in` | `node:${number}:out`;
 
 export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic" | "polyline" | "bezier" | "freehand";
 
@@ -913,6 +913,10 @@ export function editGraphicPathGeometry(
   handle: GraphicPathEditHandle,
   point: NativeArtPoint
 ): GraphicObject | undefined {
+  if (/^node:\d+:(in|out)$/.test(handle)) {
+    return editGraphicPathControlGeometry(object, handle, point);
+  }
+
   if (handle.startsWith("node:")) {
     return editGraphicPathNodeGeometry(object, handle, point);
   }
@@ -1240,6 +1244,43 @@ function editGraphicPathNodeGeometry(
       ...(node.outControl ? { outControl: movePoint(node.outControl) } : {})
     };
   });
+
+  return updateGraphicPathObject(object, {
+    ...object.data,
+    artPathKind: pathKind,
+    pathNodes: nextNodes
+  });
+}
+
+function editGraphicPathControlGeometry(
+  object: GraphicObject,
+  handle: GraphicPathEditHandle,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const pathKind = graphicPathKind(object);
+  if (pathKind !== "bezier") {
+    return undefined;
+  }
+
+  const match = /^node:(\d+):(in|out)$/.exec(handle);
+  const index = match ? Number.parseInt(match[1], 10) : -1;
+  const controlKind = match?.[2];
+  const nodes = graphicPathNodes(object);
+  if (!nodes[index] || (controlKind !== "in" && controlKind !== "out")) {
+    return undefined;
+  }
+
+  const controlPoint = {
+    x: roundLayoutNumber(point.x),
+    y: roundLayoutNumber(point.y)
+  };
+  const nextNodes = nodes.map((node, nodeIndex) => ({
+    point: node.point,
+    ...(node.inControl ? { inControl: node.inControl } : {}),
+    ...(node.outControl ? { outControl: node.outControl } : {}),
+    ...(nodeIndex === index && controlKind === "in" ? { inControl: controlPoint } : {}),
+    ...(nodeIndex === index && controlKind === "out" ? { outControl: controlPoint } : {})
+  }));
 
   return updateGraphicPathObject(object, {
     ...object.data,

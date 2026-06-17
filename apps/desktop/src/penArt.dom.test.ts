@@ -109,6 +109,7 @@ describe("Pen native art interactions", () => {
   }
 
   function dispatchPointer(
+    target: EventTarget,
     type: "pointerdown" | "pointermove" | "pointerup",
     point: { x: number; y: number },
     pointerId: number
@@ -127,12 +128,12 @@ describe("Pen native art interactions", () => {
       pointerType: { value: "mouse" },
       pressure: { value: 0.5 }
     });
-    pageElement().dispatchEvent(event);
+    target.dispatchEvent(event);
   }
 
   function clickPoint(point: { x: number; y: number }, pointerId: number) {
-    dispatchPointer("pointerdown", point, pointerId);
-    dispatchPointer("pointerup", point, pointerId);
+    dispatchPointer(pageElement(), "pointerdown", point, pointerId);
+    dispatchPointer(pageElement(), "pointerup", point, pointerId);
   }
 
   function dragPoint(
@@ -140,9 +141,19 @@ describe("Pen native art interactions", () => {
     end: { x: number; y: number },
     pointerId: number
   ) {
-    dispatchPointer("pointerdown", start, pointerId);
-    dispatchPointer("pointermove", end, pointerId);
-    dispatchPointer("pointerup", end, pointerId);
+    dispatchPointer(pageElement(), "pointerdown", start, pointerId);
+    dispatchPointer(pageElement(), "pointermove", end, pointerId);
+    dispatchPointer(pageElement(), "pointerup", end, pointerId);
+  }
+
+  function controlHandle(index: number, kind: "in" | "out"): HTMLButtonElement {
+    const handle = container.querySelector<HTMLButtonElement>(
+      `[data-graphic-path-control="${kind}"][data-graphic-path-control-index="${index}"]`
+    );
+    if (!handle) {
+      throw new Error(`Expected ${kind} control handle ${index}.`);
+    }
+    return handle;
   }
 
   function dispatchKey(key: string, metaKey = false) {
@@ -218,5 +229,33 @@ describe("Pen native art interactions", () => {
     ]);
     expect(container.querySelector("[data-path-art-preview-layer=\"true\"]")).toBeNull();
     expect(container.querySelector("[data-active-tool=\"tool.select\"]")).not.toBeNull();
+  });
+
+  it("shows Bezier control handles for straight Pen paths and drags one to curve the segment", async () => {
+    await renderMainWindow();
+
+    await act(async () => {
+      clickPoint({ x: 140, y: 140 }, 61);
+      clickPoint({ x: 220, y: 140 }, 62);
+      clickPoint({ x: 260, y: 188 }, 63);
+      dispatchKey("Enter");
+    });
+
+    const objectId = selectedArtObjectId();
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(4);
+    expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(4);
+
+    await act(async () => {
+      dispatchPointer(controlHandle(0, "out"), "pointerdown", { x: 166, y: 140 }, 64);
+      dispatchPointer(pageElement(), "pointermove", { x: 170, y: 96 }, 64);
+      dispatchPointer(pageElement(), "pointerup", { x: 170, y: 96 }, 64);
+    });
+
+    const debug = debugArtObject(objectId);
+    expect(debug.object.data.pathNodes?.[0]).toEqual({
+      point: { x: 140, y: 140 },
+      outControl: { x: 170, y: 96 }
+    });
+    expect(debug.plan.pathD).toContain(" C ");
   });
 });
