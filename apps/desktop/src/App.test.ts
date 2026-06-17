@@ -1568,6 +1568,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="tool.art.ellipse"');
     expect(markup).toContain('data-command-id="tool.art.line"');
     expect(markup).toContain('data-command-id="tool.art.lineWavy"');
+    expect(markup).toContain('data-command-id="tool.art.arrow"');
     expect(markup).toContain('data-command-id="tool.art.arc270"');
     expect(markup).toContain('data-command-id="layout.bringForward"');
     expect(markup).toContain('data-command-id="layout.sendToBack"');
@@ -1575,6 +1576,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-command-id="tool.art.rectShadow"');
     expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
     expect(markup).toContain('data-art-tool-icon="roundedRect"');
+    expect(markup).toContain('data-art-tool-icon="arrow"');
     expect(markup).toContain('data-art-tool-icon="arc270"');
     expect(rectInspectorMarkup).toContain('data-toolbar-style-controls="art"');
     expect(rectInspectorMarkup).toContain('aria-label="Fill color"');
@@ -2126,6 +2128,22 @@ describe("ChemDraft desktop shell", () => {
     expect(lineMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
     expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
     expect(lineMarkup).not.toContain("object-resize-handle");
+    const arrowDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Art Render"),
+      { x: 260, y: 220 },
+      "tool.art.arrow"
+    );
+    const arrowObjectId = arrowDocument.selection.objectIds[0] ?? "";
+    const arrowMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: arrowDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(arrowMarkup).toContain(`id="graphic-marker-end-${arrowObjectId}"`);
+    expect(arrowMarkup).toContain(`marker-end="url(#graphic-marker-end-${arrowObjectId})"`);
+    expect(arrowMarkup).toContain('markerUnits="userSpaceOnUse"');
     const ellipseDocument = insertNativeArtGraphicObject(
       createPhase4Document("Ellipse Art Render"),
       { x: 260, y: 220 },

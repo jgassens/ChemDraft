@@ -209,6 +209,7 @@
           "items": [
             { "commandId": "tool.art.line", "title": "Line", "icon": "bond", "category": "art" },
             { "commandId": "tool.art.lineWavy", "title": "Wavy Line", "icon": "mechanism", "category": "art" },
+            { "commandId": "tool.art.arrow", "title": "Arrow", "icon": "export", "category": "art" },
             { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "category": "art" },
             { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "category": "art" },
             { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" }

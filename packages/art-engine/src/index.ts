@@ -1,4 +1,4 @@
-import type { GraphicGradientStop, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
+import type { GraphicGradientStop, GraphicMarker, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
 import {
   getPathBBox,
   getPointAtLength,
@@ -77,6 +77,14 @@ export interface NativeArtFillPlan {
   paint: NativeArtPaintPlan;
 }
 
+export type NativeArtMarkerKind = GraphicMarker["kind"];
+
+export interface NativeArtMarkerPlan {
+  kind: NativeArtMarkerKind;
+  sizePx: number;
+  angleDegrees: number;
+}
+
 export interface NativeArtCapabilities {
   supportsFill: boolean;
   supportsStroke: boolean;
@@ -112,6 +120,8 @@ export interface NativeArtVisualPlan {
   frameBounds: NativeArtBounds;
   line?: { x1: number; y1: number; x2: number; y2: number };
   pathD?: string;
+  markerStart?: NativeArtMarkerPlan;
+  markerEnd?: NativeArtMarkerPlan;
   projectedShapePathD?: string;
   glossGradient?: NativeArtGlossGradientPlan;
 }
@@ -240,6 +250,8 @@ export function planNativeArtVisual(
     frameBounds,
     line,
     pathD,
+    markerStart: capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart) : undefined,
+    markerEnd: capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd) : undefined,
     projectedShapePathD,
     glossGradient: capabilities.supportsFill && fill.mode === "gloss"
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
@@ -1203,6 +1215,38 @@ function graphicPaintMetadata(value: unknown): GraphicPaint | undefined {
 
   const paint = value as GraphicPaint;
   return typeof paint.kind === "string" ? paint : undefined;
+}
+
+function nativeArtMarkerPlan(value: unknown): NativeArtMarkerPlan | undefined {
+  const marker = graphicMarkerMetadata(value);
+  if (!marker || marker.kind === "none") {
+    return undefined;
+  }
+
+  return {
+    kind: marker.kind,
+    sizePx: Math.max(2, metadataNumber(marker.sizePx) ?? 10),
+    angleDegrees: metadataNumber(marker.angleDegrees) ?? 0
+  };
+}
+
+function graphicMarkerMetadata(value: unknown): GraphicMarker | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const marker = value as GraphicMarker;
+  return isNativeArtMarkerKind(marker.kind) ? marker : undefined;
+}
+
+function isNativeArtMarkerKind(kind: unknown): kind is NativeArtMarkerKind {
+  return kind === "none" ||
+    kind === "open-arrow" ||
+    kind === "filled-arrow" ||
+    kind === "bar" ||
+    kind === "dot" ||
+    kind === "diamond" ||
+    kind === "chevron";
 }
 
 function graphicFillOpacity(object: GraphicObject): number {

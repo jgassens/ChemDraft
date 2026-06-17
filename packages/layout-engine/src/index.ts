@@ -20,6 +20,7 @@ import type {
   NativeArtFillPlan,
   NativeArtGradientStopPlan,
   NativeArtGlossGradientPlan,
+  NativeArtMarkerPlan,
   NativeArtPaintPlan,
   NativeArtProjectionMatrix,
   NativeArtStrokePlan,
@@ -31,6 +32,7 @@ export type {
   NativeArtFillPlan,
   NativeArtGradientStopPlan,
   NativeArtGlossGradientPlan,
+  NativeArtMarkerPlan,
   NativeArtPaintPlan,
   NativeArtProjectionMatrix,
   NativeArtStrokePlan,
@@ -1684,6 +1686,8 @@ function graphicObjectFragment(
   warnForGraphicSvgEffects(object, warnings);
   const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
   const gradientId = `graphic-gloss-${object.id}`;
+  const markerStartId = `graphic-marker-start-${object.id}`;
+  const markerEndId = `graphic-marker-end-${object.id}`;
   const fillAttrs = plan.glossGradient
     ? { fill: `url(#${gradientId})` }
     : svgPaintAttrs("fill", plan.fill.paint, `graphic-fill-${object.id}`);
@@ -1696,9 +1700,15 @@ function graphicObjectFragment(
     "stroke-linejoin": plan.stroke.lineJoin,
     "stroke-miterlimit": plan.stroke.miterLimit
   };
+  const markerAttrs = {
+    "marker-start": plan.markerStart ? `url(#${markerStartId})` : undefined,
+    "marker-end": plan.markerEnd ? `url(#${markerEndId})` : undefined
+  };
   const children: PageSvgFragment[] = [
     ...svgPaintDefinitionFragments(plan.fill.paint, `graphic-fill-${object.id}`),
     ...svgPaintDefinitionFragments(plan.stroke.paint, `graphic-stroke-${object.id}`),
+    ...(plan.markerStart ? svgMarkerDefinitionFragments(plan.markerStart, markerStartId, plan.stroke.color, plan.stroke.opacity) : []),
+    ...(plan.markerEnd ? svgMarkerDefinitionFragments(plan.markerEnd, markerEndId, plan.stroke.color, plan.stroke.opacity) : []),
     ...(plan.glossGradient ? [
       elementFragment("defs", `graphic-gloss-defs-${object.id}`, {}, [
         elementFragment("radialGradient", `graphic-gloss-gradient-${object.id}`, {
@@ -1750,6 +1760,7 @@ function graphicObjectFragment(
       x2: plan.line.x2,
       y2: plan.line.y2,
       ...strokeAttrs,
+      ...markerAttrs,
       transform: plan.projectionTransform
     }));
   } else if (object.graphicKind === "path" && plan.pathD) {
@@ -1757,6 +1768,7 @@ function graphicObjectFragment(
     children.push(elementFragment("path", `graphic-path-${object.id}`, {
       d: plan.pathD,
       ...strokeAttrs,
+      ...markerAttrs,
       class: "graphic-glyph-stroke graphic-glyph-path",
       ...(plan.capabilities.supportsFill ? fillAttrs : { fill: "none" }),
       transform: plan.projectionTransform
@@ -1860,6 +1872,79 @@ function svgPaintDefinitionFragments(paint: NativeArtPaintPlan, id: string): Pag
   }
 
   return [];
+}
+
+function svgMarkerDefinitionFragments(
+  marker: NativeArtMarkerPlan,
+  id: string,
+  color: string,
+  opacity: number
+): PageSvgFragment[] {
+  const size = Math.max(2, marker.sizePx);
+  const half = size / 2;
+  const strokeWidth = Math.max(1.4, size * 0.16);
+  const strokeAttrs = {
+    stroke: color,
+    "stroke-opacity": opacity === 1 ? undefined : opacity,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "stroke-width": strokeWidth
+  };
+  const fillAttrs = {
+    fill: color,
+    "fill-opacity": opacity === 1 ? undefined : opacity
+  };
+  const child = marker.kind === "filled-arrow"
+    ? elementFragment("path", `${id}-shape`, {
+        d: `M ${formatNumber(size)} 0 L 0 ${formatNumber(-half)} L 0 ${formatNumber(half)} Z`,
+        ...fillAttrs,
+        stroke: "none"
+      })
+    : marker.kind === "open-arrow"
+      ? elementFragment("path", `${id}-shape`, {
+          d: `M ${formatNumber(size)} 0 L 0 ${formatNumber(-half)} M ${formatNumber(size)} 0 L 0 ${formatNumber(half)}`,
+          fill: "none",
+          ...strokeAttrs
+        })
+      : marker.kind === "chevron"
+        ? elementFragment("path", `${id}-shape`, {
+            d: `M ${formatNumber(size)} 0 L ${formatNumber(size * 0.18)} ${formatNumber(-half)} L ${formatNumber(size * 0.48)} 0 L ${formatNumber(size * 0.18)} ${formatNumber(half)} Z`,
+            ...fillAttrs,
+            stroke: "none"
+          })
+        : marker.kind === "diamond"
+          ? elementFragment("path", `${id}-shape`, {
+              d: `M ${formatNumber(size)} 0 L ${formatNumber(size * 0.5)} ${formatNumber(-half)} L 0 0 L ${formatNumber(size * 0.5)} ${formatNumber(half)} Z`,
+              ...fillAttrs,
+              stroke: "none"
+            })
+          : marker.kind === "dot"
+            ? elementFragment("circle", `${id}-shape`, {
+                cx: half,
+                cy: 0,
+                r: Math.max(1, size * 0.38),
+                ...fillAttrs
+              })
+            : elementFragment("path", `${id}-shape`, {
+                d: `M 0 ${formatNumber(-half)} L 0 ${formatNumber(half)}`,
+                fill: "none",
+                ...strokeAttrs
+              });
+
+  return [
+    elementFragment("defs", `${id}-defs`, {}, [
+      elementFragment("marker", id, {
+        id,
+        markerHeight: size,
+        markerUnits: "userSpaceOnUse",
+        markerWidth: size,
+        orient: marker.angleDegrees === 0 ? "auto-start-reverse" : formatNumber(marker.angleDegrees),
+        refX: marker.kind === "bar" ? 0 : size,
+        refY: 0,
+        viewBox: `0 ${formatNumber(-half)} ${formatNumber(size)} ${formatNumber(size)}`
+      }, [child])
+    ])
+  ];
 }
 
 function svgGradientStopFragments(stops: readonly NativeArtGradientStopPlan[], id: string): PageSvgFragment[] {

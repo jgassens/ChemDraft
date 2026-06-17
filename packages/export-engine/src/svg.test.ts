@@ -219,4 +219,39 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("export.svg.graphic_gloss_approximation");
     expect(result.contents).not.toContain("export.svg.graphic_tilt_approximation");
   });
+
+  it("exports native graphic arrow markers as SVG marker definitions", () => {
+    const arrow = {
+      id: "art_svg_arrow",
+      type: "graphic",
+      x: 120,
+      y: 140,
+      width: 82,
+      height: 46,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 2,
+        strokeLineCap: "butt"
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "SVG Graphic Arrow", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: arrow },
+      { now: timestamp }
+    );
+    const result = exportDocumentToSvg(document, { includeWarnings: true });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.contents).toContain('data-object-id="art_svg_arrow"');
+    expect(result.contents).toContain('id="graphic-marker-end-art_svg_arrow"');
+    expect(result.contents).toContain('markerUnits="userSpaceOnUse"');
+    expect(result.contents).toContain('marker-end="url(#graphic-marker-end-art_svg_arrow)"');
+    expect(result.contents).toContain('d="M 10 0 L 0 -5 L 0 5 Z"');
+  });
 });

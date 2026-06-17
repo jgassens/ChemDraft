@@ -1595,6 +1595,15 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
     );
   }
 
+  if (toolId === "arrow") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M3 11 L13 5" />
+        <path className="art-tool-stroke filled" d="M13 5 L10.2 5.2 L11.7 7.6 Z" />
+      </svg>
+    );
+  }
+
   if (toolId.startsWith("arc")) {
     return (
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>

@@ -134,6 +134,14 @@ export const GraphicObjectStyleSchema = z
   })
   .strict();
 
+export const GraphicMarkerSchema = z
+  .object({
+    kind: z.enum(["none", "open-arrow", "filled-arrow", "bar", "dot", "diamond", "chevron"]),
+    sizePx: z.number().finite().positive().optional(),
+    angleDegrees: z.number().finite().optional()
+  })
+  .strict();
+
 export const GraphicObjectDataSchema = z
   .object({
     lineStart: PointSchema.optional(),
@@ -146,6 +154,8 @@ export const GraphicObjectDataSchema = z
     arcRadiusY: z.number().finite().positive().optional(),
     arcStartRadians: z.number().finite().optional(),
     arcSweepRadians: z.number().finite().optional(),
+    markerStart: GraphicMarkerSchema.optional(),
+    markerEnd: GraphicMarkerSchema.optional(),
     cornerRadiusPx: z.number().finite().nonnegative().optional(),
     imageHref: z.string().optional(),
     imageMimeType: z.string().optional(),
@@ -503,6 +513,7 @@ export type TextObject = z.infer<typeof TextObjectSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
 export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
+export type GraphicMarker = z.infer<typeof GraphicMarkerSchema>;
 export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
 export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;

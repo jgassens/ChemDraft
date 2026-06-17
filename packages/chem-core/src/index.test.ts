@@ -663,6 +663,8 @@ describe("native document validation and serialization", () => {
         arcRadiusY: 24,
         arcStartRadians: -5 * Math.PI / 4,
         arcSweepRadians: Math.PI,
+        markerStart: { kind: "open-arrow", sizePx: 9 },
+        markerEnd: { kind: "filled-arrow", sizePx: 11, angleDegrees: 12 },
         lineStart: { x: 100, y: 160 },
         pathControlPoint: { x: 136, y: 104 },
         lineEnd: { x: 172, y: 160 },
@@ -706,6 +708,8 @@ describe("native document validation and serialization", () => {
         arcRadiusY: 24,
         arcStartRadians: -5 * Math.PI / 4,
         arcSweepRadians: Math.PI,
+        markerStart: { kind: "open-arrow", sizePx: 9 },
+        markerEnd: { kind: "filled-arrow", sizePx: 11, angleDegrees: 12 },
         pathControlPoint: { x: 136, y: 104 }
       }
     });

@@ -70,6 +70,7 @@ import {
   type PageSvgFragment,
   type PageSvgRenderPlan,
   type NativeArtPaintPlan,
+  type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
@@ -656,7 +657,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.18.53-codex";
+const CURRENT_BUILD_STAMP = "6.16.19.6-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -11662,6 +11663,50 @@ function reactSvgPaintDefinitions(paint: NativeArtPaintPlan, id: string) {
   return null;
 }
 
+function reactSvgMarkerDefinition(
+  marker: NonNullable<NativeArtVisualPlan["markerEnd"]>,
+  id: string,
+  color: string,
+  opacity: number
+) {
+  const size = Math.max(2, marker.sizePx);
+  const half = size / 2;
+  const sharedStroke = {
+    stroke: color,
+    strokeOpacity: opacity === 1 ? undefined : opacity,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const
+  };
+  const filled = marker.kind === "filled-arrow"
+    ? <path d={`M ${size} 0 L 0 ${-half} L 0 ${half} Z`} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />
+    : marker.kind === "open-arrow"
+      ? <path d={`M ${size} 0 L 0 ${-half} M ${size} 0 L 0 ${half}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />
+      : marker.kind === "chevron"
+        ? <path d={`M ${size} 0 L ${size * 0.18} ${-half} L ${size * 0.48} 0 L ${size * 0.18} ${half} Z`} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />
+        : marker.kind === "diamond"
+          ? <path d={`M ${size} 0 L ${size * 0.5} ${-half} L 0 0 L ${size * 0.5} ${half} Z`} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />
+          : marker.kind === "dot"
+            ? <circle cx={half} cy={0} r={Math.max(1, size * 0.38)} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} />
+            : <path d={`M 0 ${-half} L 0 ${half}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />;
+
+  return (
+    <defs key={`${id}-defs`}>
+      <marker
+        id={id}
+        markerHeight={size}
+        markerUnits="userSpaceOnUse"
+        markerWidth={size}
+        orient={marker.angleDegrees === 0 ? "auto-start-reverse" : `${marker.angleDegrees}deg`}
+        refX={marker.kind === "bar" ? 0 : size}
+        refY={0}
+        viewBox={`0 ${-half} ${size} ${size}`}
+      >
+        {filled}
+      </marker>
+    </defs>
+  );
+}
+
 function GraphicGlyph({ object }: { object: GraphicObject }) {
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
   const width = plan.width;
@@ -11677,6 +11722,8 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const gradientId = `graphic-gloss-${object.id}`;
   const fillPaintId = `graphic-fill-${object.id}`;
   const strokePaintId = `graphic-stroke-${object.id}`;
+  const markerStartId = `graphic-marker-start-${object.id}`;
+  const markerEndId = `graphic-marker-end-${object.id}`;
   const pathD = plan.pathD;
   const projectionTransform = plan.projectionTransform;
   const glossGradient = plan.glossGradient;
@@ -11692,6 +11739,10 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     strokeMiterlimit: plan.stroke.miterLimit,
     vectorEffect: "non-scaling-stroke" as const
   };
+  const sharedMarkerProps = {
+    markerStart: plan.markerStart ? `url(#${markerStartId})` : undefined,
+    markerEnd: plan.markerEnd ? `url(#${markerEndId})` : undefined
+  };
   return (
     <svg
       className="graphic-glyph"
@@ -11702,6 +11753,8 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     >
       {reactSvgPaintDefinitions(plan.fill.paint, fillPaintId)}
       {reactSvgPaintDefinitions(plan.stroke.paint, strokePaintId)}
+      {plan.markerStart ? reactSvgMarkerDefinition(plan.markerStart, markerStartId, strokeColor, plan.stroke.opacity) : null}
+      {plan.markerEnd ? reactSvgMarkerDefinition(plan.markerEnd, markerEndId, strokeColor, plan.stroke.opacity) : null}
       {fillMode === "gloss" ? (
         <defs>
           <radialGradient
@@ -11799,6 +11852,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               d={pathD}
               {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
               {...sharedStrokeProps}
+              {...sharedMarkerProps}
             />
           </>
         ) : line ? (
@@ -11822,6 +11876,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               x2={line.x2}
               y2={line.y2}
               {...sharedStrokeProps}
+              {...sharedMarkerProps}
             />
           </>
         ) : (

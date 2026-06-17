@@ -214,6 +214,34 @@ describe("art-engine native art planning", () => {
     });
   });
 
+  it("plans native graphic markers for open stroke paths", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerStart: { kind: "open-arrow", sizePx: 8 },
+        markerEnd: { kind: "filled-arrow", sizePx: 12, angleDegrees: 15 }
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.markerStart).toEqual({
+      kind: "open-arrow",
+      sizePx: 8,
+      angleDegrees: 0
+    });
+    expect(plan.markerEnd).toEqual({
+      kind: "filled-arrow",
+      sizePx: 12,
+      angleDegrees: 15
+    });
+    expect(plan.capabilities.supportsFill).toBe(false);
+  });
+
   it("derives fill and corner capabilities for custom path topology", () => {
     const rectangle = {
       ...baseGraphic,

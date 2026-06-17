@@ -203,6 +203,7 @@ export type NativeArtToolId =
   | "lineDashed"
   | "lineWavy"
   | "lineBold"
+  | "arrow"
   | "arc270"
   | "arc270Dashed"
   | "arc180"
@@ -279,6 +280,10 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artShapeTool("lineDashed", "Dashed Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeDasharray: "6 6" }),
   artShapeTool("lineWavy", "Wavy Line", "path", 82, 46, { artPathKind: "wavy" }, artOutlineStyle),
   artShapeTool("lineBold", "Bold Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeWidth: 6 }),
+  artShapeTool("arrow", "Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   artArcTool("arc270", "Three-quarter Arc", 270, false),
   artArcTool("arc270Dashed", "Dashed Three-quarter Arc", 270, true),
   artArcTool("arc180", "Half Arc", 180, false),

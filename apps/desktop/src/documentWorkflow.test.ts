@@ -3470,6 +3470,32 @@ describe("Phase 4 document workflow", () => {
     expect(graphicCdxmlWarnings.every((warning) => warning.objectId === objectId)).toBe(true);
   });
 
+  it("inserts native art arrows as path graphics with an end marker", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Arrow"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arrow to be selected.");
+    }
+
+    expect(graphicById(inserted, objectId)).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "arrow",
+        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+      },
+      style: {
+        artToolCommandId: "tool.art.arrow",
+        strokeLineCap: "butt"
+      }
+    });
+  });
+
   it("applies object-style commands to selected graphics without mutating text or molecules", () => {
     const withGraphic = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Style Selection"),
