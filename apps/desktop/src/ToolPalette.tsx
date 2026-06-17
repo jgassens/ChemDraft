@@ -1628,6 +1628,16 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
     );
   }
 
+  if (toolId === "pen") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M2.6 12.4 C5.4 4.2 10.8 3.4 14.4 8.4" />
+        <path className="art-tool-stroke filled" d="M2.3 12.7 L4.5 11.9 L3.1 10.5 Z" />
+        <circle className="art-tool-stroke" cx="8.3" cy="5.7" r="1" />
+      </svg>
+    );
+  }
+
   if (toolId === "arrow") {
     return (
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>

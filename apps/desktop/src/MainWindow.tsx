@@ -162,6 +162,7 @@ import {
   getSelectedTextObject,
   insertNativeTextObject,
   insertNativeArtGraphicObject,
+  nativeBezierPathDocument,
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
@@ -416,17 +417,33 @@ type FreehandArtDragState = {
   latestPoint: ClientPoint;
   dragging: boolean;
 };
-type PolylineArtDrawState = {
+type PathArtDrawKind = "polyline" | "bezier";
+type PathArtDrawNode = {
+  point: ClientPoint;
+  inControl?: ClientPoint;
+  outControl?: ClientPoint;
+};
+type PathArtDrawState = {
   commandId: string;
+  pathKind: PathArtDrawKind;
   startDocument: ChemDraftDocument;
-  points: ClientPoint[];
+  nodes: PathArtDrawNode[];
   latestPoint?: ClientPoint;
   closed: boolean;
 };
-type PolylineArtPreviewState = {
-  points: ClientPoint[];
+type PathArtPreviewState = {
+  pathKind: PathArtDrawKind;
+  nodes: PathArtDrawNode[];
   latestPoint?: ClientPoint;
   closed: boolean;
+};
+type BezierArtNodeDragState = {
+  pointerId: number;
+  commandId: string;
+  nodeIndex: number;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  dragging: boolean;
 };
 type ObjectRotateDragState = {
   pointerId: number;
@@ -718,7 +735,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.12.7-codex";
+const CURRENT_BUILD_STAMP = "6.17.12.28-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -885,7 +902,8 @@ export function MainWindow({
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
-  const polylineArtDrawRef = useRef<PolylineArtDrawState | null>(null);
+  const pathArtDrawRef = useRef<PathArtDrawState | null>(null);
+  const bezierArtNodeDragRef = useRef<BezierArtNodeDragState | null>(null);
   const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
   const objectTransformPreviewRafRef = useRef<number | undefined>(undefined);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
@@ -915,7 +933,7 @@ export function MainWindow({
   );
   const document = documentHistory.present;
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
-  const [polylineArtPreview, setPolylineArtPreview] = useState<PolylineArtPreviewState | undefined>();
+  const [pathArtPreview, setPathArtPreview] = useState<PathArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
@@ -3419,10 +3437,11 @@ export function MainWindow({
     }
   }, [clearFreehandArtPreview]);
 
-  const syncPolylineArtPreview = useCallback((draw: PolylineArtDrawState | null) => {
-    setPolylineArtPreview(draw
+  const syncPathArtPreview = useCallback((draw: PathArtDrawState | null) => {
+    setPathArtPreview(draw
       ? {
-          points: [...draw.points],
+          pathKind: draw.pathKind,
+          nodes: draw.nodes.map((node) => ({ ...node })),
           latestPoint: draw.latestPoint,
           closed: draw.closed
         }
@@ -3430,10 +3449,11 @@ export function MainWindow({
     );
   }, []);
 
-  const clearNativePolylineArtDraw = useCallback(() => {
-    polylineArtDrawRef.current = null;
-    syncPolylineArtPreview(null);
-  }, [syncPolylineArtPreview]);
+  const clearNativePathArtDraw = useCallback(() => {
+    pathArtDrawRef.current = null;
+    bezierArtNodeDragRef.current = null;
+    syncPathArtPreview(null);
+  }, [syncPathArtPreview]);
 
   const activateSelectToolAfterArtCommit = useCallback(() => {
     const selectToolState = createActiveToolState("tool.select");
@@ -3442,26 +3462,28 @@ export function MainWindow({
     void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
   }, []);
 
-  const finishNativePolylineArtDraw = useCallback((options: { point?: ClientPoint; closed?: boolean } = {}): boolean => {
-    const draw = polylineArtDrawRef.current;
+  const finishNativePathArtDraw = useCallback((options: { point?: ClientPoint; closed?: boolean } = {}): boolean => {
+    const draw = pathArtDrawRef.current;
     if (!draw) {
       return false;
     }
 
-    const points = [...draw.points];
-    const lastPoint = points[points.length - 1];
+    const nodes = draw.nodes.map((node) => ({ ...node }));
+    const lastNode = nodes[nodes.length - 1];
     if (
       options.point &&
-      (!lastPoint || clientPointDistance(lastPoint, options.point) >= 0.75)
+      (!lastNode || clientPointDistance(lastNode.point, options.point) >= 0.75)
     ) {
-      points.push(options.point);
+      nodes.push({ point: options.point });
     }
 
     const closed = options.closed ?? draw.closed;
-    const nextDocument = nativePolylinePathDocument(draw.startDocument, points, draw.commandId, { closed });
-    clearNativePolylineArtDraw();
+    const nextDocument = draw.pathKind === "bezier"
+      ? nativeBezierPathDocument(draw.startDocument, nodes, draw.commandId, { closed })
+      : nativePolylinePathDocument(draw.startDocument, nodes.map((node) => node.point), draw.commandId, { closed });
+    clearNativePathArtDraw();
     if (nextDocument === draw.startDocument) {
-      setStatus("Polyline needs at least two points");
+      setStatus(draw.pathKind === "bezier" ? "Pen path needs at least two points" : "Polyline needs at least two points");
       return false;
     }
 
@@ -3475,36 +3497,51 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     activateSelectToolAfterArtCommit();
-    setStatus(closed ? "Inserted closed polyline" : "Inserted polyline");
+    setStatus(draw.pathKind === "bezier"
+      ? closed ? "Inserted closed Bezier path" : "Inserted Bezier path"
+      : closed ? "Inserted closed polyline" : "Inserted polyline");
     return changed;
   }, [
     activateSelectToolAfterArtCommit,
     assignHoveredNativeDeleteTarget,
-    clearNativePolylineArtDraw,
+    clearNativePathArtDraw,
     commitDocumentChange
   ]);
 
-  const startOrAppendNativePolylineArtPoint = useCallback((
+  const startOrAppendNativePathArtPoint = useCallback((
     point: ClientPoint,
     commandId: string,
-    options: { finish?: boolean } = {}
+    pathKind: PathArtDrawKind,
+    options: { finish?: boolean; pointerId?: number; currentTarget?: Element } = {}
   ) => {
-    const current = polylineArtDrawRef.current;
+    const current = pathArtDrawRef.current;
     if (options.finish && current?.commandId === commandId) {
-      finishNativePolylineArtDraw({ point });
+      finishNativePathArtDraw({ point });
       return;
     }
 
     if (!current || current.commandId !== commandId) {
-      const draw: PolylineArtDrawState = {
+      const draw: PathArtDrawState = {
         commandId,
+        pathKind,
         startDocument: documentRef.current,
-        points: [point],
+        nodes: [{ point }],
         latestPoint: point,
         closed: false
       };
-      polylineArtDrawRef.current = draw;
-      syncPolylineArtPreview(draw);
+      pathArtDrawRef.current = draw;
+      syncPathArtPreview(draw);
+      if (pathKind === "bezier" && options.pointerId !== undefined) {
+        bezierArtNodeDragRef.current = {
+          pointerId: options.pointerId,
+          commandId,
+          nodeIndex: 0,
+          startPoint: point,
+          latestPoint: point,
+          dragging: false
+        };
+        options.currentTarget?.setPointerCapture(options.pointerId);
+      }
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
@@ -3513,51 +3550,107 @@ export function MainWindow({
       assignHoveredNativeDeleteTarget(undefined);
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
-      setStatus("Started polyline");
+      setStatus(pathKind === "bezier" ? "Started Pen path" : "Started polyline");
       return;
     }
 
-    const firstPoint = current.points[0];
+    const firstPoint = current.nodes[0]?.point;
     if (
       firstPoint &&
-      current.points.length >= 3 &&
-      clientPointDistance(firstPoint, point) <= polylineCloseTolerance(viewportRef.current.scale)
+      current.nodes.length >= 3 &&
+      clientPointDistance(firstPoint, point) <= pathCloseTolerance(viewportRef.current.scale)
     ) {
       current.closed = true;
-      syncPolylineArtPreview(current);
-      finishNativePolylineArtDraw({ closed: true });
+      syncPathArtPreview(current);
+      finishNativePathArtDraw({ closed: true });
       return;
     }
 
-    const lastPoint = current.points[current.points.length - 1];
-    if (!lastPoint || clientPointDistance(lastPoint, point) >= 0.75) {
-      current.points.push(point);
+    const lastNode = current.nodes[current.nodes.length - 1];
+    if (!lastNode || clientPointDistance(lastNode.point, point) >= 0.75) {
+      current.nodes.push({ point });
     }
     current.latestPoint = point;
-    syncPolylineArtPreview(current);
-    setStatus(`${current.points.length} polyline points`);
+    if (pathKind === "bezier" && options.pointerId !== undefined) {
+      bezierArtNodeDragRef.current = {
+        pointerId: options.pointerId,
+        commandId,
+        nodeIndex: current.nodes.length - 1,
+        startPoint: point,
+        latestPoint: point,
+        dragging: false
+      };
+      options.currentTarget?.setPointerCapture(options.pointerId);
+    }
+    syncPathArtPreview(current);
+    setStatus(`${current.nodes.length} ${pathKind === "bezier" ? "Pen" : "polyline"} points`);
   }, [
     assignHoveredNativeDeleteTarget,
-    finishNativePolylineArtDraw,
-    syncPolylineArtPreview
+    finishNativePathArtDraw,
+    syncPathArtPreview
   ]);
 
-  const updateNativePolylineArtPreview = useCallback((point: ClientPoint) => {
-    const draw = polylineArtDrawRef.current;
+  const updateNativePathArtPreview = useCallback((point: ClientPoint) => {
+    const draw = pathArtDrawRef.current;
     if (!draw) {
       return;
     }
 
     draw.latestPoint = point;
-    syncPolylineArtPreview(draw);
-  }, [syncPolylineArtPreview]);
+    syncPathArtPreview(draw);
+  }, [syncPathArtPreview]);
+
+  const updateBezierArtNodeDrag = useCallback((drag: BezierArtNodeDragState, point: ClientPoint) => {
+    const draw = pathArtDrawRef.current;
+    const node = draw?.nodes[drag.nodeIndex];
+    if (!draw || draw.pathKind !== "bezier" || !node) {
+      return;
+    }
+
+    drag.latestPoint = point;
+    const dx = point.x - drag.startPoint.x;
+    const dy = point.y - drag.startPoint.y;
+    const dragging = drag.dragging || Math.hypot(dx, dy) >= GRAPHIC_HANDLE_DRAG_THRESHOLD;
+    drag.dragging = dragging;
+    if (dragging) {
+      if (drag.nodeIndex > 0) {
+        node.inControl = {
+          x: drag.startPoint.x - dx,
+          y: drag.startPoint.y - dy
+        };
+      }
+      node.outControl = {
+        x: drag.startPoint.x + dx,
+        y: drag.startPoint.y + dy
+      };
+    }
+    draw.latestPoint = undefined;
+    syncPathArtPreview(draw);
+  }, [syncPathArtPreview]);
+
+  const clearBezierArtNodeDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
+    const drag = bezierArtNodeDragRef.current;
+    if (!drag || (event && drag.pointerId !== event.pointerId)) {
+      return;
+    }
+
+    bezierArtNodeDragRef.current = null;
+    const page = pageRef.current;
+    if (page?.hasPointerCapture(drag.pointerId)) {
+      page.releasePointerCapture(drag.pointerId);
+    }
+    const currentTarget = event?.currentTarget;
+    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
+      currentTarget.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
 
   useEffect(() => {
-    const draw = polylineArtDrawRef.current;
+    const draw = pathArtDrawRef.current;
     if (draw && activeToolState.activeCommandId !== draw.commandId) {
-      clearNativePolylineArtDraw();
+      clearNativePathArtDraw();
     }
-  }, [activeToolState.activeCommandId, clearNativePolylineArtDraw]);
+  }, [activeToolState.activeCommandId, clearNativePathArtDraw]);
 
   const scheduleObjectTransformPreview = useCallback((nextPreview: ObjectTransformPreviewState | undefined) => {
     pendingObjectTransformPreviewRef.current = nextPreview;
@@ -3642,33 +3735,33 @@ export function MainWindow({
         return;
       }
 
-      const polylineArtDraw = polylineArtDrawRef.current;
-      if (polylineArtDraw) {
+      const pathArtDraw = pathArtDrawRef.current;
+      if (pathArtDraw) {
         if (event.key === "Escape") {
           event.preventDefault();
-          clearNativePolylineArtDraw();
-          setStatus("Polyline canceled");
+          clearNativePathArtDraw();
+          setStatus(pathArtDraw.pathKind === "bezier" ? "Pen path canceled" : "Polyline canceled");
           return;
         }
 
         if (event.key === "Enter") {
           event.preventDefault();
-          finishNativePolylineArtDraw();
+          finishNativePathArtDraw();
           return;
         }
 
         if (event.key === "Backspace" || event.key === "Delete") {
           event.preventDefault();
-          if (polylineArtDraw.points.length <= 1) {
-            clearNativePolylineArtDraw();
-            setStatus("Polyline canceled");
+          if (pathArtDraw.nodes.length <= 1) {
+            clearNativePathArtDraw();
+            setStatus(pathArtDraw.pathKind === "bezier" ? "Pen path canceled" : "Polyline canceled");
             return;
           }
 
-          polylineArtDraw.points.pop();
-          polylineArtDraw.latestPoint = polylineArtDraw.points[polylineArtDraw.points.length - 1];
-          syncPolylineArtPreview(polylineArtDraw);
-          setStatus(`${polylineArtDraw.points.length} polyline points`);
+          pathArtDraw.nodes.pop();
+          pathArtDraw.latestPoint = pathArtDraw.nodes[pathArtDraw.nodes.length - 1]?.point;
+          syncPathArtPreview(pathArtDraw);
+          setStatus(`${pathArtDraw.nodes.length} ${pathArtDraw.pathKind === "bezier" ? "Pen" : "polyline"} points`);
           return;
         }
       }
@@ -3714,13 +3807,13 @@ export function MainWindow({
     };
   }, [
     clearNativeFreehandArtDrag,
-    clearNativePolylineArtDraw,
+    clearNativePathArtDraw,
     clearProjectedPlaneTiltDrag,
-    finishNativePolylineArtDraw,
+    finishNativePathArtDraw,
     replacePresentDocument,
     selectedNativeMoleculePart,
     shortcutRegistry,
-    syncPolylineArtPreview
+    syncPathArtPreview
   ]);
 
   useEffect(() => {
@@ -5434,7 +5527,15 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (activeNativeArtTool.commandId === "tool.art.polyline") {
-        startOrAppendNativePolylineArtPoint(point, activeNativeArtTool.commandId, { finish: event.detail >= 2 });
+        startOrAppendNativePathArtPoint(point, activeNativeArtTool.commandId, "polyline", { finish: event.detail >= 2 });
+        return;
+      }
+      if (activeNativeArtTool.commandId === "tool.art.pen") {
+        startOrAppendNativePathArtPoint(point, activeNativeArtTool.commandId, "bezier", {
+          currentTarget: event.currentTarget,
+          finish: event.detail >= 2,
+          pointerId: event.pointerId
+        });
         return;
       }
       if (nativeArtToolIsFreehand(activeNativeArtTool.commandId)) {
@@ -5473,7 +5574,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
-    startOrAppendNativePolylineArtPoint,
+    startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativePlacementDrag
   ]);
@@ -5784,11 +5885,21 @@ export function MainWindow({
       return;
     }
 
-    if (polylineArtDrawRef.current) {
+    const bezierArtNodeDrag = bezierArtNodeDragRef.current;
+    if (bezierArtNodeDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event);
       if (point) {
-        updateNativePolylineArtPreview(point);
+        updateBezierArtNodeDrag(bezierArtNodeDrag, point);
+      }
+      return;
+    }
+
+    if (pathArtDrawRef.current) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (point) {
+        updateNativePathArtPreview(point);
       }
       return;
     }
@@ -5822,7 +5933,8 @@ export function MainWindow({
     previewGraphicPathEdit,
     previewGraphicMarkerDrag,
     previewNativeFreehandArtDrag,
-    updateNativePolylineArtPreview,
+    updateBezierArtNodeDrag,
+    updateNativePathArtPreview,
     previewNativePartDrag,
     previewNativePlacementDrag,
     previewTextResize,
@@ -6027,6 +6139,15 @@ export function MainWindow({
       return;
     }
 
+    const bezierArtNodeDrag = bezierArtNodeDragRef.current;
+    if (bezierArtNodeDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? bezierArtNodeDrag.latestPoint;
+      updateBezierArtNodeDrag(bezierArtNodeDrag, point);
+      clearBezierArtNodeDrag(event);
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (!marquee || marquee.pointerId !== event.pointerId) {
       return;
@@ -6062,6 +6183,7 @@ export function MainWindow({
     clearGraphicPathEditDrag,
     clearGraphicMarkerDrag,
     clearNativeFreehandArtDrag,
+    clearBezierArtNodeDrag,
     clearProjectedPlaneTiltDrag,
     clearTransientInteractionChrome,
     clearNativePlacementDrag,
@@ -6078,6 +6200,7 @@ export function MainWindow({
     commitObjectResize,
     commitProjectedPlaneTilt,
     cycleNativeBondOrder,
+    updateBezierArtNodeDrag,
     document.pages,
     groupProjectedPlaneTiltFromDrag,
     groupTransformDocument,
@@ -6239,7 +6362,18 @@ export function MainWindow({
     if (activeNativeArtTool?.commandId === "tool.art.polyline" && point) {
       event.preventDefault();
       event.stopPropagation();
-      startOrAppendNativePolylineArtPoint(point, activeNativeArtTool.commandId, { finish: event.detail >= 2 });
+      startOrAppendNativePathArtPoint(point, activeNativeArtTool.commandId, "polyline", { finish: event.detail >= 2 });
+      return;
+    }
+
+    if (activeNativeArtTool?.commandId === "tool.art.pen" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      startOrAppendNativePathArtPoint(point, activeNativeArtTool.commandId, "bezier", {
+        currentTarget: event.currentTarget,
+        finish: event.detail >= 2,
+        pointerId: event.pointerId
+      });
       return;
     }
 
@@ -6578,7 +6712,7 @@ export function MainWindow({
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
     startAtomLabelEdit,
-    startOrAppendNativePolylineArtPoint,
+    startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag
   ]);
 
@@ -7382,10 +7516,19 @@ export function MainWindow({
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
-    if (polylineArtDrawRef.current) {
+    const bezierArtNodeDrag = bezierArtNodeDragRef.current;
+    if (bezierArtNodeDrag?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
       if (point) {
-        updateNativePolylineArtPreview(point);
+        updateBezierArtNodeDrag(bezierArtNodeDrag, point);
+      }
+      return;
+    }
+
+    if (pathArtDrawRef.current) {
+      const point = pagePointFromPointerEvent(event);
+      if (point) {
+        updateNativePathArtPreview(point);
       }
       return;
     }
@@ -7631,11 +7774,21 @@ export function MainWindow({
     previewNativePartDrag,
     previewTextResize,
     updateFreeformBondPreview,
-    updateNativePolylineArtPreview,
+    updateBezierArtNodeDrag,
+    updateNativePathArtPreview,
     updateNativeCanvasHover
   ]);
 
   const handleObjectPointerUp = useCallback((objectId: string, event: ObjectPointerEvent) => {
+    const bezierArtNodeDrag = bezierArtNodeDragRef.current;
+    if (bezierArtNodeDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? bezierArtNodeDrag.latestPoint;
+      updateBezierArtNodeDrag(bezierArtNodeDrag, point);
+      clearBezierArtNodeDrag(event);
+      return;
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId && textResize.objectId === objectId) {
       event.stopPropagation();
@@ -7794,6 +7947,7 @@ export function MainWindow({
     clearNativeBondEditDrag,
     clearNativeBondDrag,
     clearNativePartDrag,
+    clearBezierArtNodeDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
     clearObjectResizeDrag,
@@ -7808,6 +7962,7 @@ export function MainWindow({
     commitObjectResize,
     commitGraphicCornerRadius,
     commitTextResize,
+    updateBezierArtNodeDrag,
     commitObjectDrag,
     commitObjectRotateDrag,
     cycleNativeBondOrder,
@@ -7858,6 +8013,11 @@ export function MainWindow({
       replacePresentDocument(graphicMarkerDrag.startDocument);
     }
 
+    const bezierArtNodeDrag = bezierArtNodeDragRef.current;
+    if (bezierArtNodeDrag?.pointerId === event.pointerId) {
+      clearBezierArtNodeDrag(event);
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
@@ -7868,6 +8028,7 @@ export function MainWindow({
     clearGraphicCornerRadiusDrag(event);
     clearGraphicPathEditDrag(event);
     clearGraphicMarkerDrag(event);
+    clearBezierArtNodeDrag(event);
     clearObjectDrag(event);
     clearNativeBondEditDrag(event);
     clearNativeBondDrag(event);
@@ -7882,6 +8043,7 @@ export function MainWindow({
     clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
     clearGraphicMarkerDrag,
+    clearBezierArtNodeDrag,
     clearObjectResizeDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
@@ -8061,26 +8223,30 @@ export function MainWindow({
                     data-freehand-art-preview-path="true"
                   />
                 </svg>
-                {polylineArtPreview ? (
+                {pathArtPreview ? (
                   <svg
-                    className="polyline-art-preview-layer"
+                    className="path-art-preview-layer"
                     viewBox={`0 0 ${activePage.width} ${activePage.height}`}
                     aria-hidden="true"
-                    data-polyline-art-preview-layer="true"
+                    data-path-art-kind={pathArtPreview.pathKind}
+                    data-path-art-preview-layer="true"
+                    data-polyline-art-preview-layer={pathArtPreview.pathKind === "polyline" ? "true" : undefined}
                   >
                     <path
-                      className="polyline-art-preview-path"
-                      d={polylineArtPreviewPathD(polylineArtPreview)}
-                      fill={polylineArtPreview.closed ? "rgba(29, 127, 104, 0.08)" : "none"}
-                      data-polyline-art-preview-path="true"
+                      className="path-art-preview-path"
+                      d={pathArtPreviewPathD(pathArtPreview)}
+                      fill={pathArtPreview.closed ? "rgba(29, 127, 104, 0.08)" : "none"}
+                      data-path-art-preview-path="true"
+                      data-polyline-art-preview-path={pathArtPreview.pathKind === "polyline" ? "true" : undefined}
                     />
-                    {polylineArtPreview.points.map((point, index) => (
+                    {pathArtPreview.nodes.map((node, index) => (
                       <circle
-                        className="polyline-art-preview-node"
-                        cx={point.x}
-                        cy={point.y}
-                        data-polyline-art-preview-node={index}
-                        key={`${index}:${point.x}:${point.y}`}
+                        className="path-art-preview-node"
+                        cx={node.point.x}
+                        cy={node.point.y}
+                        data-path-art-preview-node={index}
+                        data-polyline-art-preview-node={pathArtPreview.pathKind === "polyline" ? index : undefined}
+                        key={`${index}:${node.point.x}:${node.point.y}`}
                         r={4}
                       />
                     ))}
@@ -8971,33 +9137,61 @@ function freehandArtPreviewPathD(points: readonly GraphicFreehandPoint[]): strin
   ].join(" ");
 }
 
-function polylineArtPreviewPathD(preview: PolylineArtPreviewState): string {
-  const points = [...preview.points];
-  const lastPoint = points[points.length - 1];
+function pathArtPreviewPathD(preview: PathArtPreviewState): string {
+  const nodes = preview.nodes.map((node) => ({ ...node }));
+  const lastNode = nodes[nodes.length - 1];
   if (
     preview.latestPoint &&
-    (!lastPoint || clientPointDistance(lastPoint, preview.latestPoint) >= 0.75)
+    (!lastNode || clientPointDistance(lastNode.point, preview.latestPoint) >= 0.75)
   ) {
-    points.push(preview.latestPoint);
+    nodes.push({ point: preview.latestPoint });
   }
 
-  const [first, ...rest] = points;
+  const [first, ...rest] = nodes;
   if (!first) {
     return "";
   }
 
   if (rest.length === 0) {
-    return `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)} L ${formatSvgNumber(first.x + 0.01)} ${formatSvgNumber(first.y)}`;
+    return `M ${formatSvgNumber(first.point.x)} ${formatSvgNumber(first.point.y)} L ${formatSvgNumber(first.point.x + 0.01)} ${formatSvgNumber(first.point.y)}`;
   }
 
-  return [
-    `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)}`,
-    ...rest.map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`),
-    preview.closed ? "Z" : undefined
-  ].filter(Boolean).join(" ");
+  const commands = [`M ${formatSvgPreviewPoint(first.point)}`];
+  for (let index = 1; index < nodes.length; index += 1) {
+    commands.push(pathArtPreviewSegmentCommand(preview.pathKind, nodes[index - 1]!, nodes[index]!));
+  }
+  if (preview.closed) {
+    const last = nodes[nodes.length - 1]!;
+    if (preview.pathKind === "bezier" && (last.outControl || first.inControl)) {
+      commands.push(pathArtPreviewSegmentCommand(preview.pathKind, last, first));
+    }
+    commands.push("Z");
+  }
+  return commands.join(" ");
 }
 
-function polylineCloseTolerance(scale: number): number {
+function pathArtPreviewSegmentCommand(
+  pathKind: PathArtDrawKind,
+  startNode: PathArtDrawNode,
+  endNode: PathArtDrawNode
+): string {
+  if (pathKind === "bezier" && (startNode.outControl || endNode.inControl)) {
+    return [
+      "C",
+      formatSvgPreviewPoint(startNode.outControl ?? startNode.point),
+      formatSvgPreviewPoint(endNode.inControl ?? endNode.point),
+      formatSvgPreviewPoint(endNode.point)
+    ].join(" ");
+  }
+
+  return `L ${formatSvgPreviewPoint(endNode.point)}`;
+}
+
+function formatSvgPreviewPoint(point: ClientPoint): string {
+  return `${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`;
+}
+
+function pathCloseTolerance(scale: number): number {
   return Math.max(6, 10 / Math.max(scale, 0.1));
 }
 

@@ -87,6 +87,7 @@ import {
   nativeGraphicPathEditPoints,
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
+  nativeBezierPathDocument,
   nativePolylinePathDocument,
   openNativeDocument,
   prepareGraphicPathForDirectEdit,
@@ -3589,6 +3590,67 @@ describe("Phase 4 document workflow", () => {
     expect(graphic.y).toBeLessThanOrEqual(140);
     expect(graphic.x + graphic.width).toBeGreaterThanOrEqual(220);
     expect(graphic.y + graphic.height).toBeGreaterThanOrEqual(224);
+  });
+
+  it("creates native Bezier paths from Pen nodes and controls", () => {
+    const inserted = nativeBezierPathDocument(
+      createPhase4Document("Native Pen Path"),
+      [
+        {
+          point: { x: 160, y: 140 },
+          outControl: { x: 188, y: 116 }
+        },
+        {
+          point: { x: 240, y: 188 },
+          inControl: { x: 212, y: 164 },
+          outControl: { x: 268, y: 212 }
+        },
+        {
+          point: { x: 292, y: 148 },
+          inControl: { x: 272, y: 172 }
+        }
+      ],
+      "tool.art.pen"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected Pen path to be selected.");
+    }
+
+    const graphic = graphicById(inserted, objectId);
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "bezier",
+        artToolId: "pen",
+        pathClosed: false,
+        pathNodes: [
+          {
+            point: { x: 160, y: 140 },
+            outControl: { x: 188, y: 116 }
+          },
+          {
+            point: { x: 240, y: 188 },
+            inControl: { x: 212, y: 164 },
+            outControl: { x: 268, y: 212 }
+          },
+          {
+            point: { x: 292, y: 148 },
+            inControl: { x: 272, y: 172 }
+          }
+        ]
+      },
+      style: {
+        artToolCommandId: "tool.art.pen",
+        strokeColor: "#111111",
+        fillColor: "none"
+      }
+    });
+    expect(graphic.x).toBeLessThanOrEqual(160);
+    expect(graphic.y).toBeLessThanOrEqual(116);
+    expect(graphic.x + graphic.width).toBeGreaterThanOrEqual(292);
+    expect(graphic.y + graphic.height).toBeGreaterThanOrEqual(212);
   });
 
   it("creates native freehand pencil and brush strokes from raw pressure points", () => {

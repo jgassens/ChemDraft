@@ -210,6 +210,7 @@ export type NativeArtToolId =
   | "lineDashed"
   | "lineWavy"
   | "lineBold"
+  | "pen"
   | "polyline"
   | "pencil"
   | "brush"
@@ -292,6 +293,7 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artShapeTool("lineDashed", "Dashed Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeDasharray: "6 6" }),
   artShapeTool("lineWavy", "Wavy Line", "path", 82, 46, { artPathKind: "wavy" }, artOutlineStyle),
   artShapeTool("lineBold", "Bold Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeWidth: 6 }),
+  artShapeTool("pen", "Pen", "path", 1, 1, { artPathKind: "bezier" }, artOutlineStyle),
   artShapeTool("polyline", "Polyline", "path", 96, 72, {
     artPathKind: "polyline",
     pathNodes: [
@@ -1083,6 +1085,75 @@ export function nativePolylinePathDocument(
   );
 }
 
+export function createNativeBezierGraphicObject(
+  document: ChemDraftDocument,
+  nodes: ReadonlyArray<NonNullable<GraphicObjectData["pathNodes"]>[number]>,
+  commandId: string = "tool.art.pen",
+  options: { closed?: boolean } = {}
+): GraphicObject | undefined {
+  const tool = nativeArtToolForCommand(commandId);
+  if (!tool || tool.data.artPathKind !== "bezier") {
+    return undefined;
+  }
+
+  const cleanNodes = normalizePathNodes(nodes);
+  if (cleanNodes.length < 2) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const bounds = nativePathNodeBounds(cleanNodes, page.width, page.height, tool.style.strokeWidth);
+  return {
+    id: nextObjectId(document, `art_${tool.id}`),
+    type: "graphic",
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    rotation: 0,
+    style: {
+      ...tool.style,
+      source: "chemdraft-native-art",
+      artToolCommandId: tool.commandId
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    graphicKind: tool.graphicKind,
+    data: {
+      ...tool.data,
+      artPathKind: "bezier",
+      pathNodes: cleanNodes,
+      pathClosed: options.closed === true,
+      artToolId: tool.id
+    }
+  };
+}
+
+export function nativeBezierPathDocument(
+  document: ChemDraftDocument,
+  nodes: ReadonlyArray<NonNullable<GraphicObjectData["pathNodes"]>[number]>,
+  commandId: string = "tool.art.pen",
+  options: { closed?: boolean } = {}
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeBezierGraphicObject(document, nodes, commandId, options);
+  if (!object) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 function nativeArtToolDataForPlacement(
   data: GraphicObjectData,
   x: number,
@@ -1137,7 +1208,62 @@ function normalizePolylinePoints(points: readonly PagePoint[]): PagePoint[] {
     }, []);
 }
 
+function normalizePathNodes(
+  nodes: ReadonlyArray<NonNullable<GraphicObjectData["pathNodes"]>[number]>
+): NonNullable<GraphicObjectData["pathNodes"]> {
+  return nodes
+    .filter((node) => Number.isFinite(node.point.x) && Number.isFinite(node.point.y))
+    .reduce<NonNullable<GraphicObjectData["pathNodes"]>>((normalized, node) => {
+      const point = roundPagePoint(node.point);
+      const previous = normalized[normalized.length - 1];
+      if (previous && Math.hypot(previous.point.x - point.x, previous.point.y - point.y) < 0.75) {
+        return normalized;
+      }
+
+      normalized.push({
+        point,
+        ...(finitePoint(node.inControl) ? { inControl: roundPagePoint(node.inControl) } : {}),
+        ...(finitePoint(node.outControl) ? { outControl: roundPagePoint(node.outControl) } : {})
+      });
+      return normalized;
+    }, []);
+}
+
+function finitePoint(point: PagePoint | undefined): point is PagePoint {
+  return point !== undefined && Number.isFinite(point.x) && Number.isFinite(point.y);
+}
+
+function roundPagePoint(point: PagePoint): PagePoint {
+  return {
+    x: roundFreehandNumber(point.x),
+    y: roundFreehandNumber(point.y)
+  };
+}
+
+function nativePathNodeBounds(
+  nodes: ReadonlyArray<NonNullable<GraphicObjectData["pathNodes"]>[number]>,
+  pageWidth: number,
+  pageHeight: number,
+  strokeWidth: GraphicObjectStyle["strokeWidth"]
+): PageRect {
+  return nativeBoundsForPagePoints(
+    nodes.flatMap((node) => [node.point, node.inControl, node.outControl]).filter((point): point is PagePoint => point !== undefined),
+    pageWidth,
+    pageHeight,
+    strokeWidth
+  );
+}
+
 function nativePolylineBounds(
+  points: readonly PagePoint[],
+  pageWidth: number,
+  pageHeight: number,
+  strokeWidth: GraphicObjectStyle["strokeWidth"]
+): PageRect {
+  return nativeBoundsForPagePoints(points, pageWidth, pageHeight, strokeWidth);
+}
+
+function nativeBoundsForPagePoints(
   points: readonly PagePoint[],
   pageWidth: number,
   pageHeight: number,

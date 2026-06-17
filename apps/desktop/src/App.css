@@ -1671,7 +1671,7 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
-.polyline-art-preview-layer {
+.path-art-preview-layer {
   position: absolute;
   inset: 0;
   z-index: 46;
@@ -1682,7 +1682,7 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
-.polyline-art-preview-path {
+.path-art-preview-path {
   stroke: #1d7f68;
   stroke-width: 2;
   stroke-linecap: round;
@@ -1691,7 +1691,7 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
-.polyline-art-preview-node {
+.path-art-preview-node {
   fill: #f7faf9;
   stroke: #1d7f68;
   stroke-width: 2;

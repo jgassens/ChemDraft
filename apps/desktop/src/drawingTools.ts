@@ -391,6 +391,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.lineDashed", "Dashed Line", "bond"],
     ["tool.art.lineWavy", "Wavy Line", "mechanism"],
     ["tool.art.lineBold", "Bold Line", "bond"],
+    ["tool.art.pen", "Pen", "mechanism"],
     ["tool.art.polyline", "Polyline", "bond"],
     ["tool.art.pencil", "Pencil", "mechanism"],
     ["tool.art.brush", "Brush", "style"],
