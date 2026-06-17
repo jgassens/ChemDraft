@@ -160,6 +160,11 @@ describe("graphic path direct editing interactions", () => {
     };
   }
 
+  function expectPositionUsesPageScale(element: HTMLElement) {
+    expect(element.style.left).toContain("var(--page-scale)");
+    expect(element.style.top).toContain("var(--page-scale)");
+  }
+
   function expectProjectedPointShift(
     actual: { x: number; y: number } | undefined,
     before: { x: number; y: number },
@@ -296,6 +301,37 @@ describe("graphic path direct editing interactions", () => {
       kind: "filled-arrow",
       sizePx: 10
     });
+  });
+
+  it("positions native art path handles through the active page scale", async () => {
+    const arrowDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Scaled Arrowhead Handles"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    await renderMainWindow(arrowDocument);
+
+    expectPositionUsesPageScale(pathHandle("start"));
+    expectPositionUsesPageScale(pathHandle("middle"));
+    expectPositionUsesPageScale(pathHandle("end"));
+    expectPositionUsesPageScale(markerHandle("markerEnd"));
+  });
+
+  it("positions native art corner-radius handles through the active page scale", async () => {
+    const roundedRectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Scaled Corner Radius Handle"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRectShadow"
+    );
+    await renderMainWindow(roundedRectDocument);
+    const cornerHandle = container.querySelector<HTMLElement>("[data-graphic-corner-radius-handle=\"true\"]");
+    const cornerReadout = container.querySelector<HTMLElement>("[data-graphic-corner-radius-readout=\"true\"]");
+    if (!cornerHandle || !cornerReadout) {
+      throw new Error("Expected scaled corner radius handle and readout.");
+    }
+
+    expectPositionUsesPageScale(cornerHandle);
+    expectPositionUsesPageScale(cornerReadout);
   });
 
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {

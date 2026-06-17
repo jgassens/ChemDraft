@@ -668,7 +668,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.20.13-codex";
+const CURRENT_BUILD_STAMP = "6.16.20.59-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -12178,8 +12178,8 @@ function GraphicCornerRadiusHandle({
         data-graphic-corner-radius-handle="true"
         data-graphic-corner-radius-value={String(Math.round(radius))}
         style={{
-          left: `${projectedPoint.x}px`,
-          top: `${projectedPoint.y}px`
+          left: pageScaledCssPx(projectedPoint.x),
+          top: pageScaledCssPx(projectedPoint.y)
         }}
         title="Adjust corner radius"
         onPointerDown={onPointerDown}
@@ -12189,8 +12189,8 @@ function GraphicCornerRadiusHandle({
         className="graphic-corner-radius-readout"
         data-graphic-corner-radius-readout="true"
         style={{
-          left: `${projectedPoint.x}px`,
-          top: `${projectedPoint.y}px`
+          left: pageScaledCssPx(projectedPoint.x),
+          top: pageScaledCssPx(projectedPoint.y)
         }}
       >
         {label}
@@ -12251,8 +12251,8 @@ function GraphicPathEditHandles({
           data-graphic-path-handle={handle}
           key={handle}
           style={{
-            left: `${point.x - object.x}px`,
-            top: `${point.y - object.y}px`
+            left: pageScaledCssPx(point.x - object.x),
+            top: pageScaledCssPx(point.y - object.y)
           }}
           title={label}
           onPointerDown={onPointerDown(handle)}
@@ -12271,8 +12271,8 @@ function GraphicPathEditHandles({
           data-graphic-marker-size={String(Math.round(handle.marker.sizePx))}
           key={handle.id}
           style={{
-            left: `${handle.point.x}px`,
-            top: `${handle.point.y}px`
+            left: pageScaledCssPx(handle.point.x),
+            top: pageScaledCssPx(handle.point.y)
           }}
           title={handle.id === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size"}
           onPointerDown={onMarkerPointerDown(handle.id)}
@@ -12283,8 +12283,8 @@ function GraphicPathEditHandles({
           className="graphic-path-radian-readout"
           data-graphic-path-readout="true"
           style={{
-            left: `${projectedPoints.middle.x - object.x}px`,
-            top: `${projectedPoints.middle.y - object.y}px`
+            left: pageScaledCssPx(projectedPoints.middle.x - object.x),
+            top: pageScaledCssPx(projectedPoints.middle.y - object.y)
           }}
         >
           {arcRadianReadout}
@@ -12353,6 +12353,10 @@ function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
 
 function documentObjectCssTransform(object: DocumentObject): string {
   return `rotate(${object.rotation}deg)`;
+}
+
+function pageScaledCssPx(value: number): string {
+  return `calc(${value}px * var(--page-scale))`;
 }
 
 function documentObjectProjectedPlaneProjection(object: DocumentObject): DocumentObjectProjection | undefined {
