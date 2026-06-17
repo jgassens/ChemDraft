@@ -733,9 +733,10 @@ const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
 const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
+const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.12.36-codex";
+const CURRENT_BUILD_STAMP = "6.17.13.14-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -3610,7 +3611,7 @@ export function MainWindow({
     drag.latestPoint = point;
     const dx = point.x - drag.startPoint.x;
     const dy = point.y - drag.startPoint.y;
-    const dragging = drag.dragging || Math.hypot(dx, dy) >= GRAPHIC_HANDLE_DRAG_THRESHOLD;
+    const dragging = drag.dragging || Math.hypot(dx, dy) >= penControlDragThreshold(viewportRef.current.scale);
     drag.dragging = dragging;
     if (dragging) {
       if (drag.nodeIndex > 0) {
@@ -8232,6 +8233,17 @@ export function MainWindow({
                     data-path-art-preview-layer="true"
                     data-polyline-art-preview-layer={pathArtPreview.pathKind === "polyline" ? "true" : undefined}
                   >
+                    {pathArtPreviewControlPlans(pathArtPreview).map((control) => (
+                      <line
+                        className="path-art-preview-control-line"
+                        data-path-art-preview-control-line={`${control.index}:${control.kind}`}
+                        key={`${control.index}:${control.kind}:line`}
+                        x1={control.anchor.x}
+                        y1={control.anchor.y}
+                        x2={control.point.x}
+                        y2={control.point.y}
+                      />
+                    ))}
                     <path
                       className="path-art-preview-path"
                       d={pathArtPreviewPathD(pathArtPreview)}
@@ -8248,6 +8260,17 @@ export function MainWindow({
                         data-polyline-art-preview-node={pathArtPreview.pathKind === "polyline" ? index : undefined}
                         key={`${index}:${node.point.x}:${node.point.y}`}
                         r={4}
+                      />
+                    ))}
+                    {pathArtPreviewControlPlans(pathArtPreview).map((control) => (
+                      <circle
+                        className="path-art-preview-control"
+                        cx={control.point.x}
+                        cy={control.point.y}
+                        data-path-art-preview-control={control.kind}
+                        data-path-art-preview-control-index={control.index}
+                        key={`${control.index}:${control.kind}:control`}
+                        r={3.5}
                       />
                     ))}
                   </svg>
@@ -9170,6 +9193,37 @@ function pathArtPreviewPathD(preview: PathArtPreviewState): string {
   return commands.join(" ");
 }
 
+function pathArtPreviewControlPlans(preview: PathArtPreviewState): Array<{
+  anchor: ClientPoint;
+  index: number;
+  kind: "in" | "out";
+  point: ClientPoint;
+}> {
+  if (preview.pathKind !== "bezier") {
+    return [];
+  }
+
+  return preview.nodes.flatMap((node, index) => [
+    node.inControl ? {
+      anchor: node.point,
+      index,
+      kind: "in" as const,
+      point: node.inControl
+    } : undefined,
+    node.outControl ? {
+      anchor: node.point,
+      index,
+      kind: "out" as const,
+      point: node.outControl
+    } : undefined
+  ].filter((control): control is {
+    anchor: ClientPoint;
+    index: number;
+    kind: "in" | "out";
+    point: ClientPoint;
+  } => control !== undefined));
+}
+
 function pathArtPreviewSegmentCommand(
   pathKind: PathArtDrawKind,
   startNode: PathArtDrawNode,
@@ -9193,6 +9247,10 @@ function formatSvgPreviewPoint(point: ClientPoint): string {
 
 function pathCloseTolerance(scale: number): number {
   return Math.max(6, 10 / Math.max(scale, 0.1));
+}
+
+function penControlDragThreshold(scale: number): number {
+  return Math.max(4, PEN_CONTROL_DRAG_THRESHOLD_PX / Math.max(scale, 0.1));
 }
 
 function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | undefined {
@@ -13758,7 +13816,7 @@ function defaultBezierControlPoint(anchor: NativeArtPoint, target: NativeArtPoin
     return anchor;
   }
 
-  const length = Math.min(40, Math.max(18, distance / 3));
+  const length = Math.min(26, Math.max(10, distance / 4));
   return {
     x: anchor.x + dx / distance * length,
     y: anchor.y + dy / distance * length

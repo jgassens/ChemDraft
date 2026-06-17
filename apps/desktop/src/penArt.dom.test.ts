@@ -175,6 +175,8 @@ describe("Pen native art interactions", () => {
 
     expect(snapshotObjectCount()).toBe(0);
     expect(container.querySelector("[data-path-art-kind=\"bezier\"]")).not.toBeNull();
+    expect(container.querySelectorAll("[data-path-art-preview-control]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-path-art-preview-control-line]")).toHaveLength(2);
     expect(container.querySelector("[data-path-art-preview-path=\"true\"]")?.getAttribute("d")).toBe(
       "M 160 140 C 160 140 200 156 220 168"
     );
@@ -206,6 +208,30 @@ describe("Pen native art interactions", () => {
       dispatchKey("z", true);
     });
     expect(snapshotObjectCount()).toBe(0);
+  });
+
+  it("keeps small Pen click jitter from creating accidental Bezier controls", async () => {
+    await renderMainWindow();
+
+    await act(async () => {
+      clickPoint({ x: 140, y: 140 }, 71);
+      dispatchPointer(pageElement(), "pointerdown", { x: 220, y: 140 }, 72);
+      dispatchPointer(pageElement(), "pointermove", { x: 225, y: 142 }, 72);
+      dispatchPointer(pageElement(), "pointerup", { x: 225, y: 142 }, 72);
+    });
+
+    expect(container.querySelectorAll("[data-path-art-preview-control]")).toHaveLength(0);
+    expect(container.querySelector("[data-path-art-preview-path=\"true\"]")?.getAttribute("d")).toBe("M 140 140 L 220 140");
+
+    await act(async () => {
+      dispatchKey("Enter");
+    });
+
+    const debug = debugArtObject(selectedArtObjectId());
+    expect(debug.object.data.pathNodes).toEqual([
+      { point: { x: 140, y: 140 } },
+      { point: { x: 220, y: 140 } }
+    ]);
   });
 
   it("closes the Pen path by clicking the first node", async () => {
@@ -246,7 +272,7 @@ describe("Pen native art interactions", () => {
     expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(4);
 
     await act(async () => {
-      dispatchPointer(controlHandle(0, "out"), "pointerdown", { x: 166, y: 140 }, 64);
+      dispatchPointer(controlHandle(0, "out"), "pointerdown", { x: 160, y: 140 }, 64);
       dispatchPointer(pageElement(), "pointermove", { x: 170, y: 96 }, 64);
       dispatchPointer(pageElement(), "pointerup", { x: 170, y: 96 }, 64);
     });

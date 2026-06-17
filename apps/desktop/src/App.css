@@ -1691,6 +1691,23 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.path-art-preview-control-line {
+  stroke: #1d7f68;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  opacity: 0.82;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.path-art-preview-control {
+  fill: #ffffff;
+  stroke: #1d7f68;
+  stroke-width: 2;
+  opacity: 0.96;
+  pointer-events: none;
+}
+
 .path-art-preview-node {
   fill: #f7faf9;
   stroke: #1d7f68;
@@ -1965,8 +1982,8 @@ textarea:focus-visible,
 .graphic-path-edit-handle {
   position: absolute;
   z-index: 4;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   padding: 0;
   background: var(--cd-bg-control-opaque);
   border: 2px solid var(--cd-accent);
@@ -1995,16 +2012,18 @@ textarea:focus-visible,
 
 .graphic-bezier-control-line {
   stroke: var(--cd-accent);
-  stroke-width: 1.25;
-  stroke-dasharray: 3 3;
-  opacity: 0.74;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  opacity: 0.92;
   vector-effect: non-scaling-stroke;
 }
 
 .graphic-bezier-control-handle {
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
   border-radius: 2px;
+  background: var(--cd-bg-control-opaque);
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 84%);
   cursor: grab;
   transform: translate(-50%, -50%) rotate(45deg);
 }
