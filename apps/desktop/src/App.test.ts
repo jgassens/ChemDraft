@@ -2142,8 +2142,9 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(arrowMarkup).toContain(`id="graphic-marker-end-${arrowObjectId}"`);
-    expect(arrowMarkup).toContain(`marker-end="url(#graphic-marker-end-${arrowObjectId})"`);
-    expect(arrowMarkup).toContain('markerUnits="userSpaceOnUse"');
+    expect(arrowMarkup).toContain('data-graphic-marker="end"');
+    expect(arrowMarkup).not.toContain(`marker-end="url(#graphic-marker-end-${arrowObjectId})"`);
+    expect(arrowMarkup).not.toContain('markerUnits="userSpaceOnUse"');
     const ellipseDocument = insertNativeArtGraphicObject(
       createPhase4Document("Ellipse Art Render"),
       { x: 260, y: 220 },

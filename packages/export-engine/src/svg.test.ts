@@ -249,7 +249,8 @@ describe("SVG export serialization", () => {
 
     expect(result.warnings).toEqual([]);
     expect(result.contents).toContain('data-object-id="art_svg_arrow"');
-    expect(result.contents).toContain('d="M 123 143 L 199 183"');
+    expect(result.contents).toContain('d="M 123 143 L');
+    expect(result.contents).not.toContain('d="M 123 143 L 199 183"');
     expect(result.contents).toContain('id="graphic-marker-end-art_svg_arrow"');
     expect(result.contents).toContain('data-graphic-marker="end"');
     expect(result.contents).toMatch(/id="graphic-marker-end-art_svg_arrow" data-graphic-marker="end" d="M 199 183 L [^"]+ Z" fill="#111111" stroke="none"/);

@@ -657,7 +657,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.19.18-codex";
+const CURRENT_BUILD_STAMP = "6.16.19.32-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -11663,48 +11663,83 @@ function reactSvgPaintDefinitions(paint: NativeArtPaintPlan, id: string) {
   return null;
 }
 
-function reactSvgMarkerDefinition(
+function reactSvgFlattenedMarker(
   marker: NonNullable<NativeArtVisualPlan["markerEnd"]>,
+  terminal: NonNullable<NativeArtVisualPlan["markerEndTerminal"]>,
   id: string,
+  placement: "start" | "end",
   color: string,
   opacity: number
 ) {
   const size = Math.max(2, marker.sizePx);
   const half = size / 2;
+  const direction = marker.angleDegrees === 0
+    ? markerTerminalDirection(terminal)
+    : { x: Math.cos(marker.angleDegrees * Math.PI / 180), y: Math.sin(marker.angleDegrees * Math.PI / 180) };
+  const normal = { x: -direction.y, y: direction.x };
+  const tip = terminal.point;
+  const markerPoint = (back: number, offset: number) => ({
+    x: tip.x - direction.x * back + normal.x * offset,
+    y: tip.y - direction.y * back + normal.y * offset
+  });
+  const markerPath = (points: ReadonlyArray<{ x: number; y: number }>, closed = true) => [
+    `M ${points[0]?.x ?? tip.x} ${points[0]?.y ?? tip.y}`,
+    ...points.slice(1).map((point) => `L ${point.x} ${point.y}`),
+    closed ? "Z" : ""
+  ].filter(Boolean).join(" ");
   const sharedStroke = {
     stroke: color,
     strokeOpacity: opacity === 1 ? undefined : opacity,
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const
   };
-  const filled = marker.kind === "filled-arrow"
-    ? <path d={`M ${size} 0 L 0 ${-half} L 0 ${half} Z`} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />
-    : marker.kind === "open-arrow"
-      ? <path d={`M ${size} 0 L 0 ${-half} M ${size} 0 L 0 ${half}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />
-      : marker.kind === "chevron"
-        ? <path d={`M ${size} 0 L ${size * 0.18} ${-half} L ${size * 0.48} 0 L ${size * 0.18} ${half} Z`} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />
-        : marker.kind === "diamond"
-          ? <path d={`M ${size} 0 L ${size * 0.5} ${-half} L 0 0 L ${size * 0.5} ${half} Z`} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />
-          : marker.kind === "dot"
-            ? <circle cx={half} cy={0} r={Math.max(1, size * 0.38)} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} />
-            : <path d={`M 0 ${-half} L 0 ${half}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />;
+  const sharedProps = {
+    id,
+    "data-graphic-marker": placement
+  };
 
-  return (
-    <defs key={`${id}-defs`}>
-      <marker
-        id={id}
-        markerHeight={size}
-        markerUnits="userSpaceOnUse"
-        markerWidth={size}
-        orient={marker.angleDegrees === 0 ? "auto-start-reverse" : `${marker.angleDegrees}deg`}
-        refX={marker.kind === "bar" ? 0 : size}
-        refY={0}
-        viewBox={`0 ${-half} ${size} ${size}`}
-      >
-        {filled}
-      </marker>
-    </defs>
-  );
+  if (marker.kind === "filled-arrow") {
+    return <path key={id} {...sharedProps} d={markerPath([tip, markerPoint(size, -half), markerPoint(size, half)])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
+  }
+  if (marker.kind === "open-arrow") {
+    return <path key={id} {...sharedProps} d={[
+      `M ${tip.x} ${tip.y}`,
+      `L ${markerPoint(size, -half).x} ${markerPoint(size, -half).y}`,
+      `M ${tip.x} ${tip.y}`,
+      `L ${markerPoint(size, half).x} ${markerPoint(size, half).y}`
+    ].join(" ")} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />;
+  }
+  if (marker.kind === "chevron") {
+    return <path key={id} {...sharedProps} d={markerPath([
+      tip,
+      markerPoint(size * 0.82, -half),
+      markerPoint(size * 0.52, 0),
+      markerPoint(size * 0.82, half)
+    ])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
+  }
+  if (marker.kind === "diamond") {
+    return <path key={id} {...sharedProps} d={markerPath([
+      tip,
+      markerPoint(size * 0.5, -half),
+      markerPoint(size, 0),
+      markerPoint(size * 0.5, half)
+    ])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
+  }
+  if (marker.kind === "dot") {
+    const center = markerPoint(half, 0);
+    return <circle key={id} {...sharedProps} cx={center.x} cy={center.y} r={Math.max(1, size * 0.38)} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} />;
+  }
+
+  const barStart = markerPoint(0, -half);
+  const barEnd = markerPoint(0, half);
+  return <path key={id} {...sharedProps} d={`M ${barStart.x} ${barStart.y} L ${barEnd.x} ${barEnd.y}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />;
+}
+
+function markerTerminalDirection(terminal: NonNullable<NativeArtVisualPlan["markerEndTerminal"]>) {
+  const length = Math.hypot(terminal.direction.x, terminal.direction.y);
+  return Number.isFinite(length) && length > 0.001
+    ? { x: terminal.direction.x / length, y: terminal.direction.y / length }
+    : { x: 1, y: 0 };
 }
 
 function GraphicGlyph({ object }: { object: GraphicObject }) {
@@ -11712,6 +11747,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const width = plan.width;
   const height = plan.height;
   const line = plan.line;
+  const visibleLine = plan.visibleLine ?? plan.line;
   const strokeColor = plan.stroke.color;
   const fillColor = plan.fill.color;
   const strokeWidth = plan.stroke.width;
@@ -11725,6 +11761,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const markerStartId = `graphic-marker-start-${object.id}`;
   const markerEndId = `graphic-marker-end-${object.id}`;
   const pathD = plan.pathD;
+  const visiblePathD = plan.visiblePathD ?? pathD;
   const projectionTransform = plan.projectionTransform;
   const glossGradient = plan.glossGradient;
   const fillPaintProps = fillMode === "gloss"
@@ -11739,10 +11776,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     strokeMiterlimit: plan.stroke.miterLimit,
     vectorEffect: "non-scaling-stroke" as const
   };
-  const sharedMarkerProps = {
-    markerStart: plan.markerStart ? `url(#${markerStartId})` : undefined,
-    markerEnd: plan.markerEnd ? `url(#${markerEndId})` : undefined
-  };
+  const markerStart = plan.markerStart && plan.markerStartTerminal
+    ? reactSvgFlattenedMarker(plan.markerStart, plan.markerStartTerminal, markerStartId, "start", strokeColor, plan.stroke.opacity)
+    : null;
+  const markerEnd = plan.markerEnd && plan.markerEndTerminal
+    ? reactSvgFlattenedMarker(plan.markerEnd, plan.markerEndTerminal, markerEndId, "end", strokeColor, plan.stroke.opacity)
+    : null;
   return (
     <svg
       className="graphic-glyph"
@@ -11753,8 +11792,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     >
       {reactSvgPaintDefinitions(plan.fill.paint, fillPaintId)}
       {reactSvgPaintDefinitions(plan.stroke.paint, strokePaintId)}
-      {plan.markerStart ? reactSvgMarkerDefinition(plan.markerStart, markerStartId, strokeColor, plan.stroke.opacity) : null}
-      {plan.markerEnd ? reactSvgMarkerDefinition(plan.markerEnd, markerEndId, strokeColor, plan.stroke.opacity) : null}
       {fillMode === "gloss" ? (
         <defs>
           <radialGradient
@@ -11849,13 +11886,14 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             />
             <path
               className="graphic-glyph-stroke graphic-glyph-path"
-              d={pathD}
+              d={visiblePathD}
               {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
               {...sharedStrokeProps}
-              {...sharedMarkerProps}
             />
+            {markerStart}
+            {markerEnd}
           </>
-        ) : line ? (
+        ) : line && visibleLine ? (
           <>
             <line
               className="graphic-glyph-hit-target"
@@ -11871,13 +11909,14 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             />
             <line
               className="graphic-glyph-stroke"
-              x1={line.x1}
-              y1={line.y1}
-              x2={line.x2}
-              y2={line.y2}
+              x1={visibleLine.x1}
+              y1={visibleLine.y1}
+              x2={visibleLine.x2}
+              y2={visibleLine.y2}
               {...sharedStrokeProps}
-              {...sharedMarkerProps}
             />
+            {markerStart}
+            {markerEnd}
           </>
         ) : (
           <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />

@@ -124,7 +124,9 @@ export interface NativeArtVisualPlan {
   projectionTransform?: string;
   frameBounds: NativeArtBounds;
   line?: { x1: number; y1: number; x2: number; y2: number };
+  visibleLine?: { x1: number; y1: number; x2: number; y2: number };
   pathD?: string;
+  visiblePathD?: string;
   markerStart?: NativeArtMarkerPlan;
   markerEnd?: NativeArtMarkerPlan;
   markerStartTerminal?: NativeArtStrokeTerminalPlan;
@@ -236,11 +238,19 @@ export function planNativeArtVisual(
   const pathD = object.graphicKind === "path"
     ? graphicPathD(object, coordinateSpace)
     : undefined;
-  const markerStart = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart) : undefined;
-  const markerEnd = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd) : undefined;
+  const markerStart = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
+  const markerEnd = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
   const openStrokeTerminals = capabilities.isOpenStroke
     ? nativeArtOpenStrokeTerminals(line, pathD)
     : undefined;
+  const visibleStroke = nativeArtVisibleOpenStroke({
+    line,
+    pathD,
+    markerStart,
+    markerEnd,
+    markerStartTerminal: openStrokeTerminals?.start,
+    markerEndTerminal: openStrokeTerminals?.end
+  });
   const projectedShapePathD = matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect")
     ? projectedArtShapePathD(object, coordinateSpace, matrix, stroke.width)
     : undefined;
@@ -261,7 +271,9 @@ export function planNativeArtVisual(
     projectionTransform,
     frameBounds,
     line,
+    visibleLine: visibleStroke?.line,
     pathD,
+    visiblePathD: visibleStroke?.pathD,
     markerStart,
     markerEnd,
     markerStartTerminal: markerStart ? openStrokeTerminals?.start : undefined,
@@ -271,6 +283,120 @@ export function planNativeArtVisual(
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
       : undefined
   };
+}
+
+function nativeArtVisibleOpenStroke(input: {
+  line: NativeArtVisualPlan["line"];
+  pathD: string | undefined;
+  markerStart: NativeArtMarkerPlan | undefined;
+  markerEnd: NativeArtMarkerPlan | undefined;
+  markerStartTerminal: NativeArtStrokeTerminalPlan | undefined;
+  markerEndTerminal: NativeArtStrokeTerminalPlan | undefined;
+}): { line?: NonNullable<NativeArtVisualPlan["line"]>; pathD?: string } | undefined {
+  const startInset = input.markerStart && input.markerStartTerminal
+    ? nativeArtMarkerShaftInset(input.markerStart)
+    : 0;
+  const endInset = input.markerEnd && input.markerEndTerminal
+    ? nativeArtMarkerShaftInset(input.markerEnd)
+    : 0;
+  if (startInset <= 0 && endInset <= 0) {
+    return undefined;
+  }
+
+  if (input.line) {
+    const start = { x: input.line.x1, y: input.line.y1 };
+    const end = { x: input.line.x2, y: input.line.y2 };
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    if (!Number.isFinite(length) || length <= 0.001) {
+      return undefined;
+    }
+    const scaled = scaleTerminalInsets(startInset, endInset, length);
+    const startDirection = input.markerStartTerminal
+      ? markerInwardDirection(input.markerStartTerminal)
+      : normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+    const endDirection = input.markerEndTerminal
+      ? markerInwardDirection(input.markerEndTerminal)
+      : normalizedVector({ x: start.x - end.x, y: start.y - end.y });
+    if (!startDirection || !endDirection) {
+      return undefined;
+    }
+    const visibleStart = {
+      x: start.x + startDirection.x * scaled.start,
+      y: start.y + startDirection.y * scaled.start
+    };
+    const visibleEnd = {
+      x: end.x + endDirection.x * scaled.end,
+      y: end.y + endDirection.y * scaled.end
+    };
+    return {
+      line: {
+        x1: roundLayoutNumber(visibleStart.x),
+        y1: roundLayoutNumber(visibleStart.y),
+        x2: roundLayoutNumber(visibleEnd.x),
+        y2: roundLayoutNumber(visibleEnd.y)
+      }
+    };
+  }
+
+  if (!input.pathD) {
+    return undefined;
+  }
+
+  try {
+    if (!isValidPath(input.pathD)) {
+      return undefined;
+    }
+    const length = getTotalLength(input.pathD);
+    if (!Number.isFinite(length) || length <= 0.001) {
+      return undefined;
+    }
+    const scaled = scaleTerminalInsets(startInset, endInset, length);
+    const startLength = scaled.start;
+    const endLength = Math.max(startLength + 0.5, length - scaled.end);
+    const visibleLength = Math.max(0.5, endLength - startLength);
+    const steps = Math.max(2, Math.min(96, Math.ceil(visibleLength / 6)));
+    const points = Array.from({ length: steps + 1 }, (_, index) =>
+      finiteSvgPathPoint(getPointAtLength(input.pathD ?? "", startLength + visibleLength * index / steps))
+    ).filter((point): point is NativeArtPoint => point !== undefined);
+    if (points.length < 2) {
+      return undefined;
+    }
+    return {
+      pathD: [
+        `M ${formatNumber(points[0].x)} ${formatNumber(points[0].y)}`,
+        ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`)
+      ].join(" ")
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function nativeArtMarkerShaftInset(marker: NativeArtMarkerPlan): number {
+  if (marker.kind === "filled-arrow" || marker.kind === "chevron" || marker.kind === "diamond") {
+    return marker.sizePx * 0.92;
+  }
+  if (marker.kind === "dot") {
+    return marker.sizePx * 0.38;
+  }
+  return 0;
+}
+
+function scaleTerminalInsets(startInset: number, endInset: number, length: number): { start: number; end: number } {
+  const available = Math.max(0.5, length - 0.5);
+  const total = startInset + endInset;
+  if (total <= available) {
+    return { start: startInset, end: endInset };
+  }
+  const scale = available / total;
+  return {
+    start: startInset * scale,
+    end: endInset * scale
+  };
+}
+
+function markerInwardDirection(terminal: NativeArtStrokeTerminalPlan): NativeArtPoint | undefined {
+  return normalizedVector({ x: -terminal.direction.x, y: -terminal.direction.y });
 }
 
 function nativeArtOpenStrokeTerminals(
@@ -1296,15 +1422,21 @@ function graphicPaintMetadata(value: unknown): GraphicPaint | undefined {
   return typeof paint.kind === "string" ? paint : undefined;
 }
 
-function nativeArtMarkerPlan(value: unknown): NativeArtMarkerPlan | undefined {
+function nativeArtMarkerPlan(value: unknown, strokeWidth: number): NativeArtMarkerPlan | undefined {
   const marker = graphicMarkerMetadata(value);
   if (!marker || marker.kind === "none") {
     return undefined;
   }
 
+  const metadataSize = metadataNumber(marker.sizePx);
+  const strokeAwareSize = marker.kind === "bar"
+    ? strokeWidth * 2.4
+    : marker.kind === "dot"
+      ? strokeWidth * 2.8
+      : strokeWidth * 4;
   return {
     kind: marker.kind,
-    sizePx: Math.max(2, metadataNumber(marker.sizePx) ?? 10),
+    sizePx: Math.max(2, metadataSize ?? 10, strokeAwareSize),
     angleDegrees: metadataNumber(marker.angleDegrees) ?? 0
   };
 }

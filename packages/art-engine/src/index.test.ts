@@ -245,7 +245,37 @@ describe("art-engine native art planning", () => {
     expect(plan.markerStartTerminal?.direction).toEqual({ x: -1, y: 0 });
     expect(plan.markerEndTerminal?.point).toEqual({ x: 82, y: 0 });
     expect(plan.markerEndTerminal?.direction).toEqual({ x: 1, y: 0 });
+    expect(plan.visiblePathD).toBeDefined();
+    expect(plan.visiblePathD).not.toBe(plan.pathD);
     expect(plan.capabilities.supportsFill).toBe(false);
+  });
+
+  it("keeps filled arrowheads proportionate on thick dashed strokes", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      style: {
+        ...baseGraphic.style,
+        strokeWidth: 5,
+        strokeDasharray: "32 8"
+      },
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.markerEnd).toMatchObject({
+      kind: "filled-arrow",
+      sizePx: 20
+    });
+    expect(plan.pathD).toContain("L 79 43");
+    expect(plan.visiblePathD).toBeDefined();
+    expect(plan.visiblePathD).not.toContain("L 79 43");
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {

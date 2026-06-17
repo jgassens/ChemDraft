@@ -1748,18 +1748,19 @@ function graphicObjectFragment(
     }));
   } else if (object.graphicKind === "line" && plan.line) {
     renderedGraphic = true;
+    const visibleLine = plan.visibleLine ?? plan.line;
     children.push(elementFragment("line", `graphic-line-${object.id}`, {
-      x1: plan.line.x1,
-      y1: plan.line.y1,
-      x2: plan.line.x2,
-      y2: plan.line.y2,
+      x1: visibleLine.x1,
+      y1: visibleLine.y1,
+      x2: visibleLine.x2,
+      y2: visibleLine.y2,
       ...strokeAttrs,
       transform: plan.projectionTransform
     }));
   } else if (object.graphicKind === "path" && plan.pathD) {
     renderedGraphic = true;
     children.push(elementFragment("path", `graphic-path-${object.id}`, {
-      d: plan.pathD,
+      d: plan.visiblePathD ?? plan.pathD,
       ...strokeAttrs,
       class: "graphic-glyph-stroke graphic-glyph-path",
       ...(plan.capabilities.supportsFill ? fillAttrs : { fill: "none" }),
