@@ -748,7 +748,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.15.40-codex";
+const CURRENT_BUILD_STAMP = "6.17.16.5-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5508,6 +5508,9 @@ export function MainWindow({
 
     if (activeToolState.activeKind === "selection") {
       if (activeToolState.activeCommandId === "tool.lasso") {
+        if (selectionChromeConsumesPointerTarget(event.target)) {
+          return;
+        }
         startSelectionLasso(event, point);
         return;
       }
@@ -6249,7 +6252,6 @@ export function MainWindow({
       setSelectionLasso(undefined);
       selectionLassoRef.current = null;
       lassoMachineRef.current = initialInteractionState();
-      switchToSelectTool();
       setStatus(subtracting ? selectionSubtractStatusLabel(selection) : selectionStatusLabel(selection));
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
@@ -6315,8 +6317,7 @@ export function MainWindow({
     groupTransformDocument,
     installDocumentHistory,
     pagePointFromPointerEvent,
-    replacePresentDocument,
-    switchToSelectTool
+    replacePresentDocument
   ]);
 
   const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
@@ -11283,6 +11284,23 @@ function normalizedRect(startPoint: ClientPoint, latestPoint: ClientPoint): {
     width: Math.abs(startPoint.x - latestPoint.x),
     height: Math.abs(startPoint.y - latestPoint.y)
   };
+}
+
+function selectionChromeConsumesPointerTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return target.closest([
+    "[data-selection-rotate-handle='true']",
+    "[data-selection-tilt3d-handle='true']",
+    "[data-object-resize-corner]",
+    "[data-graphic-corner-radius-handle='true']",
+    "[data-graphic-path-handle]",
+    "[data-graphic-marker-handle]",
+    "[data-rotation-input-popover='true']",
+    "[data-scale-input-popover='true']"
+  ].join(",")) !== null;
 }
 
 function lassoPointsForPreview(points: readonly ClientPoint[], latestPoint: ClientPoint): ClientPoint[] {

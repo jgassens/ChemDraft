@@ -193,10 +193,47 @@ describe("lasso selection interactions", () => {
       dispatchPointer(page, "pointerup", points[0], { altKey: false });
     });
 
-    expect(activeToolCommandId()).toBe("tool.select");
+    expect(activeToolCommandId()).toBe("tool.lasso");
     expect(container.querySelector('[data-group-selection="true"]')).toBeNull();
     expect(graphicInteractionMode(target.id)).toBeUndefined();
     expect(graphicInteractionMode(graphics[1].id)).toBeDefined();
+  });
+
+  it("keeps lasso active while rotate handles remain privileged controls", async () => {
+    const firstInserted = insertNativeArtGraphicObject(
+      createPhase4Document("Lasso Rotate Privilege"),
+      { x: 140, y: 150 },
+      "tool.art.circle"
+    );
+    const secondInserted = insertNativeArtGraphicObject(firstInserted, { x: 280, y: 150 }, "tool.art.rect");
+    const graphics = secondInserted.pages[0].objects.filter((object): object is GraphicObject =>
+      object.type === "graphic"
+    );
+    const selectedDocument = selectDocumentObjects(
+      secondInserted,
+      secondInserted.pages[0].id,
+      graphics.map((object) => object.id)
+    );
+
+    await renderMainWindow(selectedDocument, "tool.lasso");
+
+    const rotateHandle = container.querySelector<HTMLElement>('[data-group-rotate-handle="true"]');
+    if (!rotateHandle) {
+      throw new Error("Expected group rotate handle.");
+    }
+    const page = pageElement();
+    const start = { x: 250, y: 130 };
+    const end = { x: 275, y: 150 };
+
+    await act(async () => {
+      dispatchPointer(rotateHandle, "pointerdown", start, { pointerId: 11 });
+      dispatchPointer(page, "pointermove", end, { pointerId: 11 });
+      dispatchPointer(page, "pointerup", end, { pointerId: 11 });
+    });
+
+    expect(activeToolCommandId()).toBe("tool.lasso");
+    expect(container.querySelector(".selection-lasso")).toBeNull();
+    expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
   });
 
   it("moves a selected graphic group instead of collapsing to the clicked object", async () => {
