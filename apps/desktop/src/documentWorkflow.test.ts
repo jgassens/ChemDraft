@@ -3497,6 +3497,41 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
+  it("inserts native art polylines as path-node graphics", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Polyline"),
+      { x: 220, y: 180 },
+      "tool.art.polyline"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted polyline to be selected.");
+    }
+
+    expect(graphicById(inserted, objectId)).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      x: 172,
+      y: 144,
+      width: 96,
+      height: 72,
+      data: {
+        artPathKind: "polyline",
+        artToolId: "polyline",
+        pathNodes: [
+          { point: { x: 180, y: 202 } },
+          { point: { x: 216, y: 158 } },
+          { point: { x: 260, y: 190 } }
+        ]
+      },
+      style: {
+        artToolCommandId: "tool.art.polyline",
+        strokeColor: "#111111",
+        fillColor: "none"
+      }
+    });
+  });
+
   it("edits native art arrowhead marker size through workflow helpers", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Native Art Arrow Marker Edit"),

@@ -1595,6 +1595,14 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
     );
   }
 
+  if (toolId === "polyline") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M2.5 12.5 L7 4.5 L14.5 9.5" />
+      </svg>
+    );
+  }
+
   if (toolId === "arrow") {
     return (
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>

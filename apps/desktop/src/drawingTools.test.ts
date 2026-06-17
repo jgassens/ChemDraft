@@ -195,5 +195,9 @@ describe("Phase 7 drawing tool activation", () => {
       kind: "art",
       category: "art"
     });
+    expect(getDrawingToolDefinition("tool.art.polyline")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
   });
 });

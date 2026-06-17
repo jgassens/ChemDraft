@@ -391,6 +391,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.lineDashed", "Dashed Line", "bond"],
     ["tool.art.lineWavy", "Wavy Line", "mechanism"],
     ["tool.art.lineBold", "Bold Line", "bond"],
+    ["tool.art.polyline", "Polyline", "bond"],
     ["tool.art.arrow", "Arrow", "export"],
     ["tool.art.arc270", "Three-quarter Arc", "export"],
     ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export"],

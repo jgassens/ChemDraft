@@ -395,6 +395,101 @@ describe("art-engine native art planning", () => {
     });
   });
 
+  it("plans native polyline path nodes as open stroke geometry", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "polyline",
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 176, y: 132 } },
+          { point: { x: 208, y: 104 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const localPlan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+    const pagePlan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+
+    expect(localPlan.pathD).toBe("M 12 28 L 56 52 L 88 24");
+    expect(pagePlan.pathD).toBe("M 132 108 L 176 132 L 208 104");
+    expect(localPlan.capabilities).toMatchObject({
+      supportsFill: false,
+      supportsLineCap: true,
+      supportsLineJoin: true,
+      isOpenStroke: true,
+      hasCorners: true
+    });
+  });
+
+  it("allows closed native polyline paths to use fill", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#1d7f68"
+      },
+      data: {
+        artPathKind: "polyline",
+        pathClosed: true,
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 196, y: 132 } },
+          { point: { x: 160, y: 148 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.pathD).toBe("M 12 28 L 76 52 L 40 68 Z");
+    expect(plan.fill.color).toBe("#1d7f68");
+    expect(plan.capabilities).toMatchObject({
+      supportsFill: true,
+      supportsLineCap: false,
+      supportsLineJoin: true,
+      isClosedShape: true
+    });
+  });
+
+  it("plans native Bezier path nodes with cubic controls", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "bezier",
+        pathNodes: [
+          {
+            point: { x: 124, y: 144 },
+            outControl: { x: 144, y: 100 }
+          },
+          {
+            point: { x: 208, y: 132 },
+            inControl: { x: 176, y: 108 }
+          }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.pathD).toBe("M 4 64 C 24 20 56 28 88 52");
+    expect(plan.capabilities).toMatchObject({
+      supportsFill: false,
+      supportsLineCap: true,
+      supportsLineJoin: false,
+      isOpenStroke: true
+    });
+  });
+
   it("clamps rectangle corner radius and exposes a direct local edit point", () => {
     const square = {
       ...baseGraphic,

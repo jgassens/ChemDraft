@@ -142,13 +142,23 @@ export const GraphicMarkerSchema = z
   })
   .strict();
 
+export const GraphicPathNodeSchema = z
+  .object({
+    point: PointSchema,
+    inControl: PointSchema.optional(),
+    outControl: PointSchema.optional()
+  })
+  .strict();
+
 export const GraphicObjectDataSchema = z
   .object({
     lineStart: PointSchema.optional(),
     lineEnd: PointSchema.optional(),
     pathControlPoint: PointSchema.optional(),
     pathD: z.string().optional(),
-    artPathKind: z.enum(["line", "wavy", "arc", "quadratic"]).optional(),
+    artPathKind: z.enum(["line", "wavy", "arc", "quadratic", "polyline", "bezier"]).optional(),
+    pathNodes: z.array(GraphicPathNodeSchema).min(1).optional(),
+    pathClosed: z.boolean().optional(),
     arcCenter: PointSchema.optional(),
     arcRadiusX: z.number().finite().positive().optional(),
     arcRadiusY: z.number().finite().positive().optional(),
@@ -514,6 +524,7 @@ export type BracketObject = z.infer<typeof BracketObjectSchema>;
 export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
 export type GraphicMarker = z.infer<typeof GraphicMarkerSchema>;
+export type GraphicPathNode = z.infer<typeof GraphicPathNodeSchema>;
 export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
 export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;

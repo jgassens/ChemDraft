@@ -747,6 +747,69 @@ describe("native document validation and serialization", () => {
     expect(reopenedGraphic.data.arcSweepRadians).toBeCloseTo(-Math.PI / 2, 6);
   });
 
+  it("round-trips native graphic path nodes for Phase 4 path editing", () => {
+    const graphic = {
+      id: "graphic_path_nodes",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 120,
+      height: 80,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "#1d7f68"
+      },
+      data: {
+        artPathKind: "bezier",
+        pathClosed: true,
+        pathNodes: [
+          {
+            point: { x: 112, y: 180 },
+            outControl: { x: 132, y: 136 }
+          },
+          {
+            point: { x: 176, y: 144 },
+            inControl: { x: 152, y: 120 },
+            outControl: { x: 196, y: 168 }
+          },
+          {
+            point: { x: 208, y: 196 },
+            inControl: { x: 184, y: 212 }
+          }
+        ]
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const reopenedGraphic = deserializeDocument(serializeDocument(document)).pages[0].objects[0] as GraphicObject;
+
+    expect(reopenedGraphic.data).toMatchObject({
+      artPathKind: "bezier",
+      pathClosed: true,
+      pathNodes: [
+        {
+          point: { x: 112, y: 180 },
+          outControl: { x: 132, y: 136 }
+        },
+        {
+          point: { x: 176, y: 144 },
+          inControl: { x: 152, y: 120 },
+          outControl: { x: 196, y: 168 }
+        },
+        {
+          point: { x: 208, y: 196 },
+          inControl: { x: 184, y: 212 }
+        }
+      ]
+    });
+  });
+
   it("migrates branch-era graphic arc degree metadata to radians", () => {
     const graphic = {
       id: "graphic_legacy_arc",

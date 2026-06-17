@@ -205,6 +205,7 @@ export type NativeArtToolId =
   | "lineDashed"
   | "lineWavy"
   | "lineBold"
+  | "polyline"
   | "arrow"
   | "arc270"
   | "arc270Dashed"
@@ -283,6 +284,14 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artShapeTool("lineDashed", "Dashed Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeDasharray: "6 6" }),
   artShapeTool("lineWavy", "Wavy Line", "path", 82, 46, { artPathKind: "wavy" }, artOutlineStyle),
   artShapeTool("lineBold", "Bold Line", "path", 82, 46, { artPathKind: "line" }, { ...artOutlineStyle, strokeWidth: 6 }),
+  artShapeTool("polyline", "Polyline", "path", 96, 72, {
+    artPathKind: "polyline",
+    pathNodes: [
+      { point: { x: 8, y: 58 } },
+      { point: { x: 44, y: 14 } },
+      { point: { x: 88, y: 46 } }
+    ]
+  }, artOutlineStyle),
   artShapeTool("arrow", "Arrow", "path", 82, 46, {
     artPathKind: "line",
     markerEnd: { kind: "filled-arrow", sizePx: 10 }
@@ -873,6 +882,7 @@ export function createNativeArtGraphicObject(
   const page = firstPage(document);
   const x = clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
   const y = clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  const data = nativeArtToolDataForPlacement(tool.data, x, y);
   return {
     id: nextObjectId(document, `art_${tool.id}`),
     type: "graphic",
@@ -893,9 +903,35 @@ export function createNativeArtGraphicObject(
     },
     graphicKind: tool.graphicKind,
     data: {
-      ...tool.data,
+      ...data,
       artToolId: tool.id
     }
+  };
+}
+
+function nativeArtToolDataForPlacement(
+  data: GraphicObjectData,
+  x: number,
+  y: number
+): GraphicObjectData {
+  if (!data.pathNodes) {
+    return { ...data };
+  }
+
+  return {
+    ...data,
+    pathNodes: data.pathNodes.map((node) => ({
+      point: offsetPagePoint(node.point, x, y),
+      ...(node.inControl ? { inControl: offsetPagePoint(node.inControl, x, y) } : {}),
+      ...(node.outControl ? { outControl: offsetPagePoint(node.outControl, x, y) } : {})
+    }))
+  };
+}
+
+function offsetPagePoint(point: PagePoint, x: number, y: number): PagePoint {
+  return {
+    x: point.x + x,
+    y: point.y + y
   };
 }
 

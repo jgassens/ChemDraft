@@ -258,4 +258,42 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("<marker");
     expect(result.contents).not.toContain("marker-end=");
   });
+
+  it("exports closed native path-node polylines as fillable SVG paths", () => {
+    const polyline = {
+      id: "art_svg_polyline",
+      type: "graphic",
+      x: 120,
+      y: 140,
+      width: 96,
+      height: 72,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        fillColor: "#1d7f68",
+        strokeWidth: 2
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "polyline",
+        pathClosed: true,
+        pathNodes: [
+          { point: { x: 132, y: 152 } },
+          { point: { x: 204, y: 164 } },
+          { point: { x: 168, y: 204 } }
+        ]
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "SVG Graphic Polyline", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: polyline },
+      { now: timestamp }
+    );
+    const result = exportDocumentToSvg(document, { includeWarnings: true });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.contents).toContain('data-object-id="art_svg_polyline"');
+    expect(result.contents).toContain('d="M 132 152 L 204 164 L 168 204 Z"');
+    expect(result.contents).toContain('fill="#1d7f68"');
+  });
 });

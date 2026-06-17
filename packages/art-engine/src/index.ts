@@ -147,7 +147,13 @@ export interface NativeArtVisualPlan {
 
 export type GraphicPathEditHandle = "start" | "middle" | "end";
 
-export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic";
+export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic" | "polyline" | "bezier";
+
+interface NativeGraphicPathNode {
+  point: NativeArtPoint;
+  inControl?: NativeArtPoint;
+  outControl?: NativeArtPoint;
+}
 
 export interface GraphicPathEditPoints {
   start: NativeArtPoint;
@@ -724,6 +730,19 @@ export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilit
         hasCorners: false
       });
     }
+    if (pathKind === "polyline" || pathKind === "bezier") {
+      const nodes = graphicPathNodes(object);
+      const isClosedShape = pathKindSupportsClosedFill(object, nodes);
+      return nativeArtCapabilityPlan({
+        supportsFill: isClosedShape,
+        supportsStroke: nodes.length >= 2,
+        supportsDash: true,
+        supportsLineCap: !isClosedShape,
+        supportsLineJoin: pathKind === "polyline" && nodes.length >= 3,
+        isClosedShape,
+        hasCorners: pathKind === "polyline" && nodes.length >= 3
+      });
+    }
 
     const pathD = metadataString(object.data.pathD);
     const isClosedShape = pathD ? svgPathLooksClosed(pathD) : false;
@@ -773,6 +792,9 @@ function graphicCornerRadius(object: GraphicObject): number {
 export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoints | undefined {
   const pathKind = graphicPathKind(object);
   if (!pathKind) {
+    return undefined;
+  }
+  if (pathKind === "polyline" || pathKind === "bezier") {
     return undefined;
   }
 
@@ -980,7 +1002,14 @@ function graphicPathKind(object: GraphicObject): GraphicPathKind | undefined {
   if (kind === "arc" && pointMetadata(object.data.pathControlPoint)) {
     return "quadratic";
   }
-  if (kind === "line" || kind === "wavy" || kind === "arc" || kind === "quadratic") {
+  if (
+    kind === "line" ||
+    kind === "wavy" ||
+    kind === "arc" ||
+    kind === "quadratic" ||
+    kind === "polyline" ||
+    kind === "bezier"
+  ) {
     return kind;
   }
   return object.graphicKind === "line" ? "line" : undefined;
@@ -996,6 +1025,44 @@ function isLegacyQuadraticArc(object: GraphicObject): boolean {
 
 function isQuadraticCurve(object: GraphicObject): boolean {
   return object.data.artPathKind === "quadratic" || isLegacyQuadraticArc(object);
+}
+
+function graphicPathNodes(object: GraphicObject): NativeGraphicPathNode[] {
+  return graphicPathNodesFromData(object.data);
+}
+
+function graphicPathNodesFromData(data: GraphicObject["data"]): NativeGraphicPathNode[] {
+  const nodes = data.pathNodes;
+  if (!Array.isArray(nodes)) {
+    return [];
+  }
+
+  return nodes
+    .map((node): NativeGraphicPathNode | undefined => {
+      if (!node || typeof node !== "object" || Array.isArray(node)) {
+        return undefined;
+      }
+      const record = node as Record<string, unknown>;
+      const point = pointMetadata(record.point);
+      if (!point) {
+        return undefined;
+      }
+      const inControl = pointMetadata(record.inControl);
+      const outControl = pointMetadata(record.outControl);
+      return {
+        point,
+        ...(inControl ? { inControl } : {}),
+        ...(outControl ? { outControl } : {})
+      };
+    })
+    .filter((node): node is NativeGraphicPathNode => node !== undefined);
+}
+
+function pathKindSupportsClosedFill(
+  object: GraphicObject,
+  nodes = graphicPathNodes(object)
+): boolean {
+  return object.data.pathClosed === true && nodes.length >= 3;
 }
 
 function promoteLineToQuadraticCurve(
@@ -1246,9 +1313,12 @@ function boundsForGraphicPath(object: GraphicObject, data: GraphicObject["data"]
   const start = pointMetadata(data.lineStart);
   const end = pointMetadata(data.lineEnd);
   const middle = pointMetadata(data.pathControlPoint);
+  const nodePoints = graphicPathNodesFromData(data)
+    .flatMap((node) => [node.point, node.inControl, node.outControl])
+    .filter((point): point is NativeArtPoint => point !== undefined);
   const points = data.artPathKind === "quadratic" && start && end && middle
     ? quadraticBezierSamplePoints(start, quadraticControlForMiddlePoint(start, middle, end), end, 24)
-    : [start, end, middle].filter((point): point is NativeArtPoint => point !== undefined);
+    : [...nodePoints, start, end, middle].filter((point): point is NativeArtPoint => point !== undefined);
   if (points.length === 0) {
     return {
       x: object.x,
@@ -1780,6 +1850,11 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
     return svgPathLocalSamplePoints(storedPath, object);
   }
 
+  if (pathKind === "polyline" || pathKind === "bezier") {
+    const pathD = graphicNodePathD(object, pathKind, "local");
+    return pathD ? svgPathSamplePoints(pathD) : [];
+  }
+
   if (pathKind === "line") {
     const endpoints = graphicPathEndpoints(object, "local", inset);
     return [endpoints.start, endpoints.end];
@@ -1909,6 +1984,10 @@ function graphicPathD(
   }
 
   const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
+  if (pathKind === "polyline" || pathKind === "bezier") {
+    return graphicNodePathD(object, pathKind, coordinateSpace);
+  }
+
   if (pathKind === "line") {
     const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
     return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
@@ -1957,6 +2036,62 @@ function graphicPathD(
   }
 
   return storedPath;
+}
+
+function graphicNodePathD(
+  object: GraphicObject,
+  pathKind: Extract<GraphicPathKind, "polyline" | "bezier">,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): string | undefined {
+  const nodes = graphicPathNodes(object);
+  if (nodes.length === 0) {
+    return undefined;
+  }
+
+  const commands = [`M ${formattedNodePoint(object, nodes[0].point, coordinateSpace)}`];
+  for (let index = 1; index < nodes.length; index += 1) {
+    commands.push(graphicNodeSegmentCommand(object, nodes[index - 1], nodes[index], pathKind, coordinateSpace));
+  }
+
+  if (pathKindSupportsClosedFill(object, nodes)) {
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    if (pathKind === "bezier" && (last.outControl || first.inControl)) {
+      commands.push(graphicNodeSegmentCommand(object, last, first, pathKind, coordinateSpace));
+    }
+    commands.push("Z");
+  }
+
+  return commands.join(" ");
+}
+
+function graphicNodeSegmentCommand(
+  object: GraphicObject,
+  startNode: NativeGraphicPathNode,
+  endNode: NativeGraphicPathNode,
+  pathKind: Extract<GraphicPathKind, "polyline" | "bezier">,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): string {
+  const end = formattedNodePoint(object, endNode.point, coordinateSpace);
+  if (pathKind === "bezier" && (startNode.outControl || endNode.inControl)) {
+    return [
+      "C",
+      formattedNodePoint(object, startNode.outControl ?? startNode.point, coordinateSpace),
+      formattedNodePoint(object, endNode.inControl ?? endNode.point, coordinateSpace),
+      end
+    ].join(" ");
+  }
+
+  return `L ${end}`;
+}
+
+function formattedNodePoint(
+  object: GraphicObject,
+  point: NativeArtPoint,
+  coordinateSpace: NativeArtVisualCoordinateSpace
+): string {
+  const resolved = pointForArtSpace(object, point, coordinateSpace);
+  return `${formatNumber(resolved.x)} ${formatNumber(resolved.y)}`;
 }
 
 function graphicPathEndpoints(
