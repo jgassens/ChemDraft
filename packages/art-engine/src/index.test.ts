@@ -9,6 +9,7 @@ import {
   editGraphicPathGeometry,
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
+  graphicPathNodeEditPoints,
   maxGraphicCornerRadius,
   planNativeArtVisual,
   prepareGraphicPathForDirectEdit,
@@ -462,6 +463,42 @@ describe("art-engine native art planning", () => {
       supportsLineJoin: true,
       isClosedShape: true
     });
+  });
+
+  it("moves native polyline nodes without dropping neighboring path nodes", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "polyline",
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 176, y: 132 } },
+          { point: { x: 208, y: 104 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    expect(graphicPathNodeEditPoints(graphic)).toMatchObject({
+      pathKind: "polyline",
+      pathClosed: false,
+      nodes: [
+        { index: 0, point: { x: 132, y: 108 } },
+        { index: 1, point: { x: 176, y: 132 } },
+        { index: 2, point: { x: 208, y: 104 } }
+      ]
+    });
+
+    const edited = editGraphicPathGeometry(graphic, "node:1", { x: 190, y: 120 });
+
+    expect(edited?.data.pathNodes).toEqual([
+      { point: { x: 132, y: 108 } },
+      { point: { x: 190, y: 120 } },
+      { point: { x: 208, y: 104 } }
+    ]);
+    expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 L 190 120 L 208 104");
   });
 
   it("plans native Bezier path nodes with cubic controls", () => {

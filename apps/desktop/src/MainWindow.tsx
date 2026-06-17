@@ -174,6 +174,7 @@ import {
   nativeMoleculePartBounds,
   nativeGraphicCornerRadiusEditPoint,
   nativeGraphicPathEditPoints,
+  nativeGraphicPathNodeEditPoints,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
   nativeArtToolForCommand,
@@ -222,6 +223,7 @@ import {
   type NativeGraphicMarkerHandleId,
   type NativeGraphicPathEditHandle,
   type NativeGraphicPathEditPoints,
+  type NativeGraphicPathNodeEditPoints,
   type NativeTextSelectionRange,
   type ToolbarColorSelection,
   type NativeBondDisplayStyle,
@@ -703,7 +705,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.11.48-codex";
+const CURRENT_BUILD_STAMP = "6.17.11.59-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -6864,7 +6866,8 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     const editPoints = object?.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
-    if (!point || object?.type !== "graphic" || !editPoints) {
+    const nodeEditPoints = object?.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
+    if (!point || object?.type !== "graphic" || (!editPoints && !nodeEditPoints)) {
       return;
     }
 
@@ -6893,9 +6896,13 @@ export function MainWindow({
       dragging: false
     };
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
-    setStatus(isSemanticCircularGraphicArc(object, editPoints)
-      ? handle === "middle" ? "Adjust selected arc radius" : "Adjust selected arc sweep"
-      : handle === "middle" ? "Bend selected line into a curve" : "Adjust selected line endpoint");
+    setStatus(
+      nodeEditPoints
+        ? "Move selected path node"
+        : editPoints && isSemanticCircularGraphicArc(object, editPoints)
+          ? handle === "middle" ? "Adjust selected arc radius" : "Adjust selected arc sweep"
+          : handle === "middle" ? "Bend selected line into a curve" : "Adjust selected line endpoint"
+    );
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
@@ -9200,6 +9207,10 @@ function capitalizeLabel(label: string): string {
 }
 
 function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean): string {
+  if (drag.handle.startsWith("node:")) {
+    return changed ? "Moved selected path node" : "Selected path node unchanged";
+  }
+
   const semanticArc = graphicPathEditDragIsSemanticArc(drag);
   if (!changed) {
     return semanticArc ? "Selected arc geometry unchanged" : "Selected line geometry unchanged";
@@ -11649,11 +11660,12 @@ function DocumentObjectView({
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+  const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
   const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
   const pathGraphicInEditMode = selected &&
     object.type === "graphic" &&
-    graphicPathEditPoints !== undefined &&
+    (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
@@ -12270,6 +12282,7 @@ function DocumentObjectView({
     const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection ? (
       <GraphicPathEditHandles
         object={object}
+        nodeEditPoints={graphicPathNodeEditPoints}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
@@ -12292,7 +12305,7 @@ function DocumentObjectView({
         data-art-transform-preview={objectTransformPreview ? "true" : undefined}
         data-art-transform-preview-mode={objectTransformPreview?.mode}
         data-art-transform-preview-proxy={artTransformProxy?.kind}
-        data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints
+        data-graphic-interaction-mode={selected && !inGroupSelection && (graphicPathEditPoints || graphicPathNodeEditPoints)
           ? pathGraphicInEditMode ? "path-edit" : "object-transform"
           : selected && !inGroupSelection && graphicCornerRadiusEditPoint ? "corner-radius-edit"
           : undefined}
@@ -13015,15 +13028,17 @@ function GraphicCornerRadiusHandle({
 
 function GraphicPathEditHandles({
   object,
+  nodeEditPoints,
   onMarkerPointerDown,
   onPointerDown
 }: {
   object: GraphicObject;
+  nodeEditPoints?: NativeGraphicPathNodeEditPoints;
   onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
   const points = nativeGraphicPathEditPoints(object);
-  if (!points) {
+  if (!points && !nodeEditPoints) {
     return null;
   }
 
@@ -13032,6 +13047,58 @@ function GraphicPathEditHandles({
     ...handle,
     point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
   }));
+  if (nodeEditPoints) {
+    return (
+      <>
+        {nodeEditPoints.nodes.map((node) => {
+          const point = projectGraphicObjectPoint(object, node.point);
+          const handle = `node:${node.index}` as const;
+          const label = `Move path node ${node.index + 1}`;
+          return (
+            <button
+              type="button"
+              className="graphic-path-edit-handle graphic-path-edit-handle-node"
+              aria-label={label}
+              data-graphic-path-handle={handle}
+              data-graphic-path-node-index={node.index}
+              key={handle}
+              style={{
+                left: pageScaledCssPx(point.x - object.x),
+                top: pageScaledCssPx(point.y - object.y)
+              }}
+              title={label}
+              onPointerDown={onPointerDown(handle)}
+            />
+          );
+        })}
+        {markerHandles.map((handle) => (
+          <button
+            type="button"
+            className={[
+              "graphic-path-edit-handle",
+              "graphic-marker-edit-handle",
+              `graphic-marker-edit-handle-${handle.id === "markerStart" ? "start" : "end"}`
+            ].join(" ")}
+            aria-label={handle.id === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size"}
+            data-graphic-marker-handle={handle.id}
+            data-graphic-marker-size={String(Math.round(handle.marker.sizePx))}
+            key={handle.id}
+            style={{
+              left: pageScaledCssPx(handle.point.x),
+              top: pageScaledCssPx(handle.point.y)
+            }}
+            title={handle.id === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size"}
+            onPointerDown={onMarkerPointerDown(handle.id)}
+          />
+        ))}
+      </>
+    );
+  }
+
+  if (!points) {
+    return null;
+  }
+
   const circularArc = isSemanticCircularGraphicArc(object, points);
   const projectedPoints = {
     start: projectGraphicObjectPoint(object, points.start),

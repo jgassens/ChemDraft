@@ -155,7 +155,7 @@ export interface NativeArtVisualPlan {
   glossGradient?: NativeArtGlossGradientPlan;
 }
 
-export type GraphicPathEditHandle = "start" | "middle" | "end";
+export type GraphicPathEditHandle = "start" | "middle" | "end" | `node:${number}`;
 
 export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic" | "polyline" | "bezier" | "freehand";
 
@@ -170,6 +170,19 @@ export interface GraphicPathEditPoints {
   middle: NativeArtPoint;
   end: NativeArtPoint;
   pathKind: GraphicPathKind;
+}
+
+export interface GraphicPathNodeEditPoint {
+  index: number;
+  point: NativeArtPoint;
+  inControl?: NativeArtPoint;
+  outControl?: NativeArtPoint;
+}
+
+export interface GraphicPathNodeEditPoints {
+  pathKind: Extract<GraphicPathKind, "polyline" | "bezier">;
+  pathClosed: boolean;
+  nodes: GraphicPathNodeEditPoint[];
 }
 
 interface CircularGraphicArcGeometry {
@@ -872,11 +885,38 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
   };
 }
 
+export function graphicPathNodeEditPoints(object: GraphicObject): GraphicPathNodeEditPoints | undefined {
+  const pathKind = graphicPathKind(object);
+  if (pathKind !== "polyline" && pathKind !== "bezier") {
+    return undefined;
+  }
+
+  const nodes = graphicPathNodes(object);
+  if (nodes.length === 0) {
+    return undefined;
+  }
+
+  return {
+    pathKind,
+    pathClosed: object.data.pathClosed === true,
+    nodes: nodes.map((node, index) => ({
+      index,
+      point: node.point,
+      ...(node.inControl ? { inControl: node.inControl } : {}),
+      ...(node.outControl ? { outControl: node.outControl } : {})
+    }))
+  };
+}
+
 export function editGraphicPathGeometry(
   object: GraphicObject,
   handle: GraphicPathEditHandle,
   point: NativeArtPoint
 ): GraphicObject | undefined {
+  if (handle.startsWith("node:")) {
+    return editGraphicPathNodeGeometry(object, handle, point);
+  }
+
   const kind = graphicPathKind(object);
   if (kind === "line" && handle === "middle") {
     return promoteLineToQuadraticCurve(object, point);
@@ -1158,6 +1198,56 @@ function promoteLineToQuadraticCurve(
   return updateQuadraticCurveObject(object, editPoints.start, editPoints.end, point);
 }
 
+function editGraphicPathNodeGeometry(
+  object: GraphicObject,
+  handle: GraphicPathEditHandle,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const pathKind = graphicPathKind(object);
+  if (pathKind !== "polyline" && pathKind !== "bezier") {
+    return undefined;
+  }
+
+  const match = /^node:(\d+)$/.exec(handle);
+  const index = match ? Number.parseInt(match[1], 10) : -1;
+  const nodes = graphicPathNodes(object);
+  const current = nodes[index];
+  if (!current) {
+    return undefined;
+  }
+
+  const dx = point.x - current.point.x;
+  const dy = point.y - current.point.y;
+  const movePoint = (candidate: NativeArtPoint): NativeArtPoint => ({
+    x: roundLayoutNumber(candidate.x + dx),
+    y: roundLayoutNumber(candidate.y + dy)
+  });
+  const nextNodes = nodes.map((node, nodeIndex) => {
+    if (nodeIndex !== index) {
+      return {
+        point: node.point,
+        ...(node.inControl ? { inControl: node.inControl } : {}),
+        ...(node.outControl ? { outControl: node.outControl } : {})
+      };
+    }
+
+    return {
+      point: {
+        x: roundLayoutNumber(point.x),
+        y: roundLayoutNumber(point.y)
+      },
+      ...(node.inControl ? { inControl: movePoint(node.inControl) } : {}),
+      ...(node.outControl ? { outControl: movePoint(node.outControl) } : {})
+    };
+  });
+
+  return updateGraphicPathObject(object, {
+    ...object.data,
+    artPathKind: pathKind,
+    pathNodes: nextNodes
+  });
+}
+
 function editQuadraticCurveGeometry(
   object: GraphicObject,
   handle: GraphicPathEditHandle,
@@ -1229,6 +1319,7 @@ function updateGraphicPathObject(
     samePoint(pointMetadata(object.data.lineStart), nextData.lineStart) &&
     samePoint(pointMetadata(object.data.lineEnd), nextData.lineEnd) &&
     samePoint(pointMetadata(object.data.pathControlPoint), nextData.pathControlPoint) &&
+    samePathNodes(object.data.pathNodes, nextData.pathNodes) &&
     object.data.artPathKind === nextData.artPathKind &&
     Math.abs(object.x - nextBounds.x) < 0.001 &&
     Math.abs(object.y - nextBounds.y) < 0.001 &&
@@ -1466,6 +1557,24 @@ function samePoint(left: NativeArtPoint | undefined, right: NativeArtPoint | und
     return left === right;
   }
   return Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
+}
+
+function samePathNodes(
+  left: GraphicObject["data"]["pathNodes"],
+  right: GraphicObject["data"]["pathNodes"]
+): boolean {
+  const leftNodes = graphicPathNodesFromData({ pathNodes: left });
+  const rightNodes = graphicPathNodesFromData({ pathNodes: right });
+  if (leftNodes.length !== rightNodes.length) {
+    return false;
+  }
+
+  return leftNodes.every((leftNode, index) => {
+    const rightNode = rightNodes[index];
+    return samePoint(leftNode.point, rightNode?.point) &&
+      samePoint(leftNode.inControl, rightNode?.inControl) &&
+      samePoint(leftNode.outControl, rightNode?.outControl);
+  });
 }
 
 function nativeArtFrameBounds(

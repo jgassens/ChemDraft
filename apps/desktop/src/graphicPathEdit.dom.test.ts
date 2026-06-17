@@ -127,6 +127,14 @@ describe("graphic path direct editing interactions", () => {
     return button;
   }
 
+  function pathNodeHandle(index: number): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-graphic-path-node-index="${index}"]`);
+    if (!button) {
+      throw new Error(`Expected path node ${index} handle.`);
+    }
+    return button;
+  }
+
   function resizeHandle(corner: "top-left" | "top-right" | "bottom-left" | "bottom-right"): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-object-resize-corner="${corner}"]`);
     if (!button) {
@@ -366,6 +374,51 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
     expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).toBeNull();
     expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).toBeNull();
+  });
+
+  it("drags a selected polyline node as one undoable path edit", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Polyline Node Drag"),
+      { x: 220, y: 180 },
+      "tool.art.polyline"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const before = debugArtObject(objectId).object;
+    const middleNode = before.data.pathNodes?.[1]?.point;
+    if (!middleNode) {
+      throw new Error("Expected inserted polyline middle node.");
+    }
+    const target = { x: middleNode.x + 26, y: middleNode.y - 18 };
+
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode).toBe("path-edit");
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(3);
+    expect(container.querySelector("[data-art-transform-frame=\"true\"]")).toBeNull();
+
+    await act(async () => {
+      dispatchPointer(pathNodeHandle(1), "pointerdown", middleNode, 29);
+      dispatchPointer(pageElement(), "pointermove", target, 29);
+      dispatchPointer(pageElement(), "pointerup", target, 29);
+    });
+    const after = debugArtObject(objectId).object;
+
+    expect(after.data.artPathKind).toBe("polyline");
+    expect(after.data.pathNodes?.[0]?.point).toEqual(before.data.pathNodes?.[0]?.point);
+    expect(after.data.pathNodes?.[1]?.point.x).toBeCloseTo(target.x, 3);
+    expect(after.data.pathNodes?.[1]?.point.y).toBeCloseTo(target.y, 3);
+    expect(after.data.pathNodes?.[2]?.point).toEqual(before.data.pathNodes?.[2]?.point);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    expect(debugArtObject(objectId).object.data.pathNodes?.[1]?.point).toEqual(middleNode);
   });
 
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {

@@ -5,12 +5,14 @@ import {
   createGraphicFreehandPathCache,
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
+  graphicPathNodeEditPoints,
   planNativeArtVisual,
   prepareGraphicPathForDirectEdit as prepareGraphicPathObjectForDirectEdit,
   type NativeArtPoint,
   type NativeArtMarkerHandleId,
   type GraphicPathEditHandle,
-  type GraphicPathEditPoints
+  type GraphicPathEditPoints,
+  type GraphicPathNodeEditPoints
 } from "@chemdraft/art-engine";
 import {
   applyPatch,
@@ -234,6 +236,7 @@ export interface NativeArtToolDefinition {
 
 export type NativeGraphicPathEditHandle = GraphicPathEditHandle;
 export type NativeGraphicPathEditPoints = GraphicPathEditPoints;
+export type NativeGraphicPathNodeEditPoints = GraphicPathNodeEditPoints;
 export type NativeGraphicMarkerHandleId = NativeArtMarkerHandleId;
 export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
 
@@ -1101,6 +1104,10 @@ export function insertNativeArtGraphicObject(
 
 export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphicPathEditPoints | undefined {
   return graphicPathEditPoints(object);
+}
+
+export function nativeGraphicPathNodeEditPoints(object: GraphicObject): NativeGraphicPathNodeEditPoints | undefined {
+  return graphicPathNodeEditPoints(object);
 }
 
 export function nativeGraphicCornerRadiusEditPoint(
