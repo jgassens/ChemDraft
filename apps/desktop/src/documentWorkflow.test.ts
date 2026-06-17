@@ -4252,6 +4252,45 @@ describe("Phase 4 document workflow", () => {
     expect(pointDistance(scaledPoints!.end, beforePoints.end)).toBeGreaterThan(0.5);
   });
 
+  it("scales native polyline path nodes with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Native Polyline"),
+      { x: 220, y: 180 },
+      "tool.art.polyline"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted polyline art object to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const beforeNodes = graphic.data.pathNodes;
+    if (!beforeNodes) {
+      throw new Error("Expected inserted polyline art object to store path nodes.");
+    }
+    const oldCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const scaleX = 1.5;
+    const scaleY = 0.45;
+
+    const scaled = scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const afterNodes = scaledGraphic.data.pathNodes;
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.artPathKind).toBe("polyline");
+    expect(scaledGraphic.width).toBeCloseTo(graphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(graphic.height * scaleY, 6);
+    expect(afterNodes).toHaveLength(beforeNodes.length);
+    beforeNodes.forEach((node, index) => {
+      expectPointToBeClose(afterNodes?.[index]?.point, scaledPoint(node.point, oldCenter, newCenter, scaleX, scaleY));
+    });
+  });
+
   it("does not rewrite local pathD data while scaling graphic frames", () => {
     const baseDocument = createPhase4Document("Scale Local Path D");
     const page = baseDocument.pages[0];

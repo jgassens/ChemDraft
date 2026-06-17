@@ -4842,7 +4842,8 @@ function translateGraphicObjectData(
     lineStart: translatePoint(data.lineStart),
     lineEnd: translatePoint(data.lineEnd),
     pathControlPoint: translatePoint(data.pathControlPoint),
-    arcCenter: translatePoint(data.arcCenter)
+    arcCenter: translatePoint(data.arcCenter),
+    pathNodes: transformGraphicPathNodes(data.pathNodes, translatePoint)
   };
 }
 
@@ -4866,7 +4867,8 @@ function resizeGraphicObjectDataForFrame(
     lineStart: resizePoint(data.lineStart),
     lineEnd: resizePoint(data.lineEnd),
     pathControlPoint: resizePoint(data.pathControlPoint),
-    arcCenter: resizePoint(data.arcCenter)
+    arcCenter: resizePoint(data.arcCenter),
+    pathNodes: transformGraphicPathNodes(data.pathNodes, resizePoint)
   };
 
   if (typeof data.arcRadiusX === "number" && Number.isFinite(data.arcRadiusX)) {
@@ -4878,6 +4880,17 @@ function resizeGraphicObjectDataForFrame(
   }
 
   return nextData;
+}
+
+function transformGraphicPathNodes(
+  nodes: GraphicObjectData["pathNodes"],
+  transformPoint: (point: PagePoint | undefined) => PagePoint | undefined
+): GraphicObjectData["pathNodes"] {
+  return nodes?.map((node) => ({
+    point: transformPoint(node.point) ?? node.point,
+    ...(node.inControl ? { inControl: transformPoint(node.inControl) ?? node.inControl } : {}),
+    ...(node.outControl ? { outControl: transformPoint(node.outControl) ?? node.outControl } : {})
+  }));
 }
 
 export function rotateNativeMoleculeParts(
