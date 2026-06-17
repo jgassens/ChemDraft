@@ -85,6 +85,11 @@ export interface NativeArtMarkerPlan {
   angleDegrees: number;
 }
 
+export interface NativeArtStrokeTerminalPlan {
+  point: NativeArtPoint;
+  direction: NativeArtPoint;
+}
+
 export interface NativeArtCapabilities {
   supportsFill: boolean;
   supportsStroke: boolean;
@@ -122,6 +127,8 @@ export interface NativeArtVisualPlan {
   pathD?: string;
   markerStart?: NativeArtMarkerPlan;
   markerEnd?: NativeArtMarkerPlan;
+  markerStartTerminal?: NativeArtStrokeTerminalPlan;
+  markerEndTerminal?: NativeArtStrokeTerminalPlan;
   projectedShapePathD?: string;
   glossGradient?: NativeArtGlossGradientPlan;
 }
@@ -229,6 +236,11 @@ export function planNativeArtVisual(
   const pathD = object.graphicKind === "path"
     ? graphicPathD(object, coordinateSpace)
     : undefined;
+  const markerStart = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart) : undefined;
+  const markerEnd = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd) : undefined;
+  const openStrokeTerminals = capabilities.isOpenStroke
+    ? nativeArtOpenStrokeTerminals(line, pathD)
+    : undefined;
   const projectedShapePathD = matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect")
     ? projectedArtShapePathD(object, coordinateSpace, matrix, stroke.width)
     : undefined;
@@ -250,13 +262,80 @@ export function planNativeArtVisual(
     frameBounds,
     line,
     pathD,
-    markerStart: capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart) : undefined,
-    markerEnd: capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd) : undefined,
+    markerStart,
+    markerEnd,
+    markerStartTerminal: markerStart ? openStrokeTerminals?.start : undefined,
+    markerEndTerminal: markerEnd ? openStrokeTerminals?.end : undefined,
     projectedShapePathD,
     glossGradient: capabilities.supportsFill && fill.mode === "gloss"
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
       : undefined
   };
+}
+
+function nativeArtOpenStrokeTerminals(
+  line: NativeArtVisualPlan["line"],
+  pathD: string | undefined
+): { start: NativeArtStrokeTerminalPlan; end: NativeArtStrokeTerminalPlan } | undefined {
+  if (line) {
+    const start = { x: line.x1, y: line.y1 };
+    const end = { x: line.x2, y: line.y2 };
+    const startDirection = normalizedVector({ x: start.x - end.x, y: start.y - end.y });
+    const endDirection = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+    return startDirection && endDirection
+      ? {
+          start: { point: start, direction: startDirection },
+          end: { point: end, direction: endDirection }
+        }
+      : undefined;
+  }
+
+  if (!pathD) {
+    return undefined;
+  }
+
+  try {
+    if (!isValidPath(pathD)) {
+      return undefined;
+    }
+    const length = getTotalLength(pathD);
+    if (!Number.isFinite(length) || length <= 0.001) {
+      return undefined;
+    }
+
+    const sampleOffset = Math.min(length, Math.max(1, length * 0.02));
+    const start = finiteSvgPathPoint(getPointAtLength(pathD, 0));
+    const startNear = finiteSvgPathPoint(getPointAtLength(pathD, sampleOffset));
+    const end = finiteSvgPathPoint(getPointAtLength(pathD, length));
+    const endNear = finiteSvgPathPoint(getPointAtLength(pathD, Math.max(0, length - sampleOffset)));
+    if (!start || !startNear || !end || !endNear) {
+      return undefined;
+    }
+
+    const startDirection = normalizedVector({ x: start.x - startNear.x, y: start.y - startNear.y });
+    const endDirection = normalizedVector({ x: end.x - endNear.x, y: end.y - endNear.y });
+    return startDirection && endDirection
+      ? {
+          start: { point: start, direction: startDirection },
+          end: { point: end, direction: endDirection }
+        }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function finiteSvgPathPoint(point: { x: number; y: number }): NativeArtPoint | undefined {
+  return Number.isFinite(point.x) && Number.isFinite(point.y)
+    ? { x: point.x, y: point.y }
+    : undefined;
+}
+
+function normalizedVector(vector: NativeArtPoint): NativeArtPoint | undefined {
+  const length = Math.hypot(vector.x, vector.y);
+  return Number.isFinite(length) && length > 0.001
+    ? { x: vector.x / length, y: vector.y / length }
+    : undefined;
 }
 
 export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilities {

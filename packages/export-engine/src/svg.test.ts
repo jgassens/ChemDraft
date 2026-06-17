@@ -220,7 +220,7 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("export.svg.graphic_tilt_approximation");
   });
 
-  it("exports native graphic arrow markers as SVG marker definitions", () => {
+  it("exports native graphic arrowheads as Illustrator-safe SVG geometry", () => {
     const arrow = {
       id: "art_svg_arrow",
       type: "graphic",
@@ -249,9 +249,11 @@ describe("SVG export serialization", () => {
 
     expect(result.warnings).toEqual([]);
     expect(result.contents).toContain('data-object-id="art_svg_arrow"');
+    expect(result.contents).toContain('d="M 123 143 L 199 183"');
     expect(result.contents).toContain('id="graphic-marker-end-art_svg_arrow"');
-    expect(result.contents).toContain('markerUnits="userSpaceOnUse"');
-    expect(result.contents).toContain('marker-end="url(#graphic-marker-end-art_svg_arrow)"');
-    expect(result.contents).toContain('d="M 10 0 L 0 -5 L 0 5 Z"');
+    expect(result.contents).toContain('data-graphic-marker="end"');
+    expect(result.contents).toMatch(/id="graphic-marker-end-art_svg_arrow" data-graphic-marker="end" d="M 199 183 L [^"]+ Z" fill="#111111" stroke="none"/);
+    expect(result.contents).not.toContain("<marker");
+    expect(result.contents).not.toContain("marker-end=");
   });
 });

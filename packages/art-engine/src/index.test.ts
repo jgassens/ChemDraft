@@ -222,6 +222,8 @@ describe("art-engine native art planning", () => {
       height: 46,
       data: {
         artPathKind: "line",
+        lineStart: { x: 120, y: 80 },
+        lineEnd: { x: 202, y: 80 },
         markerStart: { kind: "open-arrow", sizePx: 8 },
         markerEnd: { kind: "filled-arrow", sizePx: 12, angleDegrees: 15 }
       }
@@ -239,6 +241,10 @@ describe("art-engine native art planning", () => {
       sizePx: 12,
       angleDegrees: 15
     });
+    expect(plan.markerStartTerminal?.point).toEqual({ x: 0, y: 0 });
+    expect(plan.markerStartTerminal?.direction).toEqual({ x: -1, y: 0 });
+    expect(plan.markerEndTerminal?.point).toEqual({ x: 82, y: 0 });
+    expect(plan.markerEndTerminal?.direction).toEqual({ x: 1, y: 0 });
     expect(plan.capabilities.supportsFill).toBe(false);
   });
 
