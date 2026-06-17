@@ -164,6 +164,7 @@ import {
   insertNativeArtGraphicObject,
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
+  nativePolylinePathDocument,
   nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
   nativeChargeAssociationsForMolecule,
@@ -414,6 +415,18 @@ type FreehandArtDragState = {
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
+};
+type PolylineArtDrawState = {
+  commandId: string;
+  startDocument: ChemDraftDocument;
+  points: ClientPoint[];
+  latestPoint?: ClientPoint;
+  closed: boolean;
+};
+type PolylineArtPreviewState = {
+  points: ClientPoint[];
+  latestPoint?: ClientPoint;
+  closed: boolean;
 };
 type ObjectRotateDragState = {
   pointerId: number;
@@ -705,7 +718,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.11.59-codex";
+const CURRENT_BUILD_STAMP = "6.17.12.7-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -872,6 +885,7 @@ export function MainWindow({
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
+  const polylineArtDrawRef = useRef<PolylineArtDrawState | null>(null);
   const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
   const objectTransformPreviewRafRef = useRef<number | undefined>(undefined);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
@@ -901,6 +915,7 @@ export function MainWindow({
   );
   const document = documentHistory.present;
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
+  const [polylineArtPreview, setPolylineArtPreview] = useState<PolylineArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
@@ -3404,6 +3419,146 @@ export function MainWindow({
     }
   }, [clearFreehandArtPreview]);
 
+  const syncPolylineArtPreview = useCallback((draw: PolylineArtDrawState | null) => {
+    setPolylineArtPreview(draw
+      ? {
+          points: [...draw.points],
+          latestPoint: draw.latestPoint,
+          closed: draw.closed
+        }
+      : undefined
+    );
+  }, []);
+
+  const clearNativePolylineArtDraw = useCallback(() => {
+    polylineArtDrawRef.current = null;
+    syncPolylineArtPreview(null);
+  }, [syncPolylineArtPreview]);
+
+  const activateSelectToolAfterArtCommit = useCallback(() => {
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+  }, []);
+
+  const finishNativePolylineArtDraw = useCallback((options: { point?: ClientPoint; closed?: boolean } = {}): boolean => {
+    const draw = polylineArtDrawRef.current;
+    if (!draw) {
+      return false;
+    }
+
+    const points = [...draw.points];
+    const lastPoint = points[points.length - 1];
+    if (
+      options.point &&
+      (!lastPoint || clientPointDistance(lastPoint, options.point) >= 0.75)
+    ) {
+      points.push(options.point);
+    }
+
+    const closed = options.closed ?? draw.closed;
+    const nextDocument = nativePolylinePathDocument(draw.startDocument, points, draw.commandId, { closed });
+    clearNativePolylineArtDraw();
+    if (nextDocument === draw.startDocument) {
+      setStatus("Polyline needs at least two points");
+      return false;
+    }
+
+    const changed = commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    activateSelectToolAfterArtCommit();
+    setStatus(closed ? "Inserted closed polyline" : "Inserted polyline");
+    return changed;
+  }, [
+    activateSelectToolAfterArtCommit,
+    assignHoveredNativeDeleteTarget,
+    clearNativePolylineArtDraw,
+    commitDocumentChange
+  ]);
+
+  const startOrAppendNativePolylineArtPoint = useCallback((
+    point: ClientPoint,
+    commandId: string,
+    options: { finish?: boolean } = {}
+  ) => {
+    const current = polylineArtDrawRef.current;
+    if (options.finish && current?.commandId === commandId) {
+      finishNativePolylineArtDraw({ point });
+      return;
+    }
+
+    if (!current || current.commandId !== commandId) {
+      const draw: PolylineArtDrawState = {
+        commandId,
+        startDocument: documentRef.current,
+        points: [point],
+        latestPoint: point,
+        closed: false
+      };
+      polylineArtDrawRef.current = draw;
+      syncPolylineArtPreview(draw);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setSelectedNativeMoleculePart(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      setStatus("Started polyline");
+      return;
+    }
+
+    const firstPoint = current.points[0];
+    if (
+      firstPoint &&
+      current.points.length >= 3 &&
+      clientPointDistance(firstPoint, point) <= polylineCloseTolerance(viewportRef.current.scale)
+    ) {
+      current.closed = true;
+      syncPolylineArtPreview(current);
+      finishNativePolylineArtDraw({ closed: true });
+      return;
+    }
+
+    const lastPoint = current.points[current.points.length - 1];
+    if (!lastPoint || clientPointDistance(lastPoint, point) >= 0.75) {
+      current.points.push(point);
+    }
+    current.latestPoint = point;
+    syncPolylineArtPreview(current);
+    setStatus(`${current.points.length} polyline points`);
+  }, [
+    assignHoveredNativeDeleteTarget,
+    finishNativePolylineArtDraw,
+    syncPolylineArtPreview
+  ]);
+
+  const updateNativePolylineArtPreview = useCallback((point: ClientPoint) => {
+    const draw = polylineArtDrawRef.current;
+    if (!draw) {
+      return;
+    }
+
+    draw.latestPoint = point;
+    syncPolylineArtPreview(draw);
+  }, [syncPolylineArtPreview]);
+
+  useEffect(() => {
+    const draw = polylineArtDrawRef.current;
+    if (draw && activeToolState.activeCommandId !== draw.commandId) {
+      clearNativePolylineArtDraw();
+    }
+  }, [activeToolState.activeCommandId, clearNativePolylineArtDraw]);
+
   const scheduleObjectTransformPreview = useCallback((nextPreview: ObjectTransformPreviewState | undefined) => {
     pendingObjectTransformPreviewRef.current = nextPreview;
     if (objectTransformPreviewRafRef.current !== undefined) {
@@ -3487,6 +3642,37 @@ export function MainWindow({
         return;
       }
 
+      const polylineArtDraw = polylineArtDrawRef.current;
+      if (polylineArtDraw) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          clearNativePolylineArtDraw();
+          setStatus("Polyline canceled");
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finishNativePolylineArtDraw();
+          return;
+        }
+
+        if (event.key === "Backspace" || event.key === "Delete") {
+          event.preventDefault();
+          if (polylineArtDraw.points.length <= 1) {
+            clearNativePolylineArtDraw();
+            setStatus("Polyline canceled");
+            return;
+          }
+
+          polylineArtDraw.points.pop();
+          polylineArtDraw.latestPoint = polylineArtDraw.points[polylineArtDraw.points.length - 1];
+          syncPolylineArtPreview(polylineArtDraw);
+          setStatus(`${polylineArtDraw.points.length} polyline points`);
+          return;
+        }
+      }
+
       if (event.key === "Escape" && projectedPlaneTiltDragRef.current) {
         const projectedPlaneTiltDrag = projectedPlaneTiltDragRef.current;
         event.preventDefault();
@@ -3526,7 +3712,16 @@ export function MainWindow({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [clearNativeFreehandArtDrag, clearProjectedPlaneTiltDrag, replacePresentDocument, selectedNativeMoleculePart, shortcutRegistry]);
+  }, [
+    clearNativeFreehandArtDrag,
+    clearNativePolylineArtDraw,
+    clearProjectedPlaneTiltDrag,
+    finishNativePolylineArtDraw,
+    replacePresentDocument,
+    selectedNativeMoleculePart,
+    shortcutRegistry,
+    syncPolylineArtPreview
+  ]);
 
   useEffect(() => {
     if (!effectiveNativePalette) {
@@ -5238,6 +5433,10 @@ export function MainWindow({
     if (activeNativeArtTool) {
       event.preventDefault();
       event.stopPropagation();
+      if (activeNativeArtTool.commandId === "tool.art.polyline") {
+        startOrAppendNativePolylineArtPoint(point, activeNativeArtTool.commandId, { finish: event.detail >= 2 });
+        return;
+      }
       if (nativeArtToolIsFreehand(activeNativeArtTool.commandId)) {
         startNativeFreehandArtDrag(event, point, activeNativeArtTool.commandId);
         return;
@@ -5274,6 +5473,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
+    startOrAppendNativePolylineArtPoint,
     startNativeFreehandArtDrag,
     startNativePlacementDrag
   ]);
@@ -5584,6 +5784,15 @@ export function MainWindow({
       return;
     }
 
+    if (polylineArtDrawRef.current) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (point) {
+        updateNativePolylineArtPreview(point);
+      }
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -5613,6 +5822,7 @@ export function MainWindow({
     previewGraphicPathEdit,
     previewGraphicMarkerDrag,
     previewNativeFreehandArtDrag,
+    updateNativePolylineArtPreview,
     previewNativePartDrag,
     previewNativePlacementDrag,
     previewTextResize,
@@ -6026,6 +6236,13 @@ export function MainWindow({
         )
       : undefined;
 
+    if (activeNativeArtTool?.commandId === "tool.art.polyline" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      startOrAppendNativePolylineArtPoint(point, activeNativeArtTool.commandId, { finish: event.detail >= 2 });
+      return;
+    }
+
     if (activeNativeArtTool && nativeArtToolIsFreehand(activeNativeArtTool.commandId) && point) {
       event.preventDefault();
       event.stopPropagation();
@@ -6361,6 +6578,7 @@ export function MainWindow({
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
     startAtomLabelEdit,
+    startOrAppendNativePolylineArtPoint,
     startNativeFreehandArtDrag
   ]);
 
@@ -7164,6 +7382,14 @@ export function MainWindow({
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
+    if (polylineArtDrawRef.current) {
+      const point = pagePointFromPointerEvent(event);
+      if (point) {
+        updateNativePolylineArtPreview(point);
+      }
+      return;
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId && textResize.objectId === objectId) {
       const point = pagePointFromPointerEvent(event);
@@ -7405,6 +7631,7 @@ export function MainWindow({
     previewNativePartDrag,
     previewTextResize,
     updateFreeformBondPreview,
+    updateNativePolylineArtPreview,
     updateNativeCanvasHover
   ]);
 
@@ -7834,6 +8061,31 @@ export function MainWindow({
                     data-freehand-art-preview-path="true"
                   />
                 </svg>
+                {polylineArtPreview ? (
+                  <svg
+                    className="polyline-art-preview-layer"
+                    viewBox={`0 0 ${activePage.width} ${activePage.height}`}
+                    aria-hidden="true"
+                    data-polyline-art-preview-layer="true"
+                  >
+                    <path
+                      className="polyline-art-preview-path"
+                      d={polylineArtPreviewPathD(polylineArtPreview)}
+                      fill={polylineArtPreview.closed ? "rgba(29, 127, 104, 0.08)" : "none"}
+                      data-polyline-art-preview-path="true"
+                    />
+                    {polylineArtPreview.points.map((point, index) => (
+                      <circle
+                        className="polyline-art-preview-node"
+                        cx={point.x}
+                        cy={point.y}
+                        data-polyline-art-preview-node={index}
+                        key={`${index}:${point.x}:${point.y}`}
+                        r={4}
+                      />
+                    ))}
+                  </svg>
+                ) : null}
                 {selectionMarquee ? (
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
@@ -8717,6 +8969,36 @@ function freehandArtPreviewPathD(points: readonly GraphicFreehandPoint[]): strin
     `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)}`,
     ...rest.map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
   ].join(" ");
+}
+
+function polylineArtPreviewPathD(preview: PolylineArtPreviewState): string {
+  const points = [...preview.points];
+  const lastPoint = points[points.length - 1];
+  if (
+    preview.latestPoint &&
+    (!lastPoint || clientPointDistance(lastPoint, preview.latestPoint) >= 0.75)
+  ) {
+    points.push(preview.latestPoint);
+  }
+
+  const [first, ...rest] = points;
+  if (!first) {
+    return "";
+  }
+
+  if (rest.length === 0) {
+    return `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)} L ${formatSvgNumber(first.x + 0.01)} ${formatSvgNumber(first.y)}`;
+  }
+
+  return [
+    `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)}`,
+    ...rest.map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`),
+    preview.closed ? "Z" : undefined
+  ].filter(Boolean).join(" ");
+}
+
+function polylineCloseTolerance(scale: number): number {
+  return Math.max(6, 10 / Math.max(scale, 0.1));
 }
 
 function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | undefined {

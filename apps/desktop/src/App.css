@@ -1671,6 +1671,33 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.polyline-art-preview-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 46;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.polyline-art-preview-path {
+  stroke: #1d7f68;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.polyline-art-preview-node {
+  fill: #f7faf9;
+  stroke: #1d7f68;
+  stroke-width: 2;
+  pointer-events: none;
+}
+
 .art-transform-qa-overlay {
   position: absolute;
   inset: 0;

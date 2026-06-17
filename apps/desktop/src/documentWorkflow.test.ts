@@ -87,6 +87,7 @@ import {
   nativeGraphicPathEditPoints,
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
+  nativePolylinePathDocument,
   openNativeDocument,
   prepareGraphicPathForDirectEdit,
   previewNativeMoleculeBondGrowth,
@@ -3547,6 +3548,47 @@ describe("Phase 4 document workflow", () => {
         fillColor: "none"
       }
     });
+  });
+
+  it("creates native art polylines from clicked path points", () => {
+    const inserted = nativePolylinePathDocument(
+      createPhase4Document("Native Polyline Path"),
+      [
+        { x: 160, y: 140 },
+        { x: 220, y: 168 },
+        { x: 204, y: 224 }
+      ],
+      "tool.art.polyline"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected clicked polyline to be selected.");
+    }
+
+    const graphic = graphicById(inserted, objectId);
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "polyline",
+        artToolId: "polyline",
+        pathClosed: false,
+        pathNodes: [
+          { point: { x: 160, y: 140 } },
+          { point: { x: 220, y: 168 } },
+          { point: { x: 204, y: 224 } }
+        ]
+      },
+      style: {
+        artToolCommandId: "tool.art.polyline",
+        strokeColor: "#111111",
+        fillColor: "none"
+      }
+    });
+    expect(graphic.x).toBeLessThanOrEqual(160);
+    expect(graphic.y).toBeLessThanOrEqual(140);
+    expect(graphic.x + graphic.width).toBeGreaterThanOrEqual(220);
+    expect(graphic.y + graphic.height).toBeGreaterThanOrEqual(224);
   });
 
   it("creates native freehand pencil and brush strokes from raw pressure points", () => {

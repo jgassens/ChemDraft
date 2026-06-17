@@ -1014,6 +1014,75 @@ export function nativeFreehandStrokeDocument(
   );
 }
 
+export function createNativePolylineGraphicObject(
+  document: ChemDraftDocument,
+  points: readonly PagePoint[],
+  commandId: string = "tool.art.polyline",
+  options: { closed?: boolean } = {}
+): GraphicObject | undefined {
+  const tool = nativeArtToolForCommand(commandId);
+  if (!tool || tool.data.artPathKind !== "polyline") {
+    return undefined;
+  }
+
+  const cleanPoints = normalizePolylinePoints(points);
+  if (cleanPoints.length < 2) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const bounds = nativePolylineBounds(cleanPoints, page.width, page.height, tool.style.strokeWidth);
+  return {
+    id: nextObjectId(document, `art_${tool.id}`),
+    type: "graphic",
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    rotation: 0,
+    style: {
+      ...tool.style,
+      source: "chemdraft-native-art",
+      artToolCommandId: tool.commandId
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    graphicKind: tool.graphicKind,
+    data: {
+      ...tool.data,
+      artPathKind: "polyline",
+      pathNodes: cleanPoints.map((point) => ({ point })),
+      pathClosed: options.closed === true,
+      artToolId: tool.id
+    }
+  };
+}
+
+export function nativePolylinePathDocument(
+  document: ChemDraftDocument,
+  points: readonly PagePoint[],
+  commandId: string = "tool.art.polyline",
+  options: { closed?: boolean } = {}
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativePolylineGraphicObject(document, points, commandId, options);
+  if (!object) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 function nativeArtToolDataForPlacement(
   data: GraphicObjectData,
   x: number,
@@ -1050,6 +1119,48 @@ function normalizeFreehandPoints(points: readonly GraphicFreehandPoint[]): Graph
         ? { pressure: roundFreehandNumber(clamp(point.pressure, 0, 1)) }
         : {})
     }));
+}
+
+function normalizePolylinePoints(points: readonly PagePoint[]): PagePoint[] {
+  return points
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .reduce<PagePoint[]>((normalized, point) => {
+      const next = {
+        x: roundFreehandNumber(point.x),
+        y: roundFreehandNumber(point.y)
+      };
+      const previous = normalized[normalized.length - 1];
+      if (!previous || Math.hypot(previous.x - next.x, previous.y - next.y) >= 0.75) {
+        normalized.push(next);
+      }
+      return normalized;
+    }, []);
+}
+
+function nativePolylineBounds(
+  points: readonly PagePoint[],
+  pageWidth: number,
+  pageHeight: number,
+  strokeWidth: GraphicObjectStyle["strokeWidth"]
+): PageRect {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const numericStrokeWidth = typeof strokeWidth === "number" && Number.isFinite(strokeWidth) ? strokeWidth : 2;
+  const padding = Math.max(6, numericStrokeWidth * 2);
+  const x = clamp(minX - padding, 0, Math.max(0, pageWidth - 1));
+  const y = clamp(minY - padding, 0, Math.max(0, pageHeight - 1));
+  const right = clamp(maxX + padding, x + 1, pageWidth);
+  const bottom = clamp(maxY + padding, y + 1, pageHeight);
+  return {
+    x: roundFreehandNumber(x),
+    y: roundFreehandNumber(y),
+    width: roundFreehandNumber(right - x),
+    height: roundFreehandNumber(bottom - y)
+  };
 }
 
 function nativeFreehandBounds(
