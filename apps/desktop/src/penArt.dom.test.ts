@@ -156,6 +156,14 @@ describe("Pen native art interactions", () => {
     return handle;
   }
 
+  function nodeHandle(index: number): HTMLButtonElement {
+    const handle = container.querySelector<HTMLButtonElement>(`[data-graphic-path-node-index="${index}"]`);
+    if (!handle) {
+      throw new Error(`Expected node handle ${index}.`);
+    }
+    return handle;
+  }
+
   function dispatchKey(key: string, metaKey = false) {
     window.dispatchEvent(new KeyboardEvent("keydown", {
       bubbles: true,
@@ -257,7 +265,7 @@ describe("Pen native art interactions", () => {
     expect(container.querySelector("[data-active-tool=\"tool.select\"]")).not.toBeNull();
   });
 
-  it("shows Bezier control handles for straight Pen paths and drags one to curve the segment", async () => {
+  it("shows Bezier control handles only for the selected path node", async () => {
     await renderMainWindow();
 
     await act(async () => {
@@ -268,19 +276,45 @@ describe("Pen native art interactions", () => {
     });
 
     const objectId = selectedArtObjectId();
-    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(4);
-    expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(4);
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(3);
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(0);
+    expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(0);
 
     await act(async () => {
-      dispatchPointer(controlHandle(0, "out"), "pointerdown", { x: 160, y: 140 }, 64);
-      dispatchPointer(pageElement(), "pointermove", { x: 170, y: 96 }, 64);
-      dispatchPointer(pageElement(), "pointerup", { x: 170, y: 96 }, 64);
+      dispatchPointer(nodeHandle(1), "pointerdown", { x: 220, y: 140 }, 64);
+      dispatchPointer(pageElement(), "pointerup", { x: 220, y: 140 }, 64);
+    });
+
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(2);
+    expect(container.querySelector("[data-graphic-path-node-selected=\"true\"]")?.getAttribute("data-graphic-path-node-index")).toBe("1");
+    const controlLine = container.querySelector("[data-graphic-path-control-line]");
+    expect(controlLine?.getAttribute("x1") ?? "").not.toContain("calc");
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(0), "pointerdown", { x: 140, y: 140 }, 65);
+      dispatchPointer(pageElement(), "pointerup", { x: 140, y: 140 }, 65);
+    });
+
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(1);
+    expect(container.querySelector("[data-graphic-path-node-selected=\"true\"]")?.getAttribute("data-graphic-path-node-index")).toBe("0");
+    expect(container.querySelector("[data-graphic-path-control-index=\"1\"]")).toBeNull();
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(1), "pointerdown", { x: 220, y: 140 }, 66);
+      dispatchPointer(pageElement(), "pointerup", { x: 220, y: 140 }, 66);
+    });
+
+    await act(async () => {
+      dispatchPointer(controlHandle(1, "out"), "pointerdown", { x: 230, y: 152 }, 67);
+      dispatchPointer(pageElement(), "pointermove", { x: 244, y: 96 }, 67);
+      dispatchPointer(pageElement(), "pointerup", { x: 244, y: 96 }, 67);
     });
 
     const debug = debugArtObject(objectId);
-    expect(debug.object.data.pathNodes?.[0]).toEqual({
-      point: { x: 140, y: 140 },
-      outControl: { x: 170, y: 96 }
+    expect(debug.object.data.pathNodes?.[1]).toEqual({
+      point: { x: 220, y: 140 },
+      outControl: { x: 244, y: 96 }
     });
     expect(debug.plan.pathD).toContain(" C ");
   });

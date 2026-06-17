@@ -1999,6 +1999,12 @@ textarea:focus-visible,
   border-color: var(--cd-accent-strong);
 }
 
+.graphic-path-edit-handle-node-selected {
+  background: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+  box-shadow: 0 0 0 3px rgb(29 127 104 / 18%), 0 0 0 5px rgb(255 255 255 / 75%);
+}
+
 .graphic-bezier-control-layer {
   position: absolute;
   inset: 0;

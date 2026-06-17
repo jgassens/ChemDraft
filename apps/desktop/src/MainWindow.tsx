@@ -437,6 +437,10 @@ type PathArtPreviewState = {
   latestPoint?: ClientPoint;
   closed: boolean;
 };
+type SelectedGraphicPathNodeState = {
+  objectId: string;
+  nodeIndex: number;
+};
 type BezierArtNodeDragState = {
   pointerId: number;
   commandId: string;
@@ -736,7 +740,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.13.14-codex";
+const CURRENT_BUILD_STAMP = "6.17.14.23-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -940,6 +944,7 @@ export function MainWindow({
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
   const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
+  const [selectedGraphicPathNode, setSelectedGraphicPathNode] = useState<SelectedGraphicPathNodeState | undefined>();
   const [activeArtPaintTarget, setActiveArtPaintTarget] = useState<GraphicStylePaintTarget>("fill");
   const [activeAtomLabelEdit, setActiveAtomLabelEdit] = useState<AtomLabelEditState | undefined>();
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
@@ -1049,6 +1054,20 @@ export function MainWindow({
   const selectedToolbarObject = document.selection.objectIds.length === 1
     ? findDocumentObject(document, document.selection.objectIds[0])
     : undefined;
+  useEffect(() => {
+    if (!selectedGraphicPathNode) {
+      return;
+    }
+
+    const object = findDocumentObject(document, selectedGraphicPathNode.objectId);
+    const nodeEditPoints = object?.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
+    const stillSelected = activeToolState.activeKind === "selection" &&
+      document.selection.objectIds.includes(selectedGraphicPathNode.objectId);
+    const nodeStillExists = nodeEditPoints?.nodes.some((node) => node.index === selectedGraphicPathNode.nodeIndex) ?? false;
+    if (!stillSelected || !nodeStillExists) {
+      setSelectedGraphicPathNode(undefined);
+    }
+  }, [activeToolState.activeKind, document, selectedGraphicPathNode]);
   const currentToolbarTextStyle = useMemo(() => {
     if (selectedTextObject) {
       return selectedTextRange
@@ -2608,6 +2627,7 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveGraphicTransformObjectId(undefined);
+    setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
@@ -2621,6 +2641,7 @@ export function MainWindow({
     setActiveTextEditObjectId(undefined);
     setActiveTextSelection(undefined);
     setActiveGraphicTransformObjectId(undefined);
+    setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
@@ -5050,6 +5071,7 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveGraphicTransformObjectId(undefined);
+    setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
@@ -6594,6 +6616,7 @@ export function MainWindow({
       setActiveGraphicTransformObjectId((current) =>
         current === objectId && object?.type === "graphic" && nativeGraphicPathEditPoints(object) ? current : undefined
       );
+      setSelectedGraphicPathNode(undefined);
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
       setFreeformNativeBond(undefined);
@@ -6687,6 +6710,7 @@ export function MainWindow({
     setActiveEditorObjectId(object?.type === "molecule" ? object.id : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveGraphicTransformObjectId(undefined);
+    setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
@@ -7238,6 +7262,10 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     assignHoveredNativeDeleteTarget(undefined);
+    const selectedNodeIndex = nodeEditPoints ? graphicPathNodeIndexFromEditHandle(handle) : undefined;
+    setSelectedGraphicPathNode(selectedNodeIndex === undefined
+      ? undefined
+      : { objectId, nodeIndex: selectedNodeIndex });
     graphicPathEditDragRef.current = {
       pointerId: event.pointerId,
       objectId,
@@ -7303,6 +7331,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     assignHoveredNativeDeleteTarget(undefined);
+    setSelectedGraphicPathNode(undefined);
     graphicMarkerDragRef.current = {
       pointerId: event.pointerId,
       objectId,
@@ -8320,6 +8349,11 @@ export function MainWindow({
                       inGroupSelection={inGroupSelection}
                       graphicTransformActive={activeGraphicTransformObjectId === object.id}
                       graphicDirectEditActive={activeToolState.activeCommandId === "tool.art.directEdit"}
+                      selectedGraphicPathNodeIndex={
+                        selectedGraphicPathNode?.objectId === object.id
+                          ? selectedGraphicPathNode.nodeIndex
+                          : undefined
+                      }
                       selectedPart={selectedPart}
                       editingText={activeTextEditObjectId === object.id}
                       editingAtomLabel={activeAtomLabelEdit?.objectId === object.id ? activeAtomLabelEdit : undefined}
@@ -11921,6 +11955,7 @@ function DocumentObjectView({
   inGroupSelection,
   graphicTransformActive,
   graphicDirectEditActive,
+  selectedGraphicPathNodeIndex,
   selectedPart,
   editingText,
   editingAtomLabel,
@@ -11978,6 +12013,7 @@ function DocumentObjectView({
   inGroupSelection: boolean;
   graphicTransformActive: boolean;
   graphicDirectEditActive: boolean;
+  selectedGraphicPathNodeIndex?: number;
   selectedPart?: NativeMoleculeSelectionPart;
   editingText: boolean;
   editingAtomLabel?: AtomLabelEditState;
@@ -12821,6 +12857,7 @@ function DocumentObjectView({
       <GraphicPathEditHandles
         object={object}
         nodeEditPoints={graphicPathNodeEditPoints}
+        selectedNodeIndex={selectedGraphicPathNodeIndex}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
@@ -13567,11 +13604,13 @@ function GraphicCornerRadiusHandle({
 function GraphicPathEditHandles({
   object,
   nodeEditPoints,
+  selectedNodeIndex,
   onMarkerPointerDown,
   onPointerDown
 }: {
   object: GraphicObject;
   nodeEditPoints?: NativeGraphicPathNodeEditPoints;
+  selectedNodeIndex?: number;
   onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
@@ -13586,14 +13625,18 @@ function GraphicPathEditHandles({
     point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
   }));
   if (nodeEditPoints) {
-    const bezierControlHandles = nodeEditPoints.pathKind === "bezier"
-      ? bezierControlHandlePlans(nodeEditPoints)
+    const bezierControlHandles = nodeEditPoints.pathKind === "bezier" && selectedNodeIndex !== undefined
+      ? bezierControlHandlePlans(nodeEditPoints, selectedNodeIndex)
       : [];
+    const controlLayerWidth = Math.max(object.width, 1);
+    const controlLayerHeight = Math.max(object.height, 1);
     return (
       <>
         {bezierControlHandles.length > 0 ? (
           <svg
             className="graphic-bezier-control-layer"
+            viewBox={`0 0 ${formatSvgNumber(controlLayerWidth)} ${formatSvgNumber(controlLayerHeight)}`}
+            preserveAspectRatio="none"
             aria-hidden="true"
             focusable="false"
           >
@@ -13605,10 +13648,10 @@ function GraphicPathEditHandles({
                   className="graphic-bezier-control-line"
                   data-graphic-path-control-line={control.handle}
                   key={`${control.handle}:line`}
-                  x1={pageScaledCssPx(anchor.x - object.x)}
-                  y1={pageScaledCssPx(anchor.y - object.y)}
-                  x2={pageScaledCssPx(point.x - object.x)}
-                  y2={pageScaledCssPx(point.y - object.y)}
+                  x1={formatSvgNumber(anchor.x - object.x)}
+                  y1={formatSvgNumber(anchor.y - object.y)}
+                  x2={formatSvgNumber(point.x - object.x)}
+                  y2={formatSvgNumber(point.y - object.y)}
                 />
               );
             })}
@@ -13638,14 +13681,20 @@ function GraphicPathEditHandles({
         {nodeEditPoints.nodes.map((node) => {
           const point = projectGraphicObjectPoint(object, node.point);
           const handle = `node:${node.index}` as const;
+          const selected = node.index === selectedNodeIndex;
           const label = `Move path node ${node.index + 1}`;
           return (
             <button
               type="button"
-              className="graphic-path-edit-handle graphic-path-edit-handle-node"
+              className={[
+                "graphic-path-edit-handle",
+                "graphic-path-edit-handle-node",
+                selected ? "graphic-path-edit-handle-node-selected" : undefined
+              ].filter(Boolean).join(" ")}
               aria-label={label}
               data-graphic-path-handle={handle}
               data-graphic-path-node-index={node.index}
+              data-graphic-path-node-selected={selected ? "true" : undefined}
               key={handle}
               style={{
                 left: pageScaledCssPx(point.x - object.x),
@@ -13761,7 +13810,8 @@ function GraphicPathEditHandles({
 }
 
 function bezierControlHandlePlans(
-  editPoints: NativeGraphicPathNodeEditPoints
+  editPoints: NativeGraphicPathNodeEditPoints,
+  selectedNodeIndex: number
 ): Array<{
   anchor: NativeArtPoint;
   handle: Extract<NativeGraphicPathEditHandle, `node:${number}:in` | `node:${number}:out`>;
@@ -13770,42 +13820,54 @@ function bezierControlHandlePlans(
   point: NativeArtPoint;
 }> {
   const nodes = editPoints.nodes;
-  return nodes.flatMap((node, index) => {
-    const previous = index > 0
-      ? nodes[index - 1]
-      : editPoints.pathClosed ? nodes[nodes.length - 1] : undefined;
-    const next = index < nodes.length - 1
-      ? nodes[index + 1]
-      : editPoints.pathClosed ? nodes[0] : undefined;
-    const controls: Array<{
-      anchor: NativeArtPoint;
-      handle: Extract<NativeGraphicPathEditHandle, `node:${number}:in` | `node:${number}:out`>;
-      index: number;
-      kind: "in" | "out";
-      point: NativeArtPoint;
-    }> = [];
+  const node = nodes[selectedNodeIndex];
+  if (!node) {
+    return [];
+  }
 
-    if (previous) {
-      controls.push({
-        anchor: node.point,
-        handle: `node:${index}:in`,
-        index,
-        kind: "in",
-        point: node.inControl ?? defaultBezierControlPoint(node.point, previous.point)
-      });
-    }
-    if (next) {
-      controls.push({
-        anchor: node.point,
-        handle: `node:${index}:out`,
-        index,
-        kind: "out",
-        point: node.outControl ?? defaultBezierControlPoint(node.point, next.point)
-      });
-    }
+  const previous = selectedNodeIndex > 0
+    ? nodes[selectedNodeIndex - 1]
+    : editPoints.pathClosed ? nodes[nodes.length - 1] : undefined;
+  const next = selectedNodeIndex < nodes.length - 1
+    ? nodes[selectedNodeIndex + 1]
+    : editPoints.pathClosed ? nodes[0] : undefined;
+  const controls: Array<{
+    anchor: NativeArtPoint;
+    handle: Extract<NativeGraphicPathEditHandle, `node:${number}:in` | `node:${number}:out`>;
+    index: number;
+    kind: "in" | "out";
+    point: NativeArtPoint;
+  }> = [];
 
-    return controls;
-  });
+  if (previous) {
+    controls.push({
+      anchor: node.point,
+      handle: `node:${selectedNodeIndex}:in`,
+      index: selectedNodeIndex,
+      kind: "in",
+      point: node.inControl ?? defaultBezierControlPoint(node.point, previous.point)
+    });
+  }
+  if (next) {
+    controls.push({
+      anchor: node.point,
+      handle: `node:${selectedNodeIndex}:out`,
+      index: selectedNodeIndex,
+      kind: "out",
+      point: node.outControl ?? defaultBezierControlPoint(node.point, next.point)
+    });
+  }
+
+  return controls;
+}
+
+function graphicPathNodeIndexFromEditHandle(handle: NativeGraphicPathEditHandle): number | undefined {
+  const match = /^node:(\d+)(?::(?:in|out))?$/.exec(handle);
+  if (!match) {
+    return undefined;
+  }
+
+  return Number.parseInt(match[1], 10);
 }
 
 function defaultBezierControlPoint(anchor: NativeArtPoint, target: NativeArtPoint): NativeArtPoint {
