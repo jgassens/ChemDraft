@@ -297,6 +297,10 @@ describe("freehand native art interactions", () => {
     expect(debugArtObject(objectId).object.y).toBeCloseTo(before.y, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
     expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("move");
+    expect(graphic.getAttribute("data-art-transform-preview-proxy")).toBe("svg-image");
+    expect(graphic.querySelector("[data-art-transform-drag-preview='image']")).not.toBeNull();
+    expect(graphic.querySelector(".graphic-glyph-shell")?.getAttribute("data-art-vector-hidden")).toBe("true");
+    expect(graphic.querySelector(".graphic-glyph")).toBeNull();
     expect(graphic.style.transform).toContain("translate");
 
     await act(async () => {
@@ -338,6 +342,10 @@ describe("freehand native art interactions", () => {
     expect(debugArtObject(objectId).object.height).toBeCloseTo(before.height, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
     expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("resize");
+    expect(graphic.getAttribute("data-art-transform-preview-proxy")).toBe("svg-image");
+    expect(graphic.querySelector("[data-art-transform-drag-preview='image']")).not.toBeNull();
+    expect(graphic.querySelector(".graphic-glyph-shell")?.getAttribute("data-art-vector-hidden")).toBe("true");
+    expect(graphic.querySelector(".graphic-glyph")).toBeNull();
     expect(graphic.style.transform).toContain("scale");
 
     await act(async () => {
@@ -382,6 +390,10 @@ describe("freehand native art interactions", () => {
     expect(debugArtObject(objectId).object.rotation).toBeCloseTo(before.rotation, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
     expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("rotate");
+    expect(graphic.getAttribute("data-art-transform-preview-proxy")).toBe("svg-image");
+    expect(graphic.querySelector("[data-art-transform-drag-preview='image']")).not.toBeNull();
+    expect(graphic.querySelector(".graphic-glyph-shell")?.getAttribute("data-art-vector-hidden")).toBe("true");
+    expect(graphic.querySelector(".graphic-glyph")).toBeNull();
     expect(graphic.style.transform).toContain("rotate");
 
     await act(async () => {

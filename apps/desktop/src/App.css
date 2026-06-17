@@ -1859,6 +1859,43 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.graphic-object[data-art-transform-preview="true"] {
+  will-change: transform;
+}
+
+.graphic-glyph-shell {
+  width: 100%;
+  height: 100%;
+}
+
+.graphic-glyph-shell[data-art-vector-hidden="true"] {
+  visibility: hidden;
+}
+
+.art-transform-drag-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.art-transform-drag-preview-image {
+  display: block;
+  object-fit: fill;
+  user-select: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+}
+
+.art-transform-drag-preview-bounds {
+  border: 1.5px solid var(--cd-accent);
+  background: rgb(29 127 104 / 10%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 72%);
+}
+
 .reaction-arrow-line,
 .bracket-glyph-path {
   fill: none;

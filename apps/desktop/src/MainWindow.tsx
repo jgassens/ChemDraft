@@ -370,6 +370,7 @@ type ObjectDragState = {
   // When the grabbed object is part of a multi-object selection, the whole set moves
   // together by the pointer delta (group move). Undefined ⇒ single-object move.
   groupObjectIds?: readonly string[];
+  artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -421,6 +422,7 @@ type ObjectRotateDragState = {
   startPoint: ClientPoint;
   startRotationDegrees: number;
   latestPoint: ClientPoint;
+  artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   dragging: boolean;
 };
 type ObjectRotateReadoutState = {
@@ -507,6 +509,7 @@ type ObjectResizeDragState = {
   latestPoint: ClientPoint;
   latestScale: ObjectResizeScale;
   latestCumulativeScale: ObjectResizeScale;
+  artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   stretching: boolean;
   dragging: boolean;
 };
@@ -535,6 +538,14 @@ type ObjectTransformPreviewState = {
   rotationDegrees: number;
   scaleX: number;
   scaleY: number;
+  artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
+};
+type ArtTransformDragPreviewProxy = {
+  kind: "svg-image" | "bounds";
+  imageUrl?: string;
+  width: number;
+  height: number;
+  rasterScale: number;
 };
 // One drag that rotates or scales a whole multi-object selection about its shared center.
 type GroupTransformDragState = {
@@ -692,7 +703,9 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.8.43-codex";
+const CURRENT_BUILD_STAMP = "6.17.9.3-codex";
+const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
+const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -1126,7 +1139,8 @@ export function MainWindow({
 
     return { ...plannedDisplayPage, objects: svgObjects };
   }, [plannedDisplayPage]);
-  const pageSvgRenderPlan = useMemo(() => planPageSvgRender(editorSvgDisplayPage), [editorSvgDisplayPage]);
+  const pageSvgRenderPlan = useMemo(() =>
+    markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage)), [editorSvgDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
@@ -4128,24 +4142,27 @@ export function MainWindow({
   }, []);
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
-    const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
-    if (previewObjectIds) {
-      scheduleObjectTransformPreview({
-        pointerId: drag.pointerId,
-        objectIds: previewObjectIds,
-        mode: "move",
-        origin: drag.startPoint,
-        translateX: point.x - drag.startPoint.x,
-        translateY: point.y - drag.startPoint.y,
-        rotationDegrees: 0,
-        scaleX: 1,
-        scaleY: 1
-      });
-      return;
-    }
+    markFrame("previewObjectDrag", () => {
+      const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
+      if (previewObjectIds) {
+        scheduleObjectTransformPreview({
+          pointerId: drag.pointerId,
+          objectIds: previewObjectIds,
+          mode: "move",
+          origin: drag.startPoint,
+          translateX: point.x - drag.startPoint.x,
+          translateY: point.y - drag.startPoint.y,
+          rotationDegrees: 0,
+          scaleX: 1,
+          scaleY: 1,
+          artPreviewProxies: drag.artPreviewProxies
+        });
+        return;
+      }
 
-    clearObjectTransformPreview(drag.pointerId);
-    replacePresentDocument(objectDragDocument(drag, point));
+      clearObjectTransformPreview(drag.pointerId);
+      replacePresentDocument(objectDragDocument(drag, point));
+    });
   }, [clearObjectTransformPreview, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
@@ -4278,36 +4295,39 @@ export function MainWindow({
   }, []);
 
   const previewObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint) => {
-    drag.latestPoint = point;
-    const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
-    if (objectRotateReadoutTimeoutRef.current !== undefined) {
-      window.clearTimeout(objectRotateReadoutTimeoutRef.current);
-    }
-    setObjectRotateReadout({
-      objectId: drag.objectId,
-      degrees: cumulativeRotationReadoutDegrees(drag.startRotationDegrees, degrees)
-    });
-    objectRotateReadoutTimeoutRef.current = window.setTimeout(() => {
-      objectRotateReadoutTimeoutRef.current = undefined;
-      setObjectRotateReadout(undefined);
-    }, 1200);
-    if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic") {
-      scheduleObjectTransformPreview({
-        pointerId: drag.pointerId,
-        objectIds: [drag.objectId],
-        mode: "rotate",
-        origin: drag.centerPoint,
-        translateX: 0,
-        translateY: 0,
-        rotationDegrees: degrees,
-        scaleX: 1,
-        scaleY: 1
+    markFrame("previewObjectRotateDrag", () => {
+      drag.latestPoint = point;
+      const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      if (objectRotateReadoutTimeoutRef.current !== undefined) {
+        window.clearTimeout(objectRotateReadoutTimeoutRef.current);
+      }
+      setObjectRotateReadout({
+        objectId: drag.objectId,
+        degrees: cumulativeRotationReadoutDegrees(drag.startRotationDegrees, degrees)
       });
-      return;
-    }
+      objectRotateReadoutTimeoutRef.current = window.setTimeout(() => {
+        objectRotateReadoutTimeoutRef.current = undefined;
+        setObjectRotateReadout(undefined);
+      }, 1200);
+      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic") {
+        scheduleObjectTransformPreview({
+          pointerId: drag.pointerId,
+          objectIds: [drag.objectId],
+          mode: "rotate",
+          origin: drag.centerPoint,
+          translateX: 0,
+          translateY: 0,
+          rotationDegrees: degrees,
+          scaleX: 1,
+          scaleY: 1,
+          artPreviewProxies: drag.artPreviewProxies
+        });
+        return;
+      }
 
-    clearObjectTransformPreview(drag.pointerId);
-    replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
+      clearObjectTransformPreview(drag.pointerId);
+      replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
+    });
   }, [clearObjectTransformPreview, objectRotateDocumentFromDrag, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const showProjectedPlaneTiltReadout = useCallback((
@@ -4763,28 +4783,31 @@ export function MainWindow({
   }, []);
 
   const previewObjectResize = useCallback((drag: ObjectResizeDragState, point: ClientPoint, stretching: boolean) => {
-    drag.latestPoint = point;
-    drag.stretching = stretching;
-    drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching);
-    drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
-    showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale);
-    if (canUseCssResizePreview(drag)) {
-      scheduleObjectTransformPreview({
-        pointerId: drag.pointerId,
-        objectIds: [drag.objectId],
-        mode: "resize",
-        origin: drag.centerPoint,
-        translateX: 0,
-        translateY: 0,
-        rotationDegrees: 0,
-        scaleX: drag.latestScale.x,
-        scaleY: drag.latestScale.y
-      });
-      return;
-    }
+    markFrame("previewObjectResize", () => {
+      drag.latestPoint = point;
+      drag.stretching = stretching;
+      drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching);
+      drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
+      showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale);
+      if (canUseCssResizePreview(drag)) {
+        scheduleObjectTransformPreview({
+          pointerId: drag.pointerId,
+          objectIds: [drag.objectId],
+          mode: "resize",
+          origin: drag.centerPoint,
+          translateX: 0,
+          translateY: 0,
+          rotationDegrees: 0,
+          scaleX: drag.latestScale.x,
+          scaleY: drag.latestScale.y,
+          artPreviewProxies: drag.artPreviewProxies
+        });
+        return;
+      }
 
-    clearObjectTransformPreview(drag.pointerId);
-    replacePresentDocument(objectResizeDocumentFromDrag(drag, point, stretching));
+      clearObjectTransformPreview(drag.pointerId);
+      replacePresentDocument(objectResizeDocumentFromDrag(drag, point, stretching));
+    });
   }, [clearObjectTransformPreview, objectResizeDocumentFromDrag, replacePresentDocument, scheduleObjectTransformPreview, showObjectResizeReadout]);
 
   const commitObjectResize = useCallback((drag: ObjectResizeDragState, point: ClientPoint): boolean => {
@@ -6117,6 +6140,7 @@ export function MainWindow({
           startObjectX: object.x,
           startObjectY: object.y,
           groupObjectIds,
+          artPreviewProxies: createArtTransformDragPreviewProxies(document, groupObjectIds ?? [objectId], viewportRef.current.scale),
           dragging: false
         };
         captureElement.setPointerCapture(event.pointerId);
@@ -6224,6 +6248,7 @@ export function MainWindow({
           startObjectX: object.x,
           startObjectY: object.y,
           bondTarget: nativeMoleculeHit?.kind === "bond" ? { objectId, ...nativeMoleculeHit } : undefined,
+          artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
           dragging: false
         };
         objectDragMachineRef.current = interactionReducer(initialInteractionState(), {
@@ -6458,6 +6483,7 @@ export function MainWindow({
         ? selectedFragmentTarget ? 0 : nativeMoleculeTransformState(object).rotationDegrees
         : object.rotation,
       latestPoint: point,
+      artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
       dragging: false
     };
     objectRotateMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-rotate" });
@@ -6996,6 +7022,7 @@ export function MainWindow({
       latestPoint: point,
       latestScale: { x: 1, y: 1 },
       latestCumulativeScale: startCumulativeScale,
+      artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
       stretching: event.shiftKey,
       dragging: false
     };
@@ -8602,6 +8629,21 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function markFrame<T>(label: string, fn: () => T): T {
+  const perf = typeof performance !== "undefined" ? performance : undefined;
+  const start = perf?.now();
+  try {
+    return fn();
+  } finally {
+    if (start !== undefined) {
+      const elapsed = perf!.now() - start;
+      if (elapsed > 8) {
+        console.warn(`[perf] ${label}: ${elapsed.toFixed(1)}ms`);
+      }
+    }
+  }
+}
+
 function clientPointDistance(left: ClientPoint, right: ClientPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
@@ -8667,6 +8709,130 @@ function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | un
 
 function canUseCssResizePreview(drag: ObjectResizeDragState): boolean {
   return !drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic";
+}
+
+function createArtTransformDragPreviewProxies(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  viewportScale: number
+): Record<string, ArtTransformDragPreviewProxy> | undefined {
+  if (objectIds.length === 0) {
+    return undefined;
+  }
+
+  const proxies: Record<string, ArtTransformDragPreviewProxy> = {};
+  for (const objectId of objectIds) {
+    const object = findDocumentObject(document, objectId);
+    if (object?.type !== "graphic") {
+      return undefined;
+    }
+    proxies[objectId] = createGraphicArtTransformDragPreviewProxy(object, viewportScale);
+  }
+
+  return proxies;
+}
+
+function createGraphicArtTransformDragPreviewProxy(
+  object: GraphicObject,
+  viewportScale: number
+): ArtTransformDragPreviewProxy {
+  const rasterScale = Math.max(0.25, viewportScale);
+  if (ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY) {
+    return {
+      kind: "bounds",
+      width: Math.max(1, object.width),
+      height: Math.max(1, object.height),
+      rasterScale
+    };
+  }
+
+  const preview = graphicArtTransformPreviewSvgDataUrl(object);
+  return preview
+    ? { kind: "svg-image", ...preview, rasterScale }
+    : { kind: "bounds", width: Math.max(1, object.width), height: Math.max(1, object.height), rasterScale };
+}
+
+function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
+  imageUrl: string;
+  width: number;
+  height: number;
+} | undefined {
+  try {
+    const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+    const width = Math.max(1, plan.width);
+    const height = Math.max(1, plan.height);
+    const freehandPath = graphicObjectIsFreehandPath(object);
+    const strokeAttrs = [
+      previewSvgPaintAttrs("stroke", plan.stroke.paint, plan.stroke.color),
+      `stroke-width="${xmlAttributeValue(plan.stroke.width)}"`,
+      plan.stroke.dasharray ? `stroke-dasharray="${xmlAttributeValue(plan.stroke.dasharray)}"` : "",
+      `stroke-linecap="${xmlAttributeValue(plan.stroke.lineCap)}"`,
+      `stroke-linejoin="${xmlAttributeValue(plan.stroke.lineJoin)}"`,
+      `stroke-miterlimit="${xmlAttributeValue(plan.stroke.miterLimit)}"`,
+      `vector-effect="${plan.projectionTransform ? "none" : "non-scaling-stroke"}"`
+    ].filter(Boolean).join(" ");
+    const fillAttrs = previewSvgPaintAttrs("fill", plan.fill.paint, plan.fill.color);
+    const pathD = plan.visiblePathD ?? plan.pathD;
+    const projectionTransform = plan.projectionTransform
+      ? ` transform="${xmlAttributeValue(plan.projectionTransform)}"`
+      : "";
+    let body = "";
+
+    if (plan.projectedShapePathD) {
+      body = `<path d="${xmlAttributeValue(plan.projectedShapePathD)}" ${fillAttrs} ${strokeAttrs}/>`;
+    } else if (object.graphicKind === "path" && pathD) {
+      const pathFillAttrs = freehandPath || plan.capabilities.supportsFill
+        ? fillAttrs
+        : `fill="none"`;
+      body = `<path d="${xmlAttributeValue(pathD)}" ${pathFillAttrs} ${strokeAttrs}${projectionTransform}/>`;
+    } else if (object.graphicKind === "line" && plan.visibleLine) {
+      body = `<line x1="${xmlAttributeValue(plan.visibleLine.x1)}" y1="${xmlAttributeValue(plan.visibleLine.y1)}" x2="${xmlAttributeValue(plan.visibleLine.x2)}" y2="${xmlAttributeValue(plan.visibleLine.y2)}" fill="none" ${strokeAttrs}${projectionTransform}/>`;
+    } else if (object.graphicKind === "rect") {
+      body = `<rect x="${xmlAttributeValue(plan.stroke.width / 2)}" y="${xmlAttributeValue(plan.stroke.width / 2)}" width="${xmlAttributeValue(Math.max(width - plan.stroke.width, 0.5))}" height="${xmlAttributeValue(Math.max(height - plan.stroke.width, 0.5))}" rx="${xmlAttributeValue(plan.cornerRadius)}" ry="${xmlAttributeValue(plan.cornerRadius)}" ${fillAttrs} ${strokeAttrs}${projectionTransform}/>`;
+    } else if (object.graphicKind === "ellipse") {
+      body = `<ellipse cx="${xmlAttributeValue(width / 2)}" cy="${xmlAttributeValue(height / 2)}" rx="${xmlAttributeValue(Math.max(width / 2 - plan.stroke.width / 2, 0.5))}" ry="${xmlAttributeValue(Math.max(height / 2 - plan.stroke.width / 2, 0.5))}" ${fillAttrs} ${strokeAttrs}${projectionTransform}/>`;
+    }
+
+    if (!body) {
+      return undefined;
+    }
+
+    const opacity = plan.opacity === 1 ? "" : ` opacity="${xmlAttributeValue(plan.opacity)}"`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${xmlAttributeValue(width)}" height="${xmlAttributeValue(height)}" viewBox="0 0 ${xmlAttributeValue(width)} ${xmlAttributeValue(height)}"${opacity}>${body}</svg>`;
+    return {
+      imageUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+      width,
+      height
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function previewSvgPaintAttrs(
+  attribute: "fill" | "stroke",
+  paint: NativeArtPaintPlan,
+  fallbackColor: string
+): string {
+  if (paint.kind === "none") {
+    return `${attribute}="none"`;
+  }
+  if (paint.kind === "solid") {
+    return [
+      `${attribute}="${xmlAttributeValue(paint.color)}"`,
+      paint.opacity === 1 ? "" : `${attribute}-opacity="${xmlAttributeValue(paint.opacity)}"`
+    ].filter(Boolean).join(" ");
+  }
+  return `${attribute}="${xmlAttributeValue(fallbackColor)}"`;
+}
+
+function xmlAttributeValue(value: string | number | undefined): string {
+  const text = typeof value === "number" ? String(formatSvgNumber(value)) : String(value ?? "");
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function artObjectPreviewElement(root: HTMLElement, objectId: string): HTMLElement | null {
@@ -12080,6 +12246,7 @@ function DocumentObjectView({
   }
 
   if (object.type === "graphic") {
+    const artTransformProxy = objectTransformPreview?.artPreviewProxies?.[object.id];
     const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection ? (
       <GraphicPathEditHandles
         object={object}
@@ -12104,6 +12271,7 @@ function DocumentObjectView({
         data-graphic-kind={object.graphicKind}
         data-art-transform-preview={objectTransformPreview ? "true" : undefined}
         data-art-transform-preview-mode={objectTransformPreview?.mode}
+        data-art-transform-preview-proxy={artTransformProxy?.kind}
         data-graphic-interaction-mode={selected && !inGroupSelection && graphicPathEditPoints
           ? pathGraphicInEditMode ? "path-edit" : "object-transform"
           : selected && !inGroupSelection && graphicCornerRadiusEditPoint ? "corner-radius-edit"
@@ -12116,7 +12284,13 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onContextMenu={handleObjectContextMenu}
       >
-        <GraphicGlyph object={object} />
+        <div
+          className="graphic-glyph-shell"
+          data-art-vector-hidden={artTransformProxy ? "true" : undefined}
+        >
+          {artTransformProxy ? null : <GraphicGlyph object={object} />}
+        </div>
+        {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
         {graphicCornerRadiusHandle}
         {graphicPathEditHandles}
         {artObjectTransformFrame}
@@ -12139,6 +12313,108 @@ function DocumentObjectView({
       {artObjectTransformFrame}
     </div>
   );
+}
+
+function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPreviewProxy }) {
+  const [rasterImageUrl, setRasterImageUrl] = useState<string | undefined>();
+
+  useEffect(() => {
+    setRasterImageUrl(undefined);
+    if (proxy.kind !== "svg-image" || !proxy.imageUrl) {
+      return;
+    }
+
+    let active = true;
+    void rasterizeSvgPreviewImage(proxy).then((nextImageUrl) => {
+      if (active && nextImageUrl) {
+        setRasterImageUrl(nextImageUrl);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [proxy]);
+
+  if (proxy.kind === "svg-image" && proxy.imageUrl) {
+    const imageUrl = rasterImageUrl ?? proxy.imageUrl;
+    return (
+      <img
+        alt=""
+        aria-hidden="true"
+        className="art-transform-drag-preview art-transform-drag-preview-image"
+        data-art-transform-drag-preview="image"
+        data-art-transform-drag-preview-source={rasterImageUrl ? "raster" : "svg"}
+        decoding="async"
+        draggable={false}
+        src={imageUrl}
+      />
+    );
+  }
+
+  return (
+    <div
+      aria-hidden="true"
+      className="art-transform-drag-preview art-transform-drag-preview-bounds"
+      data-art-transform-drag-preview="bounds"
+    />
+  );
+}
+
+async function rasterizeSvgPreviewImage(proxy: ArtTransformDragPreviewProxy): Promise<string | undefined> {
+  if (proxy.kind !== "svg-image" || !proxy.imageUrl || typeof window === "undefined" || typeof document === "undefined") {
+    return undefined;
+  }
+
+  const ImageConstructor = window.Image;
+  if (!ImageConstructor) {
+    return undefined;
+  }
+
+  return new Promise((resolve) => {
+    const image = new ImageConstructor();
+    image.decoding = "async";
+    image.onload = () => {
+      try {
+        const size = artPreviewRasterPixelSize(proxy);
+        const canvas = document.createElement("canvas");
+        canvas.width = size.width;
+        canvas.height = size.height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          resolve(undefined);
+          return;
+        }
+
+        context.clearRect(0, 0, size.width, size.height);
+        context.drawImage(image, 0, 0, size.width, size.height);
+        resolve(canvas.toDataURL("image/png"));
+      } catch {
+        resolve(undefined);
+      }
+    };
+    image.onerror = () => resolve(undefined);
+    image.src = proxy.imageUrl!;
+  });
+}
+
+function artPreviewRasterPixelSize(proxy: ArtTransformDragPreviewProxy): { width: number; height: number } {
+  const deviceScale = typeof window !== "undefined" && Number.isFinite(window.devicePixelRatio)
+    ? Math.max(1, window.devicePixelRatio)
+    : 1;
+  const scale = Math.max(0.25, proxy.rasterScale) * deviceScale;
+  const rawWidth = Math.max(1, Math.ceil(proxy.width * scale));
+  const rawHeight = Math.max(1, Math.ceil(proxy.height * scale));
+  const largestSide = Math.max(rawWidth, rawHeight);
+  if (largestSide <= ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX) {
+    return { width: rawWidth, height: rawHeight };
+  }
+
+  const reduction = ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX / largestSide;
+  return {
+    width: Math.max(1, Math.ceil(rawWidth * reduction)),
+    height: Math.max(1, Math.ceil(rawHeight * reduction))
+  };
 }
 
 function ArtObjectTransformFrame({
@@ -12468,7 +12744,7 @@ function markerTerminalDirection(terminal: NonNullable<NativeArtVisualPlan["mark
 }
 
 function GraphicGlyph({ object }: { object: GraphicObject }) {
-  const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
   const height = plan.height;
