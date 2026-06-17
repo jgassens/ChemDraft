@@ -2820,7 +2820,7 @@ function nativeArtPolygonIntersectsRect(polygon: readonly NativeArtPoint[], rect
   return (
     corners.some((corner) => nativeArtPointInPolygon(corner, polygon)) ||
     polygon.some((point) => nativeArtPointInRect(point, rect)) ||
-    nativeArtPolygonEdges(polygon).some(([start, end]) => nativeArtLineIntersectsRect(start, end, rect))
+    nativeArtPolygonVisibleEdges(polygon).some(([start, end]) => nativeArtLineIntersectsRect(start, end, rect))
   );
 }
 
@@ -2849,7 +2849,7 @@ function nativeArtLineIntersectsPolygon(
   return (
     nativeArtPointInPolygon(start, polygon) ||
     nativeArtPointInPolygon(end, polygon) ||
-    nativeArtPolygonEdges(polygon).some(([edgeStart, edgeEnd]) =>
+    nativeArtPolygonVisibleEdges(polygon).some(([edgeStart, edgeEnd]) =>
       nativeArtSegmentsIntersect(start, end, edgeStart, edgeEnd)
     )
   );
@@ -2868,8 +2868,8 @@ function nativeArtRectCorners(rect: NativeArtBounds): NativeArtPoint[] {
   ];
 }
 
-function nativeArtPolygonEdges(polygon: readonly NativeArtPoint[]): Array<[NativeArtPoint, NativeArtPoint]> {
-  return polygon.map((point, index) => [point, polygon[(index + 1) % polygon.length]]);
+function nativeArtPolygonVisibleEdges(polygon: readonly NativeArtPoint[]): Array<[NativeArtPoint, NativeArtPoint]> {
+  return polygon.slice(0, -1).map((point, index) => [point, polygon[index + 1]]);
 }
 
 function nativeArtSegmentsIntersect(

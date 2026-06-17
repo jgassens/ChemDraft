@@ -663,6 +663,7 @@ type SelectionLassoState = {
   pointerId: number;
   points: ClientPoint[];
   latestPoint: ClientPoint;
+  subtracting: boolean;
   dragging: boolean;
 };
 type ObjectContextMenuState = {
@@ -747,7 +748,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.15.23-codex";
+const CURRENT_BUILD_STAMP = "6.17.15.40-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -2206,6 +2207,13 @@ export function MainWindow({
     void broadcastToolsetActiveTool(previousToolState.activeCommandId).catch(() => undefined);
   }, []);
 
+  const switchToSelectTool = useCallback(() => {
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+  }, []);
+
   const applyTextDocumentAtPoint = useCallback((point: ClientPoint) => {
     const currentDocument = documentRef.current;
     const nextDocument = insertNativeTextObject(currentDocument, point, "Text", textStyleDefaults);
@@ -2242,12 +2250,9 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
-    const selectToolState = createActiveToolState("tool.select");
-    activeToolCommandIdRef.current = selectToolState.activeCommandId;
-    setActiveToolState(selectToolState);
-    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    switchToSelectTool();
     setStatus("Inserted art object");
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ReturnType<typeof inspectClipboardPayload>) => {
     const result = applyClipboardPastePayload(
@@ -5477,6 +5482,7 @@ export function MainWindow({
       pointerId: event.pointerId,
       points: [point],
       latestPoint: point,
+      subtracting: event.altKey,
       dragging: false
     };
     lassoMachineRef.current = interactionReducer(
@@ -5955,6 +5961,7 @@ export function MainWindow({
       }
 
       lasso.latestPoint = point;
+      lasso.subtracting = lasso.subtracting || event.altKey;
       lassoMachineRef.current = interactionReducer(lassoMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       lasso.dragging = lassoMachineRef.current.phase === "dragging";
       if (lasso.dragging) {
@@ -6216,13 +6223,14 @@ export function MainWindow({
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? lasso.latestPoint;
       const wasDragging = lassoMachineRef.current.phase === "dragging";
+      const subtracting = lasso.subtracting || event.altKey;
       const lassoPoints = lassoPointsForSelection(lasso, point);
       const selection = wasDragging
         ? selectionInSelectionLasso(document.pages[0].objects, lassoPoints)
         : { objectIds: [], nativeSelection: undefined };
       replacePresentDocument((current) => {
         const pageId = current.pages[0].id;
-        if (!event.altKey) {
+        if (!subtracting) {
           return selectDocumentObjects(current, pageId, selection.objectIds);
         }
         const removed = new Set(selection.objectIds);
@@ -6232,16 +6240,17 @@ export function MainWindow({
           current.selection.objectIds.filter((objectId) => !removed.has(objectId))
         );
       });
-      setSelectedNativeMoleculePart(event.altKey ? undefined : selection.nativeSelection);
+      setSelectedNativeMoleculePart(subtracting ? undefined : selection.nativeSelection);
       setActiveGraphicTransformObjectId(undefined);
       clearTransientInteractionChrome();
-      if (!event.altKey && selection.objectIds.length === 0 && !selection.nativeSelection) {
+      if (!subtracting && selection.objectIds.length === 0 && !selection.nativeSelection) {
         toolbarStyleTargetRef.current = undefined;
       }
       setSelectionLasso(undefined);
       selectionLassoRef.current = null;
       lassoMachineRef.current = initialInteractionState();
-      setStatus(event.altKey ? selectionSubtractStatusLabel(selection) : selectionStatusLabel(selection));
+      switchToSelectTool();
+      setStatus(subtracting ? selectionSubtractStatusLabel(selection) : selectionStatusLabel(selection));
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -6306,7 +6315,8 @@ export function MainWindow({
     groupTransformDocument,
     installDocumentHistory,
     pagePointFromPointerEvent,
-    replacePresentDocument
+    replacePresentDocument,
+    switchToSelectTool
   ]);
 
   const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
@@ -6705,7 +6715,13 @@ export function MainWindow({
         return;
       }
 
-      const selectedDocument = selectDocumentObject(document, objectId);
+      const groupObjectIds = document.selection.objectIds.length > 1 &&
+        document.selection.objectIds.includes(objectId)
+        ? [...document.selection.objectIds]
+        : undefined;
+      const selectedDocument = groupObjectIds
+        ? document
+        : selectDocumentObject(document, objectId);
       replacePresentDocument(selectedDocument);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -6730,7 +6746,8 @@ export function MainWindow({
           startObjectX: object.x,
           startObjectY: object.y,
           bondTarget: nativeMoleculeHit?.kind === "bond" ? { objectId, ...nativeMoleculeHit } : undefined,
-          artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
+          groupObjectIds,
+          artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, groupObjectIds ?? [objectId], viewportRef.current.scale),
           dragging: false
         };
         objectDragMachineRef.current = interactionReducer(initialInteractionState(), {
@@ -11594,7 +11611,7 @@ function polygonIntersectsRect(
   return (
     corners.some((corner) => pointInPolygon(corner, polygon)) ||
     polygon.some((point) => pointInRect(point, rect)) ||
-    polygonEdges(polygon).some(([start, end]) => lineIntersectsRect(start, end, rect))
+    polygonVisibleEdges(polygon).some(([start, end]) => lineIntersectsRect(start, end, rect))
   );
 }
 
@@ -11623,7 +11640,7 @@ function lineIntersectsPolygon(
   return (
     pointInPolygon(start, polygon) ||
     pointInPolygon(end, polygon) ||
-    polygonEdges(polygon).some(([edgeStart, edgeEnd]) => segmentsIntersect(start, end, edgeStart, edgeEnd))
+    polygonVisibleEdges(polygon).some(([edgeStart, edgeEnd]) => segmentsIntersect(start, end, edgeStart, edgeEnd))
   );
 }
 
@@ -11640,8 +11657,8 @@ function rectCorners(rect: { x: number; y: number; width: number; height: number
   ];
 }
 
-function polygonEdges(polygon: readonly ClientPoint[]): Array<[ClientPoint, ClientPoint]> {
-  return polygon.map((point, index) => [point, polygon[(index + 1) % polygon.length]]);
+function polygonVisibleEdges(polygon: readonly ClientPoint[]): Array<[ClientPoint, ClientPoint]> {
+  return polygon.slice(0, -1).map((point, index) => [point, polygon[index + 1]]);
 }
 
 function lineIntersectsRect(
