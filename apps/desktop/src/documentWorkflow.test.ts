@@ -119,6 +119,7 @@ import {
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
+  updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle
 } from "./documentWorkflow";
 
@@ -3494,6 +3495,29 @@ describe("Phase 4 document workflow", () => {
         strokeLineCap: "butt"
       }
     });
+  });
+
+  it("edits native art arrowhead marker size through workflow helpers", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Arrow Marker Edit"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arrow to be selected.");
+    }
+    const arrow = graphicById(inserted, objectId);
+    const end = { x: arrow.x + arrow.width - 3, y: arrow.y + arrow.height - 3 };
+    const edited = updateNativeGraphicMarkerHandle(inserted, objectId, "markerEnd", {
+      x: end.x - 26,
+      y: end.y - 26
+    });
+
+    const marker = graphicById(edited, objectId).data.markerEnd;
+    expect(marker?.kind).toBe("filled-arrow");
+    expect(marker?.sizePx).toBeCloseTo(36.77, 3);
+    expect(edited.selection.objectIds).toEqual([objectId]);
   });
 
   it("applies object-style commands to selected graphics without mutating text or molecules", () => {

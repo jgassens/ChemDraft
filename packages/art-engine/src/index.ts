@@ -90,6 +90,15 @@ export interface NativeArtStrokeTerminalPlan {
   direction: NativeArtPoint;
 }
 
+export type NativeArtMarkerHandleId = "markerStart" | "markerEnd";
+
+export interface NativeArtMarkerHandlePlan {
+  id: NativeArtMarkerHandleId;
+  marker: NativeArtMarkerPlan;
+  point: NativeArtPoint;
+  terminal: NativeArtStrokeTerminalPlan;
+}
+
 export interface NativeArtCapabilities {
   supportsFill: boolean;
   supportsStroke: boolean;
@@ -131,6 +140,7 @@ export interface NativeArtVisualPlan {
   markerEnd?: NativeArtMarkerPlan;
   markerStartTerminal?: NativeArtStrokeTerminalPlan;
   markerEndTerminal?: NativeArtStrokeTerminalPlan;
+  markerHandles: NativeArtMarkerHandlePlan[];
   projectedShapePathD?: string;
   glossGradient?: NativeArtGlossGradientPlan;
 }
@@ -278,10 +288,85 @@ export function planNativeArtVisual(
     markerEnd,
     markerStartTerminal: markerStart ? openStrokeTerminals?.start : undefined,
     markerEndTerminal: markerEnd ? openStrokeTerminals?.end : undefined,
+    markerHandles: nativeArtMarkerHandles({
+      markerStart,
+      markerEnd,
+      markerStartTerminal: openStrokeTerminals?.start,
+      markerEndTerminal: openStrokeTerminals?.end
+    }),
     projectedShapePathD,
     glossGradient: capabilities.supportsFill && fill.mode === "gloss"
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
       : undefined
+  };
+}
+
+function nativeArtMarkerHandles(input: {
+  markerStart: NativeArtMarkerPlan | undefined;
+  markerEnd: NativeArtMarkerPlan | undefined;
+  markerStartTerminal: NativeArtStrokeTerminalPlan | undefined;
+  markerEndTerminal: NativeArtStrokeTerminalPlan | undefined;
+}): NativeArtMarkerHandlePlan[] {
+  return [
+    input.markerStart && input.markerStartTerminal
+      ? nativeArtMarkerHandle("markerStart", input.markerStart, input.markerStartTerminal)
+      : undefined,
+    input.markerEnd && input.markerEndTerminal
+      ? nativeArtMarkerHandle("markerEnd", input.markerEnd, input.markerEndTerminal)
+      : undefined
+  ].filter((handle): handle is NativeArtMarkerHandlePlan => handle !== undefined);
+}
+
+function nativeArtMarkerHandle(
+  id: NativeArtMarkerHandleId,
+  marker: NativeArtMarkerPlan,
+  terminal: NativeArtStrokeTerminalPlan
+): NativeArtMarkerHandlePlan {
+  const direction = markerInwardDirection(terminal) ?? { x: -1, y: 0 };
+  return {
+    id,
+    marker,
+    terminal,
+    point: {
+      x: roundLayoutNumber(terminal.point.x + direction.x * marker.sizePx),
+      y: roundLayoutNumber(terminal.point.y + direction.y * marker.sizePx)
+    }
+  };
+}
+
+export function editGraphicMarkerSize(
+  object: GraphicObject,
+  markerId: NativeArtMarkerHandleId,
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
+  const handle = plan.markerHandles.find((candidate) => candidate.id === markerId);
+  const currentMarker = markerId === "markerStart"
+    ? object.data.markerStart
+    : object.data.markerEnd;
+  if (!handle || !currentMarker || currentMarker.kind === "none") {
+    return undefined;
+  }
+
+  const distance = Math.hypot(point.x - handle.terminal.point.x, point.y - handle.terminal.point.y);
+  if (!Number.isFinite(distance)) {
+    return undefined;
+  }
+  const nextSize = roundLayoutNumber(clamp(distance, 4, 96));
+  const currentSize = metadataNumber(currentMarker.sizePx) ?? handle.marker.sizePx;
+  if (Math.abs(nextSize - currentSize) < 0.001) {
+    return object;
+  }
+
+  return {
+    ...object,
+    data: {
+      ...object.data,
+      [markerId]: {
+        ...currentMarker,
+        sizePx: nextSize
+      }
+    }
   };
 }
 

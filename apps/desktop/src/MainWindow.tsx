@@ -212,9 +212,11 @@ import {
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
+  updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
   swapGraphicObjectFillAndStroke,
   type GraphicStylePaintTarget,
+  type NativeGraphicMarkerHandleId,
   type NativeGraphicPathEditHandle,
   type NativeGraphicPathEditPoints,
   type NativeTextSelectionRange,
@@ -373,6 +375,15 @@ type GraphicPathEditDragState = {
   handle: NativeGraphicPathEditHandle;
   startDocument: ChemDraftDocument;
   workingDocument: ChemDraftDocument;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  dragging: boolean;
+};
+type GraphicMarkerDragState = {
+  pointerId: number;
+  objectId: string;
+  markerId: NativeGraphicMarkerHandleId;
+  startDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
@@ -657,7 +668,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.16.19.32-codex";
+const CURRENT_BUILD_STAMP = "6.16.20.13-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -770,6 +781,7 @@ interface ChemDraftAgentArtDebugSnapshot {
   plan: {
     pathD?: string;
     frameBounds: ReturnType<typeof planNativeArtVisual>["frameBounds"];
+    markerHandles: ReturnType<typeof planNativeArtVisual>["markerHandles"];
     projectionTransform?: string;
     width: number;
     height: number;
@@ -817,6 +829,7 @@ export function MainWindow({
   const objectDragRef = useRef<ObjectDragState | null>(null);
   const graphicCornerRadiusDragRef = useRef<GraphicCornerRadiusDragState | null>(null);
   const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
+  const graphicMarkerDragRef = useRef<GraphicMarkerDragState | null>(null);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -2650,6 +2663,7 @@ export function MainWindow({
           plan: {
             pathD: plan.pathD,
             frameBounds: plan.frameBounds,
+            markerHandles: plan.markerHandles,
             projectionTransform: plan.projectionTransform,
             width: plan.width,
             height: plan.height
@@ -3930,6 +3944,32 @@ export function MainWindow({
     replacePresentDocument(nextDocument);
   }, [graphicPathEditDocumentFromDrag, replacePresentDocument]);
 
+  const graphicMarkerDocumentFromDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint): ChemDraftDocument => {
+    const editPoint = nativeGraphicPathEditPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
+    return updateNativeGraphicMarkerHandle(drag.startDocument, drag.objectId, drag.markerId, editPoint);
+  }, []);
+
+  const previewGraphicMarkerDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    replacePresentDocument(graphicMarkerDocumentFromDrag(drag, point));
+  }, [graphicMarkerDocumentFromDrag, replacePresentDocument]);
+
+  const commitGraphicMarkerDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint): boolean => {
+    const edited = graphicMarkerDocumentFromDrag(drag, point);
+    if (edited === drag.startDocument) {
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: edited,
+      future: []
+    });
+    return true;
+  }, [graphicMarkerDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     return drag.target
@@ -4604,6 +4644,20 @@ export function MainWindow({
     }
   }, []);
 
+  const clearGraphicMarkerDrag = useCallback((event: ObjectPointerEvent) => {
+    const drag = graphicMarkerDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      graphicMarkerDragRef.current = null;
+      const page = pageRef.current;
+      if (page?.hasPointerCapture(event.pointerId)) {
+        page.releasePointerCapture(event.pointerId);
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
   const clearObjectRotateDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectRotateDragRef.current;
     if (drag?.pointerId === event.pointerId) {
@@ -5106,6 +5160,33 @@ export function MainWindow({
       return;
     }
 
+    const graphicMarkerDrag = graphicMarkerDragRef.current;
+    if (graphicMarkerDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicMarkerDrag.latestPoint = point;
+      if (!graphicMarkerDrag.dragging && clientPointDistance(graphicMarkerDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD) {
+        graphicMarkerDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (graphicMarkerDrag.dragging) {
+        previewGraphicMarkerDrag(graphicMarkerDrag, point);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -5206,6 +5287,7 @@ export function MainWindow({
     previewObjectResize,
     previewGraphicCornerRadius,
     previewGraphicPathEdit,
+    previewGraphicMarkerDrag,
     previewNativePartDrag,
     previewNativePlacementDrag,
     previewTextResize,
@@ -5341,6 +5423,20 @@ export function MainWindow({
       return;
     }
 
+    const graphicMarkerDrag = graphicMarkerDragRef.current;
+    if (graphicMarkerDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicMarkerDrag.latestPoint;
+      if (graphicMarkerDrag.dragging) {
+        const changed = commitGraphicMarkerDrag(graphicMarkerDrag, point);
+        setStatus(changed ? "Adjusted arrowhead size" : "Arrowhead size unchanged");
+      } else {
+        setStatus("Selected arrowhead");
+      }
+      clearGraphicMarkerDrag(event);
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -5417,11 +5513,13 @@ export function MainWindow({
     clearObjectResizeDrag,
     clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
+    clearGraphicMarkerDrag,
     clearProjectedPlaneTiltDrag,
     clearNativePlacementDrag,
     clearTextResize,
     commitGraphicCornerRadius,
     commitGraphicPathEdit,
+    commitGraphicMarkerDrag,
     commitNativePlacementDrag,
     commitNativePartDrag,
     commitTextResize,
@@ -5489,6 +5587,14 @@ export function MainWindow({
       clearGraphicPathEditDrag(event);
     }
 
+    const graphicMarkerDrag = graphicMarkerDragRef.current;
+    if (graphicMarkerDrag?.pointerId === event.pointerId) {
+      if (graphicMarkerDrag.dragging) {
+        replacePresentDocument(graphicMarkerDrag.startDocument);
+      }
+      clearGraphicMarkerDrag(event);
+    }
+
     const nativePartDrag = nativePartDragRef.current;
     if (nativePartDrag?.pointerId === event.pointerId && nativePartDrag.dragging) {
       replacePresentDocument(nativePartDrag.startDocument);
@@ -5511,7 +5617,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicPathEditDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -6438,6 +6544,64 @@ export function MainWindow({
     replacePresentDocument
   ]);
 
+  const handleGraphicMarkerPointerDown = useCallback((
+    objectId: string,
+    markerId: NativeGraphicMarkerHandleId,
+    event: PointerEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+      return;
+    }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can be unavailable if the browser has already canceled the press.
+    }
+
+    const point = pagePointFromPointerEvent(event);
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    const plan = object?.type === "graphic" ? planNativeArtVisual(object, { coordinateSpace: "local" }) : undefined;
+    if (!point || object?.type !== "graphic" || !plan?.markerHandles.some((handle) => handle.id === markerId)) {
+      return;
+    }
+
+    const selectedDocument = currentDocument.selection.objectIds.includes(objectId)
+      ? currentDocument
+      : selectDocumentObject(currentDocument, objectId);
+    replacePresentDocument(selectedDocument);
+    handleRotationInputKeep();
+    handleObjectResizeInputKeep();
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    graphicMarkerDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      markerId,
+      startDocument: selectedDocument,
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus(markerId === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size");
+  }, [
+    activeToolState.activeKind,
+    assignHoveredNativeDeleteTarget,
+    handleObjectResizeInputKeep,
+    handleRotationInputKeep,
+    pagePointFromPointerEvent,
+    replacePresentDocument
+  ]);
+
   const handleObjectResizePointerDown = useCallback((
     objectId: string,
     corner: ObjectResizeCorner,
@@ -6787,6 +6951,32 @@ export function MainWindow({
       return;
     }
 
+    const graphicMarkerDrag = graphicMarkerDragRef.current;
+    if (graphicMarkerDrag?.pointerId === event.pointerId && graphicMarkerDrag.objectId === objectId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicMarkerDrag.latestPoint = point;
+      if (!graphicMarkerDrag.dragging && clientPointDistance(graphicMarkerDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD) {
+        graphicMarkerDrag.dragging = true;
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+      }
+
+      if (graphicMarkerDrag.dragging) {
+        previewGraphicMarkerDrag(graphicMarkerDrag, point);
+      }
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       const point = pagePointFromPointerEvent(event);
@@ -6841,6 +7031,7 @@ export function MainWindow({
     previewObjectResize,
     previewGraphicCornerRadius,
     previewGraphicPathEdit,
+    previewGraphicMarkerDrag,
     previewNativeDoubleBondSideDrag,
     previewNativePartDrag,
     previewTextResize,
@@ -6952,6 +7143,20 @@ export function MainWindow({
       return;
     }
 
+    const graphicMarkerDrag = graphicMarkerDragRef.current;
+    if (graphicMarkerDrag?.pointerId === event.pointerId && graphicMarkerDrag.objectId === objectId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicMarkerDrag.latestPoint;
+      if (graphicMarkerDrag.dragging) {
+        const changed = commitGraphicMarkerDrag(graphicMarkerDrag, point);
+        setStatus(changed ? "Adjusted arrowhead size" : "Arrowhead size unchanged");
+      } else {
+        setStatus("Selected arrowhead");
+      }
+      clearGraphicMarkerDrag(event);
+      return;
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.objectId === objectId) {
       event.stopPropagation();
@@ -6998,8 +7203,10 @@ export function MainWindow({
     clearObjectResizeDrag,
     clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
+    clearGraphicMarkerDrag,
     clearTextResize,
     commitGraphicPathEdit,
+    commitGraphicMarkerDrag,
     commitNativeDoubleBondSideDrag,
     commitNativePartDrag,
     commitObjectResize,
@@ -7050,6 +7257,11 @@ export function MainWindow({
       replacePresentDocument(graphicPathEditDrag.startDocument);
     }
 
+    const graphicMarkerDrag = graphicMarkerDragRef.current;
+    if (graphicMarkerDrag?.pointerId === event.pointerId && graphicMarkerDrag.dragging) {
+      replacePresentDocument(graphicMarkerDrag.startDocument);
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
@@ -7059,6 +7271,7 @@ export function MainWindow({
     clearObjectResizeDrag(event);
     clearGraphicCornerRadiusDrag(event);
     clearGraphicPathEditDrag(event);
+    clearGraphicMarkerDrag(event);
     clearObjectDrag(event);
     clearNativeBondEditDrag(event);
     clearNativeBondDrag(event);
@@ -7072,6 +7285,7 @@ export function MainWindow({
     clearNativePartDrag,
     clearGraphicCornerRadiusDrag,
     clearGraphicPathEditDrag,
+    clearGraphicMarkerDrag,
     clearObjectResizeDrag,
     clearObjectDrag,
     clearObjectRotateDrag,
@@ -7087,6 +7301,7 @@ export function MainWindow({
       objectDragRef.current?.objectId === objectId ||
       graphicCornerRadiusDragRef.current?.objectId === objectId ||
       graphicPathEditDragRef.current?.objectId === objectId ||
+      graphicMarkerDragRef.current?.objectId === objectId ||
       objectRotateDragRef.current?.objectId === objectId ||
       objectResizeDragRef.current?.objectId === objectId
     ) {
@@ -7312,6 +7527,7 @@ export function MainWindow({
                       onGraphicCornerRadiusPointerDown={handleGraphicCornerRadiusPointerDown}
                       onGraphicCornerRadiusDoubleClick={handleGraphicCornerRadiusDoubleClick}
                       onGraphicPathEditPointerDown={handleGraphicPathEditPointerDown}
+                      onGraphicMarkerPointerDown={handleGraphicMarkerPointerDown}
                       onRotationInputChange={handleRotationInputChange}
                       onRotationInputKeep={handleRotationInputKeep}
                       onRotationInputHome={handleRotationInputHome}
@@ -10509,6 +10725,7 @@ function DocumentObjectView({
   onGraphicCornerRadiusPointerDown,
   onGraphicCornerRadiusDoubleClick,
   onGraphicPathEditPointerDown,
+  onGraphicMarkerPointerDown,
   onRotationInputChange,
   onRotationInputKeep,
   onRotationInputHome,
@@ -10563,6 +10780,7 @@ function DocumentObjectView({
   onGraphicCornerRadiusPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicCornerRadiusDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<HTMLButtonElement>): void;
+  onGraphicMarkerPointerDown(objectId: string, markerId: NativeGraphicMarkerHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
   onRotationInputKeep(input: RotationInputState): void;
   onRotationInputHome(input: RotationInputState): void;
@@ -10639,6 +10857,9 @@ function DocumentObjectView({
   };
   const handleGraphicPathEditPointerDown = (handle: NativeGraphicPathEditHandle) => (event: PointerEvent<HTMLButtonElement>) => {
     onGraphicPathEditPointerDown(object.id, handle, event);
+  };
+  const handleGraphicMarkerPointerDown = (markerId: NativeGraphicMarkerHandleId) => (event: PointerEvent<HTMLButtonElement>) => {
+    onGraphicMarkerPointerDown(object.id, markerId, event);
   };
   const handleObjectResizePointerDown = (corner: ObjectResizeCorner) => (event: PointerEvent<HTMLButtonElement>) => {
     onObjectResizePointerDown(object.id, corner, event);
@@ -11361,6 +11582,7 @@ function DocumentObjectView({
     const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection ? (
       <GraphicPathEditHandles
         object={object}
+        onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
     ) : null;
@@ -11979,9 +12201,11 @@ function GraphicCornerRadiusHandle({
 
 function GraphicPathEditHandles({
   object,
+  onMarkerPointerDown,
   onPointerDown
 }: {
   object: GraphicObject;
+  onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
   const points = nativeGraphicPathEditPoints(object);
@@ -11989,6 +12213,11 @@ function GraphicPathEditHandles({
     return null;
   }
 
+  const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const markerHandles = plan.markerHandles.map((handle) => ({
+    ...handle,
+    point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
+  }));
   const circularArc = isSemanticCircularGraphicArc(object, points);
   const projectedPoints = {
     start: projectGraphicObjectPoint(object, points.start),
@@ -12027,6 +12256,26 @@ function GraphicPathEditHandles({
           }}
           title={label}
           onPointerDown={onPointerDown(handle)}
+        />
+      ))}
+      {markerHandles.map((handle) => (
+        <button
+          type="button"
+          className={[
+            "graphic-path-edit-handle",
+            "graphic-marker-edit-handle",
+            `graphic-marker-edit-handle-${handle.id === "markerStart" ? "start" : "end"}`
+          ].join(" ")}
+          aria-label={handle.id === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size"}
+          data-graphic-marker-handle={handle.id}
+          data-graphic-marker-size={String(Math.round(handle.marker.sizePx))}
+          key={handle.id}
+          style={{
+            left: `${handle.point.x}px`,
+            top: `${handle.point.y}px`
+          }}
+          title={handle.id === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size"}
+          onPointerDown={onMarkerPointerDown(handle.id)}
         />
       ))}
       {arcRadianReadout ? (

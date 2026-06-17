@@ -1,4 +1,5 @@
 import {
+  editGraphicMarkerSize,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
   graphicCornerRadiusEditPoint,
@@ -6,6 +7,7 @@ import {
   planNativeArtVisual,
   prepareGraphicPathForDirectEdit as prepareGraphicPathObjectForDirectEdit,
   type NativeArtPoint,
+  type NativeArtMarkerHandleId,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints
 } from "@chemdraft/art-engine";
@@ -226,6 +228,7 @@ export interface NativeArtToolDefinition {
 
 export type NativeGraphicPathEditHandle = GraphicPathEditHandle;
 export type NativeGraphicPathEditPoints = GraphicPathEditPoints;
+export type NativeGraphicMarkerHandleId = NativeArtMarkerHandleId;
 export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
 
 const artOutlineStyle = {
@@ -939,6 +942,33 @@ export function updateNativeGraphicPathHandle(
   }
 
   const edited = editGraphicPathGeometry(object, handle, point);
+  if (!edited || edited === object) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: edited
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function updateNativeGraphicMarkerHandle(
+  document: ChemDraftDocument,
+  objectId: string,
+  markerId: NativeGraphicMarkerHandleId,
+  point: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (!object || object.type !== "graphic") {
+    return document;
+  }
+
+  const edited = editGraphicMarkerSize(object, markerId, point);
   if (!edited || edited === object) {
     return document;
   }

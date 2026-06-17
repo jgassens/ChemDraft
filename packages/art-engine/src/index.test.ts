@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import type { GraphicObject } from "@chemdraft/chem-core";
 import {
   editGraphicCornerRadius,
+  editGraphicMarkerSize,
   editGraphicPathGeometry,
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
@@ -276,6 +277,34 @@ describe("art-engine native art planning", () => {
     expect(plan.pathD).toContain("L 79 43");
     expect(plan.visiblePathD).toBeDefined();
     expect(plan.visiblePathD).not.toContain("L 79 43");
+  });
+
+  it("edits arrowhead marker size from marker handle drag distance", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const handle = plan.markerHandles.find((candidate) => candidate.id === "markerEnd");
+    if (!handle) {
+      throw new Error("Expected marker end handle.");
+    }
+
+    const edited = editGraphicMarkerSize(graphic, "markerEnd", {
+      x: handle.terminal.point.x - handle.terminal.direction.x * 24,
+      y: handle.terminal.point.y - handle.terminal.direction.y * 24
+    });
+
+    expect(edited?.data.markerEnd).toEqual({
+      kind: "filled-arrow",
+      sizePx: 24
+    });
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {

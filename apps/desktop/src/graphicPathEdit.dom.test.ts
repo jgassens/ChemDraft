@@ -115,6 +115,14 @@ describe("graphic path direct editing interactions", () => {
     return button;
   }
 
+  function markerHandle(handle: "markerStart" | "markerEnd"): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-graphic-marker-handle="${handle}"]`);
+    if (!button) {
+      throw new Error(`Expected ${handle} marker handle.`);
+    }
+    return button;
+  }
+
   function resizeHandle(corner: "top-left" | "top-right" | "bottom-left" | "bottom-right"): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-object-resize-corner="${corner}"]`);
     if (!button) {
@@ -238,6 +246,55 @@ describe("graphic path direct editing interactions", () => {
 
     await act(async () => {
       dispatchPointer(pageElement(), "pointerup", { x: middle.x, y: middle.y - 2 }, 1);
+    });
+  });
+
+  it("drags an arrowhead handle to resize the marker as one undoable edit", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrowhead Marker Drag"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const before = debugArtObject(objectId);
+    const marker = before.plan.markerHandles.find((handle) => handle.id === "markerEnd");
+    if (!marker) {
+      throw new Error("Expected end marker handle.");
+    }
+    const start = {
+      x: before.object.x + marker.point.x,
+      y: before.object.y + marker.point.y
+    };
+    const target = {
+      x: before.object.x + marker.terminal.point.x - marker.terminal.direction.x * 28,
+      y: before.object.y + marker.terminal.point.y - marker.terminal.direction.y * 28
+    };
+
+    await act(async () => {
+      dispatchPointer(markerHandle("markerEnd"), "pointerdown", start, 11);
+      dispatchPointer(pageElement(), "pointermove", target, 11);
+      dispatchPointer(pageElement(), "pointerup", target, 11);
+    });
+
+    expect(debugArtObject(objectId).object.data.markerEnd).toEqual({
+      kind: "filled-arrow",
+      sizePx: 28
+    });
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    expect(debugArtObject(objectId).object.data.markerEnd).toEqual({
+      kind: "filled-arrow",
+      sizePx: 10
     });
   });
 

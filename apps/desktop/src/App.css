@@ -1941,6 +1941,18 @@ textarea:focus-visible,
   border-width: 1.5px;
 }
 
+.graphic-marker-edit-handle {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  cursor: nwse-resize;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.graphic-marker-edit-handle:active {
+  cursor: grabbing;
+}
+
 .graphic-path-radian-readout {
   position: absolute;
   z-index: 5;
