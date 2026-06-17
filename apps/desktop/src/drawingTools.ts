@@ -58,8 +58,7 @@ export const coreDrawingToolDefinitions = [
     title: "Eraser Tool",
     kind: "selection",
     category: "selection",
-    icon: "select",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    icon: "select"
   },
   {
     commandId: "tool.bond",

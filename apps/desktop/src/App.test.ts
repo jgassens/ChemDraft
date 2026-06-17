@@ -1283,6 +1283,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.chairCyclohexaneA",
       "tool.chairCyclohexaneB",
       "tool.lasso",
+      "tool.eraser",
       structureCleanupCommandId,
       "tool.plus",
       "tool.minus",
@@ -1304,6 +1305,7 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
+    expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
     expect(disabledTools.length).toBeGreaterThan(20);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });

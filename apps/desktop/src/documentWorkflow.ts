@@ -2,6 +2,7 @@ import {
   editGraphicMarkerSize,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
+  deleteGraphicPathNode,
   createGraphicFreehandPathCache,
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
@@ -1365,6 +1366,47 @@ export function updateNativeGraphicPathHandle(
   }
 
   const edited = editGraphicPathGeometry(object, handle, point);
+  if (!edited || edited === object) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: edited
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function deleteNativeGraphicPathNode(
+  document: ChemDraftDocument,
+  objectId: string,
+  nodeIndex: number
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  const nodes = object?.type === "graphic" ? object.data.pathNodes : undefined;
+  if (
+    object?.type !== "graphic" ||
+    !Array.isArray(nodes) ||
+    !Number.isInteger(nodeIndex) ||
+    nodeIndex < 0 ||
+    nodeIndex >= nodes.length
+  ) {
+    return document;
+  }
+
+  if (nodes.length <= 2) {
+    return applyPatch(
+      document,
+      { op: "removeObject", objectId },
+      { now: phase4Timestamp }
+    );
+  }
+
+  const edited = deleteGraphicPathNode(object, nodeIndex);
   if (!edited || edited === object) {
     return document;
   }

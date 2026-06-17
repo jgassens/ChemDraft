@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, nativeBezierPathDocument } from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -58,12 +58,15 @@ describe("Pen native art interactions", () => {
     }
   });
 
-  async function renderMainWindow() {
+  async function renderMainWindow(options: {
+    commandId?: string;
+    initialDocument?: ReturnType<typeof createPhase4Document>;
+  } = {}) {
     await act(async () => {
       root.render(createElement(MainWindow, {
-        initialActiveToolCommandId: "tool.art.pen",
+        initialActiveToolCommandId: options.commandId ?? "tool.art.pen",
         initialCrosshairsVisible: false,
-        initialDocument: createPhase4Document("Pen Draw"),
+        initialDocument: options.initialDocument ?? createPhase4Document("Pen Draw"),
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
         nativePalette: true
@@ -317,5 +320,41 @@ describe("Pen native art interactions", () => {
       outControl: { x: 244, y: 96 }
     });
     expect(debug.plan.pathD).toContain(" C ");
+  });
+
+  it("erases selected Bezier path nodes without starting a node drag", async () => {
+    const initialDocument = nativeBezierPathDocument(
+      createPhase4Document("Pen Eraser"),
+      [
+        { point: { x: 160, y: 140 }, outControl: { x: 185, y: 150 } },
+        { point: { x: 220, y: 180 }, inControl: { x: 195, y: 155 }, outControl: { x: 245, y: 205 } },
+        { point: { x: 280, y: 150 }, inControl: { x: 255, y: 170 } }
+      ],
+      "tool.art.pen"
+    );
+    await renderMainWindow({ commandId: "tool.eraser", initialDocument });
+
+    const objectId = selectedArtObjectId();
+    expect(container.querySelector("[data-active-tool=\"tool.eraser\"]")).not.toBeNull();
+    expect(debugArtObject(objectId).object.data.pathNodes).toHaveLength(3);
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(1), "pointerdown", { x: 220, y: 180 }, 81);
+    });
+
+    const afterNodeErase = debugArtObject(objectId).object.data.pathNodes;
+    expect(snapshotObjectCount()).toBe(1);
+    expect(afterNodeErase).toHaveLength(2);
+    expect(afterNodeErase?.map((node) => node.point)).toEqual([
+      { x: 160, y: 140 },
+      { x: 280, y: 150 }
+    ]);
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(0), "pointerdown", { x: 160, y: 140 }, 82);
+    });
+
+    expect(snapshotObjectCount()).toBe(0);
+    expect(container.querySelector(`[data-object-id="${objectId}"]`)).toBeNull();
   });
 });

@@ -155,6 +155,7 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   cleanUpNativeMolecules2d,
+  deleteNativeGraphicPathNode,
   deleteSelectedDocumentObjects,
   exportPhase4Cdxml,
   exportPhase4Pdf,
@@ -747,7 +748,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.17.34-codex";
+const CURRENT_BUILD_STAMP = "6.17.17.50-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -6563,6 +6564,43 @@ export function MainWindow({
       return;
     }
 
+    if (activeToolState.activeCommandId === "tool.eraser" && object) {
+      event.preventDefault();
+      event.stopPropagation();
+      let nextDocument = document;
+      let status = "Deleted object";
+      if (object.type === "molecule") {
+        if (!nativeMoleculeHit) {
+          setStatus("No atom or bond under eraser");
+          return;
+        }
+        nextDocument = applyNativeMoleculeDeleteTarget(document, { objectId, ...nativeMoleculeHit });
+        status = nativeMoleculeHit.kind === "atom"
+          ? "Deleted carbon atom"
+          : nativeMoleculeHit.terminalAtomId ? "Deleted terminal carbon" : "Deleted carbon bond";
+      } else {
+        nextDocument = applyPatches(
+          document,
+          [{ op: "removeObject", objectId }]
+        );
+        status = object.type === "graphic"
+          ? "Deleted art object"
+          : object.type === "text" ? "Deleted text object" : "Deleted object";
+      }
+
+      if (nextDocument === document) {
+        setStatus("Nothing to erase");
+        return;
+      }
+
+      commitDocumentChange(nextDocument);
+      toolbarStyleTargetRef.current = undefined;
+      clearTransientInteractionChrome();
+      setSelectedNativeMoleculePart(undefined);
+      setStatus(status);
+      return;
+    }
+
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
       event.preventDefault();
       const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
@@ -6838,6 +6876,8 @@ export function MainWindow({
     applyNativeBondDisplayStyleDocumentTarget,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
+    clearTransientInteractionChrome,
+    commitDocumentChange,
     cycleNativeBondOrder,
     document,
     pagePointFromPointerEvent,
@@ -7357,6 +7397,27 @@ export function MainWindow({
       return;
     }
 
+    if (activeToolState.activeCommandId === "tool.eraser") {
+      const nodeMatch = /^node:(\d+)$/.exec(handle);
+      if (!nodeMatch || !nodeEditPoints) {
+        setStatus("Click a path node to erase it");
+        return;
+      }
+
+      const nextDocument = deleteNativeGraphicPathNode(currentDocument, objectId, Number.parseInt(nodeMatch[1], 10));
+      if (nextDocument === currentDocument) {
+        setStatus("No path node under eraser");
+        return;
+      }
+
+      commitDocumentChange(nextDocument);
+      toolbarStyleTargetRef.current = undefined;
+      clearTransientInteractionChrome();
+      setSelectedNativeMoleculePart(undefined);
+      setStatus(findDocumentObject(nextDocument, objectId) ? "Deleted path node" : "Deleted path object");
+      return;
+    }
+
     const selectedDocument = currentDocument.selection.objectIds.includes(objectId)
       ? currentDocument
       : selectDocumentObject(currentDocument, objectId);
@@ -7395,7 +7456,10 @@ export function MainWindow({
     );
   }, [
     activeToolState.activeKind,
+    activeToolState.activeCommandId,
     assignHoveredNativeDeleteTarget,
+    clearTransientInteractionChrome,
+    commitDocumentChange,
     handleObjectResizeInputKeep,
     handleRotationInputKeep,
     pagePointFromPointerEvent,

@@ -937,6 +937,40 @@ export function editGraphicPathGeometry(
   return undefined;
 }
 
+export function deleteGraphicPathNode(
+  object: GraphicObject,
+  nodeIndex: number
+): GraphicObject | undefined {
+  const pathKind = graphicPathKind(object);
+  if (
+    (pathKind !== "polyline" && pathKind !== "bezier") ||
+    !Number.isInteger(nodeIndex) ||
+    nodeIndex < 0
+  ) {
+    return undefined;
+  }
+
+  const nodes = graphicPathNodes(object);
+  if (!nodes[nodeIndex] || nodes.length < 3) {
+    return undefined;
+  }
+
+  const nextNodes = nodes
+    .filter((_, index) => index !== nodeIndex)
+    .map((node) => ({
+      point: node.point,
+      ...(node.inControl ? { inControl: node.inControl } : {}),
+      ...(node.outControl ? { outControl: node.outControl } : {})
+    }));
+
+  return updateGraphicPathObject(object, {
+    ...object.data,
+    artPathKind: pathKind,
+    pathClosed: object.data.pathClosed === true && nextNodes.length >= 3,
+    pathNodes: nextNodes
+  });
+}
+
 export function projectGraphicObjectPoint(
   object: GraphicObject,
   point: NativeArtPoint,

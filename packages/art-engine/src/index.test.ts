@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import type { GraphicObject } from "@chemdraft/chem-core";
 import { getPathBBox, getPointAtLength, getTotalLength } from "svg-path-commander/util";
 import {
+  deleteGraphicPathNode,
   editGraphicCornerRadius,
   editGraphicMarkerSize,
   editGraphicPathGeometry,
@@ -499,6 +500,35 @@ describe("art-engine native art planning", () => {
       { point: { x: 208, y: 104 } }
     ]);
     expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 L 190 120 L 208 104");
+  });
+
+  it("deletes native polyline nodes and recomputes path bounds", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 140,
+      height: 90,
+      data: {
+        artPathKind: "polyline",
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 176, y: 152 } },
+          { point: { x: 232, y: 104 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const edited = deleteGraphicPathNode(graphic, 1);
+
+    expect(edited?.data.pathNodes).toEqual([
+      { point: { x: 132, y: 108 } },
+      { point: { x: 232, y: 104 } }
+    ]);
+    expect(edited?.x).toBeCloseTo(126, 3);
+    expect(edited?.y).toBeCloseTo(98, 3);
+    expect(edited?.width).toBeCloseTo(112, 3);
+    expect(edited?.height).toBeCloseTo(16, 3);
+    expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 L 232 104");
   });
 
   it("plans native Bezier path nodes with cubic controls", () => {

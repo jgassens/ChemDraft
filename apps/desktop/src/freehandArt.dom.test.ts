@@ -271,6 +271,32 @@ describe("freehand native art interactions", () => {
     expect(container.querySelectorAll(".graphic-object")).toHaveLength(2);
   });
 
+  it("erases a freehand object from its painted path", async () => {
+    await renderMainWindow("tool.art.pencil", { initialPaletteMode: "floating", nativePalette: false });
+    const objectId = await drawPencilStroke(55);
+    expect(snapshotObjectCount()).toBe(1);
+
+    const eraserButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.eraser"]');
+    if (!eraserButton) {
+      throw new Error("Expected visible eraser tool button.");
+    }
+    await act(async () => {
+      eraserButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-active-tool="tool.eraser"]')).not.toBeNull();
+
+    const paintedPath = container.querySelector<SVGPathElement>(`[data-object-id="${objectId}"] .graphic-glyph-path`);
+    if (!paintedPath) {
+      throw new Error("Expected painted freehand path.");
+    }
+    await act(async () => {
+      dispatchPointer(paintedPath, "pointerdown", { x: 214, y: 196 }, 56, 0.5);
+    });
+
+    expect(snapshotObjectCount()).toBe(0);
+    expect(container.querySelector(`[data-object-id="${objectId}"]`)).toBeNull();
+  });
+
   it("previews freehand object moves with CSS and commits geometry on pointer up", async () => {
     await renderMainWindow("tool.art.pencil");
     const objectId = await drawPencilStroke(61);
