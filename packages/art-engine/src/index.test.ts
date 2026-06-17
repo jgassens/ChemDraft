@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import type { GraphicObject } from "@chemdraft/chem-core";
+import { getPointAtLength, getTotalLength } from "svg-path-commander/util";
 import {
   editGraphicCornerRadius,
   editGraphicMarkerSize,
@@ -305,6 +306,47 @@ describe("art-engine native art planning", () => {
       kind: "filled-arrow",
       sizePx: 24
     });
+  });
+
+  it("plans an undashed curved terminal connector under resized dashed arrowheads", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 100,
+      y: 90,
+      width: 730,
+      height: 210,
+      style: {
+        ...baseGraphic.style,
+        strokeColor: "#12d64f",
+        strokeWidth: 8,
+        strokeDasharray: "32 16",
+        strokeLineCap: "round"
+      },
+      data: {
+        artPathKind: "quadratic",
+        lineStart: { x: 120, y: 100 },
+        pathControlPoint: { x: 235, y: 134 },
+        lineEnd: { x: 825, y: 258 },
+        markerEnd: { kind: "filled-arrow", sizePx: 80 }
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+    const connectorPathD = plan.markerEndConnectorPathD;
+    if (!plan.pathD || !plan.visiblePathD || !plan.markerEnd || !plan.markerEndTerminal || !connectorPathD) {
+      throw new Error("Expected planned dashed arrowhead connector.");
+    }
+
+    const connectorLength = getTotalLength(connectorPathD);
+    const connectorStart = getPointAtLength(connectorPathD, 0);
+    const connectorEnd = getPointAtLength(connectorPathD, connectorLength);
+    const visibleEnd = getPointAtLength(plan.visiblePathD, getTotalLength(plan.visiblePathD));
+
+    expect(connectorEnd.x).toBeCloseTo(plan.markerEndTerminal.point.x, 3);
+    expect(connectorEnd.y).toBeCloseTo(plan.markerEndTerminal.point.y, 3);
+    expect(connectorLength).toBeGreaterThan(plan.markerEnd.sizePx * 0.92);
+    expect(Math.hypot(connectorStart.x - visibleEnd.x, connectorStart.y - visibleEnd.y)).toBeLessThan(plan.markerEnd.sizePx);
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {

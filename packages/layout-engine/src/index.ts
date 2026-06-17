@@ -1791,6 +1791,13 @@ function graphicObjectFragment(
   }
 
   if (renderedGraphic) {
+    children.push(...svgGraphicMarkerConnectorFragments(plan, object.id, {
+      ...strokeAttrs,
+      class: "graphic-glyph-stroke graphic-glyph-marker-connector",
+      "stroke-dasharray": undefined,
+      fill: "none",
+      transform: plan.projectionTransform
+    }));
     children.push(...svgFlattenedGraphicMarkerFragments(plan, object.id));
     return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
       opacity: plan.opacity === 1 ? undefined : plan.opacity
@@ -1866,6 +1873,31 @@ function svgPaintDefinitionFragments(paint: NativeArtPaintPlan, id: string): Pag
   }
 
   return [];
+}
+
+function svgGraphicMarkerConnectorFragments(
+  plan: NativeArtVisualPlan,
+  objectId: string,
+  attrs: Record<string, PageSvgAttributeValue>
+): PageSvgFragment[] {
+  const fragments: PageSvgFragment[] = [];
+  if (plan.markerStartConnectorPathD) {
+    fragments.push(elementFragment("path", `graphic-marker-start-connector-${objectId}`, {
+      ...attrs,
+      id: `graphic-marker-start-connector-${objectId}`,
+      d: plan.markerStartConnectorPathD,
+      "data-graphic-marker-connector": "start"
+    }));
+  }
+  if (plan.markerEndConnectorPathD) {
+    fragments.push(elementFragment("path", `graphic-marker-end-connector-${objectId}`, {
+      ...attrs,
+      id: `graphic-marker-end-connector-${objectId}`,
+      d: plan.markerEndConnectorPathD,
+      "data-graphic-marker-connector": "end"
+    }));
+  }
+  return fragments;
 }
 
 function svgFlattenedGraphicMarkerFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {

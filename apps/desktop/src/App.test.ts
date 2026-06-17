@@ -2142,6 +2142,7 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(arrowMarkup).toContain(`id="graphic-marker-end-${arrowObjectId}"`);
+    expect(arrowMarkup).toContain('data-graphic-marker-connector="end"');
     expect(arrowMarkup).toContain('data-graphic-marker="end"');
     expect(arrowMarkup).not.toContain(`marker-end="url(#graphic-marker-end-${arrowObjectId})"`);
     expect(arrowMarkup).not.toContain('markerUnits="userSpaceOnUse"');

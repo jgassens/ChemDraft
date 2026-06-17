@@ -136,6 +136,8 @@ export interface NativeArtVisualPlan {
   visibleLine?: { x1: number; y1: number; x2: number; y2: number };
   pathD?: string;
   visiblePathD?: string;
+  markerStartConnectorPathD?: string;
+  markerEndConnectorPathD?: string;
   markerStart?: NativeArtMarkerPlan;
   markerEnd?: NativeArtMarkerPlan;
   markerStartTerminal?: NativeArtStrokeTerminalPlan;
@@ -261,6 +263,15 @@ export function planNativeArtVisual(
     markerStartTerminal: openStrokeTerminals?.start,
     markerEndTerminal: openStrokeTerminals?.end
   });
+  const markerConnectors = nativeArtMarkerConnectorPaths({
+    line,
+    pathD,
+    markerStart,
+    markerEnd,
+    markerStartTerminal: openStrokeTerminals?.start,
+    markerEndTerminal: openStrokeTerminals?.end,
+    stroke
+  });
   const projectedShapePathD = matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect")
     ? projectedArtShapePathD(object, coordinateSpace, matrix, stroke.width)
     : undefined;
@@ -284,6 +295,8 @@ export function planNativeArtVisual(
     visibleLine: visibleStroke?.line,
     pathD,
     visiblePathD: visibleStroke?.pathD,
+    markerStartConnectorPathD: markerConnectors.start,
+    markerEndConnectorPathD: markerConnectors.end,
     markerStart,
     markerEnd,
     markerStartTerminal: markerStart ? openStrokeTerminals?.start : undefined,
@@ -455,6 +468,134 @@ function nativeArtVisibleOpenStroke(input: {
   } catch {
     return undefined;
   }
+}
+
+function nativeArtMarkerConnectorPaths(input: {
+  line: NativeArtVisualPlan["line"];
+  pathD: string | undefined;
+  markerStart: NativeArtMarkerPlan | undefined;
+  markerEnd: NativeArtMarkerPlan | undefined;
+  markerStartTerminal: NativeArtStrokeTerminalPlan | undefined;
+  markerEndTerminal: NativeArtStrokeTerminalPlan | undefined;
+  stroke: NativeArtStrokePlan;
+}): { start?: string; end?: string } {
+  return {
+    start: input.markerStart && input.markerStartTerminal
+      ? nativeArtMarkerConnectorPath(
+          input.line,
+          input.pathD,
+          input.markerStart,
+          input.markerStartTerminal,
+          "start",
+          input.stroke
+        )
+      : undefined,
+    end: input.markerEnd && input.markerEndTerminal
+      ? nativeArtMarkerConnectorPath(
+          input.line,
+          input.pathD,
+          input.markerEnd,
+          input.markerEndTerminal,
+          "end",
+          input.stroke
+        )
+      : undefined
+  };
+}
+
+function nativeArtMarkerConnectorPath(
+  line: NativeArtVisualPlan["line"],
+  pathD: string | undefined,
+  marker: NativeArtMarkerPlan,
+  terminal: NativeArtStrokeTerminalPlan,
+  placement: "start" | "end",
+  stroke: NativeArtStrokePlan
+): string | undefined {
+  const length = nativeArtMarkerConnectorLength(marker, stroke);
+  if (!Number.isFinite(length) || length <= 0.001) {
+    return undefined;
+  }
+
+  if (pathD) {
+    return nativeArtPathTerminalSegment(pathD, length, placement);
+  }
+
+  if (!line) {
+    return undefined;
+  }
+
+  const inward = markerInwardDirection(terminal);
+  if (!inward) {
+    return undefined;
+  }
+  const inner = {
+    x: terminal.point.x + inward.x * length,
+    y: terminal.point.y + inward.y * length
+  };
+  const points = placement === "start"
+    ? [terminal.point, inner]
+    : [inner, terminal.point];
+  return nativeArtPointsPathD(points);
+}
+
+function nativeArtMarkerConnectorLength(marker: NativeArtMarkerPlan, stroke: NativeArtStrokePlan): number {
+  const shaftInset = nativeArtMarkerShaftInset(marker);
+  const overlap = nativeArtDashTerminalOverlap(stroke.dasharray, stroke.width);
+  return shaftInset + overlap;
+}
+
+function nativeArtDashTerminalOverlap(dasharray: string | undefined, strokeWidth: number): number {
+  const fallback = Math.max(1, strokeWidth * 0.75);
+  if (!dasharray) {
+    return fallback;
+  }
+
+  const values = dasharray
+    .split(/[\s,]+/)
+    .map((part) => Number(part))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  if (values.length === 0) {
+    return fallback;
+  }
+
+  const pattern = values.length % 2 === 1 ? [...values, ...values] : values;
+  const gaps = pattern.filter((_, index) => index % 2 === 1);
+  const maxGap = gaps.length > 0 ? Math.max(...gaps) : 0;
+  return Math.max(fallback, Math.min(maxGap + strokeWidth * 0.5, 64));
+}
+
+function nativeArtPathTerminalSegment(
+  pathD: string,
+  connectorLength: number,
+  placement: "start" | "end"
+): string | undefined {
+  try {
+    if (!isValidPath(pathD)) {
+      return undefined;
+    }
+    const totalLength = getTotalLength(pathD);
+    if (!Number.isFinite(totalLength) || totalLength <= 0.001) {
+      return undefined;
+    }
+    const length = Math.min(connectorLength, totalLength);
+    const startLength = placement === "start" ? 0 : Math.max(0, totalLength - length);
+    const endLength = placement === "start" ? Math.min(totalLength, length) : totalLength;
+    const segmentLength = Math.max(0.001, endLength - startLength);
+    const steps = Math.max(2, Math.min(48, Math.ceil(segmentLength / 5)));
+    const points = Array.from({ length: steps + 1 }, (_, index) =>
+      finiteSvgPathPoint(getPointAtLength(pathD, startLength + segmentLength * index / steps))
+    ).filter((point): point is NativeArtPoint => point !== undefined);
+    return points.length >= 2 ? nativeArtPointsPathD(points) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function nativeArtPointsPathD(points: readonly NativeArtPoint[]): string {
+  return [
+    `M ${formatNumber(points[0]?.x ?? 0)} ${formatNumber(points[0]?.y ?? 0)}`,
+    ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`)
+  ].join(" ");
 }
 
 function nativeArtMarkerShaftInset(marker: NativeArtMarkerPlan): number {
