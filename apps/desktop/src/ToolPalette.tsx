@@ -1581,6 +1581,30 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
   const strokeClass = ["art-tool-stroke", dashed ? "dashed" : "", filled ? "filled" : ""].filter(Boolean).join(" ");
   const shadowElement = shadow ? <path className="art-tool-shadow" d={artToolShapePath(toolId)} aria-hidden="true" /> : null;
 
+  if (toolId === "pencil") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <g data-art-freehand-glyph="pencil">
+          <path className="art-tool-stroke" d="M3 14 L4.2 10.4 L11.2 3.4 C11.9 2.7 12.9 2.7 13.6 3.4 C14.3 4.1 14.3 5.1 13.6 5.8 L6.6 12.8 Z" />
+          <path className="art-tool-stroke filled" d="M3 14 L4.2 10.4 L6.6 12.8 Z" />
+          <path className="art-tool-stroke" d="M10.4 4.2 L12.8 6.6" />
+        </g>
+      </svg>
+    );
+  }
+
+  if (toolId === "brush") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <g data-art-freehand-glyph="brush">
+          <path className="art-tool-stroke" d="M10.3 8.3 L13.9 4.7 C14.4 4.2 14.4 3.5 13.9 3 C13.4 2.5 12.7 2.5 12.2 3 L8.6 6.6" />
+          <path className="art-tool-stroke filled" d="M5.1 13.9 C5.8 12.1 4.3 11.1 6.5 8.7 C7.7 7.4 9.2 6.6 10.7 7 L10 10.8 C8.4 12.5 6.9 13.3 5.1 13.9 Z" />
+          <path className="art-tool-stroke bold" d="M2.6 13.4 C4.2 11.1 6.4 14.5 8.9 11.7" />
+        </g>
+      </svg>
+    );
+  }
+
   if (toolId.startsWith("line")) {
     const path = toolId === "lineWavy"
       ? "M2 9 C4 4, 6 14, 8.5 9 S13 4, 15 9"

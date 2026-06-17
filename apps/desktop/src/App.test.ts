@@ -1580,6 +1580,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
     expect(markup).toContain('data-art-tool-icon="roundedRect"');
     expect(markup).toContain('data-art-tool-icon="polyline"');
+    expect(markup).toContain('data-art-tool-icon="pencil"');
+    expect(markup).toContain('data-art-tool-icon="brush"');
+    expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-art-freehand-glyph="pencil"');
+    expect(buttonMarkupForCommand(markup, "tool.art.brush")).toContain('data-art-freehand-glyph="brush"');
     expect(markup).toContain('data-art-tool-icon="arrow"');
     expect(markup).toContain('data-art-tool-icon="arc270"');
     expect(rectInspectorMarkup).toContain('data-toolbar-style-controls="art"');
@@ -1650,6 +1654,14 @@ describe("ChemDraft desktop shell", () => {
       ])
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
+    expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
+      width: 760,
+      minWidth: 700
+    });
+    expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
+      "tool.art.pencil",
+      "tool.art.brush"
+    ]);
     expect(desktopToolsetRegistry.require("plugin.fixture").source).toBe("plugin");
   });
 
