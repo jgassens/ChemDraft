@@ -703,7 +703,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.10.57-codex";
+const CURRENT_BUILD_STAMP = "6.17.11.20-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5829,6 +5829,8 @@ export function MainWindow({
       : { objectIds: [], nativeSelection: undefined };
     replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, selection.objectIds));
     setSelectedNativeMoleculePart(selection.nativeSelection);
+    setActiveGraphicTransformObjectId(undefined);
+    clearTransientInteractionChrome();
     if (selection.objectIds.length === 0 && !selection.nativeSelection) {
       toolbarStyleTargetRef.current = undefined;
     }
@@ -5849,6 +5851,7 @@ export function MainWindow({
     clearGraphicMarkerDrag,
     clearNativeFreehandArtDrag,
     clearProjectedPlaneTiltDrag,
+    clearTransientInteractionChrome,
     clearNativePlacementDrag,
     clearTextResize,
     commitGraphicCornerRadius,

@@ -353,6 +353,29 @@ describe("graphic path direct editing interactions", () => {
     expectPositionUsesPageScale(cornerReadout);
   });
 
+  it("clears rounded rectangle transform chrome after an empty-canvas click", async () => {
+    const roundedRectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Rounded Rect Deselect Chrome"),
+      { x: 420, y: 280 },
+      "tool.art.roundedRect"
+    );
+    await renderMainWindow(roundedRectDocument);
+
+    expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-selection-rotate-handle="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).not.toBeNull();
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 20, y: 20 }, 28);
+      dispatchPointer(pageElement(), "pointerup", { x: 20, y: 20 }, 28);
+    });
+
+    expect(container.querySelector('[data-art-transform-frame="true"]')).toBeNull();
+    expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
+    expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).toBeNull();
+    expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).toBeNull();
+  });
+
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Path Undo"),

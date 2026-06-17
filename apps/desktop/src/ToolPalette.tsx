@@ -1585,10 +1585,10 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
   if (toolId === "directEdit") {
     return (
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
-        <path className="art-tool-stroke" d="M3 12 C5.3 4.8, 10 4.8, 14 9.2" />
-        <circle className="art-tool-stroke filled" cx="3" cy="12" r="1.3" />
-        <circle className="art-tool-stroke filled" cx="8.4" cy="6.7" r="1.3" />
-        <circle className="art-tool-stroke filled" cx="14" cy="9.2" r="1.3" />
+        <path className="art-tool-stroke" d="M2.8 12.5 C5.5 4.5, 10.6 4.5, 14.2 9.4" />
+        <rect className="art-tool-edit-node" data-art-edit-node="start" x="1.2" y="10.9" width="3.2" height="3.2" rx="0.5" />
+        <rect className="art-tool-edit-node" data-art-edit-node="middle" x="7.1" y="4.7" width="3.2" height="3.2" rx="0.5" />
+        <rect className="art-tool-edit-node" data-art-edit-node="end" x="12.6" y="7.8" width="3.2" height="3.2" rx="0.5" />
       </svg>
     );
   }

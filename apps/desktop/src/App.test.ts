@@ -1604,6 +1604,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-command-id="tool.art.rectShadow"');
     expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
     expect(buttonMarkupForCommand(markup, "tool.art.directEdit")).toContain('data-art-tool-icon="directEdit"');
+    expect(buttonMarkupForCommand(markup, "tool.art.directEdit")).toContain('data-art-edit-node="middle"');
     expect(buttonMarkupForCommand(markup, "tool.art.directEdit")).not.toContain('data-toolbar-asset="Custom_Select"');
     expect(markup).toContain('data-art-tool-icon="roundedRect"');
     expect(markup).toContain('data-art-tool-icon="polyline"');
