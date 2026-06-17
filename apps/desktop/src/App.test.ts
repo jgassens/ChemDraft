@@ -236,6 +236,10 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).not.toContain(".native-bond-hit-target:hover");
     expect(appCss).not.toContain(".native-atom-hit-target:hover");
     expect(appCss).toMatch(/\.graphic-glyph-hit-target\s*{[^}]*pointer-events:\s*stroke;/s);
+    expect(appCss).toMatch(/\.graphic-object,\s*\.graphic-visual-shell,\s*\.graphic-glyph-shell\s*{[^}]*pointer-events:\s*none;/s);
+    expect(appCss).toMatch(/\.graphic-glyph-stroke\s*{[^}]*pointer-events:\s*visiblePainted;/s);
+    expect(appCss).toMatch(/\.graphic-glyph-shape,\s*\.graphic-glyph-projected-shape,\s*\.graphic-glyph-path\s*{[^}]*pointer-events:\s*visiblePainted;/s);
+    expect(appCss).toMatch(/\.graphic-glyph-hit-target\[data-graphic-hit-fill="true"\]\s*{[^}]*pointer-events:\s*all;/s);
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
@@ -2285,9 +2289,30 @@ describe("ChemDraft desktop shell", () => {
     expect(lineMarkup).toContain('data-graphic-path-handle="end"');
     expect(lineMarkup).toContain("graphic-glyph-hit-target");
     expect(lineMarkup).toContain('pointer-events="stroke"');
+    expect(lineMarkup).not.toContain('data-graphic-hit-fill="true"');
     expect(lineMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
     expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
     expect(lineMarkup).not.toContain("object-resize-handle");
+
+    const pencilDocument = nativeFreehandStrokeDocument(
+      createPhase4Document("Pencil Hit Render"),
+      [
+        { x: 220, y: 210, pressure: 0.4 },
+        { x: 250, y: 230, pressure: 0.7 },
+        { x: 285, y: 218, pressure: 0.5 }
+      ],
+      "tool.art.pencil"
+    );
+    const pencilMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: pencilDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(pencilMarkup).toContain("graphic-glyph-hit-target");
+    expect(pencilMarkup).toContain('data-graphic-hit-fill="true"');
+
     const arrowDocument = insertNativeArtGraphicObject(
       createPhase4Document("Arrow Art Render"),
       { x: 260, y: 220 },

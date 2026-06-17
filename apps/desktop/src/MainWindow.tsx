@@ -747,7 +747,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.16.45-codex";
+const CURRENT_BUILD_STAMP = "6.17.17.34-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -13929,6 +13929,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
           <>
             <path
               className="graphic-glyph-hit-target"
+              data-graphic-hit-fill={freehandPath || !plan.capabilities.supportsStroke ? "true" : undefined}
               d={pathD}
               fill={freehandPath || !plan.capabilities.supportsStroke ? "transparent" : "none"}
               stroke="transparent"

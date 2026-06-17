@@ -1890,7 +1890,17 @@ textarea:focus-visible,
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.reaction-arrow-object,
+.bracket-object {
   pointer-events: auto;
+}
+
+.graphic-object,
+.graphic-visual-shell,
+.graphic-glyph-shell {
+  pointer-events: none;
 }
 
 .reaction-arrow-glyph,
@@ -1963,11 +1973,22 @@ textarea:focus-visible,
 .graphic-glyph-stroke {
   stroke-linecap: round;
   stroke-linejoin: round;
+  pointer-events: visiblePainted;
   vector-effect: non-scaling-stroke;
+}
+
+.graphic-glyph-shape,
+.graphic-glyph-projected-shape,
+.graphic-glyph-path {
+  pointer-events: visiblePainted;
 }
 
 .graphic-glyph-hit-target {
   pointer-events: stroke;
+}
+
+.graphic-glyph-hit-target[data-graphic-hit-fill="true"] {
+  pointer-events: all;
 }
 
 .graphic-glyph-transform .graphic-glyph-stroke {
