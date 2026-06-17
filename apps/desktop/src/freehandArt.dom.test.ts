@@ -74,15 +74,18 @@ describe("freehand native art interactions", () => {
     }
   });
 
-  async function renderMainWindow(commandId: string) {
+  async function renderMainWindow(
+    commandId: string,
+    options: { initialPaletteMode?: "floating" | "hidden"; nativePalette?: boolean } = {}
+  ) {
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: commandId,
         initialCrosshairsVisible: false,
         initialDocument: createPhase4Document("Freehand Drag"),
-        initialPaletteMode: "hidden",
+        initialPaletteMode: options.initialPaletteMode ?? "hidden",
         initialRulersVisible: false,
-        nativePalette: true
+        nativePalette: options.nativePalette ?? true
       }));
     });
     pageElement().getBoundingClientRect = () => pageRect;
@@ -105,6 +108,14 @@ describe("freehand native art interactions", () => {
       throw new Error("Expected agent bridge.");
     }
     return bridge.snapshot().pages[0]?.objectCount ?? 0;
+  }
+
+  function debugArtObject(objectId: string) {
+    const debug = window.__CHEMDRAFT_AGENT__?.debugArtObject(objectId);
+    if (!debug?.ok) {
+      throw new Error(`Expected art debug snapshot for ${objectId}.`);
+    }
+    return debug;
   }
 
   function dispatchPointer(
@@ -135,6 +146,33 @@ describe("freehand native art interactions", () => {
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
+  }
+
+  async function drawPencilStroke(pointerId: number, points = [
+    { x: 180, y: 180, pressure: 0.2 },
+    { x: 214, y: 196, pressure: 0.9 },
+    { x: 252, y: 178, pressure: 0.45 }
+  ]): Promise<string> {
+    const [start, ...rest] = points;
+    const page = pageElement();
+    await act(async () => {
+      dispatchPointer(page, "pointerdown", start, pointerId, start.pressure);
+      for (const point of rest) {
+        dispatchPointer(page, "pointermove", point, pointerId, point.pressure);
+      }
+    });
+    await waitForPreviewFrame();
+    const end = points[points.length - 1];
+    await act(async () => {
+      dispatchPointer(page, "pointerup", end, pointerId, end.pressure);
+    });
+
+    const graphic = Array.from(container.querySelectorAll<HTMLElement>(".graphic-object")).at(-1);
+    const objectId = graphic?.dataset.objectId;
+    if (!objectId) {
+      throw new Error("Expected inserted freehand graphic.");
+    }
+    return objectId;
   }
 
   it("drags one pressure-sensitive pencil stroke and undoes/redoes it as one object", async () => {
@@ -203,5 +241,71 @@ describe("freehand native art interactions", () => {
       }));
     });
     expect(snapshotObjectCount()).toBe(1);
+  });
+
+  it("starts a new pencil stroke when pressing inside an existing freehand object", async () => {
+    await renderMainWindow("tool.art.pencil", { initialPaletteMode: "floating", nativePalette: false });
+    const firstObjectId = await drawPencilStroke(51);
+    expect(snapshotObjectCount()).toBe(1);
+
+    const pencilButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.art.pencil"]');
+    if (!pencilButton) {
+      throw new Error("Expected visible pencil tool button.");
+    }
+    await act(async () => {
+      pencilButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const firstGraphic = container.querySelector<HTMLElement>(`[data-object-id="${firstObjectId}"]`);
+    if (!firstGraphic) {
+      throw new Error("Expected first freehand graphic.");
+    }
+
+    await act(async () => {
+      dispatchPointer(firstGraphic, "pointerdown", { x: 204, y: 188 }, 52, 0.5);
+      dispatchPointer(pageElement(), "pointermove", { x: 224, y: 196 }, 52, 0.65);
+      dispatchPointer(pageElement(), "pointerup", { x: 244, y: 186 }, 52, 0.4);
+    });
+
+    expect(snapshotObjectCount()).toBe(2);
+    expect(container.querySelectorAll(".graphic-object")).toHaveLength(2);
+  });
+
+  it("previews freehand object moves with CSS and commits geometry on pointer up", async () => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(61);
+    const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    if (!graphic) {
+      throw new Error("Expected inserted freehand graphic.");
+    }
+
+    const before = debugArtObject(objectId).object;
+    const dragPoint = {
+      x: before.x + before.width / 2,
+      y: before.y + before.height / 2
+    };
+    const dx = 34;
+    const dy = -18;
+
+    await act(async () => {
+      dispatchPointer(graphic, "pointerdown", dragPoint, 62, 0.5);
+      dispatchPointer(pageElement(), "pointermove", { x: dragPoint.x + dx, y: dragPoint.y + dy }, 62, 0.5);
+    });
+    await waitForPreviewFrame();
+
+    expect(debugArtObject(objectId).object.x).toBeCloseTo(before.x, 3);
+    expect(debugArtObject(objectId).object.y).toBeCloseTo(before.y, 3);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBe("true");
+    expect(graphic.getAttribute("data-art-transform-preview-mode")).toBe("move");
+    expect(graphic.style.transform).toContain("translate");
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: dragPoint.x + dx, y: dragPoint.y + dy }, 62, 0.5);
+    });
+
+    const after = debugArtObject(objectId).object;
+    expect(after.x).toBeCloseTo(before.x + dx, 3);
+    expect(after.y).toBeCloseTo(before.y + dy, 3);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
   });
 });

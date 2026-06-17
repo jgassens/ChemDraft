@@ -680,7 +680,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.7.46-codex";
+const CURRENT_BUILD_STAMP = "6.17.8.5-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -845,6 +845,8 @@ export function MainWindow({
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
+  const artObjectTransformPreviewFrameRef = useRef<number | undefined>(undefined);
+  const artObjectTransformPreviewIdsRef = useRef<Set<string>>(new Set());
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -2475,6 +2477,16 @@ export function MainWindow({
       return;
     }
 
+    const selectedColor = objectColorForCommand(commandId);
+    const graphicObjectIds = selectedColor ? selectedGraphicObjectIds(session.startDocument) : [];
+    if (
+      selectedColor &&
+      previewGraphicObjectColorOnDom(pageRef.current, session.startDocument, graphicObjectIds, activeArtPaintTarget, selectedColor)
+    ) {
+      return;
+    }
+
+    clearArtStyleDomPreview(pageRef.current);
     replacePresentDocument(result.document);
   }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, replacePresentDocument]);
 
@@ -2487,6 +2499,7 @@ export function MainWindow({
 
     const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, activeArtPaintTarget);
     artStylePreviewRef.current = null;
+    clearArtStyleDomPreview(pageRef.current);
     replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
       setStatus("Select a graphic before changing object style");
@@ -2505,6 +2518,7 @@ export function MainWindow({
     }
 
     artStylePreviewRef.current = null;
+    clearArtStyleDomPreview(pageRef.current);
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
@@ -3355,6 +3369,14 @@ export function MainWindow({
     }
   }, [clearFreehandArtPreview]);
 
+  const clearArtObjectTransformPreview = useCallback(() => {
+    clearArtObjectTransformCssPreview(
+      pageRef.current,
+      artObjectTransformPreviewIdsRef.current,
+      artObjectTransformPreviewFrameRef
+    );
+  }, []);
+
   const clearProjectedPlaneTiltDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = projectedPlaneTiltDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -4064,8 +4086,25 @@ export function MainWindow({
   }, []);
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
+    const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
+    if (previewObjectIds) {
+      const dx = point.x - drag.startPoint.x;
+      const dy = point.y - drag.startPoint.y;
+      scheduleArtObjectTransformCssPreview(artObjectTransformPreviewFrameRef, () => {
+        applyArtObjectMoveCssPreview(
+          pageRef.current,
+          artObjectTransformPreviewIdsRef.current,
+          previewObjectIds,
+          dx,
+          dy
+        );
+      });
+      return;
+    }
+
+    clearArtObjectTransformPreview();
     replacePresentDocument(objectDragDocument(drag, point));
-  }, [objectDragDocument, replacePresentDocument]);
+  }, [clearArtObjectTransformPreview, objectDragDocument, replacePresentDocument]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
     updateNativeGraphicCornerRadius(
@@ -4280,6 +4319,7 @@ export function MainWindow({
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
     const moved = objectDragDocument(drag, point);
+    clearArtObjectTransformPreview();
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -4292,7 +4332,7 @@ export function MainWindow({
       future: []
     });
     return true;
-  }, [installDocumentHistory, objectDragDocument, replacePresentDocument]);
+  }, [clearArtObjectTransformPreview, installDocumentHistory, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -4667,14 +4707,28 @@ export function MainWindow({
     drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, stretching);
     drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
     showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale);
+    if (canUseCssResizePreview(drag)) {
+      scheduleArtObjectTransformCssPreview(artObjectTransformPreviewFrameRef, () => {
+        applyArtObjectResizeCssPreview(
+          pageRef.current,
+          artObjectTransformPreviewIdsRef.current,
+          drag.objectId,
+          drag.latestScale
+        );
+      });
+      return;
+    }
+
+    clearArtObjectTransformPreview();
     replacePresentDocument(objectResizeDocumentFromDrag(drag, point, stretching));
-  }, [objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+  }, [clearArtObjectTransformPreview, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const commitObjectResize = useCallback((drag: ObjectResizeDragState, point: ClientPoint): boolean => {
     drag.latestScale = objectResizeScaleFromDrag(drag.centerPoint, drag.startPoint, point, drag.stretching);
     drag.latestCumulativeScale = cumulativeObjectResizeScale(drag.startCumulativeScale, drag.latestScale);
     const resized = objectResizeDocumentFromDrag(drag, point, drag.stretching);
     showObjectResizeReadout(drag.objectId, drag.latestCumulativeScale, true);
+    clearArtObjectTransformPreview();
     if (resized === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -4687,7 +4741,7 @@ export function MainWindow({
       future: []
     });
     return true;
-  }, [installDocumentHistory, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+  }, [clearArtObjectTransformPreview, installDocumentHistory, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
     moveNativeMoleculeParts(drag.startDocument, drag.target, {
@@ -4765,11 +4819,12 @@ export function MainWindow({
     const drag = objectDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectDragRef.current = null;
+      clearArtObjectTransformPreview();
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, []);
+  }, [clearArtObjectTransformPreview]);
 
   const clearGraphicCornerRadiusDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = graphicCornerRadiusDragRef.current;
@@ -4832,6 +4887,7 @@ export function MainWindow({
     const drag = objectResizeDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       objectResizeDragRef.current = null;
+      clearArtObjectTransformPreview();
       const page = pageRef.current;
       if (page?.hasPointerCapture(event.pointerId)) {
         page.releasePointerCapture(event.pointerId);
@@ -4840,7 +4896,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, []);
+  }, [clearArtObjectTransformPreview]);
 
   const clearNativePartDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativePartDragRef.current;
@@ -5871,6 +5927,13 @@ export function MainWindow({
         )
       : undefined;
 
+    if (activeNativeArtTool && nativeArtToolIsFreehand(activeNativeArtTool.commandId) && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      startNativeFreehandArtDrag(event, point, activeNativeArtTool.commandId);
+      return;
+    }
+
     if (activeChargeToolValue && point && !chargeMarkActive) {
       event.stopPropagation();
       if (nativeMoleculeHit?.kind === "atom") {
@@ -6180,6 +6243,7 @@ export function MainWindow({
     activeToolState.activeCommandId,
     activeToolState.activeKind,
     activeChargeToolValue,
+    activeNativeArtTool,
     activeNativeBondDisplayStyle,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
@@ -6195,7 +6259,8 @@ export function MainWindow({
     replacePresentDocument,
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
-    startAtomLabelEdit
+    startAtomLabelEdit,
+    startNativeFreehandArtDrag
   ]);
 
   function isTransformHandleSecondPress(
@@ -8521,6 +8586,232 @@ function freehandArtPreviewPathD(points: readonly GraphicFreehandPoint[]): strin
     `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)}`,
     ...rest.map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
   ].join(" ");
+}
+
+function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | undefined {
+  const objectIds = drag.groupObjectIds && drag.groupObjectIds.length > 1
+    ? [...drag.groupObjectIds]
+    : [drag.objectId];
+  return objectIds.every((objectId) => findDocumentObject(drag.startDocument, objectId)?.type === "graphic")
+    ? objectIds
+    : undefined;
+}
+
+function canUseCssResizePreview(drag: ObjectResizeDragState): boolean {
+  return !drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic";
+}
+
+function applyArtObjectMoveCssPreview(
+  root: HTMLElement | null,
+  previewObjectIds: Set<string>,
+  objectIds: readonly string[],
+  dx: number,
+  dy: number
+): void {
+  if (!root) {
+    return;
+  }
+
+  const transform = `translate(${pageScaledCssPx(formatSvgNumber(dx))}, ${pageScaledCssPx(formatSvgNumber(dy))})`;
+  for (const objectId of objectIds) {
+    const element = artObjectPreviewElement(root, objectId);
+    if (!element) {
+      continue;
+    }
+    primeArtObjectTransformPreview(element);
+    element.style.transform = artObjectPreviewTransform(element, transform);
+    element.setAttribute("data-art-transform-preview-mode", "move");
+    previewObjectIds.add(objectId);
+  }
+}
+
+function applyArtObjectResizeCssPreview(
+  root: HTMLElement | null,
+  previewObjectIds: Set<string>,
+  objectId: string,
+  scale: ObjectResizeScale
+): void {
+  if (!root) {
+    return;
+  }
+
+  const element = artObjectPreviewElement(root, objectId);
+  if (!element) {
+    return;
+  }
+
+  primeArtObjectTransformPreview(element);
+  element.style.transformOrigin = "50% 50%";
+  element.style.transform = artObjectPreviewTransform(
+    element,
+    `scale(${formatSvgNumber(scale.x)}, ${formatSvgNumber(scale.y)})`
+  );
+  element.setAttribute("data-art-transform-preview-mode", "resize");
+  previewObjectIds.add(objectId);
+}
+
+function clearArtObjectTransformCssPreview(
+  root: HTMLElement | null,
+  previewObjectIds: Set<string>,
+  frameRef: { current: number | undefined }
+): void {
+  if (frameRef.current !== undefined) {
+    window.cancelAnimationFrame(frameRef.current);
+    frameRef.current = undefined;
+  }
+
+  if (!root) {
+    previewObjectIds.clear();
+    return;
+  }
+
+  const previewElements = [
+    ...[...previewObjectIds]
+      .map((objectId) => artObjectPreviewElement(root, objectId))
+      .filter((element): element is HTMLElement => element !== null),
+    ...Array.from(root.querySelectorAll<HTMLElement>("[data-art-transform-preview='true']"))
+  ];
+  for (const element of new Set(previewElements)) {
+    restoreArtObjectTransformPreview(element);
+  }
+  previewObjectIds.clear();
+}
+
+function scheduleArtObjectTransformCssPreview(
+  frameRef: { current: number | undefined },
+  applyPreview: () => void
+): void {
+  if (frameRef.current !== undefined) {
+    window.cancelAnimationFrame(frameRef.current);
+  }
+  frameRef.current = window.requestAnimationFrame(() => {
+    frameRef.current = undefined;
+    applyPreview();
+  });
+}
+
+function artObjectPreviewElement(root: HTMLElement, objectId: string): HTMLElement | null {
+  return root.querySelector<HTMLElement>(`[data-object-id="${cssEscapeIdentifier(objectId)}"].graphic-object`);
+}
+
+function primeArtObjectTransformPreview(element: HTMLElement): void {
+  if (element.getAttribute("data-art-transform-preview") === "true") {
+    return;
+  }
+
+  element.setAttribute("data-art-transform-preview", "true");
+  element.setAttribute("data-art-transform-preview-base-transform", element.style.transform);
+  element.setAttribute("data-art-transform-preview-base-origin", element.style.transformOrigin);
+}
+
+function artObjectPreviewTransform(element: HTMLElement, previewTransform: string): string {
+  const baseTransform = element.getAttribute("data-art-transform-preview-base-transform") ?? "";
+  return baseTransform ? `${baseTransform} ${previewTransform}` : previewTransform;
+}
+
+function restoreArtObjectTransformPreview(element: HTMLElement): void {
+  const baseTransform = element.getAttribute("data-art-transform-preview-base-transform");
+  const baseOrigin = element.getAttribute("data-art-transform-preview-base-origin");
+  if (baseTransform) {
+    element.style.transform = baseTransform;
+  } else {
+    element.style.removeProperty("transform");
+  }
+  if (baseOrigin) {
+    element.style.transformOrigin = baseOrigin;
+  } else {
+    element.style.removeProperty("transform-origin");
+  }
+  element.removeAttribute("data-art-transform-preview");
+  element.removeAttribute("data-art-transform-preview-mode");
+  element.removeAttribute("data-art-transform-preview-base-transform");
+  element.removeAttribute("data-art-transform-preview-base-origin");
+}
+
+function previewGraphicObjectColorOnDom(
+  root: HTMLElement | null,
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  target: GraphicStylePaintTarget,
+  color: string
+): boolean {
+  if (!root || objectIds.length === 0) {
+    return false;
+  }
+
+  let applied = false;
+  for (const objectId of objectIds) {
+    const object = findDocumentObject(document, objectId);
+    if (object?.type !== "graphic") {
+      continue;
+    }
+
+    const element = artObjectPreviewElement(root, objectId);
+    if (!element) {
+      continue;
+    }
+
+    const freehandPath = graphicObjectIsFreehandPath(object);
+    const paintAttribute = freehandPath || target === "fill" ? "fill" : "stroke";
+    const selector = freehandPath || target === "fill"
+      ? ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape"
+      : ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape, .graphic-glyph-stroke";
+    for (const paintElement of Array.from(element.querySelectorAll<SVGElement>(selector))) {
+      if (paintElement.classList.contains("graphic-glyph-hit-target") || paintElement.classList.contains("graphic-glyph-shadow")) {
+        continue;
+      }
+      primeArtStylePreviewElement(paintElement, paintAttribute);
+      paintElement.setAttribute(paintAttribute, color);
+      applied = true;
+    }
+  }
+
+  return applied;
+}
+
+function clearArtStyleDomPreview(root: HTMLElement | null): void {
+  if (!root) {
+    return;
+  }
+
+  for (const element of Array.from(root.querySelectorAll<SVGElement>("[data-art-style-preview='true']"))) {
+    restoreArtStylePreviewElement(element);
+  }
+}
+
+function primeArtStylePreviewElement(element: SVGElement, attribute: "fill" | "stroke"): void {
+  element.setAttribute("data-art-style-preview", "true");
+  const originalAttribute = `data-art-style-preview-original-${attribute}`;
+  if (!element.hasAttribute(originalAttribute)) {
+    element.setAttribute(originalAttribute, element.getAttribute(attribute) ?? "");
+  }
+}
+
+function restoreArtStylePreviewElement(element: SVGElement): void {
+  restoreArtStylePreviewAttribute(element, "fill");
+  restoreArtStylePreviewAttribute(element, "stroke");
+  element.removeAttribute("data-art-style-preview");
+}
+
+function restoreArtStylePreviewAttribute(element: SVGElement, attribute: "fill" | "stroke"): void {
+  const originalAttribute = `data-art-style-preview-original-${attribute}`;
+  if (!element.hasAttribute(originalAttribute)) {
+    return;
+  }
+
+  const originalValue = element.getAttribute(originalAttribute) ?? "";
+  if (originalValue.length > 0) {
+    element.setAttribute(attribute, originalValue);
+  } else {
+    element.removeAttribute(attribute);
+  }
+  element.removeAttribute(originalAttribute);
+}
+
+function cssEscapeIdentifier(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/["\\]/g, "\\$&");
 }
 
 function findNearestCrossingHit(
