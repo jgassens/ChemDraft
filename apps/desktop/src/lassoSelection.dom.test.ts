@@ -320,10 +320,19 @@ describe("lasso selection interactions", () => {
     const targetElement = graphicElement(target.id);
     const start = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
     const end = { x: start.x + 24, y: start.y + 18 };
+    const frameBeforeDrag = groupFrameBounds();
 
     await act(async () => {
       dispatchPointer(targetElement, "pointerdown", start, { pointerId: 7 });
       dispatchPointer(page, "pointermove", end, { pointerId: 7 });
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    });
+
+    const frameDuringDrag = groupFrameBounds();
+    expect(frameDuringDrag.left - frameBeforeDrag.left).toBeCloseTo(end.x - start.x, 5);
+    expect(frameDuringDrag.top - frameBeforeDrag.top).toBeCloseTo(end.y - start.y, 5);
+
+    await act(async () => {
       dispatchPointer(page, "pointerup", end, { pointerId: 7 });
     });
 

@@ -747,7 +747,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.16.20-codex";
+const CURRENT_BUILD_STAMP = "6.17.16.45-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -8430,10 +8430,17 @@ export function MainWindow({
                   const groupSelectionActive = activeToolState.activeKind === "selection" &&
                     document.selection.objectIds.length > 1 &&
                     !selectedNativeMoleculePart;
-                  const groupSelectionBounds = groupSelectionActive
+                  const rawGroupSelectionBounds = groupSelectionActive
                     ? visualSelectionBounds(document.pages[0].objects, document.selection.objectIds)
                     : undefined;
-                  const groupProjectedPlaneTiltObjectIds = groupSelectionBounds
+                  const groupSelectionBounds = rawGroupSelectionBounds
+                    ? previewedGroupSelectionBounds(
+                        rawGroupSelectionBounds,
+                        document.selection.objectIds,
+                        objectTransformPreview
+                      )
+                    : undefined;
+                  const groupProjectedPlaneTiltObjectIds = rawGroupSelectionBounds
                     ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, document.selection.objectIds)
                     : [];
                   return (
@@ -11487,6 +11494,37 @@ export function visualSelectionBounds(
     centerX: (minX + maxX) / 2,
     centerY: (minY + maxY) / 2
   };
+}
+
+function previewedGroupSelectionBounds(
+  bounds: SelectionBounds,
+  selectedIds: readonly string[],
+  preview: ObjectTransformPreviewState | undefined
+): SelectionBounds {
+  if (preview?.mode !== "move" || !objectTransformPreviewCoversSelection(preview, selectedIds)) {
+    return bounds;
+  }
+
+  return {
+    x: bounds.x + preview.translateX,
+    y: bounds.y + preview.translateY,
+    width: bounds.width,
+    height: bounds.height,
+    centerX: bounds.centerX + preview.translateX,
+    centerY: bounds.centerY + preview.translateY
+  };
+}
+
+function objectTransformPreviewCoversSelection(
+  preview: ObjectTransformPreviewState,
+  selectedIds: readonly string[]
+): boolean {
+  if (preview.objectIds.length !== selectedIds.length) {
+    return false;
+  }
+
+  const previewIds = new Set(preview.objectIds);
+  return selectedIds.every((id) => previewIds.has(id));
 }
 
 function visualObjectBounds(object: DocumentObject): { x: number; y: number; width: number; height: number } {
