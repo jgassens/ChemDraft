@@ -14,7 +14,7 @@
           "id": "core.main.selection",
           "items": [
             { "commandId": "tool.select", "title": "Selection Tool", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
-            { "commandId": "tool.lasso", "title": "Lasso Selection", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "selection" },
+            { "commandId": "tool.lasso", "title": "Lasso Selection", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "category": "selection" },
             { "commandId": "tool.eraser", "title": "Eraser Tool", "icon": "select", "assetName": "Custom_Eraser", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "selection" },
             { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]

@@ -14,6 +14,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import {
+  graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
   maxGraphicCornerRadius,
   projectGraphicObjectPoint,
@@ -658,6 +659,12 @@ type SelectionMarqueeState = {
   latestPoint: ClientPoint;
   dragging: boolean;
 };
+type SelectionLassoState = {
+  pointerId: number;
+  points: ClientPoint[];
+  latestPoint: ClientPoint;
+  dragging: boolean;
+};
 type ObjectContextMenuState = {
   objectId: string;
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
@@ -737,9 +744,10 @@ const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DR
 const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
+const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.14.52-codex";
+const CURRENT_BUILD_STAMP = "6.17.15.23-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -922,7 +930,9 @@ export function MainWindow({
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
+  const selectionLassoRef = useRef<SelectionLassoState | null>(null);
   const marqueeMachineRef = useRef<InteractionState>(initialInteractionState());
+  const lassoMachineRef = useRef<InteractionState>(initialInteractionState());
   const placementMachineRef = useRef<InteractionState>(initialInteractionState());
   const objectRotateMachineRef = useRef<InteractionState>(initialInteractionState());
   const projectedPlaneTiltMachineRef = useRef<InteractionState>(initialInteractionState());
@@ -966,6 +976,7 @@ export function MainWindow({
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
   const [selectedNativeMoleculePart, setSelectedNativeMoleculePart] = useState<NativeMoleculeSelectionPart | undefined>();
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
+  const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
@@ -5459,6 +5470,25 @@ export function MainWindow({
     (event: PointerEvent<HTMLButtonElement>) => handleGroupTransformPointerDown("resize", event),
   [handleGroupTransformPointerDown]);
 
+  const startSelectionLasso = useCallback((event: ObjectPointerEvent, point: ClientPoint) => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectionLassoRef.current = {
+      pointerId: event.pointerId,
+      points: [point],
+      latestPoint: point,
+      dragging: false
+    };
+    lassoMachineRef.current = interactionReducer(
+      initialInteractionState(),
+      { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "marquee" }
+    );
+    setSelectedNativeMoleculePart(undefined);
+    setActiveGraphicTransformObjectId(undefined);
+    clearTransientInteractionChrome();
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+  }, [clearTransientInteractionChrome]);
+
   const handlePagePointerDown = useCallback((event: ObjectPointerEvent) => {
     if (event.button !== 0 || event.defaultPrevented) {
       return;
@@ -5471,6 +5501,11 @@ export function MainWindow({
     }
 
     if (activeToolState.activeKind === "selection") {
+      if (activeToolState.activeCommandId === "tool.lasso") {
+        startSelectionLasso(event, point);
+        return;
+      }
+
       const pressObject = nativeMoleculeObjectAtPoint(document.pages[0].objects, point);
       const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId: pressObject?.id };
       const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
@@ -5573,6 +5608,7 @@ export function MainWindow({
     activeNativeTemplateId,
     activeNativeArtTool,
     activeToolState.activeCommandId,
+    activeToolState.activeKind,
     applyChargeDocumentAtPoint,
     applyNativeArtDocumentAtPoint,
     applyNativeTemplateDocumentAtPoint,
@@ -5580,6 +5616,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
+    startSelectionLasso,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativePlacementDrag
@@ -5910,6 +5947,26 @@ export function MainWindow({
       return;
     }
 
+    const lasso = selectionLassoRef.current;
+    if (lasso?.pointerId === event.pointerId) {
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      lasso.latestPoint = point;
+      lassoMachineRef.current = interactionReducer(lassoMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+      lasso.dragging = lassoMachineRef.current.phase === "dragging";
+      if (lasso.dragging) {
+        const lastPoint = lasso.points[lasso.points.length - 1] ?? lasso.latestPoint;
+        if (clientPointDistance(lastPoint, point) >= LASSO_POINT_SPACING_PX) {
+          lasso.points = [...lasso.points, point];
+        }
+      }
+      setSelectionLasso(lasso.dragging ? { ...lasso, points: [...lasso.points] } : undefined);
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -6154,6 +6211,43 @@ export function MainWindow({
       return;
     }
 
+    const lasso = selectionLassoRef.current;
+    if (lasso?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? lasso.latestPoint;
+      const wasDragging = lassoMachineRef.current.phase === "dragging";
+      const lassoPoints = lassoPointsForSelection(lasso, point);
+      const selection = wasDragging
+        ? selectionInSelectionLasso(document.pages[0].objects, lassoPoints)
+        : { objectIds: [], nativeSelection: undefined };
+      replacePresentDocument((current) => {
+        const pageId = current.pages[0].id;
+        if (!event.altKey) {
+          return selectDocumentObjects(current, pageId, selection.objectIds);
+        }
+        const removed = new Set(selection.objectIds);
+        return selectDocumentObjects(
+          current,
+          pageId,
+          current.selection.objectIds.filter((objectId) => !removed.has(objectId))
+        );
+      });
+      setSelectedNativeMoleculePart(event.altKey ? undefined : selection.nativeSelection);
+      setActiveGraphicTransformObjectId(undefined);
+      clearTransientInteractionChrome();
+      if (!event.altKey && selection.objectIds.length === 0 && !selection.nativeSelection) {
+        toolbarStyleTargetRef.current = undefined;
+      }
+      setSelectionLasso(undefined);
+      selectionLassoRef.current = null;
+      lassoMachineRef.current = initialInteractionState();
+      setStatus(event.altKey ? selectionSubtractStatusLabel(selection) : selectionStatusLabel(selection));
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (!marquee || marquee.pointerId !== event.pointerId) {
       return;
@@ -6294,6 +6388,16 @@ export function MainWindow({
       setStatus("Freehand stroke canceled");
     }
 
+    const lasso = selectionLassoRef.current;
+    if (lasso?.pointerId === event.pointerId) {
+      lassoMachineRef.current = initialInteractionState();
+      selectionLassoRef.current = null;
+      setSelectionLasso(undefined);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+
     const marquee = selectionMarqueeRef.current;
     if (marquee?.pointerId === event.pointerId) {
       marqueeMachineRef.current = initialInteractionState();
@@ -6318,6 +6422,10 @@ export function MainWindow({
       return;
     }
 
+    if (selectionLassoRef.current) {
+      return;
+    }
+
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
   }, []);
@@ -6328,6 +6436,11 @@ export function MainWindow({
     }
 
     const point = pagePointFromPointerEvent(event);
+    if (activeToolState.activeCommandId === "tool.lasso" && point) {
+      startSelectionLasso(event, point);
+      return;
+    }
+
     // Slice 1b: resolve the press by geometry, not by whichever overlapping wrapper the
     // browser happened to deliver the event to. A molecule's rectangular wrapper otherwise
     // swallows a press meant for a molecule beneath it (the rotaxane-overlap bug: hover
@@ -6721,7 +6834,8 @@ export function MainWindow({
     selectedNativeMoleculePart,
     startAtomLabelEdit,
     startOrAppendNativePathArtPoint,
-    startNativeFreehandArtDrag
+    startNativeFreehandArtDrag,
+    startSelectionLasso
   ]);
 
   function isTransformHandleSecondPress(
@@ -8290,6 +8404,14 @@ export function MainWindow({
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
                     latestPoint={selectionMarquee.latestPoint}
+                  />
+                ) : null}
+                {selectionLasso ? (
+                  <SelectionLassoOverlay
+                    points={selectionLasso.points}
+                    latestPoint={selectionLasso.latestPoint}
+                    pageWidth={document.pages[0].width}
+                    pageHeight={document.pages[0].height}
                   />
                 ) : null}
                 {(() => {
@@ -10753,6 +10875,34 @@ export function SelectionMarqueeOverlay({
   );
 }
 
+export function SelectionLassoOverlay({
+  points,
+  latestPoint,
+  pageWidth,
+  pageHeight
+}: {
+  points: readonly ClientPoint[];
+  latestPoint: ClientPoint;
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const pathPoints = lassoPointsForPreview(points, latestPoint);
+  const pathD = lassoPathD(pathPoints);
+  return (
+    <svg
+      className="selection-lasso"
+      aria-hidden="true"
+      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+      style={{
+        width: `calc(${pageWidth}px * var(--page-scale))`,
+        height: `calc(${pageHeight}px * var(--page-scale))`
+      }}
+    >
+      {pathD ? <path className="selection-lasso-path" d={pathD} /> : null}
+    </svg>
+  );
+}
+
 // One bounding box + rotate/resize handles around a multi-object selection, so the
 // whole group can be rotated or scaled as one. Reuses the per-molecule handle classes.
 function GroupSelectionOverlay({
@@ -11118,6 +11268,32 @@ function normalizedRect(startPoint: ClientPoint, latestPoint: ClientPoint): {
   };
 }
 
+function lassoPointsForPreview(points: readonly ClientPoint[], latestPoint: ClientPoint): ClientPoint[] {
+  if (points.length === 0) {
+    return [latestPoint];
+  }
+  const lastPoint = points[points.length - 1];
+  return clientPointDistance(lastPoint, latestPoint) > 0.001
+    ? [...points, latestPoint]
+    : [...points];
+}
+
+function lassoPointsForSelection(lasso: SelectionLassoState, latestPoint: ClientPoint): ClientPoint[] {
+  const points = lassoPointsForPreview(lasso.points, latestPoint);
+  return points.length >= 3 ? points : [];
+}
+
+function lassoPathD(points: readonly ClientPoint[]): string {
+  if (points.length < 2) {
+    return "";
+  }
+
+  const commands = points.map((point, index) =>
+    `${index === 0 ? "M" : "L"} ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`
+  );
+  return points.length >= 3 ? `${commands.join(" ")} Z` : commands.join(" ");
+}
+
 export function selectionInSelectionRect(
   objects: readonly DocumentObject[],
   startPoint: ClientPoint,
@@ -11156,6 +11332,56 @@ export function selectionInSelectionRect(
   }
 
   return { objectIds, nativeSelection };
+}
+
+export function selectionInSelectionLasso(
+  objects: readonly DocumentObject[],
+  points: readonly ClientPoint[]
+): { objectIds: string[]; nativeSelection?: NativeMoleculeSelectionPart } {
+  if (points.length < 3) {
+    return { objectIds: [], nativeSelection: undefined };
+  }
+
+  const objectIds: string[] = [];
+  let nativeSelection: NativeMoleculeSelectionPart | undefined;
+
+  for (const object of objects) {
+    if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
+      const moleculeSelection = nativeMoleculeSelectionInPolygon(object, points);
+      if (!moleculeSelection) {
+        continue;
+      }
+
+      if (nativeMoleculeSelectionCoversWholeObject(object, moleculeSelection)) {
+        objectIds.push(object.id);
+        continue;
+      }
+
+      nativeSelection ??= moleculeSelection;
+      continue;
+    }
+
+    if (object.type === "graphic") {
+      if (graphicObjectIntersectsPolygon(object, points)) {
+        objectIds.push(object.id);
+      }
+      continue;
+    }
+
+    if (polygonIntersectsRect(points, objectBounds(object))) {
+      objectIds.push(object.id);
+    }
+  }
+
+  return { objectIds, nativeSelection };
+}
+
+function selectionSubtractStatusLabel(selection: { objectIds: readonly string[]; nativeSelection?: NativeMoleculeSelectionPart }): string {
+  const removedCount = selection.objectIds.length + (selection.nativeSelection ? 1 : 0);
+  if (removedCount === 0) {
+    return "Selection unchanged";
+  }
+  return removedCount === 1 ? "Subtracted from selection" : `Subtracted ${removedCount} items from selection`;
 }
 
 function nativeMoleculeSelectionCoversWholeObject(
@@ -11282,6 +11508,32 @@ function nativeMoleculeSelectionInRect(
   return { objectId: object.id, kind: "parts", atomIds, bondIds };
 }
 
+function nativeMoleculeSelectionInPolygon(
+  object: MoleculeObject,
+  polygon: readonly ClientPoint[]
+): NativeMoleculeSelectionPart | undefined {
+  const atomIds = object.atoms
+    .filter((atom) => pointInPolygon(atom, polygon))
+    .map((atom) => atom.id);
+  const bondIds = object.bonds
+    .filter((bond) => nativeBondIntersectsPolygon(object, bond, polygon))
+    .map((bond) => bond.id);
+
+  if (atomIds.length === 0 && bondIds.length === 0) {
+    return undefined;
+  }
+
+  if (atomIds.length === 1 && bondIds.length === 0) {
+    return { objectId: object.id, kind: "atom", atomId: atomIds[0] };
+  }
+
+  if (atomIds.length === 0 && bondIds.length === 1) {
+    return { objectId: object.id, kind: "bond", bondId: bondIds[0] };
+  }
+
+  return { objectId: object.id, kind: "parts", atomIds, bondIds };
+}
+
 function nativeBondIntersectsRect(
   object: MoleculeObject,
   bond: MoleculeObject["bonds"][number],
@@ -11300,6 +11552,24 @@ function nativeBondIntersectsRect(
   );
 }
 
+function nativeBondIntersectsPolygon(
+  object: MoleculeObject,
+  bond: MoleculeObject["bonds"][number],
+  polygon: readonly ClientPoint[]
+): boolean {
+  const fromAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const toAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!fromAtom || !toAtom) {
+    return false;
+  }
+
+  return (
+    pointInPolygon(fromAtom, polygon) ||
+    pointInPolygon(toAtom, polygon) ||
+    lineIntersectsPolygon(fromAtom, toAtom, polygon)
+  );
+}
+
 function pointInRect(
   point: ClientPoint,
   rect: { x: number; y: number; width: number; height: number }
@@ -11310,6 +11580,68 @@ function pointInRect(
     point.y >= rect.y &&
     point.y <= rect.y + rect.height
   );
+}
+
+function polygonIntersectsRect(
+  polygon: readonly ClientPoint[],
+  rect: { x: number; y: number; width: number; height: number }
+): boolean {
+  if (polygon.length < 3) {
+    return false;
+  }
+
+  const corners = rectCorners(rect);
+  return (
+    corners.some((corner) => pointInPolygon(corner, polygon)) ||
+    polygon.some((point) => pointInRect(point, rect)) ||
+    polygonEdges(polygon).some(([start, end]) => lineIntersectsRect(start, end, rect))
+  );
+}
+
+function pointInPolygon(point: ClientPoint, polygon: readonly ClientPoint[]): boolean {
+  let inside = false;
+  for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index, index += 1) {
+    const current = polygon[index];
+    const previous = polygon[previousIndex];
+    const crossesY = (current.y > point.y) !== (previous.y > point.y);
+    if (!crossesY) {
+      continue;
+    }
+    const intersectionX = ((previous.x - current.x) * (point.y - current.y)) / (previous.y - current.y) + current.x;
+    if (point.x < intersectionX) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function lineIntersectsPolygon(
+  start: ClientPoint,
+  end: ClientPoint,
+  polygon: readonly ClientPoint[]
+): boolean {
+  return (
+    pointInPolygon(start, polygon) ||
+    pointInPolygon(end, polygon) ||
+    polygonEdges(polygon).some(([edgeStart, edgeEnd]) => segmentsIntersect(start, end, edgeStart, edgeEnd))
+  );
+}
+
+function rectCorners(rect: { x: number; y: number; width: number; height: number }): ClientPoint[] {
+  const left = rect.x;
+  const right = rect.x + rect.width;
+  const top = rect.y;
+  const bottom = rect.y + rect.height;
+  return [
+    { x: left, y: top },
+    { x: right, y: top },
+    { x: right, y: bottom },
+    { x: left, y: bottom }
+  ];
+}
+
+function polygonEdges(polygon: readonly ClientPoint[]): Array<[ClientPoint, ClientPoint]> {
+  return polygon.map((point, index) => [point, polygon[(index + 1) % polygon.length]]);
 }
 
 function lineIntersectsRect(

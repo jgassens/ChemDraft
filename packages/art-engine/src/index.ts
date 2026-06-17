@@ -1016,6 +1016,34 @@ export function graphicObjectIntersectsRect(object: GraphicObject, rect: NativeA
   return false;
 }
 
+export function graphicObjectIntersectsPolygon(object: GraphicObject, polygon: readonly NativeArtPoint[]): boolean {
+  if (polygon.length < 3) {
+    return false;
+  }
+
+  const objectRect = { x: object.x, y: object.y, width: object.width, height: object.height };
+  if (!nativeArtCapabilities(object).isOpenStroke) {
+    return nativeArtPolygonIntersectsRect(polygon, objectRect);
+  }
+
+  const pagePoints = graphicOpenStrokePageSamplePoints(object);
+  if (pagePoints.length < 2) {
+    return nativeArtPolygonIntersectsRect(polygon, objectRect);
+  }
+
+  if (pagePoints.some((point) => nativeArtPointInPolygon(point, polygon))) {
+    return true;
+  }
+
+  for (let index = 1; index < pagePoints.length; index += 1) {
+    if (nativeArtLineIntersectsPolygon(pagePoints[index - 1], pagePoints[index], polygon)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicObject {
   const pathKind = graphicPathKind(object);
   if (!pathKind || pathKind === "arc") {
@@ -2781,6 +2809,67 @@ function nativeArtLineIntersectsRect(start: NativeArtPoint, end: NativeArtPoint,
     nativeArtSegmentsIntersect(start, end, { x: right, y: bottom }, { x: left, y: bottom }) ||
     nativeArtSegmentsIntersect(start, end, { x: left, y: bottom }, { x: left, y: top })
   );
+}
+
+function nativeArtPolygonIntersectsRect(polygon: readonly NativeArtPoint[], rect: NativeArtBounds): boolean {
+  if (polygon.length < 3) {
+    return false;
+  }
+
+  const corners = nativeArtRectCorners(rect);
+  return (
+    corners.some((corner) => nativeArtPointInPolygon(corner, polygon)) ||
+    polygon.some((point) => nativeArtPointInRect(point, rect)) ||
+    nativeArtPolygonEdges(polygon).some(([start, end]) => nativeArtLineIntersectsRect(start, end, rect))
+  );
+}
+
+function nativeArtPointInPolygon(point: NativeArtPoint, polygon: readonly NativeArtPoint[]): boolean {
+  let inside = false;
+  for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index, index += 1) {
+    const current = polygon[index];
+    const previous = polygon[previousIndex];
+    const crossesY = current.y > point.y !== previous.y > point.y;
+    if (!crossesY) {
+      continue;
+    }
+    const intersectionX = ((previous.x - current.x) * (point.y - current.y)) / (previous.y - current.y) + current.x;
+    if (point.x < intersectionX) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function nativeArtLineIntersectsPolygon(
+  start: NativeArtPoint,
+  end: NativeArtPoint,
+  polygon: readonly NativeArtPoint[]
+): boolean {
+  return (
+    nativeArtPointInPolygon(start, polygon) ||
+    nativeArtPointInPolygon(end, polygon) ||
+    nativeArtPolygonEdges(polygon).some(([edgeStart, edgeEnd]) =>
+      nativeArtSegmentsIntersect(start, end, edgeStart, edgeEnd)
+    )
+  );
+}
+
+function nativeArtRectCorners(rect: NativeArtBounds): NativeArtPoint[] {
+  const left = rect.x;
+  const right = rect.x + rect.width;
+  const top = rect.y;
+  const bottom = rect.y + rect.height;
+  return [
+    { x: left, y: top },
+    { x: right, y: top },
+    { x: right, y: bottom },
+    { x: left, y: bottom }
+  ];
+}
+
+function nativeArtPolygonEdges(polygon: readonly NativeArtPoint[]): Array<[NativeArtPoint, NativeArtPoint]> {
+  return polygon.map((point, index) => [point, polygon[(index + 1) % polygon.length]]);
 }
 
 function nativeArtSegmentsIntersect(

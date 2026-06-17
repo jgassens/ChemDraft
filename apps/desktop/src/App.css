@@ -2849,6 +2849,22 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.selection-lasso {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.selection-lasso-path {
+  fill: var(--cd-bg-selected);
+  stroke: var(--cd-accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
 .object-context-menu {
   position: fixed;
   z-index: 200;

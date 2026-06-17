@@ -44,8 +44,7 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "lasso",
-    defaultShortcut: "L",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    defaultShortcut: "L"
   },
   {
     commandId: "tool.art.directEdit",

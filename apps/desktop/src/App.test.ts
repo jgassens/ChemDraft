@@ -69,6 +69,7 @@ import {
 import {
   MainWindow,
   ObjectLayerContextMenu,
+  SelectionLassoOverlay,
   SelectionMarqueeOverlay,
   activeNativeTargetShortcutCommand,
   cumulativeObjectResizeScale,
@@ -105,6 +106,7 @@ import {
   rotationInputHomeDraftDegrees,
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
+  selectionInSelectionLasso,
   selectionInSelectionRect,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
@@ -476,6 +478,27 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("height:calc(60px * var(--page-scale))");
   });
 
+  it("renders the selection lasso in page coordinates", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SelectionLassoOverlay, {
+        points: [
+          { x: 20, y: 30 },
+          { x: 70, y: 35 },
+          { x: 65, y: 90 }
+        ],
+        latestPoint: { x: 22, y: 88 },
+        pageWidth: 792,
+        pageHeight: 612
+      })
+    );
+
+    expect(markup).toContain("selection-lasso");
+    expect(markup).toContain('viewBox="0 0 792 612"');
+    expect(markup).toContain("width:calc(792px * var(--page-scale))");
+    expect(markup).toContain("height:calc(612px * var(--page-scale))");
+    expect(markup).toContain('d="M 20 30 L 70 35 L 65 90 L 22 88 Z"');
+  });
+
   it("selects every whole native molecule inside a marquee instead of keeping only the first one", () => {
     const first = insertNativeSingleBondMolecule(createPhase4Document("Multi Marquee"), { x: 220, y: 240 });
     const second = insertNativeSingleBondMolecule(first, { x: 320, y: 240 });
@@ -496,6 +519,30 @@ describe("ChemDraft desktop shell", () => {
       x: bounds.right + 4,
       y: bounds.bottom + 4
     });
+
+    expect(selection.objectIds).toEqual(molecules.map((molecule) => molecule.id));
+    expect(selection.nativeSelection).toBeUndefined();
+  });
+
+  it("selects every whole native molecule inside a lasso polygon", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Multi Lasso"), { x: 220, y: 240 });
+    const second = insertNativeSingleBondMolecule(first, { x: 320, y: 240 });
+    const molecules = second.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const bounds = molecules.reduce(
+      (rect, molecule) => ({
+        left: Math.min(rect.left, molecule.x),
+        top: Math.min(rect.top, molecule.y),
+        right: Math.max(rect.right, molecule.x + molecule.width),
+        bottom: Math.max(rect.bottom, molecule.y + molecule.height)
+      }),
+      { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY, right: 0, bottom: 0 }
+    );
+    const selection = selectionInSelectionLasso(second.pages[0].objects, [
+      { x: bounds.left - 6, y: bounds.top - 8 },
+      { x: bounds.right + 8, y: bounds.top - 4 },
+      { x: bounds.right + 4, y: bounds.bottom + 8 },
+      { x: bounds.left - 8, y: bounds.bottom + 6 }
+    ]);
 
     expect(selection.objectIds).toEqual(molecules.map((molecule) => molecule.id));
     expect(selection.nativeSelection).toBeUndefined();
@@ -579,6 +626,33 @@ describe("ChemDraft desktop shell", () => {
       x: rectCenter.x + 5,
       y: rectCenter.y + 5
     });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a straight graphic line when the lasso crosses the stroke", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Line Lasso"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0];
+    const graphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!objectId || !graphic) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const strokePoint = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const selection = selectionInSelectionLasso(document.pages[0].objects, [
+      { x: strokePoint.x - 9, y: strokePoint.y - 6 },
+      { x: strokePoint.x + 8, y: strokePoint.y - 4 },
+      { x: strokePoint.x + 7, y: strokePoint.y + 8 },
+      { x: strokePoint.x - 8, y: strokePoint.y + 7 }
+    ]);
 
     expect(selection.objectIds).toEqual([objectId]);
   });
@@ -1170,6 +1244,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.benzene",
       "tool.chairCyclohexaneA",
       "tool.chairCyclohexaneB",
+      "tool.lasso",
       structureCleanupCommandId,
       "tool.plus",
       "tool.minus",
