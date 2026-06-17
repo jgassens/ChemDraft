@@ -1256,12 +1256,6 @@ textarea:focus-visible,
   stroke-width: 3.4;
 }
 
-.art-tool-edit-node {
-  fill: currentColor;
-  stroke: var(--cd-bg-panel);
-  stroke-width: 0.7;
-}
-
 .art-tool-shadow {
   fill: none;
   stroke: var(--cd-text-muted);

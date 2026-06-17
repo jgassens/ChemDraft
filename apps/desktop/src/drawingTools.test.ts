@@ -102,14 +102,16 @@ describe("Phase 7 drawing tool activation", () => {
     expect(command.enabled).toBe(true);
   });
 
-  it("activates direct edit as a selection-mode art toolbar command", () => {
-    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.directEdit");
+  it("keeps direct edit registered as a hidden selection-mode command", () => {
+    const toolsetCommands = getToolsetCommandSpecs();
+    const command = withStandaloneDrawingToolCommands(toolsetCommands).find((candidate) => candidate.id === "tool.art.directEdit");
     if (!command) {
-      throw new Error("Expected tool.art.directEdit to be registered by the art toolset manifest.");
+      throw new Error("Expected tool.art.directEdit to remain registered as a standalone drawing command.");
     }
 
     const result = activateDrawingToolCommand(createActiveToolState("tool.art.circle"), command);
 
+    expect(toolsetCommands.some((candidate) => candidate.id === "tool.art.directEdit")).toBe(false);
     expect(result.outcome).toBe("activated");
     expect(result.status).toBe("Direct Edit active");
     expect(result.state.activeCommandId).toBe("tool.art.directEdit");
