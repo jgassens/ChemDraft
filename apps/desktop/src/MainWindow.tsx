@@ -748,7 +748,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.17.50-codex";
+const CURRENT_BUILD_STAMP = "6.17.18.14-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5495,6 +5495,24 @@ export function MainWindow({
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
   }, [clearTransientInteractionChrome]);
 
+  const startSelectionMarquee = useCallback((event: ObjectPointerEvent, point: ClientPoint) => {
+    event.preventDefault();
+    selectionMarqueeRef.current = {
+      pointerId: event.pointerId,
+      startPoint: point,
+      latestPoint: point,
+      dragging: false
+    };
+    marqueeMachineRef.current = interactionReducer(
+      initialInteractionState(),
+      { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "marquee" }
+    );
+    setSelectedNativeMoleculePart(undefined);
+    setActiveGraphicTransformObjectId(undefined);
+    clearTransientInteractionChrome();
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [clearTransientInteractionChrome]);
+
   const handlePagePointerDown = useCallback((event: ObjectPointerEvent) => {
     if (event.button !== 0 || event.defaultPrevented) {
       return;
@@ -5512,6 +5530,12 @@ export function MainWindow({
           return;
         }
         startSelectionLasso(event, point);
+        return;
+      }
+
+      if (activeToolState.activeCommandId === "tool.eraser") {
+        startSelectionMarquee(event, point);
+        setStatus("Drag eraser over objects");
         return;
       }
 
@@ -5533,18 +5557,7 @@ export function MainWindow({
         }
       }
 
-      event.preventDefault();
-      selectionMarqueeRef.current = {
-        pointerId: event.pointerId,
-        startPoint: point,
-        latestPoint: point,
-        dragging: false
-      };
-      marqueeMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "marquee" });
-      setSelectedNativeMoleculePart(undefined);
-      setActiveGraphicTransformObjectId(undefined);
-      clearTransientInteractionChrome();
-      event.currentTarget.setPointerCapture(event.pointerId);
+      startSelectionMarquee(event, point);
       return;
     }
 
@@ -5625,6 +5638,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
+    startSelectionMarquee,
     startSelectionLasso,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
@@ -6268,6 +6282,31 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event) ?? marquee.latestPoint;
     marquee.latestPoint = point;
     const wasDragging = marqueeMachineRef.current.phase === "dragging";
+    if (activeToolState.activeCommandId === "tool.eraser") {
+      const objectIds = wasDragging
+        ? eraserObjectIdsInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
+        : [];
+      if (objectIds.length > 0) {
+        const nextDocument = applyPatches(
+          document,
+          objectIds.map((objectId) => ({ op: "removeObject", objectId }))
+        );
+        commitDocumentChange(nextDocument);
+        toolbarStyleTargetRef.current = undefined;
+        setSelectedNativeMoleculePart(undefined);
+        setActiveGraphicTransformObjectId(undefined);
+        clearTransientInteractionChrome();
+      }
+      setSelectionMarquee(undefined);
+      selectionMarqueeRef.current = null;
+      marqueeMachineRef.current = initialInteractionState();
+      setStatus(objectIds.length === 0 ? "Nothing erased" : objectIds.length === 1 ? "Deleted object" : `Deleted ${objectIds.length} objects`);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
+
     const selection = wasDragging
       ? selectionInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
       : { objectIds: [], nativeSelection: undefined };
@@ -6285,6 +6324,7 @@ export function MainWindow({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   }, [
+    activeToolState.activeCommandId,
     activeToolState.activeKind,
     clearNativePartDrag,
     clearObjectDrag,
@@ -6305,6 +6345,7 @@ export function MainWindow({
     commitNativeFreehandArtDrag,
     commitNativePlacementDrag,
     commitNativePartDrag,
+    commitDocumentChange,
     commitTextResize,
     commitObjectDrag,
     commitObjectRotateDrag,
@@ -11434,6 +11475,42 @@ export function selectionInSelectionRect(
   return { objectIds, nativeSelection };
 }
 
+export function eraserObjectIdsInSelectionRect(
+  objects: readonly DocumentObject[],
+  startPoint: ClientPoint,
+  latestPoint: ClientPoint
+): string[] {
+  const rect = normalizedRect(startPoint, latestPoint);
+  const objectIds: string[] = [];
+
+  for (const object of objects) {
+    if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
+      if (nativeMoleculeSelectionInRect(object, rect)) {
+        objectIds.push(object.id);
+      }
+      continue;
+    }
+
+    if (object.type === "graphic") {
+      const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+      if (
+        plan.capabilities.isOpenStroke
+          ? graphicObjectIntersectsRect(object, rect)
+          : rectangleIntersectsRect(rect, visualObjectBounds(object))
+      ) {
+        objectIds.push(object.id);
+      }
+      continue;
+    }
+
+    if (rectangleIntersectsRect(rect, objectBounds(object))) {
+      objectIds.push(object.id);
+    }
+  }
+
+  return objectIds;
+}
+
 export function selectionInSelectionLasso(
   objects: readonly DocumentObject[],
   points: readonly ClientPoint[]
@@ -11510,6 +11587,18 @@ function rectangleContainsRect(
     inner.x + inner.width <= outer.x + outer.width &&
     inner.y >= outer.y &&
     inner.y + inner.height <= outer.y + outer.height
+  );
+}
+
+function rectangleIntersectsRect(
+  first: { x: number; y: number; width: number; height: number },
+  second: { x: number; y: number; width: number; height: number }
+): boolean {
+  return (
+    first.x <= second.x + second.width &&
+    first.x + first.width >= second.x &&
+    first.y <= second.y + second.height &&
+    first.y + first.height >= second.y
   );
 }
 

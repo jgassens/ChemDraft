@@ -297,6 +297,49 @@ describe("freehand native art interactions", () => {
     expect(container.querySelector(`[data-object-id="${objectId}"]`)).toBeNull();
   });
 
+  it("erases every freehand object touched by a dragged eraser marquee", async () => {
+    await renderMainWindow("tool.art.pencil", { initialPaletteMode: "floating", nativePalette: false });
+    const firstObjectId = await drawPencilStroke(57);
+
+    const pencilButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.art.pencil"]');
+    if (!pencilButton) {
+      throw new Error("Expected visible pencil tool button.");
+    }
+    await act(async () => {
+      pencilButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const secondObjectId = await drawPencilStroke(58, [
+      { x: 320, y: 184, pressure: 0.3 },
+      { x: 356, y: 202, pressure: 0.8 },
+      { x: 392, y: 184, pressure: 0.45 }
+    ]);
+    expect(snapshotObjectCount()).toBe(2);
+
+    const eraserButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.eraser"]');
+    if (!eraserButton) {
+      throw new Error("Expected visible eraser tool button.");
+    }
+    await act(async () => {
+      eraserButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 150, y: 168 }, 59, 0.5);
+      dispatchPointer(pageElement(), "pointermove", { x: 408, y: 214 }, 59, 0.5);
+    });
+    expect(container.querySelector(".selection-marquee")).not.toBeNull();
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: 408, y: 214 }, 59, 0.5);
+    });
+
+    expect(snapshotObjectCount()).toBe(0);
+    expect(container.querySelector(`[data-object-id="${firstObjectId}"]`)).toBeNull();
+    expect(container.querySelector(`[data-object-id="${secondObjectId}"]`)).toBeNull();
+    expect(container.querySelector(".selection-marquee")).toBeNull();
+  });
+
   it("previews freehand object moves with CSS and commits geometry on pointer up", async () => {
     await renderMainWindow("tool.art.pencil");
     const objectId = await drawPencilStroke(61);

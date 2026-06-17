@@ -107,6 +107,7 @@ import {
   rotationInputHomeDraftDegrees,
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
+  eraserObjectIdsInSelectionRect,
   selectionInSelectionLasso,
   selectionInSelectionRect,
   shouldActivateDocumentObject,
@@ -582,6 +583,47 @@ describe("ChemDraft desktop shell", () => {
     expect(moleculeSelection.objectIds).toEqual([molecule.id]);
     expect(moleculeSelection.objectIds).not.toContain(text.id);
     expect(fullSelection.objectIds).toEqual([molecule.id, text.id]);
+  });
+
+  it("uses touched-object hit rules for eraser marquee deletion", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Eraser Marquee Touch"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const rect = withRect.pages[0].objects.find((object): object is GraphicObject =>
+      object.type === "graphic" && object.id === withRect.selection.objectIds[0]
+    );
+    if (!rect) {
+      throw new Error("Expected rectangle graphic fixture.");
+    }
+    const edgeStart = {
+      x: rect.x + rect.width - 2,
+      y: rect.y + rect.height / 2 - 3
+    };
+    const edgeEnd = {
+      x: rect.x + rect.width + 10,
+      y: rect.y + rect.height / 2 + 3
+    };
+
+    expect(selectionInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd).objectIds).toEqual([]);
+    expect(eraserObjectIdsInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd)).toEqual([rect.id]);
+
+    const withText = insertNativeTextObject(createPhase4Document("Eraser Text Touch"), { x: 260, y: 210 }, "touch");
+    const text = withText.pages[0].objects.find((object): object is DocumentObject =>
+      object.type === "text" && object.text === "touch"
+    );
+    if (!text) {
+      throw new Error("Expected text fixture.");
+    }
+
+    expect(eraserObjectIdsInSelectionRect(withText.pages[0].objects, {
+      x: text.x + text.width - 1,
+      y: text.y + text.height / 2 - 2
+    }, {
+      x: text.x + text.width + 8,
+      y: text.y + text.height / 2 + 2
+    })).toEqual([text.id]);
   });
 
   it("keeps a tight marquee over one native atom as a partial native selection", () => {
