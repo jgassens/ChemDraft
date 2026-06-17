@@ -837,7 +837,9 @@ describe("native document validation and serialization", () => {
           { x: 112, y: 144, pressure: 0.25 },
           { x: 148, y: 158, pressure: 0.75 },
           { x: 196, y: 138, pressure: 0.55 }
-        ]
+        ],
+        cachedFreehandPathD: "M 1 2 L 3 4 Z",
+        cachedFreehandPathRevision: "fixture-revision"
       }
     } satisfies GraphicObject;
     const document = applyPatch(
@@ -861,7 +863,9 @@ describe("native document validation and serialization", () => {
         { x: 112, y: 144, pressure: 0.25 },
         { x: 148, y: 158, pressure: 0.75 },
         { x: 196, y: 138, pressure: 0.55 }
-      ]
+      ],
+      cachedFreehandPathD: "M 1 2 L 3 4 Z",
+      cachedFreehandPathRevision: "fixture-revision"
     });
   });
 

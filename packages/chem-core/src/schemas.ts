@@ -179,6 +179,8 @@ export const GraphicObjectDataSchema = z
     pathClosed: z.boolean().optional(),
     freehandPoints: z.array(GraphicFreehandPointSchema).min(1).optional(),
     freehandOptions: GraphicFreehandOptionsSchema.optional(),
+    cachedFreehandPathD: z.string().optional(),
+    cachedFreehandPathRevision: z.string().optional(),
     arcCenter: PointSchema.optional(),
     arcRadiusX: z.number().finite().positive().optional(),
     arcRadiusY: z.number().finite().positive().optional(),

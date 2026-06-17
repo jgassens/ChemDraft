@@ -1,4 +1,12 @@
-import type { GraphicFreehandOptions, GraphicFreehandPoint, GraphicGradientStop, GraphicMarker, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
+import type {
+  GraphicFreehandOptions,
+  GraphicFreehandPoint,
+  GraphicGradientStop,
+  GraphicMarker,
+  GraphicObject,
+  GraphicObjectData,
+  GraphicPaint
+} from "@chemdraft/chem-core";
 import { getStroke, type StrokeOptions } from "perfect-freehand";
 import {
   getPathBBox,
@@ -9,6 +17,7 @@ import {
 
 const minimumArcSweepRadians = Math.PI / 180;
 const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
+const transientFreehandPathCache = new WeakMap<GraphicObject, { revision: string; pathD?: string }>();
 
 export interface NativeArtPoint {
   x: number;
@@ -263,11 +272,18 @@ export function planNativeArtVisual(
   const pathD = object.graphicKind === "path"
     ? graphicPathD(object, coordinateSpace)
     : undefined;
-  const pathPoints = object.graphicKind === "path"
-    ? graphicPathSamplePoints(object, coordinateSpace)
-    : undefined;
   const markerStart = rendersStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
   const markerEnd = rendersStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
+  const pathPoints = object.graphicKind === "path" && shouldSampleGraphicPathForPlan({
+    object,
+    matrix,
+    capabilities,
+    rendersStroke,
+    markerStart,
+    markerEnd
+  })
+    ? graphicPathSamplePoints(object, coordinateSpace)
+    : undefined;
   const openStrokeTerminals = capabilities.isOpenStroke && rendersStroke
     ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
     : undefined;
@@ -335,6 +351,27 @@ function nativeArtMarkerHandles(input: {
       ? nativeArtMarkerHandle("markerEnd", input.markerEnd, input.markerEndTerminal)
       : undefined
   ].filter((handle): handle is NativeArtMarkerHandlePlan => handle !== undefined);
+}
+
+function shouldSampleGraphicPathForPlan(input: {
+  object: GraphicObject;
+  matrix: NativeArtProjectionMatrix | undefined;
+  capabilities: NativeArtCapabilities;
+  rendersStroke: boolean;
+  markerStart: NativeArtMarkerPlan | undefined;
+  markerEnd: NativeArtMarkerPlan | undefined;
+}): boolean {
+  if (input.object.graphicKind !== "path" || !graphicPathKind(input.object)) {
+    return false;
+  }
+
+  if (input.matrix) {
+    return true;
+  }
+
+  return input.capabilities.isOpenStroke &&
+    input.rendersStroke &&
+    (input.markerStart !== undefined || input.markerEnd !== undefined);
 }
 
 function nativeArtMarkerHandle(
@@ -985,13 +1022,12 @@ function nativeArtProjectionMatrixForObject(object: GraphicObject): NativeArtPro
   const tiltYDegrees = metadataNumber(object.style.tiltYDegrees) ?? 0;
   if (
     Math.abs(tiltXDegrees) < 0.001 &&
-    Math.abs(tiltYDegrees) < 0.001 &&
-    Math.abs(object.rotation) < 0.001
+    Math.abs(tiltYDegrees) < 0.001
   ) {
     return undefined;
   }
 
-  return nativeArtProjectionMatrix(tiltXDegrees, tiltYDegrees, object.rotation);
+  return nativeArtProjectionMatrix(tiltXDegrees, tiltYDegrees, 0);
 }
 
 function nativeArtProjectionMatrix(
@@ -1430,7 +1466,15 @@ function nativeArtFrameBounds(
 function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtBounds {
   const defaultBounds = { x: 0, y: 0, width: object.width, height: object.height };
   const pathKind = graphicPathKind(object);
-  if (object.graphicKind !== "path" || (pathKind !== "polyline" && pathKind !== "bezier" && pathKind !== "freehand")) {
+  if (object.graphicKind !== "path") {
+    return defaultBounds;
+  }
+
+  if (pathKind === "freehand") {
+    return defaultBounds;
+  }
+
+  if (pathKind !== "polyline" && pathKind !== "bezier") {
     return defaultBounds;
   }
 
@@ -1439,8 +1483,8 @@ function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtB
     return defaultBounds;
   }
 
-  const strokeWidth = pathKind === "freehand" ? 0 : metadataNumber(object.style.strokeWidth) ?? 2;
-  const padding = pathKind === "freehand" ? 4 : Math.max(6, strokeWidth * 2);
+  const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
+  const padding = Math.max(6, strokeWidth * 2);
   return boundsForPoints(points, padding, defaultBounds);
 }
 
@@ -2086,16 +2130,75 @@ function graphicPathD(
   return storedPath;
 }
 
+export function createGraphicFreehandPathCache(
+  object: GraphicObject
+): Pick<GraphicObjectData, "cachedFreehandPathD" | "cachedFreehandPathRevision"> | undefined {
+  if (object.graphicKind !== "path" || graphicPathKind(object) !== "freehand") {
+    return undefined;
+  }
+
+  const cachedFreehandPathRevision = graphicFreehandPathRevision(object);
+  const cachedFreehandPathD = graphicFreehandPathD(object, "local", { ignoreCache: true });
+  return cachedFreehandPathD
+    ? { cachedFreehandPathD, cachedFreehandPathRevision }
+    : undefined;
+}
+
 function graphicFreehandPathD(
   object: GraphicObject,
-  coordinateSpace: NativeArtVisualCoordinateSpace
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  options: { ignoreCache?: boolean } = {}
 ): string | undefined {
+  if (coordinateSpace === "local" && !options.ignoreCache) {
+    const revision = graphicFreehandPathRevision(object);
+    const persistedPathD = metadataString(object.data.cachedFreehandPathD);
+    const persistedRevision = metadataString(object.data.cachedFreehandPathRevision);
+    if (persistedPathD && persistedRevision === revision) {
+      return persistedPathD;
+    }
+
+    const transient = transientFreehandPathCache.get(object);
+    if (transient?.revision === revision) {
+      return transient.pathD;
+    }
+
+    const computed = graphicFreehandPathD(object, coordinateSpace, { ignoreCache: true });
+    transientFreehandPathCache.set(object, { revision, pathD: computed });
+    return computed;
+  }
+
   const outline = graphicFreehandOutlinePoints(object, coordinateSpace);
   if (outline.length < 2) {
     return undefined;
   }
 
   return `${nativeArtPointsPathD(outline)} Z`;
+}
+
+function graphicFreehandPathRevision(object: GraphicObject): string {
+  const points = graphicFreehandPoints(object);
+  const options = graphicFreehandStrokeOptions(object.data.freehandOptions);
+  let xTotal = 0;
+  let yTotal = 0;
+  let pressureTotal = 0;
+  for (const [index, point] of points.entries()) {
+    const weight = index + 1;
+    xTotal += point.x * weight;
+    yTotal += point.y * weight;
+    pressureTotal += (point.pressure ?? 0.5) * weight;
+  }
+
+  return [
+    points.length,
+    roundLayoutNumber(xTotal),
+    roundLayoutNumber(yTotal),
+    roundLayoutNumber(pressureTotal),
+    options.size,
+    options.thinning,
+    options.smoothing,
+    options.streamline,
+    options.simulatePressure ? 1 : 0
+  ].join(":");
 }
 
 function graphicFreehandOutlinePoints(

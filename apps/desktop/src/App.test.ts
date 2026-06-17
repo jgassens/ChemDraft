@@ -2229,9 +2229,9 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    expect(rotatedMarkup).not.toContain("transform:rotate(45deg)");
-    expect(rotatedMarkup).toContain("graphic-glyph-projected-shape");
-    expect(rotatedMarkup).not.toContain("graphic-glyph-shape");
+    expect(rotatedMarkup).toContain("transform:rotate(45deg)");
+    expect(rotatedMarkup).not.toContain("graphic-glyph-projected-shape");
+    expect(rotatedMarkup).toContain("graphic-glyph-shape");
     expect(rotatedMarkup).not.toContain('data-object-type="graphic"');
 
     const sphere = insertNativeArtGraphicObject(
@@ -2251,13 +2251,13 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    expect(rotatedSphereMarkup).toContain("graphic-glyph-projected-shape");
-    expect(rotatedSphereMarkup).not.toContain("transform:rotate(45deg)");
+    expect(rotatedSphereMarkup).not.toContain("graphic-glyph-projected-shape");
+    expect(rotatedSphereMarkup).toContain("transform:rotate(45deg)");
     expect(rotatedSphereMarkup).toContain(
       "left:calc(0px * var(--page-scale));top:calc(0px * var(--page-scale));width:calc(48px * var(--page-scale));height:calc(48px * var(--page-scale))"
     );
     expect(rotatedSphereMarkup).toContain('gradientUnits="userSpaceOnUse"');
-    expect(rotatedSphereMarkup).toContain('gradientTransform="matrix(');
+    expect(rotatedSphereMarkup).not.toContain('gradientTransform="matrix(');
     expect(rotatedSphereMarkup).not.toContain('cx="34%"');
     expect(rotatedSphereMarkup).not.toContain('cy="28%"');
     expect(rotatedSphereMarkup).not.toContain("66.423");

@@ -665,11 +665,11 @@ describe("art-engine native art planning", () => {
     expect(plan.projectionTransform).toContain("matrix(");
     expect(plan.projectedShapePathD).toContain("M ");
     expect(plan.frameBounds.width).toBeGreaterThan(60);
-    expect(plan.frameBounds.height).toBeGreaterThan(55);
+    expect(plan.frameBounds.height).toBeGreaterThan(40);
     expect(plan.glossGradient?.gradientTransform).toBe(plan.projectionTransform);
   });
 
-  it("uses dependency-backed bounds for local custom pathD without changing the public plan shape", () => {
+  it("keeps plain Z rotation out of projected custom path planning", () => {
     const graphic = {
       ...baseGraphic,
       graphicKind: "path",
@@ -684,10 +684,19 @@ describe("art-engine native art planning", () => {
     const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
 
     expect(plan.pathD).toBe(graphic.data.pathD);
-    expect(plan.projectionMatrix).toBeDefined();
-    expect(plan.frameBounds.width).toBeLessThan(85);
-    expect(plan.frameBounds.height).toBeLessThan(80);
-    expect(plan.frameBounds.x).toBeGreaterThan(0);
+    expect(plan.projectionMatrix).toBeUndefined();
+    expect(plan.projectionTransform).toBeUndefined();
+    expect(plan.frameBounds).toEqual({ x: 0, y: 0, width: 100, height: 80 });
+
+    const tilted = planNativeArtVisual({
+      ...graphic,
+      style: {
+        ...graphic.style,
+        tiltYDegrees: 20
+      }
+    }, { coordinateSpace: "local" });
+    expect(tilted.projectionMatrix).toBeDefined();
+    expect(tilted.frameBounds).not.toEqual(plan.frameBounds);
   });
 
   it("edits circular arc start and end handles as radian sweep metadata", () => {

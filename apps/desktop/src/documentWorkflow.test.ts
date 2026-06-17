@@ -3563,7 +3563,9 @@ describe("Phase 4 document workflow", () => {
           size: 5,
           simulatePressure: false
         },
-        freehandPoints: points
+        freehandPoints: points,
+        cachedFreehandPathD: expect.stringMatching(/^M /),
+        cachedFreehandPathRevision: expect.any(String)
       },
       style: {
         artToolCommandId: "tool.art.pencil",
@@ -3601,6 +3603,8 @@ describe("Phase 4 document workflow", () => {
       expectPointToBeClose(point, expected);
       expect(point.pressure).toBe(points[index]!.pressure);
     });
+    expect(movedGraphic.data.cachedFreehandPathD).toBeUndefined();
+    expect(movedGraphic.data.cachedFreehandPathRevision).toBeUndefined();
 
     const oldCenter = {
       x: movedGraphic.x + movedGraphic.width / 2,
@@ -3621,6 +3625,8 @@ describe("Phase 4 document workflow", () => {
       expectPointToBeClose(point, expected);
       expect(point.pressure).toBe(points[index]!.pressure);
     });
+    expect(scaledGraphic.data.cachedFreehandPathD).toBeUndefined();
+    expect(scaledGraphic.data.cachedFreehandPathRevision).toBeUndefined();
   });
 
   it("applies freehand color through stroke style instead of the filled-outline implementation detail", () => {

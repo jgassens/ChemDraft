@@ -703,7 +703,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.9.3-codex";
+const CURRENT_BUILD_STAMP = "6.17.9.26-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -6580,6 +6580,10 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type === "graphic" && graphicObjectIsFreehandPath(object)) {
+      setStatus("X/Y rotate is disabled for freehand art while transform previews are optimized");
+      return;
+    }
     if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, "rotate-xy", event)) {
       openProjectedPlaneTiltInput(objectId);
       return;
@@ -11620,18 +11624,18 @@ function DocumentObjectView({
   const transformPreviewCss = objectTransformPreview
     ? objectTransformPreviewCssTransform(objectTransformPreview)
     : "";
+  const artObjectProjection = documentObjectSupportsArtTransform(object)
+    ? documentObjectProjectedPlaneProjection(object)
+    : undefined;
   const style = {
     left: `${(object.x / pageWidth) * 100}%`,
     top: `${(object.y / pageHeight) * 100}%`,
     width: `${(object.width / pageWidth) * 100}%`,
     height: `${(object.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
-    transform: transformPreviewCss || (documentObjectSupportsArtTransform(object) ? undefined : documentObjectCssTransform(object)),
+    transform: transformPreviewCss || documentObjectCssTransform(object, artObjectProjection),
     transformOrigin: objectTransformPreview ? objectTransformPreviewCssOrigin(object, objectTransformPreview) : undefined
   } as CSSProperties;
-  const artObjectProjection = documentObjectSupportsArtTransform(object)
-    ? documentObjectProjectedPlaneProjection(object)
-    : undefined;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection)
     : undefined;
@@ -11662,6 +11666,7 @@ function DocumentObjectView({
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
       targetLabel="selected art object"
+      canProjectedPlaneTilt={object.type !== "graphic" || !graphicObjectIsFreehandPath(object)}
       rotateReadout={rotateReadout}
       projectedPlaneTiltReadout={projectedPlaneTiltReadout}
       rotationInput={rotationInput}
@@ -12420,6 +12425,7 @@ function artPreviewRasterPixelSize(proxy: ArtTransformDragPreviewProxy): { width
 function ArtObjectTransformFrame({
   frameStyle,
   targetLabel,
+  canProjectedPlaneTilt,
   rotateReadout,
   projectedPlaneTiltReadout,
   rotationInput,
@@ -12442,6 +12448,7 @@ function ArtObjectTransformFrame({
 }: {
   frameStyle?: CSSProperties;
   targetLabel: string;
+  canProjectedPlaneTilt: boolean;
   rotateReadout?: ObjectRotateReadoutState;
   projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
   rotationInput?: RotationInputState;
@@ -12466,7 +12473,7 @@ function ArtObjectTransformFrame({
     <div
       className="object-transform-frame"
       data-art-transform-frame="true"
-      data-has-tilt3d="true"
+      data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
       style={frameStyle ?? { inset: 0 }}
     >
       <ObjectResizeHandles
@@ -12494,23 +12501,25 @@ function ArtObjectTransformFrame({
           <RotateSelectionReadout degrees={rotateReadout.degrees} />
         ) : null}
       </button>
-      <button
-        type="button"
-        className="object-tilt3d-handle"
-        aria-label={`X/Y rotate ${targetLabel}`}
-        data-selection-tilt3d-handle="true"
-        title={`X/Y rotate ${targetLabel}`}
-        onPointerDown={onProjectedPlaneTiltPointerDown}
-        onDoubleClick={onProjectedPlaneTiltDoubleClick}
-      >
-        <ProjectedPlaneTiltIcon />
-        {projectedPlaneTiltReadout ? (
-          <ProjectedPlaneTiltReadout
-            label={projectedPlaneTiltReadout.label}
-            limited={projectedPlaneTiltReadout.limited}
-          />
-        ) : null}
-      </button>
+      {canProjectedPlaneTilt ? (
+        <button
+          type="button"
+          className="object-tilt3d-handle"
+          aria-label={`X/Y rotate ${targetLabel}`}
+          data-selection-tilt3d-handle="true"
+          title={`X/Y rotate ${targetLabel}`}
+          onPointerDown={onProjectedPlaneTiltPointerDown}
+          onDoubleClick={onProjectedPlaneTiltDoubleClick}
+        >
+          <ProjectedPlaneTiltIcon />
+          {projectedPlaneTiltReadout ? (
+            <ProjectedPlaneTiltReadout
+              label={projectedPlaneTiltReadout.label}
+              limited={projectedPlaneTiltReadout.limited}
+            />
+          ) : null}
+        </button>
+      ) : null}
       {rotationInput ? (
         <RotationInputPopover
           input={rotationInput}
@@ -13135,7 +13144,14 @@ function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
   return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow";
 }
 
-function documentObjectCssTransform(object: DocumentObject): string {
+function documentObjectCssTransform(
+  object: DocumentObject,
+  projection?: DocumentObjectProjection
+): string | undefined {
+  if (projection?.matrix || Math.abs(object.rotation) < 0.001) {
+    return undefined;
+  }
+
   return `rotate(${object.rotation}deg)`;
 }
 

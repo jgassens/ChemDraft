@@ -280,6 +280,8 @@ describe("freehand native art interactions", () => {
     }
 
     const before = debugArtObject(objectId).object;
+    expect(container.querySelector(".object-rotate-handle")).not.toBeNull();
+    expect(container.querySelector("[data-selection-tilt3d-handle='true']")).toBeNull();
     const dragPoint = {
       x: before.x + before.width / 2,
       y: before.y + before.height / 2

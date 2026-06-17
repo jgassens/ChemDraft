@@ -1262,12 +1262,21 @@ describe("layout-engine page SVG planner", () => {
 
     const unrotated = planNativeArtVisual(sphere, { coordinateSpace: "local" });
     const rotated = planNativeArtVisual({ ...sphere, rotation: 90 }, { coordinateSpace: "local" });
+    const tilted = planNativeArtVisual({
+      ...sphere,
+      style: {
+        ...sphere.style,
+        tiltXDegrees: 24
+      }
+    }, { coordinateSpace: "local" });
 
     expect(unrotated.frameBounds).toEqual({ x: 0, y: 0, width: 48, height: 48 });
     expect(rotated.frameBounds).toEqual({ x: 0, y: 0, width: 48, height: 48 });
     expect(unrotated.glossGradient?.gradientTransform).toBeUndefined();
-    expect(rotated.glossGradient?.gradientTransform).toContain("matrix(");
-    expect(rotated.projectedShapePathD).toContain("M ");
+    expect(rotated.glossGradient?.gradientTransform).toBeUndefined();
+    expect(rotated.projectedShapePathD).toBeUndefined();
+    expect(tilted.glossGradient?.gradientTransform).toContain("matrix(");
+    expect(tilted.projectedShapePathD).toContain("M ");
   });
 
   it("plans projected path frames from the visible generated path geometry", () => {
@@ -1278,10 +1287,11 @@ describe("layout-engine page SVG planner", () => {
       y: 160,
       width: 82,
       height: 46,
-      rotation: 90,
+      rotation: 0,
       style: {
         strokeColor: "#111111",
-        strokeWidth: 2
+        strokeWidth: 2,
+        tiltYDegrees: 35
       },
       graphicKind: "path",
       data: {
@@ -1291,8 +1301,8 @@ describe("layout-engine page SVG planner", () => {
 
     const plan = planNativeArtVisual(line, { coordinateSpace: "local" });
 
-    expect(plan.frameBounds).toEqual({ x: 21, y: -15, width: 40, height: 76 });
-    expect(plan.frameBounds).not.toEqual({ x: 18, y: -18, width: 46, height: 82 });
+    expect(plan.frameBounds).not.toEqual({ x: 0, y: 0, width: 82, height: 46 });
+    expect(plan.projectionTransform).toContain("matrix(");
   });
 
   it("exports native bent graphic paths through the explicit middle handle", () => {

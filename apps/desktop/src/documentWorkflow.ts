@@ -2,6 +2,7 @@ import {
   editGraphicMarkerSize,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
+  createGraphicFreehandPathCache,
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
   planNativeArtVisual,
@@ -955,7 +956,7 @@ export function createNativeFreehandGraphicObject(
   const page = firstPage(document);
   const options = tool.data.freehandOptions ?? {};
   const bounds = nativeFreehandBounds(cleanPoints, options, page.width, page.height);
-  return {
+  const object = {
     id: nextObjectId(document, `art_${tool.id}`),
     type: "graphic",
     x: bounds.x,
@@ -978,6 +979,13 @@ export function createNativeFreehandGraphicObject(
       ...tool.data,
       freehandPoints: cleanPoints,
       artToolId: tool.id
+    }
+  } satisfies GraphicObject;
+  return {
+    ...object,
+    data: {
+      ...object.data,
+      ...createGraphicFreehandPathCache(object)
     }
   };
 }
@@ -4972,7 +4980,7 @@ function translateGraphicObjectData(
 ): GraphicObjectData {
   const translatePoint = (point: PagePoint | undefined): PagePoint | undefined =>
     point ? { x: point.x + dx, y: point.y + dy } : undefined;
-  return {
+  const nextData: GraphicObjectData = {
     ...data,
     lineStart: translatePoint(data.lineStart),
     lineEnd: translatePoint(data.lineEnd),
@@ -4981,6 +4989,9 @@ function translateGraphicObjectData(
     pathNodes: transformGraphicPathNodes(data.pathNodes, translatePoint),
     freehandPoints: transformGraphicFreehandPoints(data.freehandPoints, translatePoint)
   };
+  delete nextData.cachedFreehandPathD;
+  delete nextData.cachedFreehandPathRevision;
+  return nextData;
 }
 
 function resizeGraphicObjectDataForFrame(
@@ -5007,6 +5018,8 @@ function resizeGraphicObjectDataForFrame(
     pathNodes: transformGraphicPathNodes(data.pathNodes, resizePoint),
     freehandPoints: transformGraphicFreehandPoints(data.freehandPoints, resizePoint)
   };
+  delete nextData.cachedFreehandPathD;
+  delete nextData.cachedFreehandPathRevision;
 
   if (typeof data.arcRadiusX === "number" && Number.isFinite(data.arcRadiusX)) {
     nextData.arcRadiusX = Math.max(1, data.arcRadiusX * scaleX);
