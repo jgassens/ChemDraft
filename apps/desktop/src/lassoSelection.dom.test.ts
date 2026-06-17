@@ -130,6 +130,33 @@ describe("lasso selection interactions", () => {
     return Number(match[1]);
   }
 
+  function pageScaledStylePx(element: HTMLElement, property: "left" | "top" | "width" | "height"): number {
+    const style = element.getAttribute("style") ?? "";
+    const match = style.match(new RegExp(`${property}:\\s*calc\\(([-\\d.]+)px \\* var\\(--page-scale\\)\\)`));
+    if (!match) {
+      throw new Error(`Expected page-scaled ${property} style: ${style}`);
+    }
+    return Number(match[1]);
+  }
+
+  function groupSelectionFrame(): HTMLElement {
+    const frame = container.querySelector<HTMLElement>('[data-group-selection="true"]');
+    if (!frame) {
+      throw new Error("Expected group selection frame.");
+    }
+    return frame;
+  }
+
+  function groupFrameBounds(): { left: number; top: number; width: number; height: number } {
+    const frame = groupSelectionFrame();
+    return {
+      left: pageScaledStylePx(frame, "left"),
+      top: pageScaledStylePx(frame, "top"),
+      width: pageScaledStylePx(frame, "width"),
+      height: pageScaledStylePx(frame, "height")
+    };
+  }
+
   function dispatchPointer(
     target: EventTarget,
     type: "pointerdown" | "pointermove" | "pointerup",
@@ -153,7 +180,7 @@ describe("lasso selection interactions", () => {
     target.dispatchEvent(event);
   }
 
-  it("starts over a selected graphic and Alt-lasso subtracts it from the group", async () => {
+  it("starts from canvas space and Alt-lasso subtracts a selected graphic from the group", async () => {
     const firstInserted = insertNativeArtGraphicObject(
       createPhase4Document("Lasso Subtract"),
       { x: 140, y: 150 },
@@ -175,10 +202,9 @@ describe("lasso selection interactions", () => {
     expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
     expect(activeToolCommandId()).toBe("tool.lasso");
 
-    const targetElement = graphicElement(target.id);
     const page = pageElement();
     const points = [
-      { x: target.x + 2, y: target.y + target.height / 2 },
+      { x: target.x - 10, y: target.y + target.height / 2 },
       { x: target.x - 8, y: target.y - 8 },
       { x: target.x + target.width + 8, y: target.y - 8 },
       { x: target.x + target.width + 8, y: target.y + target.height + 8 },
@@ -186,7 +212,7 @@ describe("lasso selection interactions", () => {
     ];
 
     await act(async () => {
-      dispatchPointer(targetElement, "pointerdown", points[0], { altKey: true });
+      dispatchPointer(page, "pointerdown", points[0], { altKey: true });
       for (const point of points.slice(1)) {
         dispatchPointer(page, "pointermove", point, { altKey: true });
       }
@@ -222,13 +248,44 @@ describe("lasso selection interactions", () => {
       throw new Error("Expected group rotate handle.");
     }
     const page = pageElement();
-    const start = { x: 250, y: 130 };
-    const end = { x: 275, y: 150 };
+    const beforeFrame = groupFrameBounds();
+    const center = {
+      x: beforeFrame.left + beforeFrame.width / 2,
+      y: beforeFrame.top + beforeFrame.height / 2
+    };
+    const start = { x: center.x, y: beforeFrame.top - 30 };
+    const end = { x: center.x + 72, y: center.y + 34 };
 
     await act(async () => {
       dispatchPointer(rotateHandle, "pointerdown", start, { pointerId: 11 });
       dispatchPointer(page, "pointermove", end, { pointerId: 11 });
       dispatchPointer(page, "pointerup", end, { pointerId: 11 });
+    });
+
+    const afterFrame = groupFrameBounds();
+    expect(Math.abs(afterFrame.width - beforeFrame.width)).toBeGreaterThan(1);
+    expect(Math.abs(afterFrame.height - beforeFrame.height)).toBeGreaterThan(1);
+    expect(activeToolCommandId()).toBe("tool.lasso");
+    expect(container.querySelector(".selection-lasso")).toBeNull();
+    expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
+
+    const secondRotateHandle = container.querySelector<HTMLElement>('[data-group-rotate-handle="true"]');
+    if (!secondRotateHandle) {
+      throw new Error("Expected group rotate handle after group rotation.");
+    }
+    const secondStart = {
+      x: afterFrame.left + afterFrame.width / 2,
+      y: afterFrame.top - 30
+    };
+    const secondEnd = {
+      x: secondStart.x - 34,
+      y: secondStart.y + 60
+    };
+
+    await act(async () => {
+      dispatchPointer(secondRotateHandle, "pointerdown", secondStart, { pointerId: 12 });
+      dispatchPointer(page, "pointermove", secondEnd, { pointerId: 12 });
+      dispatchPointer(page, "pointerup", secondEnd, { pointerId: 12 });
     });
 
     expect(activeToolCommandId()).toBe("tool.lasso");
@@ -253,7 +310,7 @@ describe("lasso selection interactions", () => {
     );
     const target = graphics[0];
 
-    await renderMainWindow(selectedDocument, "tool.select");
+    await renderMainWindow(selectedDocument, "tool.lasso");
 
     const before = new Map(graphics.map((graphic) => [
       graphic.id,
@@ -271,6 +328,7 @@ describe("lasso selection interactions", () => {
     });
 
     expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
+    expect(activeToolCommandId()).toBe("tool.lasso");
     const targetInitial = before.get(target.id);
     expect(targetInitial).toBeDefined();
     const groupDx = graphicLeftPx(target.id) - targetInitial!.left;

@@ -186,7 +186,6 @@ import {
   wrapProjectedPlaneTiltVectorRadians,
   moveDocumentObject,
   moveDocumentObjects,
-  selectionBounds,
   type SelectionBounds,
   rotateDocumentObjectsAroundPoint,
   scaleDocumentObjectsAroundPoint,
@@ -748,7 +747,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.16.5-codex";
+const CURRENT_BUILD_STAMP = "6.17.16.20-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5419,7 +5418,7 @@ export function MainWindow({
       ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, document.selection.objectIds)
       : document.selection.objectIds;
     const point = pagePointFromPointerEvent(event);
-    const bounds = ids.length > 1 ? selectionBounds(document.pages[0].objects, ids) : undefined;
+    const bounds = ids.length > 1 ? visualSelectionBounds(document.pages[0].objects, ids) : undefined;
     if (!point || !bounds) {
       if (mode === "projected-plane-tilt") {
         setStatus("Select multiple native molecules for 3D rotate");
@@ -6447,11 +6446,6 @@ export function MainWindow({
     }
 
     const point = pagePointFromPointerEvent(event);
-    if (activeToolState.activeCommandId === "tool.lasso" && point) {
-      startSelectionLasso(event, point);
-      return;
-    }
-
     // Slice 1b: resolve the press by geometry, not by whichever overlapping wrapper the
     // browser happened to deliver the event to. A molecule's rectangular wrapper otherwise
     // swallows a press meant for a molecule beneath it (the rotaxane-overlap bug: hover
@@ -8437,7 +8431,7 @@ export function MainWindow({
                     document.selection.objectIds.length > 1 &&
                     !selectedNativeMoleculePart;
                   const groupSelectionBounds = groupSelectionActive
-                    ? selectionBounds(document.pages[0].objects, document.selection.objectIds)
+                    ? visualSelectionBounds(document.pages[0].objects, document.selection.objectIds)
                     : undefined;
                   const groupProjectedPlaneTiltObjectIds = groupSelectionBounds
                     ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, document.selection.objectIds)
@@ -11454,6 +11448,63 @@ function objectBounds(object: DocumentObject): { x: number; y: number; width: nu
     y: object.y,
     width: object.width,
     height: object.height
+  };
+}
+
+export function visualSelectionBounds(
+  objects: readonly DocumentObject[],
+  ids: readonly string[]
+): SelectionBounds | undefined {
+  const selectedIds = new Set(ids);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let count = 0;
+
+  for (const object of objects) {
+    if (!selectedIds.has(object.id)) {
+      continue;
+    }
+
+    const bounds = visualObjectBounds(object);
+    minX = Math.min(minX, bounds.x);
+    minY = Math.min(minY, bounds.y);
+    maxX = Math.max(maxX, bounds.x + bounds.width);
+    maxY = Math.max(maxY, bounds.y + bounds.height);
+    count += 1;
+  }
+
+  if (count === 0) {
+    return undefined;
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2
+  };
+}
+
+function visualObjectBounds(object: DocumentObject): { x: number; y: number; width: number; height: number } {
+  if (object.type !== "graphic") {
+    return objectBounds(object);
+  }
+
+  const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const localBounds = rotatedGraphicLocalBounds(
+    object,
+    plan.frameBounds,
+    graphicVisualCssRotationDegrees(object, undefined)
+  );
+  return {
+    x: object.x + localBounds.x,
+    y: object.y + localBounds.y,
+    width: localBounds.width,
+    height: localBounds.height
   };
 }
 

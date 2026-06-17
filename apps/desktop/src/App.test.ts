@@ -61,6 +61,7 @@ import {
   nativeGraphicPathEditPoints,
   openNativeDocument,
   reorderSelectedDocumentObject,
+  selectionBounds,
   setDocumentPageOrientation,
   setDocumentPageSize,
   tiltNativeMoleculeProjectedPlane,
@@ -111,6 +112,7 @@ import {
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
   shouldOpenMoleculeEditorFromObjectClick,
+  visualSelectionBounds,
   shouldUseViewportWheelZoom
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
@@ -700,6 +702,38 @@ describe("ChemDraft desktop shell", () => {
     });
 
     expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("uses rotated art visual bounds for multi-selection transform frames", () => {
+    const firstInserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotated Art Group Bounds"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const secondInserted = insertNativeArtGraphicObject(firstInserted, { x: 340, y: 180 }, "tool.art.circle");
+    const graphics = secondInserted.pages[0].objects.filter((object): object is GraphicObject =>
+      object.type === "graphic"
+    );
+    if (graphics.length !== 2) {
+      throw new Error("Expected two graphic fixtures.");
+    }
+    const rotated = applyPatch(secondInserted, {
+      op: "updateObject",
+      objectId: graphics[0].id,
+      changes: {
+        width: 120,
+        height: 30,
+        rotation: 45
+      }
+    });
+    const ids = graphics.map((graphic) => graphic.id);
+    const rawBounds = selectionBounds(rotated.pages[0].objects, ids);
+    const visualBounds = visualSelectionBounds(rotated.pages[0].objects, ids);
+
+    expect(rawBounds).toBeDefined();
+    expect(visualBounds).toBeDefined();
+    expect(visualBounds!.y).toBeLessThan(rawBounds!.y);
+    expect(visualBounds!.height).toBeGreaterThan(rawBounds!.height + 20);
   });
 
   it("selects a quadratic graphic when the marquee crosses the sampled curve", () => {
