@@ -191,7 +191,7 @@
           "id": "core.art.selection",
           "items": [
             { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
-            { "commandId": "tool.art.directEdit", "title": "Direct Edit", "icon": "select", "assetName": "Custom_Select", "category": "art" },
+            { "commandId": "tool.art.directEdit", "title": "Direct Edit", "icon": "select", "category": "art" },
             { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },

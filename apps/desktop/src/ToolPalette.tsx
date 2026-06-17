@@ -1582,6 +1582,17 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
   const strokeClass = ["art-tool-stroke", dashed ? "dashed" : "", filled ? "filled" : ""].filter(Boolean).join(" ");
   const shadowElement = shadow ? <path className="art-tool-shadow" d={artToolShapePath(toolId)} aria-hidden="true" /> : null;
 
+  if (toolId === "directEdit") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M3 12 C5.3 4.8, 10 4.8, 14 9.2" />
+        <circle className="art-tool-stroke filled" cx="3" cy="12" r="1.3" />
+        <circle className="art-tool-stroke filled" cx="8.4" cy="6.7" r="1.3" />
+        <circle className="art-tool-stroke filled" cx="14" cy="9.2" r="1.3" />
+      </svg>
+    );
+  }
+
   if (toolId === "pencil") {
     return (
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
