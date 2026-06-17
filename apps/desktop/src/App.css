@@ -1863,6 +1863,16 @@ textarea:focus-visible,
   will-change: transform;
 }
 
+.graphic-visual-shell {
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 50%;
+}
+
+.graphic-visual-shell[data-art-z-rotation] {
+  will-change: transform;
+}
+
 .graphic-glyph-shell {
   width: 100%;
   height: 100%;

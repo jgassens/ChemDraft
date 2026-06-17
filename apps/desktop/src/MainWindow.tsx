@@ -703,7 +703,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.9.26-codex";
+const CURRENT_BUILD_STAMP = "6.17.10.11-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -2705,9 +2705,9 @@ export function MainWindow({
         const projectedEditPoints = editPoints
           ? {
               pathKind: editPoints.pathKind,
-              start: projectGraphicObjectPoint(object, editPoints.start),
-              middle: projectGraphicObjectPoint(object, editPoints.middle),
-              end: projectGraphicObjectPoint(object, editPoints.end)
+              start: projectGraphicVisualPagePoint(object, editPoints.start),
+              middle: projectGraphicVisualPagePoint(object, editPoints.middle),
+              end: projectGraphicVisualPagePoint(object, editPoints.end)
             }
           : undefined;
         const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
@@ -9216,7 +9216,7 @@ function nativeGraphicPathEditPointFromProjectedDrag(
   if (object?.type !== "graphic") {
     return point;
   }
-  return unprojectGraphicObjectPoint(object, point, { coordinateSpace: "page" });
+  return unprojectGraphicObjectPoint(object, unrotateGraphicVisualPagePoint(object, point), { coordinateSpace: "page" });
 }
 
 function nativeGraphicCornerRadiusPointFromProjectedDrag(
@@ -9228,7 +9228,7 @@ function nativeGraphicCornerRadiusPointFromProjectedDrag(
   if (object?.type !== "graphic") {
     return point;
   }
-  const unprojected = unprojectGraphicObjectPoint(object, point);
+  const unprojected = unprojectGraphicObjectPoint(object, unrotateGraphicVisualPagePoint(object, point));
   return {
     x: unprojected.x - object.x,
     y: unprojected.y - object.y
@@ -11621,9 +11621,6 @@ function DocumentObjectView({
       onAtomLabelCancel(state);
     }
   };
-  const transformPreviewCss = objectTransformPreview
-    ? objectTransformPreviewCssTransform(objectTransformPreview)
-    : "";
   const artObjectProjection = documentObjectSupportsArtTransform(object)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
@@ -11633,11 +11630,11 @@ function DocumentObjectView({
     width: `${(object.width / pageWidth) * 100}%`,
     height: `${(object.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
-    transform: transformPreviewCss || documentObjectCssTransform(object, artObjectProjection),
-    transformOrigin: objectTransformPreview ? objectTransformPreviewCssOrigin(object, objectTransformPreview) : undefined
+    transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
+    transformOrigin: documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
   } as CSSProperties;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
-    ? documentObjectArtTransformFrameStyle(object, artObjectProjection)
+    ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
@@ -12252,6 +12249,11 @@ function DocumentObjectView({
 
   if (object.type === "graphic") {
     const artTransformProxy = objectTransformPreview?.artPreviewProxies?.[object.id];
+    const graphicVisualRotationDegrees = graphicVisualCssRotationDegrees(
+      object,
+      objectTransformPreview
+    );
+    const graphicVisualStyle = graphicVisualCssStyle(graphicVisualRotationDegrees);
     const graphicPathEditHandles = pathGraphicInEditMode && !inGroupSelection ? (
       <GraphicPathEditHandles
         object={object}
@@ -12290,14 +12292,20 @@ function DocumentObjectView({
         onContextMenu={handleObjectContextMenu}
       >
         <div
-          className="graphic-glyph-shell"
-          data-art-vector-hidden={artTransformProxy ? "true" : undefined}
+          className="graphic-visual-shell"
+          data-art-z-rotation={graphicVisualStyle ? formatCssNumber(graphicVisualRotationDegrees) : undefined}
+          style={graphicVisualStyle}
         >
-          {artTransformProxy ? null : <GraphicGlyph object={object} />}
+          <div
+            className="graphic-glyph-shell"
+            data-art-vector-hidden={artTransformProxy ? "true" : undefined}
+          >
+            {artTransformProxy ? null : <GraphicGlyph object={object} />}
+          </div>
+          {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
+          {graphicCornerRadiusHandle}
+          {graphicPathEditHandles}
         </div>
-        {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
-        {graphicCornerRadiusHandle}
-        {graphicPathEditHandles}
         {artObjectTransformFrame}
       </div>
     );
@@ -13144,33 +13152,74 @@ function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
   return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow";
 }
 
-function documentObjectCssTransform(
+function documentObjectOuterCssTransform(
   object: DocumentObject,
-  projection?: DocumentObjectProjection
+  projection: DocumentObjectProjection | undefined,
+  preview: ObjectTransformPreviewState | undefined
 ): string | undefined {
-  if (projection?.matrix || Math.abs(object.rotation) < 0.001) {
+  if (preview) {
+    return object.type === "graphic"
+      ? objectTransformPreviewCssTransform(preview, { includeRotation: false })
+      : objectTransformPreviewCssTransform(preview);
+  }
+
+  if (object.type === "graphic" || projection?.matrix || Math.abs(object.rotation) < 0.001) {
     return undefined;
   }
 
   return `rotate(${object.rotation}deg)`;
 }
 
+function documentObjectOuterCssTransformOrigin(
+  object: DocumentObject,
+  preview: ObjectTransformPreviewState | undefined
+): string | undefined {
+  if (!preview || (object.type === "graphic" && preview.mode === "rotate")) {
+    return undefined;
+  }
+
+  return objectTransformPreviewCssOrigin(object, preview);
+}
+
 function pageScaledCssPx(value: number): string {
   return `calc(${value}px * var(--page-scale))`;
 }
 
-function objectTransformPreviewCssTransform(preview: ObjectTransformPreviewState): string {
+function objectTransformPreviewCssTransform(
+  preview: ObjectTransformPreviewState,
+  options: { includeRotation?: boolean } = {}
+): string {
+  const includeRotation = options.includeRotation ?? true;
   const transforms: string[] = [];
   if (Math.abs(preview.translateX) > 0.001 || Math.abs(preview.translateY) > 0.001) {
     transforms.push(`translate(${pageScaledCssPx(formatSvgNumber(preview.translateX))}, ${pageScaledCssPx(formatSvgNumber(preview.translateY))})`);
   }
-  if (Math.abs(preview.rotationDegrees) > 0.001) {
+  if (includeRotation && Math.abs(preview.rotationDegrees) > 0.001) {
     transforms.push(`rotate(${formatSvgNumber(preview.rotationDegrees)}deg)`);
   }
   if (Math.abs(preview.scaleX - 1) > 0.001 || Math.abs(preview.scaleY - 1) > 0.001) {
     transforms.push(`scale(${formatSvgNumber(preview.scaleX)}, ${formatSvgNumber(preview.scaleY)})`);
   }
   return transforms.join(" ");
+}
+
+function graphicVisualCssRotationDegrees(
+  object: GraphicObject,
+  preview: ObjectTransformPreviewState | undefined
+): number {
+  const committedRotation = object.rotation;
+  const previewRotation = preview?.mode === "rotate" ? preview.rotationDegrees : 0;
+  return committedRotation + previewRotation;
+}
+
+function graphicVisualCssStyle(rotationDegrees: number): CSSProperties | undefined {
+  if (Math.abs(rotationDegrees) < 0.001) {
+    return undefined;
+  }
+
+  return {
+    transform: `rotate(${formatSvgNumber(rotationDegrees)}deg)`
+  };
 }
 
 function objectTransformPreviewCssOrigin(
@@ -13232,18 +13281,106 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): Documen
 
 function documentObjectArtTransformFrameStyle(
   object: DocumentObject,
-  projection: DocumentObjectProjection | undefined
+  projection: DocumentObjectProjection | undefined,
+  preview: ObjectTransformPreviewState | undefined
 ): CSSProperties | undefined {
   if (object.type !== "graphic") {
     return projection?.frameStyle;
   }
 
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const bounds = rotatedGraphicLocalBounds(
+    object,
+    plan.frameBounds,
+    graphicVisualCssRotationDegrees(object, preview)
+  );
   return {
-    left: pageScaledCssPx(plan.frameBounds.x),
-    top: pageScaledCssPx(plan.frameBounds.y),
-    width: pageScaledCssPx(plan.frameBounds.width),
-    height: pageScaledCssPx(plan.frameBounds.height)
+    left: pageScaledCssPx(bounds.x),
+    top: pageScaledCssPx(bounds.y),
+    width: pageScaledCssPx(bounds.width),
+    height: pageScaledCssPx(bounds.height)
+  };
+}
+
+function rotatedGraphicLocalBounds(
+  object: GraphicObject,
+  bounds: { x: number; y: number; width: number; height: number },
+  rotationDegrees: number
+): { x: number; y: number; width: number; height: number } {
+  if (Math.abs(rotationDegrees) < 0.001) {
+    return bounds;
+  }
+  if (
+    object.graphicKind === "ellipse" &&
+    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
+  ) {
+    return bounds;
+  }
+
+  const center = {
+    x: Math.max(object.width, 1) / 2,
+    y: Math.max(object.height, 1) / 2
+  };
+  const rotationRad = degreesToRadians(rotationDegrees);
+  const cos = Math.cos(rotationRad);
+  const sin = Math.sin(rotationRad);
+  const corners = [
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+    { x: bounds.x, y: bounds.y + bounds.height }
+  ].map((point) => rotatePointAroundCenter(point, center, cos, sin));
+
+  const minX = Math.min(...corners.map((point) => point.x));
+  const maxX = Math.max(...corners.map((point) => point.x));
+  const minY = Math.min(...corners.map((point) => point.y));
+  const maxY = Math.max(...corners.map((point) => point.y));
+  return {
+    x: roundCssCoordinate(minX),
+    y: roundCssCoordinate(minY),
+    width: roundCssCoordinate(maxX - minX),
+    height: roundCssCoordinate(maxY - minY)
+  };
+}
+
+function unrotateGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
+  if (Math.abs(object.rotation) < 0.001) {
+    return point;
+  }
+
+  const center = {
+    x: object.x + Math.max(object.width, 1) / 2,
+    y: object.y + Math.max(object.height, 1) / 2
+  };
+  const rotationRad = degreesToRadians(-object.rotation);
+  return rotatePointAroundCenter(point, center, Math.cos(rotationRad), Math.sin(rotationRad));
+}
+
+function projectGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
+  const projected = projectGraphicObjectPoint(object, point);
+  if (Math.abs(object.rotation) < 0.001) {
+    return projected;
+  }
+
+  const center = {
+    x: object.x + Math.max(object.width, 1) / 2,
+    y: object.y + Math.max(object.height, 1) / 2
+  };
+  const rotationRad = degreesToRadians(object.rotation);
+  return rotatePointAroundCenter(projected, center, Math.cos(rotationRad), Math.sin(rotationRad));
+}
+
+function rotatePointAroundCenter(
+  point: { x: number; y: number },
+  center: { x: number; y: number },
+  cos: number,
+  sin: number
+): { x: number; y: number } {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
   };
 }
 

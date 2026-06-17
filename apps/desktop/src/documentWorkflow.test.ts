@@ -270,6 +270,20 @@ function rotatedPointAround(
   };
 }
 
+function projectGraphicVisualPoint(
+  graphic: GraphicObject,
+  point: { x: number; y: number }
+): { x: number; y: number } {
+  return rotatedPointAround(
+    projectGraphicObjectPoint(graphic, point),
+    {
+      x: graphic.x + Math.max(graphic.width, 1) / 2,
+      y: graphic.y + Math.max(graphic.height, 1) / 2
+    },
+    graphic.rotation
+  );
+}
+
 function expectPointToBeClose(
   actual: { x: number; y: number } | undefined,
   expected: { x: number; y: number },
@@ -4509,8 +4523,8 @@ describe("Phase 4 document workflow", () => {
     if (!rotatedPoints) {
       throw new Error("Expected rotated line edit points.");
     }
-    const projectedStart = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.start);
-    const projectedEnd = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.end);
+    const projectedStart = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.start);
+    const projectedEnd = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.end);
 
     const prepared = prepareGraphicPathForDirectEdit(rotated, objectId);
     const preparedGraphic = graphicById(prepared, objectId);
@@ -4561,9 +4575,9 @@ describe("Phase 4 document workflow", () => {
     if (!rotatedPoints) {
       throw new Error("Expected rotated quadratic edit points.");
     }
-    const projectedStart = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.start);
-    const projectedMiddle = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.middle);
-    const projectedEnd = projectGraphicObjectPoint(rotatedGraphic, rotatedPoints.end);
+    const projectedStart = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.start);
+    const projectedMiddle = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.middle);
+    const projectedEnd = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.end);
 
     const prepared = prepareGraphicPathForDirectEdit(legacy, objectId);
     const preparedGraphic = graphicById(prepared, objectId);

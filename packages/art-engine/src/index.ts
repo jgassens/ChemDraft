@@ -996,11 +996,11 @@ export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicO
   const nextData: GraphicObject["data"] = {
     ...object.data,
     artPathKind: points.pathKind,
-    lineStart: projectGraphicObjectPoint(object, points.start),
-    lineEnd: projectGraphicObjectPoint(object, points.end)
+    lineStart: projectGraphicObjectVisualPointForDirectEdit(object, points.start),
+    lineEnd: projectGraphicObjectVisualPointForDirectEdit(object, points.end)
   };
   if (points.pathKind === "quadratic") {
-    nextData.pathControlPoint = projectGraphicObjectPoint(object, points.middle);
+    nextData.pathControlPoint = projectGraphicObjectVisualPointForDirectEdit(object, points.middle);
   } else {
     delete nextData.pathControlPoint;
   }
@@ -1015,6 +1015,30 @@ export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicO
     rotation: 0,
     style: nextStyle
   }, nextData) ?? object;
+}
+
+function projectGraphicObjectVisualPointForDirectEdit(
+  object: GraphicObject,
+  point: NativeArtPoint
+): NativeArtPoint {
+  const projected = projectGraphicObjectPoint(object, point);
+  if (Math.abs(object.rotation) < 0.001) {
+    return projected;
+  }
+
+  const center = {
+    x: object.x + Math.max(object.width, 1) / 2,
+    y: object.y + Math.max(object.height, 1) / 2
+  };
+  const rotationRad = degreesToRadians(object.rotation);
+  const cos = Math.cos(rotationRad);
+  const sin = Math.sin(rotationRad);
+  const dx = projected.x - center.x;
+  const dy = projected.y - center.y;
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
+  };
 }
 
 function nativeArtProjectionMatrixForObject(object: GraphicObject): NativeArtProjectionMatrix | undefined {

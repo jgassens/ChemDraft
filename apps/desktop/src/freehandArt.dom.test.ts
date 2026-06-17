@@ -396,7 +396,8 @@ describe("freehand native art interactions", () => {
     expect(graphic.querySelector("[data-art-transform-drag-preview='image']")).not.toBeNull();
     expect(graphic.querySelector(".graphic-glyph-shell")?.getAttribute("data-art-vector-hidden")).toBe("true");
     expect(graphic.querySelector(".graphic-glyph")).toBeNull();
-    expect(graphic.style.transform).toContain("rotate");
+    expect(graphic.style.transform).not.toContain("rotate");
+    expect(graphic.querySelector<HTMLElement>(".graphic-visual-shell")?.style.transform).toContain("rotate");
 
     await act(async () => {
       dispatchPointer(pageElement(), "pointerup", dragEnd, 82, 0.5);

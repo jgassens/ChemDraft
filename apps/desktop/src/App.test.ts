@@ -2229,7 +2229,8 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    expect(rotatedMarkup).toContain("transform:rotate(45deg)");
+    expect(rotatedMarkup).toMatch(/class="graphic-visual-shell"[^>]*data-art-z-rotation="45"[^>]*style="transform:rotate\(45deg\)"/);
+    expect(rotatedMarkup).not.toMatch(/class="document-object document-object-overlay graphic-object"[^>]*transform:rotate\(45deg\)/);
     expect(rotatedMarkup).not.toContain("graphic-glyph-projected-shape");
     expect(rotatedMarkup).toContain("graphic-glyph-shape");
     expect(rotatedMarkup).not.toContain('data-object-type="graphic"');
@@ -2252,7 +2253,8 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(rotatedSphereMarkup).not.toContain("graphic-glyph-projected-shape");
-    expect(rotatedSphereMarkup).toContain("transform:rotate(45deg)");
+    expect(rotatedSphereMarkup).toMatch(/class="graphic-visual-shell"[^>]*data-art-z-rotation="45"[^>]*style="transform:rotate\(45deg\)"/);
+    expect(rotatedSphereMarkup).not.toMatch(/class="document-object document-object-overlay graphic-object"[^>]*transform:rotate\(45deg\)/);
     expect(rotatedSphereMarkup).toContain(
       "left:calc(0px * var(--page-scale));top:calc(0px * var(--page-scale));width:calc(48px * var(--page-scale));height:calc(48px * var(--page-scale))"
     );

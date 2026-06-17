@@ -1149,9 +1149,21 @@ describe("art-engine native art planning", () => {
     if (!points) {
       throw new Error("Expected quadratic edit points.");
     }
-    const projectedStart = projectGraphicObjectPoint(graphic, points.start);
-    const projectedMiddle = projectGraphicObjectPoint(graphic, points.middle);
-    const projectedEnd = projectGraphicObjectPoint(graphic, points.end);
+    const projectedStart = rotatePagePointAroundGraphicCenter(
+      graphic,
+      projectGraphicObjectPoint(graphic, points.start),
+      graphic.rotation
+    );
+    const projectedMiddle = rotatePagePointAroundGraphicCenter(
+      graphic,
+      projectGraphicObjectPoint(graphic, points.middle),
+      graphic.rotation
+    );
+    const projectedEnd = rotatePagePointAroundGraphicCenter(
+      graphic,
+      projectGraphicObjectPoint(graphic, points.end),
+      graphic.rotation
+    );
 
     const prepared = prepareGraphicPathForDirectEdit(graphic);
     const preparedPoints = graphicPathEditPoints(prepared);
@@ -1168,3 +1180,23 @@ describe("art-engine native art planning", () => {
     expect(preparedPoints?.end.y).toBeCloseTo(projectedEnd.y, 3);
   });
 });
+
+function rotatePagePointAroundGraphicCenter(
+  graphic: GraphicObject,
+  point: { x: number; y: number },
+  rotationDegrees: number
+): { x: number; y: number } {
+  const center = {
+    x: graphic.x + Math.max(graphic.width, 1) / 2,
+    y: graphic.y + Math.max(graphic.height, 1) / 2
+  };
+  const rotationRad = rotationDegrees * Math.PI / 180;
+  const cos = Math.cos(rotationRad);
+  const sin = Math.sin(rotationRad);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
+  };
+}
