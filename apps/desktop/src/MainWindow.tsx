@@ -680,7 +680,7 @@ const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.7.31-codex";
+const CURRENT_BUILD_STAMP = "6.17.7.46-codex";
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
@@ -843,6 +843,8 @@ export function MainWindow({
   const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
   const graphicMarkerDragRef = useRef<GraphicMarkerDragState | null>(null);
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
+  const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
+  const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -3301,6 +3303,40 @@ export function MainWindow({
     };
   }, [applyDetectedClipboardPayload]);
 
+  const clearFreehandArtPreview = useCallback(() => {
+    if (freehandArtPreviewFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(freehandArtPreviewFrameRef.current);
+      freehandArtPreviewFrameRef.current = undefined;
+    }
+    resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
+  }, []);
+
+  const renderFreehandArtPreview = useCallback((drag: FreehandArtDragState) => {
+    const path = freehandArtPreviewPathRef.current;
+    if (!path || !drag.dragging || drag.points.length === 0) {
+      resetFreehandArtPreviewPath(path);
+      return;
+    }
+
+    const tool = nativeArtToolForCommand(drag.commandId);
+    const size = tool?.data.freehandOptions?.size ?? 5;
+    path.setAttribute("d", freehandArtPreviewPathD(drag.points));
+    path.setAttribute("stroke", tool?.style.strokeColor ?? "#111111");
+    path.setAttribute("stroke-width", `${Math.max(1, size)}`);
+    path.setAttribute("data-active", "true");
+  }, []);
+
+  const scheduleFreehandArtPreview = useCallback((drag: FreehandArtDragState) => {
+    if (freehandArtPreviewFrameRef.current !== undefined) {
+      return;
+    }
+
+    freehandArtPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      freehandArtPreviewFrameRef.current = undefined;
+      renderFreehandArtPreview(drag);
+    });
+  }, [renderFreehandArtPreview]);
+
   const clearNativeFreehandArtDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = freehandArtDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -3308,6 +3344,7 @@ export function MainWindow({
     }
 
     freehandArtDragRef.current = null;
+    clearFreehandArtPreview();
     const page = pageRef.current;
     if (page?.hasPointerCapture(drag.pointerId)) {
       page.releasePointerCapture(drag.pointerId);
@@ -3316,7 +3353,7 @@ export function MainWindow({
     if (currentTarget?.hasPointerCapture(drag.pointerId)) {
       currentTarget.releasePointerCapture(drag.pointerId);
     }
-  }, []);
+  }, [clearFreehandArtPreview]);
 
   const clearProjectedPlaneTiltDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = projectedPlaneTiltDragRef.current;
@@ -3941,6 +3978,7 @@ export function MainWindow({
     commandId: string
   ) => {
     const startDocument = documentRef.current;
+    clearFreehandArtPreview();
     freehandArtDragRef.current = {
       pointerId: event.pointerId,
       commandId,
@@ -3960,7 +3998,7 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     event.currentTarget.setPointerCapture(event.pointerId);
     setStatus("Drawing freehand stroke");
-  }, [assignHoveredNativeDeleteTarget]);
+  }, [assignHoveredNativeDeleteTarget, clearFreehandArtPreview]);
 
   const previewNativeFreehandArtDrag = useCallback((
     drag: FreehandArtDragState,
@@ -3976,8 +4014,8 @@ export function MainWindow({
       return;
     }
 
-    replacePresentDocument(nativeFreehandStrokeDocument(drag.startDocument, drag.points, drag.commandId));
-  }, [replacePresentDocument]);
+    scheduleFreehandArtPreview(drag);
+  }, [scheduleFreehandArtPreview]);
 
   const commitNativeFreehandArtDrag = useCallback((
     drag: FreehandArtDragState,
@@ -7604,6 +7642,21 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                <svg
+                  className="freehand-art-preview-layer"
+                  viewBox={`0 0 ${activePage.width} ${activePage.height}`}
+                  aria-hidden="true"
+                  data-freehand-art-preview-layer="true"
+                >
+                  <path
+                    ref={freehandArtPreviewPathRef}
+                    className="freehand-art-preview-path"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    data-freehand-art-preview-path="true"
+                  />
+                </svg>
                 {selectionMarquee ? (
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
@@ -8441,6 +8494,33 @@ function appendFreehandDragPoint(drag: FreehandArtDragState, point: GraphicFreeh
     return;
   }
   drag.points.push(point);
+}
+
+function resetFreehandArtPreviewPath(path: SVGPathElement | null): void {
+  if (!path) {
+    return;
+  }
+
+  path.removeAttribute("d");
+  path.removeAttribute("stroke");
+  path.removeAttribute("stroke-width");
+  path.removeAttribute("data-active");
+}
+
+function freehandArtPreviewPathD(points: readonly GraphicFreehandPoint[]): string {
+  const [first, ...rest] = points;
+  if (!first) {
+    return "";
+  }
+
+  if (rest.length === 0) {
+    return `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)} L ${formatSvgNumber(first.x + 0.01)} ${formatSvgNumber(first.y)}`;
+  }
+
+  return [
+    `M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)}`,
+    ...rest.map((point) => `L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
+  ].join(" ");
 }
 
 function findNearestCrossingHit(
@@ -12145,6 +12225,7 @@ function markerTerminalDirection(terminal: NonNullable<NativeArtVisualPlan["mark
 
 function GraphicGlyph({ object }: { object: GraphicObject }) {
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
   const height = plan.height;
   const line = plan.line;
@@ -12277,18 +12358,18 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             <path
               className="graphic-glyph-hit-target"
               d={pathD}
-              fill={plan.capabilities.supportsStroke ? "none" : "transparent"}
+              fill={freehandPath || !plan.capabilities.supportsStroke ? "transparent" : "none"}
               stroke="transparent"
               strokeWidth={Math.max(strokeWidth + 10, 14)}
               strokeLinecap="round"
               strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
-              pointerEvents={plan.capabilities.supportsStroke ? "stroke" : "all"}
+              pointerEvents={freehandPath || !plan.capabilities.supportsStroke ? "all" : "stroke"}
             />
             <path
               className="graphic-glyph-stroke graphic-glyph-path"
               d={visiblePathD}
-              {...(plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
+              {...(freehandPath || plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
               {...sharedStrokeProps}
             />
             {markerStart}
@@ -12326,6 +12407,10 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
       )}
     </svg>
   );
+}
+
+function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
+  return object.graphicKind === "path" && object.data.artPathKind === "freehand";
 }
 
 function GraphicCornerRadiusHandle({

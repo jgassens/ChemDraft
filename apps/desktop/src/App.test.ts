@@ -57,6 +57,7 @@ import {
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
+  nativeFreehandStrokeDocument,
   nativeGraphicPathEditPoints,
   openNativeDocument,
   reorderSelectedDocumentObject,
@@ -1534,6 +1535,19 @@ describe("ChemDraft desktop shell", () => {
       selectedGraphicObjects: selectedGraphicObjectsForArtInspector(lineDocument),
       requestedPaintTarget: "fill"
     });
+    const freehandDocument = nativeFreehandStrokeDocument(
+      createPhase4Document("Art Inspector Freehand"),
+      [
+        { x: 180, y: 180, pressure: 0.3 },
+        { x: 220, y: 196, pressure: 0.8 }
+      ],
+      "tool.art.pencil"
+    );
+    const freehandArtStyle = createArtInspectorModel({
+      document: freehandDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(freehandDocument),
+      requestedPaintTarget: "fill"
+    });
     const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
       groups: artGroups,
       activeTool: "tool.select",
@@ -1554,6 +1568,17 @@ describe("ChemDraft desktop shell", () => {
       currentObjectColor: "#111111",
       currentArtStyleTarget: "fill",
       currentArtStyle: lineArtStyle,
+      onInvoke: () => undefined
+    }));
+    const freehandInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: freehandArtStyle,
       onInvoke: () => undefined
     }));
 
@@ -1612,6 +1637,14 @@ describe("ChemDraft desktop shell", () => {
     expect(lineInspectorMarkup).toContain('aria-label="Stroke color"');
     expect(lineInspectorMarkup).not.toContain("Line ends");
     expect(lineInspectorMarkup).not.toContain("Corners");
+    expect(freehandInspectorMarkup).toContain('data-art-fill-supported-count="0"');
+    expect(freehandInspectorMarkup).toContain('data-art-stroke-supported-count="1"');
+    expect(freehandInspectorMarkup).not.toContain('data-command-id="object.style.target.fill"');
+    expect(freehandInspectorMarkup).toContain('data-command-id="object.style.target.stroke"');
+    expect(freehandInspectorMarkup).toContain('aria-label="Stroke color"');
+    expect(freehandInspectorMarkup).toContain(">Stroke</span>");
+    expect(freehandInspectorMarkup).not.toContain('aria-label="Stroke width"');
+    expect(freehandInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
     expect(markup).not.toContain('data-command-id="text.color.black"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
     expect(toolPaletteSource).toContain("HexColorPicker");

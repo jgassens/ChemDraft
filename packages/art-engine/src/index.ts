@@ -230,6 +230,7 @@ export function planNativeArtVisual(
   const opacity = clampUnit(metadataNumber(object.style.opacity) ?? 1);
   const capabilities = nativeArtCapabilities(object);
   const freehandPath = object.graphicKind === "path" && graphicPathKind(object) === "freehand";
+  const rendersStroke = capabilities.supportsStroke && !freehandPath;
   const strokePaint = nativeArtStrokePaint(object, coordinateSpace, projectionTransform);
   const fillPaint = freehandPath
     ? strokePaint
@@ -237,14 +238,14 @@ export function planNativeArtVisual(
       ? nativeArtFillPaint(object, coordinateSpace, projectionTransform)
       : { kind: "none" as const, opacity: 1 };
   const stroke: NativeArtStrokePlan = {
-    color: capabilities.supportsStroke ? graphicColor(object.style.strokeColor, object.style.color, "#111111") : "none",
-    width: capabilities.supportsStroke ? metadataNumber(object.style.strokeWidth) ?? 1.5 : 0,
-    dasharray: capabilities.supportsStroke ? metadataString(object.style.strokeDasharray) : undefined,
-    opacity: capabilities.supportsStroke ? graphicStrokeOpacity(object) : 0,
+    color: rendersStroke ? graphicColor(object.style.strokeColor, object.style.color, "#111111") : "none",
+    width: rendersStroke ? metadataNumber(object.style.strokeWidth) ?? 1.5 : 0,
+    dasharray: rendersStroke ? metadataString(object.style.strokeDasharray) : undefined,
+    opacity: rendersStroke ? graphicStrokeOpacity(object) : 0,
     lineCap: graphicStrokeLineCap(object),
     lineJoin: graphicStrokeLineJoin(object),
     miterLimit: metadataNumber(object.style.strokeMiterLimit) ?? 4,
-    paint: capabilities.supportsStroke ? strokePaint : { kind: "none", opacity: 0 }
+    paint: rendersStroke ? strokePaint : { kind: "none", opacity: 0 }
   };
   const fill: NativeArtFillPlan = {
     color: freehandPath
@@ -265,9 +266,9 @@ export function planNativeArtVisual(
   const pathPoints = object.graphicKind === "path"
     ? graphicPathSamplePoints(object, coordinateSpace)
     : undefined;
-  const markerStart = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
-  const markerEnd = capabilities.supportsStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
-  const openStrokeTerminals = capabilities.isOpenStroke
+  const markerStart = rendersStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
+  const markerEnd = rendersStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
+  const openStrokeTerminals = capabilities.isOpenStroke && rendersStroke
     ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
     : undefined;
   const visibleStroke = nativeArtVisibleOpenStroke({
@@ -753,12 +754,12 @@ export function nativeArtCapabilities(object: GraphicObject): NativeArtCapabilit
     }
     if (pathKind === "freehand") {
       return nativeArtCapabilityPlan({
-        supportsFill: true,
-        supportsStroke: false,
+        supportsFill: false,
+        supportsStroke: true,
         supportsDash: false,
         supportsLineCap: false,
         supportsLineJoin: false,
-        isClosedShape: true,
+        isClosedShape: false,
         hasCorners: false
       });
     }

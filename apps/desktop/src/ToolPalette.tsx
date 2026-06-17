@@ -583,6 +583,7 @@ function ArtToolbarStyleControls({
   const supportsCornersAll = currentArtStyle?.supportsCornersAll ?? false;
   const effectiveArtStyleTarget: ToolsetArtPaintTarget = currentArtStyle?.activePaintTarget ?? currentArtStyleTarget;
   const activeTargetSupported = effectiveArtStyleTarget === "fill" ? supportsFill : supportsStroke;
+  const supportsStrokeWidth = supportsStroke && supportsDash;
   const activeColor = effectiveArtStyleTarget === "fill"
     ? currentArtStyle?.values.fillColor.value
     : currentArtStyle?.values.strokeColor.value;
@@ -885,9 +886,9 @@ function ArtToolbarStyleControls({
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
-      {supportsStroke || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
+      {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
-        {supportsStroke ? (
+        {supportsStrokeWidth ? (
         <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
           <span className="art-stroke-control-label">Width</span>
           <select
@@ -895,7 +896,7 @@ function ArtToolbarStyleControls({
             value={strokeWidthCommandId}
             aria-label="Stroke width"
             disabled={!selected}
-            title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}
+            title={supportTitle("Stroke width", dashSupportedCount, supportsDashAll)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onInvoke(event.currentTarget.value)}

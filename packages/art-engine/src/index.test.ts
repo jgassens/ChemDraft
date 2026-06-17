@@ -533,10 +533,11 @@ describe("art-engine native art planning", () => {
     expect(lowPlan.pathD).toMatch(/^M /);
     expect(lowPlan.pathD).toContain(" Z");
     expect(lowPlan.capabilities).toMatchObject({
-      supportsFill: true,
-      supportsStroke: false,
-      isClosedShape: true,
-      isOpenStroke: false
+      supportsFill: false,
+      supportsStroke: true,
+      supportsDash: false,
+      isClosedShape: false,
+      isOpenStroke: true
     });
     expect(lowPlan.fill.color).toBe("#111111");
     expect(lowPlan.stroke.paint).toEqual({ kind: "none", opacity: 0 });

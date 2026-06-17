@@ -4544,7 +4544,7 @@ function graphicObjectSupportedStrokeStyle(
 ): Partial<GraphicObjectStyle> {
   const changesDash = hasGraphicStyleKey(style, "strokeDasharray");
   const next: Partial<GraphicObjectStyle> = {};
-  if (hasGraphicStyleKey(style, "strokeWidth") && graphicObjectSupportsStyleCapability(object, "stroke")) {
+  if (hasGraphicStyleKey(style, "strokeWidth") && graphicObjectSupportsStyleCapability(object, "dash")) {
     next.strokeWidth = style.strokeWidth;
   }
   if (changesDash && graphicObjectSupportsStyleCapability(object, "dash")) {

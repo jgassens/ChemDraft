@@ -131,6 +131,12 @@ describe("freehand native art interactions", () => {
     target.dispatchEvent(event);
   }
 
+  async function waitForPreviewFrame() {
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  }
+
   it("drags one pressure-sensitive pencil stroke and undoes/redoes it as one object", async () => {
     await renderMainWindow("tool.art.pencil");
     const page = pageElement();
@@ -139,6 +145,17 @@ describe("freehand native art interactions", () => {
       dispatchPointer(page, "pointerdown", { x: 180, y: 180 }, 41, 0.2);
       dispatchPointer(page, "pointermove", { x: 214, y: 196 }, 41, 0.9);
       dispatchPointer(page, "pointermove", { x: 252, y: 178 }, 41, 0.45);
+    });
+    await waitForPreviewFrame();
+
+    const previewPath = container.querySelector<SVGPathElement>("[data-freehand-art-preview-path]");
+    expect(snapshotObjectCount()).toBe(0);
+    expect(previewPath?.getAttribute("data-active")).toBe("true");
+    expect(previewPath?.getAttribute("d")).toContain("L 252 178");
+    expect(previewPath?.getAttribute("stroke")).toBe("#111111");
+    expect(previewPath?.getAttribute("stroke-width")).toBe("5");
+
+    await act(async () => {
       dispatchPointer(page, "pointerup", { x: 252, y: 178 }, 41, 0.45);
     });
 
@@ -153,6 +170,7 @@ describe("freehand native art interactions", () => {
     }
 
     expect(snapshotObjectCount()).toBe(1);
+    expect(previewPath?.hasAttribute("d")).toBe(false);
     expect(container.querySelector('[data-active-tool="tool.select"]')).not.toBeNull();
     expect(debug.object.data.artPathKind).toBe("freehand");
     expect(debug.object.data.freehandOptions?.size).toBe(5);

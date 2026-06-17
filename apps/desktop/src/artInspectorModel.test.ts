@@ -100,6 +100,42 @@ describe("ArtInspectorModel", () => {
     });
   });
 
+  it("presents freehand strokes as stroke-color objects even though they render as filled outlines", () => {
+    const graphic = pathGraphic("freehand", "freehand", {
+      style: {
+        fillColor: "none",
+        strokeColor: "#1d7f68",
+        strokeOpacity: 0.72
+      },
+      data: {
+        artPathKind: "freehand",
+        freehandPoints: [
+          { x: 120, y: 100, pressure: 0.4 },
+          { x: 150, y: 116, pressure: 0.8 }
+        ],
+        freehandOptions: { size: 8 }
+      }
+    });
+    const model = createArtInspectorModel({
+      document: documentWithSelectedGraphics([graphic]),
+      selectedGraphicObjects: [graphic],
+      requestedPaintTarget: "fill"
+    });
+
+    expect(model).toMatchObject({
+      activePaintTarget: "stroke",
+      supportsFillAny: false,
+      supportsStrokeAny: true,
+      supportsDashAny: false,
+      fillSupportedCount: 0,
+      strokeSupportedCount: 1
+    });
+    expect(model.values.fillColor).toEqual({ value: null, mixed: false });
+    expect(model.values.strokeColor).toEqual({ value: "#1d7f68", mixed: false });
+    expect(model.values.strokeOpacity).toEqual({ value: 0.72, mixed: false });
+    expect(model.skippedObjectIdsByControl.fill).toEqual([{ objectId: "freehand", reason: "open-stroke" }]);
+  });
+
   it("hides rectangle corners in this pass while preserving fill, stroke, width, and dash support", () => {
     const graphic = rectGraphic("rectangle");
     const model = createArtInspectorModel({

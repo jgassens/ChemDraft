@@ -1687,6 +1687,7 @@ function graphicObjectFragment(
 ): PageSvgElementFragment {
   warnForGraphicSvgEffects(object, warnings);
   const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
+  const freehandPath = graphicObjectIsFreehandPath(object);
   const gradientId = `graphic-gloss-${object.id}`;
   const fillAttrs = plan.glossGradient
     ? { fill: `url(#${gradientId})` }
@@ -1763,7 +1764,7 @@ function graphicObjectFragment(
       d: plan.visiblePathD ?? plan.pathD,
       ...strokeAttrs,
       class: "graphic-glyph-stroke graphic-glyph-path",
-      ...(plan.capabilities.supportsFill ? fillAttrs : { fill: "none" }),
+      ...(freehandPath || plan.capabilities.supportsFill ? fillAttrs : { fill: "none" }),
       transform: plan.projectionTransform
     }));
   } else if (object.graphicKind === "rect") {
@@ -1803,6 +1804,10 @@ function graphicObjectFragment(
     objectId: object.id
   });
   return fallbackObjectFragment(object, layerIndex);
+}
+
+function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
+  return object.graphicKind === "path" && object.data.artPathKind === "freehand";
 }
 
 function svgPaintAttrs(

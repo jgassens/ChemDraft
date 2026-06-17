@@ -1655,6 +1655,22 @@ textarea:focus-visible,
   overflow: visible;
 }
 
+.freehand-art-preview-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.freehand-art-preview-path {
+  opacity: 0.96;
+  pointer-events: none;
+}
+
 .art-transform-qa-overlay {
   position: absolute;
   inset: 0;

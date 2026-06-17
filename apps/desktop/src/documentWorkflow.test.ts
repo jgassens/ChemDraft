@@ -3623,6 +3623,28 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
+  it("applies freehand color through stroke style instead of the filled-outline implementation detail", () => {
+    const document = createPhase4Document("Native Freehand Stroke Color");
+    const inserted = nativeFreehandStrokeDocument(document, [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ], "tool.art.pencil");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+
+    const fillAttempt = applyGraphicObjectColorToSelection(inserted, "fill", "#b3261e");
+    const stroked = applyGraphicObjectColorToSelection(fillAttempt, "stroke", "#1d7f68");
+    const graphic = graphicById(stroked, objectId);
+
+    expect(graphic.style.fillColor).toBe("none");
+    expect(graphic.style.strokeColor).toBe("#1d7f68");
+    expect(graphic.style.strokePaint).toEqual({ kind: "solid", color: "#1d7f68", opacity: 1 });
+    expect(graphic.style.fillPaint).toBeUndefined();
+  });
+
   it("edits native art arrowhead marker size through workflow helpers", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Native Art Arrow Marker Edit"),
