@@ -210,6 +210,11 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('id="graphic-gloss-art_svg_effects"');
     expect(result.contents).toContain('gradientUnits="userSpaceOnUse"');
     expect(result.contents).toContain('gradientTransform="matrix(');
+    expect(result.contents).toContain('stop-color="#e4f0ed"');
+    expect(result.contents).toContain('stop-color="#0d382e"');
+    expect(result.contents).not.toContain('stop-opacity="0.92"');
+    expect(result.contents).not.toContain('stop-opacity="0.42"');
+    expect(result.contents).not.toContain('stop-opacity="0.78"');
     expect(result.warnings.map((warning) => warning.code)).toEqual([
       "export.svg.graphic_effect_approximation",
       "export.svg.graphic_effect_approximation"

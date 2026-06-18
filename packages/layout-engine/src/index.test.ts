@@ -992,6 +992,7 @@ describe("layout-engine page SVG planner", () => {
     );
     const ellipsePath = visibleFragments.find((fragment) => fragment.attrs["data-object-id"] === "art_ellipse");
     const glossGradient = fragments.find((fragment) => fragment.tag === "radialGradient");
+    const glossStops = fragments.filter((fragment) => fragment.tag === "stop");
 
     expect(visibleFragments.map((fragment) => fragment.tag)).toEqual(["path", "path", "rect"]);
     expect(visibleFragments[0]?.attrs).toMatchObject({
@@ -1013,6 +1014,13 @@ describe("layout-engine page SVG planner", () => {
       gradientUnits: "userSpaceOnUse"
     });
     expect(String(glossGradient?.attrs.gradientTransform)).toContain("matrix(");
+    expect(glossStops.map((fragment) => fragment.attrs["stop-color"])).toEqual([
+      "#f6e5e4",
+      "#dfa4a1",
+      "#b3261e",
+      "#4f110d"
+    ]);
+    expect(glossStops.every((fragment) => fragment.attrs["stop-opacity"] === undefined)).toBe(true);
     expect(visibleFragments[2]?.attrs).toMatchObject({
       "data-object-id": "art_rect",
       fill: "#f8faf9",

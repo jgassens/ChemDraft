@@ -1690,7 +1690,10 @@ function graphicObjectFragment(
   const freehandPath = graphicObjectIsFreehandPath(object);
   const gradientId = `graphic-gloss-${object.id}`;
   const fillAttrs = plan.glossGradient
-    ? { fill: `url(#${gradientId})` }
+    ? {
+        fill: `url(#${gradientId})`,
+        "fill-opacity": plan.fill.opacity === 1 ? undefined : plan.fill.opacity
+      }
     : svgPaintAttrs("fill", plan.fill.paint, `graphic-fill-${object.id}`);
   const strokeAttrs = {
     class: "graphic-glyph-stroke",
@@ -1713,27 +1716,7 @@ function graphicObjectFragment(
           r: plan.glossGradient.r,
           gradientTransform: plan.glossGradient.gradientTransform,
           gradientUnits: "userSpaceOnUse"
-        }, [
-          elementFragment("stop", `graphic-gloss-stop-0-${object.id}`, {
-            offset: "0%",
-            "stop-color": "#ffffff",
-            "stop-opacity": 0.92
-          }),
-          elementFragment("stop", `graphic-gloss-stop-1-${object.id}`, {
-            offset: "28%",
-            "stop-color": "#ffffff",
-            "stop-opacity": 0.42
-          }),
-          elementFragment("stop", `graphic-gloss-stop-2-${object.id}`, {
-            offset: "72%",
-            "stop-color": plan.fill.color === "none" ? plan.stroke.color : plan.fill.color
-          }),
-          elementFragment("stop", `graphic-gloss-stop-3-${object.id}`, {
-            offset: "100%",
-            "stop-color": "#000000",
-            "stop-opacity": 0.78
-          })
-        ])
+        }, svgGradientStopFragments(plan.glossGradient.stops, `graphic-gloss-${object.id}`))
       ])
     ] : [])
   ];

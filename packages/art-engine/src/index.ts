@@ -124,6 +124,7 @@ export interface NativeArtGlossGradientPlan {
   cx: number;
   cy: number;
   r: number;
+  stops: NativeArtGradientStopPlan[];
   gradientTransform?: string;
 }
 
@@ -1846,7 +1847,44 @@ function nativeArtGlossGradient(
     cx: roundLayoutNumber(originX + Math.max(object.width, 1) * 0.34),
     cy: roundLayoutNumber(originY + Math.max(object.height, 1) * 0.28),
     r: roundLayoutNumber(Math.max(object.width, object.height, 1) * 0.7),
+    stops: nativeArtGlossGradientStops(object),
     gradientTransform: matrix ? nativeArtProjectionSvgTransform(object, coordinateSpace, matrix) : undefined
+  };
+}
+
+function nativeArtGlossGradientStops(object: GraphicObject): NativeArtGradientStopPlan[] {
+  const fill = normalizeGraphicHexColor(graphicFillColor(object.style.fillColor));
+  const stroke = normalizeGraphicHexColor(graphicColor(object.style.strokeColor, object.style.color, "#111111"));
+  const base = fill ?? stroke ?? "#111111";
+  return [
+    { offset: 0, color: mixGraphicHexColor(base, "#ffffff", 0.88), opacity: 1 },
+    { offset: 0.28, color: mixGraphicHexColor(base, "#ffffff", 0.58), opacity: 1 },
+    { offset: 0.72, color: base, opacity: 1 },
+    { offset: 1, color: mixGraphicHexColor(base, "#000000", 0.56), opacity: 1 }
+  ];
+}
+
+function mixGraphicHexColor(from: string, to: string, amount: number): string {
+  const fromRgb = rgbFromGraphicHexColor(from);
+  const toRgb = rgbFromGraphicHexColor(to);
+  if (!fromRgb || !toRgb) {
+    return from;
+  }
+  const mix = (start: number, end: number) => Math.round(start + (end - start) * amount);
+  return `#${[mix(fromRgb.r, toRgb.r), mix(fromRgb.g, toRgb.g), mix(fromRgb.b, toRgb.b)]
+    .map((component) => component.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function rgbFromGraphicHexColor(color: string): { r: number; g: number; b: number } | undefined {
+  const normalized = normalizeGraphicHexColor(color);
+  if (!normalized) {
+    return undefined;
+  }
+  return {
+    r: Number.parseInt(normalized.slice(1, 3), 16),
+    g: Number.parseInt(normalized.slice(3, 5), 16),
+    b: Number.parseInt(normalized.slice(5, 7), 16)
   };
 }
 

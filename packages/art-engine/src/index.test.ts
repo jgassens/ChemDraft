@@ -85,7 +85,13 @@ describe("art-engine native art planning", () => {
     expect(plan.glossGradient).toMatchObject({
       cx: 24.48,
       cy: 9.52,
-      r: 50.4
+      r: 50.4,
+      stops: [
+        { offset: 0, color: "#e4f0ed", opacity: 1 },
+        { offset: 0.28, color: "#a0c9c0", opacity: 1 },
+        { offset: 0.72, color: "#1d7f68", opacity: 1 },
+        { offset: 1, color: "#0d382e", opacity: 1 }
+      ]
     });
   });
 

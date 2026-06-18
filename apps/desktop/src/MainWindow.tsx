@@ -750,7 +750,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.19.18-codex";
+const CURRENT_BUILD_STAMP = "6.17.19.31-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -13970,7 +13970,6 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const line = plan.line;
   const visibleLine = plan.visibleLine ?? plan.line;
   const strokeColor = plan.stroke.color;
-  const fillColor = plan.fill.color;
   const strokeWidth = plan.stroke.width;
   const strokeDasharray = plan.stroke.dasharray;
   const cornerRadius = plan.cornerRadius;
@@ -13986,7 +13985,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const projectionTransform = plan.projectionTransform;
   const glossGradient = plan.glossGradient;
   const fillPaintProps = fillMode === "gloss"
-    ? { fill: `url(#${gradientId})` }
+    ? { fill: `url(#${gradientId})`, fillOpacity: plan.fill.opacity === 1 ? undefined : plan.fill.opacity }
     : reactSvgPaintAttrs("fill", plan.fill.paint, fillPaintId);
   const sharedStrokeProps = {
     ...reactSvgPaintAttrs("stroke", plan.stroke.paint, strokePaintId),
@@ -14023,10 +14022,14 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             gradientTransform={glossGradient?.gradientTransform}
             gradientUnits="userSpaceOnUse"
           >
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.92" />
-            <stop offset="28%" stopColor="#ffffff" stopOpacity="0.42" />
-            <stop offset="72%" stopColor={fillColor === "none" ? strokeColor : fillColor} />
-            <stop offset="100%" stopColor="#000000" stopOpacity="0.78" />
+            {glossGradient?.stops.map((stop, index) => (
+              <stop
+                key={`gloss-stop-${index}`}
+                offset={`${Number((stop.offset * 100).toFixed(4))}%`}
+                stopColor={stop.color}
+                stopOpacity={stop.opacity === 1 ? undefined : stop.opacity}
+              />
+            ))}
           </radialGradient>
         </defs>
       ) : null}
