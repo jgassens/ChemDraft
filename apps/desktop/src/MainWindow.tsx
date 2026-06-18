@@ -788,7 +788,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.16.0-codex";
+const CURRENT_BUILD_STAMP = "6.18.16.30-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -811,6 +811,16 @@ function freehandArtStatusLabel(commandId: string): string {
 
 function scissorsStatusLabel(action = "click path to split"): string {
   return `Scissors: ${action}; click path for more; Esc exits`;
+}
+
+function eyedropperStatusLabel(target: GraphicStylePaintTarget): string {
+  const targetLabel = target === "fill" ? "Fill" : "Stroke";
+  return `Eyedropper: ${targetLabel} target; click source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
+}
+
+function eyedropperNoTargetStatusLabel(target: GraphicStylePaintTarget): string {
+  const targetLabel = target === "fill" ? "Fill" : "Stroke";
+  return `Eyedropper: no ${targetLabel} target selected; select target art; Esc exits`;
 }
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -1207,6 +1217,12 @@ export function MainWindow({
   }, [activeArtPaintTarget, document]);
   const effectiveArtPaintTarget = currentArtStyle?.activePaintTarget ?? activeArtPaintTarget;
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
+
+  useEffect(() => {
+    if (activeToolState.activeCommandId === "tool.art.eyedropper") {
+      setStatus(eyedropperStatusLabel(effectiveArtPaintTarget));
+    }
+  }, [activeToolState.activeCommandId, effectiveArtPaintTarget]);
 
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
@@ -3448,7 +3464,7 @@ export function MainWindow({
             setSelectedNativeMoleculePart(undefined);
           }
         }
-        setStatus(result.status);
+        setStatus(tool.id === "tool.art.eyedropper" ? eyedropperStatusLabel(effectiveArtPaintTarget) : result.status);
       });
     });
 
@@ -3529,6 +3545,7 @@ export function MainWindow({
     commitDocumentChange,
     deleteHoveredNativeTarget,
     document,
+    effectiveArtPaintTarget,
     layerActions,
     nativePalette,
     openExportDialog,
@@ -5809,7 +5826,7 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.art.eyedropper") {
       event.preventDefault();
       event.stopPropagation();
-      setStatus(drawingToolStatusLabel("tool.art.eyedropper", "Eyedropper"));
+      setStatus(eyedropperStatusLabel(effectiveArtPaintTarget));
       return;
     }
 
@@ -6997,13 +7014,13 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
-        setStatus(drawingToolStatusLabel("tool.art.eyedropper", "Eyedropper"));
+        setStatus(eyedropperStatusLabel(effectiveArtPaintTarget));
         return;
       }
 
       const targetIds = selectedGraphicObjectIds(document).filter((selectedObjectId) => selectedObjectId !== objectId);
       if (targetIds.length === 0) {
-        setStatus("Eyedropper: select target art; click source after selecting; Esc exits");
+        setStatus(eyedropperNoTargetStatusLabel(effectiveArtPaintTarget));
         return;
       }
 
@@ -9148,6 +9165,11 @@ export function MainWindow({
                         selectedGraphicPathNode?.objectId === object.id
                       }
                       graphicSegmentEraseActive={activeToolState.activeCommandId === "tool.eraser"}
+                      graphicEyedropperTargetActive={
+                        activeToolState.activeCommandId === "tool.art.eyedropper" &&
+                        object.type === "graphic" &&
+                        document.selection.objectIds.includes(object.id)
+                      }
                       activeArtPaintTarget={effectiveArtPaintTarget}
                       selectedGraphicPathNodeIndex={
                         selectedGraphicPathNode?.objectId === object.id
@@ -13200,6 +13222,7 @@ function DocumentObjectView({
   graphicDirectEditActive,
   graphicPathFeedbackActive,
   graphicSegmentEraseActive,
+  graphicEyedropperTargetActive,
   activeArtPaintTarget,
   selectedGraphicPathNodeIndex,
   selectedPart,
@@ -13262,6 +13285,7 @@ function DocumentObjectView({
   graphicDirectEditActive: boolean;
   graphicPathFeedbackActive: boolean;
   graphicSegmentEraseActive: boolean;
+  graphicEyedropperTargetActive: boolean;
   activeArtPaintTarget: GraphicStylePaintTarget;
   selectedGraphicPathNodeIndex?: number;
   selectedPart?: NativeMoleculeSelectionPart;
@@ -14168,6 +14192,13 @@ function DocumentObjectView({
         />
       </>
     ) : null;
+    const graphicEyedropperTargetOverlay = graphicEyedropperTargetActive ? (
+      <GraphicEyedropperTargetOverlay
+        target={activeArtPaintTarget}
+        frameStyle={artObjectTransformFrameStyle}
+        counterRotationDegrees={graphicVisualRotationDegrees}
+      />
+    ) : null;
     return (
       <div
         className={["document-object", "document-object-overlay", "graphic-object"].join(" ")}
@@ -14208,6 +14239,7 @@ function DocumentObjectView({
           {graphicGradientHandles}
           {graphicPathEditHandles}
         </div>
+        {graphicEyedropperTargetOverlay}
         {artObjectTransformFrame}
       </div>
     );
@@ -14273,6 +14305,32 @@ function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPrevie
       className="art-transform-drag-preview art-transform-drag-preview-bounds"
       data-art-transform-drag-preview="bounds"
     />
+  );
+}
+
+function GraphicEyedropperTargetOverlay({
+  target,
+  frameStyle,
+  counterRotationDegrees
+}: {
+  target: GraphicStylePaintTarget;
+  frameStyle?: CSSProperties;
+  counterRotationDegrees: number;
+}) {
+  const label = target === "fill" ? "Fill target" : "Stroke target";
+  return (
+    <div
+      aria-hidden="true"
+      className="graphic-eyedropper-target"
+      data-graphic-eyedropper-target={target}
+      style={frameStyle ?? { inset: 0 }}
+    >
+      <span className="graphic-eyedropper-target-badge" style={{
+        transform: graphicSystemReadoutTransform(counterRotationDegrees, "eyedropper-target")
+      }}>
+        {label}
+      </span>
+    </div>
   );
 }
 
@@ -15370,11 +15428,13 @@ function GraphicPathEditHandles({
 
 function graphicSystemReadoutTransform(
   counterRotationDegrees: number,
-  kind: "corner-radius" | "path-radian"
+  kind: "corner-radius" | "path-radian" | "eyedropper-target"
 ): string {
   const base = kind === "corner-radius"
     ? "translate(-50%, calc(-100% - 10px))"
-    : "translate(-50%, calc(-100% - 12px))";
+    : kind === "path-radian"
+      ? "translate(-50%, calc(-100% - 12px))"
+      : "translate(-50%, calc(-100% - 8px))";
   return Math.abs(counterRotationDegrees) > 0.001
     ? `${base} rotate(${formatSvgNumber(-counterRotationDegrees)}deg)`
     : base;

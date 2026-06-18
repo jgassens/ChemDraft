@@ -566,6 +566,52 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
   });
 
+  it("marks the selected art receiver and names the active eyedropper target", async () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Eyedropper Target Mark"),
+      { x: 220, y: 180 },
+      "tool.art.circle"
+    );
+    const targetId = withTarget.selection.objectIds[0] ?? "";
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 340, y: 180 }, "tool.art.rect");
+    const sourceId = withSource.selection.objectIds[0] ?? "";
+    const selectedTarget = applyPatch(withSource, {
+      op: "setSelection",
+      pageId: withSource.pages[0].id,
+      objectIds: [targetId]
+    });
+    await renderMainWindow(selectedTarget);
+
+    const eyedropperButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.art.eyedropper"]');
+    if (!eyedropperButton) {
+      throw new Error("Expected eyedropper button.");
+    }
+    await act(async () => {
+      eyedropperButton.click();
+    });
+
+    const status = container.querySelector('[role="status"]');
+    expect(objectElement(targetId).querySelector('[data-graphic-eyedropper-target="fill"]')).not.toBeNull();
+    expect(objectElement(targetId).textContent).toContain("Fill target");
+    expect(objectElement(sourceId).querySelector("[data-graphic-eyedropper-target]")).toBeNull();
+    expect(status?.textContent).toContain("Fill target");
+    expect(status?.textContent).toContain("switch Fill/Stroke");
+    expect(status?.textContent).toContain("⌥ click copies all");
+    expect(status?.textContent).not.toContain("Option");
+
+    const strokeTargetButton = container.querySelector<HTMLButtonElement>('[data-command-id="object.style.target.stroke"]');
+    if (!strokeTargetButton) {
+      throw new Error("Expected stroke target button.");
+    }
+    await act(async () => {
+      strokeTargetButton.click();
+    });
+
+    expect(objectElement(targetId).querySelector('[data-graphic-eyedropper-target="stroke"]')).not.toBeNull();
+    expect(objectElement(targetId).textContent).toContain("Stroke target");
+    expect(status?.textContent).toContain("Stroke target");
+  });
+
   it("copies active stroke and marker style from a clicked source line to a selected arc", async () => {
     const withTarget = insertNativeArtGraphicObject(
       createPhase4Document("Eyedropper Stroke Copy"),

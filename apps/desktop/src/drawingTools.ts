@@ -443,7 +443,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.scissors", "Scissors", "select", usageHint("click path to split", "click path for more", "Esc exits")],
     ["tool.art.pencil", "Pencil", "mechanism", usageHint("drag to draw", "keep dragging to continue", "release ends, Esc cancels")],
     ["tool.art.brush", "Brush", "style", usageHint("drag to paint", "keep dragging to continue", "release ends, Esc cancels")],
-    ["tool.art.eyedropper", "Eyedropper", "style", usageHint("click source art", "Option copies full appearance", "Esc exits")],
+    ["tool.art.eyedropper", "Eyedropper", "style", usageHint("click source art", "⌥ copies full appearance", "Esc exits")],
     ["tool.art.arrow", "Arrow", "export", artPathUsageHint],
     ["tool.art.arc270", "Three-quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export", artPathUsageHint],
