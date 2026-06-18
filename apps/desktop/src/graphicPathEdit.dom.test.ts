@@ -127,6 +127,14 @@ describe("graphic path direct editing interactions", () => {
     return button;
   }
 
+  function gradientHandle(handle: "start" | "end"): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-graphic-gradient-handle="${handle}"]`);
+    if (!button) {
+      throw new Error(`Expected ${handle} gradient handle.`);
+    }
+    return button;
+  }
+
   function pathNodeHandle(index: number): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-graphic-path-node-index="${index}"]`);
     if (!button) {
@@ -325,6 +333,81 @@ describe("graphic path direct editing interactions", () => {
     expect(debugArtObject(objectId).object.data.markerEnd).toEqual({
       kind: "filled-arrow",
       sizePx: 10
+    });
+  });
+
+  it("drags a linear gradient endpoint as one undoable edit", async () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Linear Gradient Handle Drag"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const painted = applyPatch(inserted, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          ...graphicById(inserted, objectId).style,
+          fillColor: "#1d7f68",
+          fillMode: "solid",
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    });
+    await renderMainWindow(painted);
+    expect(container.querySelector('[data-graphic-gradient-control-line="fill"]')).not.toBeNull();
+
+    const before = debugArtObject(objectId).object;
+    const start = {
+      x: before.x + before.width,
+      y: before.y
+    };
+    const target = {
+      x: before.x + before.width * 0.2,
+      y: before.y + before.height * 0.8
+    };
+
+    await act(async () => {
+      dispatchPointer(gradientHandle("end"), "pointerdown", start, 21);
+      dispatchPointer(pageElement(), "pointermove", target, 21);
+      dispatchPointer(pageElement(), "pointerup", target, 21);
+    });
+
+    const editedPaint = debugArtObject(objectId).object.style.fillPaint;
+    expect(editedPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0,
+      y1: 0
+    });
+    expect(editedPaint?.kind === "linear-gradient" ? editedPaint.x2 : undefined).toBeCloseTo(0.2, 6);
+    expect(editedPaint?.kind === "linear-gradient" ? editedPaint.y2 : undefined).toBeCloseTo(0.8, 6);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    expect(debugArtObject(objectId).object.style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x2: 1,
+      y2: 0
     });
   });
 

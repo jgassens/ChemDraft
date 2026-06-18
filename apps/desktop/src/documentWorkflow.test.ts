@@ -132,6 +132,7 @@ import {
   updateNativeTextObjectStyleRange,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
+  updateNativeGraphicLinearGradientHandle,
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle
 } from "./documentWorkflow";
@@ -3960,6 +3961,40 @@ describe("Phase 4 document workflow", () => {
         { offset: 0.5, color: "#b3261e" },
         { offset: 1, color: "#1d7f68", opacity: 0.42 }
       ]
+    });
+    const linearGradientGraphic = graphicById(rotatedLinearStops, objectId);
+    const movedLinearGradientStart = updateNativeGraphicLinearGradientHandle(
+      rotatedLinearStops,
+      objectId,
+      "fill",
+      "start",
+      { x: linearGradientGraphic.width * 0.25, y: linearGradientGraphic.height * 0.75 }
+    );
+    expect(graphicById(movedLinearGradientStart, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.25,
+      y1: 0.75,
+      x2: 1,
+      y2: 1,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 0.5, color: "#b3261e" },
+        { offset: 1, color: "#1d7f68", opacity: 0.42 }
+      ]
+    });
+    const movedLinearGradientEnd = updateNativeGraphicLinearGradientHandle(
+      movedLinearGradientStart,
+      objectId,
+      "fill",
+      "end",
+      { x: linearGradientGraphic.width * 1.5, y: -12 }
+    );
+    expect(graphicById(movedLinearGradientEnd, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.25,
+      y1: 0.75,
+      x2: 1,
+      y2: 0
     });
     const deletedSelectedLinearStop = deleteGraphicObjectGradientStopAtIndexForSelection(editedLinearStopOpacity, "fill", 1);
     expect(graphicById(deletedSelectedLinearStop, objectId).style.fillPaint).toMatchObject({

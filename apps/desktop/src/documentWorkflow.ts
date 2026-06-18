@@ -1354,6 +1354,38 @@ export function nativeGraphicCornerRadiusEditPoint(
   return graphicCornerRadiusEditPoint(object);
 }
 
+export type NativeGraphicLinearGradientHandleId = "start" | "end";
+
+export interface NativeGraphicLinearGradientHandlePoints {
+  start: NativeArtPoint;
+  end: NativeArtPoint;
+}
+
+export function nativeGraphicLinearGradientHandlePoints(
+  object: GraphicObject,
+  target: GraphicStylePaintTarget
+): NativeGraphicLinearGradientHandlePoints | undefined {
+  if (!graphicObjectSupportsStyleCapability(object, target)) {
+    return undefined;
+  }
+
+  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  if (paint.kind !== "linear-gradient") {
+    return undefined;
+  }
+
+  return {
+    start: {
+      x: clampWorkflowUnit(paint.x1) * object.width,
+      y: clampWorkflowUnit(paint.y1) * object.height
+    },
+    end: {
+      x: clampWorkflowUnit(paint.x2) * object.width,
+      y: clampWorkflowUnit(paint.y2) * object.height
+    }
+  };
+}
+
 export function updateNativeGraphicPathHandle(
   document: ChemDraftDocument,
   objectId: string,
@@ -1495,6 +1527,63 @@ export function updateNativeGraphicCornerRadius(
       op: "updateObject",
       objectId,
       changes: edited
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function updateNativeGraphicLinearGradientHandle(
+  document: ChemDraftDocument,
+  objectId: string,
+  target: GraphicStylePaintTarget,
+  handle: NativeGraphicLinearGradientHandleId,
+  point: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "graphic" || !graphicObjectSupportsStyleCapability(object, target)) {
+    return document;
+  }
+
+  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  if (paint.kind !== "linear-gradient") {
+    return document;
+  }
+
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  const nextX = clampWorkflowUnit(point.x / width);
+  const nextY = clampWorkflowUnit(point.y / height);
+  const nextPaint = handle === "start"
+    ? { ...paint, x1: nextX, y1: nextY }
+    : { ...paint, x2: nextX, y2: nextY };
+  if (
+    nextPaint.x1 === paint.x1 &&
+    nextPaint.y1 === paint.y1 &&
+    nextPaint.x2 === paint.x2 &&
+    nextPaint.y2 === paint.y2
+  ) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: target === "fill"
+          ? {
+              ...object.style,
+              fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
+              fillMode: "solid",
+              fillPaint: nextPaint
+            }
+          : {
+              ...object.style,
+              strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
+              strokePaint: nextPaint
+            }
+      }
     },
     { now: phase4Timestamp }
   );

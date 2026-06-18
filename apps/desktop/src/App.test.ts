@@ -2645,6 +2645,11 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('gradientUnits="userSpaceOnUse"');
     expect(markup).toContain('stop-color="#1648ff"');
     expect(markup).toContain('stop-opacity="0.5"');
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-control-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-target="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="start"');
+    expect(markup).toContain('data-graphic-gradient-handle="end"');
     expect(markup).not.toContain('id="graphic-gloss-');
   });
 
