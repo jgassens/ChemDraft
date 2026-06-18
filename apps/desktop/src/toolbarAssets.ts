@@ -22,6 +22,7 @@ export const toolbarAssetNames = [
   "Custom_Cyclopentane",
   "Custom_Dagger",
   "Custom_Draw_Line",
+  "Custom_Eyedropper",
   "Custom_Eraser",
   "Custom_Flip_Horizontal",
   "Custom_Flip_Vertical",

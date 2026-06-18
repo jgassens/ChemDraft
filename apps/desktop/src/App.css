@@ -1604,6 +1604,13 @@ textarea:focus-visible,
   -webkit-user-select: none;
 }
 
+.app-shell[data-active-tool="tool.art.eyedropper"] .canvas-region,
+.app-shell[data-active-tool="tool.art.eyedropper"] .page,
+.app-shell[data-active-tool="tool.art.eyedropper"] .page-svg-surface,
+.app-shell[data-active-tool="tool.art.eyedropper"] .graphic-glyph-hit-target {
+  cursor: crosshair;
+}
+
 .page.crosshairs-visible {
   background:
     linear-gradient(var(--cd-canvas-grid) 1px, transparent 1px),

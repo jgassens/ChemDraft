@@ -1886,12 +1886,20 @@ describe("ChemDraft desktop shell", () => {
     expect(freehandInspectorMarkup).not.toContain('aria-label="Stroke width"');
     expect(freehandInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
     expect(markup).not.toContain('data-command-id="text.color.black"');
+    expect(desktopToolsetsSource).toContain('"commandId": "tool.art.eyedropper"');
+    expect(desktopToolsetsSource).toContain('"assetName": "Custom_Eyedropper"');
+    expect(mainWindowSource).toContain("toolBeforeEyedropperRef");
+    expect(mainWindowSource).toContain("restoreToolAfterEyedropper");
+    expect(mainWindowSource).toContain('tool.id === "tool.art.eyedropper" && activeToolState.activeCommandId === "tool.art.eyedropper"');
+    expect(mainWindowSource).toContain('event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
     expect(toolPaletteSource).toContain("HexColorPicker");
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");
     expect(toolPaletteSource).toContain("supportsFillAny");
     expect(appCss).toContain(".art-tool-icon");
+    expect(appCss).toContain('.app-shell[data-active-tool="tool.art.eyedropper"] .page');
+    expect(appCss).toContain("cursor: crosshair;");
     expect(appCss).toContain(".art-toolbar-style-controls");
     expect(appCss).toContain("grid-template-rows: 24px minmax(35px, auto);");
     expect(appCss).toContain("grid-auto-rows: minmax(24px, auto);");
@@ -2193,10 +2201,17 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps functional metadata on asset-backed palette commands", () => {
     const assetCommands = paletteGroups.flat().filter((command) => command.assetName);
+    const eyedropperCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.eyedropper");
 
     expect(assetCommands.length).toBeGreaterThanOrEqual(49);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.every((command) => command.description)).toBe(true);
+    expect(eyedropperCommand).toMatchObject({
+      id: "tool.art.eyedropper",
+      title: "Eyedropper",
+      assetName: "Custom_Eyedropper",
+      category: "art"
+    });
     expect(assetCommands.find((command) => command.assetName === "Custom_Bond_Wedge")).toMatchObject({
       id: "tool.wedgeBond",
       title: "Solid Wedge Bond",

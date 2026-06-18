@@ -564,6 +564,26 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
   });
 
+  it("exits the eyedropper tool with Escape", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Eyedropper Escape"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.eyedropper" });
+
+    expect(container.querySelector('[data-active-tool="tool.art.eyedropper"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true
+      }));
+    });
+
+    expect(container.querySelector('[data-active-tool="tool.select"]')).not.toBeNull();
+  });
+
   it("positions native art path handles through the active page scale", async () => {
     const arrowDocument = insertNativeArtGraphicObject(
       createPhase4Document("Scaled Arrowhead Handles"),

@@ -782,7 +782,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.8.35-codex";
+const CURRENT_BUILD_STAMP = "6.18.8.52-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -1052,6 +1052,7 @@ export function MainWindow({
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
+  const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
   // template click can reuse exactly what the highlight is painting (see
@@ -2233,6 +2234,20 @@ export function MainWindow({
     void broadcastToolsetActiveTool(previousToolState.activeCommandId).catch(() => undefined);
   }, []);
 
+  const restoreToolAfterEyedropper = useCallback(() => {
+    const previousToolState = toolBeforeEyedropperRef.current ?? createActiveToolState("tool.select");
+    const previousToolTitle = toolCommandSpecs.find((candidate) =>
+      candidate.id === previousToolState.activeCommandId
+    )?.title ?? "Selection Tool";
+
+    toolBeforeEyedropperRef.current = undefined;
+    toolBeforeTextPlacementRef.current = undefined;
+    activeToolCommandIdRef.current = previousToolState.activeCommandId;
+    setActiveToolState(previousToolState);
+    void broadcastToolsetActiveTool(previousToolState.activeCommandId).catch(() => undefined);
+    setStatus(`${previousToolTitle} active`);
+  }, [toolCommandSpecs]);
+
   const switchToSelectTool = useCallback(() => {
     const selectToolState = createActiveToolState("tool.select");
     activeToolCommandIdRef.current = selectToolState.activeCommandId;
@@ -3352,6 +3367,17 @@ export function MainWindow({
           return;
         }
 
+        if (tool.id === "tool.art.eyedropper" && activeToolState.activeCommandId === "tool.art.eyedropper") {
+          restoreToolAfterEyedropper();
+          return;
+        }
+
+        if (tool.id === "tool.art.eyedropper") {
+          toolBeforeEyedropperRef.current = activeToolState;
+        } else {
+          toolBeforeEyedropperRef.current = undefined;
+        }
+
         if (tool.id === "tool.text") {
           toolBeforeTextPlacementRef.current =
             activeToolState.activeCommandId === "tool.text" ? undefined : activeToolState;
@@ -3460,6 +3486,7 @@ export function MainWindow({
     quickActions,
     resetDocumentHistory,
     restoreDocumentHistory,
+    restoreToolAfterEyedropper,
     saveCurrentDocument,
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
@@ -3951,6 +3978,12 @@ export function MainWindow({
         return;
       }
 
+      if (event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper") {
+        event.preventDefault();
+        restoreToolAfterEyedropper();
+        return;
+      }
+
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
         const hoveredTargetCommandId = activeNativeTargetShortcutCommand(
           documentRef.current,
@@ -3984,6 +4017,7 @@ export function MainWindow({
     clearProjectedPlaneTiltDrag,
     finishNativePathArtDraw,
     replacePresentDocument,
+    restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
     shortcutRegistry,
     syncPathArtPreview
