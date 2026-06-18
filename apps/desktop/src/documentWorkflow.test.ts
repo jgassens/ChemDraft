@@ -4186,6 +4186,100 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(noFill, objectId).style.fillMode).toBeUndefined();
   });
 
+  it("flips native graphic gradient coordinates with the art object", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Gradient Flip"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = document.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0.15,
+            y1: 0.2,
+            x2: 0.85,
+            y2: 0.7,
+            stops: [
+              { offset: 0, color: "#b3261e" },
+              { offset: 1, color: "#ffffff" }
+            ]
+          },
+          strokePaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.3,
+            cy: 0.4,
+            r: 0.55,
+            fx: 0.2,
+            fy: 0.8,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    }]);
+    const graphic = graphicById(painted, objectId);
+    const center = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+
+    const horizontal = flipDocumentObjectsAroundPoint(painted, [objectId], center, "horizontal");
+    const horizontalGraphic = graphicById(horizontal, objectId);
+    expect(horizontalGraphic.style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.85,
+      y1: 0.2,
+      x2: 0.15,
+      y2: 0.7,
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    expect(horizontalGraphic.style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.7,
+      cy: 0.4,
+      r: 0.55,
+      fx: 0.8,
+      fy: 0.8,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#1d7f68" }
+      ]
+    });
+
+    const vertical = flipDocumentObjectsAroundPoint(painted, [objectId], center, "vertical");
+    const verticalGraphic = graphicById(vertical, objectId);
+    expect(verticalGraphic.style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.15,
+      y1: 0.8,
+      x2: 0.85,
+      y2: 0.3
+    });
+    expect(verticalGraphic.style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.3,
+      cy: 0.6,
+      r: 0.55,
+      fx: 0.2,
+      fy: 0.2
+    });
+  });
+
   it("skips fill and corner-only style fields for open-stroke graphics", () => {
     const withLine = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Open Stroke Style"),

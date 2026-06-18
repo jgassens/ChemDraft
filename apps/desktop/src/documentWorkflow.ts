@@ -7224,6 +7224,7 @@ function flipOtherObjectAroundPoint(
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
+    changes.style = flipGraphicObjectGradientStyle(object.style, axis);
   }
 
   return applyPatch(
@@ -7231,6 +7232,62 @@ function flipOtherObjectAroundPoint(
     { op: "updateObject", objectId, changes: changes as Partial<DocumentObject> },
     { now: phase4Timestamp }
   );
+}
+
+function flipGraphicObjectGradientStyle(
+  style: GraphicObjectStyle,
+  axis: DocumentFlipAxis
+): GraphicObjectStyle {
+  const fillPaint = flipGraphicPaintForAxis(style.fillPaint, axis);
+  const strokePaint = flipGraphicPaintForAxis(style.strokePaint, axis);
+  if (fillPaint === style.fillPaint && strokePaint === style.strokePaint) {
+    return style;
+  }
+
+  return {
+    ...style,
+    ...(fillPaint === style.fillPaint ? {} : { fillPaint }),
+    ...(strokePaint === style.strokePaint ? {} : { strokePaint })
+  };
+}
+
+function flipGraphicPaintForAxis(
+  paint: GraphicPaint | undefined,
+  axis: DocumentFlipAxis
+): GraphicPaint | undefined {
+  if (paint?.kind === "linear-gradient") {
+    return axis === "horizontal"
+      ? {
+          ...paint,
+          x1: flipGradientUnitCoordinate(paint.x1),
+          x2: flipGradientUnitCoordinate(paint.x2)
+        }
+      : {
+          ...paint,
+          y1: flipGradientUnitCoordinate(paint.y1),
+          y2: flipGradientUnitCoordinate(paint.y2)
+        };
+  }
+
+  if (paint?.kind === "radial-gradient") {
+    return axis === "horizontal"
+      ? {
+          ...paint,
+          cx: flipGradientUnitCoordinate(paint.cx),
+          fx: typeof paint.fx === "number" ? flipGradientUnitCoordinate(paint.fx) : paint.fx
+        }
+      : {
+          ...paint,
+          cy: flipGradientUnitCoordinate(paint.cy),
+          fy: typeof paint.fy === "number" ? flipGradientUnitCoordinate(paint.fy) : paint.fy
+        };
+  }
+
+  return paint;
+}
+
+function flipGradientUnitCoordinate(value: number): number {
+  return Number(clampWorkflowUnit(1 - value).toFixed(6));
 }
 
 function flipPointAroundAxis(
