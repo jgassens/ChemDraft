@@ -4196,6 +4196,52 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(noFill, objectId).style.fillMode).toBeUndefined();
   });
 
+  it("moves linear gradient endpoint handles when endpoint stop offsets move", () => {
+    const withGraphic = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Gradient Endpoint Stop Handles"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = withGraphic.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+
+    const linearFilled = applyGraphicObjectPaintTypeToSelection(withGraphic, "fill", "linear-gradient");
+    const threeStopGradient = addGraphicObjectGradientStopForSelection(linearFilled, "fill");
+    const movedStart = applyGraphicObjectGradientStopOffsetForSelection(threeStopGradient, "fill", 0, 0.25);
+    const movedStartPaint = graphicById(movedStart, objectId).style.fillPaint;
+    expect(movedStartPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.25,
+      y1: 0.25,
+      x2: 1,
+      y2: 1
+    });
+    if (movedStartPaint?.kind !== "linear-gradient") {
+      throw new Error("Expected moved start linear gradient paint.");
+    }
+    expect(movedStartPaint.stops[0]?.offset).toBe(0);
+    expect(movedStartPaint.stops[1]?.offset).toBeCloseTo(1 / 3, 6);
+    expect(movedStartPaint.stops[2]?.offset).toBe(1);
+
+    const movedEnd = applyGraphicObjectGradientStopOffsetForSelection(threeStopGradient, "fill", 2, 0.75);
+    const movedEndPaint = graphicById(movedEnd, objectId).style.fillPaint;
+    expect(movedEndPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0,
+      y1: 0,
+      x2: 0.75,
+      y2: 0.75
+    });
+    if (movedEndPaint?.kind !== "linear-gradient") {
+      throw new Error("Expected moved end linear gradient paint.");
+    }
+    expect(movedEndPaint.stops[0]?.offset).toBe(0);
+    expect(movedEndPaint.stops[1]?.offset).toBeCloseTo(2 / 3, 6);
+    expect(movedEndPaint.stops[2]?.offset).toBe(1);
+  });
+
   it("flips native graphic gradient coordinates with the art object", () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Gradient Flip"),

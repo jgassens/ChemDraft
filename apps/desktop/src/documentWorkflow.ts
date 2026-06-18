@@ -3682,6 +3682,7 @@ export function applyObjectColorToDocumentObjects(
 export type GraphicStylePaintTarget = "fill" | "stroke";
 export type GraphicStylePaintType = GraphicPaint["kind"] | "gloss";
 const MAX_GRAPHIC_GRADIENT_STOPS = 8;
+const GRAPHIC_GRADIENT_ENDPOINT_STOP_GAP = 0.01;
 
 export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] {
   const selectedIds = new Set(document.selection.objectIds);
@@ -3976,9 +3977,26 @@ export function applyGraphicObjectGradientStopOffsetForSelection(
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
   const value = clampWorkflowUnit(offset);
-  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, (stops) =>
-    updateGradientStopAtIndex(stops, stopIndex, (stop) => ({ ...stop, offset: value }))
-  );
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+    if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
+      return object.style;
+    }
+
+    const nextPaint = moveGraphicGradientStopOffset(paint, stopIndex, value);
+    return target === "fill"
+      ? {
+          ...object.style,
+          fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
+          fillMode: "solid",
+          fillPaint: nextPaint
+        }
+      : {
+          ...object.style,
+          strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
+          strokePaint: nextPaint
+        };
+  }, (object) => graphicObjectSupportsStyleCapability(object, target));
 }
 
 export function applyGraphicObjectOpacityToSelection(
@@ -5702,6 +5720,91 @@ function deleteGradientStopAtIndex(
 
   const deleteIndex = Math.max(0, Math.min(sorted.length - 1, Math.round(stopIndex)));
   return sorted.filter((_, index) => index !== deleteIndex);
+}
+
+function moveGraphicGradientStopOffset(
+  paint: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>,
+  stopIndex: number,
+  offset: number
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }> {
+  const sorted = sortedGradientStops(paint.stops);
+  const editIndex = Math.round(stopIndex);
+  if (editIndex < 0 || editIndex >= sorted.length) {
+    return { ...paint, stops: sorted };
+  }
+
+  if (paint.kind === "linear-gradient" && sorted.length >= 2) {
+    if (editIndex === 0) {
+      return moveLinearGradientStartStop(paint, sorted, offset);
+    }
+    if (editIndex === sorted.length - 1) {
+      return moveLinearGradientEndStop(paint, sorted, offset);
+    }
+  }
+
+  return {
+    ...paint,
+    stops: updateGradientStopAtIndex(sorted, editIndex, (stop) => ({ ...stop, offset }))
+  };
+}
+
+function moveLinearGradientStartStop(
+  paint: Extract<GraphicPaint, { kind: "linear-gradient" }>,
+  sortedStops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  offset: number
+): Extract<GraphicPaint, { kind: "linear-gradient" }> {
+  const nextStop = sortedStops[1];
+  const maximumOffset = nextStop
+    ? Math.max(0, nextStop.offset - GRAPHIC_GRADIENT_ENDPOINT_STOP_GAP)
+    : 1;
+  const endpointOffset = Math.max(0, Math.min(maximumOffset, offset));
+  const span = 1 - endpointOffset;
+  if (span <= 0) {
+    return { ...paint, stops: sortedStops };
+  }
+
+  const x1 = clampWorkflowUnit(paint.x1);
+  const y1 = clampWorkflowUnit(paint.y1);
+  const x2 = clampWorkflowUnit(paint.x2);
+  const y2 = clampWorkflowUnit(paint.y2);
+  return {
+    ...paint,
+    x1: clampWorkflowUnit(x1 + (x2 - x1) * endpointOffset),
+    y1: clampWorkflowUnit(y1 + (y2 - y1) * endpointOffset),
+    stops: sortedGradientStops(sortedStops.map((stop) => ({
+      ...stop,
+      offset: clampWorkflowUnit((stop.offset - endpointOffset) / span)
+    })))
+  };
+}
+
+function moveLinearGradientEndStop(
+  paint: Extract<GraphicPaint, { kind: "linear-gradient" }>,
+  sortedStops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  offset: number
+): Extract<GraphicPaint, { kind: "linear-gradient" }> {
+  const previousStop = sortedStops[sortedStops.length - 2];
+  const minimumOffset = previousStop
+    ? Math.min(1, previousStop.offset + GRAPHIC_GRADIENT_ENDPOINT_STOP_GAP)
+    : 0;
+  const endpointOffset = Math.max(minimumOffset, Math.min(1, offset));
+  if (endpointOffset <= 0) {
+    return { ...paint, stops: sortedStops };
+  }
+
+  const x1 = clampWorkflowUnit(paint.x1);
+  const y1 = clampWorkflowUnit(paint.y1);
+  const x2 = clampWorkflowUnit(paint.x2);
+  const y2 = clampWorkflowUnit(paint.y2);
+  return {
+    ...paint,
+    x2: clampWorkflowUnit(x1 + (x2 - x1) * endpointOffset),
+    y2: clampWorkflowUnit(y1 + (y2 - y1) * endpointOffset),
+    stops: sortedGradientStops(sortedStops.map((stop) => ({
+      ...stop,
+      offset: clampWorkflowUnit(stop.offset / endpointOffset)
+    })))
+  };
 }
 
 function updateGradientStopAtIndex(
