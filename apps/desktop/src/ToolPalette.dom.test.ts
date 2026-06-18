@@ -2,10 +2,12 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { applyPatches } from "@chemdraft/chem-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette } from "./ToolPalette";
+import { objectGradientStopOffsetCommandId } from "./commands";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -18,6 +20,45 @@ function artInspectorModelFor(commandId: string) {
   return createArtInspectorModel({
     document,
     selectedGraphicObjects: selectedGraphicObjectsForArtInspector(document),
+    requestedPaintTarget: "fill"
+  });
+}
+
+function gradientArtInspectorModel() {
+  const document = insertNativeArtGraphicObject(
+    createPhase4Document("Palette gradient stops"),
+    { x: 220, y: 180 },
+    "tool.art.rect"
+  );
+  const objectId = document.selection.objectIds[0];
+  if (!objectId) {
+    throw new Error("Expected selected art object.");
+  }
+  const gradientDocument = applyPatches(document, [{
+    op: "updateObject",
+    objectId,
+    changes: {
+      style: {
+        fillPaint: {
+          kind: "linear-gradient",
+          units: "object",
+          x1: 0,
+          y1: 0,
+          x2: 1,
+          y2: 1,
+          stops: [
+            { offset: 0, color: "#1d7f68" },
+            { offset: 1, color: "#ffffff" }
+          ]
+        },
+        fillColor: "#1d7f68",
+        fillMode: "solid"
+      }
+    }
+  }]);
+  return createArtInspectorModel({
+    document: gradientDocument,
+    selectedGraphicObjects: selectedGraphicObjectsForArtInspector(gradientDocument),
     requestedPaintTarget: "fill"
   });
 }
@@ -41,12 +82,16 @@ describe("ToolPalette art color popover", () => {
 
   function renderPalette({
     commandId = "tool.art.rect",
+    currentArtStyle = artInspectorModelFor(commandId),
     onCancel = vi.fn()
   }: {
     commandId?: string;
+    currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
   } = {}) {
     const onInvoke = vi.fn();
+    const onPreview = vi.fn();
+    const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: [],
@@ -55,12 +100,14 @@ describe("ToolPalette art color popover", () => {
         showArtStyleControls: true,
         currentObjectColor: "#111111",
         currentArtStyleTarget: "fill",
-        currentArtStyle: artInspectorModelFor(commandId),
+        currentArtStyle,
+        onArtStylePreview: onPreview,
+        onArtStyleCommit: onCommit,
         onArtStyleCancel: onCancel,
         onInvoke
       }));
     });
-    return { onInvoke };
+    return { onCommit, onInvoke, onPreview };
   }
 
   function colorTrigger(): HTMLButtonElement {
@@ -178,5 +225,40 @@ describe("ToolPalette art color popover", () => {
       throw new Error("Expected restored fill paint type selector.");
     }
     expect([...restoredFillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
+  });
+
+  it("drags gradient stop markers directly across the gradient rail", () => {
+    const { onCommit, onPreview } = renderPalette({ currentArtStyle: gradientArtInspectorModel() });
+    const rail = container.querySelector<HTMLDivElement>('[data-art-gradient-rail="fill"]');
+    const marker = container.querySelector<HTMLButtonElement>('[data-art-gradient-stop="0"]');
+    if (!rail || !marker) {
+      throw new Error("Expected gradient rail and stop marker.");
+    }
+
+    Object.defineProperty(rail, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 10,
+        y: 4,
+        left: 10,
+        top: 4,
+        right: 110,
+        bottom: 22,
+        width: 100,
+        height: 18,
+        toJSON: () => undefined
+      })
+    });
+
+    act(() => {
+      marker.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 10, buttons: 1 }));
+      marker.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 47, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenLastCalledWith(objectGradientStopOffsetCommandId(0, 0.37));
+
+    act(() => {
+      marker.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 47, buttons: 0 }));
+    });
+    expect(onCommit).toHaveBeenCalledWith(objectGradientStopOffsetCommandId(0, 0.37));
   });
 });

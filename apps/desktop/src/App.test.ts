@@ -1880,8 +1880,9 @@ describe("ChemDraft desktop shell", () => {
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color="#1d7f68"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-offset="0"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color-trigger="true"');
-    expect(gradientInspectorMarkup).toContain('data-art-inspector-slider="gradient-stop-position"');
     expect(gradientInspectorMarkup).toContain('data-art-inspector-slider="gradient-stop-opacity"');
+    expect(gradientInspectorMarkup).toContain('aria-label="Drag gradient stop 1 at 0%"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.stopOffset.0.0"');
     expect(gradientInspectorMarkup.match(/data-art-gradient-stop=/g) ?? []).toHaveLength(2);
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-active="true"');
     expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:0%");

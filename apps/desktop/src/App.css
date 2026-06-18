@@ -649,7 +649,7 @@ textarea:focus-visible,
   border-radius: 2px;
   background: var(--art-gradient-stop-color);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 72%);
-  cursor: pointer;
+  cursor: ew-resize;
   transform: translate(-50%, -50%);
 }
 
@@ -662,7 +662,7 @@ textarea:focus-visible,
 
 .art-gradient-stop-editor {
   display: grid;
-  grid-template-columns: 64px 68px minmax(148px, 1fr);
+  grid-template-columns: 64px 68px minmax(0, 1fr);
   width: 100%;
 }
 
@@ -679,13 +679,6 @@ textarea:focus-visible,
 
 .art-gradient-stop-editor .art-inspector-slider {
   width: 100%;
-}
-
-.art-gradient-stop-sliders {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(70px, 1fr));
-  gap: var(--cd-space-2);
-  min-width: 0;
 }
 
 .art-target-toggle {

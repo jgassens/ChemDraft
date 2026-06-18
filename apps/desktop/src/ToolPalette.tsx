@@ -59,6 +59,7 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   || command.id === "text.color.gray"
 ));
 const TOOLTIP_DELAY_MS = 650;
+const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
 
 export function ToolPalette({
   groups,
@@ -610,7 +611,9 @@ function ArtToolbarStyleControls({
     effectiveArtStyleTarget === "fill" || command.paintType !== "gloss"
   );
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
+  const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
+  const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
   const [selectedGradientStopIndex, setSelectedGradientStopIndex] = useState(0);
@@ -762,6 +765,78 @@ function ArtToolbarStyleControls({
     }
     setDraftGradientStopColor(normalized);
     invokeOrCommit(objectGradientStopColorCommandId(activeGradientStopIndex, normalized));
+  };
+
+  const gradientStopOffsetForClientX = (stopIndex: number, clientX: number): number | undefined => {
+    const railRect = gradientRailRef.current?.getBoundingClientRect();
+    if (!railRect || railRect.width <= 0) {
+      return undefined;
+    }
+    const rawOffset = Math.max(0, Math.min(1, (clientX - railRect.left) / railRect.width));
+    const previousStop = activeGradientStops[stopIndex - 1];
+    const nextStop = activeGradientStops[stopIndex + 1];
+    const minimumOffset = previousStop
+      ? Math.min(1, previousStop.offset + GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 0;
+    const maximumOffset = nextStop
+      ? Math.max(0, nextStop.offset - GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 1;
+    if (minimumOffset > maximumOffset) {
+      return rawOffset;
+    }
+    return Math.max(minimumOffset, Math.min(maximumOffset, rawOffset));
+  };
+
+  const previewGradientStopOffset = (stopIndex: number, clientX: number): boolean => {
+    const offset = gradientStopOffsetForClientX(stopIndex, clientX);
+    if (offset === undefined) {
+      return false;
+    }
+    previewCommand(objectGradientStopOffsetCommandId(stopIndex, offset));
+    return true;
+  };
+
+  const commitGradientStopOffset = (stopIndex: number, clientX: number): boolean => {
+    const offset = gradientStopOffsetForClientX(stopIndex, clientX);
+    if (offset === undefined) {
+      return false;
+    }
+    invokeOrCommit(objectGradientStopOffsetCommandId(stopIndex, offset));
+    return true;
+  };
+
+  const applyGradientStopOffsetKey = (
+    stopIndex: number,
+    currentOffset: number,
+    event: ReactKeyboardEvent<HTMLButtonElement>
+  ) => {
+    let nextOffset = currentOffset;
+    if (event.key === "Home") {
+      nextOffset = 0;
+    } else if (event.key === "End") {
+      nextOffset = 1;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+      nextOffset = currentOffset - (event.shiftKey ? 0.1 : 0.01);
+    } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+      nextOffset = currentOffset + (event.shiftKey ? 0.1 : 0.01);
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const previousStop = activeGradientStops[stopIndex - 1];
+    const nextStop = activeGradientStops[stopIndex + 1];
+    const minimumOffset = previousStop
+      ? Math.min(1, previousStop.offset + GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 0;
+    const maximumOffset = nextStop
+      ? Math.max(0, nextStop.offset - GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 1;
+    const clampedOffset = minimumOffset <= maximumOffset
+      ? Math.max(minimumOffset, Math.min(maximumOffset, nextOffset))
+      : Math.max(0, Math.min(1, nextOffset));
+    invokeOrCommit(objectGradientStopOffsetCommandId(stopIndex, clampedOffset));
   };
 
   const opacitySlider = (
@@ -996,6 +1071,7 @@ function ArtToolbarStyleControls({
       {showGradientControls ? (
         <div className="art-inspector-row art-gradient-row" data-art-gradient-controls={effectiveArtStyleTarget}>
           <div
+            ref={gradientRailRef}
             className="art-gradient-rail"
             data-art-gradient-rail={effectiveArtStyleTarget}
             data-art-gradient-type={activeGradient?.paintType ?? undefined}
@@ -1005,12 +1081,14 @@ function ArtToolbarStyleControls({
             {activeGradientStops.map((stop, index) => (
               <button
                 type="button"
-                key={`${stop.offset}:${stop.color}:${index}`}
+                key={`gradient-stop-${index}`}
                 className={[
                   "art-gradient-stop-marker",
                   index === activeGradientStopIndex ? "active" : ""
                 ].filter(Boolean).join(" ")}
-                aria-label={`Select gradient stop ${index + 1} at ${Math.round(stop.offset * 100)}%`}
+                aria-label={`Drag gradient stop ${index + 1} at ${Math.round(stop.offset * 100)}%`}
+                title="Drag to move gradient stop; use arrow keys for 1% nudges"
+                data-command-id={objectGradientStopOffsetCommandId(index, stop.offset)}
                 data-art-gradient-stop={index}
                 data-art-gradient-stop-active={index === activeGradientStopIndex ? "true" : undefined}
                 data-palette-control="true"
@@ -1019,7 +1097,51 @@ function ArtToolbarStyleControls({
                   "--art-gradient-stop-offset": `${Math.round(stop.offset * 100)}%`,
                   opacity: stop.opacity
                 } as CSSProperties}
-                onPointerDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.preventDefault();
+                  setSelectedGradientStopIndex(index);
+                  setGradientStopColorOpen(false);
+                  gradientStopDragRef.current = { stopIndex: index, moved: false };
+                  if (typeof event.currentTarget.setPointerCapture === "function") {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }
+                }}
+                onPointerMove={(event) => {
+                  const drag = gradientStopDragRef.current;
+                  if (drag?.stopIndex !== index || event.buttons !== 1) {
+                    return;
+                  }
+                  event.stopPropagation();
+                  event.preventDefault();
+                  if (previewGradientStopOffset(index, event.clientX)) {
+                    drag.moved = true;
+                  }
+                }}
+                onPointerUp={(event) => {
+                  const drag = gradientStopDragRef.current;
+                  event.stopPropagation();
+                  if (typeof event.currentTarget.hasPointerCapture === "function" &&
+                    event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  if (drag?.stopIndex === index && drag.moved) {
+                    commitGradientStopOffset(index, event.clientX);
+                  }
+                  gradientStopDragRef.current = null;
+                }}
+                onPointerCancel={(event) => {
+                  const drag = gradientStopDragRef.current;
+                  if (typeof event.currentTarget.hasPointerCapture === "function" &&
+                    event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  gradientStopDragRef.current = null;
+                  if (drag?.moved) {
+                    onCancel?.();
+                  }
+                }}
+                onKeyDown={(event) => applyGradientStopOffsetKey(index, stop.offset, event)}
                 onClick={() => setSelectedGradientStopIndex(index)}
               />
             ))}
@@ -1130,20 +1252,12 @@ function ArtToolbarStyleControls({
               </div>
             ) : null}
           </div>
-          <div className="art-gradient-stop-sliders">
-            {opacitySlider(
-              "Gradient stop position",
-              "Pos",
-              currentGradientStopOffset,
-              (offset) => objectGradientStopOffsetCommandId(activeGradientStopIndex, offset)
-            )}
-            {opacitySlider(
-              "Gradient stop opacity",
-              "Stop",
-              currentGradientStopOpacity,
-              (opacity) => objectGradientStopOpacityCommandId(activeGradientStopIndex, opacity)
-            )}
-          </div>
+          {opacitySlider(
+            "Gradient stop opacity",
+            "Stop",
+            currentGradientStopOpacity,
+            (opacity) => objectGradientStopOpacityCommandId(activeGradientStopIndex, opacity)
+          )}
         </div>
       ) : null}
       {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
