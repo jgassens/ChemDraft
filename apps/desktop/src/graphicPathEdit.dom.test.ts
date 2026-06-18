@@ -612,6 +612,69 @@ describe("graphic path direct editing interactions", () => {
     expect(status?.textContent).toContain("Stroke target");
   });
 
+  it("uses the first clicked graphic as the eyedropper target when none is selected", async () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Eyedropper First Target"),
+      { x: 220, y: 180 },
+      "tool.art.circle"
+    );
+    const targetId = withTarget.selection.objectIds[0] ?? "";
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 340, y: 180 }, "tool.art.rect");
+    const sourceId = withSource.selection.objectIds[0] ?? "";
+    const styledSource = applyPatch(withSource, {
+      op: "updateObject",
+      objectId: sourceId,
+      changes: {
+        style: {
+          ...graphicById(withSource, sourceId).style,
+          fillColor: "#1d7f68",
+          fillOpacity: 0.55,
+          fillMode: "solid",
+          fillPaint: { kind: "solid", color: "#1d7f68", opacity: 0.55 }
+        }
+      }
+    });
+    const noSelection = applyPatch(styledSource, {
+      op: "setSelection",
+      pageId: styledSource.pages[0].id,
+      objectIds: []
+    });
+    await renderMainWindow(noSelection, { initialActiveToolCommandId: "tool.art.eyedropper" });
+
+    const status = container.querySelector('[role="status"]');
+    expect(container.querySelector('[data-active-tool="tool.art.eyedropper"]')).not.toBeNull();
+    expect(container.querySelector('[data-art-target-cue="true"]')).toBeNull();
+
+    const target = debugArtObject(targetId).object;
+    await act(async () => {
+      dispatchPointer(objectElement(targetId), "pointerdown", {
+        x: target.x + target.width / 2,
+        y: target.y + target.height / 2
+      }, 31);
+    });
+
+    expect(objectElement(targetId).querySelector('[data-graphic-eyedropper-target="fill"]')).not.toBeNull();
+    expect(objectElement(sourceId).querySelector("[data-graphic-eyedropper-target]")).toBeNull();
+    expect(container.querySelector('[data-art-target-cue="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-can-undo="false"]')).not.toBeNull();
+    expect(status?.textContent).toContain("Fill target selected");
+
+    const source = debugArtObject(sourceId).object;
+    await act(async () => {
+      dispatchPointer(objectElement(sourceId), "pointerdown", {
+        x: source.x + source.width / 2,
+        y: source.y + source.height / 2
+      }, 32);
+    });
+
+    expect(debugArtObject(targetId).object.style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillOpacity: 0.55,
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 0.55 }
+    });
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+  });
+
   it("copies active stroke and marker style from a clicked source line to a selected arc", async () => {
     const withTarget = insertNativeArtGraphicObject(
       createPhase4Document("Eyedropper Stroke Copy"),

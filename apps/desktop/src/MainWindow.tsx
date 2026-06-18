@@ -788,7 +788,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.16.30-codex";
+const CURRENT_BUILD_STAMP = "6.18.18.22-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -815,12 +815,17 @@ function scissorsStatusLabel(action = "click path to split"): string {
 
 function eyedropperStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
-  return `Eyedropper: ${targetLabel} target; click source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
+  return `Eyedropper: ${targetLabel} target selected; click source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
 }
 
-function eyedropperNoTargetStatusLabel(target: GraphicStylePaintTarget): string {
+function eyedropperChooseTargetStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
-  return `Eyedropper: no ${targetLabel} target selected; select target art; Esc exits`;
+  return `Eyedropper: click ${targetLabel.toLowerCase()} target art; then click source; Esc exits`;
+}
+
+function eyedropperSameTargetStatusLabel(target: GraphicStylePaintTarget): string {
+  const targetLabel = target === "fill" ? "Fill" : "Stroke";
+  return `Eyedropper: ${targetLabel} target selected; click different source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
 }
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -1026,6 +1031,7 @@ export function MainWindow({
   const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
   const [selectedGraphicPathNode, setSelectedGraphicPathNode] = useState<SelectedGraphicPathNodeState | undefined>();
   const [activeArtPaintTarget, setActiveArtPaintTarget] = useState<GraphicStylePaintTarget>("fill");
+  const [artPaintTargetCueActive, setArtPaintTargetCueActive] = useState(false);
   const [activeAtomLabelEdit, setActiveAtomLabelEdit] = useState<AtomLabelEditState | undefined>();
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
@@ -1088,6 +1094,7 @@ export function MainWindow({
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
+  const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
   // template click can reuse exactly what the highlight is painting (see
@@ -1216,13 +1223,16 @@ export function MainWindow({
     return model.selectedCount > 0 ? model : undefined;
   }, [activeArtPaintTarget, document]);
   const effectiveArtPaintTarget = currentArtStyle?.activePaintTarget ?? activeArtPaintTarget;
+  const currentEyedropperStatus = currentArtStyle
+    ? eyedropperStatusLabel(effectiveArtPaintTarget)
+    : eyedropperChooseTargetStatusLabel(effectiveArtPaintTarget);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
 
   useEffect(() => {
     if (activeToolState.activeCommandId === "tool.art.eyedropper") {
-      setStatus(eyedropperStatusLabel(effectiveArtPaintTarget));
+      setStatus(currentEyedropperStatus);
     }
-  }, [activeToolState.activeCommandId, effectiveArtPaintTarget]);
+  }, [activeToolState.activeCommandId, currentEyedropperStatus]);
 
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
@@ -1349,6 +1359,23 @@ export function MainWindow({
       hoveredNativeAtomPointRef.current = undefined;
     }
     setHoveredNativeDeleteTarget(target);
+  }, []);
+  const flashArtPaintTargetControls = useCallback(() => {
+    if (artPaintTargetCueTimerRef.current !== undefined) {
+      window.clearTimeout(artPaintTargetCueTimerRef.current);
+    }
+
+    setArtPaintTargetCueActive(true);
+    artPaintTargetCueTimerRef.current = window.setTimeout(() => {
+      setArtPaintTargetCueActive(false);
+      artPaintTargetCueTimerRef.current = undefined;
+    }, 1500);
+  }, []);
+  useEffect(() => () => {
+    if (artPaintTargetCueTimerRef.current !== undefined) {
+      window.clearTimeout(artPaintTargetCueTimerRef.current);
+      artPaintTargetCueTimerRef.current = undefined;
+    }
   }, []);
   const updateToolbarStyleTargetSnapshot = useCallback((
     nextDocument: ChemDraftDocument,
@@ -3457,6 +3484,9 @@ export function MainWindow({
         if (result.outcome === "activated") {
           setActiveTextEditObjectId(undefined);
           setActiveAtomLabelEdit(undefined);
+          if (tool.id === "tool.art.eyedropper" && currentArtStyle) {
+            flashArtPaintTargetControls();
+          }
           if (tool.id === "tool.art.directEdit") {
             pendingObjectTransformPreviewRef.current = undefined;
             setObjectTransformPreview(undefined);
@@ -3464,7 +3494,7 @@ export function MainWindow({
             setSelectedNativeMoleculePart(undefined);
           }
         }
-        setStatus(tool.id === "tool.art.eyedropper" ? eyedropperStatusLabel(effectiveArtPaintTarget) : result.status);
+        setStatus(tool.id === "tool.art.eyedropper" ? currentEyedropperStatus : result.status);
       });
     });
 
@@ -3543,9 +3573,11 @@ export function MainWindow({
     cleanUpSelectedStructure3d,
     cleanUpSelectedStructure,
     commitDocumentChange,
+    currentArtStyle,
+    currentEyedropperStatus,
     deleteHoveredNativeTarget,
     document,
-    effectiveArtPaintTarget,
+    flashArtPaintTargetControls,
     layerActions,
     nativePalette,
     openExportDialog,
@@ -7014,13 +7046,33 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
+        setStatus(currentEyedropperStatus);
+        return;
+      }
+
+      const selectedGraphicIds = selectedGraphicObjectIds(currentDocument);
+      if (selectedGraphicIds.length === 0) {
+        replacePresentDocument((current) => selectDocumentObject(current, objectId));
+        clearTransientInteractionChrome();
+        setSelectedNativeMoleculePart(undefined);
+        setSelectedGraphicPathNode(undefined);
+        setActiveGraphicTransformObjectId(undefined);
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+        flashArtPaintTargetControls();
         setStatus(eyedropperStatusLabel(effectiveArtPaintTarget));
         return;
       }
 
-      const targetIds = selectedGraphicObjectIds(document).filter((selectedObjectId) => selectedObjectId !== objectId);
+      const targetIds = selectedGraphicIds.filter((selectedObjectId) => selectedObjectId !== objectId);
       if (targetIds.length === 0) {
-        setStatus(eyedropperNoTargetStatusLabel(effectiveArtPaintTarget));
+        flashArtPaintTargetControls();
+        setStatus(eyedropperSameTargetStatusLabel(effectiveArtPaintTarget));
         return;
       }
 
@@ -7372,9 +7424,11 @@ export function MainWindow({
     applySingleBondDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
+    currentEyedropperStatus,
     cycleNativeBondOrder,
     document,
     effectiveArtPaintTarget,
+    flashArtPaintTargetControls,
     pagePointFromPointerEvent,
     replacePresentDocument,
     restoreToolAfterTextPlacement,
@@ -8909,6 +8963,7 @@ export function MainWindow({
       aria-label="ChemDraft desktop workspace"
       data-active-tool={activeToolState.activeCommandId}
       data-active-tool-kind={activeToolState.activeKind}
+      data-art-target-cue={artPaintTargetCueActive ? "true" : undefined}
       data-can-undo={canUndo ? "true" : "false"}
       data-can-redo={canRedo ? "true" : "false"}
     >

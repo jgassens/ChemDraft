@@ -712,6 +712,27 @@ textarea:focus-visible,
   box-shadow: inset 0 0 0 1px var(--cd-accent-border-muted);
 }
 
+.app-shell[data-art-target-cue="true"] .art-target-toggle button[data-command-id="object.style.target.fill"]:not(:disabled),
+.app-shell[data-art-target-cue="true"] .art-target-toggle button[data-command-id="object.style.target.stroke"]:not(:disabled) {
+  animation: art-target-cue-pulse 0.5s ease-in-out 3;
+  border-color: var(--cd-accent);
+  box-shadow:
+    inset 0 0 0 1px var(--cd-accent),
+    0 0 0 3px rgb(29 127 104 / 22%);
+}
+
+@keyframes art-target-cue-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  45% {
+    transform: scale(1.12);
+    background: var(--cd-bg-selected);
+  }
+}
+
 .art-target-toggle button:disabled,
 .art-inspector-symbol-button:disabled,
 .art-toolbar-style-controls select:disabled,
