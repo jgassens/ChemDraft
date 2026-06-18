@@ -786,7 +786,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.11.55-codex";
+const CURRENT_BUILD_STAMP = "6.18.12.37-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -14120,6 +14120,7 @@ function DocumentObjectView({
         nodeEditPoints={graphicPathNodeEditPoints}
         selectedNodeIndex={selectedGraphicPathNodeIndex}
         segmentHitTargetsActive={graphicSegmentEraseActive}
+        counterRotationDegrees={graphicVisualRotationDegrees}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
@@ -14128,6 +14129,7 @@ function DocumentObjectView({
       <GraphicCornerRadiusHandle
         object={object}
         readout={graphicCornerRadiusReadout}
+        counterRotationDegrees={graphicVisualRotationDegrees}
         onDoubleClick={handleGraphicCornerRadiusDoubleClick}
         onPointerDown={handleGraphicCornerRadiusPointerDown}
       />
@@ -14908,11 +14910,13 @@ function graphicGradientHandleStatusName(
 function GraphicCornerRadiusHandle({
   object,
   readout,
+  counterRotationDegrees,
   onPointerDown,
   onDoubleClick
 }: {
   object: GraphicObject;
   readout?: GraphicCornerRadiusReadoutState;
+  counterRotationDegrees: number;
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
@@ -14946,7 +14950,8 @@ function GraphicCornerRadiusHandle({
         data-graphic-corner-radius-readout="true"
         style={{
           left: pageScaledCssPx(projectedPoint.x),
-          top: pageScaledCssPx(projectedPoint.y)
+          top: pageScaledCssPx(projectedPoint.y),
+          transform: graphicSystemReadoutTransform(counterRotationDegrees, "corner-radius")
         }}
       >
         {label}
@@ -15112,6 +15117,7 @@ function GraphicPathEditHandles({
   nodeEditPoints,
   selectedNodeIndex,
   segmentHitTargetsActive,
+  counterRotationDegrees,
   onMarkerPointerDown,
   onPointerDown
 }: {
@@ -15119,6 +15125,7 @@ function GraphicPathEditHandles({
   nodeEditPoints?: NativeGraphicPathNodeEditPoints;
   selectedNodeIndex?: number;
   segmentHitTargetsActive: boolean;
+  counterRotationDegrees: number;
   onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<Element>) => void;
 }) {
@@ -15330,7 +15337,8 @@ function GraphicPathEditHandles({
           data-graphic-path-readout="true"
           style={{
             left: pageScaledCssPx(projectedPoints.middle.x - object.x),
-            top: pageScaledCssPx(projectedPoints.middle.y - object.y)
+            top: pageScaledCssPx(projectedPoints.middle.y - object.y),
+            transform: graphicSystemReadoutTransform(counterRotationDegrees, "path-radian")
           }}
         >
           {arcRadianReadout}
@@ -15338,6 +15346,18 @@ function GraphicPathEditHandles({
       ) : null}
     </>
   );
+}
+
+function graphicSystemReadoutTransform(
+  counterRotationDegrees: number,
+  kind: "corner-radius" | "path-radian"
+): string {
+  const base = kind === "corner-radius"
+    ? "translate(-50%, calc(-100% - 10px))"
+    : "translate(-50%, calc(-100% - 12px))";
+  return Math.abs(counterRotationDegrees) > 0.001
+    ? `${base} rotate(${formatSvgNumber(-counterRotationDegrees)}deg)`
+    : base;
 }
 
 type GraphicPathSegmentHitPlan = {

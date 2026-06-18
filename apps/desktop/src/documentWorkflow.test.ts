@@ -3759,6 +3759,51 @@ describe("Phase 4 document workflow", () => {
     expect(scaledGraphic.data.cachedFreehandPathRevision).toBeUndefined();
   });
 
+  it("flips native freehand point geometry on the requested axis only", () => {
+    const document = createPhase4Document("Native Freehand Flip");
+    const points = [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ];
+    const inserted = nativeFreehandStrokeDocument(document, points, "tool.art.pencil");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const center = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+
+    const horizontal = flipDocumentObjectsAroundPoint(inserted, [objectId], center, "horizontal");
+    const vertical = flipDocumentObjectsAroundPoint(inserted, [objectId], center, "vertical");
+    const horizontalGraphic = graphicById(horizontal, objectId);
+    const verticalGraphic = graphicById(vertical, objectId);
+
+    horizontalGraphic.data.freehandPoints?.forEach((point, index) => {
+      const source = graphic.data.freehandPoints![index]!;
+      expectPointToBeClose(point, { x: center.x - (source.x - center.x), y: source.y });
+      expect(point.pressure).toBe(source.pressure);
+    });
+    verticalGraphic.data.freehandPoints?.forEach((point, index) => {
+      const source = graphic.data.freehandPoints![index]!;
+      expectPointToBeClose(point, { x: source.x, y: center.y - (source.y - center.y) });
+      expect(point.pressure).toBe(source.pressure);
+    });
+    expect(horizontalGraphic.data.freehandPoints?.map((point) => point.x)).not.toEqual(
+      verticalGraphic.data.freehandPoints?.map((point) => point.x)
+    );
+    expect(horizontalGraphic.data.freehandPoints?.map((point) => point.y)).not.toEqual(
+      verticalGraphic.data.freehandPoints?.map((point) => point.y)
+    );
+    expect(horizontalGraphic.rotation).toBe(graphic.rotation);
+    expect(verticalGraphic.rotation).toBe(graphic.rotation);
+    expect(horizontalGraphic.data.cachedFreehandPathD).toBeUndefined();
+    expect(verticalGraphic.data.cachedFreehandPathD).toBeUndefined();
+  });
+
   it("applies freehand color through stroke style instead of the filled-outline implementation detail", () => {
     const document = createPhase4Document("Native Freehand Stroke Color");
     const inserted = nativeFreehandStrokeDocument(document, [
@@ -7481,7 +7526,7 @@ describe("group transforms (multi-object selection)", () => {
     expectPointToBeClose(newCenter, { x: groupCenter.x - (oldCenter.x - groupCenter.x), y: oldCenter.y });
     expect(flippedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
     expect(flippedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
-    expect(flippedGraphic.rotation).toBeCloseTo(180, 6);
+    expect(flippedGraphic.rotation).toBeCloseTo(bentGraphic.rotation, 6);
     expectPointToBeClose(flippedGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, -1, 1));
     expectPointToBeClose(flippedGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, -1, 1));
     expectPointToBeClose(flippedGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, -1, 1));

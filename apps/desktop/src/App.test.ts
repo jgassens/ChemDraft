@@ -2416,6 +2416,7 @@ describe("ChemDraft desktop shell", () => {
       { x: 220, y: 180 },
       "tool.art.roundedRectShadow"
     );
+    const objectId = document.selection.objectIds[0] ?? "";
     const markup = renderToStaticMarkup(
       createElement(MainWindow, {
         initialDocument: document,
@@ -2446,6 +2447,21 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("art-object-tilt-handle");
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
+
+    const radiusReadoutRotated = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: { rotation: 37 }
+    }]);
+    const radiusReadoutRotatedMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: radiusReadoutRotated,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(radiusReadoutRotatedMarkup).toContain('data-graphic-corner-radius-readout="true"');
+    expect(radiusReadoutRotatedMarkup).toContain("rotate(-37deg)");
 
     const noFillRectDocument = insertNativeArtGraphicObject(
       createPhase4Document("No Fill Rect Hit Render"),

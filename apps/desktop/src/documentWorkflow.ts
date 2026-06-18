@@ -7214,7 +7214,9 @@ function flipOtherObjectAroundPoint(
     y: newCenter.y - object.height / 2,
     width: object.width,
     height: object.height,
-    rotation: normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
+    rotation: object.type === "graphic"
+      ? object.rotation
+      : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
   };
 
   if (object.type === "electron-mark" && object.markKind === "charge") {
