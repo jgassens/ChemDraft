@@ -24,6 +24,7 @@ import {
   objectGradientReverseCommand,
   objectGradientRotateCommand,
   objectGradientStopColorCommandId,
+  objectGradientStopOffsetCommandId,
   objectGradientStopOpacityCommandId,
   objectPaintTypeCommandId,
   objectPaintTypeCommands,
@@ -795,9 +796,9 @@ function ArtToolbarStyleControls({
       } else if (event.key === "End") {
         nextPercent = 100;
       } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
-        nextPercent = basePercent - (event.shiftKey ? 10 : 5);
+        nextPercent = basePercent - (event.shiftKey ? 10 : 1);
       } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
-        nextPercent = basePercent + (event.shiftKey ? 10 : 5);
+        nextPercent = basePercent + (event.shiftKey ? 10 : 1);
       } else {
         return;
       }
@@ -1089,6 +1090,7 @@ function ArtToolbarStyleControls({
           data-art-gradient-stop-editor={effectiveArtStyleTarget}
           data-art-gradient-active-stop={activeGradientStopIndex}
           data-art-gradient-stop-color={currentGradientStopColor}
+          data-art-gradient-stop-offset={currentGradientStopOffset}
         >
           <span className="art-gradient-stop-readout">
             {`Stop ${activeGradientStopIndex + 1} · ${Math.round(currentGradientStopOffset * 100)}%`}
@@ -1128,12 +1130,20 @@ function ArtToolbarStyleControls({
               </div>
             ) : null}
           </div>
-          {opacitySlider(
-            "Gradient stop opacity",
-            "Stop",
-            currentGradientStopOpacity,
-            (opacity) => objectGradientStopOpacityCommandId(activeGradientStopIndex, opacity)
-          )}
+          <div className="art-gradient-stop-sliders">
+            {opacitySlider(
+              "Gradient stop position",
+              "Pos",
+              currentGradientStopOffset,
+              (offset) => objectGradientStopOffsetCommandId(activeGradientStopIndex, offset)
+            )}
+            {opacitySlider(
+              "Gradient stop opacity",
+              "Stop",
+              currentGradientStopOpacity,
+              (opacity) => objectGradientStopOpacityCommandId(activeGradientStopIndex, opacity)
+            )}
+          </div>
         </div>
       ) : null}
       {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (

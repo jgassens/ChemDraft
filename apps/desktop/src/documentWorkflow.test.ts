@@ -24,6 +24,7 @@ import {
   applyGraphicObjectEyedropperToSelection,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
+  applyGraphicObjectGradientStopOffsetForSelection,
   applyGraphicObjectGradientStopOpacityForSelection,
   deleteGraphicObjectGradientStopForSelection,
   deleteGraphicObjectGradientStopAtIndexForSelection,
@@ -4001,12 +4002,21 @@ describe("Phase 4 document workflow", () => {
         { offset: 1, color: "#ffffff" }
       ]
     });
-    const rotatedLinearStops = rotateGraphicObjectGradientStopsForSelection(editedLinearStopOpacity, "fill");
+    const editedLinearStopOffset = applyGraphicObjectGradientStopOffsetForSelection(editedLinearStopOpacity, "fill", 1, 0.37);
+    expect(graphicById(editedLinearStopOffset, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.37, color: "#1d7f68", opacity: 0.42 },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const rotatedLinearStops = rotateGraphicObjectGradientStopsForSelection(editedLinearStopOffset, "fill");
     expect(graphicById(rotatedLinearStops, objectId).style.fillPaint).toMatchObject({
       kind: "linear-gradient",
       stops: [
         { offset: 0, color: "#ffffff" },
-        { offset: 0.5, color: "#b3261e" },
+        { offset: 0.37, color: "#b3261e" },
         { offset: 1, color: "#1d7f68", opacity: 0.42 }
       ]
     });
@@ -4026,7 +4036,7 @@ describe("Phase 4 document workflow", () => {
       y2: 1,
       stops: [
         { offset: 0, color: "#ffffff" },
-        { offset: 0.5, color: "#b3261e" },
+        { offset: 0.37, color: "#b3261e" },
         { offset: 1, color: "#1d7f68", opacity: 0.42 }
       ]
     });

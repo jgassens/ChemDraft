@@ -350,6 +350,7 @@ export const customObjectFillOpacityCommandPrefix = "object.fillOpacity.custom."
 export const customObjectStrokeOpacityCommandPrefix = "object.strokeOpacity.custom.";
 export const customObjectGradientStopColorCommandPrefix = "object.gradient.stopColor.";
 export const customObjectGradientStopOpacityCommandPrefix = "object.gradient.stopOpacity.";
+export const customObjectGradientStopOffsetCommandPrefix = "object.gradient.stopOffset.";
 export const customObjectGradientDeleteStopCommandPrefix = "object.gradient.deleteStop.";
 
 export function textCustomColorCommandId(color: string): string {
@@ -379,6 +380,10 @@ export function objectGradientStopColorCommandId(stopIndex: number, color: strin
 
 export function objectGradientStopOpacityCommandId(stopIndex: number, opacity: number): string {
   return `${customObjectGradientStopOpacityCommandPrefix}${normalizeStopIndex(stopIndex)}.${opacityPercent(opacity)}`;
+}
+
+export function objectGradientStopOffsetCommandId(stopIndex: number, offset: number): string {
+  return `${customObjectGradientStopOffsetCommandPrefix}${normalizeStopIndex(stopIndex)}.${unitPercent(offset)}`;
 }
 
 export function objectGradientDeleteStopCommandId(stopIndex: number): string {
@@ -418,6 +423,18 @@ export function objectGradientStopOpacityForCommand(commandId: string): { stopIn
   return {
     stopIndex: normalizeStopIndex(Number(stopIndexText)),
     opacity: opacityFromCommandSuffix(opacityText ?? "100")
+  };
+}
+
+export function objectGradientStopOffsetForCommand(commandId: string): { stopIndex: number; offset: number } | undefined {
+  if (!commandId.startsWith(customObjectGradientStopOffsetCommandPrefix)) {
+    return undefined;
+  }
+
+  const [stopIndexText, offsetText] = commandId.slice(customObjectGradientStopOffsetCommandPrefix.length).split(".");
+  return {
+    stopIndex: normalizeStopIndex(Number(stopIndexText)),
+    offset: unitFromCommandSuffix(offsetText ?? "0", 0)
   };
 }
 
@@ -478,12 +495,20 @@ export function normalizeHexColor(color: string | undefined): string | undefined
 }
 
 function opacityPercent(opacity: number): number {
-  return Math.round(Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 1)) * 100);
+  return unitPercent(opacity);
+}
+
+function unitPercent(value: number, fallback = 1): number {
+  return Math.round(Math.max(0, Math.min(1, Number.isFinite(value) ? value : fallback)) * 100);
 }
 
 function opacityFromCommandSuffix(value: string): number {
+  return unitFromCommandSuffix(value, 1);
+}
+
+function unitFromCommandSuffix(value: string, fallback: number): number {
   const parsed = Number(value);
-  return Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed / 100 : 1));
+  return Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed / 100 : fallback));
 }
 
 function normalizeStopIndex(stopIndex: number): number {

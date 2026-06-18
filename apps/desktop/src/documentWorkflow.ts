@@ -3968,6 +3968,19 @@ export function applyGraphicObjectGradientStopOpacityForSelection(
   );
 }
 
+export function applyGraphicObjectGradientStopOffsetForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  stopIndex: number,
+  offset: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const value = clampWorkflowUnit(offset);
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, (stops) =>
+    updateGradientStopAtIndex(stops, stopIndex, (stop) => ({ ...stop, offset: value }))
+  );
+}
+
 export function applyGraphicObjectOpacityToSelection(
   document: ChemDraftDocument,
   key: "opacity" | "fillOpacity" | "strokeOpacity",

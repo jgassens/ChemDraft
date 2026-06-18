@@ -30,6 +30,8 @@ import {
   objectGradientDeleteStopIndexForCommand,
   objectGradientStopColorCommandId,
   objectGradientStopColorForCommand,
+  objectGradientStopOffsetCommandId,
+  objectGradientStopOffsetForCommand,
   objectGradientStopOpacityCommandId,
   objectGradientStopOpacityForCommand,
   objectStyleActions,
@@ -1290,6 +1292,10 @@ describe("ChemDraft desktop shell", () => {
       stopIndex: 2,
       opacity: 0.42
     });
+    expect(objectGradientStopOffsetForCommand(objectGradientStopOffsetCommandId(2, 0.37))).toEqual({
+      stopIndex: 2,
+      offset: 0.37
+    });
     expect(objectGradientDeleteStopIndexForCommand(objectGradientDeleteStopCommandId(2))).toBe(2);
     expect(textStylePatchForCommand("object.color.green")).toBeUndefined();
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.color.green")).toBe(true);
@@ -1872,7 +1878,9 @@ describe("ChemDraft desktop shell", () => {
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-editor="fill"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-active-stop="0"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color="#1d7f68"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-offset="0"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color-trigger="true"');
+    expect(gradientInspectorMarkup).toContain('data-art-inspector-slider="gradient-stop-position"');
     expect(gradientInspectorMarkup).toContain('data-art-inspector-slider="gradient-stop-opacity"');
     expect(gradientInspectorMarkup.match(/data-art-gradient-stop=/g) ?? []).toHaveLength(2);
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-active="true"');
