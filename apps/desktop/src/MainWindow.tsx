@@ -750,7 +750,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.19.51-codex";
+const CURRENT_BUILD_STAMP = "6.17.20.3-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -9571,7 +9571,7 @@ function createGraphicArtTransformDragPreviewProxy(
     : { kind: "bounds", width: Math.max(1, object.width), height: Math.max(1, object.height), rasterScale };
 }
 
-function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
+export function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
   imageUrl: string;
   width: number;
   height: number;
@@ -9581,8 +9581,11 @@ function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
     const width = Math.max(1, plan.width);
     const height = Math.max(1, plan.height);
     const freehandPath = graphicObjectIsFreehandPath(object);
+    const fillPaintId = `preview-fill-${object.id}`;
+    const strokePaintId = `preview-stroke-${object.id}`;
+    const glossPaintId = `preview-gloss-${object.id}`;
     const strokeAttrs = [
-      previewSvgPaintAttrs("stroke", plan.stroke.paint, plan.stroke.color),
+      previewSvgPaintAttrs("stroke", plan.stroke.paint, strokePaintId),
       `stroke-width="${xmlAttributeValue(plan.stroke.width)}"`,
       plan.stroke.dasharray ? `stroke-dasharray="${xmlAttributeValue(plan.stroke.dasharray)}"` : "",
       `stroke-linecap="${xmlAttributeValue(plan.stroke.lineCap)}"`,
@@ -9590,7 +9593,15 @@ function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
       `stroke-miterlimit="${xmlAttributeValue(plan.stroke.miterLimit)}"`,
       `vector-effect="${plan.projectionTransform ? "none" : "non-scaling-stroke"}"`
     ].filter(Boolean).join(" ");
-    const fillAttrs = previewSvgPaintAttrs("fill", plan.fill.paint, plan.fill.color);
+    const fillAttrs = plan.fill.mode === "gloss" && plan.glossGradient
+      ? previewSvgGlossPaintAttrs(glossPaintId, plan.fill.opacity)
+      : previewSvgPaintAttrs("fill", plan.fill.paint, fillPaintId);
+    const definitions = [
+      plan.fill.mode === "gloss" && plan.glossGradient
+        ? previewSvgGlossDefinition(plan.glossGradient, glossPaintId)
+        : previewSvgPaintDefinition(plan.fill.paint, fillPaintId),
+      previewSvgPaintDefinition(plan.stroke.paint, strokePaintId)
+    ].filter(Boolean).join("");
     const pathD = plan.visiblePathD ?? plan.pathD;
     const projectionTransform = plan.projectionTransform
       ? ` transform="${xmlAttributeValue(plan.projectionTransform)}"`
@@ -9617,7 +9628,7 @@ function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
     }
 
     const opacity = plan.opacity === 1 ? "" : ` opacity="${xmlAttributeValue(plan.opacity)}"`;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${xmlAttributeValue(width)}" height="${xmlAttributeValue(height)}" viewBox="0 0 ${xmlAttributeValue(width)} ${xmlAttributeValue(height)}"${opacity}>${body}</svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${xmlAttributeValue(width)}" height="${xmlAttributeValue(height)}" viewBox="0 0 ${xmlAttributeValue(width)} ${xmlAttributeValue(height)}"${opacity}>${definitions}${body}</svg>`;
     return {
       imageUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
       width,
@@ -9631,7 +9642,7 @@ function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
 function previewSvgPaintAttrs(
   attribute: "fill" | "stroke",
   paint: NativeArtPaintPlan,
-  fallbackColor: string
+  id: string
 ): string {
   if (paint.kind === "none") {
     return `${attribute}="none"`;
@@ -9642,7 +9653,46 @@ function previewSvgPaintAttrs(
       paint.opacity === 1 ? "" : `${attribute}-opacity="${xmlAttributeValue(paint.opacity)}"`
     ].filter(Boolean).join(" ");
   }
-  return `${attribute}="${xmlAttributeValue(fallbackColor)}"`;
+  return `${attribute}="url(#${xmlAttributeValue(id)})"`;
+}
+
+function previewSvgPaintDefinition(paint: NativeArtPaintPlan, id: string): string {
+  if (paint.kind === "linear-gradient") {
+    return `<defs><linearGradient id="${xmlAttributeValue(id)}" x1="${xmlAttributeValue(paint.x1)}" y1="${xmlAttributeValue(paint.y1)}" x2="${xmlAttributeValue(paint.x2)}" y2="${xmlAttributeValue(paint.y2)}"${previewSvgGradientTransformAttr(paint.gradientTransform)} gradientUnits="userSpaceOnUse">${previewSvgGradientStops(paint.stops)}</linearGradient></defs>`;
+  }
+  if (paint.kind === "radial-gradient") {
+    return `<defs><radialGradient id="${xmlAttributeValue(id)}" cx="${xmlAttributeValue(paint.cx)}" cy="${xmlAttributeValue(paint.cy)}" r="${xmlAttributeValue(paint.r)}"${typeof paint.fx === "number" ? ` fx="${xmlAttributeValue(paint.fx)}"` : ""}${typeof paint.fy === "number" ? ` fy="${xmlAttributeValue(paint.fy)}"` : ""}${previewSvgGradientTransformAttr(paint.gradientTransform)} gradientUnits="userSpaceOnUse">${previewSvgGradientStops(paint.stops)}</radialGradient></defs>`;
+  }
+  return "";
+}
+
+function previewSvgGlossPaintAttrs(id: string, opacity: number): string {
+  return [
+    `fill="url(#${xmlAttributeValue(id)})"`,
+    opacity === 1 ? "" : `fill-opacity="${xmlAttributeValue(opacity)}"`
+  ].filter(Boolean).join(" ");
+}
+
+function previewSvgGlossDefinition(
+  gradient: NonNullable<NativeArtVisualPlan["glossGradient"]>,
+  id: string
+): string {
+  return `<defs><radialGradient id="${xmlAttributeValue(id)}" cx="${xmlAttributeValue(gradient.cx)}" cy="${xmlAttributeValue(gradient.cy)}" r="${xmlAttributeValue(gradient.r)}"${previewSvgGradientTransformAttr(gradient.gradientTransform)} gradientUnits="userSpaceOnUse">${previewSvgGradientStops(gradient.stops)}</radialGradient></defs>`;
+}
+
+type PreviewSvgGradientStop = { offset: number; color: string; opacity: number };
+
+function previewSvgGradientStops(stops: readonly PreviewSvgGradientStop[]): string {
+  return stops.map((stop) => [
+    `<stop offset="${xmlAttributeValue(`${Number((stop.offset * 100).toFixed(4))}%`)}"`,
+    ` stop-color="${xmlAttributeValue(stop.color)}"`,
+    stop.opacity === 1 ? "" : ` stop-opacity="${xmlAttributeValue(stop.opacity)}"`,
+    "/>"
+  ].join("")).join("");
+}
+
+function previewSvgGradientTransformAttr(transform: string | undefined): string {
+  return transform ? ` gradientTransform="${xmlAttributeValue(transform)}"` : "";
 }
 
 function xmlAttributeValue(value: string | number | undefined): string {

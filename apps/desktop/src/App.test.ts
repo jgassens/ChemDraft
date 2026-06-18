@@ -110,6 +110,7 @@ import {
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
   eraserObjectIdsInSelectionRect,
+  graphicArtTransformPreviewSvgDataUrl,
   selectionInSelectionLasso,
   selectionInSelectionRect,
   shouldActivateDocumentObject,
@@ -2566,6 +2567,84 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('stop-color="#1648ff"');
     expect(markup).toContain('stop-opacity="0.5"');
     expect(markup).not.toContain('id="graphic-gloss-');
+  });
+
+  it("preserves gradient paints in native art drag preview proxies", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Art Gradient Drag Preview"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.5,
+            cy: 0.5,
+            r: 0.72,
+            fx: 0.25,
+            fy: 0.2,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          },
+          strokePaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0,
+            stops: [
+              { offset: 0, color: "#1648ff" },
+              { offset: 1, color: "#d12b2b", opacity: 0.5 }
+            ]
+          },
+          strokeWidth: 5
+        }
+      }
+    }]);
+    const object = painted.pages[0].objects.find((candidate): candidate is GraphicObject =>
+      candidate.type === "graphic" && candidate.id === objectId
+    );
+    if (!object) {
+      throw new Error("Expected gradient art object.");
+    }
+
+    const preview = graphicArtTransformPreviewSvgDataUrl(object);
+    expect(preview).toBeDefined();
+    const previewSvg = decodeURIComponent(preview?.imageUrl.split(",", 2)[1] ?? "");
+    expect(previewSvg).toContain(`<radialGradient id="preview-fill-${objectId}"`);
+    expect(previewSvg).toContain(`<linearGradient id="preview-stroke-${objectId}"`);
+    expect(previewSvg).toContain(`fill="url(#preview-fill-${objectId})"`);
+    expect(previewSvg).toContain(`stroke="url(#preview-stroke-${objectId})"`);
+    expect(previewSvg).toContain('stop-color="#1d7f68"');
+    expect(previewSvg).toContain('stop-color="#d12b2b"');
+    expect(previewSvg).toContain('stop-opacity="0.5"');
+
+    const glossDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Gloss Drag Preview"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRectGloss"
+    );
+    const glossObject = glossDocument.pages[0].objects.find((candidate): candidate is GraphicObject =>
+      candidate.type === "graphic" && candidate.id === (glossDocument.selection.objectIds[0] ?? "")
+    );
+    if (!glossObject) {
+      throw new Error("Expected gloss art object.");
+    }
+
+    const glossPreview = graphicArtTransformPreviewSvgDataUrl(glossObject);
+    expect(glossPreview).toBeDefined();
+    const glossPreviewSvg = decodeURIComponent(glossPreview?.imageUrl.split(",", 2)[1] ?? "");
+    expect(glossPreviewSvg).toContain(`<radialGradient id="preview-gloss-${glossObject.id}"`);
+    expect(glossPreviewSvg).toContain(`fill="url(#preview-gloss-${glossObject.id})"`);
   });
 
   it("hides molecule transform handles when the bond tool is active", () => {
