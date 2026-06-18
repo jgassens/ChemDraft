@@ -2384,6 +2384,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('rx="7"');
     expect(markup).toContain('data-graphic-corner-radius-handle="true"');
     expect(markup).toContain('data-graphic-corner-radius-readout="true"');
+    expect(markup).toContain('data-graphic-interaction-mode="corner-radius-edit"');
     expect(markup).toContain("Radius: 7 px");
     expect(markup).toContain('data-art-transform-frame="true"');
     expect(markup).toContain('data-has-tilt3d="true"');
@@ -2650,6 +2651,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-graphic-gradient-target="fill"');
     expect(markup).toContain('data-graphic-gradient-handle="start"');
     expect(markup).toContain('data-graphic-gradient-handle="end"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-art-transform-frame="true"');
     expect(markup).not.toContain('id="graphic-gloss-');
   });
 

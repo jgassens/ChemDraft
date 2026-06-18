@@ -777,7 +777,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.7.22-codex";
+const CURRENT_BUILD_STAMP = "6.18.7.51-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -6987,7 +6987,11 @@ export function MainWindow({
       return;
     }
 
-    if (activeToolState.activeKind === "selection" && object?.type === "graphic" && nativeGraphicPathEditPoints(object)) {
+    if (
+      activeToolState.activeKind === "selection" &&
+      object?.type === "graphic" &&
+      graphicObjectHasDirectEditChrome(object, effectiveArtPaintTarget)
+    ) {
       const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
       const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
       lastSelectionPressRef.current = press;
@@ -7024,7 +7028,9 @@ export function MainWindow({
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
       setActiveGraphicTransformObjectId((current) =>
-        current === objectId && object?.type === "graphic" && nativeGraphicPathEditPoints(object) ? current : undefined
+        current === objectId && object?.type === "graphic" && graphicObjectHasDirectEditChrome(object, effectiveArtPaintTarget)
+          ? current
+          : undefined
       );
       setSelectedGraphicPathNode(undefined);
       setActiveAtomLabelEdit(undefined);
@@ -7145,6 +7151,7 @@ export function MainWindow({
     commitDocumentChange,
     cycleNativeBondOrder,
     document,
+    effectiveArtPaintTarget,
     pagePointFromPointerEvent,
     replacePresentDocument,
     restoreToolAfterTextPlacement,
@@ -13255,6 +13262,9 @@ function DocumentObjectView({
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
+  const graphicGradientHandlePoints = object.type === "graphic"
+    ? nativeGraphicLinearGradientHandlePoints(object, activeArtPaintTarget)
+    : undefined;
   const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
   const pathGraphicInEditMode = selected &&
     object.type === "graphic" &&
@@ -13273,10 +13283,26 @@ function DocumentObjectView({
     !rotationInput &&
     !resizeReadout &&
     !resizeInput;
+  const showGraphicGradientHandles = selected &&
+    object.type === "graphic" &&
+    graphicGradientHandlePoints !== undefined &&
+    !inGroupSelection &&
+    graphicEditHandlesActive &&
+    !pathGraphicInEditMode &&
+    !editingText &&
+    !editingAtomLabel &&
+    !rotateReadout &&
+    !projectedPlaneTiltReadout &&
+    !rotationInput &&
+    !resizeReadout &&
+    !resizeInput &&
+    !objectTransformPreview;
+  const graphicDirectEditChromeActive = pathGraphicInEditMode ||
+    showGraphicGradientHandles;
   const showArtObjectTransformFrame = selected &&
     !inGroupSelection &&
     documentObjectSupportsArtTransform(object) &&
-    !pathGraphicInEditMode;
+    !graphicDirectEditChromeActive;
   const artObjectTransformFrame = showArtObjectTransformFrame ? (
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
@@ -13889,17 +13915,6 @@ function DocumentObjectView({
         onPointerDown={handleGraphicCornerRadiusPointerDown}
       />
     ) : null;
-    const showGraphicGradientHandles = selected &&
-      !inGroupSelection &&
-      !pathGraphicInEditMode &&
-      !editingText &&
-      !editingAtomLabel &&
-      !rotateReadout &&
-      !projectedPlaneTiltReadout &&
-      !rotationInput &&
-      !resizeReadout &&
-      !resizeInput &&
-      !objectTransformPreview;
     const graphicGradientHandles = showGraphicGradientHandles ? (
       <GraphicLinearGradientHandles
         object={object}
@@ -13917,9 +13932,11 @@ function DocumentObjectView({
         data-art-transform-preview={objectTransformPreview ? "true" : undefined}
         data-art-transform-preview-mode={objectTransformPreview?.mode}
         data-art-transform-preview-proxy={artTransformProxy?.kind}
-        data-graphic-interaction-mode={selected && !inGroupSelection && (graphicPathEditPoints || graphicPathNodeEditPoints)
-          ? pathGraphicInEditMode ? "path-edit" : "object-transform"
-          : selected && !inGroupSelection && graphicCornerRadiusEditPoint ? "corner-radius-edit"
+        data-graphic-interaction-mode={selected && !inGroupSelection
+          ? pathGraphicInEditMode ? "path-edit"
+            : showGraphicGradientHandles ? "gradient-edit"
+              : showGraphicCornerRadiusHandle ? "corner-radius-edit"
+                : showArtObjectTransformFrame ? "object-transform" : undefined
           : undefined}
         aria-label={`${object.graphicKind} graphic`}
         onPointerDown={handleObjectPointerDown}
@@ -14640,6 +14657,13 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
 
 function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
   return object.graphicKind === "path" && object.data.artPathKind === "freehand";
+}
+
+function graphicObjectHasDirectEditChrome(object: GraphicObject, target: GraphicStylePaintTarget): boolean {
+  return nativeGraphicPathEditPoints(object) !== undefined ||
+    nativeGraphicPathNodeEditPoints(object) !== undefined ||
+    nativeGraphicCornerRadiusEditPoint(object) !== undefined ||
+    nativeGraphicLinearGradientHandlePoints(object, target) !== undefined;
 }
 
 function GraphicCornerRadiusHandle({

@@ -453,6 +453,7 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
     expect(container.querySelector('[data-selection-rotate-handle="true"]')).not.toBeNull();
     expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).not.toBeNull();
+    expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).not.toBeNull();
 
     await act(async () => {
       dispatchPointer(pageElement(), "pointerdown", { x: 20, y: 20 }, 28);
@@ -462,6 +463,37 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector('[data-art-transform-frame="true"]')).toBeNull();
     expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
     expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).toBeNull();
+    expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).toBeNull();
+  });
+
+  it("switches rounded rectangle direct-edit chrome to transform chrome on double-click", async () => {
+    const roundedRectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Rounded Rect Transform Mode"),
+      { x: 420, y: 280 },
+      "tool.art.roundedRect"
+    );
+    const objectId = roundedRectDocument.selection.objectIds[0] ?? "";
+    await renderMainWindow(roundedRectDocument);
+
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode)
+      .toBe("corner-radius-edit");
+
+    const object = graphicById(roundedRectDocument, objectId);
+    const target = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+    const graphicElement = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"].graphic-object`);
+    if (!graphicElement) {
+      throw new Error("Expected selected rounded rectangle element.");
+    }
+
+    await act(async () => {
+      dispatchPointer(graphicElement, "pointerdown", target, 31, 2);
+      dispatchPointer(graphicElement, "pointerup", target, 31, 2);
+    });
+
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode)
+      .toBe("object-transform");
+    expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-selection-rotate-handle="true"]')).not.toBeNull();
     expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).toBeNull();
   });
 
