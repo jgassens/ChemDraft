@@ -798,6 +798,43 @@ describe("graphic path direct editing interactions", () => {
     expect(undone.data.pathNodes).toBeUndefined();
   });
 
+  it("shows the new polyline node immediately after a scissors split", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Scissors Polyline Feedback"),
+      { x: 220, y: 180 },
+      "tool.art.polyline"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.scissors" });
+    const before = debugArtObject(objectId).object;
+    const start = before.data.pathNodes?.[0]?.point;
+    const next = before.data.pathNodes?.[1]?.point;
+    if (!start || !next) {
+      throw new Error("Expected inserted polyline nodes.");
+    }
+    const splitPoint = {
+      x: (start.x + next.x) / 2,
+      y: (start.y + next.y) / 2
+    };
+
+    expect(container.querySelector('[data-active-tool="tool.art.scissors"]')).not.toBeNull();
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(0);
+
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointerdown", splitPoint, 78);
+    });
+    const after = debugArtObject(objectId).object;
+    const selectedHandle = container.querySelector<HTMLElement>('[data-graphic-path-node-selected="true"]');
+
+    expect(container.querySelector('[data-active-tool="tool.art.scissors"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode).toBe("path-edit");
+    expect(after.data.pathNodes).toHaveLength(4);
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(4);
+    expect(selectedHandle?.dataset.graphicPathNodeIndex).toBe("1");
+    expect(after.data.pathNodes?.[1]?.point.x).toBeCloseTo(splitPoint.x, 3);
+    expect(after.data.pathNodes?.[1]?.point.y).toBeCloseTo(splitPoint.y, 3);
+  });
+
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Path Undo"),

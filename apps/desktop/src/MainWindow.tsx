@@ -783,7 +783,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.9.58-codex";
+const CURRENT_BUILD_STAMP = "6.18.10.9-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -1109,13 +1109,15 @@ export function MainWindow({
 
     const object = findDocumentObject(document, selectedGraphicPathNode.objectId);
     const nodeEditPoints = object?.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
-    const stillSelected = activeToolState.activeKind === "selection" &&
+    const pathFeedbackToolActive = activeToolState.activeKind === "selection" ||
+      activeToolState.activeCommandId === "tool.art.scissors";
+    const stillSelected = pathFeedbackToolActive &&
       document.selection.objectIds.includes(selectedGraphicPathNode.objectId);
     const nodeStillExists = nodeEditPoints?.nodes.some((node) => node.index === selectedGraphicPathNode.nodeIndex) ?? false;
     if (!stillSelected || !nodeStillExists) {
       setSelectedGraphicPathNode(undefined);
     }
-  }, [activeToolState.activeKind, document, selectedGraphicPathNode]);
+  }, [activeToolState.activeCommandId, activeToolState.activeKind, document, selectedGraphicPathNode]);
   const currentToolbarTextStyle = useMemo(() => {
     if (selectedTextObject) {
       return selectedTextRange
@@ -6822,8 +6824,16 @@ export function MainWindow({
         return;
       }
 
+      const splitObject = findDocumentObject(split.document, objectId);
+      const splitNodeIndex = splitObject?.type === "graphic" && Array.isArray(splitObject.data.pathNodes)
+        ? splitObject.data.pathNodes.findIndex((node) =>
+            Math.hypot(node.point.x - split.point.x, node.point.y - split.point.y) < 0.1
+          )
+        : -1;
+
       commitDocumentChange(split.document);
       clearTransientInteractionChrome();
+      setSelectedGraphicPathNode(splitNodeIndex >= 0 ? { objectId, nodeIndex: splitNodeIndex } : undefined);
       setSelectedNativeMoleculePart(undefined);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -9057,6 +9067,10 @@ export function MainWindow({
                       inGroupSelection={inGroupSelection}
                       graphicTransformActive={activeGraphicTransformObjectId === object.id}
                       graphicDirectEditActive={activeToolState.activeCommandId === "tool.art.directEdit"}
+                      graphicPathFeedbackActive={
+                        activeToolState.activeCommandId === "tool.art.scissors" &&
+                        selectedGraphicPathNode?.objectId === object.id
+                      }
                       activeArtPaintTarget={effectiveArtPaintTarget}
                       selectedGraphicPathNodeIndex={
                         selectedGraphicPathNode?.objectId === object.id
@@ -13105,6 +13119,7 @@ function DocumentObjectView({
   inGroupSelection,
   graphicTransformActive,
   graphicDirectEditActive,
+  graphicPathFeedbackActive,
   activeArtPaintTarget,
   selectedGraphicPathNodeIndex,
   selectedPart,
@@ -13165,6 +13180,7 @@ function DocumentObjectView({
   inGroupSelection: boolean;
   graphicTransformActive: boolean;
   graphicDirectEditActive: boolean;
+  graphicPathFeedbackActive: boolean;
   activeArtPaintTarget: GraphicStylePaintTarget;
   selectedGraphicPathNodeIndex?: number;
   selectedPart?: NativeMoleculeSelectionPart;
@@ -13405,7 +13421,7 @@ function DocumentObjectView({
   const hasGraphicGradientHandles = graphicLinearGradientHandlePoints !== undefined ||
     graphicRadialGradientHandlePoints !== undefined;
   const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
-  const pathGraphicInEditMode = selected &&
+  const pathGraphicInEditMode = (selected || graphicPathFeedbackActive) &&
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive;
@@ -14078,7 +14094,7 @@ function DocumentObjectView({
         data-art-transform-preview={objectTransformPreview ? "true" : undefined}
         data-art-transform-preview-mode={objectTransformPreview?.mode}
         data-art-transform-preview-proxy={artTransformProxy?.kind}
-        data-graphic-interaction-mode={selected && !inGroupSelection
+        data-graphic-interaction-mode={(selected || graphicPathFeedbackActive) && !inGroupSelection
           ? pathGraphicInEditMode ? "path-edit"
             : showGraphicGradientHandles ? "gradient-edit"
               : showGraphicCornerRadiusHandle ? "corner-radius-edit"
