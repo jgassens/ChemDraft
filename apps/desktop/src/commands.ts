@@ -280,6 +280,11 @@ export const objectGradientReverseCommand = {
   title: "Reverse Gradient Stops"
 } as const;
 
+export const objectGradientRotateCommand = {
+  id: "object.gradient.rotateStops",
+  title: "Rotate Gradient Stops"
+} as const;
+
 export const objectGradientAddStopCommand = {
   id: "object.gradient.addStop",
   title: "Add Gradient Stop"
@@ -555,6 +560,13 @@ export const objectStyleActions: CommandSpec[] = [
   {
     id: objectGradientReverseCommand.id,
     title: objectGradientReverseCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientRotateCommand.id,
+    title: objectGradientRotateCommand.title,
     icon: "style",
     source: "core",
     category: "object-style"

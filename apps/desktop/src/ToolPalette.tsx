@@ -22,6 +22,7 @@ import {
   objectGradientAddStopCommand,
   objectGradientDeleteStopCommandId,
   objectGradientReverseCommand,
+  objectGradientRotateCommand,
   objectGradientStopColorCommandId,
   objectGradientStopOpacityCommandId,
   objectPaintTypeCommandId,
@@ -1054,7 +1055,7 @@ function ArtToolbarStyleControls({
           >
             −
           </button>
-          <button
+            <button
             type="button"
             className="art-inspector-symbol-button"
             aria-label="Reverse gradient stops"
@@ -1066,6 +1067,19 @@ function ArtToolbarStyleControls({
             onClick={() => onInvoke(objectGradientReverseCommand.id)}
           >
             ⇆
+          </button>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Rotate gradient stops"
+            title="Rotate gradient stops"
+            disabled={!activeGradient?.editable}
+            data-command-id={objectGradientRotateCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke(objectGradientRotateCommand.id)}
+          >
+            ↻
           </button>
         </div>
       ) : null}

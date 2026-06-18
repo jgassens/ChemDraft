@@ -1273,7 +1273,8 @@ describe("ChemDraft desktop shell", () => {
         "object.color.magenta",
         "object.gradient.addStop",
         "object.gradient.deleteStop",
-        "object.gradient.reverseStops"
+        "object.gradient.reverseStops",
+        "object.gradient.rotateStops"
       ])
     );
     expect(objectColorForCommand("object.color.green")).toBe("#1d7f68");
@@ -1292,6 +1293,7 @@ describe("ChemDraft desktop shell", () => {
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.addStop")).toBe(true);
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.deleteStop")).toBe(true);
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.reverseStops")).toBe(true);
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.rotateStops")).toBe(true);
     expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
     expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
     expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
@@ -1856,6 +1858,7 @@ describe("ChemDraft desktop shell", () => {
     expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.addStop"');
     expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.deleteStop.0"');
     expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.reverseStops"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.rotateStops"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-editor="fill"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-active-stop="0"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color="#1d7f68"');

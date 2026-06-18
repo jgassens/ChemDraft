@@ -120,6 +120,7 @@ import {
   resizeNativeTextObjectBox,
   moveDocumentObjects,
   reverseGraphicObjectGradientStopsForSelection,
+  rotateGraphicObjectGradientStopsForSelection,
   scaleDocumentObjectsAroundPoint,
   selectionBounds,
   selectAllDocumentObjects,
@@ -3949,6 +3950,15 @@ describe("Phase 4 document workflow", () => {
         { offset: 0, color: "#b3261e" },
         { offset: 0.5, color: "#1d7f68", opacity: 0.42 },
         { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const rotatedLinearStops = rotateGraphicObjectGradientStopsForSelection(editedLinearStopOpacity, "fill");
+    expect(graphicById(rotatedLinearStops, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 0.5, color: "#b3261e" },
+        { offset: 1, color: "#1d7f68", opacity: 0.42 }
       ]
     });
     const deletedSelectedLinearStop = deleteGraphicObjectGradientStopAtIndexForSelection(editedLinearStopOpacity, "fill", 1);

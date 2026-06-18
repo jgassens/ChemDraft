@@ -3529,6 +3529,14 @@ export function reverseGraphicObjectGradientStopsForSelection(
   return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, reverseGradientStops);
 }
 
+export function rotateGraphicObjectGradientStopsForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, rotateGradientStops);
+}
+
 export function addGraphicObjectGradientStopForSelection(
   document: ChemDraftDocument,
   target: GraphicStylePaintTarget,
@@ -5160,6 +5168,29 @@ function reverseGradientStops(
       offset: clampWorkflowUnit(1 - stop.offset)
     }))
     .sort((left, right) => left.offset - right.offset);
+}
+
+function rotateGradientStops(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sorted = sortedGradientStops(stops);
+  if (sorted.length <= 1) {
+    return sorted;
+  }
+
+  const rotatedPayloads = [
+    sorted[sorted.length - 1]!,
+    ...sorted.slice(0, -1)
+  ];
+  return sortedGradientStops(sorted.map((stop, index) => {
+    const payload = rotatedPayloads[index]!;
+    const opacity = gradientStopOpacity(payload);
+    return {
+      offset: stop.offset,
+      color: gradientStopColor(payload),
+      ...(opacity < 1 ? { opacity } : {})
+    };
+  }));
 }
 
 function addGradientStop(
