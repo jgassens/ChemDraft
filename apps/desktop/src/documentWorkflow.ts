@@ -3721,6 +3721,94 @@ export function swapGraphicObjectFillAndStroke(
   );
 }
 
+export function applyGraphicObjectEyedropperToSelection(
+  document: ChemDraftDocument,
+  sourceObjectId: string,
+  target: GraphicStylePaintTarget,
+  options: { fullAppearance?: boolean } = {},
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const source = findDocumentObject(document, sourceObjectId);
+  if (source?.type !== "graphic") {
+    return document;
+  }
+
+  const targetIds = objectIds.filter((objectId) => objectId !== sourceObjectId);
+  if (targetIds.length === 0) {
+    return document;
+  }
+
+  const targetIdSet = new Set(targetIds);
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "graphic" || !targetIdSet.has(object.id)) {
+        return [];
+      }
+      if (
+        options.fullAppearance
+          ? !graphicObjectSupportsStyleCapability(object, "fill") && !graphicObjectSupportsStyleCapability(object, "stroke")
+          : !graphicObjectSupportsStyleCapability(object, target)
+      ) {
+        return [];
+      }
+
+      const nextStyle = { ...object.style };
+      if (options.fullAppearance) {
+        copyGraphicAppearanceStyle(nextStyle, source.style);
+      } else if (target === "fill") {
+        copyGraphicFillStyle(nextStyle, source.style);
+      } else {
+        copyGraphicStrokeStyle(nextStyle, source.style);
+      }
+
+      let nextData = object.data;
+      if (
+        (options.fullAppearance || target === "stroke") &&
+        graphicObjectSupportsStyleCapability(object, "lineEnds")
+      ) {
+        nextData = { ...object.data };
+        copyOptionalGraphicDataKey(nextData, source.data, "markerStart");
+        copyOptionalGraphicDataKey(nextData, source.data, "markerEnd");
+      }
+
+      return graphicStylesEqual(object.style, nextStyle) && graphicDataMarkerStateEqual(object.data, nextData)
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              style: nextStyle,
+              data: nextData
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+function copyOptionalGraphicDataKey<K extends keyof GraphicObjectData>(
+  target: GraphicObjectData,
+  source: GraphicObjectData,
+  key: K
+): void {
+  if (Object.prototype.hasOwnProperty.call(source, key)) {
+    target[key] = source[key];
+  } else {
+    delete target[key];
+  }
+}
+
+function graphicDataMarkerStateEqual(first: GraphicObjectData, second: GraphicObjectData): boolean {
+  return JSON.stringify({
+    markerStart: first.markerStart,
+    markerEnd: first.markerEnd
+  }) === JSON.stringify({
+    markerStart: second.markerStart,
+    markerEnd: second.markerEnd
+  });
+}
+
 export function reverseGraphicObjectGradientStopsForSelection(
   document: ChemDraftDocument,
   target: GraphicStylePaintTarget,
@@ -5131,7 +5219,45 @@ function graphicObjectHasVisibleFill(object: GraphicObject): boolean {
     object.style.effect === "shadow";
 }
 
-type GraphicStyleCapability = "fill" | "stroke" | "dash" | "lineCap" | "lineJoin";
+function copyGraphicAppearanceStyle(target: GraphicObjectStyle, source: GraphicObjectStyle): void {
+  copyGraphicFillStyle(target, source);
+  copyGraphicStrokeStyle(target, source);
+  copyOptionalGraphicStyleKey(target, source, "opacity");
+  copyOptionalGraphicStyleKey(target, source, "effect");
+}
+
+function copyGraphicFillStyle(target: GraphicObjectStyle, source: GraphicObjectStyle): void {
+  copyOptionalGraphicStyleKey(target, source, "fillColor");
+  copyOptionalGraphicStyleKey(target, source, "fillPaint");
+  copyOptionalGraphicStyleKey(target, source, "fillOpacity");
+  copyOptionalGraphicStyleKey(target, source, "fillMode");
+}
+
+function copyGraphicStrokeStyle(target: GraphicObjectStyle, source: GraphicObjectStyle): void {
+  copyOptionalGraphicStyleKey(target, source, "color");
+  copyOptionalGraphicStyleKey(target, source, "strokeColor");
+  copyOptionalGraphicStyleKey(target, source, "strokePaint");
+  copyOptionalGraphicStyleKey(target, source, "strokeOpacity");
+  copyOptionalGraphicStyleKey(target, source, "strokeWidth");
+  copyOptionalGraphicStyleKey(target, source, "strokeDasharray");
+  copyOptionalGraphicStyleKey(target, source, "strokeLineCap");
+  copyOptionalGraphicStyleKey(target, source, "strokeLineJoin");
+  copyOptionalGraphicStyleKey(target, source, "strokeMiterLimit");
+}
+
+function copyOptionalGraphicStyleKey<K extends keyof GraphicObjectStyle>(
+  target: GraphicObjectStyle,
+  source: GraphicObjectStyle,
+  key: K
+): void {
+  if (hasGraphicStyleKey(source, key)) {
+    target[key] = source[key];
+  } else {
+    delete target[key];
+  }
+}
+
+type GraphicStyleCapability = "fill" | "stroke" | "dash" | "lineCap" | "lineJoin" | "lineEnds";
 
 function graphicObjectSupportsStyleCapability(object: GraphicObject, capability: GraphicStyleCapability): boolean {
   const capabilities = planNativeArtVisual(object, { coordinateSpace: "local" }).capabilities;
@@ -5145,6 +5271,9 @@ function graphicObjectSupportsStyleCapability(object: GraphicObject, capability:
     return capabilities.supportsDash;
   }
   if (capability === "lineCap") {
+    return capabilities.supportsLineCap;
+  }
+  if (capability === "lineEnds") {
     return capabilities.supportsLineCap;
   }
   return capabilities.supportsLineJoin;

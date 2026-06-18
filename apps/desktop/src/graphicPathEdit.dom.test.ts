@@ -111,6 +111,14 @@ describe("graphic path direct editing interactions", () => {
     return page;
   }
 
+  function objectElement(objectId: string): HTMLElement {
+    const object = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    if (!object) {
+      throw new Error(`Expected rendered object ${objectId}.`);
+    }
+    return object;
+  }
+
   function pathHandle(handle: "start" | "middle" | "end"): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-graphic-path-handle="${handle}"]`);
     if (!button) {
@@ -490,6 +498,70 @@ describe("graphic path direct editing interactions", () => {
       kind: "radial-gradient",
       r: 0.5
     });
+  });
+
+  it("copies active fill from a clicked source graphic with the eyedropper tool", async () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Eyedropper Fill Copy"),
+      { x: 220, y: 180 },
+      "tool.art.circle"
+    );
+    const targetId = withTarget.selection.objectIds[0] ?? "";
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 340, y: 180 }, "tool.art.rect");
+    const sourceId = withSource.selection.objectIds[0] ?? "";
+    const styledSource = applyPatch(withSource, {
+      op: "updateObject",
+      objectId: sourceId,
+      changes: {
+        style: {
+          ...graphicById(withSource, sourceId).style,
+          fillColor: "#1d7f68",
+          fillOpacity: 0.45,
+          fillMode: "solid",
+          fillPaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.5,
+            cy: 0.5,
+            r: 0.5,
+            fx: 0.25,
+            fy: 0.25,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    });
+    const selectedTarget = applyPatch(styledSource, {
+      op: "setSelection",
+      pageId: styledSource.pages[0].id,
+      objectIds: [targetId]
+    });
+    await renderMainWindow(selectedTarget, { initialActiveToolCommandId: "tool.art.eyedropper" });
+
+    const source = debugArtObject(sourceId).object;
+    await act(async () => {
+      dispatchPointer(objectElement(sourceId), "pointerdown", {
+        x: source.x + source.width / 2,
+        y: source.y + source.height / 2
+      }, 23);
+    });
+
+    expect(debugArtObject(targetId).object.style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillOpacity: 0.45,
+      fillPaint: {
+        kind: "radial-gradient",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#1d7f68" }
+        ]
+      }
+    });
+    expect(debugArtObject(sourceId).object.style.fillColor).toBe("#1d7f68");
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
   });
 
   it("positions native art path handles through the active page scale", async () => {

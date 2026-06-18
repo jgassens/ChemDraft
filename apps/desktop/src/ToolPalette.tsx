@@ -1889,6 +1889,16 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
     );
   }
 
+  if (toolId === "eyedropper") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M11.5 2.4 L14.6 5.5 L6.7 13.4 L3.6 14.3 L4.5 11.2 Z" />
+        <path className="art-tool-stroke filled" d="M4.5 11.2 L6.7 13.4 L3.6 14.3 Z" />
+        <path className="art-tool-stroke" d="M9.8 4.1 L12.9 7.2" />
+      </svg>
+    );
+  }
+
   if (toolId.startsWith("line")) {
     const path = toolId === "lineWavy"
       ? "M2 9 C4 4, 6 14, 8.5 9 S13 4, 15 9"

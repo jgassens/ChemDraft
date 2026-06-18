@@ -393,6 +393,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.polyline", "Polyline", "bond"],
     ["tool.art.pencil", "Pencil", "mechanism"],
     ["tool.art.brush", "Brush", "style"],
+    ["tool.art.eyedropper", "Eyedropper", "style"],
     ["tool.art.arrow", "Arrow", "export"],
     ["tool.art.arc270", "Three-quarter Arc", "export"],
     ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export"],

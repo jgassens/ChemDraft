@@ -213,7 +213,8 @@
             { "commandId": "tool.art.arrow", "title": "Arrow", "icon": "export", "category": "art" },
             { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "category": "art" },
             { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" }
+            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" },
+            { "commandId": "tool.art.eyedropper", "title": "Eyedropper", "icon": "style", "category": "art" }
           ]
         },
         {

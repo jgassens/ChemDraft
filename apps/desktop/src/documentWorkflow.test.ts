@@ -21,6 +21,7 @@ import {
   applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
   applyGraphicObjectColorToSelection,
+  applyGraphicObjectEyedropperToSelection,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOpacityForSelection,
@@ -4249,6 +4250,132 @@ describe("Phase 4 document workflow", () => {
       strokeDasharray: "0 6",
       strokeLineCap: "round"
     });
+  });
+
+  it("copies graphic fill, stroke, markers, and full appearance with the eyedropper helper", () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Eyedropper"),
+      { x: 220, y: 180 },
+      "tool.art.circle"
+    );
+    const targetId = withTarget.selection.objectIds[0];
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 340, y: 180 }, "tool.art.rect");
+    const sourceId = withSource.selection.objectIds[0];
+    if (!targetId || !sourceId) {
+      throw new Error("Expected eyedropper target and source graphics.");
+    }
+    const paintedSource = applyPatches(withSource, [
+      {
+        op: "updateObject",
+        objectId: sourceId,
+        changes: {
+          style: {
+            ...graphicById(withSource, sourceId).style,
+            fillColor: "#1d7f68",
+            fillOpacity: 0.42,
+            fillMode: "solid",
+            fillPaint: {
+              kind: "linear-gradient",
+              units: "object",
+              x1: 0,
+              y1: 0,
+              x2: 1,
+              y2: 1,
+              stops: [
+                { offset: 0, color: "#ffffff" },
+                { offset: 1, color: "#1d7f68", opacity: 0.42 }
+              ]
+            },
+            strokeColor: "#b3261e",
+            strokeWidth: 5
+          }
+        }
+      },
+      { op: "setSelection", pageId: withSource.pages[0].id, objectIds: [targetId] }
+    ]);
+
+    const copiedFill = applyGraphicObjectEyedropperToSelection(paintedSource, sourceId, "fill");
+    expect(graphicById(copiedFill, targetId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillOpacity: 0.42,
+      fillPaint: {
+        kind: "linear-gradient",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#1d7f68", opacity: 0.42 }
+        ]
+      }
+    });
+    expect(graphicById(copiedFill, targetId).style.strokeWidth).not.toBe(5);
+
+    const withLineTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Eyedropper Stroke"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const lineTargetId = withLineTarget.selection.objectIds[0];
+    const withArrowSource = insertNativeArtGraphicObject(withLineTarget, { x: 360, y: 180 }, "tool.art.arrow");
+    const arrowSourceId = withArrowSource.selection.objectIds[0];
+    if (!lineTargetId || !arrowSourceId) {
+      throw new Error("Expected eyedropper line target and arrow source.");
+    }
+    const styledArrowSource = applyPatches(withArrowSource, [
+      {
+        op: "updateObject",
+        objectId: arrowSourceId,
+        changes: {
+          style: {
+            ...graphicById(withArrowSource, arrowSourceId).style,
+            strokeColor: "#6046a8",
+            strokeOpacity: 0.6,
+            strokeWidth: 7,
+            strokeDasharray: "8 6",
+            strokeLineCap: "square"
+          }
+        }
+      },
+      { op: "setSelection", pageId: withArrowSource.pages[0].id, objectIds: [lineTargetId] }
+    ]);
+    const copiedStroke = applyGraphicObjectEyedropperToSelection(styledArrowSource, arrowSourceId, "stroke");
+    expect(graphicById(copiedStroke, lineTargetId).style).toMatchObject({
+      strokeColor: "#6046a8",
+      strokeOpacity: 0.6,
+      strokeWidth: 7,
+      strokeDasharray: "8 6",
+      strokeLineCap: "square"
+    });
+    expect(graphicById(copiedStroke, lineTargetId).data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 10 });
+    expect(graphicById(copiedStroke, lineTargetId).style.fillColor).toBe("none");
+
+    const fullAppearanceTarget = applyPatches(paintedSource, [
+      {
+        op: "updateObject",
+        objectId: sourceId,
+        changes: {
+          style: {
+            ...graphicById(paintedSource, sourceId).style,
+            opacity: 0.7,
+            effect: "shadow",
+            tiltXDegrees: 35
+          }
+        }
+      },
+      { op: "setSelection", pageId: paintedSource.pages[0].id, objectIds: [targetId] }
+    ]);
+    const copiedFull = applyGraphicObjectEyedropperToSelection(
+      fullAppearanceTarget,
+      sourceId,
+      "fill",
+      { fullAppearance: true }
+    );
+    expect(graphicById(copiedFull, targetId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      strokeColor: "#b3261e",
+      strokeWidth: 5,
+      opacity: 0.7,
+      effect: "shadow"
+    });
+    expect(graphicById(copiedFull, targetId).style.tiltXDegrees).toBeUndefined();
   });
 
   it("edits rectangle corner radius through native graphic workflow helpers", () => {

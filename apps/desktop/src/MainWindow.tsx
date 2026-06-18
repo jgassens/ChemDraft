@@ -157,6 +157,7 @@ import {
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
   applyGraphicObjectColorToSelection,
+  applyGraphicObjectEyedropperToSelection,
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
@@ -781,7 +782,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.8.10-codex";
+const CURRENT_BUILD_STAMP = "6.18.8.35-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5701,6 +5702,13 @@ export function MainWindow({
       return;
     }
 
+    if (activeToolState.activeCommandId === "tool.art.eyedropper") {
+      event.preventDefault();
+      event.stopPropagation();
+      setStatus("Click a source art object");
+      return;
+    }
+
     if (activeToolState.activeKind === "selection") {
       if (activeToolState.activeCommandId === "tool.lasso") {
         if (selectionChromeConsumesPointerTarget(event.target)) {
@@ -6832,6 +6840,48 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       applyNativeBondDisplayStyleDocumentTarget({ objectId, ...nativeMoleculeHit }, activeNativeBondDisplayStyle);
+      return;
+    }
+
+    if (activeToolState.activeCommandId === "tool.art.eyedropper") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (object?.type !== "graphic") {
+        setStatus("Click a source art object");
+        return;
+      }
+
+      const targetIds = selectedGraphicObjectIds(document).filter((selectedObjectId) => selectedObjectId !== objectId);
+      if (targetIds.length === 0) {
+        setStatus("Select target art first, then click a source");
+        return;
+      }
+
+      const copied = applyGraphicObjectEyedropperToSelection(
+        document,
+        objectId,
+        effectiveArtPaintTarget,
+        { fullAppearance: event.altKey },
+        targetIds
+      );
+      if (copied === document) {
+        setStatus("Art appearance unchanged");
+        return;
+      }
+
+      commitDocumentChange(copied);
+      clearTransientInteractionChrome();
+      setSelectedNativeMoleculePart(undefined);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setStatus(event.altKey
+        ? "Copied full art appearance"
+        : effectiveArtPaintTarget === "fill" ? "Copied art fill" : "Copied art stroke");
       return;
     }
 
