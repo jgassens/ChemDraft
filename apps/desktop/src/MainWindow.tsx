@@ -786,7 +786,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.12.37-codex";
+const CURRENT_BUILD_STAMP = "6.18.13.38-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -13482,10 +13482,24 @@ function DocumentObjectView({
   const hasGraphicGradientHandles = graphicLinearGradientHandlePoints !== undefined ||
     graphicRadialGradientHandlePoints !== undefined;
   const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
+  const showGraphicGradientHandles = selected &&
+    object.type === "graphic" &&
+    hasGraphicGradientHandles &&
+    !inGroupSelection &&
+    graphicEditHandlesActive &&
+    !editingText &&
+    !editingAtomLabel &&
+    !rotateReadout &&
+    !projectedPlaneTiltReadout &&
+    !rotationInput &&
+    !resizeReadout &&
+    !resizeInput &&
+    !objectTransformPreview;
   const pathGraphicInEditMode = (selected || graphicPathFeedbackActive) &&
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
-    graphicEditHandlesActive;
+    graphicEditHandlesActive &&
+    !showGraphicGradientHandles;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
     graphicCornerRadiusEditPoint !== undefined &&
@@ -13499,20 +13513,6 @@ function DocumentObjectView({
     !rotationInput &&
     !resizeReadout &&
     !resizeInput;
-  const showGraphicGradientHandles = selected &&
-    object.type === "graphic" &&
-    hasGraphicGradientHandles &&
-    !inGroupSelection &&
-    graphicEditHandlesActive &&
-    !pathGraphicInEditMode &&
-    !editingText &&
-    !editingAtomLabel &&
-    !rotateReadout &&
-    !projectedPlaneTiltReadout &&
-    !rotationInput &&
-    !resizeReadout &&
-    !resizeInput &&
-    !objectTransformPreview;
   const graphicDirectEditChromeActive = pathGraphicInEditMode ||
     showGraphicGradientHandles;
   const showArtObjectTransformFrame = selected &&

@@ -67,6 +67,7 @@ import {
   nativeBondLengthPx,
   nativeFreehandStrokeDocument,
   nativeGraphicPathEditPoints,
+  nativePolylinePathDocument,
   openNativeDocument,
   reorderSelectedDocumentObject,
   selectionBounds,
@@ -2769,6 +2770,61 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-graphic-gradient-handle="radius"');
     expect(markup).toContain('data-graphic-gradient-handle="focus"');
     expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-art-transform-frame="true"');
+  });
+
+  it("renders gradient handles for closed complex path graphics instead of path-node chrome", () => {
+    const document = nativePolylinePathDocument(
+      createPhase4Document("Complex Path Gradient Handles"),
+      [
+        { x: 260, y: 230 },
+        { x: 420, y: 360 },
+        { x: 260, y: 350 },
+        { x: 410, y: 215 },
+        { x: 340, y: 420 }
+      ],
+      "tool.art.polyline",
+      { closed: true }
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#c86d6d" },
+              { offset: 1, color: "#f3d7d7" }
+            ]
+          },
+          strokePaint: { kind: "solid", color: "#111111", opacity: 1 }
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain(`fill="url(#graphic-fill-${objectId})"`);
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-control-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="start"');
+    expect(markup).toContain('data-graphic-gradient-handle="end"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-graphic-interaction-mode="path-edit"');
+    expect(markup).not.toContain('data-graphic-path-node-index=');
     expect(markup).not.toContain('data-art-transform-frame="true"');
   });
 
