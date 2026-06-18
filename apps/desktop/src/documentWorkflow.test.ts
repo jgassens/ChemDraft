@@ -3894,6 +3894,19 @@ describe("Phase 4 document workflow", () => {
       }
     });
 
+    const recoloredLinear = applyGraphicObjectColorToSelection(linearFilled, "fill", "#b3261e");
+    expect(graphicById(recoloredLinear, objectId).style).toMatchObject({
+      fillColor: "#b3261e",
+      fillMode: "solid",
+      fillPaint: {
+        kind: "linear-gradient",
+        stops: [
+          { offset: 0, color: "#b3261e" },
+          { offset: 1, color: "#ffffff" }
+        ]
+      }
+    });
+
     const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);
     const transparentGraphic = graphicById(transparentFill, objectId);
     const linearSvg = exportPhase4Svg(transparentFill, { includeWarnings: true });
@@ -3921,6 +3934,15 @@ describe("Phase 4 document workflow", () => {
       ]
     });
 
+    const greenRadialStroke = applyGraphicObjectColorToSelection(radialStroked, "stroke", "#1d7f68");
+    expect(graphicById(greenRadialStroke, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#1d7f68" }
+      ]
+    });
+
     const radialSvg = exportPhase4Svg(radialStroked, { includeWarnings: true });
     const radialGraphic = graphicById(radialStroked, objectId);
     expect(radialSvg.contents).toContain(`<radialGradient id="graphic-stroke-${objectId}"`);
@@ -3933,7 +3955,14 @@ describe("Phase 4 document workflow", () => {
     const glossed = applyGraphicObjectPaintTypeToSelection(radialStroked, "fill", "gloss");
     expect(graphicById(glossed, objectId).style.fillMode).toBe("gloss");
 
-    const noFill = applyGraphicObjectPaintTypeToSelection(glossed, "fill", "none");
+    const recoloredGloss = applyGraphicObjectColorToSelection(glossed, "fill", "#1d7f68");
+    expect(graphicById(recoloredGloss, objectId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillMode: "gloss",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 0.35 }
+    });
+
+    const noFill = applyGraphicObjectPaintTypeToSelection(recoloredGloss, "fill", "none");
     expect(graphicById(noFill, objectId).style).toMatchObject({
       fillColor: "none",
       fillPaint: { kind: "none" }

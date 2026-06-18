@@ -2394,6 +2394,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
     expect(mainWindowSource).toContain('data-graphic-corner-radius-handle="true"');
     expect(mainWindowSource).toContain('setActiveGraphicTransformObjectId(objectId)');
+    expect(mainWindowSource).not.toContain("setActiveArtPaintTarget(currentArtStyle.activePaintTarget)");
     expect(mainWindowSource).not.toContain("function graphicPathD(object: GraphicObject");
     expect(mainWindowSource).not.toContain("function documentObjectProjectedEllipseBounds");
 

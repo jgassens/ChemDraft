@@ -131,6 +131,7 @@ describe("ToolPalette art color popover", () => {
     }
 
     expect([...fillSelect.options].map((option) => option.value)).toContain("object.paint.type.linearGradient");
+    expect([...fillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
 
     act(() => {
       fillSelect.value = "object.paint.type.linearGradient";
@@ -158,5 +159,24 @@ describe("ToolPalette art color popover", () => {
 
     expect([...strokeSelect.options].map((option) => option.value)).toContain("object.paint.type.radialGradient");
     expect([...strokeSelect.options].map((option) => option.value)).not.toContain("object.paint.type.gloss");
+
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showArtStyleControls: true,
+        currentObjectColor: "#111111",
+        currentArtStyleTarget: "fill",
+        currentArtStyle: artInspectorModelFor("tool.art.rect"),
+        onInvoke
+      }));
+    });
+
+    const restoredFillSelect = container.querySelector<HTMLSelectElement>('[data-art-paint-type-select="fill"]');
+    if (!restoredFillSelect) {
+      throw new Error("Expected restored fill paint type selector.");
+    }
+    expect([...restoredFillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
   });
 });

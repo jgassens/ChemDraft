@@ -3422,12 +3422,15 @@ export function applyGraphicObjectColorToSelection(
 
   return updateGraphicObjects(document, objectIds, (object) => {
     const opacity = target === "fill" ? graphicFillPaintOpacity(object) : graphicStrokePaintOpacity(object);
-    const paint: GraphicPaint = { kind: "solid", color: normalized, opacity };
+    const currentPaint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+    const paint = graphicPaintWithPrimaryColor(currentPaint, normalized, opacity);
     return target === "fill"
       ? {
           ...object.style,
           fillColor: normalized,
-          fillMode: "solid",
+          fillMode: object.style.fillMode === "gloss"
+            ? "gloss"
+            : paint.kind === "none" ? undefined : "solid",
           fillPaint: paint
         }
       : {
@@ -5020,6 +5023,32 @@ function graphicPaintBaseColor(object: GraphicObject, target: GraphicStylePaintT
 
 function gradientCompanionColor(color: string): string {
   return color.toLowerCase() === "#ffffff" ? "#1d7f68" : "#ffffff";
+}
+
+function graphicPaintWithPrimaryColor(paint: GraphicPaint, color: string, opacity: number): GraphicPaint {
+  if (paint.kind === "linear-gradient" || paint.kind === "radial-gradient") {
+    return {
+      ...paint,
+      stops: gradientStopsWithPrimaryColor(paint.stops, color)
+    };
+  }
+
+  return { kind: "solid", color, opacity };
+}
+
+function gradientStopsWithPrimaryColor(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  color: string
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const normalizedStopColors = stops.map((stop) => normalizeWorkflowHexColor(stop.color));
+  const hasBaseStop = normalizedStopColors.some((stopColor) => stopColor !== undefined && stopColor !== "#ffffff");
+  return stops.map((stop, index) => {
+    const normalizedStopColor = normalizedStopColors[index];
+    const shouldUpdate = hasBaseStop
+      ? normalizedStopColor !== "#ffffff"
+      : index === stops.length - 1;
+    return shouldUpdate ? { ...stop, color } : stop;
+  });
 }
 
 function graphicFillPaintOpacity(object: GraphicObject): number {

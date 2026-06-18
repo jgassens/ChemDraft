@@ -750,7 +750,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.19.31-codex";
+const CURRENT_BUILD_STAMP = "6.17.19.39-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -1144,17 +1144,8 @@ export function MainWindow({
     });
     return model.selectedCount > 0 ? model : undefined;
   }, [activeArtPaintTarget, document]);
+  const effectiveArtPaintTarget = currentArtStyle?.activePaintTarget ?? activeArtPaintTarget;
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
-
-  useEffect(() => {
-    if (!currentArtStyle || currentArtStyle.selectedCount === 0) {
-      return;
-    }
-
-    if (activeArtPaintTarget !== currentArtStyle.activePaintTarget) {
-      setActiveArtPaintTarget(currentArtStyle.activePaintTarget);
-    }
-  }, [activeArtPaintTarget, currentArtStyle]);
 
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
@@ -2564,7 +2555,7 @@ export function MainWindow({
       return true;
     }
 
-    const result = applyObjectStyleCommandToDocument(documentRef.current, commandId, activeArtPaintTarget);
+    const result = applyObjectStyleCommandToDocument(documentRef.current, commandId, effectiveArtPaintTarget);
     if (!result.handled) {
       return false;
     }
@@ -2578,12 +2569,12 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
-  }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle]);
+  }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
 
   const previewObjectStyleCommand = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current ?? { startDocument: documentRef.current };
     artStylePreviewRef.current = session;
-    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, activeArtPaintTarget);
+    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, effectiveArtPaintTarget);
     if (!result.handled || !result.targeted) {
       return;
     }
@@ -2592,14 +2583,15 @@ export function MainWindow({
     const graphicObjectIds = selectedColor ? selectedGraphicObjectIds(session.startDocument) : [];
     if (
       selectedColor &&
-      previewGraphicObjectColorOnDom(pageRef.current, session.startDocument, graphicObjectIds, activeArtPaintTarget, selectedColor)
+      canPreviewGraphicObjectColorOnDom(session.startDocument, graphicObjectIds, effectiveArtPaintTarget) &&
+      previewGraphicObjectColorOnDom(pageRef.current, session.startDocument, graphicObjectIds, effectiveArtPaintTarget, selectedColor)
     ) {
       return;
     }
 
     clearArtStyleDomPreview(pageRef.current);
     replacePresentDocument(result.document);
-  }, [activeArtPaintTarget, applyObjectStyleCommandToDocument, replacePresentDocument]);
+  }, [applyObjectStyleCommandToDocument, effectiveArtPaintTarget, replacePresentDocument]);
 
   const commitObjectStylePreview = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current;
@@ -2608,7 +2600,7 @@ export function MainWindow({
       return;
     }
 
-    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, activeArtPaintTarget);
+    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, effectiveArtPaintTarget);
     artStylePreviewRef.current = null;
     clearArtStyleDomPreview(pageRef.current);
     replacePresentDocument(session.startDocument);
@@ -2620,7 +2612,7 @@ export function MainWindow({
     const changed = commitDocumentChange(result.document);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
-  }, [activeArtPaintTarget, applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentChange, replacePresentDocument]);
+  }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentChange, effectiveArtPaintTarget, replacePresentDocument]);
 
   const cancelObjectStylePreview = useCallback(() => {
     const session = artStylePreviewRef.current;
@@ -9664,6 +9656,24 @@ function xmlAttributeValue(value: string | number | undefined): string {
 
 function artObjectPreviewElement(root: HTMLElement, objectId: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`[data-object-id="${cssEscapeIdentifier(objectId)}"].graphic-object`);
+}
+
+function canPreviewGraphicObjectColorOnDom(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  target: GraphicStylePaintTarget
+): boolean {
+  return objectIds.every((objectId) => {
+    const object = findDocumentObject(document, objectId);
+    if (object?.type !== "graphic") {
+      return true;
+    }
+    if (target === "fill" && object.style.fillMode === "gloss") {
+      return false;
+    }
+    const paint = target === "fill" ? object.style.fillPaint : object.style.strokePaint;
+    return paint?.kind !== "linear-gradient" && paint?.kind !== "radial-gradient";
+  });
 }
 
 function previewGraphicObjectColorOnDom(
