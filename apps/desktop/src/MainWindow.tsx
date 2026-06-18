@@ -750,7 +750,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.19.39-codex";
+const CURRENT_BUILD_STAMP = "6.17.19.51-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -13994,6 +13994,9 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const visiblePathD = plan.visiblePathD ?? pathD;
   const projectionTransform = plan.projectionTransform;
   const glossGradient = plan.glossGradient;
+  const hitStrokeWidth = Math.max(strokeWidth + 10, 14);
+  const closedFillHitTarget = plan.capabilities.supportsFill && !plan.capabilities.isOpenStroke;
+  const pathFillHitTarget = freehandPath || closedFillHitTarget || !plan.capabilities.supportsStroke;
   const fillPaintProps = fillMode === "gloss"
     ? { fill: `url(#${gradientId})`, fillOpacity: plan.fill.opacity === 1 ? undefined : plan.fill.opacity }
     : reactSvgPaintAttrs("fill", plan.fill.paint, fillPaintId);
@@ -14045,6 +14048,20 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
       ) : null}
       {plan.projectedShapePathD ? (
         <>
+          {closedFillHitTarget ? (
+            <path
+              className="graphic-glyph-hit-target"
+              data-graphic-hit-fill="true"
+              d={plan.projectedShapePathD}
+              fill="transparent"
+              stroke="transparent"
+              strokeWidth={hitStrokeWidth}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="all"
+            />
+          ) : null}
           {effect === "shadow" ? (
             <path
               className="graphic-glyph-shadow graphic-glyph-projected-shape"
@@ -14084,40 +14101,72 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             />
           ) : null}
           {object.graphicKind === "ellipse" ? (
-          <ellipse
-            className="graphic-glyph-stroke graphic-glyph-shape"
-            cx={width / 2}
-            cy={height / 2}
-            rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
-            ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
-            {...fillPaintProps}
-            {...sharedStrokeProps}
-          />
-        ) : object.graphicKind === "rect" ? (
-          <rect
-            className="graphic-glyph-stroke graphic-glyph-shape"
-            x={strokeWidth / 2}
-            y={strokeWidth / 2}
-            width={Math.max(width - strokeWidth, 0.5)}
-            height={Math.max(height - strokeWidth, 0.5)}
-            rx={cornerRadius}
-            ry={cornerRadius}
-            {...fillPaintProps}
-            {...sharedStrokeProps}
-          />
-        ) : object.graphicKind === "path" && pathD ? (
+            <>
+              <ellipse
+                className="graphic-glyph-hit-target"
+                data-graphic-hit-fill="true"
+                cx={width / 2}
+                cy={height / 2}
+                rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
+                ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
+                fill="transparent"
+                stroke="transparent"
+                strokeWidth={hitStrokeWidth}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="all"
+              />
+              <ellipse
+                className="graphic-glyph-stroke graphic-glyph-shape"
+                cx={width / 2}
+                cy={height / 2}
+                rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
+                ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
+                {...fillPaintProps}
+                {...sharedStrokeProps}
+              />
+            </>
+          ) : object.graphicKind === "rect" ? (
+            <>
+              <rect
+                className="graphic-glyph-hit-target"
+                data-graphic-hit-fill="true"
+                x={strokeWidth / 2}
+                y={strokeWidth / 2}
+                width={Math.max(width - strokeWidth, 0.5)}
+                height={Math.max(height - strokeWidth, 0.5)}
+                rx={cornerRadius}
+                ry={cornerRadius}
+                fill="transparent"
+                stroke="transparent"
+                strokeWidth={hitStrokeWidth}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="all"
+              />
+              <rect
+                className="graphic-glyph-stroke graphic-glyph-shape"
+                x={strokeWidth / 2}
+                y={strokeWidth / 2}
+                width={Math.max(width - strokeWidth, 0.5)}
+                height={Math.max(height - strokeWidth, 0.5)}
+                rx={cornerRadius}
+                ry={cornerRadius}
+                {...fillPaintProps}
+                {...sharedStrokeProps}
+              />
+            </>
+          ) : object.graphicKind === "path" && pathD ? (
           <>
             <path
               className="graphic-glyph-hit-target"
-              data-graphic-hit-fill={freehandPath || !plan.capabilities.supportsStroke ? "true" : undefined}
+              data-graphic-hit-fill={pathFillHitTarget ? "true" : undefined}
               d={pathD}
-              fill={freehandPath || !plan.capabilities.supportsStroke ? "transparent" : "none"}
+              fill={pathFillHitTarget ? "transparent" : "none"}
               stroke="transparent"
-              strokeWidth={Math.max(strokeWidth + 10, 14)}
+              strokeWidth={hitStrokeWidth}
               strokeLinecap="round"
               strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
-              pointerEvents={freehandPath || !plan.capabilities.supportsStroke ? "all" : "stroke"}
+              pointerEvents={pathFillHitTarget ? "all" : "stroke"}
             />
             <path
               className="graphic-glyph-stroke graphic-glyph-path"
@@ -14137,7 +14186,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               x2={line.x2}
               y2={line.y2}
               stroke="transparent"
-              strokeWidth={Math.max(strokeWidth + 10, 14)}
+              strokeWidth={hitStrokeWidth}
               strokeLinecap="round"
               vectorEffect="non-scaling-stroke"
               pointerEvents="stroke"

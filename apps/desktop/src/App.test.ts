@@ -44,6 +44,8 @@ import {
   applyObjectColorToDocumentObjects,
   applyDocumentObjectProjectedPlaneTilt,
   applyFreeformSingleBondToolAtPoint,
+  applyGraphicObjectColorToSelection,
+  applyGraphicObjectOpacityToSelection,
   applyNativeAtomElementTarget,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeDeleteTarget,
@@ -2313,6 +2315,41 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("art-object-tilt-handle");
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
+
+    const noFillRectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("No Fill Rect Hit Render"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const noFillRectMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: noFillRectDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(noFillRectMarkup).toContain('data-graphic-kind="rect"');
+    expect(noFillRectMarkup).toContain("graphic-glyph-hit-target");
+    expect(noFillRectMarkup).toContain('data-graphic-hit-fill="true"');
+    expect(noFillRectMarkup).toContain('fill="transparent"');
+    expect(noFillRectMarkup).toContain('pointer-events="all"');
+
+    const transparentFillRectDocument = applyGraphicObjectOpacityToSelection(
+      applyGraphicObjectColorToSelection(noFillRectDocument, "fill", "#1d7f68"),
+      "fillOpacity",
+      0
+    );
+    const transparentFillRectMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: transparentFillRectDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(transparentFillRectMarkup).toContain('fill="#1d7f68"');
+    expect(transparentFillRectMarkup).toContain('fill-opacity="0"');
+    expect(transparentFillRectMarkup).toContain('data-graphic-hit-fill="true"');
+    expect(transparentFillRectMarkup).toContain('pointer-events="all"');
 
     const lineDocument = insertNativeArtGraphicObject(
       createPhase4Document("Line Art Render"),
