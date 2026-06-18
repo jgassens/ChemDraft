@@ -15,6 +15,7 @@ import {
   planNativeArtVisual,
   prepareGraphicPathForDirectEdit,
   projectGraphicObjectPoint,
+  splitGraphicPathSegmentAtPoint,
   unprojectGraphicObjectPoint
 } from "./index";
 
@@ -537,6 +538,62 @@ describe("art-engine native art planning", () => {
     expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 L 232 104");
   });
 
+  it("splits native line paths into editable polyline nodes", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 100,
+      height: 60,
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+
+    const split = splitGraphicPathSegmentAtPoint(graphic, { x: 170, y: 110 }, { maxDistancePx: 2 });
+
+    expect(split?.segmentIndex).toBe(0);
+    expect(split?.object.data.artPathKind).toBe("polyline");
+    expect(split?.object.data.pathNodes).toEqual([
+      { point: { x: 123, y: 83 } },
+      { point: { x: 170, y: 110 } },
+      { point: { x: 217, y: 137 } }
+    ]);
+    expect(planNativeArtVisual(split!.object, { coordinateSpace: "page" }).pathD).toBe(
+      "M 123 83 L 170 110 L 217 137"
+    );
+  });
+
+  it("splits native polyline path segments at the nearest point", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 140,
+      height: 90,
+      data: {
+        artPathKind: "polyline",
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 232, y: 108 } },
+          { point: { x: 232, y: 168 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const split = splitGraphicPathSegmentAtPoint(graphic, { x: 180, y: 111 }, { maxDistancePx: 6 });
+
+    expect(split?.segmentIndex).toBe(0);
+    expect(split?.object.data.pathNodes).toEqual([
+      { point: { x: 132, y: 108 } },
+      { point: { x: 180, y: 108 } },
+      { point: { x: 232, y: 108 } },
+      { point: { x: 232, y: 168 } }
+    ]);
+    expect(split?.object.x).toBeCloseTo(126, 3);
+    expect(planNativeArtVisual(split!.object, { coordinateSpace: "page" }).pathD).toBe(
+      "M 132 108 L 180 108 L 232 108 L 232 168"
+    );
+  });
+
   it("plans native Bezier path nodes with cubic controls", () => {
     const graphic = {
       ...baseGraphic,
@@ -594,6 +651,47 @@ describe("art-engine native art planning", () => {
       { point: { x: 208, y: 148 } }
     ]);
     expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 C 178 92 208 148 208 148");
+  });
+
+  it("splits native Bezier path segments while preserving the cubic shape", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 80,
+      data: {
+        artPathKind: "bezier",
+        pathNodes: [
+          {
+            point: { x: 100, y: 100 },
+            outControl: { x: 130, y: 50 }
+          },
+          {
+            point: { x: 200, y: 100 },
+            inControl: { x: 170, y: 150 }
+          }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const split = splitGraphicPathSegmentAtPoint(graphic, { x: 150, y: 100 }, { maxDistancePx: 2 });
+    const nodes = split?.object.data.pathNodes;
+
+    expect(split?.segmentIndex).toBe(0);
+    expect(nodes).toHaveLength(3);
+    expect(nodes?.[0]?.point).toEqual({ x: 100, y: 100 });
+    expect(nodes?.[0]?.outControl?.x).toBeCloseTo(115, 1);
+    expect(nodes?.[0]?.outControl?.y).toBeCloseTo(75, 1);
+    expect(nodes?.[1]?.point.x).toBeCloseTo(150, 1);
+    expect(nodes?.[1]?.point.y).toBeCloseTo(100, 1);
+    expect(nodes?.[1]?.inControl?.x).toBeCloseTo(132.5, 1);
+    expect(nodes?.[1]?.inControl?.y).toBeCloseTo(87.5, 1);
+    expect(nodes?.[1]?.outControl?.x).toBeCloseTo(167.5, 1);
+    expect(nodes?.[1]?.outControl?.y).toBeCloseTo(112.5, 1);
+    expect(nodes?.[2]?.point).toEqual({ x: 200, y: 100 });
+    expect(nodes?.[2]?.inControl?.x).toBeCloseTo(185, 1);
+    expect(nodes?.[2]?.inControl?.y).toBeCloseTo(125, 1);
+    expect(planNativeArtVisual(split!.object, { coordinateSpace: "page" }).pathD?.match(/ C /g)).toHaveLength(2);
   });
 
   it("plans pressure-sensitive native freehand strokes as filled outline paths", () => {

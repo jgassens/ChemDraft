@@ -391,6 +391,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.lineBold", "Bold Line", "bond"],
     ["tool.art.pen", "Pen", "mechanism"],
     ["tool.art.polyline", "Polyline", "bond"],
+    ["tool.art.scissors", "Scissors", "select"],
     ["tool.art.pencil", "Pencil", "mechanism"],
     ["tool.art.brush", "Brush", "style"],
     ["tool.art.eyedropper", "Eyedropper", "style"],

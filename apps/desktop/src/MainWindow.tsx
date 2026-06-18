@@ -167,6 +167,7 @@ import {
   cleanUpNativeMolecules2d,
   deleteNativeGraphicPathNode,
   deleteSelectedDocumentObjects,
+  splitNativeGraphicPathSegmentAtPoint,
   exportPhase4Cdxml,
   exportPhase4Pdf,
   exportPhase4Svg,
@@ -782,7 +783,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.9.33-codex";
+const CURRENT_BUILD_STAMP = "6.18.9.58-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -5743,6 +5744,13 @@ export function MainWindow({
       return;
     }
 
+    if (activeToolState.activeCommandId === "tool.art.scissors") {
+      event.preventDefault();
+      event.stopPropagation();
+      setStatus("Click an art path segment to split it");
+      return;
+    }
+
     if (activeToolState.activeKind === "selection") {
       if (activeToolState.activeCommandId === "tool.lasso") {
         if (selectionChromeConsumesPointerTarget(event.target)) {
@@ -6796,6 +6804,37 @@ export function MainWindow({
           hitToleranceForScale(viewportRef.current.scale)
         )
       : undefined;
+
+    if (activeToolState.activeCommandId === "tool.art.scissors" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (object?.type !== "graphic") {
+        setStatus("Click an art path segment to split it");
+        return;
+      }
+
+      const splitPoint = nativeGraphicPathEditPointFromProjectedDrag(currentDocument, objectId, point);
+      const split = splitNativeGraphicPathSegmentAtPoint(currentDocument, objectId, splitPoint, {
+        maxDistancePx: Math.max(2, 10 / viewportRef.current.scale)
+      });
+      if (!split) {
+        setStatus("No path segment under scissors");
+        return;
+      }
+
+      commitDocumentChange(split.document);
+      clearTransientInteractionChrome();
+      setSelectedNativeMoleculePart(undefined);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setStatus("Split art path segment");
+      return;
+    }
 
     if (activeNativeArtTool?.commandId === "tool.art.polyline" && point) {
       event.preventDefault();

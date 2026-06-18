@@ -15,6 +15,7 @@ export const toolbarAssetNames = [
   "Art_Polyline",
   "Art_Rectangle",
   "Art_Rounded_Rectangle",
+  "Art_Scissors",
   "Art_Select",
   "Art_Send_Backward",
   "Art_Send_To_Back",

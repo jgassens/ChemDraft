@@ -1607,7 +1607,11 @@ textarea:focus-visible,
 .app-shell[data-active-tool="tool.art.eyedropper"] .canvas-region,
 .app-shell[data-active-tool="tool.art.eyedropper"] .page,
 .app-shell[data-active-tool="tool.art.eyedropper"] .page-svg-surface,
-.app-shell[data-active-tool="tool.art.eyedropper"] .graphic-glyph-hit-target {
+.app-shell[data-active-tool="tool.art.eyedropper"] .graphic-glyph-hit-target,
+.app-shell[data-active-tool="tool.art.scissors"] .canvas-region,
+.app-shell[data-active-tool="tool.art.scissors"] .page,
+.app-shell[data-active-tool="tool.art.scissors"] .page-svg-surface,
+.app-shell[data-active-tool="tool.art.scissors"] .graphic-glyph-hit-target {
   cursor: crosshair;
 }
 

@@ -759,6 +759,45 @@ describe("graphic path direct editing interactions", () => {
     expect(debugArtObject(objectId).object.data.pathNodes?.[1]?.point).toEqual(middleNode);
   });
 
+  it("splits a clicked art line with scissors as an undoable path edit", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Scissors Split"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.scissors" });
+    const before = debugArtObject(objectId);
+    const middle = before.projectedEditPoints?.middle;
+    if (!middle) {
+      throw new Error("Expected projected line middle.");
+    }
+
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointerdown", middle, 77);
+    });
+    const after = debugArtObject(objectId).object;
+
+    expect(after.data.artPathKind).toBe("polyline");
+    expect(after.data.pathNodes).toHaveLength(3);
+    expect(after.data.pathNodes?.[1]?.point.x).toBeCloseTo(middle.x, 3);
+    expect(after.data.pathNodes?.[1]?.point.y).toBeCloseTo(middle.y, 3);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    const undone = debugArtObject(objectId).object;
+    expect(undone.data.artPathKind).toBe("line");
+    expect(undone.data.pathNodes).toBeUndefined();
+  });
+
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Path Undo"),

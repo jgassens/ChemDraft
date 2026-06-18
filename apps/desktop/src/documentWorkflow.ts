@@ -3,6 +3,7 @@ import {
   editGraphicCornerRadius,
   editGraphicPathGeometry,
   deleteGraphicPathNode,
+  splitGraphicPathSegmentAtPoint,
   createGraphicFreehandPathCache,
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
@@ -239,6 +240,13 @@ export interface NativeArtToolDefinition {
 export type NativeGraphicPathEditHandle = GraphicPathEditHandle;
 export type NativeGraphicPathEditPoints = GraphicPathEditPoints;
 export type NativeGraphicPathNodeEditPoints = GraphicPathNodeEditPoints;
+
+export interface NativeGraphicPathSegmentSplit {
+  document: ChemDraftDocument;
+  segmentIndex: number;
+  point: PagePoint;
+  distance: number;
+}
 export type NativeGraphicMarkerHandleId = NativeArtMarkerHandleId;
 export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
 
@@ -1495,6 +1503,38 @@ export function deleteNativeGraphicPathNode(
     },
     { now: phase4Timestamp }
   );
+}
+
+export function splitNativeGraphicPathSegmentAtPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  point: PagePoint,
+  options: { maxDistancePx?: number } = {}
+): NativeGraphicPathSegmentSplit | undefined {
+  const page = firstPage(document);
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "graphic") {
+    return undefined;
+  }
+
+  const split = splitGraphicPathSegmentAtPoint(object, point, options);
+  if (!split) {
+    return undefined;
+  }
+
+  return {
+    document: applyPatches(
+      document,
+      [
+        { op: "updateObject", objectId, changes: split.object },
+        { op: "setSelection", pageId: page.id, objectIds: [objectId] }
+      ],
+      { now: phase4Timestamp }
+    ),
+    segmentIndex: split.segmentIndex,
+    point: split.point,
+    distance: split.distance
+  };
 }
 
 export function updateNativeGraphicMarkerHandle(

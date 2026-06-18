@@ -166,6 +166,8 @@ interface NativeGraphicPathNode {
   outControl?: NativeArtPoint;
 }
 
+type NativeGraphicPathNodeData = NonNullable<GraphicObjectData["pathNodes"]>[number];
+
 export interface GraphicPathEditPoints {
   start: NativeArtPoint;
   middle: NativeArtPoint;
@@ -184,6 +186,13 @@ export interface GraphicPathNodeEditPoints {
   pathKind: Extract<GraphicPathKind, "polyline" | "bezier">;
   pathClosed: boolean;
   nodes: GraphicPathNodeEditPoint[];
+}
+
+export interface GraphicPathSegmentSplitResult {
+  object: GraphicObject;
+  segmentIndex: number;
+  point: NativeArtPoint;
+  distance: number;
 }
 
 interface CircularGraphicArcGeometry {
@@ -972,6 +981,58 @@ export function deleteGraphicPathNode(
   });
 }
 
+export function splitGraphicPathSegmentAtPoint(
+  object: GraphicObject,
+  point: NativeArtPoint,
+  options: { maxDistancePx?: number } = {}
+): GraphicPathSegmentSplitResult | undefined {
+  const pathKind = graphicPathKind(object);
+  const maxDistancePx = Math.max(0, options.maxDistancePx ?? 12);
+  if (pathKind === "line") {
+    return splitLinePathSegmentAtPoint(object, point, maxDistancePx);
+  }
+  if (pathKind !== "polyline" && pathKind !== "bezier") {
+    return undefined;
+  }
+
+  const nodes = graphicPathNodes(object);
+  const closed = object.data.pathClosed === true;
+  const segmentCount = closed ? nodes.length : nodes.length - 1;
+  if (segmentCount <= 0) {
+    return undefined;
+  }
+
+  const best = nearestGraphicNodeSegment(nodes, closed, pathKind, point);
+  if (!best || best.distance > maxDistancePx || best.t <= 0.02 || best.t >= 0.98) {
+    return undefined;
+  }
+
+  const nextNodes = splitGraphicPathNodes(nodes, closed, pathKind, best.segmentIndex, best.t, best.point);
+  if (!nextNodes) {
+    return undefined;
+  }
+
+  const nextData: GraphicObject["data"] = {
+    ...object.data,
+    artPathKind: pathKind,
+    pathClosed: closed,
+    pathNodes: nextNodes
+  };
+  delete nextData.pathD;
+
+  const edited = updateGraphicPathObject(object, nextData);
+  if (!edited || edited === object) {
+    return undefined;
+  }
+
+  return {
+    object: edited,
+    segmentIndex: best.segmentIndex,
+    point: best.point,
+    distance: best.distance
+  };
+}
+
 export function projectGraphicObjectPoint(
   object: GraphicObject,
   point: NativeArtPoint,
@@ -1446,6 +1507,264 @@ function deleteSemanticArcData(data: GraphicObject["data"]): void {
   delete data.arcRadiusY;
   delete data.arcStartRadians;
   delete data.arcSweepRadians;
+}
+
+function splitLinePathSegmentAtPoint(
+  object: GraphicObject,
+  point: NativeArtPoint,
+  maxDistancePx: number
+): GraphicPathSegmentSplitResult | undefined {
+  const editPoints = graphicPathEditPoints(object);
+  if (!editPoints || editPoints.pathKind !== "line") {
+    return undefined;
+  }
+
+  const nearest = nearestPointOnLineSegment(point, editPoints.start, editPoints.end);
+  if (nearest.distance > maxDistancePx || nearest.t <= 0.02 || nearest.t >= 0.98) {
+    return undefined;
+  }
+
+  const splitPoint = roundPoint(nearest.point);
+  const nextData: GraphicObject["data"] = {
+    ...object.data,
+    artPathKind: "polyline",
+    pathClosed: false,
+    pathNodes: [
+      { point: roundPoint(editPoints.start) },
+      { point: splitPoint },
+      { point: roundPoint(editPoints.end) }
+    ]
+  };
+  delete nextData.lineStart;
+  delete nextData.lineEnd;
+  delete nextData.pathControlPoint;
+  delete nextData.pathD;
+  deleteSemanticArcData(nextData);
+
+  const edited = updateGraphicPathObject(object, nextData);
+  if (!edited || edited === object) {
+    return undefined;
+  }
+
+  return {
+    object: edited,
+    segmentIndex: 0,
+    point: splitPoint,
+    distance: nearest.distance
+  };
+}
+
+function nearestGraphicNodeSegment(
+  nodes: readonly NativeGraphicPathNode[],
+  closed: boolean,
+  pathKind: Extract<GraphicPathKind, "polyline" | "bezier">,
+  point: NativeArtPoint
+): { segmentIndex: number; t: number; point: NativeArtPoint; distance: number } | undefined {
+  const segmentCount = closed ? nodes.length : nodes.length - 1;
+  let best: { segmentIndex: number; t: number; point: NativeArtPoint; distance: number } | undefined;
+  for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
+    const start = nodes[segmentIndex];
+    const end = nodes[(segmentIndex + 1) % nodes.length];
+    if (!start || !end) {
+      continue;
+    }
+
+    const nearest = pathKind === "bezier"
+      ? nearestPointOnCubicSegment(point, start, end)
+      : nearestPointOnLineSegment(point, start.point, end.point);
+    if (!best || nearest.distance < best.distance) {
+      best = {
+        segmentIndex,
+        t: nearest.t,
+        point: roundPoint(nearest.point),
+        distance: nearest.distance
+      };
+    }
+  }
+
+  return best;
+}
+
+function splitGraphicPathNodes(
+  nodes: readonly NativeGraphicPathNode[],
+  closed: boolean,
+  pathKind: Extract<GraphicPathKind, "polyline" | "bezier">,
+  segmentIndex: number,
+  t: number,
+  point: NativeArtPoint
+): NativeGraphicPathNodeData[] | undefined {
+  const start = nodes[segmentIndex];
+  const end = nodes[(segmentIndex + 1) % nodes.length];
+  if (!start || !end) {
+    return undefined;
+  }
+
+  const nextNodes = nodes.map(cloneGraphicPathNode);
+  let inserted: NativeGraphicPathNodeData = { point: roundPoint(point) };
+  if (pathKind === "bezier" && (start.outControl || end.inControl)) {
+    const split = splitCubicBezierSegment(start, end, t);
+    nextNodes[segmentIndex] = split.start;
+    inserted = split.inserted;
+    nextNodes[(segmentIndex + 1) % nodes.length] = split.end;
+  }
+
+  if (closed && segmentIndex === nodes.length - 1) {
+    nextNodes.push(inserted);
+  } else {
+    nextNodes.splice(segmentIndex + 1, 0, inserted);
+  }
+
+  return nextNodes;
+}
+
+function splitCubicBezierSegment(
+  start: NativeGraphicPathNode,
+  end: NativeGraphicPathNode,
+  t: number
+): { start: NativeGraphicPathNodeData; inserted: NativeGraphicPathNodeData; end: NativeGraphicPathNodeData } {
+  const p0 = start.point;
+  const p1 = start.outControl ?? start.point;
+  const p2 = end.inControl ?? end.point;
+  const p3 = end.point;
+  const q0 = lerpPoint(p0, p1, t);
+  const q1 = lerpPoint(p1, p2, t);
+  const q2 = lerpPoint(p2, p3, t);
+  const r0 = lerpPoint(q0, q1, t);
+  const r1 = lerpPoint(q1, q2, t);
+  const splitPoint = lerpPoint(r0, r1, t);
+
+  return {
+    start: {
+      point: roundPoint(start.point),
+      ...(start.inControl ? { inControl: roundPoint(start.inControl) } : {}),
+      outControl: roundPoint(q0)
+    },
+    inserted: {
+      point: roundPoint(splitPoint),
+      inControl: roundPoint(r0),
+      outControl: roundPoint(r1)
+    },
+    end: {
+      point: roundPoint(end.point),
+      inControl: roundPoint(q2),
+      ...(end.outControl ? { outControl: roundPoint(end.outControl) } : {})
+    }
+  };
+}
+
+function cloneGraphicPathNode(node: NativeGraphicPathNode): NativeGraphicPathNodeData {
+  return {
+    point: roundPoint(node.point),
+    ...(node.inControl ? { inControl: roundPoint(node.inControl) } : {}),
+    ...(node.outControl ? { outControl: roundPoint(node.outControl) } : {})
+  };
+}
+
+function nearestPointOnLineSegment(
+  point: NativeArtPoint,
+  start: NativeArtPoint,
+  end: NativeArtPoint
+): { t: number; point: NativeArtPoint; distance: number } {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared <= 0.000001
+    ? 0
+    : clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+  const projected = {
+    x: start.x + dx * t,
+    y: start.y + dy * t
+  };
+  return {
+    t,
+    point: projected,
+    distance: pointDistance(point, projected)
+  };
+}
+
+function nearestPointOnCubicSegment(
+  point: NativeArtPoint,
+  start: NativeGraphicPathNode,
+  end: NativeGraphicPathNode
+): { t: number; point: NativeArtPoint; distance: number } {
+  const p0 = start.point;
+  const p1 = start.outControl ?? start.point;
+  const p2 = end.inControl ?? end.point;
+  const p3 = end.point;
+  const steps = 48;
+  let best = {
+    t: 0,
+    point: p0,
+    distance: pointDistance(point, p0)
+  };
+  let previous = p0;
+  for (let index = 1; index <= steps; index += 1) {
+    const segmentEndT = index / steps;
+    const next = cubicPointAt(p0, p1, p2, p3, segmentEndT);
+    const nearest = nearestPointOnLineSegment(point, previous, next);
+    const candidateT = (index - 1 + nearest.t) / steps;
+    const candidatePoint = cubicPointAt(p0, p1, p2, p3, candidateT);
+    const candidateDistance = pointDistance(point, candidatePoint);
+    if (candidateDistance < best.distance) {
+      best = { t: candidateT, point: candidatePoint, distance: candidateDistance };
+    }
+    previous = next;
+  }
+
+  let low = Math.max(0, best.t - 1 / steps);
+  let high = Math.min(1, best.t + 1 / steps);
+  for (let index = 0; index < 10; index += 1) {
+    const leftT = low + (high - low) / 3;
+    const rightT = high - (high - low) / 3;
+    const leftDistance = pointDistance(point, cubicPointAt(p0, p1, p2, p3, leftT));
+    const rightDistance = pointDistance(point, cubicPointAt(p0, p1, p2, p3, rightT));
+    if (leftDistance <= rightDistance) {
+      high = rightT;
+    } else {
+      low = leftT;
+    }
+  }
+
+  const t = (low + high) / 2;
+  const nearest = cubicPointAt(p0, p1, p2, p3, t);
+  return {
+    t,
+    point: nearest,
+    distance: pointDistance(point, nearest)
+  };
+}
+
+function cubicPointAt(
+  p0: NativeArtPoint,
+  p1: NativeArtPoint,
+  p2: NativeArtPoint,
+  p3: NativeArtPoint,
+  t: number
+): NativeArtPoint {
+  const q0 = lerpPoint(p0, p1, t);
+  const q1 = lerpPoint(p1, p2, t);
+  const q2 = lerpPoint(p2, p3, t);
+  const r0 = lerpPoint(q0, q1, t);
+  const r1 = lerpPoint(q1, q2, t);
+  return lerpPoint(r0, r1, t);
+}
+
+function lerpPoint(start: NativeArtPoint, end: NativeArtPoint, t: number): NativeArtPoint {
+  return {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t
+  };
+}
+
+function pointDistance(left: NativeArtPoint, right: NativeArtPoint): number {
+  return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function roundPoint(point: NativeArtPoint): NativeArtPoint {
+  return {
+    x: roundLayoutNumber(point.x),
+    y: roundLayoutNumber(point.y)
+  };
 }
 
 function editSemanticArcGeometry(

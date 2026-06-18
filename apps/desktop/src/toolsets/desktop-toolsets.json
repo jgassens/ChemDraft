@@ -210,6 +210,7 @@
             { "commandId": "tool.art.lineWavy", "title": "Wavy Line", "icon": "mechanism", "assetName": "Art_Wavy_Line", "category": "art" },
             { "commandId": "tool.art.pen", "title": "Pen", "icon": "mechanism", "assetName": "Art_Pen", "category": "art" },
             { "commandId": "tool.art.polyline", "title": "Polyline", "icon": "bond", "assetName": "Art_Polyline", "category": "art" },
+            { "commandId": "tool.art.scissors", "title": "Scissors", "icon": "select", "assetName": "Art_Scissors", "category": "art" },
             { "commandId": "tool.art.arrow", "title": "Arrow", "icon": "export", "assetName": "Art_Arrow", "category": "art" },
             { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "assetName": "Art_Arc_Circular", "category": "art" },
             { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "assetName": "Art_Arc_Half", "category": "art" },
