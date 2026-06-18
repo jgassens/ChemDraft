@@ -833,6 +833,28 @@ describe("graphic path direct editing interactions", () => {
     expect(selectedHandle?.dataset.graphicPathNodeIndex).toBe("1");
     expect(after.data.pathNodes?.[1]?.point.x).toBeCloseTo(splitPoint.x, 3);
     expect(after.data.pathNodes?.[1]?.point.y).toBeCloseTo(splitPoint.y, 3);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Scissors: node added; click path for more; Esc exits");
+  });
+
+  it("exits the scissors tool with Escape", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Scissors Escape"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.scissors" });
+
+    expect(container.querySelector('[data-active-tool="tool.art.scissors"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true
+      }));
+    });
+
+    expect(container.querySelector('[data-active-tool="tool.select"]')).not.toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selection: click or drag");
   });
 
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {

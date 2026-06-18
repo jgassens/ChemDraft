@@ -784,7 +784,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.10.17-codex";
+const CURRENT_BUILD_STAMP = "6.18.10.26-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -3992,6 +3992,13 @@ export function MainWindow({
         return;
       }
 
+      if (event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.scissors") {
+        event.preventDefault();
+        switchToSelectTool();
+        setStatus(drawingToolStatusLabel("tool.select", "Selection Tool"));
+        return;
+      }
+
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
         const hoveredTargetCommandId = activeNativeTargetShortcutCommand(
           documentRef.current,
@@ -4028,6 +4035,7 @@ export function MainWindow({
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
     shortcutRegistry,
+    switchToSelectTool,
     syncPathArtPreview
   ]);
 
@@ -5754,7 +5762,7 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.art.scissors") {
       event.preventDefault();
       event.stopPropagation();
-      setStatus("Scissors: click path to split");
+      setStatus("Scissors: click path to split; Esc exits");
       return;
     }
 
@@ -6816,7 +6824,7 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
-        setStatus("Scissors: click path to split");
+        setStatus("Scissors: click path to split; Esc exits");
         return;
       }
 
@@ -6825,7 +6833,7 @@ export function MainWindow({
         maxDistancePx: Math.max(2, 10 / viewportRef.current.scale)
       });
       if (!split) {
-        setStatus("Scissors: click closer to path");
+        setStatus("Scissors: click closer; Esc exits");
         return;
       }
 
@@ -6847,7 +6855,7 @@ export function MainWindow({
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
       assignHoveredNativeDeleteTarget(undefined);
-      setStatus("Scissors: node added; click path");
+      setStatus("Scissors: node added; click path for more; Esc exits");
       return;
     }
 

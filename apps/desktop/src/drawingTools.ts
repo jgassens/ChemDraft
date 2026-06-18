@@ -424,7 +424,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.lineBold", "Bold Line", "bond", "click canvas"],
     ["tool.art.pen", "Pen", "mechanism", "click points, drag handles"],
     ["tool.art.polyline", "Polyline", "bond", "click points, double-click finish"],
-    ["tool.art.scissors", "Scissors", "select", "click path to split"],
+    ["tool.art.scissors", "Scissors", "select", "click path to split; Esc exits"],
     ["tool.art.pencil", "Pencil", "mechanism", "drag to draw"],
     ["tool.art.brush", "Brush", "style", "drag to paint"],
     ["tool.art.eyedropper", "Eyedropper", "style", "click source art"],

@@ -128,7 +128,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Scissors: click path to split");
+    expect(result.status).toBe("Scissors: click path to split; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.art.scissors");
   });
 
