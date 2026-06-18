@@ -48,7 +48,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Single Bond active");
+    expect(result.status).toBe("Single Bond: click canvas or atom");
     expect(result.state).toMatchObject({
       activeCommandId: "tool.bond",
       activeKind: "bond",
@@ -66,7 +66,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(current, command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Single Bond active");
+    expect(result.status).toBe("Single Bond: click canvas or atom");
     expect(result.state.activeCommandId).toBe("tool.bond");
     expect(result.state.activeKind).toBe("bond");
     expect(command.enabled).toBe(true);
@@ -81,7 +81,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Text Tool active");
+    expect(result.status).toBe("Text: click canvas to type");
     expect(result.state.activeCommandId).toBe("tool.text");
     expect(result.state.activeKind).toBe("text");
     expect(command.enabled).toBe(true);
@@ -96,7 +96,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Circle active");
+    expect(result.status).toBe("Circle: click canvas");
     expect(result.state.activeCommandId).toBe("tool.art.circle");
     expect(result.state.activeKind).toBe("art");
     expect(command.enabled).toBe(true);
@@ -113,10 +113,23 @@ describe("Phase 7 drawing tool activation", () => {
 
     expect(toolsetCommands.some((candidate) => candidate.id === "tool.art.directEdit")).toBe(false);
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Direct Edit active");
+    expect(result.status).toBe("Direct Edit: adjust art handles");
     expect(result.state.activeCommandId).toBe("tool.art.directEdit");
     expect(result.state.activeKind).toBe("selection");
     expect(command.enabled).toBe(true);
+  });
+
+  it("shows brief usage text for one-shot art utilities", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.scissors");
+    if (!command) {
+      throw new Error("Expected tool.art.scissors to be registered by the toolset manifest.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Scissors: click path to split");
+    expect(result.state.activeCommandId).toBe("tool.art.scissors");
   });
 
   it("keeps preset art variants registered for compatibility without showing them in the primary art toolbar", () => {

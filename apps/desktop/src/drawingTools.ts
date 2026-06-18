@@ -10,6 +10,7 @@ export interface DrawingToolDefinition {
   category: string;
   icon: CommandSpec["icon"];
   defaultShortcut?: string;
+  usageHint?: string;
   disabledReason?: string;
 }
 
@@ -36,7 +37,8 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "select",
-    defaultShortcut: "V"
+    defaultShortcut: "V",
+    usageHint: "click or drag"
   },
   {
     commandId: "tool.lasso",
@@ -44,21 +46,24 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "lasso",
-    defaultShortcut: "L"
+    defaultShortcut: "L",
+    usageHint: "drag around objects"
   },
   {
     commandId: "tool.art.directEdit",
     title: "Direct Edit",
     kind: "selection",
     category: "art",
-    icon: "select"
+    icon: "select",
+    usageHint: "adjust art handles"
   },
   {
     commandId: "tool.eraser",
     title: "Eraser Tool",
     kind: "selection",
     category: "selection",
-    icon: "select"
+    icon: "select",
+    usageHint: "click or drag to delete"
   },
   {
     commandId: "tool.bond",
@@ -66,35 +71,40 @@ export const coreDrawingToolDefinitions = [
     kind: "bond",
     category: "structure",
     icon: "bond",
-    defaultShortcut: "M"
+    defaultShortcut: "M",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.wedgeBond",
     title: "Solid Wedge Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.hashedBond",
     title: "Hashed Wedge Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.dashedBond",
     title: "Dashed Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.boldBond",
     title: "Bold Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.chain",
@@ -119,35 +129,40 @@ export const coreDrawingToolDefinitions = [
     kind: "ring",
     category: "structure",
     icon: "ring",
-    defaultShortcut: "R"
+    defaultShortcut: "R",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.cyclohexane",
     title: "Cyclohexane Template",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.benzene",
     title: "Benzene Template",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.chairCyclohexaneA",
     title: "Chair Cyclohexane Template A",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.chairCyclohexaneB",
     title: "Chair Cyclohexane Template B",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: "click canvas or atom"
   },
   {
     commandId: "tool.text",
@@ -155,7 +170,8 @@ export const coreDrawingToolDefinitions = [
     kind: "text",
     category: "annotation",
     icon: "text",
-    defaultShortcut: "T"
+    defaultShortcut: "T",
+    usageHint: "click canvas to type"
   },
   {
     commandId: "tool.plus",
@@ -163,7 +179,8 @@ export const coreDrawingToolDefinitions = [
     kind: "charge",
     category: "annotation",
     icon: "charge",
-    defaultShortcut: "+"
+    defaultShortcut: "+",
+    usageHint: "click atom or canvas"
   },
   {
     commandId: "tool.minus",
@@ -171,7 +188,8 @@ export const coreDrawingToolDefinitions = [
     kind: "charge",
     category: "annotation",
     icon: "charge",
-    defaultShortcut: "-"
+    defaultShortcut: "-",
+    usageHint: "click atom or canvas"
   },
   {
     commandId: "tool.reactionArrow",
@@ -252,6 +270,14 @@ export function getDrawingToolDefinition(commandId: string): DrawingToolDefiniti
   return drawingToolDefinitionByCommandId.get(commandId);
 }
 
+export function drawingToolStatusLabel(commandId: string, title?: string): string {
+  const definition = getDrawingToolDefinition(commandId);
+  const statusTitle = compactToolStatusTitle(title ?? definition?.title ?? "Tool");
+  return definition?.usageHint
+    ? `${statusTitle}: ${definition.usageHint}`
+    : `${title ?? definition?.title ?? commandId} active`;
+}
+
 export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec[]): CommandSpec[] {
   const knownCommandIds = new Set(commands.map((command) => command.id));
   const standaloneCommands = coreDrawingToolDefinitions
@@ -309,7 +335,7 @@ export function activateDrawingToolCommand(
       lastCommandId: normalizedCommand.id
     },
     outcome: "activated",
-    status: `${normalizedCommand.title} active`
+    status: drawingToolStatusLabel(normalizedCommand.id, normalizedCommand.title)
   };
 }
 
@@ -352,6 +378,13 @@ function mergeDrawingToolCommandSpec(command: CommandSpec): CommandSpec {
   };
 }
 
+function compactToolStatusTitle(title: string): string {
+  return title
+    .replace(/ Tool$/, "")
+    .replace(/ Selection$/, "")
+    .replace(/ Template$/, "");
+}
+
 function dedupeCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   const byId = new Map<string, CommandSpec>();
   commands.forEach((command) => {
@@ -365,52 +398,53 @@ function dedupeCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
 
 function artDrawingToolDefinitions(): DrawingToolDefinition[] {
   const tools = [
-    ["tool.art.circle", "Circle", "bracket"],
-    ["tool.art.circleDashed", "Dashed Circle", "bracket"],
-    ["tool.art.circleGloss", "Gloss Circle", "style"],
-    ["tool.art.circleFilled", "Filled Circle", "style"],
-    ["tool.art.circleShadow", "Shadow Circle", "bracket"],
-    ["tool.art.ellipse", "Ellipse", "bracket"],
-    ["tool.art.ellipseDashed", "Dashed Ellipse", "bracket"],
-    ["tool.art.ellipseGloss", "Gloss Ellipse", "style"],
-    ["tool.art.ellipseFilled", "Filled Ellipse", "style"],
-    ["tool.art.ellipseShadow", "Shadow Ellipse", "bracket"],
-    ["tool.art.roundedRect", "Rounded Rectangle", "bracket"],
-    ["tool.art.roundedRectDashed", "Dashed Rounded Rectangle", "bracket"],
-    ["tool.art.roundedRectGloss", "Gloss Rounded Rectangle", "style"],
-    ["tool.art.roundedRectFilled", "Filled Rounded Rectangle", "style"],
-    ["tool.art.roundedRectShadow", "Shadow Rounded Rectangle", "bracket"],
-    ["tool.art.rect", "Rectangle", "bracket"],
-    ["tool.art.rectDashed", "Dashed Rectangle", "bracket"],
-    ["tool.art.rectGloss", "Gloss Rectangle", "style"],
-    ["tool.art.rectFilled", "Filled Rectangle", "style"],
-    ["tool.art.rectShadow", "Shadow Rectangle", "bracket"],
-    ["tool.art.line", "Line", "bond"],
-    ["tool.art.lineDashed", "Dashed Line", "bond"],
-    ["tool.art.lineWavy", "Wavy Line", "mechanism"],
-    ["tool.art.lineBold", "Bold Line", "bond"],
-    ["tool.art.pen", "Pen", "mechanism"],
-    ["tool.art.polyline", "Polyline", "bond"],
-    ["tool.art.scissors", "Scissors", "select"],
-    ["tool.art.pencil", "Pencil", "mechanism"],
-    ["tool.art.brush", "Brush", "style"],
-    ["tool.art.eyedropper", "Eyedropper", "style"],
-    ["tool.art.arrow", "Arrow", "export"],
-    ["tool.art.arc270", "Three-quarter Arc", "export"],
-    ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export"],
-    ["tool.art.arc180", "Half Arc", "export"],
-    ["tool.art.arc180Dashed", "Dashed Half Arc", "export"],
-    ["tool.art.arc120", "One-third Arc", "export"],
-    ["tool.art.arc120Dashed", "Dashed One-third Arc", "export"],
-    ["tool.art.arc90", "Quarter Arc", "export"],
-    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export"]
+    ["tool.art.circle", "Circle", "bracket", "click canvas"],
+    ["tool.art.circleDashed", "Dashed Circle", "bracket", "click canvas"],
+    ["tool.art.circleGloss", "Gloss Circle", "style", "click canvas"],
+    ["tool.art.circleFilled", "Filled Circle", "style", "click canvas"],
+    ["tool.art.circleShadow", "Shadow Circle", "bracket", "click canvas"],
+    ["tool.art.ellipse", "Ellipse", "bracket", "click canvas"],
+    ["tool.art.ellipseDashed", "Dashed Ellipse", "bracket", "click canvas"],
+    ["tool.art.ellipseGloss", "Gloss Ellipse", "style", "click canvas"],
+    ["tool.art.ellipseFilled", "Filled Ellipse", "style", "click canvas"],
+    ["tool.art.ellipseShadow", "Shadow Ellipse", "bracket", "click canvas"],
+    ["tool.art.roundedRect", "Rounded Rectangle", "bracket", "click canvas"],
+    ["tool.art.roundedRectDashed", "Dashed Rounded Rectangle", "bracket", "click canvas"],
+    ["tool.art.roundedRectGloss", "Gloss Rounded Rectangle", "style", "click canvas"],
+    ["tool.art.roundedRectFilled", "Filled Rounded Rectangle", "style", "click canvas"],
+    ["tool.art.roundedRectShadow", "Shadow Rounded Rectangle", "bracket", "click canvas"],
+    ["tool.art.rect", "Rectangle", "bracket", "click canvas"],
+    ["tool.art.rectDashed", "Dashed Rectangle", "bracket", "click canvas"],
+    ["tool.art.rectGloss", "Gloss Rectangle", "style", "click canvas"],
+    ["tool.art.rectFilled", "Filled Rectangle", "style", "click canvas"],
+    ["tool.art.rectShadow", "Shadow Rectangle", "bracket", "click canvas"],
+    ["tool.art.line", "Line", "bond", "click canvas"],
+    ["tool.art.lineDashed", "Dashed Line", "bond", "click canvas"],
+    ["tool.art.lineWavy", "Wavy Line", "mechanism", "click canvas"],
+    ["tool.art.lineBold", "Bold Line", "bond", "click canvas"],
+    ["tool.art.pen", "Pen", "mechanism", "click points, drag handles"],
+    ["tool.art.polyline", "Polyline", "bond", "click points, double-click finish"],
+    ["tool.art.scissors", "Scissors", "select", "click path to split"],
+    ["tool.art.pencil", "Pencil", "mechanism", "drag to draw"],
+    ["tool.art.brush", "Brush", "style", "drag to paint"],
+    ["tool.art.eyedropper", "Eyedropper", "style", "click source art"],
+    ["tool.art.arrow", "Arrow", "export", "click canvas"],
+    ["tool.art.arc270", "Three-quarter Arc", "export", "click canvas"],
+    ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export", "click canvas"],
+    ["tool.art.arc180", "Half Arc", "export", "click canvas"],
+    ["tool.art.arc180Dashed", "Dashed Half Arc", "export", "click canvas"],
+    ["tool.art.arc120", "One-third Arc", "export", "click canvas"],
+    ["tool.art.arc120Dashed", "Dashed One-third Arc", "export", "click canvas"],
+    ["tool.art.arc90", "Quarter Arc", "export", "click canvas"],
+    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", "click canvas"]
   ] as const;
 
-  return tools.map(([commandId, title, icon]) => ({
+  return tools.map(([commandId, title, icon, usageHint]) => ({
     commandId,
     title,
     kind: "art",
     category: "art",
-    icon
+    icon,
+    usageHint
   } satisfies DrawingToolDefinition));
 }

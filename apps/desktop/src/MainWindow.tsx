@@ -127,6 +127,7 @@ import {
 import {
   activateDrawingToolCommand,
   createActiveToolState,
+  drawingToolStatusLabel,
   isDrawingToolCommand,
   withStandaloneDrawingToolCommands,
   type ActiveToolState
@@ -783,7 +784,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.10.9-codex";
+const CURRENT_BUILD_STAMP = "6.18.10.17-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -2248,7 +2249,7 @@ export function MainWindow({
     activeToolCommandIdRef.current = previousToolState.activeCommandId;
     setActiveToolState(previousToolState);
     void broadcastToolsetActiveTool(previousToolState.activeCommandId).catch(() => undefined);
-    setStatus(`${previousToolTitle} active`);
+    setStatus(drawingToolStatusLabel(previousToolState.activeCommandId, previousToolTitle));
   }, [toolCommandSpecs]);
 
   const switchToSelectTool = useCallback(() => {
@@ -3753,7 +3754,9 @@ export function MainWindow({
       assignHoveredNativeDeleteTarget(undefined);
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
-      setStatus(pathKind === "bezier" ? "Started Pen path" : "Started polyline");
+      setStatus(pathKind === "bezier"
+        ? "Pen: click points, drag handles"
+        : "Polyline: click points, double-click finish");
       return;
     }
 
@@ -3786,7 +3789,9 @@ export function MainWindow({
       options.currentTarget?.setPointerCapture(options.pointerId);
     }
     syncPathArtPreview(current);
-    setStatus(`${current.nodes.length} ${pathKind === "bezier" ? "Pen" : "polyline"} points`);
+    setStatus(pathKind === "bezier"
+      ? `Pen: ${current.nodes.length} points; drag handles`
+      : `Polyline: ${current.nodes.length} points; double-click finish`);
   }, [
     assignHoveredNativeDeleteTarget,
     finishNativePathArtDraw,
@@ -5742,14 +5747,14 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.art.eyedropper") {
       event.preventDefault();
       event.stopPropagation();
-      setStatus("Click a source art object");
+      setStatus("Eyedropper: click source art");
       return;
     }
 
     if (activeToolState.activeCommandId === "tool.art.scissors") {
       event.preventDefault();
       event.stopPropagation();
-      setStatus("Click an art path segment to split it");
+      setStatus("Scissors: click path to split");
       return;
     }
 
@@ -6811,7 +6816,7 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
-        setStatus("Click an art path segment to split it");
+        setStatus("Scissors: click path to split");
         return;
       }
 
@@ -6820,7 +6825,7 @@ export function MainWindow({
         maxDistancePx: Math.max(2, 10 / viewportRef.current.scale)
       });
       if (!split) {
-        setStatus("No path segment under scissors");
+        setStatus("Scissors: click closer to path");
         return;
       }
 
@@ -6842,7 +6847,7 @@ export function MainWindow({
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
       assignHoveredNativeDeleteTarget(undefined);
-      setStatus("Split art path segment");
+      setStatus("Scissors: node added; click path");
       return;
     }
 
@@ -6930,13 +6935,13 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
-        setStatus("Click a source art object");
+        setStatus("Eyedropper: click source art");
         return;
       }
 
       const targetIds = selectedGraphicObjectIds(document).filter((selectedObjectId) => selectedObjectId !== objectId);
       if (targetIds.length === 0) {
-        setStatus("Select target art first, then click a source");
+        setStatus("Eyedropper: select target first");
         return;
       }
 
