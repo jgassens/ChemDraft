@@ -19,6 +19,8 @@ import {
   objectOpacityCommandId,
   objectColorCommands,
   objectCustomColorCommandId,
+  objectGradientAddStopCommand,
+  objectGradientDeleteStopCommand,
   objectGradientReverseCommand,
   objectPaintTypeCommandId,
   objectPaintTypeCommands,
@@ -955,6 +957,32 @@ function ArtToolbarStyleControls({
               />
             ))}
           </div>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Add gradient stop"
+            title="Add gradient stop"
+            disabled={!activeGradient?.canAddStop}
+            data-command-id={objectGradientAddStopCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke(objectGradientAddStopCommand.id)}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Delete middle gradient stop"
+            title="Delete middle gradient stop"
+            disabled={!activeGradient?.canDeleteStop}
+            data-command-id={objectGradientDeleteStopCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke(objectGradientDeleteStopCommand.id)}
+          >
+            −
+          </button>
           <button
             type="button"
             className="art-inspector-symbol-button"

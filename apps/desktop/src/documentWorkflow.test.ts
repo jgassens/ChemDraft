@@ -21,6 +21,8 @@ import {
   applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
   applyGraphicObjectColorToSelection,
+  addGraphicObjectGradientStopForSelection,
+  deleteGraphicObjectGradientStopForSelection,
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
@@ -3918,6 +3920,23 @@ describe("Phase 4 document workflow", () => {
           { offset: 1, color: "#b3261e" }
         ]
       }
+    });
+    const addedLinearStop = addGraphicObjectGradientStopForSelection(recoloredLinear, "fill");
+    expect(graphicById(addedLinearStop, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.5, color: "#d9938f" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const deletedLinearStop = deleteGraphicObjectGradientStopForSelection(addedLinearStop, "fill");
+    expect(graphicById(deletedLinearStop, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 1, color: "#ffffff" }
+      ]
     });
 
     const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);

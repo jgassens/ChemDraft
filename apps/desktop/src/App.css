@@ -621,7 +621,7 @@ textarea:focus-visible,
 
 .art-gradient-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 24px);
   width: 100%;
 }
 

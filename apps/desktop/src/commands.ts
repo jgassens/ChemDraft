@@ -280,6 +280,16 @@ export const objectGradientReverseCommand = {
   title: "Reverse Gradient Stops"
 } as const;
 
+export const objectGradientAddStopCommand = {
+  id: "object.gradient.addStop",
+  title: "Add Gradient Stop"
+} as const;
+
+export const objectGradientDeleteStopCommand = {
+  id: "object.gradient.deleteStop",
+  title: "Delete Middle Gradient Stop"
+} as const;
+
 export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
 
 export const objectPaintTypeCommands = [
@@ -494,6 +504,20 @@ export const objectStyleActions: CommandSpec[] = [
   {
     id: objectGradientReverseCommand.id,
     title: objectGradientReverseCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientAddStopCommand.id,
+    title: objectGradientAddStopCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientDeleteStopCommand.id,
+    title: objectGradientDeleteStopCommand.title,
     icon: "style",
     source: "core",
     category: "object-style"

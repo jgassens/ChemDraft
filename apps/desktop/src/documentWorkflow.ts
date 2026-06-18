@@ -3395,6 +3395,7 @@ export function applyObjectColorToDocumentObjects(
 
 export type GraphicStylePaintTarget = "fill" | "stroke";
 export type GraphicStylePaintType = GraphicPaint["kind"] | "gloss";
+const MAX_GRAPHIC_GRADIENT_STOPS = 8;
 
 export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] {
   const selectedIds = new Set(document.selection.objectIds);
@@ -3525,30 +3526,23 @@ export function reverseGraphicObjectGradientStopsForSelection(
   target: GraphicStylePaintTarget,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
-    if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
-      return object.style;
-    }
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, reverseGradientStops);
+}
 
-    const nextPaint = {
-      ...paint,
-      stops: reverseGradientStops(paint.stops)
-    };
+export function addGraphicObjectGradientStopForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, addGradientStop);
+}
 
-    return target === "fill"
-      ? {
-          ...object.style,
-          fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
-          fillMode: "solid",
-          fillPaint: nextPaint
-        }
-      : {
-          ...object.style,
-          strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
-          strokePaint: nextPaint
-        };
-  }, (object) => graphicObjectSupportsStyleCapability(object, target));
+export function deleteGraphicObjectGradientStopForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, deleteMiddleGradientStop);
 }
 
 export function applyGraphicObjectOpacityToSelection(
@@ -5082,6 +5076,40 @@ function gradientStopsWithPrimaryColor(
   });
 }
 
+function updateGraphicObjectGradientStopsForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[],
+  updateStops: (
+    stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+  ) => Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+    if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
+      return object.style;
+    }
+
+    const nextPaint = {
+      ...paint,
+      stops: updateStops(paint.stops)
+    };
+
+    return target === "fill"
+      ? {
+          ...object.style,
+          fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
+          fillMode: "solid",
+          fillPaint: nextPaint
+        }
+      : {
+          ...object.style,
+          strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
+          strokePaint: nextPaint
+        };
+  }, (object) => graphicObjectSupportsStyleCapability(object, target));
+}
+
 function reverseGradientStops(
   stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
 ): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
@@ -5091,6 +5119,119 @@ function reverseGradientStops(
       offset: clampWorkflowUnit(1 - stop.offset)
     }))
     .sort((left, right) => left.offset - right.offset);
+}
+
+function addGradientStop(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sorted = sortedGradientStops(stops);
+  if (sorted.length >= MAX_GRAPHIC_GRADIENT_STOPS) {
+    return sorted;
+  }
+  if (sorted.length === 0) {
+    return [
+      { offset: 0, color: "#111111" },
+      { offset: 1, color: "#ffffff" }
+    ];
+  }
+  if (sorted.length === 1) {
+    const only = sorted[0]!;
+    return sortedGradientStops([
+      only,
+      { ...only, offset: only.offset <= 0.5 ? 1 : 0 }
+    ]);
+  }
+
+  let leftIndex = 0;
+  let widestGap = -1;
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const gap = sorted[index + 1]!.offset - sorted[index]!.offset;
+    if (gap > widestGap) {
+      widestGap = gap;
+      leftIndex = index;
+    }
+  }
+
+  const left = sorted[leftIndex]!;
+  const right = sorted[leftIndex + 1]!;
+  const offset = clampWorkflowUnit((left.offset + right.offset) / 2);
+  const color = mixWorkflowHexColors(gradientStopColor(left), gradientStopColor(right), 0.5);
+  const opacity = (gradientStopOpacity(left) + gradientStopOpacity(right)) / 2;
+  const stop = {
+    offset,
+    color,
+    ...(opacity < 1 ? { opacity: clampWorkflowUnit(opacity) } : {})
+  };
+
+  return sortedGradientStops([
+    ...sorted.slice(0, leftIndex + 1),
+    stop,
+    ...sorted.slice(leftIndex + 1)
+  ]);
+}
+
+function deleteMiddleGradientStop(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sorted = sortedGradientStops(stops);
+  if (sorted.length <= 2) {
+    return sorted;
+  }
+
+  let deleteIndex = 1;
+  let closestToMiddle = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < sorted.length - 1; index += 1) {
+    const distance = Math.abs(sorted[index]!.offset - 0.5);
+    if (distance < closestToMiddle) {
+      closestToMiddle = distance;
+      deleteIndex = index;
+    }
+  }
+
+  return sorted.filter((_, index) => index !== deleteIndex);
+}
+
+function sortedGradientStops(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  return stops
+    .map((stop) => ({
+      ...stop,
+      offset: clampWorkflowUnit(stop.offset),
+      color: gradientStopColor(stop),
+      ...(gradientStopOpacity(stop) < 1 ? { opacity: gradientStopOpacity(stop) } : {})
+    }))
+    .sort((left, right) => left.offset - right.offset);
+}
+
+function gradientStopColor(
+  stop: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
+): string {
+  return normalizeWorkflowHexColor(stop.color) ?? "#111111";
+}
+
+function gradientStopOpacity(
+  stop: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
+): number {
+  return clampWorkflowUnit(stop.opacity ?? 1);
+}
+
+function mixWorkflowHexColors(from: string, to: string, amount: number): string {
+  const start = rgbFromWorkflowHexColor(from);
+  const end = rgbFromWorkflowHexColor(to);
+  const t = clampWorkflowUnit(amount);
+  return `#${[0, 1, 2].map((index) =>
+    Math.round(start[index]! + (end[index]! - start[index]!) * t).toString(16).padStart(2, "0")
+  ).join("")}`;
+}
+
+function rgbFromWorkflowHexColor(color: string): [number, number, number] {
+  const normalized = normalizeWorkflowHexColor(color) ?? "#111111";
+  return [
+    Number.parseInt(normalized.slice(1, 3), 16),
+    Number.parseInt(normalized.slice(3, 5), 16),
+    Number.parseInt(normalized.slice(5, 7), 16)
+  ];
 }
 
 function graphicFillPaintOpacity(object: GraphicObject): number {

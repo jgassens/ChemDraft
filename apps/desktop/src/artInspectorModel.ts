@@ -5,6 +5,7 @@ export type ArtInspectorPaintTarget = "fill" | "stroke";
 export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
 export type ArtInspectorLineCap = "butt" | "round" | "square";
 export type ArtInspectorLineJoin = "miter" | "round" | "bevel";
+const MAX_ART_INSPECTOR_GRADIENT_STOPS = 8;
 
 export type ArtInspectorSkipReason =
   | "open-stroke"
@@ -39,6 +40,8 @@ export interface ArtInspectorGradientModel {
   stops: ArtInspectorGradientStop[];
   mixed: boolean;
   editable: boolean;
+  canAddStop: boolean;
+  canDeleteStop: boolean;
 }
 
 export interface ArtInspectorModel {
@@ -292,20 +295,22 @@ function gradientModelForTarget(
     .filter((_, index) => supported[index])
     .map(({ object }) => target === "fill" ? object.style.fillPaint : object.style.strokePaint);
   if (paints.length === 0) {
-    return { paintType: null, stops: [], mixed: false, editable: false };
+    return { paintType: null, stops: [], mixed: false, editable: false, canAddStop: false, canDeleteStop: false };
   }
 
   const gradients = paints.filter(isGradientPaint);
   if (gradients.length !== paints.length) {
-    return { paintType: null, stops: [], mixed: gradients.length > 0, editable: false };
+    return { paintType: null, stops: [], mixed: gradients.length > 0, editable: false, canAddStop: false, canDeleteStop: false };
   }
 
   const [first, ...rest] = gradients;
   if (!first) {
-    return { paintType: null, stops: [], mixed: false, editable: false };
+    return { paintType: null, stops: [], mixed: false, editable: false, canAddStop: false, canDeleteStop: false };
   }
 
   const firstStops = normalizedGradientStops(first);
+  const canAddStop = gradients.every((paint) => paint.stops.length < MAX_ART_INSPECTOR_GRADIENT_STOPS);
+  const canDeleteStop = gradients.every((paint) => paint.stops.length > 2);
   const uniform = rest.every((paint) =>
     paint.kind === first.kind &&
     gradientStopsEqual(normalizedGradientStops(paint), firstStops)
@@ -315,7 +320,9 @@ function gradientModelForTarget(
     paintType: uniform ? first.kind : null,
     stops: uniform ? firstStops : [],
     mixed: !uniform,
-    editable: true
+    editable: true,
+    canAddStop,
+    canDeleteStop
   };
 }
 

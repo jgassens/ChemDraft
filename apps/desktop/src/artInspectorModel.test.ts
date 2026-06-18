@@ -204,6 +204,8 @@ describe("ArtInspectorModel", () => {
       paintType: "linear-gradient",
       mixed: false,
       editable: true,
+      canAddStop: true,
+      canDeleteStop: false,
       stops: [
         { offset: 0, color: "#1d7f68", opacity: 1 },
         { offset: 1, color: "#ffffff", opacity: 0.35 }
@@ -219,6 +221,8 @@ describe("ArtInspectorModel", () => {
       paintType: "radial-gradient",
       mixed: false,
       editable: true,
+      canAddStop: true,
+      canDeleteStop: false,
       stops: [
         { offset: 0, color: "#ffffff", opacity: 1 },
         { offset: 1, color: "#b3261e", opacity: 1 }
@@ -238,7 +242,14 @@ describe("ArtInspectorModel", () => {
       requestedPaintTarget: "fill"
     });
     expect(glossModel.values.fillPaintType).toEqual({ value: "gloss", mixed: false });
-    expect(glossModel.activeGradient).toEqual({ paintType: null, stops: [], mixed: false, editable: false });
+    expect(glossModel.activeGradient).toEqual({
+      paintType: null,
+      stops: [],
+      mixed: false,
+      editable: false,
+      canAddStop: false,
+      canDeleteStop: false
+    });
   });
 
   it("keeps corners available only for tested custom cornered paths", () => {
