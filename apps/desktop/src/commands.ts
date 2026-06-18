@@ -275,6 +275,11 @@ export const objectStyleSwapCommand = {
   title: "Swap Fill and Stroke"
 } as const;
 
+export const objectGradientReverseCommand = {
+  id: "object.gradient.reverseStops",
+  title: "Reverse Gradient Stops"
+} as const;
+
 export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
 
 export const objectPaintTypeCommands = [
@@ -482,6 +487,13 @@ export const objectStyleActions: CommandSpec[] = [
   {
     id: objectStyleSwapCommand.id,
     title: objectStyleSwapCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientReverseCommand.id,
+    title: objectGradientReverseCommand.title,
     icon: "style",
     source: "core",
     category: "object-style"

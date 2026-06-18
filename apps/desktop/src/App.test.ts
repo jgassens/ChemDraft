@@ -1264,13 +1264,15 @@ describe("ChemDraft desktop shell", () => {
       expect.arrayContaining([
         "object.color.black",
         "object.color.green",
-        "object.color.magenta"
+        "object.color.magenta",
+        "object.gradient.reverseStops"
       ])
     );
     expect(objectColorForCommand("object.color.green")).toBe("#1d7f68");
     expect(objectColorForCommand(objectCustomColorCommandId("#A0B1C2"))).toBe("#a0b1c2");
     expect(textStylePatchForCommand("object.color.green")).toBeUndefined();
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.color.green")).toBe(true);
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.reverseStops")).toBe(true);
     expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
     expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
     expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
@@ -1708,6 +1710,34 @@ describe("ChemDraft desktop shell", () => {
       selectedGraphicObjects: selectedGraphicObjectsForArtInspector(freehandDocument),
       requestedPaintTarget: "fill"
     });
+    const gradientObjectId = rectDocument.selection.objectIds[0] ?? "";
+    const gradientDocument = applyPatches(rectDocument, [{
+      op: "updateObject",
+      objectId: gradientObjectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#1d7f68" },
+              { offset: 1, color: "#ffffff", opacity: 0.35 }
+            ]
+          },
+          fillColor: "#1d7f68",
+          fillMode: "solid"
+        }
+      }
+    }]);
+    const gradientArtStyle = createArtInspectorModel({
+      document: gradientDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(gradientDocument),
+      requestedPaintTarget: "fill"
+    });
     const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
       groups: artGroups,
       activeTool: "tool.select",
@@ -1739,6 +1769,17 @@ describe("ChemDraft desktop shell", () => {
       currentObjectColor: "#111111",
       currentArtStyleTarget: "fill",
       currentArtStyle: freehandArtStyle,
+      onInvoke: () => undefined
+    }));
+    const gradientInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: gradientArtStyle,
       onInvoke: () => undefined
     }));
 
@@ -1790,6 +1831,13 @@ describe("ChemDraft desktop shell", () => {
     expect(rectInspectorMarkup).toContain("Dash");
     expect(rectInspectorMarkup).not.toContain("Corners");
     expect(rectInspectorMarkup).not.toContain("Line ends");
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-controls="fill"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-rail="fill"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-type="linear-gradient"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.reverseStops"');
+    expect(gradientInspectorMarkup.match(/data-art-gradient-stop=/g) ?? []).toHaveLength(2);
+    expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:0%");
+    expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:100%");
     expect(lineInspectorMarkup).toContain('data-art-fill-supported-count="0"');
     expect(lineInspectorMarkup).toContain('data-art-line-ends-supported-count="1"');
     expect(lineInspectorMarkup).toContain('data-art-fill-support-all="false"');

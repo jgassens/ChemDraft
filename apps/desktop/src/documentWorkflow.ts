@@ -3520,6 +3520,37 @@ export function swapGraphicObjectFillAndStroke(
   );
 }
 
+export function reverseGraphicObjectGradientStopsForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+    if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
+      return object.style;
+    }
+
+    const nextPaint = {
+      ...paint,
+      stops: reverseGradientStops(paint.stops)
+    };
+
+    return target === "fill"
+      ? {
+          ...object.style,
+          fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
+          fillMode: "solid",
+          fillPaint: nextPaint
+        }
+      : {
+          ...object.style,
+          strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
+          strokePaint: nextPaint
+        };
+  }, (object) => graphicObjectSupportsStyleCapability(object, target));
+}
+
 export function applyGraphicObjectOpacityToSelection(
   document: ChemDraftDocument,
   key: "opacity" | "fillOpacity" | "strokeOpacity",
@@ -5049,6 +5080,17 @@ function gradientStopsWithPrimaryColor(
       : index === stops.length - 1;
     return shouldUpdate ? { ...stop, color } : stop;
   });
+}
+
+function reverseGradientStops(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  return stops
+    .map((stop) => ({
+      ...stop,
+      offset: clampWorkflowUnit(1 - stop.offset)
+    }))
+    .sort((left, right) => left.offset - right.offset);
 }
 
 function graphicFillPaintOpacity(object: GraphicObject): number {

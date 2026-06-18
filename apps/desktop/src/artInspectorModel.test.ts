@@ -200,6 +200,30 @@ describe("ArtInspectorModel", () => {
     expect(model.values.strokePaintType).toEqual({ value: "radial-gradient", mixed: false });
     expect(model.values.fillColor).toEqual({ value: "#1d7f68", mixed: false });
     expect(model.values.strokeColor).toEqual({ value: "#b3261e", mixed: false });
+    expect(model.activeGradient).toEqual({
+      paintType: "linear-gradient",
+      mixed: false,
+      editable: true,
+      stops: [
+        { offset: 0, color: "#1d7f68", opacity: 1 },
+        { offset: 1, color: "#ffffff", opacity: 0.35 }
+      ]
+    });
+
+    const strokeModel = createArtInspectorModel({
+      document: documentWithSelectedGraphics([gradient]),
+      selectedGraphicObjects: [gradient],
+      requestedPaintTarget: "stroke"
+    });
+    expect(strokeModel.activeGradient).toEqual({
+      paintType: "radial-gradient",
+      mixed: false,
+      editable: true,
+      stops: [
+        { offset: 0, color: "#ffffff", opacity: 1 },
+        { offset: 1, color: "#b3261e", opacity: 1 }
+      ]
+    });
 
     const gloss = rectGraphic("gloss", {
       style: {
@@ -214,6 +238,7 @@ describe("ArtInspectorModel", () => {
       requestedPaintTarget: "fill"
     });
     expect(glossModel.values.fillPaintType).toEqual({ value: "gloss", mixed: false });
+    expect(glossModel.activeGradient).toEqual({ paintType: null, stops: [], mixed: false, editable: false });
   });
 
   it("keeps corners available only for tested custom cornered paths", () => {

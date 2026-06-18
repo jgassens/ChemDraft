@@ -28,6 +28,19 @@ export interface ArtInspectorMixedValue<T> {
   mixed: boolean;
 }
 
+export interface ArtInspectorGradientStop {
+  offset: number;
+  color: string;
+  opacity: number;
+}
+
+export interface ArtInspectorGradientModel {
+  paintType: Extract<GraphicPaint["kind"], "linear-gradient" | "radial-gradient"> | null;
+  stops: ArtInspectorGradientStop[];
+  mixed: boolean;
+  editable: boolean;
+}
+
 export interface ArtInspectorModel {
   selectedCount: number;
   selectedGraphicIds: string[];
@@ -68,6 +81,7 @@ export interface ArtInspectorModel {
     lineEnds: ArtInspectorMixedValue<ArtInspectorLineCap>;
     corners: ArtInspectorMixedValue<ArtInspectorLineJoin>;
   };
+  activeGradient: ArtInspectorGradientModel;
   skippedObjectIdsByControl: ArtInspectorSkippedObjectIdsByControl;
 }
 
@@ -108,6 +122,20 @@ export function createArtInspectorModel({
       ? "fill"
       : requestedPaintTarget;
 
+  const values = {
+    fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarPaintType(object)),
+    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarPaintType(object)),
+    fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarColor(object)),
+    strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarColor(object)),
+    objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
+    fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => metadataNumberValue(object.style.fillOpacity, 1)),
+    strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeOpacity, 1)),
+    strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeWidth, 1.5)),
+    dash: uniformSupportedValue(planned, supportsDash, ({ object }) => metadataStringValue(object.style.strokeDasharray) ?? "solid"),
+    lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan.stroke.lineCap),
+    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan.stroke.lineJoin)
+  };
+
   return {
     selectedCount,
     selectedGraphicIds: graphics.map((object) => object.id),
@@ -135,19 +163,12 @@ export function createArtInspectorModel({
     cornersSupportedCount,
     fillOpacitySupportedCount: fillSupportedCount,
     strokeOpacitySupportedCount: strokeSupportedCount,
-    values: {
-      fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarPaintType(object)),
-      strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarPaintType(object)),
-      fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarColor(object)),
-      strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarColor(object)),
-      objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
-      fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => metadataNumberValue(object.style.fillOpacity, 1)),
-      strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeOpacity, 1)),
-      strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeWidth, 1.5)),
-      dash: uniformSupportedValue(planned, supportsDash, ({ object }) => metadataStringValue(object.style.strokeDasharray) ?? "solid"),
-      lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan.stroke.lineCap),
-      corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan.stroke.lineJoin)
-    },
+    values,
+    activeGradient: gradientModelForTarget(
+      planned,
+      activePaintTarget === "fill" ? supportsFill : supportsStroke,
+      activePaintTarget
+    ),
     skippedObjectIdsByControl: skippedObjectIdsByControl(planned)
   };
 }
@@ -262,6 +283,69 @@ function representativeGradientStopColor(paint: Extract<GraphicPaint, { kind: "l
     normalizeToolbarHexColor(paint.stops[0]?.color);
 }
 
+function gradientModelForTarget(
+  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[],
+  supported: readonly boolean[],
+  target: ArtInspectorPaintTarget
+): ArtInspectorGradientModel {
+  const paints = planned
+    .filter((_, index) => supported[index])
+    .map(({ object }) => target === "fill" ? object.style.fillPaint : object.style.strokePaint);
+  if (paints.length === 0) {
+    return { paintType: null, stops: [], mixed: false, editable: false };
+  }
+
+  const gradients = paints.filter(isGradientPaint);
+  if (gradients.length !== paints.length) {
+    return { paintType: null, stops: [], mixed: gradients.length > 0, editable: false };
+  }
+
+  const [first, ...rest] = gradients;
+  if (!first) {
+    return { paintType: null, stops: [], mixed: false, editable: false };
+  }
+
+  const firstStops = normalizedGradientStops(first);
+  const uniform = rest.every((paint) =>
+    paint.kind === first.kind &&
+    gradientStopsEqual(normalizedGradientStops(paint), firstStops)
+  );
+
+  return {
+    paintType: uniform ? first.kind : null,
+    stops: uniform ? firstStops : [],
+    mixed: !uniform,
+    editable: true
+  };
+}
+
+function isGradientPaint(paint: GraphicPaint | undefined): paint is Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }> {
+  return paint?.kind === "linear-gradient" || paint?.kind === "radial-gradient";
+}
+
+function normalizedGradientStops(
+  paint: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>
+): ArtInspectorGradientStop[] {
+  return [...paint.stops]
+    .map((stop) => ({
+      offset: clampToolbarUnit(stop.offset),
+      color: normalizeToolbarHexColor(stop.color) ?? "#111111",
+      opacity: clampToolbarUnit(stop.opacity ?? 1)
+    }))
+    .sort((left, right) => left.offset - right.offset);
+}
+
+function gradientStopsEqual(left: readonly ArtInspectorGradientStop[], right: readonly ArtInspectorGradientStop[]): boolean {
+  return left.length === right.length &&
+    left.every((stop, index) => {
+      const other = right[index];
+      return other !== undefined &&
+        stop.offset === other.offset &&
+        stop.color === other.color &&
+        stop.opacity === other.opacity;
+    });
+}
+
 function graphicFillToolbarPaintType(object: GraphicObject): ArtInspectorPaintType {
   if (object.style.fillMode === "gloss") {
     return "gloss";
@@ -305,4 +389,11 @@ function normalizeToolbarHexColor(color: string | undefined): string | null {
     return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
   }
   return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : null;
+}
+
+function clampToolbarUnit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(1, value));
 }

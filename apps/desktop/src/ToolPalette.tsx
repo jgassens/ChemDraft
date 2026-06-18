@@ -19,6 +19,7 @@ import {
   objectOpacityCommandId,
   objectColorCommands,
   objectCustomColorCommandId,
+  objectGradientReverseCommand,
   objectPaintTypeCommandId,
   objectPaintTypeCommands,
   objectStrokeDashCommands,
@@ -613,6 +614,13 @@ function ArtToolbarStyleControls({
   const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.values.dash.value ?? undefined);
   const strokeCap = currentArtStyle?.values.lineEnds.value ?? "butt";
   const strokeJoin = currentArtStyle?.values.corners.value ?? "miter";
+  const activeGradient = currentArtStyle?.activeGradient;
+  const showGradientControls = selected && activeTargetSupported && Boolean(activeGradient?.editable || activeGradient?.mixed);
+  const gradientRailStyle = {
+    "--art-gradient-rail": activeGradient && activeGradient.stops.length > 0
+      ? artGradientRailCss(activeGradient.stops)
+      : "repeating-linear-gradient(135deg, var(--cd-bg-control) 0 5px, var(--cd-border-subtle) 5px 10px)"
+  } as CSSProperties;
   const showAdvancedStrokeControls = false;
 
   useEffect(() => {
@@ -924,6 +932,44 @@ function ArtToolbarStyleControls({
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
+      {showGradientControls ? (
+        <div className="art-inspector-row art-gradient-row" data-art-gradient-controls={effectiveArtStyleTarget}>
+          <div
+            className="art-gradient-rail"
+            aria-hidden="true"
+            data-art-gradient-rail={effectiveArtStyleTarget}
+            data-art-gradient-type={activeGradient?.paintType ?? undefined}
+            data-art-gradient-mixed={activeGradient?.mixed ? "true" : undefined}
+            style={gradientRailStyle}
+          >
+            {activeGradient?.stops.map((stop, index) => (
+              <span
+                key={`${stop.offset}:${stop.color}:${index}`}
+                className="art-gradient-stop-marker"
+                data-art-gradient-stop={index}
+                style={{
+                  "--art-gradient-stop-color": stop.color,
+                  "--art-gradient-stop-offset": `${Math.round(stop.offset * 100)}%`,
+                  opacity: stop.opacity
+                } as CSSProperties}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Reverse gradient stops"
+            title="Reverse gradient stops"
+            disabled={!activeGradient?.editable}
+            data-command-id={objectGradientReverseCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke(objectGradientReverseCommand.id)}
+          >
+            ⇆
+          </button>
+        </div>
+      ) : null}
       {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
         {supportsStrokeWidth ? (
@@ -1034,6 +1080,21 @@ function lineJoinLabel(value: "miter" | "round" | "bevel"): string {
     return "Round";
   }
   return "Bevel";
+}
+
+function artGradientRailCss(stops: readonly { offset: number; color: string; opacity: number }[]): string {
+  const stopCss = stops
+    .map((stop) => `${hexToRgbaCss(stop.color, stop.opacity)} ${Math.round(stop.offset * 100)}%`)
+    .join(", ");
+  return `linear-gradient(90deg, ${stopCss})`;
+}
+
+function hexToRgbaCss(color: string, opacity: number): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  const red = Number.parseInt(normalized.slice(1, 3), 16);
+  const green = Number.parseInt(normalized.slice(3, 5), 16);
+  const blue = Number.parseInt(normalized.slice(5, 7), 16);
+  return `rgb(${red} ${green} ${blue} / ${Math.max(0, Math.min(1, opacity))})`;
 }
 
 type ColorPickerTab = "palette" | "mixer";

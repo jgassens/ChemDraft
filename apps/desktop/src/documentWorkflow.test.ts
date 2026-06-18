@@ -114,6 +114,7 @@ import {
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   moveDocumentObjects,
+  reverseGraphicObjectGradientStopsForSelection,
   scaleDocumentObjectsAroundPoint,
   selectionBounds,
   selectAllDocumentObjects,
@@ -3906,6 +3907,18 @@ describe("Phase 4 document workflow", () => {
         ]
       }
     });
+    const reversedLinear = reverseGraphicObjectGradientStopsForSelection(recoloredLinear, "fill");
+    expect(graphicById(reversedLinear, objectId).style).toMatchObject({
+      fillColor: "#b3261e",
+      fillMode: "solid",
+      fillPaint: {
+        kind: "linear-gradient",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#b3261e" }
+        ]
+      }
+    });
 
     const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);
     const transparentGraphic = graphicById(transparentFill, objectId);
@@ -3940,6 +3953,14 @@ describe("Phase 4 document workflow", () => {
       stops: [
         { offset: 0, color: "#ffffff" },
         { offset: 1, color: "#1d7f68" }
+      ]
+    });
+    const reversedRadialStroke = reverseGraphicObjectGradientStopsForSelection(greenRadialStroke, "stroke");
+    expect(graphicById(reversedRadialStroke, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      stops: [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
       ]
     });
 
