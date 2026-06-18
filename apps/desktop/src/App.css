@@ -2130,6 +2130,23 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
+.graphic-gradient-radius-ring {
+  fill: none;
+  stroke: var(--cd-accent);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 4;
+  opacity: 0.68;
+  vector-effect: non-scaling-stroke;
+}
+
+.graphic-gradient-radius-line {
+  stroke-dasharray: 3 3;
+}
+
+.graphic-gradient-focus-line {
+  stroke-dasharray: 2 5;
+}
+
 .graphic-gradient-handle {
   position: absolute;
   z-index: 4;
@@ -2147,6 +2164,15 @@ textarea:focus-visible,
 
 .graphic-gradient-handle-end {
   background: var(--cd-bg-active);
+}
+
+.graphic-gradient-handle-radius {
+  background: var(--cd-bg-active);
+}
+
+.graphic-gradient-handle-focus {
+  border-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .graphic-gradient-handle:hover {

@@ -127,7 +127,7 @@ describe("graphic path direct editing interactions", () => {
     return button;
   }
 
-  function gradientHandle(handle: "start" | "end"): HTMLButtonElement {
+  function gradientHandle(handle: "start" | "end" | "center" | "radius" | "focus"): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-graphic-gradient-handle="${handle}"]`);
     if (!button) {
       throw new Error(`Expected ${handle} gradient handle.`);
@@ -408,6 +408,87 @@ describe("graphic path direct editing interactions", () => {
       kind: "linear-gradient",
       x2: 1,
       y2: 0
+    });
+  });
+
+  it("drags a radial gradient radius as one undoable edit", async () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Radial Gradient Handle Drag"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const painted = applyPatch(inserted, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          ...graphicById(inserted, objectId).style,
+          fillColor: "#1d7f68",
+          fillMode: "solid",
+          fillPaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.5,
+            cy: 0.5,
+            r: 0.5,
+            fx: 0.3,
+            fy: 0.25,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    });
+    await renderMainWindow(painted);
+    expect(container.querySelector('[data-graphic-gradient-radius-ring="fill"]')).not.toBeNull();
+    expect(gradientHandle("center")).not.toBeNull();
+    expect(gradientHandle("focus")).not.toBeNull();
+
+    const before = debugArtObject(objectId).object;
+    const center = {
+      x: before.x + before.width * 0.5,
+      y: before.y + before.height * 0.5
+    };
+    const maxDimension = Math.max(before.width, before.height, 1);
+    const start = {
+      x: center.x + maxDimension * 0.5,
+      y: center.y
+    };
+    const target = {
+      x: center.x + maxDimension * 0.25,
+      y: center.y
+    };
+
+    await act(async () => {
+      dispatchPointer(gradientHandle("radius"), "pointerdown", start, 22);
+      dispatchPointer(pageElement(), "pointermove", target, 22);
+      dispatchPointer(pageElement(), "pointerup", target, 22);
+    });
+
+    const editedPaint = debugArtObject(objectId).object.style.fillPaint;
+    expect(editedPaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.5,
+      cy: 0.5
+    });
+    expect(editedPaint?.kind === "radial-gradient" ? editedPaint.r : undefined).toBeCloseTo(0.25, 6);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    expect(debugArtObject(objectId).object.style.fillPaint).toMatchObject({
+      kind: "radial-gradient",
+      r: 0.5
     });
   });
 

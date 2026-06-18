@@ -189,6 +189,7 @@ import {
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
   nativeGraphicPathNodeEditPoints,
+  nativeGraphicRadialGradientHandlePoints,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
   nativeArtToolForCommand,
@@ -232,6 +233,7 @@ import {
   updateNativeGraphicLinearGradientHandle,
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
+  updateNativeGraphicRadialGradientHandle,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOpacityForSelection,
@@ -241,11 +243,13 @@ import {
   rotateGraphicObjectGradientStopsForSelection,
   swapGraphicObjectFillAndStroke,
   type GraphicStylePaintTarget,
+  type NativeGraphicGradientHandleId,
   type NativeGraphicLinearGradientHandleId,
   type NativeGraphicMarkerHandleId,
   type NativeGraphicPathEditHandle,
   type NativeGraphicPathEditPoints,
   type NativeGraphicPathNodeEditPoints,
+  type NativeGraphicRadialGradientHandleId,
   type NativeTextSelectionRange,
   type ToolbarColorSelection,
   type NativeBondDisplayStyle,
@@ -416,11 +420,11 @@ type GraphicMarkerDragState = {
   latestPoint: ClientPoint;
   dragging: boolean;
 };
-type GraphicLinearGradientDragState = {
+type GraphicGradientDragState = {
   pointerId: number;
   objectId: string;
   target: GraphicStylePaintTarget;
-  handle: NativeGraphicLinearGradientHandleId;
+  handle: NativeGraphicGradientHandleId;
   startDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
@@ -777,7 +781,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.7.51-codex";
+const CURRENT_BUILD_STAMP = "6.18.8.10-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -941,7 +945,7 @@ export function MainWindow({
   const graphicCornerRadiusDragRef = useRef<GraphicCornerRadiusDragState | null>(null);
   const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
   const graphicMarkerDragRef = useRef<GraphicMarkerDragState | null>(null);
-  const graphicGradientDragRef = useRef<GraphicLinearGradientDragState | null>(null);
+  const graphicGradientDragRef = useRef<GraphicGradientDragState | null>(null);
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
@@ -4672,12 +4676,14 @@ export function MainWindow({
     replacePresentDocument(graphicMarkerDocumentFromDrag(drag, point));
   }, [graphicMarkerDocumentFromDrag, replacePresentDocument]);
 
-  const graphicGradientDocumentFromDrag = useCallback((drag: GraphicLinearGradientDragState, point: ClientPoint): ChemDraftDocument => {
+  const graphicGradientDocumentFromDrag = useCallback((drag: GraphicGradientDragState, point: ClientPoint): ChemDraftDocument => {
     const editPoint = nativeGraphicLocalPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
-    return updateNativeGraphicLinearGradientHandle(drag.startDocument, drag.objectId, drag.target, drag.handle, editPoint);
+    return isLinearGradientHandleId(drag.handle)
+      ? updateNativeGraphicLinearGradientHandle(drag.startDocument, drag.objectId, drag.target, drag.handle, editPoint)
+      : updateNativeGraphicRadialGradientHandle(drag.startDocument, drag.objectId, drag.target, drag.handle, editPoint);
   }, []);
 
-  const previewGraphicGradientDrag = useCallback((drag: GraphicLinearGradientDragState, point: ClientPoint) => {
+  const previewGraphicGradientDrag = useCallback((drag: GraphicGradientDragState, point: ClientPoint) => {
     drag.latestPoint = point;
     replacePresentDocument(graphicGradientDocumentFromDrag(drag, point));
   }, [graphicGradientDocumentFromDrag, replacePresentDocument]);
@@ -4698,7 +4704,7 @@ export function MainWindow({
     return true;
   }, [graphicMarkerDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
 
-  const commitGraphicGradientDrag = useCallback((drag: GraphicLinearGradientDragState, point: ClientPoint): boolean => {
+  const commitGraphicGradientDrag = useCallback((drag: GraphicGradientDragState, point: ClientPoint): boolean => {
     const edited = graphicGradientDocumentFromDrag(drag, point);
     if (edited === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
@@ -6376,10 +6382,10 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? graphicGradientDrag.latestPoint;
       if (graphicGradientDrag.dragging) {
         const changed = commitGraphicGradientDrag(graphicGradientDrag, point);
-        const endpoint = graphicGradientDrag.handle === "start" ? "start" : "end";
-        setStatus(changed ? `Moved linear gradient ${endpoint}` : `Linear gradient ${endpoint} unchanged`);
+        const handleName = graphicGradientHandleStatusName(graphicGradientDrag.target, graphicGradientDrag.handle);
+        setStatus(changed ? `Moved ${handleName}` : "Gradient handle unchanged");
       } else {
-        setStatus("Selected linear gradient handle");
+        setStatus("Selected gradient handle");
       }
       clearGraphicGradientDrag(event);
       return;
@@ -7800,7 +7806,7 @@ export function MainWindow({
   const handleGraphicGradientPointerDown = useCallback((
     objectId: string,
     target: GraphicStylePaintTarget,
-    handle: NativeGraphicLinearGradientHandleId,
+    handle: NativeGraphicGradientHandleId,
     event: PointerEvent<HTMLButtonElement>
   ) => {
     event.preventDefault();
@@ -7817,10 +7823,15 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event);
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    const hasHandle = object?.type === "graphic"
+      ? isLinearGradientHandleId(handle)
+        ? nativeGraphicLinearGradientHandlePoints(object, target) !== undefined
+        : nativeGraphicRadialGradientHandlePoints(object, target) !== undefined
+      : false;
     if (
       !point ||
       object?.type !== "graphic" ||
-      !nativeGraphicLinearGradientHandlePoints(object, target)
+      !hasHandle
     ) {
       return;
     }
@@ -7851,7 +7862,7 @@ export function MainWindow({
       dragging: false
     };
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
-    setStatus(handle === "start" ? "Move linear gradient start" : "Move linear gradient end");
+    setStatus(`Move ${graphicGradientHandleStatusName(target, handle)}`);
   }, [
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
@@ -8476,10 +8487,10 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? graphicGradientDrag.latestPoint;
       if (graphicGradientDrag.dragging) {
         const changed = commitGraphicGradientDrag(graphicGradientDrag, point);
-        const endpoint = graphicGradientDrag.handle === "start" ? "start" : "end";
-        setStatus(changed ? `Moved linear gradient ${endpoint}` : `Linear gradient ${endpoint} unchanged`);
+        const handleName = graphicGradientHandleStatusName(graphicGradientDrag.target, graphicGradientDrag.handle);
+        setStatus(changed ? `Moved ${handleName}` : "Gradient handle unchanged");
       } else {
-        setStatus("Selected linear gradient handle");
+        setStatus("Selected gradient handle");
       }
       clearGraphicGradientDrag(event);
       return;
@@ -13062,7 +13073,7 @@ function DocumentObjectView({
   onGraphicCornerRadiusDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicMarkerPointerDown(objectId: string, markerId: NativeGraphicMarkerHandleId, event: PointerEvent<HTMLButtonElement>): void;
-  onGraphicGradientPointerDown(objectId: string, target: GraphicStylePaintTarget, handle: NativeGraphicLinearGradientHandleId, event: PointerEvent<HTMLButtonElement>): void;
+  onGraphicGradientPointerDown(objectId: string, target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
   onRotationInputKeep(input: RotationInputState): void;
   onRotationInputHome(input: RotationInputState): void;
@@ -13145,7 +13156,7 @@ function DocumentObjectView({
   };
   const handleGraphicGradientPointerDown = (
     target: GraphicStylePaintTarget,
-    handle: NativeGraphicLinearGradientHandleId
+    handle: NativeGraphicGradientHandleId
   ) => (event: PointerEvent<HTMLButtonElement>) => {
     onGraphicGradientPointerDown(object.id, target, handle, event);
   };
@@ -13262,9 +13273,14 @@ function DocumentObjectView({
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
-  const graphicGradientHandlePoints = object.type === "graphic"
+  const graphicLinearGradientHandlePoints = object.type === "graphic"
     ? nativeGraphicLinearGradientHandlePoints(object, activeArtPaintTarget)
     : undefined;
+  const graphicRadialGradientHandlePoints = object.type === "graphic"
+    ? nativeGraphicRadialGradientHandlePoints(object, activeArtPaintTarget)
+    : undefined;
+  const hasGraphicGradientHandles = graphicLinearGradientHandlePoints !== undefined ||
+    graphicRadialGradientHandlePoints !== undefined;
   const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
   const pathGraphicInEditMode = selected &&
     object.type === "graphic" &&
@@ -13285,7 +13301,7 @@ function DocumentObjectView({
     !resizeInput;
   const showGraphicGradientHandles = selected &&
     object.type === "graphic" &&
-    graphicGradientHandlePoints !== undefined &&
+    hasGraphicGradientHandles &&
     !inGroupSelection &&
     graphicEditHandlesActive &&
     !pathGraphicInEditMode &&
@@ -13916,11 +13932,18 @@ function DocumentObjectView({
       />
     ) : null;
     const graphicGradientHandles = showGraphicGradientHandles ? (
-      <GraphicLinearGradientHandles
-        object={object}
-        target={activeArtPaintTarget}
-        onPointerDown={handleGraphicGradientPointerDown}
-      />
+      <>
+        <GraphicLinearGradientHandles
+          object={object}
+          target={activeArtPaintTarget}
+          onPointerDown={handleGraphicGradientPointerDown}
+        />
+        <GraphicRadialGradientHandles
+          object={object}
+          target={activeArtPaintTarget}
+          onPointerDown={handleGraphicGradientPointerDown}
+        />
+      </>
     ) : null;
     return (
       <div
@@ -14663,7 +14686,22 @@ function graphicObjectHasDirectEditChrome(object: GraphicObject, target: Graphic
   return nativeGraphicPathEditPoints(object) !== undefined ||
     nativeGraphicPathNodeEditPoints(object) !== undefined ||
     nativeGraphicCornerRadiusEditPoint(object) !== undefined ||
-    nativeGraphicLinearGradientHandlePoints(object, target) !== undefined;
+    nativeGraphicLinearGradientHandlePoints(object, target) !== undefined ||
+    nativeGraphicRadialGradientHandlePoints(object, target) !== undefined;
+}
+
+function isLinearGradientHandleId(handle: NativeGraphicGradientHandleId): handle is NativeGraphicLinearGradientHandleId {
+  return handle === "start" || handle === "end";
+}
+
+function graphicGradientHandleStatusName(
+  target: GraphicStylePaintTarget,
+  handle: NativeGraphicGradientHandleId
+): string {
+  if (isLinearGradientHandleId(handle)) {
+    return `${target} linear gradient ${handle}`;
+  }
+  return `${target} radial gradient ${handle}`;
 }
 
 function GraphicCornerRadiusHandle({
@@ -14723,7 +14761,7 @@ function GraphicLinearGradientHandles({
 }: {
   object: GraphicObject;
   target: GraphicStylePaintTarget;
-  onPointerDown(target: GraphicStylePaintTarget, handle: NativeGraphicLinearGradientHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerDown(target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
   const points = nativeGraphicLinearGradientHandlePoints(object, target);
   if (!points) {
@@ -14757,6 +14795,93 @@ function GraphicLinearGradientHandles({
           x2={formatSvgNumber(end.x)}
           y2={formatSvgNumber(end.y)}
         />
+      </svg>
+      {handles.map(({ id, point, label }) => (
+        <button
+          type="button"
+          className={[
+            "graphic-gradient-handle",
+            `graphic-gradient-handle-${id}`
+          ].join(" ")}
+          aria-label={label}
+          data-graphic-gradient-handle={id}
+          data-graphic-gradient-target={target}
+          key={id}
+          style={{
+            left: pageScaledCssPx(point.x),
+            top: pageScaledCssPx(point.y)
+          }}
+          title={label}
+          onPointerDown={onPointerDown(target, id)}
+        />
+      ))}
+    </>
+  );
+}
+
+function GraphicRadialGradientHandles({
+  object,
+  target,
+  onPointerDown
+}: {
+  object: GraphicObject;
+  target: GraphicStylePaintTarget;
+  onPointerDown(target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
+}) {
+  const points = nativeGraphicRadialGradientHandlePoints(object, target);
+  if (!points) {
+    return null;
+  }
+
+  const center = projectGraphicObjectPoint(object, points.center, { coordinateSpace: "local" });
+  const radius = projectGraphicObjectPoint(object, points.radius, { coordinateSpace: "local" });
+  const focus = points.focus
+    ? projectGraphicObjectPoint(object, points.focus, { coordinateSpace: "local" })
+    : undefined;
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  const projectedRadius = Math.max(0, Math.hypot(radius.x - center.x, radius.y - center.y));
+  const handles: Array<{ id: NativeGraphicRadialGradientHandleId; point: NativeArtPoint; label: string }> = [
+    { id: "center", point: center, label: `Move ${target} radial gradient center` },
+    { id: "radius", point: radius, label: `Resize ${target} radial gradient radius` },
+    ...(focus ? [{ id: "focus" as const, point: focus, label: `Move ${target} radial gradient focus` }] : [])
+  ];
+
+  return (
+    <>
+      <svg
+        className="graphic-gradient-control-layer"
+        viewBox={`0 0 ${formatSvgNumber(width)} ${formatSvgNumber(height)}`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        focusable="false"
+        data-graphic-gradient-control-layer={target}
+      >
+        <circle
+          className="graphic-gradient-radius-ring"
+          data-graphic-gradient-radius-ring={target}
+          cx={formatSvgNumber(center.x)}
+          cy={formatSvgNumber(center.y)}
+          r={formatSvgNumber(projectedRadius)}
+        />
+        <line
+          className="graphic-gradient-control-line graphic-gradient-radius-line"
+          data-graphic-gradient-radius-line={target}
+          x1={formatSvgNumber(center.x)}
+          y1={formatSvgNumber(center.y)}
+          x2={formatSvgNumber(radius.x)}
+          y2={formatSvgNumber(radius.y)}
+        />
+        {focus ? (
+          <line
+            className="graphic-gradient-control-line graphic-gradient-focus-line"
+            data-graphic-gradient-focus-line={target}
+            x1={formatSvgNumber(center.x)}
+            y1={formatSvgNumber(center.y)}
+            x2={formatSvgNumber(focus.x)}
+            y2={formatSvgNumber(focus.y)}
+          />
+        ) : null}
       </svg>
       {handles.map(({ id, point, label }) => (
         <button

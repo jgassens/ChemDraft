@@ -1355,10 +1355,19 @@ export function nativeGraphicCornerRadiusEditPoint(
 }
 
 export type NativeGraphicLinearGradientHandleId = "start" | "end";
+export type NativeGraphicRadialGradientHandleId = "center" | "radius" | "focus";
+export type NativeGraphicGradientHandleId = NativeGraphicLinearGradientHandleId | NativeGraphicRadialGradientHandleId;
 
 export interface NativeGraphicLinearGradientHandlePoints {
   start: NativeArtPoint;
   end: NativeArtPoint;
+}
+
+export interface NativeGraphicRadialGradientHandlePoints {
+  center: NativeArtPoint;
+  radius: NativeArtPoint;
+  focus?: NativeArtPoint;
+  radiusPx: number;
 }
 
 export function nativeGraphicLinearGradientHandlePoints(
@@ -1383,6 +1392,40 @@ export function nativeGraphicLinearGradientHandlePoints(
       x: clampWorkflowUnit(paint.x2) * object.width,
       y: clampWorkflowUnit(paint.y2) * object.height
     }
+  };
+}
+
+export function nativeGraphicRadialGradientHandlePoints(
+  object: GraphicObject,
+  target: GraphicStylePaintTarget
+): NativeGraphicRadialGradientHandlePoints | undefined {
+  if (!graphicObjectSupportsStyleCapability(object, target)) {
+    return undefined;
+  }
+
+  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  if (paint.kind !== "radial-gradient") {
+    return undefined;
+  }
+
+  const center = {
+    x: clampWorkflowUnit(paint.cx) * object.width,
+    y: clampWorkflowUnit(paint.cy) * object.height
+  };
+  const radiusPx = Math.max(0, Number.isFinite(paint.r) ? paint.r : 0) * Math.max(object.width, object.height, 1);
+  return {
+    center,
+    radius: {
+      x: center.x + radiusPx,
+      y: center.y
+    },
+    focus: typeof paint.fx === "number" && typeof paint.fy === "number"
+      ? {
+          x: clampWorkflowUnit(paint.fx) * object.width,
+          y: clampWorkflowUnit(paint.fy) * object.height
+        }
+      : undefined,
+    radiusPx
   };
 }
 
@@ -1561,6 +1604,74 @@ export function updateNativeGraphicLinearGradientHandle(
     nextPaint.y1 === paint.y1 &&
     nextPaint.x2 === paint.x2 &&
     nextPaint.y2 === paint.y2
+  ) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: target === "fill"
+          ? {
+              ...object.style,
+              fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
+              fillMode: "solid",
+              fillPaint: nextPaint
+            }
+          : {
+              ...object.style,
+              strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
+              strokePaint: nextPaint
+            }
+      }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function updateNativeGraphicRadialGradientHandle(
+  document: ChemDraftDocument,
+  objectId: string,
+  target: GraphicStylePaintTarget,
+  handle: NativeGraphicRadialGradientHandleId,
+  point: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "graphic" || !graphicObjectSupportsStyleCapability(object, target)) {
+    return document;
+  }
+
+  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  if (paint.kind !== "radial-gradient") {
+    return document;
+  }
+
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  const maxDimension = Math.max(width, height, 1);
+  const nextX = clampWorkflowUnit(point.x / width);
+  const nextY = clampWorkflowUnit(point.y / height);
+  const center = {
+    x: paint.cx * width,
+    y: paint.cy * height
+  };
+  const nextPaint = handle === "center"
+    ? { ...paint, cx: nextX, cy: nextY }
+    : handle === "focus"
+      ? { ...paint, fx: nextX, fy: nextY }
+      : {
+          ...paint,
+          r: Math.max(0, Math.hypot(point.x - center.x, point.y - center.y) / maxDimension)
+        };
+  if (
+    nextPaint.cx === paint.cx &&
+    nextPaint.cy === paint.cy &&
+    nextPaint.r === paint.r &&
+    nextPaint.fx === paint.fx &&
+    nextPaint.fy === paint.fy
   ) {
     return document;
   }

@@ -134,7 +134,8 @@ import {
   updateNativeGraphicCornerRadius,
   updateNativeGraphicLinearGradientHandle,
   updateNativeGraphicMarkerHandle,
-  updateNativeGraphicPathHandle
+  updateNativeGraphicPathHandle,
+  updateNativeGraphicRadialGradientHandle
 } from "./documentWorkflow";
 
 function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
@@ -4056,6 +4057,60 @@ describe("Phase 4 document workflow", () => {
         { offset: 1, color: "#ffffff" }
       ]
     });
+
+    const radialGradientGraphic = graphicById(greenRadialStroke, objectId);
+    const movedRadialCenter = updateNativeGraphicRadialGradientHandle(
+      greenRadialStroke,
+      objectId,
+      "stroke",
+      "center",
+      { x: radialGradientGraphic.width * 0.25, y: radialGradientGraphic.height * 0.7 }
+    );
+    expect(graphicById(movedRadialCenter, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.25,
+      cy: 0.7,
+      r: 0.72,
+      fx: 0.32,
+      fy: 0.28,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#1d7f68" }
+      ]
+    });
+    const movedRadialFocus = updateNativeGraphicRadialGradientHandle(
+      movedRadialCenter,
+      objectId,
+      "stroke",
+      "focus",
+      { x: radialGradientGraphic.width * 0.65, y: radialGradientGraphic.height * 0.2 }
+    );
+    expect(graphicById(movedRadialFocus, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.25,
+      cy: 0.7,
+      fx: 0.65,
+      fy: 0.2
+    });
+    const resizedRadial = updateNativeGraphicRadialGradientHandle(
+      movedRadialFocus,
+      objectId,
+      "stroke",
+      "radius",
+      {
+        x: radialGradientGraphic.width * 0.25 + Math.max(radialGradientGraphic.width, radialGradientGraphic.height, 1) * 0.4,
+        y: radialGradientGraphic.height * 0.7
+      }
+    );
+    const resizedRadialPaint = graphicById(resizedRadial, objectId).style.strokePaint;
+    expect(resizedRadialPaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.25,
+      cy: 0.7,
+      fx: 0.65,
+      fy: 0.2
+    });
+    expect(resizedRadialPaint?.kind === "radial-gradient" ? resizedRadialPaint.r : undefined).toBeCloseTo(0.4, 6);
 
     const radialSvg = exportPhase4Svg(radialStroked, { includeWarnings: true });
     const radialGraphic = graphicById(radialStroked, objectId);

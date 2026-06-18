@@ -2656,6 +2656,56 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('id="graphic-gloss-');
   });
 
+  it("renders radial gradient direct-edit handles without art transform chrome", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Radial Gradient Handles"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillColor: "#1d7f68",
+          fillMode: "solid",
+          fillPaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.45,
+            cy: 0.55,
+            r: 0.5,
+            fx: 0.25,
+            fy: 0.3,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-radius-ring="fill"');
+    expect(markup).toContain('data-graphic-gradient-radius-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-focus-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="center"');
+    expect(markup).toContain('data-graphic-gradient-handle="radius"');
+    expect(markup).toContain('data-graphic-gradient-handle="focus"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-art-transform-frame="true"');
+  });
+
   it("preserves gradient paints in native art drag preview proxies", () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Art Gradient Drag Preview"),
