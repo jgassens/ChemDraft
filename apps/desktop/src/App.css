@@ -680,6 +680,10 @@ textarea:focus-visible,
   position: relative;
 }
 
+.art-paint-type-control {
+  width: 74px;
+}
+
 .art-color-popover {
   position: absolute;
   z-index: 25;

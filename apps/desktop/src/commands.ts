@@ -275,6 +275,21 @@ export const objectStyleSwapCommand = {
   title: "Swap Fill and Stroke"
 } as const;
 
+export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
+
+export const objectPaintTypeCommands = [
+  { id: "object.paint.type.none", title: "Paint Type: None", paintType: "none", label: "None" },
+  { id: "object.paint.type.solid", title: "Paint Type: Solid", paintType: "solid", label: "Solid" },
+  { id: "object.paint.type.linearGradient", title: "Paint Type: Linear Gradient", paintType: "linear-gradient", label: "Linear" },
+  { id: "object.paint.type.radialGradient", title: "Paint Type: Radial Gradient", paintType: "radial-gradient", label: "Radial" },
+  { id: "object.paint.type.gloss", title: "Paint Type: Gloss", paintType: "gloss", label: "Gloss" }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  paintType: ObjectPaintType;
+  label: string;
+}[];
+
 export const objectStrokeWidthCommands = [
   { id: "object.stroke.width.1", title: "Stroke Width: 1 px", strokeWidth: 1 },
   { id: "object.stroke.width.1_5", title: "Stroke Width: 1.5 px", strokeWidth: 1.5 },
@@ -373,6 +388,15 @@ export function objectColorForCommand(commandId: string): string | undefined {
   return normalizeHexColor(customColor);
 }
 
+export function objectPaintTypeForCommand(commandId: string): ObjectPaintType | undefined {
+  return objectPaintTypeCommands.find((command) => command.id === commandId)?.paintType;
+}
+
+export function objectPaintTypeCommandId(paintType: ObjectPaintType): string {
+  return objectPaintTypeCommands.find((command) => command.paintType === paintType)?.id ??
+    objectPaintTypeCommands[1].id;
+}
+
 export function normalizeHexColor(color: string | undefined): string | undefined {
   const normalized = color?.trim().replace(/^#/, "").toLowerCase();
   if (!normalized) {
@@ -462,6 +486,13 @@ export const objectStyleActions: CommandSpec[] = [
     source: "core",
     category: "object-style"
   },
+  ...objectPaintTypeCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
   ...objectColorCommands.map(({ id, title }) => ({
     id,
     title,

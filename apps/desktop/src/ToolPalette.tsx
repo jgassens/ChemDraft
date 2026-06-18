@@ -19,6 +19,8 @@ import {
   objectOpacityCommandId,
   objectColorCommands,
   objectCustomColorCommandId,
+  objectPaintTypeCommandId,
+  objectPaintTypeCommands,
   objectStrokeDashCommands,
   objectStrokeLineCapCommands,
   objectStrokeLineJoinCommands,
@@ -588,6 +590,18 @@ function ArtToolbarStyleControls({
     ? currentArtStyle?.values.fillColor.value
     : currentArtStyle?.values.strokeColor.value;
   const currentColor = normalizeHexColor(activeColor ?? currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
+  const activePaintTypeValue = effectiveArtStyleTarget === "fill"
+    ? currentArtStyle?.values.fillPaintType.value
+    : currentArtStyle?.values.strokePaintType.value;
+  const activePaintTypeMixed = effectiveArtStyleTarget === "fill"
+    ? currentArtStyle?.values.fillPaintType.mixed ?? false
+    : currentArtStyle?.values.strokePaintType.mixed ?? false;
+  const activePaintTypeCommandId = activePaintTypeMixed
+    ? "object.paint.type.mixed"
+    : objectPaintTypeCommandId(activePaintTypeValue ?? "solid");
+  const activePaintTypeCommands = objectPaintTypeCommands.filter((command) =>
+    effectiveArtStyleTarget === "fill" || command.paintType !== "gloss"
+  );
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -821,6 +835,30 @@ function ArtToolbarStyleControls({
             </button>
           ) : null}
         </div>
+        <label
+          className="toolbar-control-label art-paint-type-control"
+          title={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
+        >
+          <select
+            className="toolbar-select"
+            value={activePaintTypeCommandId}
+            aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
+            disabled={!selected || !activeTargetSupported}
+            data-art-paint-type-select={effectiveArtStyleTarget}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {activePaintTypeMixed ? (
+              <option value="object.paint.type.mixed">Mixed</option>
+            ) : null}
+            {activePaintTypeCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <div
           className="art-color-picker"
           role="group"

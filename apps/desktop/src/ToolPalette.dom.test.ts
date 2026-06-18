@@ -122,4 +122,41 @@ describe("ToolPalette art color popover", () => {
     });
     expect(container.querySelector(".art-color-popover")).toBeNull();
   });
+
+  it("invokes native paint type commands from the art style selector", () => {
+    const { onInvoke } = renderPalette();
+    const fillSelect = container.querySelector<HTMLSelectElement>('[data-art-paint-type-select="fill"]');
+    if (!fillSelect) {
+      throw new Error("Expected fill paint type selector.");
+    }
+
+    expect([...fillSelect.options].map((option) => option.value)).toContain("object.paint.type.linearGradient");
+
+    act(() => {
+      fillSelect.value = "object.paint.type.linearGradient";
+      fillSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.paint.type.linearGradient");
+
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showArtStyleControls: true,
+        currentObjectColor: "#111111",
+        currentArtStyleTarget: "stroke",
+        currentArtStyle: artInspectorModelFor("tool.art.line"),
+        onInvoke
+      }));
+    });
+
+    const strokeSelect = container.querySelector<HTMLSelectElement>('[data-art-paint-type-select="stroke"]');
+    if (!strokeSelect) {
+      throw new Error("Expected stroke paint type selector.");
+    }
+
+    expect([...strokeSelect.options].map((option) => option.value)).toContain("object.paint.type.radialGradient");
+    expect([...strokeSelect.options].map((option) => option.value)).not.toContain("object.paint.type.gloss");
+  });
 });

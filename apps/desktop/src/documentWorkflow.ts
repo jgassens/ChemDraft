@@ -3394,6 +3394,7 @@ export function applyObjectColorToDocumentObjects(
 }
 
 export type GraphicStylePaintTarget = "fill" | "stroke";
+export type GraphicStylePaintType = GraphicPaint["kind"] | "gloss";
 
 export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] {
   const selectedIds = new Set(document.selection.objectIds);
@@ -3426,6 +3427,7 @@ export function applyGraphicObjectColorToSelection(
       ? {
           ...object.style,
           fillColor: normalized,
+          fillMode: "solid",
           fillPaint: paint
         }
       : {
@@ -3445,6 +3447,7 @@ export function applyGraphicObjectNoneToSelection(
     ? {
         ...object.style,
         fillColor: "none",
+        fillMode: undefined,
         fillPaint: { kind: "none" }
       }
     : {
@@ -3452,6 +3455,43 @@ export function applyGraphicObjectNoneToSelection(
         strokeColor: "none",
         strokePaint: { kind: "none" }
       }, (object) => graphicObjectSupportsStyleCapability(object, target));
+}
+
+export function applyGraphicObjectPaintTypeToSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  paintType: GraphicStylePaintType,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    if (paintType === "gloss") {
+      const color = graphicPaintBaseColor(object, "fill");
+      const opacity = graphicFillPaintOpacity(object);
+      return {
+        ...object.style,
+        fillColor: color,
+        fillMode: "gloss",
+        fillPaint: { kind: "solid", color, opacity }
+      };
+    }
+
+    const paint = graphicPaintForType(object, target, paintType);
+    return target === "fill"
+      ? {
+          ...object.style,
+          fillColor: legacyColorForGraphicPaint(paint, "none"),
+          fillMode: paint.kind === "none" ? undefined : "solid",
+          fillPaint: paint
+        }
+      : {
+          ...object.style,
+          strokeColor: legacyColorForGraphicPaint(paint, "#111111"),
+          strokePaint: paint
+        };
+  }, (object) =>
+    graphicObjectSupportsStyleCapability(object, target) &&
+    (paintType !== "gloss" || target === "fill")
+  );
 }
 
 export function swapGraphicObjectFillAndStroke(
@@ -3467,6 +3507,7 @@ export function swapGraphicObjectFillAndStroke(
       strokePaint: fillPaint,
       fillColor: legacyColorForGraphicPaint(strokePaint, "none"),
       strokeColor: legacyColorForGraphicPaint(fillPaint, "#111111"),
+      fillMode: strokePaint.kind === "none" ? undefined : "solid",
       fillOpacity: object.style.strokeOpacity,
       strokeOpacity: object.style.fillOpacity
     };
@@ -4921,6 +4962,66 @@ function graphicStrokePaintForObject(object: GraphicObject): GraphicPaint {
   return { kind: "solid", color, opacity: graphicStrokePaintOpacity(object) };
 }
 
+function graphicPaintForType(
+  object: GraphicObject,
+  target: GraphicStylePaintTarget,
+  paintType: GraphicPaint["kind"]
+): GraphicPaint {
+  if (paintType === "none") {
+    return { kind: "none" };
+  }
+
+  const color = graphicPaintBaseColor(object, target);
+  const opacity = target === "fill" ? graphicFillPaintOpacity(object) : graphicStrokePaintOpacity(object);
+  if (paintType === "solid") {
+    return { kind: "solid", color, opacity };
+  }
+
+  const companionColor = gradientCompanionColor(color);
+  if (paintType === "linear-gradient") {
+    return {
+      kind: "linear-gradient",
+      units: "object",
+      x1: 0,
+      y1: 0,
+      x2: 1,
+      y2: 1,
+      stops: [
+        { offset: 0, color },
+        { offset: 1, color: companionColor }
+      ]
+    };
+  }
+
+  return {
+    kind: "radial-gradient",
+    units: "object",
+    cx: 0.5,
+    cy: 0.5,
+    r: 0.72,
+    fx: 0.32,
+    fy: 0.28,
+    stops: [
+      { offset: 0, color: companionColor },
+      { offset: 1, color }
+    ]
+  };
+}
+
+function graphicPaintBaseColor(object: GraphicObject, target: GraphicStylePaintTarget): string {
+  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  const fallback = target === "fill"
+    ? normalizeWorkflowHexColor(typeof object.style.fillColor === "string" ? object.style.fillColor : undefined) ?? "#111111"
+    : normalizeWorkflowHexColor(
+      typeof object.style.strokeColor === "string" ? object.style.strokeColor : undefined
+    ) ?? "#111111";
+  return legacyColorForGraphicPaint(paint, fallback);
+}
+
+function gradientCompanionColor(color: string): string {
+  return color.toLowerCase() === "#ffffff" ? "#1d7f68" : "#ffffff";
+}
+
 function graphicFillPaintOpacity(object: GraphicObject): number {
   return object.style.fillPaint?.kind === "solid"
     ? clampWorkflowUnit(object.style.fillPaint.opacity ?? 1)
@@ -4934,7 +5035,18 @@ function graphicStrokePaintOpacity(object: GraphicObject): number {
 }
 
 function legacyColorForGraphicPaint(paint: GraphicPaint, fallback: string): string {
-  return paint.kind === "solid" ? paint.color : fallback;
+  if (paint.kind === "solid") {
+    return paint.color;
+  }
+  if (paint.kind === "linear-gradient" || paint.kind === "radial-gradient") {
+    return [...paint.stops]
+      .reverse()
+      .map((stop) => normalizeWorkflowHexColor(stop.color))
+      .find((color) => color !== undefined && color !== "#ffffff") ??
+      normalizeWorkflowHexColor(paint.stops[0]?.color) ??
+      fallback;
+  }
+  return fallback;
 }
 
 function graphicStylesEqual(first: GraphicObjectStyle, second: GraphicObjectStyle): boolean {

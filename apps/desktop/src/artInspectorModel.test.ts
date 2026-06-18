@@ -160,6 +160,62 @@ describe("ArtInspectorModel", () => {
     });
   });
 
+  it("reports native gradient and gloss paint types for selected graphics", () => {
+    const gradient = rectGraphic("gradient", {
+      style: {
+        fillColor: "#1d7f68",
+        fillPaint: {
+          kind: "linear-gradient",
+          units: "object",
+          x1: 0,
+          y1: 0,
+          x2: 1,
+          y2: 1,
+          stops: [
+            { offset: 0, color: "#1d7f68" },
+            { offset: 1, color: "#ffffff", opacity: 0.35 }
+          ]
+        },
+        strokeColor: "#b3261e",
+        strokePaint: {
+          kind: "radial-gradient",
+          units: "object",
+          cx: 0.5,
+          cy: 0.5,
+          r: 0.7,
+          stops: [
+            { offset: 0, color: "#ffffff" },
+            { offset: 1, color: "#b3261e" }
+          ]
+        }
+      }
+    });
+    const model = createArtInspectorModel({
+      document: documentWithSelectedGraphics([gradient]),
+      selectedGraphicObjects: [gradient],
+      requestedPaintTarget: "fill"
+    });
+
+    expect(model.values.fillPaintType).toEqual({ value: "linear-gradient", mixed: false });
+    expect(model.values.strokePaintType).toEqual({ value: "radial-gradient", mixed: false });
+    expect(model.values.fillColor).toEqual({ value: "#1d7f68", mixed: false });
+    expect(model.values.strokeColor).toEqual({ value: "#b3261e", mixed: false });
+
+    const gloss = rectGraphic("gloss", {
+      style: {
+        fillColor: "#1d7f68",
+        fillMode: "gloss",
+        strokeColor: "#111111"
+      }
+    });
+    const glossModel = createArtInspectorModel({
+      document: documentWithSelectedGraphics([gloss]),
+      selectedGraphicObjects: [gloss],
+      requestedPaintTarget: "fill"
+    });
+    expect(glossModel.values.fillPaintType).toEqual({ value: "gloss", mixed: false });
+  });
+
   it("keeps corners available only for tested custom cornered paths", () => {
     const closedCorneredPath = pathGraphic("custom_path", undefined, {
       data: {

@@ -23,6 +23,7 @@ import {
   applyGraphicObjectColorToSelection,
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
+  applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectStrokeStyleToSelection,
   applyColorToNativeMoleculePart,
   applyToolbarColorToSelection,
@@ -3862,6 +3863,82 @@ describe("Phase 4 document workflow", () => {
     const history = { past: [selected], present: swapped, future: [] };
     expect(graphicById(undo(history).present, objectId).style.fillColor).not.toBe("#aabbcc");
     expect(graphicById(redo(undo(history)).present, objectId).style.fillColor).toBe("#aabbcc");
+  });
+
+  it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", () => {
+    const withGraphic = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Gradient Paint Selection"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = withGraphic.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+
+    const linearFilled = applyGraphicObjectPaintTypeToSelection(withGraphic, "fill", "linear-gradient");
+    expect(graphicById(linearFilled, objectId).style).toMatchObject({
+      fillColor: "#111111",
+      fillMode: "solid",
+      fillPaint: {
+        kind: "linear-gradient",
+        units: "object",
+        x1: 0,
+        y1: 0,
+        x2: 1,
+        y2: 1,
+        stops: [
+          { offset: 0, color: "#111111" },
+          { offset: 1, color: "#ffffff" }
+        ]
+      }
+    });
+
+    const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);
+    const transparentGraphic = graphicById(transparentFill, objectId);
+    const linearSvg = exportPhase4Svg(transparentFill, { includeWarnings: true });
+    expect(linearSvg.contents).toContain(`<linearGradient id="graphic-fill-${objectId}"`);
+    expect(linearSvg.contents).toContain(`x1="${transparentGraphic.x}"`);
+    expect(linearSvg.contents).toContain(`y1="${transparentGraphic.y}"`);
+    expect(linearSvg.contents).toContain(`x2="${transparentGraphic.x + transparentGraphic.width}"`);
+    expect(linearSvg.contents).toContain(`y2="${transparentGraphic.y + transparentGraphic.height}"`);
+    expect(linearSvg.contents).toContain('stop-opacity="0.35"');
+    expect(linearSvg.contents).toContain(`fill="url(#graphic-fill-${objectId})"`);
+    expect(linearSvg.warnings).toEqual([]);
+
+    const radialStroked = applyGraphicObjectPaintTypeToSelection(transparentFill, "stroke", "radial-gradient");
+    expect(graphicById(radialStroked, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      units: "object",
+      cx: 0.5,
+      cy: 0.5,
+      r: 0.72,
+      fx: 0.32,
+      fy: 0.28,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#111111" }
+      ]
+    });
+
+    const radialSvg = exportPhase4Svg(radialStroked, { includeWarnings: true });
+    const radialGraphic = graphicById(radialStroked, objectId);
+    expect(radialSvg.contents).toContain(`<radialGradient id="graphic-stroke-${objectId}"`);
+    expect(radialSvg.contents).toContain(`cx="${radialGraphic.x + radialGraphic.width * 0.5}"`);
+    expect(radialSvg.contents).toContain(`cy="${radialGraphic.y + radialGraphic.height * 0.5}"`);
+    expect(radialSvg.contents).toContain(`r="${Number((Math.max(radialGraphic.width, radialGraphic.height, 1) * 0.72).toFixed(4))}"`);
+    expect(radialSvg.contents).toContain(`stroke="url(#graphic-stroke-${objectId})"`);
+    expect(radialSvg.warnings).toEqual([]);
+
+    const glossed = applyGraphicObjectPaintTypeToSelection(radialStroked, "fill", "gloss");
+    expect(graphicById(glossed, objectId).style.fillMode).toBe("gloss");
+
+    const noFill = applyGraphicObjectPaintTypeToSelection(glossed, "fill", "none");
+    expect(graphicById(noFill, objectId).style).toMatchObject({
+      fillColor: "none",
+      fillPaint: { kind: "none" }
+    });
+    expect(graphicById(noFill, objectId).style.fillMode).toBeUndefined();
   });
 
   it("skips fill and corner-only style fields for open-stroke graphics", () => {

@@ -1,7 +1,8 @@
 import { planNativeArtVisual } from "@chemdraft/art-engine";
-import type { ChemDraftDocument, GraphicObject } from "@chemdraft/chem-core";
+import type { ChemDraftDocument, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
+export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
 export type ArtInspectorLineCap = "butt" | "round" | "square";
 export type ArtInspectorLineJoin = "miter" | "round" | "bevel";
 
@@ -55,6 +56,8 @@ export interface ArtInspectorModel {
   fillOpacitySupportedCount: number;
   strokeOpacitySupportedCount: number;
   values: {
+    fillPaintType: ArtInspectorMixedValue<ArtInspectorPaintType>;
+    strokePaintType: ArtInspectorMixedValue<ArtInspectorPaintType>;
     fillColor: ArtInspectorMixedValue<string>;
     strokeColor: ArtInspectorMixedValue<string>;
     objectOpacity: ArtInspectorMixedValue<number>;
@@ -133,6 +136,8 @@ export function createArtInspectorModel({
     fillOpacitySupportedCount: fillSupportedCount,
     strokeOpacitySupportedCount: strokeSupportedCount,
     values: {
+      fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarPaintType(object)),
+      strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarPaintType(object)),
       fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarColor(object)),
       strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarColor(object)),
       objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
@@ -232,6 +237,9 @@ function graphicFillToolbarColor(object: GraphicObject): string | null {
   if (object.style.fillPaint?.kind === "solid") {
     return normalizeToolbarHexColor(object.style.fillPaint.color);
   }
+  if (object.style.fillPaint?.kind === "linear-gradient" || object.style.fillPaint?.kind === "radial-gradient") {
+    return representativeGradientStopColor(object.style.fillPaint);
+  }
   const fillColor = metadataStringValue(object.style.fillColor);
   return fillColor?.toLowerCase() === "none" ? null : normalizeToolbarHexColor(fillColor);
 }
@@ -240,7 +248,35 @@ function graphicStrokeToolbarColor(object: GraphicObject): string | null {
   if (object.style.strokePaint?.kind === "solid") {
     return normalizeToolbarHexColor(object.style.strokePaint.color);
   }
+  if (object.style.strokePaint?.kind === "linear-gradient" || object.style.strokePaint?.kind === "radial-gradient") {
+    return representativeGradientStopColor(object.style.strokePaint);
+  }
   return normalizeToolbarHexColor(metadataColor(object.style.strokeColor, object.style.color, "#111111"));
+}
+
+function representativeGradientStopColor(paint: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>): string | null {
+  return [...paint.stops]
+    .reverse()
+    .map((stop) => normalizeToolbarHexColor(stop.color))
+    .find((color) => color !== null && color !== "#ffffff") ??
+    normalizeToolbarHexColor(paint.stops[0]?.color);
+}
+
+function graphicFillToolbarPaintType(object: GraphicObject): ArtInspectorPaintType {
+  if (object.style.fillMode === "gloss") {
+    return "gloss";
+  }
+  if (object.style.fillPaint) {
+    return object.style.fillPaint.kind;
+  }
+  return metadataStringValue(object.style.fillColor)?.toLowerCase() === "none" ? "none" : "solid";
+}
+
+function graphicStrokeToolbarPaintType(object: GraphicObject): ArtInspectorPaintType {
+  if (object.style.strokePaint) {
+    return object.style.strokePaint.kind;
+  }
+  return metadataStringValue(object.style.strokeColor)?.toLowerCase() === "none" ? "none" : "solid";
 }
 
 function metadataNumberValue(value: unknown, fallback: number): number {
