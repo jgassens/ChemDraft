@@ -246,7 +246,8 @@ describe("graphic path direct editing interactions", () => {
     type: "pointerdown" | "pointermove" | "pointerup",
     point: { x: number; y: number },
     pointerId: number,
-    detail = 1
+    detail = 1,
+    modifiers: MouseEventInit = {}
   ) {
     const event = new MouseEvent(type, {
       bubbles: true,
@@ -255,7 +256,8 @@ describe("graphic path direct editing interactions", () => {
       cancelable: true,
       clientX: point.x,
       clientY: point.y,
-      detail
+      detail,
+      ...modifiers
     });
     Object.defineProperties(event, {
       isPrimary: { value: true },
@@ -562,6 +564,144 @@ describe("graphic path direct editing interactions", () => {
     });
     expect(debugArtObject(sourceId).object.style.fillColor).toBe("#1d7f68");
     expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+  });
+
+  it("copies active stroke and marker style from a clicked source line to a selected arc", async () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Eyedropper Stroke Copy"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const targetId = withTarget.selection.objectIds[0] ?? "";
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 360, y: 180 }, "tool.art.line");
+    const sourceId = withSource.selection.objectIds[0] ?? "";
+    const styledSource = applyPatch(withSource, {
+      op: "updateObject",
+      objectId: sourceId,
+      changes: {
+        style: {
+          ...graphicById(withSource, sourceId).style,
+          strokeColor: "#6046a8",
+          strokeOpacity: 0.62,
+          strokeWidth: 7,
+          strokeDasharray: "8 6",
+          strokeLineCap: "square"
+        },
+        data: {
+          ...graphicById(withSource, sourceId).data,
+          markerEnd: { kind: "filled-arrow", sizePx: 18 }
+        }
+      }
+    });
+    const selectedTarget = applyPatch(styledSource, {
+      op: "setSelection",
+      pageId: styledSource.pages[0].id,
+      objectIds: [targetId]
+    });
+    await renderMainWindow(selectedTarget, { initialActiveToolCommandId: "tool.art.eyedropper" });
+
+    const source = debugArtObject(sourceId).object;
+    await act(async () => {
+      dispatchPointer(objectElement(sourceId), "pointerdown", {
+        x: source.x + source.width / 2,
+        y: source.y + source.height / 2
+      }, 24);
+    });
+
+    expect(debugArtObject(targetId).object.style).toMatchObject({
+      strokeColor: "#6046a8",
+      strokeOpacity: 0.62,
+      strokeWidth: 7,
+      strokeDasharray: "8 6",
+      strokeLineCap: "square"
+    });
+    expect(debugArtObject(targetId).object.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 18 });
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    expect(debugArtObject(targetId).object.style.strokeColor).not.toBe("#6046a8");
+    expect(debugArtObject(targetId).object.data.markerEnd).toBeUndefined();
+  });
+
+  it("copies full art appearance with Option-eyedropper and undoes the copy", async () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Eyedropper Full Appearance Copy"),
+      { x: 220, y: 180 },
+      "tool.art.circle"
+    );
+    const targetId = withTarget.selection.objectIds[0] ?? "";
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 360, y: 180 }, "tool.art.rect");
+    const sourceId = withSource.selection.objectIds[0] ?? "";
+    const styledSource = applyPatch(withSource, {
+      op: "updateObject",
+      objectId: sourceId,
+      changes: {
+        style: {
+          ...graphicById(withSource, sourceId).style,
+          fillColor: "#1d7f68",
+          fillOpacity: 0.5,
+          fillMode: "solid",
+          fillPaint: { kind: "solid", color: "#1d7f68", opacity: 0.5 },
+          strokeColor: "#b3261e",
+          strokeOpacity: 0.7,
+          strokeWidth: 5,
+          strokeDasharray: "3 4",
+          opacity: 0.8,
+          effect: "shadow"
+        }
+      }
+    });
+    const selectedTarget = applyPatch(styledSource, {
+      op: "setSelection",
+      pageId: styledSource.pages[0].id,
+      objectIds: [targetId]
+    });
+    const initialTargetStyle = graphicById(selectedTarget, targetId).style;
+    await renderMainWindow(selectedTarget, { initialActiveToolCommandId: "tool.art.eyedropper" });
+
+    const source = debugArtObject(sourceId).object;
+    await act(async () => {
+      dispatchPointer(objectElement(sourceId), "pointerdown", {
+        x: source.x + source.width / 2,
+        y: source.y + source.height / 2
+      }, 25, 1, { altKey: true });
+    });
+
+    expect(debugArtObject(targetId).object.style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillOpacity: 0.5,
+      strokeColor: "#b3261e",
+      strokeOpacity: 0.7,
+      strokeWidth: 5,
+      strokeDasharray: "3 4",
+      opacity: 0.8,
+      effect: "shadow"
+    });
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+
+    expect(debugArtObject(targetId).object.style).toMatchObject({
+      fillColor: initialTargetStyle.fillColor,
+      strokeColor: initialTargetStyle.strokeColor,
+      strokeWidth: initialTargetStyle.strokeWidth
+    });
+    expect(debugArtObject(targetId).object.style.effect).toBeUndefined();
   });
 
   it("exits the eyedropper tool with Escape", async () => {
