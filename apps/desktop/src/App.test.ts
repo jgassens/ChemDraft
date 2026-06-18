@@ -26,6 +26,12 @@ import {
   normalizeHexColor,
   objectColorForCommand,
   objectCustomColorCommandId,
+  objectGradientDeleteStopCommandId,
+  objectGradientDeleteStopIndexForCommand,
+  objectGradientStopColorCommandId,
+  objectGradientStopColorForCommand,
+  objectGradientStopOpacityCommandId,
+  objectGradientStopOpacityForCommand,
   objectStyleActions,
   pageOrientationActions,
   pageSizeActions,
@@ -1272,6 +1278,15 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(objectColorForCommand("object.color.green")).toBe("#1d7f68");
     expect(objectColorForCommand(objectCustomColorCommandId("#A0B1C2"))).toBe("#a0b1c2");
+    expect(objectGradientStopColorForCommand(objectGradientStopColorCommandId(2, "#A0B1C2"))).toEqual({
+      stopIndex: 2,
+      color: "#a0b1c2"
+    });
+    expect(objectGradientStopOpacityForCommand(objectGradientStopOpacityCommandId(2, 0.42))).toEqual({
+      stopIndex: 2,
+      opacity: 0.42
+    });
+    expect(objectGradientDeleteStopIndexForCommand(objectGradientDeleteStopCommandId(2))).toBe(2);
     expect(textStylePatchForCommand("object.color.green")).toBeUndefined();
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.color.green")).toBe(true);
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.addStop")).toBe(true);
@@ -1839,9 +1854,15 @@ describe("ChemDraft desktop shell", () => {
     expect(gradientInspectorMarkup).toContain('data-art-gradient-rail="fill"');
     expect(gradientInspectorMarkup).toContain('data-art-gradient-type="linear-gradient"');
     expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.addStop"');
-    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.deleteStop"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.deleteStop.0"');
     expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.reverseStops"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-editor="fill"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-active-stop="0"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color="#1d7f68"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color-trigger="true"');
+    expect(gradientInspectorMarkup).toContain('data-art-inspector-slider="gradient-stop-opacity"');
     expect(gradientInspectorMarkup.match(/data-art-gradient-stop=/g) ?? []).toHaveLength(2);
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-active="true"');
     expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:0%");
     expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:100%");
     expect(lineInspectorMarkup).toContain('data-art-fill-supported-count="0"');
@@ -1869,7 +1890,8 @@ describe("ChemDraft desktop shell", () => {
     expect(toolPaletteSource).toContain("supportsFillAny");
     expect(appCss).toContain(".art-tool-icon");
     expect(appCss).toContain(".art-toolbar-style-controls");
-    expect(appCss).toContain("grid-template-rows: 24px minmax(35px, auto) minmax(38px, auto);");
+    expect(appCss).toContain("grid-template-rows: 24px minmax(35px, auto);");
+    expect(appCss).toContain("grid-auto-rows: minmax(24px, auto);");
     expect(appCss).toContain(".art-inspector-slider-value");
     expect(appCss).toContain(".art-stroke-control-label");
     expect(appCss).toContain(".art-color-popover .react-colorful");

@@ -287,7 +287,7 @@ export const objectGradientAddStopCommand = {
 
 export const objectGradientDeleteStopCommand = {
   id: "object.gradient.deleteStop",
-  title: "Delete Middle Gradient Stop"
+  title: "Delete Gradient Stop"
 } as const;
 
 export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
@@ -343,6 +343,9 @@ export const customObjectColorCommandPrefix = "object.color.custom.";
 export const customObjectOpacityCommandPrefix = "object.opacity.custom.";
 export const customObjectFillOpacityCommandPrefix = "object.fillOpacity.custom.";
 export const customObjectStrokeOpacityCommandPrefix = "object.strokeOpacity.custom.";
+export const customObjectGradientStopColorCommandPrefix = "object.gradient.stopColor.";
+export const customObjectGradientStopOpacityCommandPrefix = "object.gradient.stopOpacity.";
+export const customObjectGradientDeleteStopCommandPrefix = "object.gradient.deleteStop.";
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
@@ -364,6 +367,19 @@ export function objectStrokeOpacityCommandId(opacity: number): string {
   return `${customObjectStrokeOpacityCommandPrefix}${opacityPercent(opacity)}`;
 }
 
+export function objectGradientStopColorCommandId(stopIndex: number, color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customObjectGradientStopColorCommandPrefix}${normalizeStopIndex(stopIndex)}.${normalized.slice(1)}`;
+}
+
+export function objectGradientStopOpacityCommandId(stopIndex: number, opacity: number): string {
+  return `${customObjectGradientStopOpacityCommandPrefix}${normalizeStopIndex(stopIndex)}.${opacityPercent(opacity)}`;
+}
+
+export function objectGradientDeleteStopCommandId(stopIndex: number): string {
+  return `${customObjectGradientDeleteStopCommandPrefix}${normalizeStopIndex(stopIndex)}`;
+}
+
 export function objectOpacityForCommand(commandId: string): { key: "opacity" | "fillOpacity" | "strokeOpacity"; value: number } | undefined {
   if (commandId.startsWith(customObjectOpacityCommandPrefix)) {
     return { key: "opacity", value: opacityFromCommandSuffix(commandId.slice(customObjectOpacityCommandPrefix.length)) };
@@ -375,6 +391,37 @@ export function objectOpacityForCommand(commandId: string): { key: "opacity" | "
     return { key: "strokeOpacity", value: opacityFromCommandSuffix(commandId.slice(customObjectStrokeOpacityCommandPrefix.length)) };
   }
   return undefined;
+}
+
+export function objectGradientStopColorForCommand(commandId: string): { stopIndex: number; color: string } | undefined {
+  if (!commandId.startsWith(customObjectGradientStopColorCommandPrefix)) {
+    return undefined;
+  }
+
+  const [stopIndexText, colorText] = commandId.slice(customObjectGradientStopColorCommandPrefix.length).split(".");
+  const stopIndex = normalizeStopIndex(Number(stopIndexText));
+  const color = normalizeHexColor(colorText ? `#${colorText}` : undefined);
+  return color ? { stopIndex, color } : undefined;
+}
+
+export function objectGradientStopOpacityForCommand(commandId: string): { stopIndex: number; opacity: number } | undefined {
+  if (!commandId.startsWith(customObjectGradientStopOpacityCommandPrefix)) {
+    return undefined;
+  }
+
+  const [stopIndexText, opacityText] = commandId.slice(customObjectGradientStopOpacityCommandPrefix.length).split(".");
+  return {
+    stopIndex: normalizeStopIndex(Number(stopIndexText)),
+    opacity: opacityFromCommandSuffix(opacityText ?? "100")
+  };
+}
+
+export function objectGradientDeleteStopIndexForCommand(commandId: string): number | undefined {
+  if (!commandId.startsWith(customObjectGradientDeleteStopCommandPrefix)) {
+    return undefined;
+  }
+
+  return normalizeStopIndex(Number(commandId.slice(customObjectGradientDeleteStopCommandPrefix.length)));
 }
 
 export function textColorForCommand(commandId: string): string | undefined {
@@ -432,6 +479,10 @@ function opacityPercent(opacity: number): number {
 function opacityFromCommandSuffix(value: string): number {
   const parsed = Number(value);
   return Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed / 100 : 1));
+}
+
+function normalizeStopIndex(stopIndex: number): number {
+  return Math.max(0, Math.round(Number.isFinite(stopIndex) ? stopIndex : 0));
 }
 
 export const textLetterSpacingCommands = [

@@ -22,7 +22,10 @@ import {
   applyObjectColorToDocumentObjects,
   applyGraphicObjectColorToSelection,
   addGraphicObjectGradientStopForSelection,
+  applyGraphicObjectGradientStopColorForSelection,
+  applyGraphicObjectGradientStopOpacityForSelection,
   deleteGraphicObjectGradientStopForSelection,
+  deleteGraphicObjectGradientStopAtIndexForSelection,
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
@@ -3927,6 +3930,32 @@ describe("Phase 4 document workflow", () => {
       stops: [
         { offset: 0, color: "#b3261e" },
         { offset: 0.5, color: "#d9938f" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const editedLinearStopColor = applyGraphicObjectGradientStopColorForSelection(addedLinearStop, "fill", 1, "#1d7f68");
+    expect(graphicById(editedLinearStopColor, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.5, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const editedLinearStopOpacity = applyGraphicObjectGradientStopOpacityForSelection(editedLinearStopColor, "fill", 1, 0.42);
+    expect(graphicById(editedLinearStopOpacity, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.5, color: "#1d7f68", opacity: 0.42 },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const deletedSelectedLinearStop = deleteGraphicObjectGradientStopAtIndexForSelection(editedLinearStopOpacity, "fill", 1);
+    expect(graphicById(deletedSelectedLinearStop, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
         { offset: 1, color: "#ffffff" }
       ]
     });

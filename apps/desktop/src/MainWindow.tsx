@@ -105,8 +105,11 @@ import {
   objectStrokeWidthCommands,
   objectStyleNoneCommands,
   objectGradientAddStopCommand,
+  objectGradientDeleteStopIndexForCommand,
   objectGradientDeleteStopCommand,
   objectGradientReverseCommand,
+  objectGradientStopColorForCommand,
+  objectGradientStopOpacityForCommand,
   objectStyleSwapCommand,
   objectStyleTargetCommands,
   pageOrientationActions,
@@ -227,7 +230,10 @@ import {
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
   addGraphicObjectGradientStopForSelection,
+  applyGraphicObjectGradientStopColorForSelection,
+  applyGraphicObjectGradientStopOpacityForSelection,
   deleteGraphicObjectGradientStopForSelection,
+  deleteGraphicObjectGradientStopAtIndexForSelection,
   reverseGraphicObjectGradientStopsForSelection,
   swapGraphicObjectFillAndStroke,
   type GraphicStylePaintTarget,
@@ -756,7 +762,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.17.21.47-codex";
+const CURRENT_BUILD_STAMP = "6.18.6.52-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -2456,6 +2462,59 @@ export function MainWindow({
         message: target === "fill"
           ? "Added selected graphic fill gradient stop"
           : "Added selected graphic stroke gradient stop"
+      };
+    }
+
+    const gradientStopColor = objectGradientStopColorForCommand(commandId);
+    if (gradientStopColor) {
+      return {
+        document: applyGraphicObjectGradientStopColorForSelection(
+          currentDocument,
+          target,
+          gradientStopColor.stopIndex,
+          gradientStopColor.color,
+          graphicObjectIds
+        ),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: target === "fill"
+          ? "Updated selected graphic fill gradient stop color"
+          : "Updated selected graphic stroke gradient stop color"
+      };
+    }
+
+    const gradientStopOpacity = objectGradientStopOpacityForCommand(commandId);
+    if (gradientStopOpacity) {
+      return {
+        document: applyGraphicObjectGradientStopOpacityForSelection(
+          currentDocument,
+          target,
+          gradientStopOpacity.stopIndex,
+          gradientStopOpacity.opacity,
+          graphicObjectIds
+        ),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: target === "fill"
+          ? "Updated selected graphic fill gradient stop opacity"
+          : "Updated selected graphic stroke gradient stop opacity"
+      };
+    }
+
+    const gradientStopDeleteIndex = objectGradientDeleteStopIndexForCommand(commandId);
+    if (gradientStopDeleteIndex !== undefined) {
+      return {
+        document: deleteGraphicObjectGradientStopAtIndexForSelection(
+          currentDocument,
+          target,
+          gradientStopDeleteIndex,
+          graphicObjectIds
+        ),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: target === "fill"
+          ? "Deleted selected graphic fill gradient stop"
+          : "Deleted selected graphic stroke gradient stop"
       };
     }
 

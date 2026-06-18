@@ -3545,6 +3545,47 @@ export function deleteGraphicObjectGradientStopForSelection(
   return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, deleteMiddleGradientStop);
 }
 
+export function deleteGraphicObjectGradientStopAtIndexForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  stopIndex: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, (stops) =>
+    deleteGradientStopAtIndex(stops, stopIndex)
+  );
+}
+
+export function applyGraphicObjectGradientStopColorForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  stopIndex: number,
+  color: string,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const normalized = normalizeWorkflowHexColor(color);
+  if (!normalized) {
+    return document;
+  }
+
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, (stops) =>
+    updateGradientStopAtIndex(stops, stopIndex, (stop) => ({ ...stop, color: normalized }))
+  );
+}
+
+export function applyGraphicObjectGradientStopOpacityForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  stopIndex: number,
+  opacity: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const value = clampWorkflowUnit(opacity);
+  return updateGraphicObjectGradientStopsForSelection(document, target, objectIds, (stops) =>
+    updateGradientStopAtIndex(stops, stopIndex, (stop) => ({ ...stop, opacity: value }))
+  );
+}
+
 export function applyGraphicObjectOpacityToSelection(
   document: ChemDraftDocument,
   key: "opacity" | "fillOpacity" | "strokeOpacity",
@@ -5189,6 +5230,35 @@ function deleteMiddleGradientStop(
   }
 
   return sorted.filter((_, index) => index !== deleteIndex);
+}
+
+function deleteGradientStopAtIndex(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  stopIndex: number
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sorted = sortedGradientStops(stops);
+  if (sorted.length <= 2) {
+    return sorted;
+  }
+
+  const deleteIndex = Math.max(0, Math.min(sorted.length - 1, Math.round(stopIndex)));
+  return sorted.filter((_, index) => index !== deleteIndex);
+}
+
+function updateGradientStopAtIndex(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  stopIndex: number,
+  updateStop: (
+    stop: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
+  ) => Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sorted = sortedGradientStops(stops);
+  const editIndex = Math.round(stopIndex);
+  if (editIndex < 0 || editIndex >= sorted.length) {
+    return sorted;
+  }
+
+  return sortedGradientStops(sorted.map((stop, index) => index === editIndex ? updateStop(stop) : stop));
 }
 
 function sortedGradientStops(

@@ -20,8 +20,10 @@ import {
   objectColorCommands,
   objectCustomColorCommandId,
   objectGradientAddStopCommand,
-  objectGradientDeleteStopCommand,
+  objectGradientDeleteStopCommandId,
   objectGradientReverseCommand,
+  objectGradientStopColorCommandId,
+  objectGradientStopOpacityCommandId,
   objectPaintTypeCommandId,
   objectPaintTypeCommands,
   objectStrokeDashCommands,
@@ -606,8 +608,12 @@ function ArtToolbarStyleControls({
     effectiveArtStyleTarget === "fill" || command.paintType !== "gloss"
   );
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
+  const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
+  const [selectedGradientStopIndex, setSelectedGradientStopIndex] = useState(0);
+  const [gradientStopColorOpen, setGradientStopColorOpen] = useState(false);
+  const [draftGradientStopColor, setDraftGradientStopColor] = useState("#111111");
   const selectedGraphicIdsKey = currentArtStyle?.selectedGraphicIds.join("\u0000") ?? "";
   const objectOpacity = currentArtStyle?.values.objectOpacity.value ?? 1;
   const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
@@ -618,16 +624,28 @@ function ArtToolbarStyleControls({
   const strokeJoin = currentArtStyle?.values.corners.value ?? "miter";
   const activeGradient = currentArtStyle?.activeGradient;
   const showGradientControls = selected && activeTargetSupported && Boolean(activeGradient?.editable || activeGradient?.mixed);
+  const activeGradientStops = activeGradient?.stops ?? [];
+  const activeGradientStopsKey = activeGradientStops
+    .map((stop) => `${stop.offset}:${stop.color}:${stop.opacity}`)
+    .join("|");
+  const activeGradientStopIndex = activeGradientStops.length > 0
+    ? Math.min(selectedGradientStopIndex, activeGradientStops.length - 1)
+    : 0;
+  const activeGradientStop = activeGradientStops[activeGradientStopIndex];
+  const currentGradientStopColor = activeGradientStop?.color ?? currentColor;
+  const currentGradientStopOpacity = activeGradientStop?.opacity ?? 1;
+  const currentGradientStopOffset = activeGradientStop?.offset ?? 0;
+  const showGradientStopEditor = showGradientControls && activeGradient?.editable === true && activeGradientStop !== undefined;
   const gradientRailStyle = {
-    "--art-gradient-rail": activeGradient && activeGradient.stops.length > 0
-      ? artGradientRailCss(activeGradient.stops)
+    "--art-gradient-rail": activeGradientStops.length > 0
+      ? artGradientRailCss(activeGradientStops)
       : "repeating-linear-gradient(135deg, var(--cd-bg-control) 0 5px, var(--cd-border-subtle) 5px 10px)"
   } as CSSProperties;
   const showAdvancedStrokeControls = false;
 
   useEffect(() => {
-    onColorPickerOpenChange?.(colorOpen);
-  }, [colorOpen, onColorPickerOpenChange]);
+    onColorPickerOpenChange?.(colorOpen || gradientStopColorOpen);
+  }, [colorOpen, gradientStopColorOpen, onColorPickerOpenChange]);
 
   useEffect(() => {
     if (!colorOpen) {
@@ -636,7 +654,18 @@ function ArtToolbarStyleControls({
   }, [colorOpen, currentColor]);
 
   useEffect(() => {
-    if (!colorOpen) {
+    if (!gradientStopColorOpen) {
+      setDraftGradientStopColor(currentGradientStopColor);
+    }
+  }, [currentGradientStopColor, gradientStopColorOpen]);
+
+  useEffect(() => {
+    const maxIndex = activeGradientStops.length - 1;
+    setSelectedGradientStopIndex((current) => maxIndex < 0 ? 0 : Math.max(0, Math.min(maxIndex, current)));
+  }, [activeGradientStops.length, activeGradientStopsKey]);
+
+  useEffect(() => {
+    if (!colorOpen && !gradientStopColorOpen) {
       return undefined;
     }
 
@@ -645,7 +674,11 @@ function ArtToolbarStyleControls({
       if (target instanceof Node && colorPickerRef.current?.contains(target)) {
         return;
       }
+      if (target instanceof Node && gradientStopColorPickerRef.current?.contains(target)) {
+        return;
+      }
       setColorOpen(false);
+      setGradientStopColorOpen(false);
     };
     const closeForEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") {
@@ -653,10 +686,12 @@ function ArtToolbarStyleControls({
       }
       event.preventDefault();
       setColorOpen(false);
+      setGradientStopColorOpen(false);
       onCancel?.();
     };
     const closeForWindowBlur = () => {
       setColorOpen(false);
+      setGradientStopColorOpen(false);
     };
 
     document.addEventListener("pointerdown", closeForOutsidePointer, true);
@@ -667,10 +702,11 @@ function ArtToolbarStyleControls({
       document.removeEventListener("keydown", closeForEscape, true);
       window.removeEventListener("blur", closeForWindowBlur);
     };
-  }, [colorOpen, onCancel]);
+  }, [colorOpen, gradientStopColorOpen, onCancel]);
 
   useEffect(() => {
     setColorOpen(false);
+    setGradientStopColorOpen(false);
   }, [selectedGraphicIdsKey]);
 
   const invokeOrCommit = (commandId: string) => {
@@ -706,6 +742,24 @@ function ArtToolbarStyleControls({
     }
     setDraftColor(normalized);
     invokeOrCommit(objectCustomColorCommandId(normalized));
+  };
+
+  const updateGradientStopColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !activeGradientStop) {
+      return;
+    }
+    setDraftGradientStopColor(normalized);
+    previewCommand(objectGradientStopColorCommandId(activeGradientStopIndex, normalized));
+  };
+
+  const commitGradientStopColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !activeGradientStop) {
+      return;
+    }
+    setDraftGradientStopColor(normalized);
+    invokeOrCommit(objectGradientStopColorCommandId(activeGradientStopIndex, normalized));
   };
 
   const opacitySlider = (
@@ -889,7 +943,10 @@ function ArtToolbarStyleControls({
               effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
             )} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
-            onClick={() => setColorOpen((open) => !open)}
+            onClick={() => {
+              setGradientStopColorOpen(false);
+              setColorOpen((open) => !open);
+            }}
           >
             <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
             <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
@@ -938,22 +995,30 @@ function ArtToolbarStyleControls({
         <div className="art-inspector-row art-gradient-row" data-art-gradient-controls={effectiveArtStyleTarget}>
           <div
             className="art-gradient-rail"
-            aria-hidden="true"
             data-art-gradient-rail={effectiveArtStyleTarget}
             data-art-gradient-type={activeGradient?.paintType ?? undefined}
             data-art-gradient-mixed={activeGradient?.mixed ? "true" : undefined}
             style={gradientRailStyle}
           >
-            {activeGradient?.stops.map((stop, index) => (
-              <span
+            {activeGradientStops.map((stop, index) => (
+              <button
+                type="button"
                 key={`${stop.offset}:${stop.color}:${index}`}
-                className="art-gradient-stop-marker"
+                className={[
+                  "art-gradient-stop-marker",
+                  index === activeGradientStopIndex ? "active" : ""
+                ].filter(Boolean).join(" ")}
+                aria-label={`Select gradient stop ${index + 1} at ${Math.round(stop.offset * 100)}%`}
                 data-art-gradient-stop={index}
+                data-art-gradient-stop-active={index === activeGradientStopIndex ? "true" : undefined}
+                data-palette-control="true"
                 style={{
                   "--art-gradient-stop-color": stop.color,
                   "--art-gradient-stop-offset": `${Math.round(stop.offset * 100)}%`,
                   opacity: stop.opacity
                 } as CSSProperties}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => setSelectedGradientStopIndex(index)}
               />
             ))}
           </div>
@@ -966,20 +1031,26 @@ function ArtToolbarStyleControls({
             data-command-id={objectGradientAddStopCommand.id}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke(objectGradientAddStopCommand.id)}
+            onClick={() => {
+              setSelectedGradientStopIndex(nextInsertedGradientStopIndex(activeGradientStops));
+              onInvoke(objectGradientAddStopCommand.id);
+            }}
           >
             +
           </button>
           <button
             type="button"
             className="art-inspector-symbol-button"
-            aria-label="Delete middle gradient stop"
-            title="Delete middle gradient stop"
+            aria-label="Delete selected gradient stop"
+            title="Delete selected gradient stop"
             disabled={!activeGradient?.canDeleteStop}
-            data-command-id={objectGradientDeleteStopCommand.id}
+            data-command-id={objectGradientDeleteStopCommandId(activeGradientStopIndex)}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke(objectGradientDeleteStopCommand.id)}
+            onClick={() => {
+              setSelectedGradientStopIndex((current) => Math.max(0, current - 1));
+              onInvoke(objectGradientDeleteStopCommandId(activeGradientStopIndex));
+            }}
           >
             −
           </button>
@@ -996,6 +1067,59 @@ function ArtToolbarStyleControls({
           >
             ⇆
           </button>
+        </div>
+      ) : null}
+      {showGradientStopEditor ? (
+        <div
+          className="art-inspector-row art-gradient-stop-editor"
+          data-art-gradient-stop-editor={effectiveArtStyleTarget}
+          data-art-gradient-active-stop={activeGradientStopIndex}
+          data-art-gradient-stop-color={currentGradientStopColor}
+        >
+          <span className="art-gradient-stop-readout">
+            {`Stop ${activeGradientStopIndex + 1} · ${Math.round(currentGradientStopOffset * 100)}%`}
+          </span>
+          <div
+            className="art-color-picker art-gradient-stop-color-picker"
+            role="group"
+            aria-label="Gradient stop color"
+            ref={gradientStopColorPickerRef}
+            data-color-picker="true"
+            data-palette-control="true"
+          >
+            <button
+              type="button"
+              className="toolbar-color-trigger art-gradient-stop-color-trigger"
+              aria-label="Open gradient stop color picker"
+              aria-expanded={gradientStopColorOpen}
+              title="Pick gradient stop color"
+              data-art-gradient-stop-color-trigger="true"
+              data-palette-control="true"
+              style={{ "--picker-color": currentGradientStopColor } as CSSProperties}
+              onClick={() => {
+                setColorOpen(false);
+                setGradientStopColorOpen((open) => !open);
+              }}
+            >
+              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+              <span className="toolbar-color-trigger-label">Stop</span>
+            </button>
+            {gradientStopColorOpen ? (
+              <div className="art-color-popover" role="dialog" aria-label="Gradient stop color picker">
+                <HexColorPicker
+                  color={draftGradientStopColor}
+                  onChange={updateGradientStopColor}
+                  onChangeEnd={commitGradientStopColor}
+                />
+              </div>
+            ) : null}
+          </div>
+          {opacitySlider(
+            "Gradient stop opacity",
+            "Stop",
+            currentGradientStopOpacity,
+            (opacity) => objectGradientStopOpacityCommandId(activeGradientStopIndex, opacity)
+          )}
         </div>
       ) : null}
       {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
@@ -1115,6 +1239,24 @@ function artGradientRailCss(stops: readonly { offset: number; color: string; opa
     .map((stop) => `${hexToRgbaCss(stop.color, stop.opacity)} ${Math.round(stop.offset * 100)}%`)
     .join(", ");
   return `linear-gradient(90deg, ${stopCss})`;
+}
+
+function nextInsertedGradientStopIndex(stops: readonly { offset: number }[]): number {
+  if (stops.length <= 1) {
+    return stops.length;
+  }
+
+  let leftIndex = 0;
+  let widestGap = -1;
+  for (let index = 0; index < stops.length - 1; index += 1) {
+    const gap = stops[index + 1]!.offset - stops[index]!.offset;
+    if (gap > widestGap) {
+      widestGap = gap;
+      leftIndex = index;
+    }
+  }
+
+  return leftIndex + 1;
 }
 
 function hexToRgbaCss(color: string, opacity: number): string {
