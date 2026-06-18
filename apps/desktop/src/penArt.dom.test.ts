@@ -167,6 +167,14 @@ describe("Pen native art interactions", () => {
     return handle;
   }
 
+  function segmentHandle(index: number): SVGPathElement {
+    const handle = container.querySelector<SVGPathElement>(`[data-graphic-path-segment-index="${index}"]`);
+    if (!handle) {
+      throw new Error(`Expected path segment handle ${index}.`);
+    }
+    return handle;
+  }
+
   function dispatchKey(key: string, metaKey = false) {
     window.dispatchEvent(new KeyboardEvent("keydown", {
       bubbles: true,
@@ -356,5 +364,44 @@ describe("Pen native art interactions", () => {
 
     expect(snapshotObjectCount()).toBe(0);
     expect(container.querySelector(`[data-object-id="${objectId}"]`)).toBeNull();
+  });
+
+  it("erases a selected closed Bezier path segment and keeps the updated edit chrome visible", async () => {
+    const initialDocument = nativeBezierPathDocument(
+      createPhase4Document("Pen Segment Eraser"),
+      [
+        { point: { x: 160, y: 140 }, outControl: { x: 190, y: 110 } },
+        { point: { x: 240, y: 140 }, inControl: { x: 210, y: 110 }, outControl: { x: 270, y: 170 } },
+        { point: { x: 240, y: 220 }, inControl: { x: 270, y: 190 }, outControl: { x: 210, y: 250 } },
+        { point: { x: 160, y: 220 }, inControl: { x: 190, y: 250 }, outControl: { x: 130, y: 190 } }
+      ],
+      "tool.art.pen",
+      { closed: true }
+    );
+    await renderMainWindow({ commandId: "tool.eraser", initialDocument });
+
+    const objectId = selectedArtObjectId();
+    expect(container.querySelectorAll("[data-graphic-path-segment-index]")).toHaveLength(4);
+    expect(debugArtObject(objectId).object.data.pathClosed).toBe(true);
+
+    await act(async () => {
+      dispatchPointer(segmentHandle(1), "pointerdown", { x: 240, y: 180 }, 83);
+    });
+
+    const after = debugArtObject(objectId).object;
+    expect(after.data.pathClosed).toBe(false);
+    expect(after.data.pathNodes).toHaveLength(4);
+    expect(after.data.pathNodes?.map((node) => node.point)).toEqual([
+      { x: 240, y: 220 },
+      { x: 160, y: 220 },
+      { x: 160, y: 140 },
+      { x: 240, y: 140 }
+    ]);
+    expect(container.querySelectorAll("[data-graphic-path-segment-index]")).toHaveLength(3);
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(4);
+    expect(container.querySelector("[role=\"status\"]")?.textContent).toBe(
+      "Eraser: segment deleted; click node or segment; Esc exits"
+    );
+    expect(container.querySelector("[data-active-tool=\"tool.eraser\"]")).not.toBeNull();
   });
 });

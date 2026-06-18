@@ -156,7 +156,14 @@ export interface NativeArtVisualPlan {
   glossGradient?: NativeArtGlossGradientPlan;
 }
 
-export type GraphicPathEditHandle = "start" | "middle" | "end" | `node:${number}` | `node:${number}:in` | `node:${number}:out`;
+export type GraphicPathEditHandle =
+  | "start"
+  | "middle"
+  | "end"
+  | `node:${number}`
+  | `node:${number}:in`
+  | `node:${number}:out`
+  | `segment:${number}`;
 
 export type GraphicPathKind = "line" | "wavy" | "arc" | "quadratic" | "polyline" | "bezier" | "freehand";
 
@@ -973,12 +980,65 @@ export function deleteGraphicPathNode(
       ...(node.outControl ? { outControl: node.outControl } : {})
     }));
 
-  return updateGraphicPathObject(object, {
+  const nextData: GraphicObject["data"] = {
     ...object.data,
     artPathKind: pathKind,
     pathClosed: object.data.pathClosed === true && nextNodes.length >= 3,
     pathNodes: nextNodes
-  });
+  };
+  delete nextData.pathD;
+
+  return updateGraphicPathObject(object, nextData);
+}
+
+export function deleteGraphicPathSegment(
+  object: GraphicObject,
+  segmentIndex: number
+): GraphicObject | undefined {
+  const pathKind = graphicPathKind(object);
+  if (
+    (pathKind !== "polyline" && pathKind !== "bezier") ||
+    !Number.isInteger(segmentIndex) ||
+    segmentIndex < 0
+  ) {
+    return undefined;
+  }
+
+  const nodes = graphicPathNodes(object);
+  const closed = object.data.pathClosed === true;
+  const segmentCount = closed ? nodes.length : nodes.length - 1;
+  if (nodes.length < 2 || segmentIndex >= segmentCount) {
+    return undefined;
+  }
+
+  if (!closed) {
+    if (segmentIndex === 0) {
+      return deleteGraphicPathNode(object, 0);
+    }
+    if (segmentIndex === nodes.length - 2) {
+      return deleteGraphicPathNode(object, nodes.length - 1);
+    }
+    return undefined;
+  }
+
+  if (nodes.length < 3) {
+    return undefined;
+  }
+
+  const gapStartIndex = (segmentIndex + 1) % nodes.length;
+  const nextNodes = [
+    ...nodes.slice(gapStartIndex),
+    ...nodes.slice(0, gapStartIndex)
+  ].map(cloneGraphicPathNode);
+  const nextData: GraphicObject["data"] = {
+    ...object.data,
+    artPathKind: pathKind,
+    pathClosed: false,
+    pathNodes: nextNodes
+  };
+  delete nextData.pathD;
+
+  return updateGraphicPathObject(object, nextData);
 }
 
 export function splitGraphicPathSegmentAtPoint(
@@ -1486,6 +1546,7 @@ function updateGraphicPathObject(
     samePoint(pointMetadata(object.data.pathControlPoint), nextData.pathControlPoint) &&
     samePathNodes(object.data.pathNodes, nextData.pathNodes) &&
     object.data.artPathKind === nextData.artPathKind &&
+    object.data.pathClosed === nextData.pathClosed &&
     Math.abs(object.x - nextBounds.x) < 0.001 &&
     Math.abs(object.y - nextBounds.y) < 0.001 &&
     Math.abs(object.width - nextBounds.width) < 0.001 &&

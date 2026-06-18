@@ -3,6 +3,7 @@ import {
   editGraphicCornerRadius,
   editGraphicPathGeometry,
   deleteGraphicPathNode,
+  deleteGraphicPathSegment,
   splitGraphicPathSegmentAtPoint,
   createGraphicFreehandPathCache,
   graphicCornerRadiusEditPoint,
@@ -1490,6 +1491,51 @@ export function deleteNativeGraphicPathNode(
   }
 
   const edited = deleteGraphicPathNode(object, nodeIndex);
+  if (!edited || edited === object) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: edited
+    },
+    { now: phase4Timestamp }
+  );
+}
+
+export function deleteNativeGraphicPathSegment(
+  document: ChemDraftDocument,
+  objectId: string,
+  segmentIndex: number
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  const nodes = object?.type === "graphic" ? object.data.pathNodes : undefined;
+  const pathClosed = object?.type === "graphic" && object.data.pathClosed === true;
+  const segmentCount = Array.isArray(nodes)
+    ? pathClosed ? nodes.length : nodes.length - 1
+    : 0;
+  if (
+    object?.type !== "graphic" ||
+    !Array.isArray(nodes) ||
+    !Number.isInteger(segmentIndex) ||
+    segmentIndex < 0 ||
+    segmentIndex >= segmentCount
+  ) {
+    return document;
+  }
+
+  if (nodes.length <= 2) {
+    return applyPatch(
+      document,
+      { op: "removeObject", objectId },
+      { now: phase4Timestamp }
+    );
+  }
+
+  const edited = deleteGraphicPathSegment(object, segmentIndex);
   if (!edited || edited === object) {
     return document;
   }

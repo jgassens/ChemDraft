@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import type { GraphicObject } from "@chemdraft/chem-core";
 import { getPathBBox, getPointAtLength, getTotalLength } from "svg-path-commander/util";
 import {
+  deleteGraphicPathSegment,
   deleteGraphicPathNode,
   editGraphicCornerRadius,
   editGraphicMarkerSize,
@@ -536,6 +537,38 @@ describe("art-engine native art planning", () => {
     expect(edited?.width).toBeCloseTo(112, 3);
     expect(edited?.height).toBeCloseTo(16, 3);
     expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe("M 132 108 L 232 104");
+  });
+
+  it("deletes closed native polyline segments by opening the path at the clicked edge", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 140,
+      height: 100,
+      data: {
+        artPathKind: "polyline",
+        pathClosed: true,
+        pathNodes: [
+          { point: { x: 132, y: 108 } },
+          { point: { x: 232, y: 108 } },
+          { point: { x: 232, y: 168 } },
+          { point: { x: 132, y: 168 } }
+        ]
+      }
+    } satisfies GraphicObject;
+
+    const edited = deleteGraphicPathSegment(graphic, 1);
+
+    expect(edited?.data.pathClosed).toBe(false);
+    expect(edited?.data.pathNodes).toEqual([
+      { point: { x: 232, y: 168 } },
+      { point: { x: 132, y: 168 } },
+      { point: { x: 132, y: 108 } },
+      { point: { x: 232, y: 108 } }
+    ]);
+    expect(planNativeArtVisual(edited!, { coordinateSpace: "page" }).pathD).toBe(
+      "M 232 168 L 132 168 L 132 108 L 232 108"
+    );
   });
 
   it("splits native line paths into editable polyline nodes", () => {

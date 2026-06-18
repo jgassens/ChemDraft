@@ -237,6 +237,7 @@ import {
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
   updateNativeGraphicRadialGradientHandle,
+  deleteNativeGraphicPathSegment,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOpacityForSelection,
@@ -784,7 +785,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.10.51-codex";
+const CURRENT_BUILD_STAMP = "6.18.11.24-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -7825,7 +7826,7 @@ export function MainWindow({
   const handleGraphicPathEditPointerDown = useCallback((
     objectId: string,
     handle: NativeGraphicPathEditHandle,
-    event: PointerEvent<HTMLButtonElement>
+    event: PointerEvent<Element>
   ) => {
     event.preventDefault();
     event.stopPropagation();
@@ -7849,14 +7850,19 @@ export function MainWindow({
 
     if (activeToolState.activeCommandId === "tool.eraser") {
       const nodeMatch = /^node:(\d+)$/.exec(handle);
-      if (!nodeMatch || !nodeEditPoints) {
-        setStatus("Click a path node to erase it");
+      const segmentMatch = /^segment:(\d+)$/.exec(handle);
+      if ((!nodeMatch && !segmentMatch) || !nodeEditPoints) {
+        setStatus("Eraser: click path node or segment; drag clears touched objects; Esc exits");
         return;
       }
 
-      const nextDocument = deleteNativeGraphicPathNode(currentDocument, objectId, Number.parseInt(nodeMatch[1], 10));
+      const nextDocument = nodeMatch
+        ? deleteNativeGraphicPathNode(currentDocument, objectId, Number.parseInt(nodeMatch[1], 10))
+        : deleteNativeGraphicPathSegment(currentDocument, objectId, Number.parseInt(segmentMatch?.[1] ?? "-1", 10));
       if (nextDocument === currentDocument) {
-        setStatus("No path node under eraser");
+        setStatus(nodeMatch
+          ? "Eraser: no path node hit; click node or segment; Esc exits"
+          : "Eraser: use end segment on open path; click node or segment; Esc exits");
         return;
       }
 
@@ -7864,7 +7870,11 @@ export function MainWindow({
       toolbarStyleTargetRef.current = undefined;
       clearTransientInteractionChrome();
       setSelectedNativeMoleculePart(undefined);
-      setStatus(findDocumentObject(nextDocument, objectId) ? "Deleted path node" : "Deleted path object");
+      setStatus(findDocumentObject(nextDocument, objectId)
+        ? nodeMatch
+          ? "Eraser: node deleted; click node or segment; Esc exits"
+          : "Eraser: segment deleted; click node or segment; Esc exits"
+        : "Eraser: path deleted; click or drag to erase; Esc exits");
       return;
     }
 
@@ -9110,6 +9120,7 @@ export function MainWindow({
                         activeToolState.activeCommandId === "tool.art.scissors" &&
                         selectedGraphicPathNode?.objectId === object.id
                       }
+                      graphicSegmentEraseActive={activeToolState.activeCommandId === "tool.eraser"}
                       activeArtPaintTarget={effectiveArtPaintTarget}
                       selectedGraphicPathNodeIndex={
                         selectedGraphicPathNode?.objectId === object.id
@@ -13159,6 +13170,7 @@ function DocumentObjectView({
   graphicTransformActive,
   graphicDirectEditActive,
   graphicPathFeedbackActive,
+  graphicSegmentEraseActive,
   activeArtPaintTarget,
   selectedGraphicPathNodeIndex,
   selectedPart,
@@ -13220,6 +13232,7 @@ function DocumentObjectView({
   graphicTransformActive: boolean;
   graphicDirectEditActive: boolean;
   graphicPathFeedbackActive: boolean;
+  graphicSegmentEraseActive: boolean;
   activeArtPaintTarget: GraphicStylePaintTarget;
   selectedGraphicPathNodeIndex?: number;
   selectedPart?: NativeMoleculeSelectionPart;
@@ -13249,7 +13262,7 @@ function DocumentObjectView({
   onProjectedPlaneTiltDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onGraphicCornerRadiusPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicCornerRadiusDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
-  onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<HTMLButtonElement>): void;
+  onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<Element>): void;
   onGraphicMarkerPointerDown(objectId: string, markerId: NativeGraphicMarkerHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicGradientPointerDown(objectId: string, target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
@@ -13326,7 +13339,7 @@ function DocumentObjectView({
   const handleGraphicCornerRadiusDoubleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     onGraphicCornerRadiusDoubleClick(object.id, event);
   };
-  const handleGraphicPathEditPointerDown = (handle: NativeGraphicPathEditHandle) => (event: PointerEvent<HTMLButtonElement>) => {
+  const handleGraphicPathEditPointerDown = (handle: NativeGraphicPathEditHandle) => (event: PointerEvent<Element>) => {
     onGraphicPathEditPointerDown(object.id, handle, event);
   };
   const handleGraphicMarkerPointerDown = (markerId: NativeGraphicMarkerHandleId) => (event: PointerEvent<HTMLButtonElement>) => {
@@ -14097,6 +14110,7 @@ function DocumentObjectView({
         object={object}
         nodeEditPoints={graphicPathNodeEditPoints}
         selectedNodeIndex={selectedGraphicPathNodeIndex}
+        segmentHitTargetsActive={graphicSegmentEraseActive}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
@@ -15088,14 +15102,16 @@ function GraphicPathEditHandles({
   object,
   nodeEditPoints,
   selectedNodeIndex,
+  segmentHitTargetsActive,
   onMarkerPointerDown,
   onPointerDown
 }: {
   object: GraphicObject;
   nodeEditPoints?: NativeGraphicPathNodeEditPoints;
   selectedNodeIndex?: number;
+  segmentHitTargetsActive: boolean;
   onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
-  onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<Element>) => void;
 }) {
   const points = nativeGraphicPathEditPoints(object);
   if (!points && !nodeEditPoints) {
@@ -15111,10 +15127,33 @@ function GraphicPathEditHandles({
     const bezierControlHandles = nodeEditPoints.pathKind === "bezier" && selectedNodeIndex !== undefined
       ? bezierControlHandlePlans(nodeEditPoints, selectedNodeIndex)
       : [];
+    const segmentHitPlans = segmentHitTargetsActive
+      ? graphicPathSegmentHitPlans(object, nodeEditPoints)
+      : [];
     const controlLayerWidth = Math.max(object.width, 1);
     const controlLayerHeight = Math.max(object.height, 1);
     return (
       <>
+        {segmentHitPlans.length > 0 ? (
+          <svg
+            className="graphic-path-segment-hit-layer"
+            viewBox={`0 0 ${formatSvgNumber(controlLayerWidth)} ${formatSvgNumber(controlLayerHeight)}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+            focusable="false"
+          >
+            {segmentHitPlans.map((segment) => (
+              <path
+                className="graphic-path-segment-hit-target"
+                data-graphic-path-handle={segment.handle}
+                data-graphic-path-segment-index={segment.index}
+                d={segment.d}
+                key={segment.handle}
+                onPointerDown={onPointerDown(segment.handle)}
+              />
+            ))}
+          </svg>
+        ) : null}
         {bezierControlHandles.length > 0 ? (
           <svg
             className="graphic-bezier-control-layer"
@@ -15290,6 +15329,64 @@ function GraphicPathEditHandles({
       ) : null}
     </>
   );
+}
+
+type GraphicPathSegmentHitPlan = {
+  d: string;
+  handle: Extract<NativeGraphicPathEditHandle, `segment:${number}`>;
+  index: number;
+};
+
+function graphicPathSegmentHitPlans(
+  object: GraphicObject,
+  editPoints: NativeGraphicPathNodeEditPoints
+): GraphicPathSegmentHitPlan[] {
+  const nodes = editPoints.nodes;
+  const segmentCount = editPoints.pathClosed ? nodes.length : nodes.length - 1;
+  if (segmentCount <= 0) {
+    return [];
+  }
+
+  const plans: GraphicPathSegmentHitPlan[] = [];
+  for (let index = 0; index < segmentCount; index += 1) {
+    const start = nodes[index];
+    const end = nodes[(index + 1) % nodes.length];
+    if (!start || !end) {
+      continue;
+    }
+    plans.push({
+      d: graphicPathSegmentHitPathD(object, start, end, editPoints.pathKind),
+      handle: `segment:${index}`,
+      index
+    });
+  }
+
+  return plans;
+}
+
+function graphicPathSegmentHitPathD(
+  object: GraphicObject,
+  start: NativeGraphicPathNodeEditPoints["nodes"][number],
+  end: NativeGraphicPathNodeEditPoints["nodes"][number],
+  pathKind: NativeGraphicPathNodeEditPoints["pathKind"]
+): string {
+  const startPoint = projectGraphicObjectPoint(object, start.point);
+  const endPoint = projectGraphicObjectPoint(object, end.point);
+  const move = `M ${formatSvgNumber(startPoint.x - object.x)} ${formatSvgNumber(startPoint.y - object.y)}`;
+  const endCommand = `${formatSvgNumber(endPoint.x - object.x)} ${formatSvgNumber(endPoint.y - object.y)}`;
+  if (pathKind === "bezier" && (start.outControl || end.inControl)) {
+    const outControl = projectGraphicObjectPoint(object, start.outControl ?? start.point);
+    const inControl = projectGraphicObjectPoint(object, end.inControl ?? end.point);
+    return [
+      move,
+      "C",
+      `${formatSvgNumber(outControl.x - object.x)} ${formatSvgNumber(outControl.y - object.y)}`,
+      `${formatSvgNumber(inControl.x - object.x)} ${formatSvgNumber(inControl.y - object.y)}`,
+      endCommand
+    ].join(" ");
+  }
+
+  return `${move} L ${endCommand}`;
 }
 
 function bezierControlHandlePlans(
