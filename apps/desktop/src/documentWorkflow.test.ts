@@ -64,6 +64,7 @@ import {
   exportPhase4Svg,
   findNativeMoleculeDeleteHit,
   findNativeMoleculeAtomHit,
+  flipDocumentObjectsAroundPoint,
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
@@ -7432,6 +7433,100 @@ describe("group transforms (multi-object selection)", () => {
     expectPointToBeClose(scaledPoints?.end, scaledPoint(beforePoints.end, oldCenter, newCenter, scaleX, scaleY));
   });
 
+  it("group-flips edited graphic path geometry with positive frame dimensions", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Flip Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 38 }
+    );
+    const withText = insertNativeTextObject(bent, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const bentGraphic = graphicById(withText, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const bounds = selectionBounds(withText.pages[0].objects, [objectId, textId]);
+    if (!bounds || !beforePoints) {
+      throw new Error("Expected group bounds and quadratic edit points.");
+    }
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+
+    const flipped = flipDocumentObjectsAroundPoint(withText, [objectId, textId], groupCenter, "horizontal");
+    const flippedGraphic = graphicById(flipped, objectId);
+    const flippedPoints = nativeGraphicPathEditPoints(flippedGraphic);
+    const newCenter = {
+      x: flippedGraphic.x + flippedGraphic.width / 2,
+      y: flippedGraphic.y + flippedGraphic.height / 2
+    };
+
+    expectPointToBeClose(newCenter, { x: groupCenter.x - (oldCenter.x - groupCenter.x), y: oldCenter.y });
+    expect(flippedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
+    expect(flippedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
+    expect(flippedGraphic.rotation).toBeCloseTo(180, 6);
+    expectPointToBeClose(flippedGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedPoints?.start, scaledPoint(beforePoints.start, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedPoints?.middle, scaledPoint(beforePoints.middle, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedPoints?.end, scaledPoint(beforePoints.end, oldCenter, newCenter, -1, 1));
+  });
+
+  it("flips semantic arc radii without negative values", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Flip Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const editedGraphic = graphicById(edited, objectId);
+    const oldCenter = {
+      x: editedGraphic.x + editedGraphic.width / 2,
+      y: editedGraphic.y + editedGraphic.height / 2
+    };
+
+    const flipped = flipDocumentObjectsAroundPoint(edited, [objectId], oldCenter, "horizontal");
+    const flippedGraphic = graphicById(flipped, objectId);
+    const newCenter = {
+      x: flippedGraphic.x + flippedGraphic.width / 2,
+      y: flippedGraphic.y + flippedGraphic.height / 2
+    };
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(flippedGraphic.data.artPathKind).toBe("arc");
+    expect(flippedGraphic.data.arcRadiusX).toBeCloseTo(editedGraphic.data.arcRadiusX ?? 0, 6);
+    expect(flippedGraphic.data.arcRadiusY).toBeCloseTo(editedGraphic.data.arcRadiusY ?? 0, 6);
+    expect(flippedGraphic.data.arcRadiusX).toBeGreaterThan(0);
+    expect(flippedGraphic.data.arcRadiusY).toBeGreaterThan(0);
+    expectPointToBeClose(flippedGraphic.data.arcCenter, scaledPoint(editedGraphic.data.arcCenter!, oldCenter, newCenter, -1, 1));
+  });
+
   it("group-rotates edited graphic path geometry by moving explicit data with the object center only", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("Group Rotate Edited Line"),
@@ -7577,5 +7672,25 @@ describe("group transforms (multi-object selection)", () => {
     expect(after.width).toBeGreaterThan(before.width * 1.5);
     expect(after.height).toBeGreaterThan(before.height * 1.5);
     expect(moleculeAtomTotal(scaled)).toBe(atomsBefore);
+  });
+
+  it("flips selected molecules about the group center while preserving identity", () => {
+    const { document, ids, m1 } = twoMolecules();
+    const mol1 = m1 as MoleculeObject;
+    const [a0, a1] = mol1.atoms;
+    const beforeVector = { x: a1.x - a0.x, y: a1.y - a0.y };
+    const bounds = selectionBounds(document.pages[0].objects, ids)!;
+    const atomsBefore = moleculeAtomTotal(document);
+
+    const flipped = flipDocumentObjectsAroundPoint(document, ids, { x: bounds.centerX, y: bounds.centerY }, "horizontal");
+    const obj1 = flipped.pages[0].objects.find((object) => object.id === m1.id) as MoleculeObject;
+    const f0 = obj1.atoms.find((atom) => atom.id === a0.id)!;
+    const f1 = obj1.atoms.find((atom) => atom.id === a1.id)!;
+
+    expectPointToBeClose(f0, { x: bounds.centerX - (a0.x - bounds.centerX), y: a0.y }, 1);
+    expectPointToBeClose(f1, { x: bounds.centerX - (a1.x - bounds.centerX), y: a1.y }, 1);
+    expect(f1.x - f0.x).toBeCloseTo(-beforeVector.x, 1);
+    expect(f1.y - f0.y).toBeCloseTo(beforeVector.y, 1);
+    expect(moleculeAtomTotal(flipped)).toBe(atomsBefore);
   });
 });

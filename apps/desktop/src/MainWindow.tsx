@@ -199,6 +199,7 @@ import {
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
+  flipSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
   type SelectionBounds,
@@ -785,7 +786,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.11.41-codex";
+const CURRENT_BUILD_STAMP = "6.18.11.55-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -3333,6 +3334,12 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (action.id === "layout.flipHorizontal" || action.id === "layout.flipVertical") {
+          const axis = action.id === "layout.flipHorizontal" ? "horizontal" : "vertical";
+          const changed = commitDocumentChange((current) => flipSelectedDocumentObjects(current, axis));
+          setStatus(changed ? action.title : "No selected object");
+          return;
+        }
         const placement = action.id === "layout.bringToFront"
           ? "front"
           : action.id === "layout.bringForward"
@@ -11357,7 +11364,9 @@ function isLayerCommandId(commandId: string): boolean {
     commandId === "layout.bringToFront" ||
     commandId === "layout.bringForward" ||
     commandId === "layout.sendBackward" ||
-    commandId === "layout.sendToBack"
+    commandId === "layout.sendToBack" ||
+    commandId === "layout.flipHorizontal" ||
+    commandId === "layout.flipVertical"
   );
 }
 

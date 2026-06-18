@@ -995,6 +995,8 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "layout.sendBackward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.bringToFront")).toBe(true);
     expect(commands.some((command) => command.id === "layout.sendToBack")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.flipHorizontal")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.flipVertical")).toBe(true);
     expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
     expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(commands.some((command) => command.id === "tool.art.circle")).toBe(true);
@@ -1358,7 +1360,9 @@ describe("ChemDraft desktop shell", () => {
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
-      "layout.sendToBack"
+      "layout.sendToBack",
+      "layout.flipHorizontal",
+      "layout.flipVertical"
     ]);
     const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 

@@ -6148,11 +6148,11 @@ function resizeGraphicObjectDataForFrame(
   delete nextData.cachedFreehandPathRevision;
 
   if (typeof data.arcRadiusX === "number" && Number.isFinite(data.arcRadiusX)) {
-    nextData.arcRadiusX = Math.max(1, data.arcRadiusX * scaleX);
+    nextData.arcRadiusX = Math.max(1, data.arcRadiusX * Math.abs(scaleX));
   }
 
   if (typeof data.arcRadiusY === "number" && Number.isFinite(data.arcRadiusY)) {
-    nextData.arcRadiusY = Math.max(1, data.arcRadiusY * scaleY);
+    nextData.arcRadiusY = Math.max(1, data.arcRadiusY * Math.abs(scaleY));
   }
 
   return nextData;
@@ -7118,6 +7118,127 @@ export function scaleDocumentObjectsAroundPoint(
       : transformOtherObjectAroundPoint(next, object.id, center, { scaleX: sx, scaleY: sy });
   }
   return next;
+}
+
+export type DocumentFlipAxis = "horizontal" | "vertical";
+
+export function flipSelectedDocumentObjects(
+  document: ChemDraftDocument,
+  axis: DocumentFlipAxis
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const bounds = selectionBounds(page.objects, document.selection.objectIds);
+  if (!bounds) {
+    return document;
+  }
+
+  return flipDocumentObjectsAroundPoint(
+    document,
+    document.selection.objectIds,
+    { x: bounds.centerX, y: bounds.centerY },
+    axis
+  );
+}
+
+export function flipDocumentObjectsAroundPoint(
+  document: ChemDraftDocument,
+  ids: readonly string[],
+  center: PagePoint,
+  axis: DocumentFlipAxis
+): ChemDraftDocument {
+  if (ids.length === 0) {
+    return document;
+  }
+
+  const page = firstPage(document);
+  const set = new Set(ids);
+  let next = document;
+  for (const object of page.objects) {
+    if (!set.has(object.id)) {
+      continue;
+    }
+    next = object.type === "molecule"
+      ? flipNativeMoleculeObjectAroundPoint(next, object.id, center, axis)
+      : flipOtherObjectAroundPoint(next, object.id, center, axis);
+  }
+  return next;
+}
+
+function flipNativeMoleculeObjectAroundPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  center: PagePoint,
+  axis: DocumentFlipAxis
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const molecule = page?.objects.find((candidate): candidate is MoleculeObject =>
+    candidate.id === objectId && candidate.type === "molecule"
+  );
+  if (!page || !molecule || molecule.atoms.length === 0) {
+    return document;
+  }
+
+  const flipped = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+    ...molecule,
+    atoms: molecule.atoms.map((atom) => ({
+      ...atom,
+      ...flipPointAroundAxis(atom, center, axis)
+    }))
+  }));
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: flipped },
+    { now: phase4Timestamp }
+  );
+}
+
+function flipOtherObjectAroundPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  center: PagePoint,
+  axis: DocumentFlipAxis
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const object = page?.objects.find((candidate) => candidate.id === objectId);
+  if (!page || !object) {
+    return document;
+  }
+
+  const oldCenter = objectCenter(object);
+  const newCenter = flipPointAroundAxis(oldCenter, center, axis);
+  const scaleX = axis === "horizontal" ? -1 : 1;
+  const scaleY = axis === "vertical" ? -1 : 1;
+  const changes: Record<string, unknown> = {
+    x: newCenter.x - object.width / 2,
+    y: newCenter.y - object.height / 2,
+    width: object.width,
+    height: object.height,
+    rotation: normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
+  };
+
+  if (object.type === "electron-mark" && object.markKind === "charge") {
+    changes.anchor = { ...object.anchor, kind: "point", point: newCenter };
+  }
+  if (object.type === "graphic") {
+    changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
+  }
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: changes as Partial<DocumentObject> },
+    { now: phase4Timestamp }
+  );
+}
+
+function flipPointAroundAxis(
+  point: PagePoint,
+  center: PagePoint,
+  axis: DocumentFlipAxis
+): PagePoint {
+  return axis === "horizontal"
+    ? { x: center.x - (point.x - center.x), y: point.y }
+    : { x: point.x, y: center.y - (point.y - center.y) };
 }
 
 export function cleanUpSelectedNativeMolecule2d(document: ChemDraftDocument): ChemDraftDocument {

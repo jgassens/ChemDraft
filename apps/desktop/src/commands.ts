@@ -729,6 +729,26 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       category: "layout",
       enabled: hasSelection,
       description: "Move the selected document object to the back layer"
+    },
+    {
+      id: "layout.flipHorizontal",
+      title: "Flip Horizontally",
+      icon: "align",
+      assetName: "Custom_Flip_Horizontal",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Mirror the selected document objects left to right"
+    },
+    {
+      id: "layout.flipVertical",
+      title: "Flip Vertically",
+      icon: "align",
+      assetName: "Custom_Flip_Vertical",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Mirror the selected document objects top to bottom"
     }
   ];
 }
