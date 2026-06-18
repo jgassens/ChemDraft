@@ -1826,15 +1826,16 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-command-id="tool.art.circleGloss"');
     expect(markup).not.toContain('data-command-id="tool.art.rectShadow"');
     expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
-    expect(markup).toContain('data-art-tool-icon="roundedRect"');
-    expect(markup).toContain('data-art-tool-icon="pen"');
-    expect(markup).toContain('data-art-tool-icon="polyline"');
-    expect(markup).toContain('data-art-tool-icon="pencil"');
-    expect(markup).toContain('data-art-tool-icon="brush"');
-    expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-art-freehand-glyph="pencil"');
-    expect(buttonMarkupForCommand(markup, "tool.art.brush")).toContain('data-art-freehand-glyph="brush"');
-    expect(markup).toContain('data-art-tool-icon="arrow"');
-    expect(markup).toContain('data-art-tool-icon="arc270"');
+    expect(artGroups.flat().every((command) => command.assetName)).toBe(true);
+    expect(markup).not.toContain("data-art-tool-icon=");
+    expect(buttonMarkupForCommand(markup, "tool.art.roundedRect")).toContain('data-toolbar-asset="Art_Rounded_Rectangle"');
+    expect(buttonMarkupForCommand(markup, "tool.art.pen")).toContain('data-toolbar-asset="Art_Pen"');
+    expect(buttonMarkupForCommand(markup, "tool.art.polyline")).toContain('data-toolbar-asset="Art_Polyline"');
+    expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-toolbar-asset="Art_Pencil"');
+    expect(buttonMarkupForCommand(markup, "tool.art.brush")).toContain('data-toolbar-asset="Art_Brush"');
+    expect(buttonMarkupForCommand(markup, "tool.art.arrow")).toContain('data-toolbar-asset="Art_Arrow"');
+    expect(buttonMarkupForCommand(markup, "tool.art.arc270")).toContain('data-toolbar-asset="Art_Arc_Circular"');
+    expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-toolbar-asset="Art_Send_To_Back"');
     expect(rectInspectorMarkup).toContain('data-toolbar-style-controls="art"');
     expect(rectInspectorMarkup).toContain('aria-label="Fill color"');
     expect(rectInspectorMarkup).toContain('aria-label="Open object color picker"');
@@ -1887,7 +1888,7 @@ describe("ChemDraft desktop shell", () => {
     expect(freehandInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
     expect(markup).not.toContain('data-command-id="text.color.black"');
     expect(desktopToolsetsSource).toContain('"commandId": "tool.art.eyedropper"');
-    expect(desktopToolsetsSource).toContain('"assetName": "Custom_Eyedropper"');
+    expect(desktopToolsetsSource).toContain('"assetName": "Art_Eyedropper"');
     expect(mainWindowSource).toContain("toolBeforeEyedropperRef");
     expect(mainWindowSource).toContain("restoreToolAfterEyedropper");
     expect(mainWindowSource).toContain('tool.id === "tool.art.eyedropper" && activeToolState.activeCommandId === "tool.art.eyedropper"');
@@ -1897,7 +1898,6 @@ describe("ChemDraft desktop shell", () => {
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");
     expect(toolPaletteSource).toContain("supportsFillAny");
-    expect(appCss).toContain(".art-tool-icon");
     expect(appCss).toContain('.app-shell[data-active-tool="tool.art.eyedropper"] .page');
     expect(appCss).toContain("cursor: crosshair;");
     expect(appCss).toContain(".art-toolbar-style-controls");
@@ -2209,7 +2209,7 @@ describe("ChemDraft desktop shell", () => {
     expect(eyedropperCommand).toMatchObject({
       id: "tool.art.eyedropper",
       title: "Eyedropper",
-      assetName: "Custom_Eyedropper",
+      assetName: "Art_Eyedropper",
       category: "art"
     });
     expect(assetCommands.find((command) => command.assetName === "Custom_Bond_Wedge")).toMatchObject({

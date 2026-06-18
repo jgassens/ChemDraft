@@ -190,48 +190,48 @@
         {
           "id": "core.art.selection",
           "items": [
-            { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
-            { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
+            { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Art_Select", "shortcutDisplay": "V", "category": "selection" },
+            { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
         {
           "id": "core.art.shapes",
           "items": [
-            { "commandId": "tool.art.rect", "title": "Rectangle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.roundedRect", "title": "Rounded Rectangle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.circle", "title": "Circle", "icon": "bracket", "category": "art" },
-            { "commandId": "tool.art.ellipse", "title": "Ellipse", "icon": "bracket", "category": "art" }
+            { "commandId": "tool.art.rect", "title": "Rectangle", "icon": "bracket", "assetName": "Art_Rectangle", "category": "art" },
+            { "commandId": "tool.art.roundedRect", "title": "Rounded Rectangle", "icon": "bracket", "assetName": "Art_Rounded_Rectangle", "category": "art" },
+            { "commandId": "tool.art.circle", "title": "Circle", "icon": "bracket", "assetName": "Art_Circle", "category": "art" },
+            { "commandId": "tool.art.ellipse", "title": "Ellipse", "icon": "bracket", "assetName": "Art_Ellipse", "category": "art" }
           ]
         },
         {
           "id": "core.art.paths",
           "items": [
-            { "commandId": "tool.art.line", "title": "Line", "icon": "bond", "category": "art" },
-            { "commandId": "tool.art.lineWavy", "title": "Wavy Line", "icon": "mechanism", "category": "art" },
-            { "commandId": "tool.art.pen", "title": "Pen", "icon": "mechanism", "category": "art" },
-            { "commandId": "tool.art.polyline", "title": "Polyline", "icon": "bond", "category": "art" },
-            { "commandId": "tool.art.arrow", "title": "Arrow", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "category": "art" },
-            { "commandId": "tool.art.eyedropper", "title": "Eyedropper", "icon": "style", "assetName": "Custom_Eyedropper", "category": "art" }
+            { "commandId": "tool.art.line", "title": "Line", "icon": "bond", "assetName": "Art_Line", "category": "art" },
+            { "commandId": "tool.art.lineWavy", "title": "Wavy Line", "icon": "mechanism", "assetName": "Art_Wavy_Line", "category": "art" },
+            { "commandId": "tool.art.pen", "title": "Pen", "icon": "mechanism", "assetName": "Art_Pen", "category": "art" },
+            { "commandId": "tool.art.polyline", "title": "Polyline", "icon": "bond", "assetName": "Art_Polyline", "category": "art" },
+            { "commandId": "tool.art.arrow", "title": "Arrow", "icon": "export", "assetName": "Art_Arrow", "category": "art" },
+            { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "assetName": "Art_Arc_Circular", "category": "art" },
+            { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "assetName": "Art_Arc_Half", "category": "art" },
+            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "assetName": "Art_Arc_Quarter", "category": "art" },
+            { "commandId": "tool.art.eyedropper", "title": "Eyedropper", "icon": "style", "assetName": "Art_Eyedropper", "category": "art" }
           ]
         },
         {
           "id": "core.art.freehand",
           "title": "Freehand",
           "items": [
-            { "commandId": "tool.art.pencil", "title": "Pencil", "icon": "mechanism", "category": "art" },
-            { "commandId": "tool.art.brush", "title": "Brush", "icon": "style", "category": "art" }
+            { "commandId": "tool.art.pencil", "title": "Pencil", "icon": "mechanism", "assetName": "Art_Pencil", "category": "art" },
+            { "commandId": "tool.art.brush", "title": "Brush", "icon": "style", "assetName": "Art_Brush", "category": "art" }
           ]
         },
         {
           "id": "core.art.arrange",
           "items": [
-            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
-            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "category": "layout" }
           ]
         }
       ]
