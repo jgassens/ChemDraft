@@ -1818,6 +1818,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="tool.art.pen"');
     expect(markup).toContain('data-command-id="tool.art.polyline"');
     expect(markup).toContain('data-command-id="tool.art.scissors"');
+    expect(markup).toContain('data-command-id="tool.eraser"');
     expect(markup).toContain('data-command-id="tool.art.pencil"');
     expect(markup).toContain('data-command-id="tool.art.brush"');
     expect(markup).toContain('data-command-id="tool.art.arrow"');
@@ -1833,6 +1834,7 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.art.pen")).toContain('data-toolbar-asset="Art_Pen"');
     expect(buttonMarkupForCommand(markup, "tool.art.polyline")).toContain('data-toolbar-asset="Art_Polyline"');
     expect(buttonMarkupForCommand(markup, "tool.art.scissors")).toContain('data-toolbar-asset="Art_Scissors"');
+    expect(buttonMarkupForCommand(markup, "tool.eraser")).toContain('data-toolbar-asset="Art_Eraser"');
     expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-toolbar-asset="Art_Pencil"');
     expect(buttonMarkupForCommand(markup, "tool.art.brush")).toContain('data-toolbar-asset="Art_Brush"');
     expect(buttonMarkupForCommand(markup, "tool.art.arrow")).toContain('data-toolbar-asset="Art_Arrow"');
@@ -1947,6 +1949,33 @@ describe("ChemDraft desktop shell", () => {
       "tool.art.brush"
     ]);
     expect(desktopToolsetRegistry.require("plugin.fixture").source).toBe("plugin");
+  });
+
+  it("keeps duplicated toolbar commands on a shared material-style asset", () => {
+    const assetNamesByCommandId = new Map<string, Set<string>>();
+    desktopToolsetRegistry.listToolsets().forEach((toolset) => {
+      toolset.groups.forEach((group) => {
+        group.items.forEach((item) => {
+          if (!item.assetName) {
+            return;
+          }
+          const assetNames = assetNamesByCommandId.get(item.commandId) ?? new Set<string>();
+          assetNames.add(item.assetName);
+          assetNamesByCommandId.set(item.commandId, assetNames);
+        });
+      });
+    });
+
+    assetNamesByCommandId.forEach((assetNames, commandId) => {
+      expect([...assetNames], commandId).toHaveLength(1);
+    });
+    expect([...assetNamesByCommandId.get("tool.select") ?? []]).toEqual(["Art_Select"]);
+    expect([...assetNamesByCommandId.get("tool.text") ?? []]).toEqual(["Art_Text"]);
+    expect([...assetNamesByCommandId.get("tool.eraser") ?? []]).toEqual(["Art_Eraser"]);
+    expect([...assetNamesByCommandId.get("layout.bringToFront") ?? []]).toEqual(["Art_Bring_To_Front"]);
+    expect([...assetNamesByCommandId.get("layout.bringForward") ?? []]).toEqual(["Art_Bring_Forward"]);
+    expect([...assetNamesByCommandId.get("layout.sendBackward") ?? []]).toEqual(["Art_Send_Backward"]);
+    expect([...assetNamesByCommandId.get("layout.sendToBack") ?? []]).toEqual(["Art_Send_To_Back"]);
   });
 
   it("keeps sparse floating toolsets compact", () => {

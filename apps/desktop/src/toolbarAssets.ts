@@ -8,6 +8,7 @@ export const toolbarAssetNames = [
   "Art_Brush",
   "Art_Circle",
   "Art_Ellipse",
+  "Art_Eraser",
   "Art_Eyedropper",
   "Art_Line",
   "Art_Pen",

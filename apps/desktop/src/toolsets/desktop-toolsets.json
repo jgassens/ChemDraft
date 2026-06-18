@@ -13,10 +13,10 @@
         {
           "id": "core.main.selection",
           "items": [
-            { "commandId": "tool.select", "title": "Selection Tool", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
+            { "commandId": "tool.select", "title": "Selection Tool", "icon": "select", "assetName": "Art_Select", "shortcutDisplay": "V", "category": "selection" },
             { "commandId": "tool.lasso", "title": "Lasso Selection", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "category": "selection" },
-            { "commandId": "tool.eraser", "title": "Eraser Tool", "icon": "select", "assetName": "Custom_Eraser", "category": "selection" },
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
+            { "commandId": "tool.eraser", "title": "Eraser Tool", "icon": "select", "assetName": "Art_Eraser", "category": "selection" },
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
         {
@@ -83,10 +83,10 @@
             { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
-            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "category": "layout" }
           ]
         },
         {
@@ -164,7 +164,7 @@
         {
           "id": "core.annotations.tools",
           "items": [
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" },
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" },
             { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
@@ -191,6 +191,7 @@
           "id": "core.art.selection",
           "items": [
             { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Art_Select", "shortcutDisplay": "V", "category": "selection" },
+            { "commandId": "tool.eraser", "title": "Eraser", "icon": "select", "assetName": "Art_Eraser", "category": "selection" },
             { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
@@ -280,10 +281,10 @@
             { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
-            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "category": "layout" }
           ]
         }
       ]
@@ -322,7 +323,7 @@
         {
           "id": "core.text.tool",
           "items": [
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         }
       ]
