@@ -784,11 +784,30 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.10.26-codex";
+const CURRENT_BUILD_STAMP = "6.18.10.51-codex";
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
+
+function selectToolStatusLabel(): string {
+  return drawingToolStatusLabel("tool.select", "Selection Tool");
+}
+
+function pathArtDrawStatusLabel(pathKind: PathArtDrawKind, nodeCount?: number): string {
+  const countLabel = nodeCount === undefined ? "" : ` (${nodeCount})`;
+  return pathKind === "bezier"
+    ? `Pen: click points${countLabel}; drag handles; Enter ends, Esc cancels`
+    : `Polyline: click points${countLabel}; Backspace removes point; Enter/double-click ends, Esc cancels`;
+}
+
+function freehandArtStatusLabel(commandId: string): string {
+  return drawingToolStatusLabel(commandId, commandId === "tool.art.brush" ? "Brush" : "Pencil");
+}
+
+function scissorsStatusLabel(action = "click path to split"): string {
+  return `Scissors: ${action}; click path for more; Esc exits`;
+}
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
 // the pointer (seen at low zoom, where the wide bond catcher routes the press to the object
@@ -2296,7 +2315,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     switchToSelectTool();
-    setStatus("Inserted art object");
+    setStatus(selectToolStatusLabel());
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ReturnType<typeof inspectClipboardPayload>) => {
@@ -3687,7 +3706,9 @@ export function MainWindow({
       : nativePolylinePathDocument(draw.startDocument, nodes.map((node) => node.point), draw.commandId, { closed });
     clearNativePathArtDraw();
     if (nextDocument === draw.startDocument) {
-      setStatus(draw.pathKind === "bezier" ? "Pen path needs at least two points" : "Polyline needs at least two points");
+      setStatus(draw.pathKind === "bezier"
+        ? "Pen: add another point; drag handles; Enter ends, Esc cancels"
+        : "Polyline: add another point; Backspace removes point; Enter/double-click ends, Esc cancels");
       return false;
     }
 
@@ -3701,9 +3722,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     activateSelectToolAfterArtCommit();
-    setStatus(draw.pathKind === "bezier"
-      ? closed ? "Inserted closed Bezier path" : "Inserted Bezier path"
-      : closed ? "Inserted closed polyline" : "Inserted polyline");
+    setStatus(selectToolStatusLabel());
     return changed;
   }, [
     activateSelectToolAfterArtCommit,
@@ -3754,9 +3773,7 @@ export function MainWindow({
       assignHoveredNativeDeleteTarget(undefined);
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
-      setStatus(pathKind === "bezier"
-        ? "Pen: click points, drag handles"
-        : "Polyline: click points, double-click finish");
+      setStatus(pathArtDrawStatusLabel(pathKind, 1));
       return;
     }
 
@@ -3789,9 +3806,7 @@ export function MainWindow({
       options.currentTarget?.setPointerCapture(options.pointerId);
     }
     syncPathArtPreview(current);
-    setStatus(pathKind === "bezier"
-      ? `Pen: ${current.nodes.length} points; drag handles`
-      : `Polyline: ${current.nodes.length} points; double-click finish`);
+    setStatus(pathArtDrawStatusLabel(pathKind, current.nodes.length));
   }, [
     assignHoveredNativeDeleteTarget,
     finishNativePathArtDraw,
@@ -3939,7 +3954,7 @@ export function MainWindow({
         event.preventDefault();
         replacePresentDocument(freehandArtDrag.startDocument);
         clearNativeFreehandArtDrag();
-        setStatus("Freehand stroke canceled");
+        setStatus(freehandArtStatusLabel(freehandArtDrag.commandId));
         return;
       }
 
@@ -3948,7 +3963,7 @@ export function MainWindow({
         if (event.key === "Escape") {
           event.preventDefault();
           clearNativePathArtDraw();
-          setStatus(pathArtDraw.pathKind === "bezier" ? "Pen path canceled" : "Polyline canceled");
+          setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind));
           return;
         }
 
@@ -3962,14 +3977,14 @@ export function MainWindow({
           event.preventDefault();
           if (pathArtDraw.nodes.length <= 1) {
             clearNativePathArtDraw();
-            setStatus(pathArtDraw.pathKind === "bezier" ? "Pen path canceled" : "Polyline canceled");
+            setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind));
             return;
           }
 
           pathArtDraw.nodes.pop();
           pathArtDraw.latestPoint = pathArtDraw.nodes[pathArtDraw.nodes.length - 1]?.point;
           syncPathArtPreview(pathArtDraw);
-          setStatus(`${pathArtDraw.nodes.length} ${pathArtDraw.pathKind === "bezier" ? "Pen" : "polyline"} points`);
+          setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind, pathArtDraw.nodes.length));
           return;
         }
       }
@@ -3995,7 +4010,18 @@ export function MainWindow({
       if (event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.scissors") {
         event.preventDefault();
         switchToSelectTool();
-        setStatus(drawingToolStatusLabel("tool.select", "Selection Tool"));
+        setStatus(selectToolStatusLabel());
+        return;
+      }
+
+      if (
+        event.key === "Escape" &&
+        activeToolCommandIdRef.current !== "tool.select" &&
+        isDrawingToolCommand(activeToolCommandIdRef.current)
+      ) {
+        event.preventDefault();
+        switchToSelectTool();
+        setStatus(selectToolStatusLabel());
         return;
       }
 
@@ -4594,7 +4620,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     event.currentTarget.setPointerCapture(event.pointerId);
-    setStatus("Drawing freehand stroke");
+    setStatus(freehandArtStatusLabel(commandId));
   }, [assignHoveredNativeDeleteTarget, clearFreehandArtPreview]);
 
   const previewNativeFreehandArtDrag = useCallback((
@@ -5755,14 +5781,14 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.art.eyedropper") {
       event.preventDefault();
       event.stopPropagation();
-      setStatus("Eyedropper: click source art");
+      setStatus(drawingToolStatusLabel("tool.art.eyedropper", "Eyedropper"));
       return;
     }
 
     if (activeToolState.activeCommandId === "tool.art.scissors") {
       event.preventDefault();
       event.stopPropagation();
-      setStatus("Scissors: click path to split; Esc exits");
+      setStatus(scissorsStatusLabel());
       return;
     }
 
@@ -6505,8 +6531,8 @@ export function MainWindow({
     if (freehandArtDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? freehandArtDrag.latestPoint;
-      const changed = commitNativeFreehandArtDrag(freehandArtDrag, point, event);
-      setStatus(changed ? "Inserted freehand stroke" : "Freehand stroke canceled");
+      commitNativeFreehandArtDrag(freehandArtDrag, point, event);
+      setStatus(freehandArtStatusLabel(freehandArtDrag.commandId));
       clearNativeFreehandArtDrag(event);
       return;
     }
@@ -6732,7 +6758,7 @@ export function MainWindow({
     if (freehandArtDrag?.pointerId === event.pointerId) {
       replacePresentDocument(freehandArtDrag.startDocument);
       clearNativeFreehandArtDrag(event);
-      setStatus("Freehand stroke canceled");
+      setStatus(freehandArtStatusLabel(freehandArtDrag.commandId));
     }
 
     const lasso = selectionLassoRef.current;
@@ -6824,7 +6850,7 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
-        setStatus("Scissors: click path to split; Esc exits");
+        setStatus(scissorsStatusLabel());
         return;
       }
 
@@ -6833,7 +6859,7 @@ export function MainWindow({
         maxDistancePx: Math.max(2, 10 / viewportRef.current.scale)
       });
       if (!split) {
-        setStatus("Scissors: click closer; Esc exits");
+        setStatus(scissorsStatusLabel("click closer to path"));
         return;
       }
 
@@ -6855,7 +6881,7 @@ export function MainWindow({
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
       assignHoveredNativeDeleteTarget(undefined);
-      setStatus("Scissors: node added; click path for more; Esc exits");
+      setStatus(scissorsStatusLabel("node added"));
       return;
     }
 
@@ -6943,13 +6969,13 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       if (object?.type !== "graphic") {
-        setStatus("Eyedropper: click source art");
+        setStatus(drawingToolStatusLabel("tool.art.eyedropper", "Eyedropper"));
         return;
       }
 
       const targetIds = selectedGraphicObjectIds(document).filter((selectedObjectId) => selectedObjectId !== objectId);
       if (targetIds.length === 0) {
-        setStatus("Eyedropper: select target first");
+        setStatus("Eyedropper: select target art; click source after selecting; Esc exits");
         return;
       }
 

@@ -3,6 +3,7 @@ import {
   activateDrawingToolCommand,
   coreDrawingToolDefinitions,
   createActiveToolState,
+  drawingToolStatusLabel,
   getDrawingToolCommandSpecs,
   getDrawingToolDefinition,
   isDrawingToolCommand,
@@ -48,7 +49,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Single Bond: click canvas or atom");
+    expect(result.status).toBe("Single Bond: click canvas or atom; click atom to extend; Esc exits");
     expect(result.state).toMatchObject({
       activeCommandId: "tool.bond",
       activeKind: "bond",
@@ -66,7 +67,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(current, command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Single Bond: click canvas or atom");
+    expect(result.status).toBe("Single Bond: click canvas or atom; click atom to extend; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.bond");
     expect(result.state.activeKind).toBe("bond");
     expect(command.enabled).toBe(true);
@@ -81,7 +82,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Text: click canvas to type");
+    expect(result.status).toBe("Text: click canvas to type; edit selected text; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.text");
     expect(result.state.activeKind).toBe("text");
     expect(command.enabled).toBe(true);
@@ -96,7 +97,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Circle: click canvas");
+    expect(result.status).toBe("Circle: click canvas; select object to edit; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.art.circle");
     expect(result.state.activeKind).toBe("art");
     expect(command.enabled).toBe(true);
@@ -113,7 +114,7 @@ describe("Phase 7 drawing tool activation", () => {
 
     expect(toolsetCommands.some((candidate) => candidate.id === "tool.art.directEdit")).toBe(false);
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Direct Edit: adjust art handles");
+    expect(result.status).toBe("Direct Edit: drag art handles; double-click object for transform; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.art.directEdit");
     expect(result.state.activeKind).toBe("selection");
     expect(command.enabled).toBe(true);
@@ -128,8 +129,22 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Scissors: click path to split; Esc exits");
+    expect(result.status).toBe("Scissors: click path to split; click path for more; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.art.scissors");
+  });
+
+  it("formats every enabled drawing tool hint as action, optional action, and exit action", () => {
+    for (const definition of coreDrawingToolDefinitions) {
+      const disabledReason = "disabledReason" in definition ? definition.disabledReason : undefined;
+      if (disabledReason) {
+        continue;
+      }
+      const usageHint = "usageHint" in definition ? definition.usageHint : undefined;
+      expect(usageHint, definition.commandId).toBeDefined();
+      const usage = drawingToolStatusLabel(definition.commandId, definition.title).split(": ")[1];
+      expect(usage.split("; "), definition.commandId).toHaveLength(3);
+      expect(usage.split("; ").every((segment) => segment.trim().length > 0), definition.commandId).toBe(true);
+    }
   });
 
   it("keeps preset art variants registered for compatibility without showing them in the primary art toolbar", () => {

@@ -854,7 +854,23 @@ describe("graphic path direct editing interactions", () => {
     });
 
     expect(container.querySelector('[data-active-tool="tool.select"]')).not.toBeNull();
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selection: click or drag");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selection: click object or canvas; drag moves or selects; choose another tool");
+  });
+
+  it("exits idle drawing tools with Escape", async () => {
+    await renderMainWindow(createPhase4Document("Idle Tool Escape"), { initialActiveToolCommandId: "tool.art.circle" });
+
+    expect(container.querySelector('[data-active-tool="tool.art.circle"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true
+      }));
+    });
+
+    expect(container.querySelector('[data-active-tool="tool.select"]')).not.toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selection: click object or canvas; drag moves or selects; choose another tool");
   });
 
   it("commits a line-to-quadratic drag as one undoable history entry", async () => {
