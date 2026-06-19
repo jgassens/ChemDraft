@@ -9,6 +9,7 @@ import type {
 } from "@chemdraft/chem-core";
 import Flatten from "@flatten-js/core";
 import { getStroke, type StrokeOptions } from "perfect-freehand";
+import SVGPathCommander from "svg-path-commander";
 import {
   getPathBBox,
   getPointAtLength,
@@ -3028,7 +3029,9 @@ function graphicPathD(
   const storedPath = metadataString(object.data.pathD);
   const pathKind = graphicPathKind(object);
   if (storedPath && !pathKind) {
-    return storedPath;
+    return coordinateSpace === "page"
+      ? translateSvgPathD(storedPath, object.x, object.y)
+      : storedPath;
   }
 
   const inset = Math.max(3, (metadataNumber(object.style.strokeWidth) ?? 2) / 2);
@@ -3088,6 +3091,20 @@ function graphicPathD(
   }
 
   return storedPath;
+}
+
+function translateSvgPathD(pathD: string, x: number, y: number): string {
+  if (Math.abs(x) < 0.001 && Math.abs(y) < 0.001) {
+    return pathD;
+  }
+
+  try {
+    return new SVGPathCommander(pathD, { round: 3 })
+      .transform({ translate: [x, y] })
+      .toString();
+  } catch {
+    return pathD;
+  }
 }
 
 export function createGraphicFreehandPathCache(

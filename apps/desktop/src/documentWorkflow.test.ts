@@ -172,6 +172,33 @@ function graphicById(document: ChemDraftDocument, objectId: string): GraphicObje
   return graphic;
 }
 
+function exportedObjectTag(svg: string, objectId: string): string {
+  const escapedObjectId = objectId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = svg.match(new RegExp(`<[^>]+data-object-id="${escapedObjectId}"[^>]*>`));
+  if (!match) {
+    throw new Error(`Expected exported SVG element for "${objectId}".`);
+  }
+  return match[0];
+}
+
+function exportedAttribute(tag: string, attributeName: string): string {
+  const escapedAttributeName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tag.match(new RegExp(`\\s${escapedAttributeName}="([^"]+)"`));
+  if (!match) {
+    throw new Error(`Expected exported SVG attribute "${attributeName}".`);
+  }
+  return match[1];
+}
+
+function svgPathCoordinatePairs(pathD: string): { x: number; y: number }[] {
+  const values = pathD.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  const pairs: { x: number; y: number }[] = [];
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    pairs.push({ x: values[index], y: values[index + 1] });
+  }
+  return pairs;
+}
+
 function growFromAtom(document: ChemDraftDocument, atomId: string, angleDegrees: number): ChemDraftDocument {
   const molecule = selectedMolecule(document);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
@@ -4503,6 +4530,11 @@ describe("Phase 4 document workflow", () => {
     }
     const graphic = graphicById(result.document, resultId);
     const svg = exportPhase4Svg(result.document, { includeWarnings: true });
+    const exportedTag = exportedObjectTag(svg.contents, resultId);
+    const exportedPathD = exportedAttribute(exportedTag, "d");
+    const exportedPoints = svgPathCoordinatePairs(exportedPathD);
+    const exportedXs = exportedPoints.map((point) => point.x);
+    const exportedYs = exportedPoints.map((point) => point.y);
 
     expect(result.changed).toBe(true);
     expect(result.status).toBe("Unioned 2 closed art shapes");
@@ -4521,8 +4553,16 @@ describe("Phase 4 document workflow", () => {
     });
     expect(graphic.data.pathD).toMatch(/^M /);
     expect(svg.contents).toContain(`data-object-id="${resultId}"`);
+    expect(exportedPathD).not.toBe(graphic.data.pathD);
+    expect(Math.min(...exportedXs)).toBeCloseTo(graphic.x, 3);
+    expect(Math.min(...exportedYs)).toBeCloseTo(graphic.y, 3);
     expect(svg.contents).toContain("<path");
     expect(svg.warnings).toEqual([]);
+
+    const rotated = rotateDocumentObject(result.document, resultId, 12);
+    const rotatedSvg = exportPhase4Svg(rotated, { includeWarnings: true });
+    const rotatedTag = exportedObjectTag(rotatedSvg.contents, resultId);
+    expect(exportedAttribute(rotatedTag, "transform")).toContain("rotate(12");
   });
 
   it("applies native art boolean subtract, intersect, split, and open-shape skips", () => {

@@ -1777,7 +1777,8 @@ function graphicObjectFragment(
   if (renderedGraphic) {
     children.push(...svgFlattenedGraphicMarkerFragments(plan, object.id));
     return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
-      opacity: plan.opacity === 1 ? undefined : plan.opacity
+      opacity: plan.opacity === 1 ? undefined : plan.opacity,
+      transform: rotationTransform(object)
     }), children);
   }
 
