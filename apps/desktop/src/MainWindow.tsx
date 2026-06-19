@@ -95,7 +95,10 @@ import {
   createQuickActions,
   editActions,
   objectColorForCommand,
+  objectEffectColorForCommand,
+  objectEffectOpacityForCommand,
   objectEffectForCommand,
+  objectEffectSizeForCommand,
   objectFillOpacityCommandId,
   objectOpacityCommandId,
   objectOpacityForCommand,
@@ -164,6 +167,9 @@ import {
   applyToolbarColorToSelection,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
+  applyGraphicObjectEffectColorToSelection,
+  applyGraphicObjectEffectOpacityToSelection,
+  applyGraphicObjectEffectSizeToSelection,
   applyGraphicObjectEffectToSelection,
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
@@ -794,7 +800,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.8.32-codex";
+const CURRENT_BUILD_STAMP = "6.19.9.11-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -2708,6 +2714,36 @@ export function MainWindow({
         message: effectKind === "none"
           ? "Cleared selected graphic effects"
           : `Applied selected graphic ${effectKind} effect`
+      };
+    }
+
+    const effectColor = objectEffectColorForCommand(commandId);
+    if (effectColor) {
+      return {
+        document: applyGraphicObjectEffectColorToSelection(currentDocument, effectColor.effectKind, effectColor.color, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: `Updated selected graphic ${effectColor.effectKind} color`
+      };
+    }
+
+    const effectOpacity = objectEffectOpacityForCommand(commandId);
+    if (effectOpacity) {
+      return {
+        document: applyGraphicObjectEffectOpacityToSelection(currentDocument, effectOpacity.effectKind, effectOpacity.opacity, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: `Updated selected graphic ${effectOpacity.effectKind} opacity`
+      };
+    }
+
+    const effectSize = objectEffectSizeForCommand(commandId);
+    if (effectSize) {
+      return {
+        document: applyGraphicObjectEffectSizeToSelection(currentDocument, effectSize.effectKind, effectSize.size, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: `Updated selected graphic ${effectSize.effectKind} size`
       };
     }
 

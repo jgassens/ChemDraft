@@ -385,23 +385,69 @@ describe("ArtInspectorModel", () => {
     expect(createArtInspectorModel({
       document: documentWithSelectedGraphics([plain]),
       selectedGraphicObjects: [plain]
-    }).values.effect).toEqual({ value: "none", mixed: false });
-    expect(createArtInspectorModel({
+    })).toMatchObject({
+      effectKinds: [],
+      values: { effect: { value: "none", mixed: false } },
+      effectControls: {
+        shadow: {
+          presentCount: 0,
+          presentAll: false,
+          color: { value: "#52616b", mixed: false },
+          opacity: { value: 0.28, mixed: false },
+          size: { value: 0.25, mixed: false }
+        }
+      }
+    });
+    const shadowModel = createArtInspectorModel({
       document: documentWithSelectedGraphics([shadow]),
       selectedGraphicObjects: [shadow]
-    }).values.effect).toEqual({ value: "shadow", mixed: false });
-    expect(createArtInspectorModel({
+    });
+    expect(shadowModel.values.effect).toEqual({ value: "shadow", mixed: false });
+    expect(shadowModel.effectKinds).toEqual(["shadow"]);
+    expect(shadowModel.effectControls.shadow).toMatchObject({
+      presentCount: 1,
+      presentAll: true,
+      color: { value: "#52616b", mixed: false },
+      opacity: { value: 0.28, mixed: false },
+      size: { value: 0.25, mixed: false }
+    });
+    const stackedModel = createArtInspectorModel({
       document: documentWithSelectedGraphics([stacked]),
       selectedGraphicObjects: [stacked]
-    }).values.effect).toEqual({ value: "multiple", mixed: false });
+    });
+    expect(stackedModel.values.effect).toEqual({ value: "multiple", mixed: false });
+    expect(stackedModel.effectKinds).toEqual(["shadow", "sketch"]);
+    expect(stackedModel.effectControls.sketch).toMatchObject({
+      presentCount: 1,
+      presentAll: true,
+      opacity: { value: 1, mixed: false }
+    });
+    expect(stackedModel.effectControls.sketch.size.value).toBeCloseTo(1.25 / 3);
     expect(createArtInspectorModel({
       document: documentWithSelectedGraphics([legacyShadow]),
       selectedGraphicObjects: [legacyShadow]
-    }).values.effect).toEqual({ value: "shadow", mixed: false });
-    expect(createArtInspectorModel({
+    })).toMatchObject({
+      effectKinds: ["shadow"],
+      values: { effect: { value: "shadow", mixed: false } },
+      effectControls: {
+        shadow: {
+          presentCount: 1,
+          presentAll: true,
+          color: { value: "#52616b", mixed: false }
+        }
+      }
+    });
+    const mixedModel = createArtInspectorModel({
       document: documentWithSelectedGraphics([plain, shadow]),
       selectedGraphicObjects: [plain, shadow]
-    }).values.effect).toEqual({ value: null, mixed: true });
+    });
+    expect(mixedModel.values.effect).toEqual({ value: null, mixed: true });
+    expect(mixedModel.effectKinds).toEqual(["shadow"]);
+    expect(mixedModel.effectControls.shadow).toMatchObject({
+      presentCount: 1,
+      presentAll: false,
+      color: { value: "#52616b", mixed: false }
+    });
   });
 
   it("selects graphics from the current document selection without carrying UI state", () => {

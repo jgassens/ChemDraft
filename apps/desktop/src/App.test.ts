@@ -1776,6 +1776,21 @@ describe("ChemDraft desktop shell", () => {
       selectedGraphicObjects: selectedGraphicObjectsForArtInspector(gradientDocument),
       requestedPaintTarget: "fill"
     });
+    const effectObjectId = rectDocument.selection.objectIds[0] ?? "";
+    const effectDocument = applyPatches(rectDocument, [{
+      op: "updateObject",
+      objectId: effectObjectId,
+      changes: {
+        style: {
+          effects: [{ kind: "glow", color: "#1d7f68", opacity: 0.42, blurPx: 7, spreadPx: 1.2 }]
+        }
+      }
+    }]);
+    const effectArtStyle = createArtInspectorModel({
+      document: effectDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(effectDocument),
+      requestedPaintTarget: "fill"
+    });
     const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
       groups: artGroups,
       activeTool: "tool.select",
@@ -1820,6 +1835,17 @@ describe("ChemDraft desktop shell", () => {
       currentArtStyle: gradientArtStyle,
       onInvoke: () => undefined
     }));
+    const effectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: effectArtStyle,
+      onInvoke: () => undefined
+    }));
 
     expect(markup).toContain('aria-label="ChemDraft floating Art Toolbar"');
     expect(markup).toContain('data-toolset-id="core.art"');
@@ -1846,10 +1872,6 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="art.boolean.subtract"');
     expect(markup).toContain('data-command-id="art.boolean.intersect"');
     expect(markup).toContain('data-command-id="art.boolean.split"');
-    expect(markup).not.toContain('data-command-id="object.effect.shadow"');
-    expect(markup).not.toContain('data-command-id="object.effect.glow"');
-    expect(markup).not.toContain('data-command-id="object.effect.sketch"');
-    expect(markup).not.toContain('data-command-id="object.effect.none"');
     expect(markup).not.toContain('data-command-id="tool.art.circleGloss"');
     expect(markup).not.toContain('data-command-id="tool.art.rectShadow"');
     expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
@@ -1873,12 +1895,19 @@ describe("ChemDraft desktop shell", () => {
     expect(rectInspectorMarkup).toContain('data-color-picker="true"');
     expect(rectInspectorMarkup).toContain('data-command-id="object.style.target.fill"');
     expect(rectInspectorMarkup).toContain('data-command-id="object.style.swapFillStroke"');
-    expect(rectInspectorMarkup).toContain('aria-label="Art effect"');
-    expect(rectInspectorMarkup).toContain('data-art-effect-select="true"');
-    expect(rectInspectorMarkup).toContain('value="object.effect.none"');
-    expect(rectInspectorMarkup).toContain('value="object.effect.shadow"');
-    expect(rectInspectorMarkup).toContain('value="object.effect.glow"');
-    expect(rectInspectorMarkup).toContain('value="object.effect.sketch"');
+    expect(rectInspectorMarkup).toContain('aria-label="Art effects"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="none"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="shadow"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="glow"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="sketch"');
+    expect(rectInspectorMarkup).not.toContain('data-art-effect-controls=');
+    expect(effectInspectorMarkup).toContain('data-art-effect-button="glow"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-controls="glow"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-present-count="1"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-present-all="true"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-color-trigger="glow"');
+    expect(effectInspectorMarkup).toContain('data-art-inspector-slider="glow-effect-opacity"');
+    expect(effectInspectorMarkup).toContain('data-art-inspector-slider="glow-effect-size"');
     expect(rectInspectorMarkup).toContain('aria-label="Stroke width"');
     expect(rectInspectorMarkup).toContain('data-art-inspector-slider="object-opacity"');
     expect(rectInspectorMarkup).toContain('data-art-inspector-slider="fill-opacity"');

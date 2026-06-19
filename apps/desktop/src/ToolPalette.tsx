@@ -27,6 +27,9 @@ import {
   objectGradientStopOffsetCommandId,
   objectGradientStopOpacityCommandId,
   objectEffectCommands,
+  objectEffectColorCommandId,
+  objectEffectOpacityCommandId,
+  objectEffectSizeCommandId,
   objectPaintTypeCommandId,
   objectPaintTypeCommands,
   objectStrokeDashCommands,
@@ -46,6 +49,7 @@ import {
 } from "./commands";
 import { Icon } from "./icons";
 import { toolbarAsset } from "./toolbarAssets";
+import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import type { ToolsetArtPaintTarget, ToolsetArtStylePayload } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
@@ -612,11 +616,15 @@ function ArtToolbarStyleControls({
     effectiveArtStyleTarget === "fill" || command.paintType !== "gloss"
   );
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
+  const effectColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
+  const [effectColorOpen, setEffectColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
+  const [draftEffectColor, setDraftEffectColor] = useState("#52616b");
+  const [focusedEffectKind, setFocusedEffectKind] = useState<ArtInspectorEffectKind | undefined>();
   const [selectedGradientStopIndex, setSelectedGradientStopIndex] = useState(0);
   const [gradientStopColorOpen, setGradientStopColorOpen] = useState(false);
   const [draftGradientStopColor, setDraftGradientStopColor] = useState("#111111");
@@ -625,9 +633,20 @@ function ArtToolbarStyleControls({
   const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
   const strokeOpacity = currentArtStyle?.values.strokeOpacity.value ?? 1;
   const activeEffectValue = currentArtStyle?.values.effect.value ?? "none";
-  const activeEffectCommandId = currentArtStyle?.values.effect.mixed || activeEffectValue === "multiple"
-    ? "object.effect.mixed"
-    : objectEffectCommands.find((command) => command.effectKind === activeEffectValue)?.id ?? objectEffectCommands[0].id;
+  const activeEffectKinds = currentArtStyle?.effectKinds ?? [];
+  const activeEffectKindsKey = activeEffectKinds.join("|");
+  const visibleEffectKind = focusedEffectKind && (activeEffectKinds.includes(focusedEffectKind) || selected)
+    ? focusedEffectKind
+    : activeEffectValue === "shadow" || activeEffectValue === "glow" || activeEffectValue === "sketch"
+      ? activeEffectValue
+      : activeEffectKinds[0];
+  const visibleEffectModel = visibleEffectKind ? currentArtStyle?.effectControls[visibleEffectKind] : undefined;
+  const currentEffectColor = visibleEffectModel?.color.value ?? "#52616b";
+  const draftEffectRgb = useMemo(() => hexToRgbColor(draftEffectColor) ?? { r: 17, g: 17, b: 17 }, [draftEffectColor]);
+  const draftEffectCmyk = useMemo(() => rgbToCmykColor(draftEffectRgb), [draftEffectRgb]);
+  const effectOpacity = visibleEffectModel?.opacity.value ?? 1;
+  const effectSize = visibleEffectModel?.size.value ?? 0.25;
+  const showEffectControls = selected && visibleEffectKind !== undefined && (visibleEffectModel?.presentCount ?? 0) > 0;
   const strokeWidthCommandId = closestObjectStrokeWidthCommandId(currentArtStyle?.values.strokeWidth.value ?? undefined);
   const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.values.dash.value ?? undefined);
   const strokeCap = currentArtStyle?.values.lineEnds.value ?? "butt";
@@ -654,8 +673,8 @@ function ArtToolbarStyleControls({
   const showAdvancedStrokeControls = false;
 
   useEffect(() => {
-    onColorPickerOpenChange?.(colorOpen || gradientStopColorOpen);
-  }, [colorOpen, gradientStopColorOpen, onColorPickerOpenChange]);
+    onColorPickerOpenChange?.(colorOpen || effectColorOpen || gradientStopColorOpen);
+  }, [colorOpen, effectColorOpen, gradientStopColorOpen, onColorPickerOpenChange]);
 
   useEffect(() => {
     if (!colorOpen) {
@@ -670,12 +689,18 @@ function ArtToolbarStyleControls({
   }, [currentGradientStopColor, gradientStopColorOpen]);
 
   useEffect(() => {
+    if (!effectColorOpen) {
+      setDraftEffectColor(currentEffectColor);
+    }
+  }, [currentEffectColor, effectColorOpen]);
+
+  useEffect(() => {
     const maxIndex = activeGradientStops.length - 1;
     setSelectedGradientStopIndex((current) => maxIndex < 0 ? 0 : Math.max(0, Math.min(maxIndex, current)));
   }, [activeGradientStops.length, activeGradientStopsKey]);
 
   useEffect(() => {
-    if (!colorOpen && !gradientStopColorOpen) {
+    if (!colorOpen && !effectColorOpen && !gradientStopColorOpen) {
       return undefined;
     }
 
@@ -684,10 +709,14 @@ function ArtToolbarStyleControls({
       if (target instanceof Node && colorPickerRef.current?.contains(target)) {
         return;
       }
+      if (target instanceof Node && effectColorPickerRef.current?.contains(target)) {
+        return;
+      }
       if (target instanceof Node && gradientStopColorPickerRef.current?.contains(target)) {
         return;
       }
       setColorOpen(false);
+      setEffectColorOpen(false);
       setGradientStopColorOpen(false);
     };
     const closeForEscape = (event: globalThis.KeyboardEvent) => {
@@ -696,11 +725,13 @@ function ArtToolbarStyleControls({
       }
       event.preventDefault();
       setColorOpen(false);
+      setEffectColorOpen(false);
       setGradientStopColorOpen(false);
       onCancel?.();
     };
     const closeForWindowBlur = () => {
       setColorOpen(false);
+      setEffectColorOpen(false);
       setGradientStopColorOpen(false);
     };
 
@@ -712,12 +743,24 @@ function ArtToolbarStyleControls({
       document.removeEventListener("keydown", closeForEscape, true);
       window.removeEventListener("blur", closeForWindowBlur);
     };
-  }, [colorOpen, gradientStopColorOpen, onCancel]);
+  }, [colorOpen, effectColorOpen, gradientStopColorOpen, onCancel]);
 
   useEffect(() => {
     setColorOpen(false);
+    setEffectColorOpen(false);
     setGradientStopColorOpen(false);
   }, [selectedGraphicIdsKey]);
+
+  useEffect(() => {
+    setFocusedEffectKind((current) => {
+      if (current && activeEffectKinds.includes(current)) {
+        return current;
+      }
+      return activeEffectValue === "shadow" || activeEffectValue === "glow" || activeEffectValue === "sketch"
+        ? activeEffectValue
+        : activeEffectKinds[0];
+    });
+  }, [activeEffectKindsKey, activeEffectValue]);
 
   const invokeOrCommit = (commandId: string) => {
     if (onCommit) {
@@ -752,6 +795,48 @@ function ArtToolbarStyleControls({
     }
     setDraftColor(normalized);
     invokeOrCommit(objectCustomColorCommandId(normalized));
+  };
+
+  const updateEffectColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !visibleEffectKind) {
+      return;
+    }
+    setDraftEffectColor(normalized);
+    previewCommand(objectEffectColorCommandId(visibleEffectKind, normalized));
+  };
+
+  const commitEffectColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !visibleEffectKind) {
+      return;
+    }
+    setDraftEffectColor(normalized);
+    invokeOrCommit(objectEffectColorCommandId(visibleEffectKind, normalized));
+  };
+
+  const updateEffectRgbChannel = (channel: keyof RgbColor, value: string) => {
+    updateEffectColor(rgbToHexColor({
+      ...draftEffectRgb,
+      [channel]: clampColorChannel(value)
+    }));
+  };
+
+  const updateEffectCmykChannel = (channel: keyof CmykColor, value: string) => {
+    updateEffectColor(rgbToHexColor(cmykToRgbColor({
+      ...draftEffectCmyk,
+      [channel]: clampPercentChannel(value)
+    })));
+  };
+
+  const updateEffectHexInput = (value: string) => {
+    const normalized = normalizeHexColor(value);
+    if (normalized) {
+      updateEffectColor(normalized);
+      return;
+    }
+
+    setDraftEffectColor(`#${value.replace(/[^0-9a-f]/gi, "").slice(0, 6).toLowerCase()}`.padEnd(7, "0"));
   };
 
   const updateGradientStopColor = (color: string) => {
@@ -1067,33 +1152,161 @@ function ArtToolbarStyleControls({
         >
           ⇄
         </button>
-        <label className="toolbar-control-label art-effect-control" title="Art effect">
-          <select
-            className="toolbar-select"
-            value={activeEffectCommandId}
-            aria-label="Art effect"
-            disabled={!selected}
-            data-art-effect-select="true"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {currentArtStyle?.values.effect.mixed || activeEffectValue === "multiple" ? (
-              <option value="object.effect.mixed">Effect: Multiple</option>
-            ) : null}
-            {objectEffectCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {`Effect: ${command.label}`}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="art-effect-button-group" role="group" aria-label="Art effects">
+          {objectEffectCommands.map((command) => {
+            const effectKind = command.effectKind;
+            const active = effectKind !== "none" && activeEffectKinds.includes(effectKind);
+            return (
+              <button
+                type="button"
+                key={command.id}
+                className={active ? "active" : ""}
+                aria-pressed={active}
+                aria-label={command.title}
+                title={command.title}
+                disabled={!selected}
+                data-command-id={command.id}
+                data-art-effect-button={effectKind}
+                data-palette-control="true"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  if (effectKind !== "none") {
+                    setFocusedEffectKind(effectKind);
+                  } else {
+                    setFocusedEffectKind(undefined);
+                    setEffectColorOpen(false);
+                  }
+                  onInvoke(command.id);
+                }}
+              >
+                {command.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
       <div className="art-inspector-row art-inspector-opacity-row">
         {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
+      {showEffectControls && visibleEffectKind ? (
+        <div
+          className="art-inspector-row art-effect-row"
+          data-art-effect-controls={visibleEffectKind}
+          data-art-effect-present-count={visibleEffectModel?.presentCount ?? 0}
+          data-art-effect-present-all={visibleEffectModel?.presentAll ?? false}
+        >
+          <div
+            className="art-color-picker art-effect-color-picker"
+            role="group"
+            aria-label={`${effectLabel(visibleEffectKind)} effect color`}
+            ref={effectColorPickerRef}
+            data-color-picker="true"
+            data-palette-control="true"
+          >
+            <button
+              type="button"
+              className="toolbar-color-trigger art-effect-color-trigger"
+              aria-label={`Open ${effectLabel(visibleEffectKind)} effect color picker`}
+              aria-expanded={effectColorOpen}
+              title={`${effectLabel(visibleEffectKind)} effect color`}
+              data-art-effect-color-trigger={visibleEffectKind}
+              data-palette-control="true"
+              style={{ "--picker-color": currentEffectColor } as CSSProperties}
+              onClick={() => {
+                setColorOpen(false);
+                setGradientStopColorOpen(false);
+                setEffectColorOpen((open) => !open);
+              }}
+            >
+              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+              <span className="toolbar-color-trigger-label">Effect</span>
+            </button>
+            {effectColorOpen ? (
+              <div
+                className="art-color-popover art-effect-color-popover"
+                role="dialog"
+                aria-label={`${effectLabel(visibleEffectKind)} effect color picker`}
+              >
+                <HexColorPicker color={draftEffectColor} onChange={updateEffectColor} onChangeEnd={commitEffectColor} />
+                <div className="color-mixer-panel" role="group" aria-label="Effect color mixer">
+                  <label className="color-wheel-control">
+                    <span className="visually-hidden">Effect color wheel</span>
+                    <input
+                      className="color-wheel-input"
+                      type="color"
+                      value={draftEffectColor}
+                      aria-label="Effect color wheel"
+                      onChange={(event) => updateEffectColor(event.currentTarget.value)}
+                      onBlur={(event) => commitEffectColor(event.currentTarget.value)}
+                    />
+                    <span className="color-wheel-face" aria-hidden="true">
+                      <span className="color-wheel-current" style={{ "--picker-color": draftEffectColor } as CSSProperties} />
+                    </span>
+                  </label>
+                  <div className="color-channel-groups">
+                    <div className="color-channel-group" aria-label="Effect RGB color">
+                      {(["r", "g", "b"] as const).map((channel) => (
+                        <label key={channel}>
+                          <span>{channel.toUpperCase()}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={255}
+                            value={draftEffectRgb[channel]}
+                            onBlur={() => commitEffectColor(draftEffectColor)}
+                            onChange={(event) => updateEffectRgbChannel(channel, event.currentTarget.value)}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div className="color-channel-group" aria-label="Effect CMYK color">
+                      {(["c", "m", "y", "k"] as const).map((channel) => (
+                        <label key={channel}>
+                          <span>{channel.toUpperCase()}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={draftEffectCmyk[channel]}
+                            onBlur={() => commitEffectColor(draftEffectColor)}
+                            onChange={(event) => updateEffectCmykChannel(channel, event.currentTarget.value)}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <label className="color-hex-field">
+                      <span>HEX</span>
+                      <input
+                        type="text"
+                        value={draftEffectColor.toUpperCase()}
+                        spellCheck={false}
+                        onBlur={() => commitEffectColor(draftEffectColor)}
+                        onChange={(event) => updateEffectHexInput(event.currentTarget.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          {opacitySlider(
+            `${effectLabel(visibleEffectKind)} effect opacity`,
+            "Eff",
+            effectOpacity,
+            (opacity) => objectEffectOpacityCommandId(visibleEffectKind, opacity),
+            visibleEffectModel?.presentCount ?? 0
+          )}
+          {opacitySlider(
+            `${effectLabel(visibleEffectKind)} effect size`,
+            "Size",
+            effectSize,
+            (size) => objectEffectSizeCommandId(visibleEffectKind, size),
+            visibleEffectModel?.presentCount ?? 0
+          )}
+        </div>
+      ) : null}
       {showGradientControls ? (
         <div className="art-inspector-row art-gradient-row" data-art-gradient-controls={effectiveArtStyleTarget}>
           <div
@@ -1386,6 +1599,16 @@ function lineCapLabel(value: "butt" | "round" | "square"): string {
     return "Round";
   }
   return "Square";
+}
+
+function effectLabel(value: ArtInspectorEffectKind): string {
+  if (value === "shadow") {
+    return "Shadow";
+  }
+  if (value === "glow") {
+    return "Glow";
+  }
+  return "Sketch";
 }
 
 function lineJoinLabel(value: "miter" | "round" | "bevel"): string {

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette } from "./ToolPalette";
-import { objectGradientStopOffsetCommandId } from "./commands";
+import { objectEffectOpacityCommandId, objectEffectSizeCommandId, objectGradientStopOffsetCommandId } from "./commands";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -59,6 +59,32 @@ function gradientArtInspectorModel() {
   return createArtInspectorModel({
     document: gradientDocument,
     selectedGraphicObjects: selectedGraphicObjectsForArtInspector(gradientDocument),
+    requestedPaintTarget: "fill"
+  });
+}
+
+function effectArtInspectorModel() {
+  const document = insertNativeArtGraphicObject(
+    createPhase4Document("Palette effect controls"),
+    { x: 220, y: 180 },
+    "tool.art.rect"
+  );
+  const objectId = document.selection.objectIds[0];
+  if (!objectId) {
+    throw new Error("Expected selected art object.");
+  }
+  const effectDocument = applyPatches(document, [{
+    op: "updateObject",
+    objectId,
+    changes: {
+      style: {
+        effects: [{ kind: "glow", color: "#1d7f68", opacity: 0.42, blurPx: 7, spreadPx: 1.2 }]
+      }
+    }
+  }]);
+  return createArtInspectorModel({
+    document: effectDocument,
+    selectedGraphicObjects: selectedGraphicObjectsForArtInspector(effectDocument),
     requestedPaintTarget: "fill"
   });
 }
@@ -127,6 +153,13 @@ describe("ToolPalette art color popover", () => {
       throw new Error("Expected art color popover.");
     }
     return popover;
+  }
+
+  function changeRangeValue(input: HTMLInputElement, value: string) {
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    valueSetter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    valueSetter?.call(input, value);
   }
 
   it("opens reliably and closes on outside pointer, Escape, blur, and selection changes", () => {
@@ -227,26 +260,57 @@ describe("ToolPalette art color popover", () => {
     expect([...restoredFillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
   });
 
-  it("invokes native effect commands from the visible art effect selector", () => {
+  it("invokes native effect commands from buttons and visible effect controls", () => {
     const { onInvoke } = renderPalette();
-    const effectSelect = container.querySelector<HTMLSelectElement>('[data-art-effect-select="true"]');
-    if (!effectSelect) {
-      throw new Error("Expected art effect selector.");
+    const glowButton = container.querySelector<HTMLButtonElement>('[data-art-effect-button="glow"]');
+    if (!glowButton) {
+      throw new Error("Expected glow effect button.");
     }
 
-    expect(effectSelect.getAttribute("aria-label")).toBe("Art effect");
-    expect([...effectSelect.options].map((option) => option.value)).toEqual([
-      "object.effect.none",
-      "object.effect.shadow",
-      "object.effect.glow",
-      "object.effect.sketch"
-    ]);
-
     act(() => {
-      effectSelect.value = "object.effect.glow";
-      effectSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      glowButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onInvoke).toHaveBeenCalledWith("object.effect.glow");
+
+    const clearButton = container.querySelector<HTMLButtonElement>('[data-art-effect-button="none"]');
+    if (!clearButton) {
+      throw new Error("Expected clear effects button.");
+    }
+    act(() => {
+      clearButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.effect.none");
+
+    const { onPreview, onCommit } = renderPalette({ currentArtStyle: effectArtInspectorModel() });
+    expect(container.querySelector('[data-art-effect-controls="glow"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-art-effect-button="glow"]')?.className).toContain("active");
+    const effectColorTrigger = container.querySelector<HTMLButtonElement>('[data-art-effect-color-trigger="glow"]');
+    if (!effectColorTrigger) {
+      throw new Error("Expected effect color trigger.");
+    }
+    expect(effectColorTrigger.textContent).toContain("Effect");
+    act(() => {
+      effectColorTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[aria-label="Effect color mixer"]')).not.toBeNull();
+
+    const effectOpacity = container.querySelector<HTMLInputElement>('[data-art-inspector-slider="glow-effect-opacity"] input');
+    const effectSize = container.querySelector<HTMLInputElement>('[data-art-inspector-slider="glow-effect-size"] input');
+    if (!effectOpacity || !effectSize) {
+      throw new Error("Expected effect opacity and size sliders.");
+    }
+    act(() => {
+      changeRangeValue(effectOpacity, "72");
+    });
+    expect(onPreview).toHaveBeenCalledWith(objectEffectOpacityCommandId("glow", 0.72));
+
+    act(() => {
+      effectSize.focus();
+      changeRangeValue(effectSize, "50");
+      effectSize.blur();
+    });
+    expect(onPreview).toHaveBeenCalledWith(objectEffectSizeCommandId("glow", 0.5));
+    expect(onCommit).toHaveBeenCalledWith(objectEffectSizeCommandId("glow", 0.5));
   });
 
   it("drags gradient stop markers directly across the gradient rail", () => {

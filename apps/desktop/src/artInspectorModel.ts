@@ -4,6 +4,7 @@ import type { ChemDraftDocument, GraphicObject, GraphicPaint } from "@chemdraft/
 export type ArtInspectorPaintTarget = "fill" | "stroke";
 export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
 export type ArtInspectorEffectValue = "none" | "shadow" | "glow" | "sketch" | "multiple";
+export type ArtInspectorEffectKind = Exclude<ArtInspectorEffectValue, "none" | "multiple">;
 export type ArtInspectorLineCap = "butt" | "round" | "square";
 export type ArtInspectorLineJoin = "miter" | "round" | "bevel";
 const MAX_ART_INSPECTOR_GRADIENT_STOPS = 8;
@@ -45,10 +46,20 @@ export interface ArtInspectorGradientModel {
   canDeleteStop: boolean;
 }
 
+export interface ArtInspectorEffectModel {
+  kind: ArtInspectorEffectKind;
+  presentCount: number;
+  presentAll: boolean;
+  color: ArtInspectorMixedValue<string>;
+  opacity: ArtInspectorMixedValue<number>;
+  size: ArtInspectorMixedValue<number>;
+}
+
 export interface ArtInspectorModel {
   selectedCount: number;
   selectedGraphicIds: string[];
   selectedGraphicKinds: GraphicObject["graphicKind"][];
+  effectKinds: ArtInspectorEffectKind[];
   requestedPaintTarget: ArtInspectorPaintTarget;
   activePaintTarget: ArtInspectorPaintTarget;
   supportsFillAny: boolean;
@@ -87,6 +98,7 @@ export interface ArtInspectorModel {
     corners: ArtInspectorMixedValue<ArtInspectorLineJoin>;
   };
   activeGradient: ArtInspectorGradientModel;
+  effectControls: Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
   skippedObjectIdsByControl: ArtInspectorSkippedObjectIdsByControl;
 }
 
@@ -141,11 +153,17 @@ export function createArtInspectorModel({
     lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan.stroke.lineCap),
     corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan.stroke.lineJoin)
   };
+  const effectControls = {
+    shadow: effectModelForKind(planned, "shadow", selectedCount),
+    glow: effectModelForKind(planned, "glow", selectedCount),
+    sketch: effectModelForKind(planned, "sketch", selectedCount)
+  } satisfies Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
 
   return {
     selectedCount,
     selectedGraphicIds: graphics.map((object) => object.id),
     selectedGraphicKinds: uniqueGraphicKinds(graphics),
+    effectKinds: (["shadow", "glow", "sketch"] as const).filter((kind) => effectControls[kind].presentCount > 0),
     requestedPaintTarget,
     activePaintTarget,
     supportsFillAny: fillSupportedCount > 0,
@@ -175,6 +193,7 @@ export function createArtInspectorModel({
       activePaintTarget === "fill" ? supportsFill : supportsStroke,
       activePaintTarget
     ),
+    effectControls,
     skippedObjectIdsByControl: skippedObjectIdsByControl(planned)
   };
 }
@@ -200,10 +219,10 @@ function uniqueGraphicKinds(objects: readonly GraphicObject[]): GraphicObject["g
   return [...new Set(objects.map((object) => object.graphicKind))];
 }
 
-function uniformSupportedValue<T>(
-  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[],
+function uniformSupportedValue<TEntry, T>(
+  planned: readonly TEntry[],
   supported: readonly boolean[],
-  read: (entry: { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }) => T | null | undefined
+  read: (entry: TEntry) => T | null | undefined
 ): ArtInspectorMixedValue<T> {
   const values = planned
     .filter((_, index) => supported[index])
@@ -374,16 +393,115 @@ function graphicStrokeToolbarPaintType(object: GraphicObject): ArtInspectorPaint
 }
 
 function graphicToolbarEffectValue(object: GraphicObject): ArtInspectorEffectValue {
-  const explicitEffects = Array.isArray(object.style.effects) ? object.style.effects : [];
-  const effectKinds = [
-    ...(object.style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow") ? ["shadow" as const] : []),
-    ...explicitEffects.map((effect) => effect.kind)
-  ];
+  const effectKinds = graphicEffectsForToolbar(object).map((effect) => effect.kind);
   const uniqueEffectKinds = [...new Set(effectKinds)];
   if (uniqueEffectKinds.length === 0) {
     return "none";
   }
   return uniqueEffectKinds.length === 1 ? uniqueEffectKinds[0] : "multiple";
+}
+
+function effectModelForKind(
+  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[],
+  kind: ArtInspectorEffectKind,
+  selectedCount: number
+): ArtInspectorEffectModel {
+  const entries = planned.map(({ object }) => ({
+    object,
+    effect: graphicEffectsForToolbar(object).find((candidate) => candidate.kind === kind)
+  }));
+  const presentCount = entries.filter((entry) => entry.effect).length;
+  const supported = entries.map((entry) => entry.effect !== undefined);
+  return {
+    kind,
+    presentCount,
+    presentAll: selectedCount > 0 && presentCount === selectedCount,
+    color: presentCount > 0
+      ? uniformSupportedValue(entries, supported, ({ object, effect }) => effectColorForToolbar(object, kind, effect))
+      : { value: defaultEffectColor(kind), mixed: false },
+    opacity: presentCount > 0
+      ? uniformSupportedValue(entries, supported, ({ effect }) => effectOpacityForToolbar(kind, effect))
+      : { value: defaultEffectOpacity(kind), mixed: false },
+    size: presentCount > 0
+      ? uniformSupportedValue(entries, supported, ({ effect }) => effectSizeForToolbar(kind, effect))
+      : { value: defaultEffectSize(kind), mixed: false }
+  };
+}
+
+function graphicEffectsForToolbar(object: GraphicObject): NonNullable<GraphicObject["style"]["effects"]> {
+  const explicitEffects = Array.isArray(object.style.effects) ? object.style.effects : [];
+  return object.style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow")
+    ? [{ kind: "shadow" }, ...explicitEffects]
+    : explicitEffects;
+}
+
+function effectColorForToolbar(
+  object: GraphicObject,
+  kind: ArtInspectorEffectKind,
+  effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
+): string {
+  return normalizeToolbarHexColor(effect?.color) ??
+    (kind === "sketch" ? graphicStrokeToolbarColor(object) : null) ??
+    defaultEffectColor(kind);
+}
+
+function effectOpacityForToolbar(
+  kind: ArtInspectorEffectKind,
+  effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
+): number {
+  return clampToolbarUnit(typeof effect?.opacity === "number" ? effect.opacity : defaultEffectOpacity(kind));
+}
+
+function effectSizeForToolbar(
+  kind: ArtInspectorEffectKind,
+  effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
+): number {
+  if (kind === "shadow") {
+    const offsetX = Math.abs(typeof effect?.offsetX === "number" ? effect.offsetX : 6);
+    const offsetY = Math.abs(typeof effect?.offsetY === "number" ? effect.offsetY : 6);
+    const blur = Math.max(0, typeof effect?.blurPx === "number" ? effect.blurPx : 3);
+    return clampToolbarUnit(Math.max(offsetX / 24, offsetY / 24, blur / 12));
+  }
+
+  if (kind === "glow") {
+    const blur = Math.max(0, typeof effect?.blurPx === "number" ? effect.blurPx : 7);
+    const spread = Math.max(0, typeof effect?.spreadPx === "number" ? effect.spreadPx : 1.2);
+    return clampToolbarUnit(Math.max(blur / 18, spread / 4));
+  }
+
+  const roughness = Math.max(0, typeof effect?.roughness === "number" ? effect.roughness : 1.25);
+  const bowing = Math.max(0, typeof effect?.bowing === "number" ? effect.bowing : 0.8);
+  return clampToolbarUnit(Math.max(roughness / 3, bowing / 2));
+}
+
+function defaultEffectColor(kind: ArtInspectorEffectKind): string {
+  if (kind === "shadow") {
+    return "#52616b";
+  }
+  if (kind === "glow") {
+    return "#1d7f68";
+  }
+  return "#111111";
+}
+
+function defaultEffectOpacity(kind: ArtInspectorEffectKind): number {
+  if (kind === "shadow") {
+    return 0.28;
+  }
+  if (kind === "glow") {
+    return 0.42;
+  }
+  return 1;
+}
+
+function defaultEffectSize(kind: ArtInspectorEffectKind): number {
+  if (kind === "shadow") {
+    return 0.25;
+  }
+  if (kind === "glow") {
+    return 7 / 18;
+  }
+  return 1.25 / 3;
 }
 
 function metadataNumberValue(value: unknown, fallback: number): number {

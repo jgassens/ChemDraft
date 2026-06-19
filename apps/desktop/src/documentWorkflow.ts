@@ -257,6 +257,7 @@ export interface NativeGraphicPathSegmentSplit {
 export type NativeGraphicMarkerHandleId = NativeArtMarkerHandleId;
 export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
 export type GraphicStyleEffectKind = GraphicEffect["kind"] | "none";
+export type GraphicStyleAdjustableEffectKind = Exclude<GraphicStyleEffectKind, "none">;
 
 const artOutlineStyle = {
   strokeColor: "#111111",
@@ -4246,6 +4247,64 @@ export function applyGraphicObjectEffectToSelection(
   });
 }
 
+export function applyGraphicObjectEffectColorToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  color: string,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectEffectForSelection(document, effectKind, objectIds, (effect) => ({
+    ...effect,
+    color
+  }));
+}
+
+export function applyGraphicObjectEffectOpacityToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  opacity: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectEffectForSelection(document, effectKind, objectIds, (effect) => ({
+    ...effect,
+    opacity: clampWorkflowUnit(opacity)
+  }));
+}
+
+export function applyGraphicObjectEffectSizeToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  size: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const value = clampWorkflowUnit(size);
+  return updateGraphicObjectEffectForSelection(document, effectKind, objectIds, (effect) => {
+    if (effectKind === "shadow") {
+      const sizePx = value * 24;
+      return {
+        ...effect,
+        offsetX: sizePx,
+        offsetY: sizePx,
+        blurPx: sizePx * 0.5
+      };
+    }
+
+    if (effectKind === "glow") {
+      return {
+        ...effect,
+        blurPx: value * 18,
+        spreadPx: value * 4
+      };
+    }
+
+    return {
+      ...effect,
+      roughness: value * 3,
+      bowing: value * 2
+    };
+  });
+}
+
 export function applyGraphicObjectStrokeStyleToSelection(
   document: ChemDraftDocument,
   style: Pick<GraphicObjectStyle, "strokeWidth" | "strokeDasharray" | "strokeLineCap" | "strokeLineJoin" | "strokeMiterLimit">,
@@ -5677,6 +5736,25 @@ function defaultGraphicEffectForKind(object: GraphicObject, kind: Exclude<Graphi
     return { kind, color: "#1d7f68", opacity: 0.42, blurPx: 7, spreadPx: 1.2 };
   }
   return { kind, seed: graphicStyleEffectSeed(object.id, kind), roughness: 1.25, bowing: 0.8 };
+}
+
+function updateGraphicObjectEffectForSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  objectIds: readonly string[],
+  updateEffect: (effect: GraphicEffect, object: GraphicObject) => GraphicEffect
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const { effect: _legacyEffect, effects: _effects, ...baseStyle } = object.style;
+    const existingEffects = graphicEffectsForStyle(object.style);
+    const nextEffects = existingEffects.some((effect) => effect.kind === effectKind)
+      ? existingEffects.map((effect) => effect.kind === effectKind ? updateEffect(effect, object) : effect)
+      : [...existingEffects, updateEffect(defaultGraphicEffectForKind(object, effectKind), object)];
+    return {
+      ...baseStyle,
+      effects: nextEffects
+    };
+  });
 }
 
 function graphicStyleEffectSeed(objectId: string, kind: Exclude<GraphicStyleEffectKind, "none">): number {

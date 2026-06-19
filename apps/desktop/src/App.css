@@ -603,8 +603,8 @@ textarea:focus-visible,
   grid-auto-rows: minmax(24px, auto);
   align-items: center;
   gap: var(--cd-space-2);
-  width: 460px;
-  min-width: 460px;
+  width: 540px;
+  min-width: 540px;
   min-height: 140px;
   padding: var(--cd-space-2);
   border: 1px solid var(--cd-border-subtle);
@@ -688,10 +688,16 @@ textarea:focus-visible,
   gap: 3px;
 }
 
+.art-effect-button-group {
+  display: grid;
+  grid-template-columns: 38px 52px 44px 50px;
+  gap: 3px;
+}
+
 .art-target-toggle button,
+.art-effect-button-group button,
 .art-inspector-symbol-button {
   display: grid;
-  width: 24px;
   height: 24px;
   place-items: center;
   padding: 0;
@@ -705,7 +711,21 @@ textarea:focus-visible,
   cursor: pointer;
 }
 
+.art-target-toggle button,
+.art-inspector-symbol-button {
+  width: 24px;
+}
+
+.art-effect-button-group button {
+  min-width: 0;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
 .art-target-toggle button.active,
+.art-effect-button-group button.active,
+.art-effect-button-group button:hover:not(:disabled),
 .art-inspector-symbol-button:hover:not(:disabled) {
   border-color: var(--cd-accent-border);
   background: var(--cd-bg-selected);
@@ -734,6 +754,7 @@ textarea:focus-visible,
 }
 
 .art-target-toggle button:disabled,
+.art-effect-button-group button:disabled,
 .art-inspector-symbol-button:disabled,
 .art-toolbar-style-controls select:disabled,
 .art-toolbar-style-controls input:disabled {
@@ -767,8 +788,14 @@ textarea:focus-visible,
   width: 74px;
 }
 
-.art-effect-control {
-  width: 112px;
+.art-effect-row {
+  display: grid;
+  grid-template-columns: 82px minmax(82px, 1fr) minmax(82px, 1fr);
+  column-gap: var(--cd-space-3);
+}
+
+.art-effect-color-trigger {
+  width: 82px;
 }
 
 .art-color-popover {
@@ -797,6 +824,21 @@ textarea:focus-visible,
 .art-color-popover .react-colorful__hue {
   height: 14px;
   border-radius: 0 0 var(--cd-radius-control) var(--cd-radius-control);
+}
+
+.art-color-popover.art-effect-color-popover {
+  width: 282px;
+}
+
+.art-effect-color-popover .react-colorful {
+  width: 264px;
+  height: 132px;
+}
+
+.art-effect-color-popover .color-mixer-panel {
+  padding-top: var(--cd-space-2);
+  border-top: 1px solid var(--cd-border-subtle);
+  margin-top: var(--cd-space-2);
 }
 
 .art-inspector-opacity-row {

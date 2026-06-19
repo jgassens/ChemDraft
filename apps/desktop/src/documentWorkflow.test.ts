@@ -22,6 +22,9 @@ import {
   applyObjectColorToDocumentObjects,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
+  applyGraphicObjectEffectColorToSelection,
+  applyGraphicObjectEffectOpacityToSelection,
+  applyGraphicObjectEffectSizeToSelection,
   applyGraphicObjectEffectToSelection,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
@@ -4806,7 +4809,34 @@ describe("Phase 4 document workflow", () => {
       bowing: 0.8
     });
 
-    const cleared = applyGraphicObjectEffectToSelection(sketched, "none");
+    const recolored = applyGraphicObjectEffectColorToSelection(sketched, "shadow", "#123456");
+    expect(graphicById(recolored, objectId).style.fillColor).toBe("none");
+    expect(graphicById(recolored, objectId).style.strokeColor).toBe("#111111");
+    expect(graphicById(recolored, objectId).style.effects?.find((effect) => effect.kind === "shadow")).toMatchObject({
+      color: "#123456",
+      opacity: 0.28,
+      offsetX: 6,
+      offsetY: 6,
+      blurPx: 3
+    });
+
+    const resized = applyGraphicObjectEffectSizeToSelection(recolored, "glow", 0.5);
+    expect(graphicById(resized, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      kind: "glow",
+      color: "#1d7f68",
+      opacity: 0.42,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const faded = applyGraphicObjectEffectOpacityToSelection(resized, "glow", 0.72);
+    expect(graphicById(faded, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      opacity: 0.72,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const cleared = applyGraphicObjectEffectToSelection(faded, "none");
     expect(graphicById(cleared, objectId).style.effect).toBeUndefined();
     expect(graphicById(cleared, objectId).style.effects).toBeUndefined();
   });
