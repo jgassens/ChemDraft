@@ -6,7 +6,9 @@ import type {
   GraphicMarker,
   GraphicObject,
   GraphicObjectData,
-  GraphicPaint
+  GraphicPaint,
+  VisualEffect,
+  VisualEffectStyle
 } from "@chemdraft/chem-core";
 import Flatten from "@flatten-js/core";
 import { getStroke, type StrokeOptions } from "perfect-freehand";
@@ -24,6 +26,7 @@ const minimumArcSweepRadians = Math.PI / 180;
 const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
 const transientFreehandPathCache = new WeakMap<GraphicObject, { revision: string; pathD?: string }>();
 const defaultGlowEffectColor = "#fdd835";
+export type VisualEffectKind = VisualEffect["kind"];
 
 export interface NativeArtPoint {
   x: number;
@@ -472,15 +475,37 @@ interface NativeArtEffectPlanInput {
 }
 
 function nativeArtEffectPlans(object: GraphicObject, input: NativeArtEffectPlanInput): NativeArtEffectPlan[] {
-  return nativeArtGraphicEffects(object)
-    .map((effect) => nativeArtEffectPlan(object, effect, input))
+  const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
+    ? nativeArtSketchBasePathD(object, input)
+    : undefined;
+  return visualEffectPlansForStyle({
+    objectId: object.id,
+    style: object.style,
+    sketchBasePathD
+  });
+}
+
+export function visualEffectPlansForStyle({
+  objectId,
+  style,
+  sketchBasePathD
+}: {
+  objectId: string;
+  style: Record<string, unknown>;
+  sketchBasePathD?: string;
+}): NativeArtEffectPlan[] {
+  return visualEffectsForStyle(style)
+    .map((effect) => visualEffectPlan(objectId, effect, sketchBasePathD))
     .filter((effect): effect is NativeArtEffectPlan => effect !== undefined);
 }
 
-function nativeArtGraphicEffects(object: GraphicObject): GraphicEffect[] {
-  const explicitEffects = Array.isArray(object.style.effects) ? object.style.effects : [];
-  const effects: GraphicEffect[] = [];
-  if (object.style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow")) {
+export function visualEffectsForStyle(style: Record<string, unknown>): VisualEffect[] {
+  const explicitEffects = mergeVisualEffectsByKind(
+    visualEffectArray(style.effects),
+    visualEffectArray(style.visualEffects)
+  );
+  const effects: VisualEffect[] = [];
+  if (style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow")) {
     effects.push({ kind: "shadow" });
   }
 
@@ -493,10 +518,56 @@ function nativeArtGraphicEffects(object: GraphicObject): GraphicEffect[] {
   return effects;
 }
 
-function nativeArtEffectPlan(
-  object: GraphicObject,
-  effect: GraphicEffect,
-  input: NativeArtEffectPlanInput
+export function inactiveVisualEffectsForStyle(style: Record<string, unknown>): VisualEffect[] {
+  return mergeVisualEffectsByKind(
+    visualEffectArray(style.inactiveEffects),
+    visualEffectArray(style.inactiveVisualEffects)
+  );
+}
+
+export function mergeVisualEffectsByKind(
+  existingEffects: readonly VisualEffect[],
+  incomingEffects: readonly VisualEffect[]
+): VisualEffect[] {
+  return [...existingEffects, ...incomingEffects].reduce<VisualEffect[]>((effects, effect) => {
+    const existingIndex = effects.findIndex((candidate) => candidate.kind === effect.kind);
+    if (existingIndex >= 0) {
+      effects[existingIndex] = effect;
+      return effects;
+    }
+    return [...effects, effect];
+  }, []);
+}
+
+export function visualStyleWithEffects<TStyle extends Record<string, unknown>>(
+  baseStyle: TStyle,
+  effects: readonly VisualEffect[],
+  inactiveEffects: readonly VisualEffect[],
+  options: { includeGraphicAliases?: boolean } = {}
+): TStyle & Partial<VisualEffectStyle> {
+  return {
+    ...baseStyle,
+    ...(effects.length > 0 ? { visualEffects: [...effects] } : {}),
+    ...(inactiveEffects.length > 0 ? { inactiveVisualEffects: [...inactiveEffects] } : {}),
+    ...(options.includeGraphicAliases && effects.length > 0 ? { effects: [...effects] } : {}),
+    ...(options.includeGraphicAliases && inactiveEffects.length > 0 ? { inactiveEffects: [...inactiveEffects] } : {})
+  };
+}
+
+export function defaultVisualEffectForKind(objectId: string, kind: VisualEffectKind): VisualEffect {
+  if (kind === "shadow") {
+    return { kind, color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 };
+  }
+  if (kind === "glow") {
+    return { kind, color: defaultGlowEffectColor, opacity: 0.42, blurPx: 7, spreadPx: 1.2 };
+  }
+  return { kind, color: "#111111", seed: visualEffectSeed(objectId, { kind }, kind), roughness: 1.25, bowing: 0.8, strokeWidth: 1.5 };
+}
+
+function visualEffectPlan(
+  objectId: string,
+  effect: VisualEffect,
+  sketchBasePathD?: string
 ): NativeArtEffectPlan | undefined {
   if (effect.kind === "shadow") {
     return {
@@ -519,22 +590,21 @@ function nativeArtEffectPlan(
     };
   }
 
-  return nativeArtSketchEffectPlan(object, effect, input);
+  return visualSketchEffectPlan(objectId, effect, sketchBasePathD);
 }
 
-function nativeArtSketchEffectPlan(
-  object: GraphicObject,
-  effect: GraphicEffect,
-  input: NativeArtEffectPlanInput
+function visualSketchEffectPlan(
+  objectId: string,
+  effect: VisualEffect,
+  basePathD: string | undefined
 ): NativeArtSketchEffectPlan | undefined {
-  const basePathD = nativeArtSketchBasePathD(object, input);
   if (!basePathD) {
     return undefined;
   }
 
   const color = graphicColor(effect.color, "#111111");
   const strokeWidth = Math.max(0.5, metadataNumber(effect.strokeWidth) ?? 1.5);
-  const seed = nativeArtEffectSeed(object, effect, "sketch");
+  const seed = visualEffectSeed(objectId, effect, "sketch");
   const roughness = Math.max(0, metadataNumber(effect.roughness) ?? 1.25);
   const bowing = Math.max(0, metadataNumber(effect.bowing) ?? 0.8);
   const drawable = rough.generator().path(basePathD, {
@@ -607,13 +677,49 @@ function nativeArtSketchBasePathD(object: GraphicObject, input: NativeArtEffectP
   return undefined;
 }
 
-function nativeArtEffectSeed(object: GraphicObject, effect: GraphicEffect, kind: NativeArtEffectPlan["kind"]): number {
+function visualEffectSeed(objectId: string, effect: VisualEffect, kind: NativeArtEffectPlan["kind"]): number {
   const explicitSeed = metadataNumber(effect.seed);
   if (explicitSeed !== undefined && Number.isInteger(explicitSeed) && explicitSeed > 0) {
     return Math.min(explicitSeed, 2147483646);
   }
 
-  return nativeArtStablePositiveSeed(`${object.id}:${kind}`);
+  return nativeArtStablePositiveSeed(`${objectId}:${kind}`);
+}
+
+function visualEffectArray(value: unknown): VisualEffect[] {
+  return Array.isArray(value)
+    ? value.map(visualEffectFromUnknown).filter((effect): effect is VisualEffect => effect !== undefined)
+    : [];
+}
+
+function visualEffectFromUnknown(value: unknown): VisualEffect | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const kind = visualEffectKind(record.kind);
+  if (!kind) {
+    return undefined;
+  }
+
+  return {
+    kind,
+    ...(typeof record.color === "string" ? { color: record.color } : {}),
+    ...(typeof record.opacity === "number" ? { opacity: clampUnit(record.opacity) } : {}),
+    ...(typeof record.offsetX === "number" && Number.isFinite(record.offsetX) ? { offsetX: record.offsetX } : {}),
+    ...(typeof record.offsetY === "number" && Number.isFinite(record.offsetY) ? { offsetY: record.offsetY } : {}),
+    ...(typeof record.blurPx === "number" && Number.isFinite(record.blurPx) && record.blurPx >= 0 ? { blurPx: record.blurPx } : {}),
+    ...(typeof record.spreadPx === "number" && Number.isFinite(record.spreadPx) ? { spreadPx: record.spreadPx } : {}),
+    ...(typeof record.roughness === "number" && Number.isFinite(record.roughness) && record.roughness >= 0 ? { roughness: record.roughness } : {}),
+    ...(typeof record.bowing === "number" && Number.isFinite(record.bowing) && record.bowing >= 0 ? { bowing: record.bowing } : {}),
+    ...(typeof record.strokeWidth === "number" && Number.isFinite(record.strokeWidth) && record.strokeWidth > 0 ? { strokeWidth: record.strokeWidth } : {}),
+    ...(typeof record.seed === "number" && Number.isInteger(record.seed) && record.seed > 0 ? { seed: record.seed } : {})
+  };
+}
+
+function visualEffectKind(value: unknown): VisualEffectKind | undefined {
+  return value === "shadow" || value === "glow" || value === "sketch" ? value : undefined;
 }
 
 function nativeArtStablePositiveSeed(value: string): number {

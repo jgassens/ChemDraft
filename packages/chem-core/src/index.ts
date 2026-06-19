@@ -47,6 +47,8 @@ export {
   TextObjectSchema,
   TextSpanSchema,
   UnknownCompatibilityObjectSchema,
+  VisualEffectSchema,
+  VisualEffectStyleSchema,
   type Anchor,
   type AnnotationObject,
   type ArrowObject,
@@ -94,7 +96,9 @@ export {
   type SuperatomObject,
   type TextObject,
   type TextSpan,
-  type UnknownCompatibilityObject
+  type UnknownCompatibilityObject,
+  type VisualEffect,
+  type VisualEffectStyle
 } from "./schemas";
 
 export {

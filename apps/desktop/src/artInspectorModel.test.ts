@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
-import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
+import {
+  ChemDraftSyntheticStylePreset,
+  createEmptyDocument,
+  stylePresetToObjectStyle,
+  type ChemDraftDocument,
+  type DocumentObject,
+  type GraphicObject,
+  type MoleculeObject
+} from "@chemdraft/chem-core";
+import {
+  createArtInspectorModel,
+  selectedGraphicObjectsForArtInspector,
+  selectedVisualObjectsForArtInspector
+} from "./artInspectorModel";
 
 const baseGraphic = {
   type: "graphic",
@@ -457,11 +469,68 @@ describe("ArtInspectorModel", () => {
 
     expect(selectedGraphicObjectsForArtInspector(document)).toEqual([circle]);
   });
+
+  it("models selected molecules as shared visual-effect targets without graphic paint controls", () => {
+    const molecule = moleculeObject("mol_effect", {
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        source: "chemdraft-native-drawing",
+        visualEffects: [
+          { kind: "glow", color: "#ffee66", opacity: 0.7, blurPx: 9, spreadPx: 2 }
+        ]
+      }
+    });
+    const document = documentWithSelectedObjects([molecule]);
+    const selectedVisualObjects = selectedVisualObjectsForArtInspector(document);
+
+    expect(selectedGraphicObjectsForArtInspector(document)).toEqual([]);
+    expect(selectedVisualObjects).toEqual([molecule]);
+
+    const model = createArtInspectorModel({
+      document,
+      selectedGraphicObjects: [],
+      selectedVisualObjects
+    });
+    expect(model).toMatchObject({
+      selectedCount: 1,
+      selectedObjectIds: ["mol_effect"],
+      selectedGraphicIds: [],
+      supportsFillAny: false,
+      supportsStrokeAny: false,
+      supportsDashAny: false,
+      values: {
+        effect: { value: "glow", mixed: false }
+      },
+      effectKinds: ["glow"],
+      effectControls: {
+        glow: {
+          presentCount: 1,
+          presentAll: true,
+          color: { value: "#ffee66", mixed: false },
+          opacity: { value: 0.7, mixed: false }
+        }
+      }
+    });
+    expect(model.effectControls.glow.size.value).toBeCloseTo(0.5);
+    expect(model.activeGradient).toMatchObject({
+      paintType: null,
+      editable: false,
+      mixed: false,
+      stops: []
+    });
+  });
 });
 
 function documentWithSelectedGraphics(
   graphics: readonly GraphicObject[],
   selectedIds = graphics.map((graphic) => graphic.id)
+): ChemDraftDocument {
+  return documentWithSelectedObjects(graphics, selectedIds);
+}
+
+function documentWithSelectedObjects(
+  objects: readonly DocumentObject[],
+  selectedIds = objects.map((object) => object.id)
 ): ChemDraftDocument {
   const document = createEmptyDocument({
     id: "doc_art_inspector",
@@ -472,7 +541,7 @@ function documentWithSelectedGraphics(
     ...document,
     pages: [{
       ...document.pages[0],
-      objects: [...graphics]
+      objects: [...objects]
     }],
     selection: {
       objectIds: [...selectedIds]
@@ -536,5 +605,43 @@ function rectGraphic(id: string, overrides: Partial<GraphicObject> = {}): Graphi
     data: {
       ...overrides.data
     }
+  };
+}
+
+function moleculeObject(id: string, overrides: Partial<MoleculeObject> = {}): MoleculeObject {
+  return {
+    id,
+    type: "molecule",
+    x: 120,
+    y: 120,
+    width: 120,
+    height: 32,
+    rotation: 0,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "chemdraft-native-drawing"
+    },
+    structureFormat: "smiles",
+    structure: "CC",
+    atoms: [
+      { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+      { id: "atom_002", element: "C", x: 220, y: 180, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }
+    ],
+    chemistry: {
+      formula: "C2H6",
+      atomCount: 2,
+      bondCount: 1,
+      totalCharge: 0,
+      radicalCount: 0,
+      isotopeLabels: [],
+      stereochemistry: [],
+      warnings: []
+    },
+    superatoms: [],
+    rGroups: [],
+    ...overrides
   };
 }

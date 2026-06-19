@@ -629,7 +629,7 @@ function ArtToolbarStyleControls({
   const [selectedGradientStopIndex, setSelectedGradientStopIndex] = useState(0);
   const [gradientStopColorOpen, setGradientStopColorOpen] = useState(false);
   const [draftGradientStopColor, setDraftGradientStopColor] = useState("#111111");
-  const selectedGraphicIdsKey = currentArtStyle?.selectedGraphicIds.join("\u0000") ?? "";
+  const selectedStyleObjectIdsKey = currentArtStyle?.selectedObjectIds.join("\u0000") ?? "";
   const objectOpacity = currentArtStyle?.values.objectOpacity.value ?? 1;
   const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
   const strokeOpacity = currentArtStyle?.values.strokeOpacity.value ?? 1;
@@ -750,7 +750,7 @@ function ArtToolbarStyleControls({
     setColorOpen(false);
     setEffectColorOpen(false);
     setGradientStopColorOpen(false);
-  }, [selectedGraphicIdsKey]);
+  }, [selectedStyleObjectIdsKey]);
 
   useEffect(() => {
     setFocusedEffectKind((current) => {

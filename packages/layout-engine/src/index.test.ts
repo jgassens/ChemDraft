@@ -919,6 +919,39 @@ describe("layout-engine page SVG planner", () => {
     });
   });
 
+  it("renders shared visual effect fragments for native molecule graphs", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_effects",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          source: "chemdraft-native-drawing",
+          visualEffects: [
+            { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 },
+            { kind: "glow", color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 },
+            { kind: "sketch", color: "#111111", seed: 713, roughness: 1.25, bowing: 0.8, strokeWidth: 1.5 }
+          ]
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    expect(fragments.some((fragment) =>
+      fragment.tag === "filter" && fragment.attrs.id === "molecule-effects-mol_effects"
+    )).toBe(true);
+    expect(fragments.some((fragment) =>
+      fragment.tag === "feFlood" && fragment.attrs["flood-color"] === "#fdd835"
+    )).toBe(true);
+    expect(fragments.find((fragment) =>
+      fragment.attrs["data-molecule-effect-source"] === "true"
+    )?.attrs.filter).toBe("url(#molecule-effects-mol_effects)");
+    expect(fragments.some((fragment) =>
+      fragment.attrs.class === "native-molecule-sketch" &&
+      fragment.attrs["data-molecule-effect"] === "sketch"
+    )).toBe(true);
+    expect(fragments.some((fragment) => String(fragment.attrs.class).includes("native-bond-line"))).toBe(true);
+  });
+
   it("renders styled native art graphics as exportable shape primitives", () => {
     const page = pageWithObjects([
       {

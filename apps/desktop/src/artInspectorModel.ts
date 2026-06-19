@@ -1,5 +1,5 @@
-import { planNativeArtVisual } from "@chemdraft/art-engine";
-import type { ChemDraftDocument, GraphicObject, GraphicPaint } from "@chemdraft/chem-core";
+import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
+import type { ChemDraftDocument, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
 export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
@@ -57,6 +57,7 @@ export interface ArtInspectorEffectModel {
 
 export interface ArtInspectorModel {
   selectedCount: number;
+  selectedObjectIds: string[];
   selectedGraphicIds: string[];
   selectedGraphicKinds: GraphicObject["graphicKind"][];
   effectKinds: ArtInspectorEffectKind[];
@@ -105,29 +106,38 @@ export interface ArtInspectorModel {
 export interface CreateArtInspectorModelOptions {
   document: ChemDraftDocument;
   selectedGraphicObjects: readonly GraphicObject[];
+  selectedVisualObjects?: readonly ArtInspectorStyleObject[];
   requestedPaintTarget?: ArtInspectorPaintTarget;
 }
 
 type ArtInspectorCapabilityKey = "fill" | "stroke" | "dash" | "lineEnds" | "corners";
+type ArtInspectorStyleObject = GraphicObject | MoleculeObject;
+type ArtInspectorPlannedEntry =
+  | { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }
+  | { object: MoleculeObject; plan: undefined };
 
 export function createArtInspectorModel({
   document,
   selectedGraphicObjects,
+  selectedVisualObjects,
   requestedPaintTarget = "fill"
 }: CreateArtInspectorModelOptions): ArtInspectorModel {
   void document;
 
-  const graphics = [...selectedGraphicObjects];
-  const selectedCount = graphics.length;
-  const planned = graphics.map((object) => ({
-    object,
-    plan: planNativeArtVisual(object, { coordinateSpace: "local" })
-  }));
-  const supportsFill = planned.map(({ plan }) => plan.capabilities.supportsFill);
-  const supportsStroke = planned.map(({ plan }) => plan.capabilities.supportsStroke);
-  const supportsDash = planned.map(({ plan }) => plan.capabilities.supportsDash);
-  const supportsLineEnds = planned.map(({ plan }) => plan.capabilities.supportsLineCap);
-  const supportsCorners = planned.map(({ plan }) => plan.capabilities.supportsLineJoin);
+  const styleObjects = selectedVisualObjects ? [...selectedVisualObjects] : [...selectedGraphicObjects];
+  const graphics = styleObjects.filter((object): object is GraphicObject => object.type === "graphic");
+  const selectedCount = styleObjects.length;
+  const planned = styleObjects.map((object): ArtInspectorPlannedEntry => {
+    if (object.type === "graphic") {
+      return { object, plan: planNativeArtVisual(object, { coordinateSpace: "local" }) };
+    }
+    return { object, plan: undefined };
+  });
+  const supportsFill = planned.map((entry) => entry.plan?.capabilities.supportsFill === true);
+  const supportsStroke = planned.map((entry) => entry.plan?.capabilities.supportsStroke === true);
+  const supportsDash = planned.map((entry) => entry.plan?.capabilities.supportsDash === true);
+  const supportsLineEnds = planned.map((entry) => entry.plan?.capabilities.supportsLineCap === true);
+  const supportsCorners = planned.map((entry) => entry.plan?.capabilities.supportsLineJoin === true);
   const fillSupportedCount = countSupported(supportsFill);
   const strokeSupportedCount = countSupported(supportsStroke);
   const dashSupportedCount = countSupported(supportsDash);
@@ -140,18 +150,18 @@ export function createArtInspectorModel({
       : requestedPaintTarget;
 
   const values = {
-    fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarPaintType(object)),
-    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarPaintType(object)),
-    fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => graphicFillToolbarColor(object)),
-    strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => graphicStrokeToolbarColor(object)),
+    fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarPaintType(object) : undefined),
+    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : undefined),
+    fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarColor(object) : undefined),
+    strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarColor(object) : undefined),
     objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
-    fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => metadataNumberValue(object.style.fillOpacity, 1)),
-    strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeOpacity, 1)),
-    effect: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => graphicToolbarEffectValue(object)),
-    strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeWidth, 1.5)),
-    dash: uniformSupportedValue(planned, supportsDash, ({ object }) => metadataStringValue(object.style.strokeDasharray) ?? "solid"),
-    lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan.stroke.lineCap),
-    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan.stroke.lineJoin)
+    fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.fillOpacity, 1) : undefined),
+    strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.strokeOpacity, 1) : undefined),
+    effect: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => visualToolbarEffectValue(object)),
+    strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.strokeWidth, 1.5) : undefined),
+    dash: uniformSupportedValue(planned, supportsDash, ({ object }) => object.type === "graphic" ? metadataStringValue(object.style.strokeDasharray) ?? "solid" : undefined),
+    lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan?.stroke.lineCap),
+    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan?.stroke.lineJoin)
   };
   const effectControls = {
     shadow: effectModelForKind(planned, "shadow", selectedCount),
@@ -161,6 +171,7 @@ export function createArtInspectorModel({
 
   return {
     selectedCount,
+    selectedObjectIds: styleObjects.map((object) => object.id),
     selectedGraphicIds: graphics.map((object) => object.id),
     selectedGraphicKinds: uniqueGraphicKinds(graphics),
     effectKinds: (["shadow", "glow", "sketch"] as const).filter((kind) => effectControls[kind].presentCount > 0),
@@ -211,6 +222,24 @@ export function selectedGraphicObjectsForArtInspector(document: ChemDraftDocumen
   );
 }
 
+export function selectedVisualObjectsForArtInspector(
+  document: ChemDraftDocument,
+  options: { excludeMoleculeObjectId?: string } = {}
+): ArtInspectorStyleObject[] {
+  const selectedIds = new Set(document.selection.objectIds);
+  if (selectedIds.size === 0) {
+    return [];
+  }
+
+  return document.pages.flatMap((page) =>
+    page.objects.filter((object): object is ArtInspectorStyleObject =>
+      (object.type === "graphic" || object.type === "molecule") &&
+      selectedIds.has(object.id) &&
+      object.id !== options.excludeMoleculeObjectId
+    )
+  );
+}
+
 function countSupported(values: readonly boolean[]): number {
   return values.filter(Boolean).length;
 }
@@ -240,7 +269,7 @@ function uniformSupportedValue<TEntry, T>(
 }
 
 function skippedObjectIdsByControl(
-  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[]
+  planned: readonly ArtInspectorPlannedEntry[]
 ): ArtInspectorSkippedObjectIdsByControl {
   const fill = skippedForControl(planned, "fill");
   const lineEnds = skippedForControl(planned, "lineEnds");
@@ -253,10 +282,13 @@ function skippedObjectIdsByControl(
 }
 
 function skippedForControl(
-  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[],
+  planned: readonly ArtInspectorPlannedEntry[],
   control: ArtInspectorCapabilityKey
 ): ArtInspectorSkippedObject[] {
   return planned.flatMap<ArtInspectorSkippedObject>(({ object, plan }) => {
+    if (!plan) {
+      return [];
+    }
     if (control === "fill" && !plan.capabilities.supportsFill) {
       return [{
         objectId: object.id,
@@ -309,12 +341,14 @@ function representativeGradientStopColor(paint: Extract<GraphicPaint, { kind: "l
 }
 
 function gradientModelForTarget(
-  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[],
+  planned: readonly ArtInspectorPlannedEntry[],
   supported: readonly boolean[],
   target: ArtInspectorPaintTarget
 ): ArtInspectorGradientModel {
   const paints = planned
-    .filter((_, index) => supported[index])
+    .filter((entry, index): entry is Extract<ArtInspectorPlannedEntry, { object: GraphicObject }> =>
+      entry.object.type === "graphic" && supported[index]
+    )
     .map(({ object }) => target === "fill" ? object.style.fillPaint : object.style.strokePaint);
   if (paints.length === 0) {
     return { paintType: null, stops: [], mixed: false, editable: false, canAddStop: false, canDeleteStop: false };
@@ -392,8 +426,8 @@ function graphicStrokeToolbarPaintType(object: GraphicObject): ArtInspectorPaint
   return metadataStringValue(object.style.strokeColor)?.toLowerCase() === "none" ? "none" : "solid";
 }
 
-function graphicToolbarEffectValue(object: GraphicObject): ArtInspectorEffectValue {
-  const effectKinds = graphicEffectsForToolbar(object).map((effect) => effect.kind);
+function visualToolbarEffectValue(object: ArtInspectorStyleObject): ArtInspectorEffectValue {
+  const effectKinds = visualEffectsForToolbar(object).map((effect) => effect.kind);
   const uniqueEffectKinds = [...new Set(effectKinds)];
   if (uniqueEffectKinds.length === 0) {
     return "none";
@@ -402,13 +436,13 @@ function graphicToolbarEffectValue(object: GraphicObject): ArtInspectorEffectVal
 }
 
 function effectModelForKind(
-  planned: readonly { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }[],
+  planned: readonly ArtInspectorPlannedEntry[],
   kind: ArtInspectorEffectKind,
   selectedCount: number
 ): ArtInspectorEffectModel {
   const entries = planned.map(({ object }) => ({
     object,
-    effect: graphicEffectsForToolbar(object).find((candidate) => candidate.kind === kind)
+    effect: visualEffectsForToolbar(object).find((candidate) => candidate.kind === kind)
   }));
   const presentCount = entries.filter((entry) => entry.effect).length;
   const supported = entries.map((entry) => entry.effect !== undefined);
@@ -417,7 +451,7 @@ function effectModelForKind(
     presentCount,
     presentAll: selectedCount > 0 && presentCount === selectedCount,
     color: presentCount > 0
-      ? uniformSupportedValue(entries, supported, ({ object, effect }) => effectColorForToolbar(object, kind, effect))
+      ? uniformSupportedValue(entries, supported, ({ effect }) => effectColorForToolbar(kind, effect))
       : { value: defaultEffectColor(kind), mixed: false },
     opacity: presentCount > 0
       ? uniformSupportedValue(entries, supported, ({ effect }) => effectOpacityForToolbar(kind, effect))
@@ -428,17 +462,13 @@ function effectModelForKind(
   };
 }
 
-function graphicEffectsForToolbar(object: GraphicObject): NonNullable<GraphicObject["style"]["effects"]> {
-  const explicitEffects = Array.isArray(object.style.effects) ? object.style.effects : [];
-  return object.style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow")
-    ? [{ kind: "shadow" }, ...explicitEffects]
-    : explicitEffects;
+function visualEffectsForToolbar(object: ArtInspectorStyleObject): VisualEffect[] {
+  return visualEffectsForStyle(object.style);
 }
 
 function effectColorForToolbar(
-  object: GraphicObject,
   kind: ArtInspectorEffectKind,
-  effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
+  effect: VisualEffect | undefined
 ): string {
   return normalizeToolbarHexColor(effect?.color) ??
     defaultEffectColor(kind);
@@ -446,14 +476,14 @@ function effectColorForToolbar(
 
 function effectOpacityForToolbar(
   kind: ArtInspectorEffectKind,
-  effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
+  effect: VisualEffect | undefined
 ): number {
   return clampToolbarUnit(typeof effect?.opacity === "number" ? effect.opacity : defaultEffectOpacity(kind));
 }
 
 function effectSizeForToolbar(
   kind: ArtInspectorEffectKind,
-  effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
+  effect: VisualEffect | undefined
 ): number {
   if (kind === "shadow") {
     const offsetX = Math.abs(typeof effect?.offsetX === "number" ? effect.offsetX : 6);

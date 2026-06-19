@@ -86,7 +86,7 @@ export const GraphicPaintSchema = z.discriminatedUnion("kind", [
     .strict()
 ]);
 
-export const GraphicEffectSchema = z
+export const VisualEffectSchema = z
   .object({
     kind: z.enum(["shadow", "glow", "sketch"]),
     color: z.string().optional(),
@@ -99,6 +99,18 @@ export const GraphicEffectSchema = z
     bowing: z.number().finite().nonnegative().optional(),
     strokeWidth: z.number().finite().positive().optional(),
     seed: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const GraphicEffectSchema = VisualEffectSchema;
+
+export const VisualEffectStyleSchema = z
+  .object({
+    effect: z.enum(["shadow", "reflection"]).optional(),
+    visualEffects: z.array(VisualEffectSchema).optional(),
+    inactiveVisualEffects: z.array(VisualEffectSchema).optional(),
+    effects: z.array(VisualEffectSchema).optional(),
+    inactiveEffects: z.array(VisualEffectSchema).optional()
   })
   .strict();
 
@@ -143,6 +155,8 @@ export const GraphicObjectStyleSchema = z
     strokeMiterLimit: z.number().finite().positive().optional(),
     fillMode: z.enum(["solid", "gloss"]).optional(),
     effect: z.enum(["shadow", "reflection"]).optional(),
+    visualEffects: z.array(VisualEffectSchema).optional(),
+    inactiveVisualEffects: z.array(VisualEffectSchema).optional(),
     effects: z.array(GraphicEffectSchema).optional(),
     inactiveEffects: z.array(GraphicEffectSchema).optional(),
     tiltXDegrees: z.number().finite().optional(),
@@ -563,7 +577,9 @@ export type TextObject = z.infer<typeof TextObjectSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
 export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
-export type GraphicEffect = z.infer<typeof GraphicEffectSchema>;
+export type VisualEffect = z.infer<typeof VisualEffectSchema>;
+export type VisualEffectStyle = z.infer<typeof VisualEffectStyleSchema>;
+export type GraphicEffect = VisualEffect;
 export type GraphicMarker = z.infer<typeof GraphicMarkerSchema>;
 export type GraphicPathNode = z.infer<typeof GraphicPathNodeSchema>;
 export type GraphicFreehandPoint = z.infer<typeof GraphicFreehandPointSchema>;

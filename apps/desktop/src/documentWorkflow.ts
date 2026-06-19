@@ -6,13 +6,18 @@ import {
   deleteGraphicPathSegment,
   splitGraphicPathSegmentAtPoint,
   createGraphicFreehandPathCache,
+  defaultVisualEffectForKind,
   graphicCornerRadiusEditPoint,
   graphicObjectSupportsBooleanOperation,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
+  inactiveVisualEffectsForStyle,
+  mergeVisualEffectsByKind,
   planNativeArtVisual,
   planNativeArtBooleanOperation,
   prepareGraphicPathForDirectEdit as prepareGraphicPathObjectForDirectEdit,
+  visualEffectsForStyle,
+  visualStyleWithEffects,
   type NativeArtPoint,
   type NativeArtBooleanOperation,
   type NativeArtBooleanSkippedInput,
@@ -20,7 +25,8 @@ import {
   type NativeArtMarkerHandleId,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints,
-  type GraphicPathNodeEditPoints
+  type GraphicPathNodeEditPoints,
+  type VisualEffectKind
 } from "@chemdraft/art-engine";
 import {
   applyPatch,
@@ -39,7 +45,6 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
-  type GraphicEffect,
   type GraphicFreehandOptions,
   type GraphicFreehandPoint,
   type GraphicObjectData,
@@ -56,7 +61,8 @@ import {
   type PageOrientation,
   type PageSizePresetId,
   type TextSpan,
-  type TextObject
+  type TextObject,
+  type VisualEffect
 } from "@chemdraft/chem-core";
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
@@ -256,7 +262,7 @@ export interface NativeGraphicPathSegmentSplit {
 }
 export type NativeGraphicMarkerHandleId = NativeArtMarkerHandleId;
 export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
-export type GraphicStyleEffectKind = GraphicEffect["kind"] | "none";
+export type GraphicStyleEffectKind = VisualEffectKind | "none";
 export type GraphicStyleAdjustableEffectKind = Exclude<GraphicStyleEffectKind, "none">;
 
 const artOutlineStyle = {
@@ -3705,6 +3711,26 @@ export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] 
   );
 }
 
+export function selectedVisualEffectObjectIds(
+  document: ChemDraftDocument,
+  options: { excludeMoleculeObjectId?: string } = {}
+): string[] {
+  const selectedIds = new Set(document.selection.objectIds);
+  if (selectedIds.size === 0) {
+    return [];
+  }
+
+  return document.pages.flatMap((page) =>
+    page.objects
+      .filter((object): object is GraphicObject | MoleculeObject =>
+        (object.type === "graphic" || object.type === "molecule") &&
+        selectedIds.has(object.id) &&
+        object.id !== options.excludeMoleculeObjectId
+      )
+      .map((object) => object.id)
+  );
+}
+
 export interface NativeArtBooleanDocumentResult {
   document: ChemDraftDocument;
   changed: boolean;
@@ -4232,21 +4258,30 @@ export function applyGraphicObjectEffectToSelection(
   effectKind: GraphicStyleEffectKind,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const { effect: _legacyEffect, effects: _effects, inactiveEffects: _inactiveEffects, ...baseStyle } = object.style;
-    const existingEffects = graphicEffectsForStyle(object.style);
-    const inactiveEffects = inactiveGraphicEffectsForStyle(object.style);
+  return applyVisualEffectToSelection(document, effectKind, objectIds);
+}
+
+export function applyVisualEffectToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleEffectKind,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateVisualEffectObjects(document, objectIds, (object) => {
+    const baseStyle = visualEffectBaseStyle(object.style);
+    const existingEffects = visualEffectsForStyle(object.style);
+    const inactiveEffects = inactiveVisualEffectsForStyle(object.style);
     if (effectKind === "none") {
-      return graphicStyleWithEffects(baseStyle, [], mergeGraphicEffectsByKind(inactiveEffects, existingEffects));
+      return visualStyleForObject(object, baseStyle, [], mergeVisualEffectsByKind(inactiveEffects, existingEffects));
     }
 
     if (existingEffects.some((effect) => effect.kind === effectKind)) {
-      return graphicStyleWithEffects(baseStyle, existingEffects, inactiveEffects);
+      return visualStyleForObject(object, baseStyle, existingEffects, inactiveEffects);
     }
 
     const restoredEffect = inactiveEffects.find((effect) => effect.kind === effectKind) ??
-      defaultGraphicEffectForKind(object, effectKind);
-    return graphicStyleWithEffects(
+      defaultVisualEffectForKind(object.id, effectKind);
+    return visualStyleForObject(
+      object,
       baseStyle,
       [...existingEffects, restoredEffect],
       inactiveEffects.filter((effect) => effect.kind !== effectKind)
@@ -4259,18 +4294,27 @@ export function deactivateGraphicObjectEffectForSelection(
   effectKind: GraphicStyleAdjustableEffectKind,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const existingEffects = graphicEffectsForStyle(object.style);
+  return deactivateVisualEffectForSelection(document, effectKind, objectIds);
+}
+
+export function deactivateVisualEffectForSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateVisualEffectObjects(document, objectIds, (object) => {
+    const existingEffects = visualEffectsForStyle(object.style);
     const removedEffect = existingEffects.find((effect) => effect.kind === effectKind);
     if (!removedEffect) {
       return object.style;
     }
 
-    const { effect: _legacyEffect, effects: _effects, inactiveEffects: _inactiveEffects, ...baseStyle } = object.style;
-    return graphicStyleWithEffects(
+    const baseStyle = visualEffectBaseStyle(object.style);
+    return visualStyleForObject(
+      object,
       baseStyle,
       existingEffects.filter((effect) => effect.kind !== effectKind),
-      mergeGraphicEffectsByKind(inactiveGraphicEffectsForStyle(object.style), [removedEffect])
+      mergeVisualEffectsByKind(inactiveVisualEffectsForStyle(object.style), [removedEffect])
     );
   });
 }
@@ -4281,7 +4325,16 @@ export function applyGraphicObjectEffectColorToSelection(
   color: string,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
-  return updateGraphicObjectEffectForSelection(document, effectKind, objectIds, (effect) => ({
+  return applyVisualEffectColorToSelection(document, effectKind, color, objectIds);
+}
+
+export function applyVisualEffectColorToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  color: string,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateVisualEffectForSelection(document, effectKind, objectIds, (effect) => ({
     ...effect,
     color
   }));
@@ -4293,7 +4346,16 @@ export function applyGraphicObjectEffectOpacityToSelection(
   opacity: number,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
-  return updateGraphicObjectEffectForSelection(document, effectKind, objectIds, (effect) => ({
+  return applyVisualEffectOpacityToSelection(document, effectKind, opacity, objectIds);
+}
+
+export function applyVisualEffectOpacityToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  opacity: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateVisualEffectForSelection(document, effectKind, objectIds, (effect) => ({
     ...effect,
     opacity: clampWorkflowUnit(opacity)
   }));
@@ -4305,8 +4367,17 @@ export function applyGraphicObjectEffectSizeToSelection(
   size: number,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
+  return applyVisualEffectSizeToSelection(document, effectKind, size, objectIds);
+}
+
+export function applyVisualEffectSizeToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  size: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
   const value = clampWorkflowUnit(size);
-  return updateGraphicObjectEffectForSelection(document, effectKind, objectIds, (effect) => {
+  return updateVisualEffectForSelection(document, effectKind, objectIds, (effect) => {
     if (effectKind === "shadow") {
       const sizePx = value * 24;
       return {
@@ -5751,82 +5822,49 @@ function hasGraphicStyleKey(style: Partial<GraphicObjectStyle>, key: keyof Graph
   return Object.prototype.hasOwnProperty.call(style, key);
 }
 
-function graphicEffectsForStyle(style: GraphicObjectStyle): GraphicEffect[] {
-  const effects = Array.isArray(style.effects) ? style.effects : [];
-  return style.effect === "shadow" && !effects.some((effect) => effect.kind === "shadow")
-    ? [{ kind: "shadow" }, ...effects]
-    : [...effects];
+function visualEffectBaseStyle(style: Record<string, unknown>): Record<string, unknown> {
+  const {
+    effect: _legacyEffect,
+    visualEffects: _visualEffects,
+    inactiveVisualEffects: _inactiveVisualEffects,
+    effects: _effects,
+    inactiveEffects: _inactiveEffects,
+    ...baseStyle
+  } = style;
+  return baseStyle;
 }
 
-function inactiveGraphicEffectsForStyle(style: GraphicObjectStyle): GraphicEffect[] {
-  return Array.isArray(style.inactiveEffects) ? [...style.inactiveEffects] : [];
+function visualStyleForObject(
+  object: GraphicObject | MoleculeObject,
+  baseStyle: Record<string, unknown>,
+  effects: readonly VisualEffect[],
+  inactiveEffects: readonly VisualEffect[]
+): Record<string, unknown> {
+  return visualStyleWithEffects(baseStyle, effects, inactiveEffects, {
+    includeGraphicAliases: object.type === "graphic"
+  });
 }
 
-function mergeGraphicEffectsByKind(
-  existingEffects: readonly GraphicEffect[],
-  incomingEffects: readonly GraphicEffect[]
-): GraphicEffect[] {
-  return [...existingEffects, ...incomingEffects].reduce<GraphicEffect[]>((effects, effect) => {
-    const existingIndex = effects.findIndex((candidate) => candidate.kind === effect.kind);
-    if (existingIndex >= 0) {
-      effects[existingIndex] = effect;
-      return effects;
-    }
-    return [...effects, effect];
-  }, []);
-}
-
-function graphicStyleWithEffects(
-  baseStyle: Omit<GraphicObjectStyle, "effect" | "effects" | "inactiveEffects">,
-  effects: readonly GraphicEffect[],
-  inactiveEffects: readonly GraphicEffect[]
-): GraphicObjectStyle {
-  return {
-    ...baseStyle,
-    ...(effects.length > 0 ? { effects: [...effects] } : {}),
-    ...(inactiveEffects.length > 0 ? { inactiveEffects: [...inactiveEffects] } : {})
-  };
-}
-
-function defaultGraphicEffectForKind(object: GraphicObject, kind: Exclude<GraphicStyleEffectKind, "none">): GraphicEffect {
-  if (kind === "shadow") {
-    return { kind, color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 };
-  }
-  if (kind === "glow") {
-    return { kind, color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 };
-  }
-  return { kind, color: "#111111", seed: graphicStyleEffectSeed(object.id, kind), roughness: 1.25, bowing: 0.8, strokeWidth: 1.5 };
-}
-
-function updateGraphicObjectEffectForSelection(
+function updateVisualEffectForSelection(
   document: ChemDraftDocument,
   effectKind: GraphicStyleAdjustableEffectKind,
   objectIds: readonly string[],
-  updateEffect: (effect: GraphicEffect, object: GraphicObject) => GraphicEffect
+  updateEffect: (effect: VisualEffect, object: GraphicObject | MoleculeObject) => VisualEffect
 ): ChemDraftDocument {
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const { effect: _legacyEffect, effects: _effects, inactiveEffects: _inactiveEffects, ...baseStyle } = object.style;
-    const existingEffects = graphicEffectsForStyle(object.style);
-    const inactiveEffects = inactiveGraphicEffectsForStyle(object.style);
+  return updateVisualEffectObjects(document, objectIds, (object) => {
+    const baseStyle = visualEffectBaseStyle(object.style);
+    const existingEffects = visualEffectsForStyle(object.style);
+    const inactiveEffects = inactiveVisualEffectsForStyle(object.style);
     const nextEffects = existingEffects.some((effect) => effect.kind === effectKind)
       ? existingEffects.map((effect) => effect.kind === effectKind ? updateEffect(effect, object) : effect)
-      : [...existingEffects, updateEffect(defaultGraphicEffectForKind(object, effectKind), object)];
-    return graphicStyleWithEffects(
+      : [...existingEffects, updateEffect(defaultVisualEffectForKind(object.id, effectKind), object)];
+    return visualStyleForObject(
+      object,
       baseStyle,
       nextEffects,
       inactiveEffects.filter((effect) => effect.kind !== effectKind)
     );
   });
-}
-
-function graphicStyleEffectSeed(objectId: string, kind: Exclude<GraphicStyleEffectKind, "none">): number {
-  let hash = 2166136261;
-  const value = `${objectId}:${kind}`;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % 2147483646 + 1;
 }
 
 function updateGraphicObjects(
@@ -5848,6 +5886,38 @@ function updateGraphicObjects(
 
       const nextStyle = updateStyle(object);
       return graphicStylesEqual(object.style, nextStyle)
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              style: nextStyle
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+function updateVisualEffectObjects(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  updateStyle: (object: GraphicObject | MoleculeObject) => Record<string, unknown>
+): ChemDraftDocument {
+  const targetIds = new Set(objectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if ((object.type !== "graphic" && object.type !== "molecule") || !targetIds.has(object.id)) {
+        return [];
+      }
+
+      const nextStyle = updateStyle(object);
+      return JSON.stringify(object.style) === JSON.stringify(nextStyle)
         ? []
         : [{
             op: "updateObject" as const,

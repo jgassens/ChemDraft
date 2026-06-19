@@ -126,6 +126,34 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("native-crossing-hit-target");
   });
 
+  it("exports shared visual effect SVG for native molecules", () => {
+    const molecule = {
+      ...nativeBondMolecule(),
+      id: "mol_svg_effects",
+      style: {
+        source: "chemdraft-native-drawing",
+        visualEffects: [
+          { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 },
+          { kind: "glow", color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 },
+          { kind: "sketch", color: "#111111", seed: 713, roughness: 1.25, bowing: 0.8, strokeWidth: 1.5 }
+        ]
+      }
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Molecule SVG Effects", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+    const result = exportDocumentToSvg(document);
+
+    expect(result.contents).toContain('id="molecule-effects-mol_svg_effects"');
+    expect(result.contents).toContain('flood-color="#fdd835"');
+    expect(result.contents).toContain('data-molecule-effect-source="true" filter="url(#molecule-effects-mol_svg_effects)"');
+    expect(result.contents).toContain('data-molecule-effect="sketch"');
+    expect(result.contents).toContain('data-object-id="mol_svg_effects"');
+    expect(result.contents).not.toContain("native-bond-hit-target");
+  });
+
   it("returns fallback warnings and can embed warning metadata on request", () => {
     const unknownObject = {
       id: "unknown_svg_001",

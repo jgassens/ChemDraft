@@ -15,7 +15,11 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { planNativeArtVisual as planNativeArtVisualFromArtEngine } from "@chemdraft/art-engine";
+import {
+  planNativeArtVisual as planNativeArtVisualFromArtEngine,
+  visualEffectPlansForStyle,
+  visualEffectsForStyle
+} from "@chemdraft/art-engine";
 import type {
   NativeArtEffectPlan,
   NativeArtFillPlan,
@@ -820,6 +824,18 @@ interface PageBondLineSegment {
   doubleBondSide?: DoubleBondSide;
 }
 
+type PageMoleculeBondSegment = PageBondLineSegment & { bond: CoreMoleculeBond; key: string };
+
+interface PageMoleculeBondSegmentGroup {
+  bond: CoreMoleculeBond;
+  segments: PageMoleculeBondSegment[];
+}
+
+interface PageMoleculeAtomLabel {
+  atom: MoleculeAtom;
+  label: string;
+}
+
 export interface BondDepthCandidate {
   ref: BondRef;
   objectLayerIndex: number;
@@ -1291,12 +1307,12 @@ function planNativeMoleculeGraphSvg(
 ): PageSvgElementFragment {
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
-  const atomLabels = object.atoms.flatMap((atom) => {
+  const atomLabels: PageMoleculeAtomLabel[] = object.atoms.flatMap((atom) => {
     const label = atomDisplayLabel(atom, object.bonds);
     return label ? [{ atom, label }] : [];
   });
   const labelByAtomId = new Map(atomLabels.map(({ atom, label }) => [atom.id, label]));
-  const bondSegmentGroups = object.bonds.flatMap((bond) => {
+  const bondSegmentGroups: PageMoleculeBondSegmentGroup[] = object.bonds.flatMap((bond) => {
     const fromAtom = atomById.get(bond.fromAtomId);
     const toAtom = atomById.get(bond.toAtomId);
     if (!fromAtom || !toAtom) {
@@ -1322,6 +1338,98 @@ function planNativeMoleculeGraphSvg(
   const primitive = moleculeDrawingPrimitive(object) === "single-bond"
     ? "single-bond"
     : "connected-carbon-chain";
+  const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
+    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, atomLabels, drawingStyle, gapsByBondKey)
+    : undefined;
+  const effects = visualEffectPlansForStyle({
+    objectId: object.id,
+    style: object.style,
+    sketchBasePathD
+  });
+  const effectFilterId = `molecule-effects-${object.id}`;
+  const bondLayerFragments = bondSegmentGroups.map(({ bond, segments }) =>
+    elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
+      "data-bond-layer-id": bond.id
+    }, [
+      ...segments.map((segment) =>
+        elementFragment("line", `bond-hit-${object.id}-${segment.key}`, {
+          class: "native-bond-hit-target",
+          "data-hit-target": "bond",
+          "data-bond-id": segment.bond.id,
+          x1: segment.x1,
+          y1: segment.y1,
+          x2: segment.x2,
+          y2: segment.y2
+        })
+      ),
+      ...segments.flatMap((segment) =>
+        nativeBondHoverDecoratorFragments(
+          segment,
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
+        )
+      ),
+      ...segments.flatMap((segment) =>
+        nativeBondSegmentFragments(
+          object,
+          segment,
+          drawingStyle,
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
+        )
+      )
+    ])
+  );
+  const labelBackgroundFragments = atomLabels.map(({ atom, label }) => {
+    const box = atomLabelBox(atom, label, drawingStyle);
+    return elementFragment("rect", `label-background-${object.id}-${atom.id}`, {
+      class: "native-atom-label-background",
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      fill: drawingStyle.atomLabelBackgroundColor
+    });
+  });
+  const labelFragments = atomLabels.map(({ atom, label }) => {
+    const anchor = atomLabelAnchor(atom);
+    return elementFragment("g", `label-${object.id}-${atom.id}`, {
+      class: "native-atom-label",
+      "data-atom-label": label,
+      transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
+      fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
+      "font-family": drawingStyle.atomLabelFontFamily,
+      "font-size": drawingStyle.atomLabelFontSizePx,
+      "font-weight": drawingStyle.atomLabelFontWeight
+    }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
+      elementFragment("text", `label-run-${object.id}-${atom.id}-${index}`, {
+        class: "native-atom-label-run",
+        "data-atom-label-run": run.script === "superscript" ? "charge" : run.script,
+        x: run.x,
+        y: run.y,
+        "dominant-baseline": "central",
+        "text-anchor": run.textAnchor,
+        "font-size": atomLabelRunFontSize(run.script, drawingStyle)
+      }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
+    ));
+  });
+  const atomHitFragments = object.atoms.map((atom) =>
+    elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
+      class: "native-atom-hit-target",
+      "data-hit-target": "atom",
+      "data-atom-id": atom.id,
+      cx: atom.x,
+      cy: atom.y,
+      r: 8
+    })
+  );
+  const effectSource = moleculeEffectSourceFragment(
+    object,
+    effects,
+    effectFilterId,
+    bondSegmentGroups,
+    atomLabels,
+    drawingStyle,
+    gapsByBondKey
+  );
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     "data-chem-primitive": primitive,
@@ -1331,85 +1439,168 @@ function planNativeMoleculeGraphSvg(
     "data-style-preset-id": drawingStyle.stylePresetId,
     transform: rotationTransform(object)
   }), [
-    ...bondSegmentGroups.map(({ bond, segments }) =>
-      elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
-        "data-bond-layer-id": bond.id
-      }, [
-        ...segments.map((segment) =>
-          elementFragment("line", `bond-hit-${object.id}-${segment.key}`, {
-            class: "native-bond-hit-target",
-            "data-hit-target": "bond",
-            "data-bond-id": segment.bond.id,
-            x1: segment.x1,
-            y1: segment.y1,
-            x2: segment.x2,
-            y2: segment.y2
-          })
-        ),
-        ...segments.flatMap((segment) =>
-          nativeBondHoverDecoratorFragments(
-            segment,
-            gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
-          )
-        ),
-        ...segments.flatMap((segment) =>
-          nativeBondSegmentFragments(
-            object,
-            segment,
-            drawingStyle,
-            gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
-          )
-        )
-      ])
-    ),
-    ...atomLabels.map(({ atom, label }) => {
-      const box = atomLabelBox(atom, label, drawingStyle);
-      return elementFragment("rect", `label-background-${object.id}-${atom.id}`, {
-        class: "native-atom-label-background",
-        x: box.x,
-        y: box.y,
-        width: box.width,
-        height: box.height,
-        fill: drawingStyle.atomLabelBackgroundColor
-      });
+    ...svgEffectDefinitionFragmentsForEffects(effects, effectFilterId),
+    ...(effectSource ? [effectSource] : []),
+    ...bondLayerFragments,
+    ...labelBackgroundFragments,
+    ...labelFragments,
+    ...svgSketchEffectFragmentsForEffects(effects, object.id, {
+      className: "native-molecule-sketch",
+      dataAttribute: "data-molecule-effect",
+      keyPrefix: "molecule-sketch"
     }),
-    ...atomLabels.map(({ atom, label }) => {
-      const anchor = atomLabelAnchor(atom);
-      return elementFragment("g", `label-${object.id}-${atom.id}`, {
-        class: "native-atom-label",
-        "data-atom-label": label,
-        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
-        fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
-        "font-family": drawingStyle.atomLabelFontFamily,
-        "font-size": drawingStyle.atomLabelFontSizePx,
-        "font-weight": drawingStyle.atomLabelFontWeight
-      }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
-        elementFragment("text", `label-run-${object.id}-${atom.id}-${index}`, {
-          class: "native-atom-label-run",
-          "data-atom-label-run": run.script === "superscript" ? "charge" : run.script,
-          x: run.x,
-          y: run.y,
-          "dominant-baseline": "central",
-          "text-anchor": run.textAnchor,
-          "font-size": atomLabelRunFontSize(run.script, drawingStyle)
-        }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
-      ));
-    }),
-    ...object.atoms.map((atom) =>
-      elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
-        class: "native-atom-hit-target",
-        "data-hit-target": "atom",
-        "data-atom-id": atom.id,
-        cx: atom.x,
-        cy: atom.y,
-        r: 8
-      })
-    )
+    ...atomHitFragments
   ]);
 }
 
+function moleculeEffectSourceFragment(
+  object: MoleculeObject,
+  effects: readonly NativeArtEffectPlan[],
+  effectFilterId: string,
+  bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
+  atomLabels: readonly PageMoleculeAtomLabel[],
+  drawingStyle: NativeDrawingStyle,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+): PageSvgElementFragment | undefined {
+  const hasFilter = effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
+  if (!hasFilter) {
+    return undefined;
+  }
+
+  const children = [
+    ...bondSegmentGroups.flatMap(({ bond, segments }) =>
+      segments.flatMap((segment) =>
+        moleculeBondEffectSourceFragments(
+          object,
+          segment,
+          drawingStyle,
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
+        )
+      )
+    ),
+    ...moleculeAtomLabelEffectSourceFragments(object, atomLabels, drawingStyle)
+  ];
+  if (children.length === 0) {
+    return undefined;
+  }
+
+  return elementFragment("g", `molecule-effect-source-${object.id}`, {
+    class: "native-molecule-effect-source",
+    "data-molecule-effect-source": "true",
+    filter: `url(#${effectFilterId})`,
+    "pointer-events": "none"
+  }, children);
+}
+
+function moleculeBondEffectSourceFragments(
+  object: MoleculeObject,
+  segment: PageMoleculeBondSegment,
+  drawingStyle: NativeDrawingStyle,
+  crossingGaps: readonly BondCrossingGap[] = []
+): PageSvgElementFragment[] {
+  const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wedge" && segment.segment === "primary") {
+    return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
+      elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle),
+        fill: "#000000",
+        stroke: "none"
+      })
+    );
+  }
+
+  if (bondStyle === "hashed" && segment.segment === "primary") {
+    return nativeHashedWedgeSegments(segment, drawingStyle).flatMap((hash, index) =>
+      splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
+        elementFragment("line", `molecule-effect-source-bond-hash-${object.id}-${segment.key}-${index}-${visibleIndex}`, {
+          x1: visibleHash.x1,
+          y1: visibleHash.y1,
+          x2: visibleHash.x2,
+          y2: visibleHash.y2,
+          stroke: "#000000",
+          "stroke-width": drawingStyle.bondStrokeWidthPx,
+          "stroke-linecap": "butt"
+        })
+      )
+    );
+  }
+
+  return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
+    elementFragment("line", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
+      x1: visibleSegment.x1,
+      y1: visibleSegment.y1,
+      x2: visibleSegment.x2,
+      y2: visibleSegment.y2,
+      stroke: "#000000",
+      "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
+      "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
+      "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
+    })
+  );
+}
+
+function moleculeAtomLabelEffectSourceFragments(
+  object: MoleculeObject,
+  atomLabels: readonly PageMoleculeAtomLabel[],
+  drawingStyle: NativeDrawingStyle
+): PageSvgElementFragment[] {
+  return atomLabels.map(({ atom, label }) => {
+    const anchor = atomLabelAnchor(atom);
+    return elementFragment("g", `molecule-effect-source-label-${object.id}-${atom.id}`, {
+      transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
+      fill: "#000000",
+      "font-family": drawingStyle.atomLabelFontFamily,
+      "font-size": drawingStyle.atomLabelFontSizePx,
+      "font-weight": drawingStyle.atomLabelFontWeight
+    }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
+      elementFragment("text", `molecule-effect-source-label-run-${object.id}-${atom.id}-${index}`, {
+        x: run.x,
+        y: run.y,
+        "dominant-baseline": "central",
+        "text-anchor": run.textAnchor,
+        "font-size": atomLabelRunFontSize(run.script, drawingStyle)
+      }, [textFragment(`molecule-effect-source-label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
+    ));
+  });
+}
+
+function moleculeEffectSketchBasePathD(
+  object: MoleculeObject,
+  bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
+  atomLabels: readonly PageMoleculeAtomLabel[],
+  drawingStyle: NativeDrawingStyle,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+): string | undefined {
+  const bondPathParts = bondSegmentGroups.flatMap(({ bond, segments }) =>
+    segments.flatMap((segment) =>
+      splitSegmentByCrossingGaps(
+        segment,
+        gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
+      ).map((visibleSegment) => linePathD(visibleSegment))
+    )
+  );
+  const labelPathParts = atomLabels.map(({ atom, label }) => rectPathD(atomLabelBox(atom, label, drawingStyle)));
+  return [...bondPathParts, ...labelPathParts].join(" ") || undefined;
+}
+
+function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
+  return `M ${formatNumber(segment.x1)} ${formatNumber(segment.y1)} L ${formatNumber(segment.x2)} ${formatNumber(segment.y2)}`;
+}
+
+function rectPathD(rect: { x: number; y: number; width: number; height: number }): string {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  return [
+    `M ${formatNumber(rect.x)} ${formatNumber(rect.y)}`,
+    `H ${formatNumber(right)}`,
+    `V ${formatNumber(bottom)}`,
+    `H ${formatNumber(rect.x)}`,
+    "Z"
+  ].join(" ");
+}
+
 function nativeBondHoverDecoratorFragments(
-  segment: PageBondLineSegment & { bond: CoreMoleculeBond; key: string },
+  segment: PageMoleculeBondSegment,
   crossingGaps: readonly BondCrossingGap[] = []
 ): PageSvgElementFragment[] {
   return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
@@ -1427,7 +1618,7 @@ function nativeBondHoverDecoratorFragments(
 
 function nativeBondSegmentFragments(
   object: MoleculeObject,
-  segment: PageBondLineSegment & { bond: CoreMoleculeBond; key: string },
+  segment: PageMoleculeBondSegment,
   drawingStyle: NativeDrawingStyle,
   crossingGaps: readonly BondCrossingGap[] = []
 ): PageSvgElementFragment[] {
@@ -1936,16 +2127,20 @@ function svgEffectSourceAttrs(
 }
 
 function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): PageSvgFragment[] {
-  const effects = plan.effects.filter((effect): effect is Extract<NativeArtEffectPlan, { kind: "shadow" | "glow" }> =>
+  return svgEffectDefinitionFragmentsForEffects(plan.effects, id);
+}
+
+function svgEffectDefinitionFragmentsForEffects(effects: readonly NativeArtEffectPlan[], id: string): PageSvgFragment[] {
+  const filterEffects = effects.filter((effect): effect is Extract<NativeArtEffectPlan, { kind: "shadow" | "glow" }> =>
     effect.kind === "shadow" || effect.kind === "glow"
   );
-  if (effects.length === 0) {
+  if (filterEffects.length === 0) {
     return [];
   }
 
   const filterChildren: PageSvgFragment[] = [];
   const mergeInputs: string[] = [];
-  effects.forEach((effect) => {
+  filterEffects.forEach((effect) => {
     if (effect.kind === "shadow") {
       const blurResult = `${id}-shadow-blur`;
       const offsetResult = `${id}-shadow-offset`;
@@ -2032,15 +2227,33 @@ function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): Pa
 }
 
 function svgSketchEffectFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
-  const sketch = plan.effects.find((effect) => effect.kind === "sketch");
+  const transform = plan.projectedShapePathD ? undefined : plan.projectionTransform;
+  return svgSketchEffectFragmentsForEffects(plan.effects, objectId, {
+    className: "graphic-glyph-sketch",
+    dataAttribute: "data-graphic-effect",
+    keyPrefix: "graphic-sketch",
+    transform
+  });
+}
+
+function svgSketchEffectFragmentsForEffects(
+  effects: readonly NativeArtEffectPlan[],
+  objectId: string,
+  options: {
+    className: string;
+    dataAttribute: string;
+    keyPrefix: string;
+    transform?: string;
+  }
+): PageSvgFragment[] {
+  const sketch = effects.find((effect) => effect.kind === "sketch");
   if (!sketch) {
     return [];
   }
 
-  const transform = plan.projectedShapePathD ? undefined : plan.projectionTransform;
-  return sketch.paths.map((path, index) => elementFragment("path", `graphic-sketch-${objectId}-${index}`, {
-    class: "graphic-glyph-sketch",
-    "data-graphic-effect": "sketch",
+  return sketch.paths.map((path, index) => elementFragment("path", `${options.keyPrefix}-${objectId}-${index}`, {
+    class: options.className,
+    [options.dataAttribute]: "sketch",
     d: path.d,
     fill: path.fill ?? "none",
     stroke: path.stroke,
@@ -2048,7 +2261,7 @@ function svgSketchEffectFragments(plan: NativeArtVisualPlan, objectId: string): 
     "stroke-opacity": sketch.opacity === 1 ? undefined : sketch.opacity,
     "stroke-linecap": "round",
     "stroke-linejoin": "round",
-    transform,
+    transform: options.transform,
     "pointer-events": "none"
   }));
 }

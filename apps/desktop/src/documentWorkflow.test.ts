@@ -11,7 +11,8 @@ import {
   type ElectronMarkObject,
   type GraphicObject,
   type MoleculeObject,
-  type TextObject
+  type TextObject,
+  type VisualEffect
 } from "@chemdraft/chem-core";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
@@ -26,7 +27,12 @@ import {
   applyGraphicObjectEffectOpacityToSelection,
   applyGraphicObjectEffectSizeToSelection,
   applyGraphicObjectEffectToSelection,
+  applyVisualEffectColorToSelection,
+  applyVisualEffectOpacityToSelection,
+  applyVisualEffectSizeToSelection,
+  applyVisualEffectToSelection,
   deactivateGraphicObjectEffectForSelection,
+  deactivateVisualEffectForSelection,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOffsetForSelection,
@@ -134,6 +140,7 @@ import {
   selectionBounds,
   selectAllDocumentObjects,
   selectedGraphicObjectIds,
+  selectedVisualEffectObjectIds,
   selectedArtBooleanEligibleObjectIds,
   swapGraphicObjectFillAndStroke,
   toggleDocumentObjectSelection,
@@ -165,6 +172,14 @@ function moleculeById(document: ChemDraftDocument, objectId: string): MoleculeOb
     throw new Error(`Expected molecule "${objectId}".`);
   }
   return molecule;
+}
+
+function moleculeVisualEffects(document: ChemDraftDocument, objectId: string): VisualEffect[] | undefined {
+  return moleculeById(document, objectId).style.visualEffects as VisualEffect[] | undefined;
+}
+
+function moleculeInactiveVisualEffects(document: ChemDraftDocument, objectId: string): VisualEffect[] | undefined {
+  return moleculeById(document, objectId).style.inactiveVisualEffects as VisualEffect[] | undefined;
 }
 
 function graphicById(document: ChemDraftDocument, objectId: string): GraphicObject {
@@ -4871,6 +4886,52 @@ describe("Phase 4 document workflow", () => {
       { kind: "shadow", color: "#123456", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 }
     ]);
     expect(graphicById(restoredAfterClear, objectId).style.inactiveEffects?.map((effect) => effect.kind)).toEqual(["sketch", "glow"]);
+  });
+
+  it("applies shared visual effects to selected molecules without changing chemistry", () => {
+    const inserted = insertNativeSingleBondMolecule(
+      createPhase4Document("Native Molecule Visual Effects"),
+      { x: 260, y: 220 }
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted native molecule to be selected.");
+    }
+    const originalMolecule = moleculeById(inserted, objectId);
+
+    expect(selectedVisualEffectObjectIds(inserted)).toEqual([objectId]);
+
+    const glowing = applyVisualEffectToSelection(inserted, "glow");
+    expect(moleculeVisualEffects(glowing, objectId)).toEqual([
+      { kind: "glow", color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 }
+    ]);
+
+    const recolored = applyVisualEffectColorToSelection(glowing, "glow", "#ffee66");
+    const resized = applyVisualEffectSizeToSelection(recolored, "glow", 0.5);
+    const faded = applyVisualEffectOpacityToSelection(resized, "glow", 0.7);
+    expect(moleculeVisualEffects(faded, objectId)?.[0]).toMatchObject({
+      kind: "glow",
+      color: "#ffee66",
+      opacity: 0.7,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const disabled = deactivateVisualEffectForSelection(faded, "glow");
+    expect(moleculeVisualEffects(disabled, objectId)).toBeUndefined();
+    expect(moleculeInactiveVisualEffects(disabled, objectId)).toEqual([
+      { kind: "glow", color: "#ffee66", opacity: 0.7, blurPx: 9, spreadPx: 2 }
+    ]);
+
+    const restored = applyVisualEffectToSelection(disabled, "glow");
+    expect(moleculeVisualEffects(restored, objectId)).toEqual([
+      { kind: "glow", color: "#ffee66", opacity: 0.7, blurPx: 9, spreadPx: 2 }
+    ]);
+    const restoredMolecule = moleculeById(restored, objectId);
+    expect(restoredMolecule.atoms).toEqual(originalMolecule.atoms);
+    expect(restoredMolecule.bonds).toEqual(originalMolecule.bonds);
+    expect(restoredMolecule.structure).toBe(originalMolecule.structure);
+    expect(restoredMolecule.chemistry).toEqual(originalMolecule.chemistry);
   });
 
   it("edits rectangle corner radius through native graphic workflow helpers", () => {

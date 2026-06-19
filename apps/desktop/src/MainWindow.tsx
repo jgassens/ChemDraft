@@ -168,11 +168,11 @@ import {
   applyToolbarColorToSelection,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
-  applyGraphicObjectEffectColorToSelection,
-  deactivateGraphicObjectEffectForSelection,
-  applyGraphicObjectEffectOpacityToSelection,
-  applyGraphicObjectEffectSizeToSelection,
-  applyGraphicObjectEffectToSelection,
+  applyVisualEffectColorToSelection,
+  deactivateVisualEffectForSelection,
+  applyVisualEffectOpacityToSelection,
+  applyVisualEffectSizeToSelection,
+  applyVisualEffectToSelection,
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
@@ -231,6 +231,7 @@ import {
   resizeNativeTextObjectBox,
   resolveToolbarColorSelection,
   selectedGraphicObjectIds,
+  selectedVisualEffectObjectIds,
   rotateNativeMoleculeParts,
   rotateDocumentObject,
   rotateNativeMoleculeObjectAroundPoint,
@@ -326,7 +327,7 @@ import {
   nativeMoleculeTemplateHoverTarget,
   type TemplateHoverSample
 } from "./interaction/hitTest";
-import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
+import { createArtInspectorModel, selectedVisualObjectsForArtInspector } from "./artInspectorModel";
 
 // Re-exported so existing tests can keep importing it from "./MainWindow" while the
 // implementation lives in the pure, separately-tested interaction layer.
@@ -802,7 +803,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.9.55-codex";
+const CURRENT_BUILD_STAMP = "6.19.10.30-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -1238,11 +1239,14 @@ export function MainWindow({
   const currentArtStyle = useMemo(() => {
     const model = createArtInspectorModel({
       document,
-      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(document),
+      selectedGraphicObjects: [],
+      selectedVisualObjects: selectedVisualObjectsForArtInspector(document, {
+        excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
+      }),
       requestedPaintTarget: activeArtPaintTarget
     });
     return model.selectedCount > 0 ? model : undefined;
-  }, [activeArtPaintTarget, document]);
+  }, [activeArtPaintTarget, document, selectedNativeMoleculePart]);
   const effectiveArtPaintTarget = currentArtStyle?.activePaintTarget ?? activeArtPaintTarget;
   const currentEyedropperStatus = currentArtStyle
     ? eyedropperStatusLabel(effectiveArtPaintTarget)
@@ -2550,6 +2554,9 @@ export function MainWindow({
     }
 
     const graphicObjectIds = selectedGraphicObjectIds(currentDocument);
+    const visualEffectObjectIds = selectedVisualEffectObjectIds(currentDocument, {
+      excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
+    });
 
     const noneCommand = objectStyleNoneCommands.find((command) => command.id === commandId);
     if (noneCommand) {
@@ -2710,52 +2717,52 @@ export function MainWindow({
     const disabledEffectKind = objectEffectDisableForCommand(commandId);
     if (disabledEffectKind) {
       return {
-        document: deactivateGraphicObjectEffectForSelection(currentDocument, disabledEffectKind, graphicObjectIds),
+        document: deactivateVisualEffectForSelection(currentDocument, disabledEffectKind, visualEffectObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: `Disabled selected graphic ${disabledEffectKind} effect`
+        targeted: visualEffectObjectIds.length > 0,
+        message: `Disabled selected visual ${disabledEffectKind} effect`
       };
     }
 
     const effectKind = objectEffectForCommand(commandId);
     if (effectKind) {
       return {
-        document: applyGraphicObjectEffectToSelection(currentDocument, effectKind, graphicObjectIds),
+        document: applyVisualEffectToSelection(currentDocument, effectKind, visualEffectObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
+        targeted: visualEffectObjectIds.length > 0,
         message: effectKind === "none"
-          ? "Cleared selected graphic effects"
-          : `Applied selected graphic ${effectKind} effect`
+          ? "Cleared selected visual effects"
+          : `Applied selected visual ${effectKind} effect`
       };
     }
 
     const effectColor = objectEffectColorForCommand(commandId);
     if (effectColor) {
       return {
-        document: applyGraphicObjectEffectColorToSelection(currentDocument, effectColor.effectKind, effectColor.color, graphicObjectIds),
+        document: applyVisualEffectColorToSelection(currentDocument, effectColor.effectKind, effectColor.color, visualEffectObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: `Updated selected graphic ${effectColor.effectKind} color`
+        targeted: visualEffectObjectIds.length > 0,
+        message: `Updated selected visual ${effectColor.effectKind} color`
       };
     }
 
     const effectOpacity = objectEffectOpacityForCommand(commandId);
     if (effectOpacity) {
       return {
-        document: applyGraphicObjectEffectOpacityToSelection(currentDocument, effectOpacity.effectKind, effectOpacity.opacity, graphicObjectIds),
+        document: applyVisualEffectOpacityToSelection(currentDocument, effectOpacity.effectKind, effectOpacity.opacity, visualEffectObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: `Updated selected graphic ${effectOpacity.effectKind} opacity`
+        targeted: visualEffectObjectIds.length > 0,
+        message: `Updated selected visual ${effectOpacity.effectKind} opacity`
       };
     }
 
     const effectSize = objectEffectSizeForCommand(commandId);
     if (effectSize) {
       return {
-        document: applyGraphicObjectEffectSizeToSelection(currentDocument, effectSize.effectKind, effectSize.size, graphicObjectIds),
+        document: applyVisualEffectSizeToSelection(currentDocument, effectSize.effectKind, effectSize.size, visualEffectObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: `Updated selected graphic ${effectSize.effectKind} size`
+        targeted: visualEffectObjectIds.length > 0,
+        message: `Updated selected visual ${effectSize.effectKind} size`
       };
     }
 
