@@ -7,6 +7,7 @@ import type {
   GraphicObjectData,
   GraphicPaint
 } from "@chemdraft/chem-core";
+import Flatten from "@flatten-js/core";
 import { getStroke, type StrokeOptions } from "perfect-freehand";
 import {
   getPathBBox,
@@ -202,6 +203,32 @@ export interface GraphicPathSegmentSplitResult {
   distance: number;
 }
 
+export type NativeArtBooleanOperation = "union" | "subtract" | "intersect" | "split";
+
+export type NativeArtBooleanSkipReason =
+  | "open-shape"
+  | "unsupported-shape"
+  | "invalid-geometry";
+
+export interface NativeArtBooleanSkippedInput {
+  objectId: string;
+  reason: NativeArtBooleanSkipReason;
+}
+
+export interface NativeArtBooleanResultPath {
+  pathD: string;
+  bounds: NativeArtBounds;
+  area: number;
+  faceCount: number;
+}
+
+export interface NativeArtBooleanOperationPlan {
+  operation: NativeArtBooleanOperation;
+  resultPaths: NativeArtBooleanResultPath[];
+  skippedInputs: NativeArtBooleanSkippedInput[];
+  eligibleInputIds: string[];
+}
+
 interface CircularGraphicArcGeometry {
   center: NativeArtPoint;
   radiusX: number;
@@ -209,6 +236,12 @@ interface CircularGraphicArcGeometry {
   startRadians: number;
   sweepRadians: number;
   endRadians: number;
+}
+
+interface NativeArtBooleanPolygonInput {
+  objectId: string;
+  polygon?: Flatten.Polygon;
+  skipped?: NativeArtBooleanSkippedInput;
 }
 
 export function maxGraphicCornerRadius(object: GraphicObject): number {
@@ -1198,6 +1231,45 @@ export function graphicObjectIntersectsPolygon(object: GraphicObject, polygon: r
   }
 
   return false;
+}
+
+export function graphicObjectSupportsBooleanOperation(object: GraphicObject): boolean {
+  return graphicObjectBooleanPolygonInput(object).polygon !== undefined;
+}
+
+export function planNativeArtBooleanOperation(
+  objects: readonly GraphicObject[],
+  operation: NativeArtBooleanOperation
+): NativeArtBooleanOperationPlan {
+  const inputs = objects.map(graphicObjectBooleanPolygonInput);
+  const eligible = inputs.filter((input): input is NativeArtBooleanPolygonInput & { polygon: Flatten.Polygon } =>
+    input.polygon !== undefined
+  );
+  const skippedInputs = inputs
+    .filter((input): input is NativeArtBooleanPolygonInput & { skipped: NativeArtBooleanSkippedInput } =>
+      input.skipped !== undefined
+    )
+    .map((input) => input.skipped);
+
+  if (eligible.length < 2) {
+    return {
+      operation,
+      resultPaths: [],
+      skippedInputs,
+      eligibleInputIds: eligible.map((input) => input.objectId)
+    };
+  }
+
+  const resultPolygons = operation === "split"
+    ? splitNativeArtBooleanPolygons(eligible.map((input) => input.polygon))
+    : [reduceNativeArtBooleanPolygons(eligible.map((input) => input.polygon), operation)];
+
+  return {
+    operation,
+    resultPaths: resultPolygons.flatMap((polygon) => nativeArtBooleanResultPaths(polygon)),
+    skippedInputs,
+    eligibleInputIds: eligible.map((input) => input.objectId)
+  };
 }
 
 export function prepareGraphicPathForDirectEdit(object: GraphicObject): GraphicObject {
@@ -2677,7 +2749,10 @@ function svgPathBounds(pathD: string): NativeArtBounds | undefined {
   }
 }
 
-function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
+function svgPathSamplePoints(
+  pathD: string,
+  options: { includeBounds?: boolean } = {}
+): NativeArtPoint[] {
   try {
     if (!isValidPath(pathD)) {
       return [];
@@ -2699,7 +2774,8 @@ function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
       const point = getPointAtLength(pathD, length * index / steps);
       return { x: point.x, y: point.y };
     });
-    return [...pathPoints, ...boundsPoints].filter((point) =>
+    const samples = options.includeBounds === false ? pathPoints : [...pathPoints, ...boundsPoints];
+    return samples.filter((point) =>
       Number.isFinite(point.x) && Number.isFinite(point.y)
     );
   } catch {
@@ -2713,6 +2789,236 @@ function svgPathLooksClosed(pathD: string): boolean {
 
 function svgPathLooksCornered(pathD: string): boolean {
   return /[LlHhVv]/.test(pathD);
+}
+
+function graphicObjectBooleanPolygonInput(object: GraphicObject): NativeArtBooleanPolygonInput {
+  const resolved = graphicObjectBooleanPagePoints(object);
+  if (resolved.reason) {
+    return { objectId: object.id, skipped: { objectId: object.id, reason: resolved.reason } };
+  }
+
+  const polygon = nativeArtBooleanPolygonFromPoints(resolved.points);
+  return polygon
+    ? { objectId: object.id, polygon }
+    : { objectId: object.id, skipped: { objectId: object.id, reason: "invalid-geometry" } };
+}
+
+function graphicObjectBooleanPagePoints(object: GraphicObject): {
+  points: NativeArtPoint[];
+  reason?: undefined;
+} | {
+  points?: undefined;
+  reason: NativeArtBooleanSkipReason;
+} {
+  const localPoints = graphicObjectBooleanLocalPoints(object);
+  if (localPoints.reason) {
+    return { reason: localPoints.reason };
+  }
+
+  const pagePoints = localPoints.points.map((point) => graphicObjectBooleanLocalPointToPage(object, point));
+  const cleanPoints = cleanNativeArtBooleanRingPoints(pagePoints);
+  return cleanPoints.length >= 3 ? { points: cleanPoints } : { reason: "invalid-geometry" };
+}
+
+function graphicObjectBooleanLocalPoints(object: GraphicObject): {
+  points: NativeArtPoint[];
+  reason?: undefined;
+} | {
+  points?: undefined;
+  reason: NativeArtBooleanSkipReason;
+} {
+  if (object.graphicKind === "rect") {
+    return {
+      points: roundedRectPathPoints(Math.max(object.width, 1), Math.max(object.height, 1), graphicCornerRadius(object), 0, { x: 0, y: 0 })
+    };
+  }
+
+  if (object.graphicKind === "ellipse") {
+    return {
+      points: ellipsePathPoints(Math.max(object.width, 1), Math.max(object.height, 1), 0, { x: 0, y: 0 })
+    };
+  }
+
+  if (object.graphicKind !== "path") {
+    return { reason: object.graphicKind === "line" ? "open-shape" : "unsupported-shape" };
+  }
+
+  const pathKind = graphicPathKind(object);
+  if (pathKind === "polyline" || pathKind === "bezier") {
+    const nodes = graphicPathNodes(object);
+    if (!pathKindSupportsClosedFill(object, nodes)) {
+      return { reason: "open-shape" };
+    }
+    const pathD = graphicNodePathD(object, pathKind, "local");
+    const points = pathD ? svgPathSamplePoints(pathD, { includeBounds: false }) : [];
+    return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
+  }
+
+  if (pathKind === "freehand") {
+    const pathD = graphicFreehandPathD(object, "local");
+    const points = pathD ? svgPathSamplePoints(pathD, { includeBounds: false }) : [];
+    return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
+  }
+
+  if (pathKind) {
+    return { reason: "open-shape" };
+  }
+
+  const storedPath = metadataString(object.data.pathD);
+  if (!storedPath) {
+    return { reason: "unsupported-shape" };
+  }
+  if (!svgPathLooksClosed(storedPath)) {
+    return { reason: "open-shape" };
+  }
+
+  const points = svgPathSamplePoints(storedPath, { includeBounds: false });
+  return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
+}
+
+function graphicObjectBooleanLocalPointToPage(object: GraphicObject, point: NativeArtPoint): NativeArtPoint {
+  const projected = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+  const pagePoint = { x: object.x + projected.x, y: object.y + projected.y };
+  const rotation = metadataNumber(object.rotation) ?? 0;
+  if (Math.abs(rotation) < 0.001) {
+    return pagePoint;
+  }
+
+  return rotateNativeArtPoint(
+    pagePoint,
+    { x: object.x + object.width / 2, y: object.y + object.height / 2 },
+    degreesToRadians(rotation)
+  );
+}
+
+function rotateNativeArtPoint(point: NativeArtPoint, center: NativeArtPoint, radians: number): NativeArtPoint {
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: roundLayoutNumber(center.x + dx * cos - dy * sin),
+    y: roundLayoutNumber(center.y + dx * sin + dy * cos)
+  };
+}
+
+function nativeArtBooleanPolygonFromPoints(points: readonly NativeArtPoint[]): Flatten.Polygon | undefined {
+  const cleanPoints = cleanNativeArtBooleanRingPoints(points);
+  if (cleanPoints.length < 3) {
+    return undefined;
+  }
+
+  try {
+    const polygon = new Flatten.Polygon(cleanPoints.map((point) => [point.x, point.y] as [number, number]));
+    return nativeArtBooleanPolygonHasArea(polygon) && polygon.isValid() ? polygon : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reduceNativeArtBooleanPolygons(
+  polygons: readonly Flatten.Polygon[],
+  operation: Exclude<NativeArtBooleanOperation, "split">
+): Flatten.Polygon {
+  return polygons.slice(1).reduce((current, polygon) => {
+    if (operation === "union") {
+      return Flatten.BooleanOperations.unify(current, polygon);
+    }
+    if (operation === "subtract") {
+      return Flatten.BooleanOperations.subtract(current, polygon);
+    }
+    return Flatten.BooleanOperations.intersect(current, polygon);
+  }, polygons[0].clone());
+}
+
+function splitNativeArtBooleanPolygons(polygons: readonly Flatten.Polygon[]): Flatten.Polygon[] {
+  let pieces: Flatten.Polygon[] = [];
+  polygons.forEach((polygon) => {
+    let remaining = polygon.clone();
+    const nextPieces: Flatten.Polygon[] = [];
+    pieces.forEach((piece) => {
+      const overlap = Flatten.BooleanOperations.intersect(piece, polygon);
+      const pieceOnly = Flatten.BooleanOperations.subtract(piece, polygon);
+      if (nativeArtBooleanPolygonHasArea(pieceOnly)) {
+        nextPieces.push(pieceOnly);
+      }
+      if (nativeArtBooleanPolygonHasArea(overlap)) {
+        nextPieces.push(overlap);
+      }
+      remaining = Flatten.BooleanOperations.subtract(remaining, piece);
+    });
+    if (nativeArtBooleanPolygonHasArea(remaining)) {
+      nextPieces.push(remaining);
+    }
+    pieces = nextPieces;
+  });
+  return pieces;
+}
+
+function nativeArtBooleanResultPaths(polygon: Flatten.Polygon): NativeArtBooleanResultPath[] {
+  if (!nativeArtBooleanPolygonHasArea(polygon)) {
+    return [];
+  }
+
+  const faces = Array.from(polygon.faces) as Flatten.Face[];
+  const rings = faces
+    .map((face) => cleanNativeArtBooleanRingPoints(face.vertices.map((point) => ({ x: point.x, y: point.y }))))
+    .filter((ring) => ring.length >= 3);
+  const points = rings.flat();
+  if (rings.length === 0 || points.length < 3) {
+    return [];
+  }
+
+  const rawBounds = boundsForPoints(points, 0, { x: 0, y: 0, width: 1, height: 1 });
+  const bounds = {
+    ...rawBounds,
+    width: roundLayoutNumber(Math.max(rawBounds.width, 1)),
+    height: roundLayoutNumber(Math.max(rawBounds.height, 1))
+  };
+  const pathD = rings.map((ring) =>
+    pointsPathD(ring.map((point) => ({
+      x: roundLayoutNumber(point.x - bounds.x),
+      y: roundLayoutNumber(point.y - bounds.y)
+    })), true)
+  ).join(" ");
+
+  return pathD
+    ? [{
+        pathD,
+        bounds,
+        area: roundLayoutNumber(Math.abs(polygon.area())),
+        faceCount: rings.length
+      }]
+    : [];
+}
+
+function nativeArtBooleanPolygonHasArea(polygon: Flatten.Polygon): boolean {
+  try {
+    return !polygon.isEmpty() && Math.abs(polygon.area()) > 0.01 && Array.from(polygon.faces).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function cleanNativeArtBooleanRingPoints(points: readonly NativeArtPoint[]): NativeArtPoint[] {
+  const finitePoints = points
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .map((point) => ({ x: roundLayoutNumber(point.x), y: roundLayoutNumber(point.y) }));
+  const cleanPoints: NativeArtPoint[] = [];
+  finitePoints.forEach((point) => {
+    const previous = cleanPoints.at(-1);
+    if (!previous || Math.hypot(previous.x - point.x, previous.y - point.y) > 0.001) {
+      cleanPoints.push(point);
+    }
+  });
+
+  const first = cleanPoints[0];
+  const last = cleanPoints.at(-1);
+  if (first && last && cleanPoints.length > 1 && Math.hypot(first.x - last.x, first.y - last.y) <= 0.001) {
+    cleanPoints.pop();
+  }
+
+  return cleanPoints;
 }
 
 function graphicPathD(

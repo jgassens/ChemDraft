@@ -130,6 +130,9 @@ importers:
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core
+      '@flatten-js/core':
+        specifier: ^1.6.12
+        version: 1.6.12
       perfect-freehand:
         specifier: 1.2.3
         version: 1.2.3
@@ -616,6 +619,14 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@flatten-js/core@1.6.12':
+    resolution: {integrity: sha512-FwTv9YuAPNojrw5XHT74TRjUYN/yEjeHejklNEoEZYEeT9VELZwnHmd1N4BMds6p/y1hBzeltEyHZpRIUyAsAg==}
+    engines: {node: '>=4.2.4'}
+
+  '@flatten-js/interval-tree@2.0.3':
+    resolution: {integrity: sha512-Lv3eaITqU20WD+5W8L7JeJdjDXC9hfTUEzY0cRLx/sXj1+P3XdK6Fig4UdxvsekakTK8XeOwnpAKEpTI728U4g==}
+    engines: {node: '>=16.0.0'}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -2799,6 +2810,14 @@ snapshots:
     optional: true
 
   '@exodus/bytes@1.15.1': {}
+
+  '@flatten-js/core@1.6.12':
+    dependencies:
+      '@flatten-js/interval-tree': 2.0.3
+
+  '@flatten-js/interval-tree@2.0.3':
+    dependencies:
+      tslib: 2.8.1
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

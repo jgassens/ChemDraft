@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@chemdraft/chem-core": "workspace:*",
+    "@flatten-js/core": "^1.6.12",
     "perfect-freehand": "1.2.3",
     "svg-path-commander": "2.2.1"
   },

@@ -12,7 +12,9 @@ import {
   graphicCornerRadiusEditPoint,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
+  graphicObjectSupportsBooleanOperation,
   maxGraphicCornerRadius,
+  planNativeArtBooleanOperation,
   planNativeArtVisual,
   prepareGraphicPathForDirectEdit,
   projectGraphicObjectPoint,
@@ -41,6 +43,10 @@ describe("art-engine native art planning", () => {
     const artEnginePackage = require("../package.json") as { dependencies?: Record<string, string> };
     const pathCommanderPackage = require("svg-path-commander/package.json") as { license: string };
     const domMatrixPackage = require("@thednp/dommatrix/package.json") as { license: string };
+    const flattenPackage = JSON.parse(readFileSync(
+      require.resolve("@flatten-js/core").replace(/dist\/main\.cjs$/, "package.json"),
+      "utf8"
+    )) as { license: string };
     const perfectFreehandPackage = JSON.parse(readFileSync(
       require.resolve("perfect-freehand").replace(/dist\/cjs\/index\.js$/, "package.json"),
       "utf8"
@@ -48,15 +54,124 @@ describe("art-engine native art planning", () => {
 
     expect(pathCommanderPackage.license).toBe("MIT");
     expect(domMatrixPackage.license).toBe("MIT");
+    expect(flattenPackage.license).toBe("MIT");
     expect(perfectFreehandPackage.license).toBe("MIT");
-    expect(Object.keys(artEnginePackage.dependencies ?? {})).not.toEqual(expect.arrayContaining([
-      "makerjs",
-      "d3-path",
-      "@flatten-js/core",
-      "bezier-js",
-      "svg-pathdata",
-      "roughjs"
-    ]));
+    expect(Object.keys(artEnginePackage.dependencies ?? {})).toContain("@flatten-js/core");
+    ["makerjs", "d3-path", "bezier-js", "svg-pathdata", "roughjs"].forEach((dependency) => {
+      expect(Object.keys(artEnginePackage.dependencies ?? {})).not.toContain(dependency);
+    });
+  });
+
+  it("plans a boolean union from two closed rectangles", () => {
+    const first = {
+      ...baseGraphic,
+      id: "rect_a",
+      graphicKind: "rect",
+      x: 100,
+      y: 100,
+      width: 80,
+      height: 54,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#1d7f68"
+      }
+    } satisfies GraphicObject;
+    const second = {
+      ...first,
+      id: "rect_b",
+      x: 148,
+      y: 120
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtBooleanOperation([first, second], "union");
+
+    expect(graphicObjectSupportsBooleanOperation(first)).toBe(true);
+    expect(plan.eligibleInputIds).toEqual(["rect_a", "rect_b"]);
+    expect(plan.skippedInputs).toEqual([]);
+    expect(plan.resultPaths).toHaveLength(1);
+    expect(plan.resultPaths[0]?.pathD).toMatch(/^M /);
+    expect(plan.resultPaths[0]?.pathD).toContain("Z");
+    expect(plan.resultPaths[0]?.bounds).toMatchObject({ x: 100, y: 100, width: 128, height: 74 });
+  });
+
+  it("plans rectangle subtraction with an ellipse hole", () => {
+    const rect = {
+      ...baseGraphic,
+      id: "rect_source",
+      graphicKind: "rect",
+      x: 100,
+      y: 90,
+      width: 120,
+      height: 90,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#111111"
+      }
+    } satisfies GraphicObject;
+    const ellipse = {
+      ...baseGraphic,
+      id: "circle_cutout",
+      graphicKind: "ellipse",
+      x: 138,
+      y: 112,
+      width: 44,
+      height: 44,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#ffffff"
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtBooleanOperation([rect, ellipse], "subtract");
+    const result = plan.resultPaths[0];
+
+    expect(plan.skippedInputs).toEqual([]);
+    expect(result?.bounds).toMatchObject({ x: 100, y: 90, width: 120, height: 90 });
+    expect(result?.faceCount).toBe(2);
+    expect((result?.pathD.match(/M /g) ?? [])).toHaveLength(2);
+    expect(result?.area).toBeLessThan(rect.width * rect.height);
+  });
+
+  it("plans ellipse intersections and skips open path inputs", () => {
+    const first = {
+      ...baseGraphic,
+      id: "ellipse_a",
+      graphicKind: "ellipse",
+      x: 100,
+      y: 90,
+      width: 120,
+      height: 84,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#1d7f68"
+      }
+    } satisfies GraphicObject;
+    const second = {
+      ...first,
+      id: "ellipse_b",
+      x: 160
+    } satisfies GraphicObject;
+    const openLine = {
+      ...baseGraphic,
+      id: "open_line",
+      graphicKind: "path",
+      width: 96,
+      height: 48,
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+
+    const intersection = planNativeArtBooleanOperation([first, second], "intersect");
+    const skipped = planNativeArtBooleanOperation([first, openLine], "union");
+
+    expect(intersection.resultPaths).toHaveLength(1);
+    expect(intersection.resultPaths[0]?.area).toBeGreaterThan(0);
+    expect(intersection.resultPaths[0]?.area).toBeLessThan(Math.PI * (first.width / 2) * (first.height / 2));
+    expect(graphicObjectSupportsBooleanOperation(openLine)).toBe(false);
+    expect(skipped.resultPaths).toEqual([]);
+    expect(skipped.eligibleInputIds).toEqual(["ellipse_a"]);
+    expect(skipped.skippedInputs).toEqual([{ objectId: "open_line", reason: "open-shape" }]);
   });
 
   it("plans native ellipse geometry without owning document state", () => {

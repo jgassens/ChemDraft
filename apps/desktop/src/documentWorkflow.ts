@@ -7,11 +7,16 @@ import {
   splitGraphicPathSegmentAtPoint,
   createGraphicFreehandPathCache,
   graphicCornerRadiusEditPoint,
+  graphicObjectSupportsBooleanOperation,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
   planNativeArtVisual,
+  planNativeArtBooleanOperation,
   prepareGraphicPathForDirectEdit as prepareGraphicPathObjectForDirectEdit,
   type NativeArtPoint,
+  type NativeArtBooleanOperation,
+  type NativeArtBooleanSkippedInput,
+  type NativeArtBooleanResultPath,
   type NativeArtMarkerHandleId,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints,
@@ -3695,6 +3700,205 @@ export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] 
       .filter((object): object is GraphicObject => object.type === "graphic" && selectedIds.has(object.id))
       .map((object) => object.id)
   );
+}
+
+export interface NativeArtBooleanDocumentResult {
+  document: ChemDraftDocument;
+  changed: boolean;
+  status: string;
+  resultObjectIds: string[];
+  skippedInputs: NativeArtBooleanSkippedInput[];
+}
+
+export function selectedArtBooleanEligibleObjectIds(document: ChemDraftDocument): string[] {
+  return selectedGraphicObjectsInSelectionOrder(document)
+    .filter(graphicObjectSupportsBooleanOperation)
+    .map((object) => object.id);
+}
+
+export function applyNativeArtBooleanOperationToSelection(
+  document: ChemDraftDocument,
+  operation: NativeArtBooleanOperation
+): NativeArtBooleanDocumentResult {
+  const page = document.pages.find((candidate) => candidate.id === document.selection.pageId) ?? firstPage(document);
+  const selectedGraphics = selectedGraphicObjectsInSelectionOrder(document);
+  const plan = planNativeArtBooleanOperation(selectedGraphics, operation);
+  if (plan.eligibleInputIds.length < 2) {
+    return {
+      document,
+      changed: false,
+      status: nativeArtBooleanNeedsSelectionStatus(operation, plan.skippedInputs),
+      resultObjectIds: [],
+      skippedInputs: plan.skippedInputs
+    };
+  }
+
+  if (plan.resultPaths.length === 0) {
+    return {
+      document,
+      changed: false,
+      status: `${nativeArtBooleanCommandTitle(operation)} produced no closed art shape`,
+      resultObjectIds: [],
+      skippedInputs: plan.skippedInputs
+    };
+  }
+
+  const sourceObject = selectedGraphics.find((object) => object.id === plan.eligibleInputIds[0]);
+  if (!sourceObject) {
+    return {
+      document,
+      changed: false,
+      status: "Boolean art operation could not find a source shape",
+      resultObjectIds: [],
+      skippedInputs: plan.skippedInputs
+    };
+  }
+
+  const reservedObjectIds = new Set(document.pages.flatMap((candidate) => candidate.objects.map((object) => object.id)));
+  const resultObjects = plan.resultPaths.map((resultPath) =>
+    createNativeArtBooleanResultObject(document, sourceObject, operation, resultPath, reservedObjectIds)
+  );
+  const resultObjectIds = resultObjects.map((object) => object.id);
+  const patches: DocumentPatch[] = [
+    ...plan.eligibleInputIds.map((objectId) => ({ op: "removeObject" as const, objectId })),
+    ...resultObjects.map((object) => ({ op: "addObject" as const, pageId: page.id, object })),
+    { op: "setSelection", pageId: page.id, objectIds: resultObjectIds }
+  ];
+
+  return {
+    document: applyPatches(document, patches, { now: phase4Timestamp }),
+    changed: true,
+    status: nativeArtBooleanSuccessStatus(operation, plan.eligibleInputIds.length, resultObjects.length, plan.skippedInputs),
+    resultObjectIds,
+    skippedInputs: plan.skippedInputs
+  };
+}
+
+function selectedGraphicObjectsInSelectionOrder(document: ChemDraftDocument): GraphicObject[] {
+  if (document.selection.objectIds.length === 0) {
+    return [];
+  }
+
+  const page = document.pages.find((candidate) => candidate.id === document.selection.pageId) ?? firstPage(document);
+  const graphicsById = new Map(page.objects
+    .filter((object): object is GraphicObject => object.type === "graphic")
+    .map((object) => [object.id, object]));
+  return document.selection.objectIds.flatMap((objectId) => {
+    const object = graphicsById.get(objectId);
+    return object ? [object] : [];
+  });
+}
+
+function createNativeArtBooleanResultObject(
+  document: ChemDraftDocument,
+  sourceObject: GraphicObject,
+  operation: NativeArtBooleanOperation,
+  resultPath: NativeArtBooleanResultPath,
+  reservedObjectIds: Set<string>
+): GraphicObject {
+  return {
+    id: nextReservedObjectId(reservedObjectIds, `art_boolean_${operation}`, document),
+    type: "graphic",
+    graphicKind: "path",
+    x: resultPath.bounds.x,
+    y: resultPath.bounds.y,
+    width: resultPath.bounds.width,
+    height: resultPath.bounds.height,
+    rotation: 0,
+    style: {
+      ...sourceObject.style,
+      source: "chemdraft-native-art",
+      artToolId: `boolean-${operation}`,
+      artToolCommandId: `art.boolean.${operation}`
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    data: {
+      pathD: resultPath.pathD,
+      artToolId: `boolean-${operation}`
+    }
+  };
+}
+
+function nextReservedObjectId(
+  reservedObjectIds: Set<string>,
+  prefix: string,
+  document: ChemDraftDocument
+): string {
+  let index = document.pages.flatMap((page) => page.objects).length + 1;
+  let id = `${prefix}_${String(index).padStart(3, "0")}`;
+  while (reservedObjectIds.has(id)) {
+    index += 1;
+    id = `${prefix}_${String(index).padStart(3, "0")}`;
+  }
+  reservedObjectIds.add(id);
+  return id;
+}
+
+function nativeArtBooleanNeedsSelectionStatus(
+  operation: NativeArtBooleanOperation,
+  skippedInputs: readonly NativeArtBooleanSkippedInput[]
+): string {
+  const skipped = nativeArtBooleanSkippedStatus(skippedInputs);
+  return `${nativeArtBooleanCommandTitle(operation)} needs at least two closed art shapes${skipped}`;
+}
+
+function nativeArtBooleanSuccessStatus(
+  operation: NativeArtBooleanOperation,
+  eligibleCount: number,
+  resultCount: number,
+  skippedInputs: readonly NativeArtBooleanSkippedInput[]
+): string {
+  const sourceText = `${eligibleCount} closed art ${eligibleCount === 1 ? "shape" : "shapes"}`;
+  const resultText = operation === "split"
+    ? ` into ${resultCount} ${resultCount === 1 ? "piece" : "pieces"}`
+    : "";
+  return `${nativeArtBooleanPastTense(operation)} ${sourceText}${resultText}${nativeArtBooleanSkippedStatus(skippedInputs)}`;
+}
+
+function nativeArtBooleanCommandTitle(operation: NativeArtBooleanOperation): string {
+  if (operation === "subtract") {
+    return "Boolean subtract";
+  }
+  if (operation === "intersect") {
+    return "Boolean intersect";
+  }
+  if (operation === "split") {
+    return "Boolean split";
+  }
+  return "Boolean union";
+}
+
+function nativeArtBooleanPastTense(operation: NativeArtBooleanOperation): string {
+  if (operation === "subtract") {
+    return "Subtracted";
+  }
+  if (operation === "intersect") {
+    return "Intersected";
+  }
+  if (operation === "split") {
+    return "Split";
+  }
+  return "Unioned";
+}
+
+function nativeArtBooleanSkippedStatus(skippedInputs: readonly NativeArtBooleanSkippedInput[]): string {
+  if (skippedInputs.length === 0) {
+    return "";
+  }
+
+  const openCount = skippedInputs.filter((input) => input.reason === "open-shape").length;
+  const unsupportedCount = skippedInputs.filter((input) => input.reason === "unsupported-shape").length;
+  const invalidCount = skippedInputs.filter((input) => input.reason === "invalid-geometry").length;
+  const parts = [
+    openCount > 0 ? `${openCount} open` : "",
+    unsupportedCount > 0 ? `${unsupportedCount} unsupported` : "",
+    invalidCount > 0 ? `${invalidCount} invalid` : ""
+  ].filter(Boolean);
+  return `; skipped ${parts.length > 0 ? parts.join(", ") : skippedInputs.length} art ${skippedInputs.length === 1 ? "object" : "objects"}`;
 }
 
 export function applyGraphicObjectColorToSelection(

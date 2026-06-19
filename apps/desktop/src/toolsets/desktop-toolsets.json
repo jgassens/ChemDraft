@@ -183,7 +183,7 @@
       "source": "core",
       "defaultVisible": true,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 760, "height": 190, "minWidth": 700, "minHeight": 170 },
+      "preferredWindowSize": { "width": 820, "height": 190, "minWidth": 740, "minHeight": 170 },
       "category": "core",
       "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [
@@ -234,6 +234,16 @@
             { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
             { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "category": "layout" },
             { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "category": "layout" }
+          ]
+        },
+        {
+          "id": "core.art.boolean",
+          "title": "Boolean",
+          "items": [
+            { "commandId": "art.boolean.union", "title": "Union", "icon": "group", "category": "art" },
+            { "commandId": "art.boolean.subtract", "title": "Subtract", "icon": "group", "category": "art" },
+            { "commandId": "art.boolean.intersect", "title": "Intersect", "icon": "group", "category": "art" },
+            { "commandId": "art.boolean.split", "title": "Split", "icon": "group", "category": "art" }
           ]
         }
       ]

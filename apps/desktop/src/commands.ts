@@ -8,7 +8,11 @@ import {
 } from "@chemdraft/chem-core";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
-import { nativeSingleLetterElements, type NativeSingleLetterElement } from "./documentWorkflow";
+import {
+  nativeSingleLetterElements,
+  selectedArtBooleanEligibleObjectIds,
+  type NativeSingleLetterElement
+} from "./documentWorkflow";
 import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
@@ -65,6 +69,12 @@ export const drawerActions: CommandSpec[] = [
 export const structureCleanupCommandId = "structure.cleanup2d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
+export const artBooleanOperationCommandIds = {
+  union: "art.boolean.union",
+  subtract: "art.boolean.subtract",
+  intersect: "art.boolean.intersect",
+  split: "art.boolean.split"
+} as const;
 
 export const editActions: CommandSpec[] = [
   {
@@ -714,6 +724,7 @@ export function textStylePatchForCommand(
 
 export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
+  const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
     {
       id: "layout.bringToFront",
@@ -774,6 +785,46 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       category: "layout",
       enabled: hasSelection,
       description: "Mirror the selected document objects top to bottom"
+    },
+    {
+      id: artBooleanOperationCommandIds.union,
+      title: "Union",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Merge selected closed art shapes into one path"
+    },
+    {
+      id: artBooleanOperationCommandIds.subtract,
+      title: "Subtract",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Subtract later selected closed art shapes from the first"
+    },
+    {
+      id: artBooleanOperationCommandIds.intersect,
+      title: "Intersect",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Keep only the overlap of selected closed art shapes"
+    },
+    {
+      id: artBooleanOperationCommandIds.split,
+      title: "Split",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Split selected closed art shapes into non-overlapping pieces"
     }
   ];
 }

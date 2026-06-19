@@ -33,6 +33,7 @@ import {
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectStrokeStyleToSelection,
   applyColorToNativeMoleculePart,
+  applyNativeArtBooleanOperationToSelection,
   applyToolbarColorToSelection,
   applyAnalysisToSelectedMolecule,
   applyEditorSaveResultToSelectedMolecule,
@@ -128,6 +129,7 @@ import {
   selectionBounds,
   selectAllDocumentObjects,
   selectedGraphicObjectIds,
+  selectedArtBooleanEligibleObjectIds,
   swapGraphicObjectFillAndStroke,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
@@ -4446,6 +4448,128 @@ describe("Phase 4 document workflow", () => {
       strokeDasharray: "0 6",
       strokeLineCap: "round"
     });
+  });
+
+  it("applies native art boolean union and exports the result as SVG", () => {
+    const withFirst = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Union"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const firstId = withFirst.selection.objectIds[0];
+    const withSecond = insertNativeArtGraphicObject(withFirst, { x: 260, y: 196 }, "tool.art.rectFilled");
+    const secondId = withSecond.selection.objectIds[0];
+    if (!firstId || !secondId) {
+      throw new Error("Expected two art rectangles.");
+    }
+    const selected = applyPatches(withSecond, [{
+      op: "setSelection",
+      pageId: withSecond.pages[0].id,
+      objectIds: [firstId, secondId]
+    }]);
+
+    expect(selectedArtBooleanEligibleObjectIds(selected)).toEqual([firstId, secondId]);
+    const result = applyNativeArtBooleanOperationToSelection(selected, "union");
+    const resultId = result.resultObjectIds[0];
+    if (!resultId) {
+      throw new Error("Expected boolean union result.");
+    }
+    const graphic = graphicById(result.document, resultId);
+    const svg = exportPhase4Svg(result.document, { includeWarnings: true });
+
+    expect(result.changed).toBe(true);
+    expect(result.status).toBe("Unioned 2 closed art shapes");
+    expect(result.document.selection.objectIds).toEqual([resultId]);
+    expect(result.document.pages[0].objects.some((object) => object.id === firstId || object.id === secondId)).toBe(false);
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      style: {
+        fillColor: "#111111",
+        artToolCommandId: "art.boolean.union"
+      },
+      data: {
+        artToolId: "boolean-union"
+      }
+    });
+    expect(graphic.data.pathD).toMatch(/^M /);
+    expect(svg.contents).toContain(`data-object-id="${resultId}"`);
+    expect(svg.contents).toContain("<path");
+    expect(svg.warnings).toEqual([]);
+  });
+
+  it("applies native art boolean subtract, intersect, split, and open-shape skips", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Operations"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withCircle = insertNativeArtGraphicObject(withRect, { x: 220, y: 180 }, "tool.art.circleFilled");
+    const circleId = withCircle.selection.objectIds[0];
+    if (!rectId || !circleId) {
+      throw new Error("Expected a rectangle and circle.");
+    }
+    const selectedForSubtract = applyPatches(withCircle, [{
+      op: "setSelection",
+      pageId: withCircle.pages[0].id,
+      objectIds: [rectId, circleId]
+    }]);
+
+    const subtracted = applyNativeArtBooleanOperationToSelection(selectedForSubtract, "subtract");
+    const subtractGraphic = graphicById(subtracted.document, subtracted.resultObjectIds[0] ?? "");
+    expect(subtracted.changed).toBe(true);
+    expect((subtractGraphic.data.pathD?.match(/M /g) ?? [])).toHaveLength(2);
+    expect(subtractGraphic.data.pathD).toContain("Z");
+
+    const selectedForIntersect = applyPatches(withCircle, [{
+      op: "setSelection",
+      pageId: withCircle.pages[0].id,
+      objectIds: [rectId, circleId]
+    }]);
+    const intersected = applyNativeArtBooleanOperationToSelection(selectedForIntersect, "intersect");
+    const intersectGraphic = graphicById(intersected.document, intersected.resultObjectIds[0] ?? "");
+    expect(intersected.changed).toBe(true);
+    expect(intersectGraphic.width).toBeGreaterThan(0);
+    expect(intersectGraphic.height).toBeGreaterThan(0);
+    expect(intersectGraphic.data.pathD).toContain("Z");
+
+    const withFirstSplitRect = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Split"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const firstSplitId = withFirstSplitRect.selection.objectIds[0];
+    const withSecondSplitRect = insertNativeArtGraphicObject(withFirstSplitRect, { x: 252, y: 180 }, "tool.art.rectFilled");
+    const secondSplitId = withSecondSplitRect.selection.objectIds[0];
+    if (!firstSplitId || !secondSplitId) {
+      throw new Error("Expected split rectangles.");
+    }
+    const selectedForSplit = applyPatches(withSecondSplitRect, [{
+      op: "setSelection",
+      pageId: withSecondSplitRect.pages[0].id,
+      objectIds: [firstSplitId, secondSplitId]
+    }]);
+    const split = applyNativeArtBooleanOperationToSelection(selectedForSplit, "split");
+    expect(split.changed).toBe(true);
+    expect(split.resultObjectIds.length).toBeGreaterThanOrEqual(2);
+    expect(split.document.selection.objectIds).toEqual(split.resultObjectIds);
+
+    const withOpenLine = insertNativeArtGraphicObject(withRect, { x: 320, y: 220 }, "tool.art.line");
+    const lineId = withOpenLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected an open art line.");
+    }
+    const selectedWithLine = applyPatches(withOpenLine, [{
+      op: "setSelection",
+      pageId: withOpenLine.pages[0].id,
+      objectIds: [rectId, lineId]
+    }]);
+    const skipped = applyNativeArtBooleanOperationToSelection(selectedWithLine, "union");
+    expect(skipped.changed).toBe(false);
+    expect(skipped.document).toBe(selectedWithLine);
+    expect(skipped.skippedInputs).toEqual([{ objectId: lineId, reason: "open-shape" }]);
+    expect(skipped.status).toBe("Boolean union needs at least two closed art shapes; skipped 1 open art object");
   });
 
   it("copies graphic fill, stroke, markers, and full appearance with the eyedropper helper", () => {
