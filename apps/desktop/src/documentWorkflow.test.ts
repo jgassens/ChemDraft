@@ -155,6 +155,7 @@ import {
   selectionBounds,
   selectAllDocumentObjects,
   selectedGraphicObjectIds,
+  selectedLayerObjectIds,
   selectedVisualEffectObjectIds,
   selectedArtBooleanEligibleObjectIds,
   parseSelectionClipboardPayload,
@@ -8166,6 +8167,99 @@ describe("group transforms (multi-object selection)", () => {
     expect(duplicated.selection.objectIds).toEqual([duplicateGroupId]);
     expect(duplicateChildIds).toHaveLength(ids.length);
     expect(duplicateChildIds.some((objectId) => ids.includes(objectId))).toBe(false);
+  });
+
+  it("moves selected group children through layer order as a visible block", () => {
+    const document = createPhase4Document("Group Layer Order");
+    const pageId = document.pages[0].id;
+    const text = (id: string, x: number): TextObject => ({
+      id,
+      type: "text",
+      x,
+      y: 180,
+      width: 60,
+      height: 30,
+      rotation: 0,
+      style: {},
+      text: id,
+      spans: []
+    });
+    const objects = [
+      text("behind", 100),
+      text("child_a", 180),
+      text("child_b", 260),
+      text("blocker", 340)
+    ];
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["child_a", "child_b"] }
+    ]);
+    const grouped = groupSelectedDocumentObjects(selected);
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    expect(selectedLayerObjectIds(grouped)).toEqual(["child_a", "child_b", groupId]);
+
+    const forward = reorderSelectedDocumentObject(grouped, "forward");
+    expect(forward.pages[0].objects.map((object) => object.id)).toEqual([
+      "behind",
+      "blocker",
+      "child_a",
+      "child_b",
+      groupId
+    ]);
+    expect(forward.selection.objectIds).toEqual([groupId]);
+
+    const back = reorderSelectedDocumentObject(forward, "back");
+    expect(back.pages[0].objects.map((object) => object.id)).toEqual([
+      "child_a",
+      "child_b",
+      groupId,
+      "behind",
+      "blocker"
+    ]);
+    expect(back.selection.objectIds).toEqual([groupId]);
+  });
+
+  it("moves multi-selected objects through layer order together while preserving their order", () => {
+    const document = createPhase4Document("Multi Layer Order");
+    const pageId = document.pages[0].id;
+    const objects: TextObject[] = ["back", "left", "right", "front"].map((id, index) => ({
+      id,
+      type: "text",
+      x: 120 + index * 72,
+      y: 220,
+      width: 48,
+      height: 24,
+      rotation: 0,
+      style: {},
+      text: id,
+      spans: []
+    }));
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["left", "right"] }
+    ]);
+
+    const forward = reorderSelectedDocumentObject(selected, "forward");
+    expect(forward.pages[0].objects.map((object) => object.id)).toEqual([
+      "back",
+      "front",
+      "left",
+      "right"
+    ]);
+    expect(forward.selection.objectIds).toEqual(["left", "right"]);
+
+    const toBack = reorderSelectedDocumentObject(forward, "back");
+    expect(toBack.pages[0].objects.map((object) => object.id)).toEqual([
+      "left",
+      "right",
+      "back",
+      "front"
+    ]);
+    expect(toBack.selection.objectIds).toEqual(["left", "right"]);
   });
 
   it("deletes a selected group and its child objects", () => {

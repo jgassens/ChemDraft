@@ -6878,16 +6878,83 @@ export function reorderSelectedDocumentObject(
   document: ChemDraftDocument,
   placement: ObjectReorderPlacement
 ): ChemDraftDocument {
-  const objectId = document.selection.objectIds[0];
-  if (!objectId) {
+  const page = firstPage(document);
+  const objectIds = selectedLayerObjectIds(document);
+  if (objectIds.length === 0) {
     return document;
   }
 
-  return applyPatch(
-    document,
-    { op: "reorderObject", objectId, placement },
-    { now: phase4Timestamp }
-  );
+  return reorderPageObjects(document, page.id, objectIds, placement);
+}
+
+function reorderPageObjects(
+  document: ChemDraftDocument,
+  pageId: string,
+  objectIds: readonly string[],
+  placement: ObjectReorderPlacement
+): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page) {
+    return document;
+  }
+
+  const currentOrder = page.objects.map((object) => object.id);
+  const nextOrder = reorderedLayerObjectIds(currentOrder, objectIds, placement);
+  if (nextOrder.every((objectId, index) => objectId === currentOrder[index])) {
+    return document;
+  }
+
+  let next = document;
+  for (const objectId of [...nextOrder].reverse()) {
+    next = applyPatch(
+      next,
+      { op: "reorderObject", objectId, placement: "back" },
+      { now: phase4Timestamp }
+    );
+  }
+  return next;
+}
+
+export function reorderedLayerObjectIds(
+  currentOrder: readonly string[],
+  objectIds: readonly string[],
+  placement: ObjectReorderPlacement
+): string[] {
+  const selected = new Set(objectIds.filter((objectId) => currentOrder.includes(objectId)));
+  if (selected.size === 0) {
+    return [...currentOrder];
+  }
+
+  if (placement === "front") {
+    return [
+      ...currentOrder.filter((objectId) => !selected.has(objectId)),
+      ...currentOrder.filter((objectId) => selected.has(objectId))
+    ];
+  }
+
+  if (placement === "back") {
+    return [
+      ...currentOrder.filter((objectId) => selected.has(objectId)),
+      ...currentOrder.filter((objectId) => !selected.has(objectId))
+    ];
+  }
+
+  const nextOrder = [...currentOrder];
+  if (placement === "forward") {
+    for (let index = nextOrder.length - 2; index >= 0; index -= 1) {
+      if (selected.has(nextOrder[index]) && !selected.has(nextOrder[index + 1])) {
+        [nextOrder[index], nextOrder[index + 1]] = [nextOrder[index + 1], nextOrder[index]];
+      }
+    }
+    return nextOrder;
+  }
+
+  for (let index = 1; index < nextOrder.length; index += 1) {
+    if (selected.has(nextOrder[index]) && !selected.has(nextOrder[index - 1])) {
+      [nextOrder[index - 1], nextOrder[index]] = [nextOrder[index], nextOrder[index - 1]];
+    }
+  }
+  return nextOrder;
 }
 
 export function reorderNativeMoleculeParts(
@@ -7901,6 +7968,15 @@ export function selectedGroupObjectIds(document: ChemDraftDocument): string[] {
 function selectedTransformObjectIds(document: ChemDraftDocument): string[] {
   const page = firstPage(document);
   return resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds);
+}
+
+export function selectedLayerObjectIds(document: ChemDraftDocument): string[] {
+  const page = firstPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  const selectedVisibleIds = new Set(resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds));
+  return page.objects
+    .filter((object) => selectedVisibleIds.has(object.id) || (object.type === "group" && selectedIds.has(object.id)))
+    .map((object) => object.id);
 }
 
 export function groupSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {

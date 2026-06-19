@@ -241,12 +241,14 @@ import {
   previewNativeMoleculeFreeformBondGrowth,
   prepareGraphicPathForDirectEdit,
   recommendImportedPageFit,
+  reorderedLayerObjectIds,
   reorderSelectedDocumentObject,
   resizeNativeMoleculeParts,
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   resolveToolbarColorSelection,
   selectedGraphicObjectIds,
+  selectedLayerObjectIds,
   selectedMoleculeObjectIds,
   selectedVisualEffectObjectIds,
   parseSelectionClipboardPayload,
@@ -835,7 +837,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.16.34-codex";
+const CURRENT_BUILD_STAMP = "6.19.17.58-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -13633,17 +13635,19 @@ function isBondDepthCommandId(commandId: string): commandId is BondDepthCommandI
 
 export function crossingClearPatchesForObjectLayerPlacement(
   page: ChemDraftDocument["pages"][number],
-  objectId: string,
+  objectIds: string | readonly string[],
   placement: ObjectReorderPlacement
 ): DocumentPatch[] {
-  const affectedObjectIds = objectLayerPlacementAffectedObjectIds(page.objects, objectId, placement);
+  const selectedObjectIds = Array.isArray(objectIds) ? objectIds : [objectIds];
+  const affectedObjectIds = objectLayerPlacementAffectedObjectIds(page.objects, selectedObjectIds, placement);
   if (affectedObjectIds.length === 0) {
     return [];
   }
 
+  const selected = new Set(selectedObjectIds);
   const affected = new Set(affectedObjectIds);
   return page.crossings
-    .filter((crossing) => crossingTouchesObjectAndAffectedObject(crossing.bonds, objectId, affected))
+    .filter((crossing) => crossingTouchesSelectedAndAffectedObject(crossing.bonds, selected, affected))
     .map((crossing) => ({
       op: "clearCrossingOverride",
       pageId: page.id,
@@ -13655,50 +13659,53 @@ export function reorderSelectedDocumentObjectWithCrossingDefaults(
   document: ChemDraftDocument,
   placement: ObjectReorderPlacement
 ): ChemDraftDocument {
-  const objectId = document.selection.objectIds[0];
-  if (!objectId) {
+  const objectIds = selectedLayerObjectIds(document);
+  if (objectIds.length === 0) {
     return document;
   }
 
-  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  const page = document.pages.find((candidate) => objectIds.some((objectId) =>
+    candidate.objects.some((object) => object.id === objectId)
+  ));
   if (!page) {
     return document;
   }
 
-  const crossingPatches = crossingClearPatchesForObjectLayerPlacement(page, objectId, placement);
+  const crossingPatches = crossingClearPatchesForObjectLayerPlacement(page, objectIds, placement);
   const reordered = reorderSelectedDocumentObject(document, placement);
   return crossingPatches.length > 0 ? applyPatches(reordered, crossingPatches) : reordered;
 }
 
 function objectLayerPlacementAffectedObjectIds(
   objects: readonly DocumentObject[],
-  objectId: string,
+  objectIds: string | readonly string[],
   placement: ObjectReorderPlacement
 ): string[] {
-  const objectIndex = objects.findIndex((object) => object.id === objectId);
-  if (objectIndex < 0) {
+  const currentOrder = objects.map((object) => object.id);
+  const candidateObjectIds = Array.isArray(objectIds) ? objectIds : [objectIds];
+  const selected = new Set(candidateObjectIds.filter((objectId) => currentOrder.includes(objectId)));
+  if (selected.size === 0) {
     return [];
   }
 
   if (placement === "front" || placement === "back") {
-    return objects.filter((object) => object.id !== objectId).map((object) => object.id);
+    return currentOrder.filter((objectId) => !selected.has(objectId));
   }
 
-  if (placement === "forward") {
-    return objectIndex < objects.length - 1 ? [objects[objectIndex + 1].id] : [];
-  }
-
-  return objectIndex > 0 ? [objects[objectIndex - 1].id] : [];
+  const nextOrder = reorderedLayerObjectIds(currentOrder, candidateObjectIds, placement);
+  return currentOrder.filter((objectId, index) =>
+    !selected.has(objectId) && nextOrder[index] !== objectId
+  );
 }
 
-function crossingTouchesObjectAndAffectedObject(
+function crossingTouchesSelectedAndAffectedObject(
   bonds: readonly [BondRef, BondRef],
-  objectId: string,
+  selectedObjectIds: ReadonlySet<string>,
   affectedObjectIds: ReadonlySet<string>
 ): boolean {
-  const selectedBond = bonds.find((bond) => bond.objectId === objectId);
-  const otherBond = bonds.find((bond) => bond.objectId !== objectId);
-  return selectedBond !== undefined && otherBond !== undefined && affectedObjectIds.has(otherBond.objectId);
+  const [first, second] = bonds;
+  return (selectedObjectIds.has(first.objectId) && affectedObjectIds.has(second.objectId)) ||
+    (selectedObjectIds.has(second.objectId) && affectedObjectIds.has(first.objectId));
 }
 
 function bondDepthStatusForCommand(commandId: BondDepthCommandId): string {
