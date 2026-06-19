@@ -621,6 +621,7 @@ function ArtToolbarStyleControls({
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
+  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number } | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [effectColorOpen, setEffectColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -938,6 +939,7 @@ function ArtToolbarStyleControls({
     supportedCount = selectedCount
   ) => {
     const percent = Math.round(value * 100);
+    const sliderKey = label.toLowerCase().replace(/\s+/g, "-");
     const applySliderPercent = (nextPercent: number, commit: boolean) => {
       const normalizedPercent = Math.max(0, Math.min(100, Math.round(nextPercent)));
       const command = commandId(normalizedPercent / 100);
@@ -947,6 +949,8 @@ function ArtToolbarStyleControls({
         previewCommand(command);
       }
     };
+    const sliderOwnsPointer = (event: ReactPointerEvent<HTMLInputElement>) =>
+      sliderDragRef.current?.sliderKey === sliderKey && sliderDragRef.current.pointerId === event.pointerId;
     const applySliderPointer = (event: ReactPointerEvent<HTMLInputElement>, commit: boolean) => {
       const rect = event.currentTarget.getBoundingClientRect();
       const nextPercent = rect.width > 0 ? (event.clientX - rect.left) / rect.width * 100 : percent;
@@ -973,7 +977,7 @@ function ArtToolbarStyleControls({
       applySliderPercent(nextPercent, true);
     };
     return (
-      <label className="art-inspector-slider" data-art-inspector-slider={label.toLowerCase().replace(/\s+/g, "-")}>
+      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}>
         <span className="art-inspector-slider-header">
           <span className="art-inspector-slider-label">{shortLabel}</span>
           <span className="art-inspector-slider-value">{percent}%</span>
@@ -989,24 +993,55 @@ function ArtToolbarStyleControls({
           data-palette-control="true"
           onPointerDown={(event) => {
             event.stopPropagation();
-            event.currentTarget.setPointerCapture(event.pointerId);
+            sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
+            if (typeof event.currentTarget.setPointerCapture === "function") {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }
             applySliderPointer(event, false);
           }}
           onPointerMove={(event) => {
-            if (event.buttons === 1) {
+            if (event.buttons === 1 && sliderOwnsPointer(event)) {
               applySliderPointer(event, false);
             }
           }}
           onPointerUp={(event) => {
             event.stopPropagation();
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            if (!sliderOwnsPointer(event)) {
+              return;
+            }
+            if (
+              typeof event.currentTarget.hasPointerCapture === "function" &&
+              event.currentTarget.hasPointerCapture(event.pointerId) &&
+              typeof event.currentTarget.releasePointerCapture === "function"
+            ) {
               event.currentTarget.releasePointerCapture(event.pointerId);
             }
+            sliderDragRef.current = null;
             applySliderPointer(event, true);
           }}
-          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value) / 100))}
+          onPointerCancel={(event) => {
+            if (sliderOwnsPointer(event)) {
+              if (
+                typeof event.currentTarget.hasPointerCapture === "function" &&
+                event.currentTarget.hasPointerCapture(event.pointerId) &&
+                typeof event.currentTarget.releasePointerCapture === "function"
+              ) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              sliderDragRef.current = null;
+            }
+          }}
+          onChange={(event) => {
+            if (sliderDragRef.current?.sliderKey === sliderKey) {
+              previewCommand(commandId(Number(event.currentTarget.value) / 100));
+            }
+          }}
           onKeyDown={applySliderKey}
-          onBlur={(event) => invokeOrCommit(commandId(Number(event.currentTarget.value) / 100))}
+          onBlur={() => {
+            if (sliderDragRef.current?.sliderKey === sliderKey) {
+              sliderDragRef.current = null;
+            }
+          }}
         />
       </label>
     );

@@ -803,7 +803,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.10.30-codex";
+const CURRENT_BUILD_STAMP = "6.19.10.57-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -10546,6 +10546,28 @@ function previewSvgEffectSourceShape(
   return attrs ? `<${tag} ${geometry} ${attrs}${transform}/>` : "";
 }
 
+type SvgEffectFilterRegion = { x: number; y: number; width: number; height: number };
+
+function svgEffectPadding(effect: NativeArtVisualPlan["effects"][number]): number {
+  if (effect.kind === "shadow") {
+    return Math.max(Math.abs(effect.offsetX), Math.abs(effect.offsetY)) + effect.blurPx * 4 + 2;
+  }
+  if (effect.kind === "glow") {
+    return effect.blurPx * 4 + effect.spreadPx * 2 + 2;
+  }
+  return 0;
+}
+
+function svgEffectFilterRegionForPlan(plan: NativeArtVisualPlan): SvgEffectFilterRegion {
+  const padding = Math.max(24, ...plan.effects.map(svgEffectPadding));
+  return {
+    x: plan.frameBounds.x - padding,
+    y: plan.frameBounds.y - padding,
+    width: Math.max(plan.frameBounds.width + padding * 2, 1),
+    height: Math.max(plan.frameBounds.height + padding * 2, 1)
+  };
+}
+
 function previewSvgEffectDefinition(plan: NativeArtVisualPlan, id: string): string {
   const effects = plan.effects.filter((effect): effect is Extract<NativeArtVisualPlan["effects"][number], { kind: "shadow" | "glow" }> =>
     effect.kind === "shadow" || effect.kind === "glow"
@@ -10591,7 +10613,13 @@ function previewSvgEffectDefinition(plan: NativeArtVisualPlan, id: string): stri
   const mergeNodes = [
     ...mergeInputs.map((input) => `<feMergeNode in="${xmlAttributeValue(input)}"/>`)
   ].join("");
-  return `<defs><filter id="${xmlAttributeValue(id)}" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">${children.join("")}<feMerge>${mergeNodes}</feMerge></filter></defs>`;
+  const region = svgEffectFilterRegionForPlan(plan);
+  return [
+    `<defs><filter id="${xmlAttributeValue(id)}" filterUnits="userSpaceOnUse"`,
+    ` x="${xmlAttributeValue(region.x)}" y="${xmlAttributeValue(region.y)}"`,
+    ` width="${xmlAttributeValue(region.width)}" height="${xmlAttributeValue(region.height)}"`,
+    ` color-interpolation-filters="sRGB">${children.join("")}<feMerge>${mergeNodes}</feMerge></filter></defs>`
+  ].join("");
 }
 
 function previewSvgSketchEffects(plan: NativeArtVisualPlan, objectId: string): string {
@@ -15124,10 +15152,19 @@ function reactSvgEffectDefinitions(plan: NativeArtVisualPlan, id: string) {
     );
     mergeInputs.push(compositeResult);
   });
+  const region = svgEffectFilterRegionForPlan(plan);
 
   return (
     <defs>
-      <filter id={id} x="-40%" y="-40%" width="180%" height="180%" colorInterpolationFilters="sRGB">
+      <filter
+        id={id}
+        filterUnits="userSpaceOnUse"
+        x={region.x}
+        y={region.y}
+        width={region.width}
+        height={region.height}
+        colorInterpolationFilters="sRGB"
+      >
         {filterChildren}
         <feMerge>
           {mergeInputs.map((input, index) => <feMergeNode key={`${id}-merge-${index}`} in={input} />)}

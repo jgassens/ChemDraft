@@ -936,9 +936,14 @@ describe("layout-engine page SVG planner", () => {
     ]);
 
     const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
-    expect(fragments.some((fragment) =>
+    const effectFilter = fragments.find((fragment) =>
       fragment.tag === "filter" && fragment.attrs.id === "molecule-effects-mol_effects"
-    )).toBe(true);
+    );
+    expect(effectFilter?.attrs).toMatchObject({
+      filterUnits: "userSpaceOnUse"
+    });
+    expect(Number(effectFilter?.attrs.x)).toBeLessThan(120);
+    expect(Number(effectFilter?.attrs.y)).toBeLessThan(120);
     expect(fragments.some((fragment) =>
       fragment.tag === "feFlood" && fragment.attrs["flood-color"] === "#fdd835"
     )).toBe(true);
@@ -1079,7 +1084,11 @@ describe("layout-engine page SVG planner", () => {
       rx: 7,
       ry: 7
     });
-    expect(shadowFilter).toBeDefined();
+    expect(shadowFilter?.attrs).toMatchObject({
+      filterUnits: "userSpaceOnUse"
+    });
+    expect(Number(shadowFilter?.attrs.x)).toBeLessThan(Number(visibleFragments[2]?.attrs.x));
+    expect(Number(shadowFilter?.attrs.y)).toBeLessThan(Number(visibleFragments[2]?.attrs.y));
     expect(effectSource?.attrs).toMatchObject({
       filter: "url(#graphic-effects-art_rect)",
       fill: "#000000",

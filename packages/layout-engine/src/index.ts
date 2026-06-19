@@ -1439,7 +1439,11 @@ function planNativeMoleculeGraphSvg(
     "data-style-preset-id": drawingStyle.stylePresetId,
     transform: rotationTransform(object)
   }), [
-    ...svgEffectDefinitionFragmentsForEffects(effects, effectFilterId),
+    ...svgEffectDefinitionFragmentsForEffects(
+      effects,
+      effectFilterId,
+      svgEffectFilterRegionForBounds(effects, object)
+    ),
     ...(effectSource ? [effectSource] : []),
     ...bondLayerFragments,
     ...labelBackgroundFragments,
@@ -2126,11 +2130,44 @@ function svgEffectSourceAttrs(
   };
 }
 
-function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): PageSvgFragment[] {
-  return svgEffectDefinitionFragmentsForEffects(plan.effects, id);
+type SvgEffectFilterRegion = { x: number; y: number; width: number; height: number };
+
+function svgEffectPadding(effect: NativeArtEffectPlan): number {
+  if (effect.kind === "shadow") {
+    return Math.max(Math.abs(effect.offsetX), Math.abs(effect.offsetY)) + effect.blurPx * 4 + 2;
+  }
+  if (effect.kind === "glow") {
+    return effect.blurPx * 4 + effect.spreadPx * 2 + 2;
+  }
+  return 0;
 }
 
-function svgEffectDefinitionFragmentsForEffects(effects: readonly NativeArtEffectPlan[], id: string): PageSvgFragment[] {
+function svgEffectFilterRegionForBounds(
+  effects: readonly NativeArtEffectPlan[],
+  bounds: { x: number; y: number; width: number; height: number }
+): SvgEffectFilterRegion {
+  const padding = Math.max(24, ...effects.map(svgEffectPadding));
+  return {
+    x: bounds.x - padding,
+    y: bounds.y - padding,
+    width: Math.max(bounds.width + padding * 2, 1),
+    height: Math.max(bounds.height + padding * 2, 1)
+  };
+}
+
+function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): PageSvgFragment[] {
+  return svgEffectDefinitionFragmentsForEffects(
+    plan.effects,
+    id,
+    svgEffectFilterRegionForBounds(plan.effects, plan.frameBounds)
+  );
+}
+
+function svgEffectDefinitionFragmentsForEffects(
+  effects: readonly NativeArtEffectPlan[],
+  id: string,
+  region: SvgEffectFilterRegion
+): PageSvgFragment[] {
   const filterEffects = effects.filter((effect): effect is Extract<NativeArtEffectPlan, { kind: "shadow" | "glow" }> =>
     effect.kind === "shadow" || effect.kind === "glow"
   );
@@ -2216,10 +2253,11 @@ function svgEffectDefinitionFragmentsForEffects(effects: readonly NativeArtEffec
     elementFragment("defs", `${id}-defs`, {}, [
       elementFragment("filter", id, {
         id,
-        x: "-40%",
-        y: "-40%",
-        width: "180%",
-        height: "180%",
+        filterUnits: "userSpaceOnUse",
+        x: region.x,
+        y: region.y,
+        width: region.width,
+        height: region.height,
         "color-interpolation-filters": "sRGB"
       }, filterChildren)
     ])

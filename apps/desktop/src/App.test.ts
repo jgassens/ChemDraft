@@ -2522,6 +2522,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("art-object-content");
     expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain('id="graphic-effects-');
+    expect(markup).toContain('filterUnits="userSpaceOnUse"');
+    expect(markup).not.toContain('x="-40%"');
     expect(markup).toContain("feOffset");
     expect(markup).toContain('data-graphic-effect-source="true"');
     expect(markup).toContain('filter="url(#graphic-effects-');
@@ -2540,6 +2542,32 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("art-object-tilt-handle");
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
+
+    const glowLineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Glow Line Render"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const glowLineObjectId = glowLineDocument.selection.objectIds[0] ?? "";
+    const glowLineWithEffect = applyPatches(glowLineDocument, [{
+      op: "updateObject",
+      objectId: glowLineObjectId,
+      changes: {
+        style: {
+          effects: [{ kind: "glow", color: "#fdd835", opacity: 0.65, blurPx: 8, spreadPx: 2 }]
+        }
+      }
+    }]);
+    const glowLineMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: glowLineWithEffect,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(glowLineMarkup).toContain('filterUnits="userSpaceOnUse"');
+    expect(glowLineMarkup).toContain('y="-38"');
+    expect(glowLineMarkup).toContain('flood-color="#fdd835"');
 
     const radiusReadoutRotated = applyPatches(document, [{
       op: "updateObject",

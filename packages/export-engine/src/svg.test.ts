@@ -147,6 +147,8 @@ describe("SVG export serialization", () => {
     const result = exportDocumentToSvg(document);
 
     expect(result.contents).toContain('id="molecule-effects-mol_svg_effects"');
+    expect(result.contents).toContain('filterUnits="userSpaceOnUse"');
+    expect(result.contents).not.toContain('x="-40%"');
     expect(result.contents).toContain('flood-color="#fdd835"');
     expect(result.contents).toContain('data-molecule-effect-source="true" filter="url(#molecule-effects-mol_svg_effects)"');
     expect(result.contents).toContain('data-molecule-effect="sketch"');
@@ -241,6 +243,8 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('gradientUnits="userSpaceOnUse"');
     expect(result.contents).toContain('gradientTransform="matrix(');
     expect(result.contents).toContain('id="graphic-effects-art_svg_effects"');
+    expect(result.contents).toContain('filterUnits="userSpaceOnUse"');
+    expect(result.contents).not.toContain('x="-40%"');
     expect(result.contents).toContain("<feOffset");
     expect(result.contents).toContain('filter="url(#graphic-effects-art_svg_effects)"');
     expect(result.contents).toContain('data-graphic-effect-source="true"');
@@ -292,6 +296,7 @@ describe("SVG export serialization", () => {
 
     expect(first.contents).toBe(second.contents);
     expect(first.contents).toContain('id="graphic-effects-art_svg_glow_sketch"');
+    expect(first.contents).toContain('filterUnits="userSpaceOnUse"');
     expect(first.contents).toContain("<feGaussianBlur");
     expect(first.contents).toContain("<feFlood");
     expect(first.contents).toContain('data-graphic-effect="sketch"');

@@ -167,6 +167,23 @@ describe("ToolPalette art color popover", () => {
     valueSetter?.call(input, value);
   }
 
+  function setSliderRect(input: HTMLInputElement, left = 10, width = 100) {
+    Object.defineProperty(input, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: left,
+        y: 4,
+        left,
+        top: 4,
+        right: left + width,
+        bottom: 22,
+        width,
+        height: 18,
+        toJSON: () => undefined
+      })
+    });
+  }
+
   it("opens reliably and closes on outside pointer, Escape, blur, and selection changes", () => {
     const onCancel = vi.fn();
     renderPalette({ onCancel });
@@ -320,15 +337,30 @@ describe("ToolPalette art color popover", () => {
     if (!effectOpacity || !effectSize) {
       throw new Error("Expected effect opacity and size sliders.");
     }
-    act(() => {
-      changeRangeValue(effectOpacity, "72");
-    });
-    expect(onPreview).toHaveBeenCalledWith(objectEffectOpacityCommandId("glow", 0.72));
+    setSliderRect(effectOpacity);
+    setSliderRect(effectSize);
 
     act(() => {
-      effectSize.focus();
-      changeRangeValue(effectSize, "50");
-      effectSize.blur();
+      effectOpacity.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 0 }));
+      changeRangeValue(effectOpacity, "72");
+      effectOpacity.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82, buttons: 0 }));
+    });
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(onCommit).not.toHaveBeenCalled();
+
+    act(() => {
+      effectOpacity.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 82, buttons: 1 }));
+      effectOpacity.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenCalledWith(objectEffectOpacityCommandId("glow", 0.72));
+    act(() => {
+      effectOpacity.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82, buttons: 0 }));
+    });
+    expect(onCommit).toHaveBeenCalledWith(objectEffectOpacityCommandId("glow", 0.72));
+
+    act(() => {
+      effectSize.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      effectSize.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 60, buttons: 0 }));
     });
     expect(onPreview).toHaveBeenCalledWith(objectEffectSizeCommandId("glow", 0.5));
     expect(onCommit).toHaveBeenCalledWith(objectEffectSizeCommandId("glow", 0.5));
