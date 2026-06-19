@@ -1521,7 +1521,6 @@ interface MoleculeFillAdjacencyEdge {
   bondId: string;
 }
 
-const maxMoleculeFillCycleLength = 12;
 const maxMoleculeFillCycles = 256;
 
 function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[] {
@@ -1532,7 +1531,6 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   const atomIds = object.atoms.map((atom) => atom.id);
   const atomIdSet = new Set(atomIds);
   const sortedAtomIds = [...atomIds].sort();
-  const sortedAtomIndex = new Map(sortedAtomIds.map((atomId, index) => [atomId, index]));
   const adjacency = new Map<string, MoleculeFillAdjacencyEdge[]>(
     sortedAtomIds.map((atomId) => [atomId, []])
   );
@@ -1554,56 +1552,109 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   adjacency.forEach((edges) => edges.sort((left, right) => left.atomId.localeCompare(right.atomId)));
 
   const cycles = new Map<string, MoleculeFillRingCycle>();
-  const maxCycleLength = Math.min(maxMoleculeFillCycleLength, object.atoms.length);
+  for (const bond of object.bonds) {
+    if (cycles.size >= maxMoleculeFillCycles) {
+      break;
+    }
 
-  sortedAtomIds.forEach((startAtomId) => {
-    const startIndex = sortedAtomIndex.get(startAtomId) ?? 0;
-    const visit = (
-      currentAtomId: string,
-      atomPath: string[],
-      bondPath: string[],
-      visitedAtomIds: Set<string>
-    ) => {
-      if (cycles.size >= maxMoleculeFillCycles) {
-        return;
-      }
+    if (
+      !atomIdSet.has(bond.fromAtomId) ||
+      !atomIdSet.has(bond.toAtomId) ||
+      bond.fromAtomId === bond.toAtomId
+    ) {
+      continue;
+    }
 
-      (adjacency.get(currentAtomId) ?? []).forEach((edge) => {
-        if (edge.atomId === startAtomId) {
-          if (atomPath.length < 3) {
-            return;
-          }
-          const cycleBondIds = [...bondPath, edge.bondId];
-          const cycleKey = moleculeFillCycleKey(cycleBondIds);
-          const cycle = { atomIds: [...atomPath], bondIds: cycleBondIds };
-          if (!cycles.has(cycleKey) && moleculeFillCycleIsChordless(cycle, bondedPairs)) {
-            cycles.set(cycleKey, cycle);
-          }
-          return;
-        }
+    const path = moleculeFillShortestPath(adjacency, bond.fromAtomId, bond.toAtomId, bond.id);
+    if (!path || path.atomIds.length < 3) {
+      continue;
+    }
 
-        const edgeIndex = sortedAtomIndex.get(edge.atomId);
-        if (
-          edgeIndex === undefined ||
-          edgeIndex < startIndex ||
-          visitedAtomIds.has(edge.atomId) ||
-          atomPath.length >= maxCycleLength
-        ) {
-          return;
-        }
-
-        visitedAtomIds.add(edge.atomId);
-        visit(edge.atomId, [...atomPath, edge.atomId], [...bondPath, edge.bondId], visitedAtomIds);
-        visitedAtomIds.delete(edge.atomId);
-      });
+    const cycle = {
+      atomIds: path.atomIds,
+      bondIds: [...path.bondIds, bond.id]
     };
-
-    visit(startAtomId, [startAtomId], [], new Set([startAtomId]));
-  });
+    const cycleKey = moleculeFillCycleKey(cycle.bondIds);
+    const canonicalCycle = moleculeFillCanonicalCycle(cycle);
+    if (!cycles.has(cycleKey) && moleculeFillCycleIsChordless(canonicalCycle, bondedPairs)) {
+      cycles.set(cycleKey, canonicalCycle);
+    }
+  }
 
   return [...cycles.values()].sort((left, right) =>
     moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
   );
+}
+
+function moleculeFillShortestPath(
+  adjacency: ReadonlyMap<string, readonly MoleculeFillAdjacencyEdge[]>,
+  startAtomId: string,
+  endAtomId: string,
+  excludedBondId: string
+): MoleculeFillRingCycle | undefined {
+  const queue = [startAtomId];
+  const visitedAtomIds = new Set([startAtomId]);
+  const previous = new Map<string, MoleculeFillAdjacencyEdge>();
+
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const currentAtomId = queue[queueIndex]!;
+    for (const edge of adjacency.get(currentAtomId) ?? []) {
+      if (edge.bondId === excludedBondId || visitedAtomIds.has(edge.atomId)) {
+        continue;
+      }
+
+      visitedAtomIds.add(edge.atomId);
+      previous.set(edge.atomId, { atomId: currentAtomId, bondId: edge.bondId });
+      if (edge.atomId === endAtomId) {
+        return moleculeFillReconstructPath(startAtomId, endAtomId, previous);
+      }
+      queue.push(edge.atomId);
+    }
+  }
+
+  return undefined;
+}
+
+function moleculeFillReconstructPath(
+  startAtomId: string,
+  endAtomId: string,
+  previous: ReadonlyMap<string, MoleculeFillAdjacencyEdge>
+): MoleculeFillRingCycle | undefined {
+  const atomIds = [endAtomId];
+  const bondIds: string[] = [];
+  let currentAtomId = endAtomId;
+
+  while (currentAtomId !== startAtomId) {
+    const step = previous.get(currentAtomId);
+    if (!step) {
+      return undefined;
+    }
+    bondIds.push(step.bondId);
+    currentAtomId = step.atomId;
+    atomIds.push(currentAtomId);
+  }
+
+  return {
+    atomIds: atomIds.reverse(),
+    bondIds: bondIds.reverse()
+  };
+}
+
+function moleculeFillCanonicalCycle(cycle: MoleculeFillRingCycle): MoleculeFillRingCycle {
+  const firstAtomId = cycle.atomIds[0];
+  const forwardAtomId = cycle.atomIds[1];
+  const backwardAtomId = cycle.atomIds[cycle.atomIds.length - 1];
+  if (!firstAtomId || !forwardAtomId || !backwardAtomId || forwardAtomId.localeCompare(backwardAtomId) <= 0) {
+    return cycle;
+  }
+
+  return {
+    ...cycle,
+    atomIds: [
+      firstAtomId,
+      ...cycle.atomIds.slice(1).reverse()
+    ]
+  };
 }
 
 function moleculeFillCycleIsChordless(

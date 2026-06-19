@@ -1102,6 +1102,54 @@ describe("layout-engine page SVG planner", () => {
     expect(pathNumbers.every((value) => value >= 80 && value <= 360)).toBe(true);
   });
 
+  it("fills macrocycle interiors even when the ring is larger than small aromatic scaffolds", () => {
+    const atomCount = 16;
+    const center = { x: 240, y: 220 };
+    const radius = 90;
+    const atoms = Array.from({ length: atomCount }, (_, index) => {
+      const angle = (Math.PI * 2 * index) / atomCount;
+      return {
+        id: `atom_${String(index + 1).padStart(3, "0")}`,
+        element: "C",
+        x: Number((center.x + Math.cos(angle) * radius).toFixed(3)),
+        y: Number((center.y + Math.sin(angle) * radius).toFixed(3)),
+        formalCharge: 0
+      };
+    });
+    const bonds = atoms.map((atom, index) => ({
+      id: `bond_${String(index + 1).padStart(3, "0")}`,
+      fromAtomId: atom.id,
+      toAtomId: atoms[(index + 1) % atomCount]!.id,
+      order: "single" as const
+    }));
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_macro_fill",
+        x: 140,
+        y: 120,
+        width: 200,
+        height: 200,
+        structure: "macrocycle-sp3",
+        atoms,
+        bonds,
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: { kind: "solid", color: "#d02626" }
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    const pathD = String(fill?.attrs.d ?? "");
+
+    expect(fill?.tag).toBe("path");
+    expect((pathD.match(/M /g) ?? [])).toHaveLength(1);
+    expect((pathD.match(/ L /g) ?? [])).toHaveLength(atomCount - 1);
+    expect(pathD).toContain("330 220");
+    expect(pathD).toContain("150 220");
+  });
+
   it("does not invent molecule fills for acyclic chains", () => {
     const page = pageWithObjects([
       moleculeObject({

@@ -3003,6 +3003,53 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-art-transform-frame="true"');
   });
 
+  it("renders molecule fill gradient handles instead of molecule transform chrome", () => {
+    const document = insertNativeTemplateMolecule(
+      createPhase4Document("Molecule Gradient Handles"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillColor: "#1d7f68",
+          fillMode: "solid",
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#1d7f68" },
+              { offset: 1, color: "#ffffff" }
+            ]
+          }
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-control-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-target="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="start"');
+    expect(markup).toContain('data-graphic-gradient-handle="end"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-molecule-transform-frame=');
+  });
+
   it("renders gradient handles for closed complex path graphics instead of path-node chrome", () => {
     const document = nativePolylinePathDocument(
       createPhase4Document("Complex Path Gradient Handles"),

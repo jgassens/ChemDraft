@@ -835,7 +835,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.15.59-codex";
+const CURRENT_BUILD_STAMP = "6.19.16.34-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -2667,6 +2667,9 @@ export function MainWindow({
     const visualEffectObjectIds = selectedVisualEffectObjectIds(currentDocument, {
       excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
     });
+    const gradientObjectIds = target === "fill"
+      ? [...graphicObjectIds, ...moleculeObjectIds]
+      : graphicObjectIds;
 
     const noneCommand = objectStyleNoneCommands.find((command) => command.id === commandId);
     if (noneCommand) {
@@ -2691,34 +2694,28 @@ export function MainWindow({
 
     if (commandId === objectGradientReverseCommand.id) {
       return {
-        document: reverseGraphicObjectGradientStopsForSelection(currentDocument, target, graphicObjectIds),
+        document: reverseGraphicObjectGradientStopsForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Reversed selected graphic fill gradient"
-          : "Reversed selected graphic stroke gradient"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Reversed selected fill gradient" : "Reversed selected graphic stroke gradient"
       };
     }
 
     if (commandId === objectGradientRotateCommand.id) {
       return {
-        document: rotateGraphicObjectGradientStopsForSelection(currentDocument, target, graphicObjectIds),
+        document: rotateGraphicObjectGradientStopsForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Rotated selected graphic fill gradient stops"
-          : "Rotated selected graphic stroke gradient stops"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Rotated selected fill gradient stops" : "Rotated selected graphic stroke gradient stops"
       };
     }
 
     if (commandId === objectGradientAddStopCommand.id) {
       return {
-        document: addGraphicObjectGradientStopForSelection(currentDocument, target, graphicObjectIds),
+        document: addGraphicObjectGradientStopForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Added selected graphic fill gradient stop"
-          : "Added selected graphic stroke gradient stop"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Added selected fill gradient stop" : "Added selected graphic stroke gradient stop"
       };
     }
 
@@ -2730,13 +2727,11 @@ export function MainWindow({
           target,
           gradientStopColor.stopIndex,
           gradientStopColor.color,
-          graphicObjectIds
+          gradientObjectIds
         ),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Updated selected graphic fill gradient stop color"
-          : "Updated selected graphic stroke gradient stop color"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Updated selected fill gradient stop color" : "Updated selected graphic stroke gradient stop color"
       };
     }
 
@@ -2748,13 +2743,11 @@ export function MainWindow({
           target,
           gradientStopOpacity.stopIndex,
           gradientStopOpacity.opacity,
-          graphicObjectIds
+          gradientObjectIds
         ),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Updated selected graphic fill gradient stop opacity"
-          : "Updated selected graphic stroke gradient stop opacity"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Updated selected fill gradient stop opacity" : "Updated selected graphic stroke gradient stop opacity"
       };
     }
 
@@ -2766,13 +2759,11 @@ export function MainWindow({
           target,
           gradientStopOffset.stopIndex,
           gradientStopOffset.offset,
-          graphicObjectIds
+          gradientObjectIds
         ),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Updated selected graphic fill gradient stop position"
-          : "Updated selected graphic stroke gradient stop position"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Updated selected fill gradient stop position" : "Updated selected graphic stroke gradient stop position"
       };
     }
 
@@ -2783,24 +2774,20 @@ export function MainWindow({
           currentDocument,
           target,
           gradientStopDeleteIndex,
-          graphicObjectIds
+          gradientObjectIds
         ),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Deleted selected graphic fill gradient stop"
-          : "Deleted selected graphic stroke gradient stop"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Deleted selected fill gradient stop" : "Deleted selected graphic stroke gradient stop"
       };
     }
 
     if (commandId === objectGradientDeleteStopCommand.id) {
       return {
-        document: deleteGraphicObjectGradientStopForSelection(currentDocument, target, graphicObjectIds),
+        document: deleteGraphicObjectGradientStopForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: target === "fill"
-          ? "Deleted selected graphic fill gradient stop"
-          : "Deleted selected graphic stroke gradient stop"
+        targeted: gradientObjectIds.length > 0,
+        message: target === "fill" ? "Deleted selected fill gradient stop" : "Deleted selected graphic stroke gradient stop"
       };
     }
 
@@ -8534,14 +8521,15 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event);
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
-    const hasHandle = object?.type === "graphic"
+    const hasHandle = object && (object.type === "graphic" || object.type === "molecule")
       ? isLinearGradientHandleId(handle)
         ? nativeGraphicLinearGradientHandlePoints(object, target) !== undefined
         : nativeGraphicRadialGradientHandlePoints(object, target) !== undefined
       : false;
     if (
       !point ||
-      object?.type !== "graphic" ||
+      !object ||
+      (object.type !== "graphic" && object.type !== "molecule") ||
       !hasHandle
     ) {
       return;
@@ -11394,6 +11382,12 @@ function nativeGraphicLocalPointFromProjectedDrag(
   point: ClientPoint
 ): ClientPoint {
   const object = findDocumentObject(document, objectId);
+  if (object?.type === "molecule") {
+    return {
+      x: point.x - object.x,
+      y: point.y - object.y
+    };
+  }
   if (object?.type !== "graphic") {
     return point;
   }
@@ -14383,17 +14377,20 @@ function DocumentObjectView({
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
-  const graphicLinearGradientHandlePoints = object.type === "graphic"
-    ? nativeGraphicLinearGradientHandlePoints(object, activeArtPaintTarget)
+  const gradientPaintObject = object.type === "graphic" || object.type === "molecule" ? object : undefined;
+  const graphicLinearGradientHandlePoints = gradientPaintObject
+    ? nativeGraphicLinearGradientHandlePoints(gradientPaintObject, activeArtPaintTarget)
     : undefined;
-  const graphicRadialGradientHandlePoints = object.type === "graphic"
-    ? nativeGraphicRadialGradientHandlePoints(object, activeArtPaintTarget)
+  const graphicRadialGradientHandlePoints = gradientPaintObject
+    ? nativeGraphicRadialGradientHandlePoints(gradientPaintObject, activeArtPaintTarget)
     : undefined;
   const hasGraphicGradientHandles = graphicLinearGradientHandlePoints !== undefined ||
     graphicRadialGradientHandlePoints !== undefined;
+  const wholeGradientPaintObjectSelected = object.type !== "molecule" || selectedPart?.objectId !== object.id;
   const graphicEditHandlesActive = graphicDirectEditActive || !graphicTransformActive;
   const showGraphicGradientHandles = selected &&
-    object.type === "graphic" &&
+    gradientPaintObject !== undefined &&
+    wholeGradientPaintObjectSelected &&
     hasGraphicGradientHandles &&
     !inGroupSelection &&
     graphicEditHandlesActive &&
@@ -14489,7 +14486,7 @@ function DocumentObjectView({
       const selectedFragmentBounds = selectedPart && hasVisibleSelectionTargets
         ? nativeMoleculePartBounds(object, selectedPart)
         : undefined;
-      const transformFrame = hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
+      const transformFrame = !showGraphicGradientHandles && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
         ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
@@ -14555,6 +14552,20 @@ function DocumentObjectView({
             ))}
         </g>
       ) : null;
+      const moleculeGradientHandles = showGraphicGradientHandles ? (
+        <>
+          <GraphicLinearGradientHandles
+            object={object}
+            target={activeArtPaintTarget}
+            onPointerDown={handleGraphicGradientPointerDown}
+          />
+          <GraphicRadialGradientHandles
+            object={object}
+            target={activeArtPaintTarget}
+            onPointerDown={handleGraphicGradientPointerDown}
+          />
+        </>
+      ) : null;
       return (
         <div
           className={[
@@ -14589,6 +14600,7 @@ function DocumentObjectView({
           data-freeform-preview-length-angstrom={freeformPreview?.lengthAngstrom}
           data-double-bond-preview-bond-id={doubleBondSidePreview?.bondId}
           data-double-bond-preview-side={doubleBondSidePreview?.side}
+          data-graphic-interaction-mode={showGraphicGradientHandles ? "gradient-edit" : undefined}
           aria-label={moleculeAriaLabel(object)}
           onPointerDown={handleObjectPointerDown}
           onPointerMove={handleObjectPointerMove}
@@ -14676,6 +14688,7 @@ function DocumentObjectView({
               />
             ))}
           </svg>
+          {moleculeGradientHandles}
           {transformFrame ? (
             <div
               className="object-transform-frame"
@@ -16083,12 +16096,28 @@ function GraphicCornerRadiusHandle({
   );
 }
 
+type GraphicGradientHandleObject = GraphicObject | MoleculeObject;
+
+function projectGraphicGradientHandlePoint(
+  object: GraphicGradientHandleObject,
+  point: NativeArtPoint,
+  options: { coordinateSpace?: "local" | "page" } = {}
+): NativeArtPoint {
+  if (object.type === "graphic") {
+    return projectGraphicObjectPoint(object, point, options);
+  }
+
+  return options.coordinateSpace === "page"
+    ? { x: point.x - object.x, y: point.y - object.y }
+    : point;
+}
+
 function GraphicLinearGradientHandles({
   object,
   target,
   onPointerDown
 }: {
-  object: GraphicObject;
+  object: GraphicGradientHandleObject;
   target: GraphicStylePaintTarget;
   onPointerDown(target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
@@ -16097,8 +16126,8 @@ function GraphicLinearGradientHandles({
     return null;
   }
 
-  const start = projectGraphicObjectPoint(object, points.start, { coordinateSpace: "local" });
-  const end = projectGraphicObjectPoint(object, points.end, { coordinateSpace: "local" });
+  const start = projectGraphicGradientHandlePoint(object, points.start, { coordinateSpace: "local" });
+  const end = projectGraphicGradientHandlePoint(object, points.end, { coordinateSpace: "local" });
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   const handles: Array<{ id: NativeGraphicLinearGradientHandleId; point: NativeArtPoint; label: string }> = [
@@ -16153,7 +16182,7 @@ function GraphicRadialGradientHandles({
   target,
   onPointerDown
 }: {
-  object: GraphicObject;
+  object: GraphicGradientHandleObject;
   target: GraphicStylePaintTarget;
   onPointerDown(target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
@@ -16162,10 +16191,10 @@ function GraphicRadialGradientHandles({
     return null;
   }
 
-  const center = projectGraphicObjectPoint(object, points.center, { coordinateSpace: "local" });
-  const radius = projectGraphicObjectPoint(object, points.radius, { coordinateSpace: "local" });
+  const center = projectGraphicGradientHandlePoint(object, points.center, { coordinateSpace: "local" });
+  const radius = projectGraphicGradientHandlePoint(object, points.radius, { coordinateSpace: "local" });
   const focus = points.focus
-    ? projectGraphicObjectPoint(object, points.focus, { coordinateSpace: "local" })
+    ? projectGraphicGradientHandlePoint(object, points.focus, { coordinateSpace: "local" })
     : undefined;
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);

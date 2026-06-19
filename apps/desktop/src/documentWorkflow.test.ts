@@ -10,6 +10,7 @@ import {
   type ChemDraftDocument,
   type ElectronMarkObject,
   type GraphicObject,
+  type GraphicPaint,
   type GroupObject,
   type MoleculeObject,
   type PlusObject,
@@ -4023,7 +4024,45 @@ describe("Phase 4 document workflow", () => {
       ]
     });
 
-    const translucent = applyMoleculeObjectOpacityToSelection(linear, "fillOpacity", 0.42);
+    const movedLinearEnd = updateNativeGraphicLinearGradientHandle(linear, molecule.id, "fill", "end", {
+      x: molecule.width * 0.2,
+      y: molecule.height * 0.8
+    });
+    const movedLinearPaint = moleculeById(movedLinearEnd, molecule.id).style.fillPaint as GraphicPaint | undefined;
+    expect(movedLinearPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0,
+      y1: 0,
+      y2: 0.8
+    });
+    expect(movedLinearPaint?.kind === "linear-gradient" ? movedLinearPaint.x2 : undefined).toBeCloseTo(0.2, 6);
+
+    const addedStop = addGraphicObjectGradientStopForSelection(movedLinearEnd, "fill", [molecule.id]);
+    const movedMiddleStop = applyGraphicObjectGradientStopOffsetForSelection(addedStop, "fill", 1, 0.37, [molecule.id]);
+    expect(moleculeById(movedMiddleStop, molecule.id).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 0.37 },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+
+    const radial = applyMoleculeObjectPaintTypeToSelection(filled, "fill", "radial-gradient");
+    const radialMolecule = moleculeById(radial, molecule.id);
+    const movedRadialRadius = updateNativeGraphicRadialGradientHandle(radial, molecule.id, "fill", "radius", {
+      x: radialMolecule.width * 0.38 + Math.max(radialMolecule.width, radialMolecule.height, 1) * 0.25,
+      y: radialMolecule.height * 0.32
+    });
+    const movedRadialPaint = moleculeById(movedRadialRadius, molecule.id).style.fillPaint as GraphicPaint | undefined;
+    expect(movedRadialPaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.38,
+      cy: 0.32
+    });
+    expect(movedRadialPaint?.kind === "radial-gradient" ? movedRadialPaint.r : undefined).toBeCloseTo(0.25, 6);
+
+    const translucent = applyMoleculeObjectOpacityToSelection(movedMiddleStop, "fillOpacity", 0.42);
     expect(moleculeById(translucent, molecule.id).style.fillOpacity).toBe(0.42);
 
     const stroked = applyMoleculeObjectColorToSelection(translucent, "stroke", "#B3261E");
@@ -4040,9 +4079,10 @@ describe("Phase 4 document workflow", () => {
     expect(moleculeById(mainToolbarColored, molecule.id).style).toMatchObject({
       bondColor: "#1648FF",
       atomLabelColor: "#1648FF",
-      fillColor: "#1d7f68",
-      fillOpacity: 0.42
+      fillOpacity: 0.42,
+      fillPaint: { kind: "linear-gradient" }
     });
+    expect(moleculeById(mainToolbarColored, molecule.id).style.fillColor).not.toBe("#1648FF");
   });
 
   it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", () => {

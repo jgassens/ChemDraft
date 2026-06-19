@@ -1405,14 +1405,14 @@ export interface NativeGraphicRadialGradientHandlePoints {
 }
 
 export function nativeGraphicLinearGradientHandlePoints(
-  object: GraphicObject,
+  object: NativePaintObject,
   target: GraphicStylePaintTarget
 ): NativeGraphicLinearGradientHandlePoints | undefined {
-  if (!graphicObjectSupportsStyleCapability(object, target)) {
+  if (!nativePaintObjectSupportsTarget(object, target)) {
     return undefined;
   }
 
-  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  const paint = nativePaintForObject(object, target);
   if (paint.kind !== "linear-gradient") {
     return undefined;
   }
@@ -1430,14 +1430,14 @@ export function nativeGraphicLinearGradientHandlePoints(
 }
 
 export function nativeGraphicRadialGradientHandlePoints(
-  object: GraphicObject,
+  object: NativePaintObject,
   target: GraphicStylePaintTarget
 ): NativeGraphicRadialGradientHandlePoints | undefined {
-  if (!graphicObjectSupportsStyleCapability(object, target)) {
+  if (!nativePaintObjectSupportsTarget(object, target)) {
     return undefined;
   }
 
-  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  const paint = nativePaintForObject(object, target);
   if (paint.kind !== "radial-gradient") {
     return undefined;
   }
@@ -1694,11 +1694,15 @@ export function updateNativeGraphicLinearGradientHandle(
   point: PagePoint
 ): ChemDraftDocument {
   const object = findDocumentObject(document, objectId);
-  if (object?.type !== "graphic" || !graphicObjectSupportsStyleCapability(object, target)) {
+  if (
+    !object ||
+    (object.type !== "graphic" && object.type !== "molecule") ||
+    !nativePaintObjectSupportsTarget(object, target)
+  ) {
     return document;
   }
 
-  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  const paint = nativePaintForObject(object, target);
   if (paint.kind !== "linear-gradient") {
     return document;
   }
@@ -1725,18 +1729,7 @@ export function updateNativeGraphicLinearGradientHandle(
       op: "updateObject",
       objectId,
       changes: {
-        style: target === "fill"
-          ? {
-              ...object.style,
-              fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
-              fillMode: "solid",
-              fillPaint: nextPaint
-            }
-          : {
-              ...object.style,
-              strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
-              strokePaint: nextPaint
-            }
+        style: nativePaintStyleForObject(object, target, nextPaint)
       }
     },
     { now: phase4Timestamp }
@@ -1751,11 +1744,15 @@ export function updateNativeGraphicRadialGradientHandle(
   point: PagePoint
 ): ChemDraftDocument {
   const object = findDocumentObject(document, objectId);
-  if (object?.type !== "graphic" || !graphicObjectSupportsStyleCapability(object, target)) {
+  if (
+    !object ||
+    (object.type !== "graphic" && object.type !== "molecule") ||
+    !nativePaintObjectSupportsTarget(object, target)
+  ) {
     return document;
   }
 
-  const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  const paint = nativePaintForObject(object, target);
   if (paint.kind !== "radial-gradient") {
     return document;
   }
@@ -1793,18 +1790,7 @@ export function updateNativeGraphicRadialGradientHandle(
       op: "updateObject",
       objectId,
       changes: {
-        style: target === "fill"
-          ? {
-              ...object.style,
-              fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
-              fillMode: "solid",
-              fillPaint: nextPaint
-            }
-          : {
-              ...object.style,
-              strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
-              strokePaint: nextPaint
-            }
+        style: nativePaintStyleForObject(object, target, nextPaint)
       }
     },
     { now: phase4Timestamp }
@@ -3708,6 +3694,8 @@ export type GraphicStylePaintTarget = "fill" | "stroke";
 export type GraphicStylePaintType = GraphicPaint["kind"] | "gloss";
 const MAX_GRAPHIC_GRADIENT_STOPS = 8;
 const GRAPHIC_GRADIENT_ENDPOINT_STOP_GAP = 0.01;
+type GradientGraphicPaint = Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>;
+type NativePaintObject = GraphicObject | MoleculeObject;
 
 export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] {
   const selectedIds = new Set(document.selection.objectIds);
@@ -4239,26 +4227,9 @@ export function applyGraphicObjectGradientStopOffsetForSelection(
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
   const value = clampWorkflowUnit(offset);
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
-    if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
-      return object.style;
-    }
-
-    const nextPaint = moveGraphicGradientStopOffset(paint, stopIndex, value);
-    return target === "fill"
-      ? {
-          ...object.style,
-          fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
-          fillMode: "solid",
-          fillPaint: nextPaint
-        }
-      : {
-          ...object.style,
-          strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
-          strokePaint: nextPaint
-        };
-  }, (object) => graphicObjectSupportsStyleCapability(object, target));
+  return updateGradientPaintObjectsForSelection(document, target, objectIds, (paint) =>
+    moveGraphicGradientStopOffset(paint, stopIndex, value)
+  );
 }
 
 export function applyGraphicObjectOpacityToSelection(
@@ -5908,6 +5879,60 @@ function graphicObjectSupportsStyleCapability(object: GraphicObject, capability:
   return capabilities.supportsLineJoin;
 }
 
+function nativePaintObjectSupportsTarget(object: NativePaintObject, target: GraphicStylePaintTarget): boolean {
+  return object.type === "graphic"
+    ? graphicObjectSupportsStyleCapability(object, target)
+    : target === "fill" || target === "stroke";
+}
+
+function nativePaintForObject(object: NativePaintObject, target: GraphicStylePaintTarget): GraphicPaint {
+  if (object.type === "graphic") {
+    return target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  }
+
+  return target === "fill" ? moleculeFillPaintForObject(object) : moleculeStrokePaintForObject(object);
+}
+
+function nativePaintStyleForObject(
+  object: NativePaintObject,
+  target: GraphicStylePaintTarget,
+  paint: GraphicPaint
+): Record<string, unknown> {
+  if (object.type === "graphic") {
+    return target === "fill"
+      ? {
+          ...object.style,
+          fillColor: legacyColorForGraphicPaint(paint, "none"),
+          fillMode: paint.kind === "none" ? undefined : "solid",
+          fillPaint: paint
+        }
+      : {
+          ...object.style,
+          strokeColor: legacyColorForGraphicPaint(paint, "#111111"),
+          strokePaint: paint
+        };
+  }
+
+  if (target === "fill") {
+    return {
+      ...object.style,
+      fillColor: legacyColorForGraphicPaint(paint, "none"),
+      fillMode: paint.kind === "none" ? undefined : "solid",
+      fillPaint: paint
+    };
+  }
+
+  const strokeColor = legacyColorForGraphicPaint(paint, "#111111");
+  return {
+    ...object.style,
+    bondColor: strokeColor,
+    atomLabelColor: strokeColor,
+    color: strokeColor,
+    strokeColor,
+    strokePaint: paint
+  };
+}
+
 function graphicObjectSupportedStrokeStyle(
   object: GraphicObject,
   style: Pick<GraphicObjectStyle, "strokeWidth" | "strokeDasharray" | "strokeLineCap" | "strokeLineJoin" | "strokeMiterLimit">
@@ -6291,38 +6316,61 @@ function updateGraphicObjectGradientStopsForSelection(
   target: GraphicStylePaintTarget,
   objectIds: readonly string[],
   updateStops: (
-    stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
-  ) => Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
+    stops: GradientGraphicPaint["stops"]
+  ) => GradientGraphicPaint["stops"]
 ): ChemDraftDocument {
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
-    if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
-      return object.style;
-    }
+  return updateGradientPaintObjectsForSelection(document, target, objectIds, (paint) => ({
+    ...paint,
+    stops: updateStops(paint.stops)
+  }));
+}
 
-    const nextPaint = {
-      ...paint,
-      stops: updateStops(paint.stops)
-    };
+function updateGradientPaintObjectsForSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[],
+  updatePaint: (paint: GradientGraphicPaint, object: NativePaintObject) => GradientGraphicPaint
+): ChemDraftDocument {
+  const targetIds = new Set(objectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
 
-    return target === "fill"
-      ? {
-          ...object.style,
-          fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
-          fillMode: "solid",
-          fillPaint: nextPaint
-        }
-      : {
-          ...object.style,
-          strokeColor: legacyColorForGraphicPaint(nextPaint, "#111111"),
-          strokePaint: nextPaint
-        };
-  }, (object) => graphicObjectSupportsStyleCapability(object, target));
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (
+        (object.type !== "graphic" && object.type !== "molecule") ||
+        !targetIds.has(object.id) ||
+        !nativePaintObjectSupportsTarget(object, target)
+      ) {
+        return [];
+      }
+
+      const paint = nativePaintForObject(object, target);
+      if (paint.kind !== "linear-gradient" && paint.kind !== "radial-gradient") {
+        return [];
+      }
+
+      const nextPaint = updatePaint(paint, object);
+      const nextStyle = nativePaintStyleForObject(object, target, nextPaint);
+      return JSON.stringify(object.style) === JSON.stringify(nextStyle)
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              style: nextStyle
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
 function reverseGradientStops(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  stops: GradientGraphicPaint["stops"]
+): GradientGraphicPaint["stops"] {
   return stops
     .map((stop) => ({
       ...stop,
@@ -6332,8 +6380,8 @@ function reverseGradientStops(
 }
 
 function rotateGradientStops(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  stops: GradientGraphicPaint["stops"]
+): GradientGraphicPaint["stops"] {
   const sorted = sortedGradientStops(stops);
   if (sorted.length <= 1) {
     return sorted;
@@ -6355,8 +6403,8 @@ function rotateGradientStops(
 }
 
 function addGradientStop(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  stops: GradientGraphicPaint["stops"]
+): GradientGraphicPaint["stops"] {
   const sorted = sortedGradientStops(stops);
   if (sorted.length >= MAX_GRAPHIC_GRADIENT_STOPS) {
     return sorted;
@@ -6404,8 +6452,8 @@ function addGradientStop(
 }
 
 function deleteMiddleGradientStop(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  stops: GradientGraphicPaint["stops"]
+): GradientGraphicPaint["stops"] {
   const sorted = sortedGradientStops(stops);
   if (sorted.length <= 2) {
     return sorted;
@@ -6425,9 +6473,9 @@ function deleteMiddleGradientStop(
 }
 
 function deleteGradientStopAtIndex(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  stops: GradientGraphicPaint["stops"],
   stopIndex: number
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+): GradientGraphicPaint["stops"] {
   const sorted = sortedGradientStops(stops);
   if (sorted.length <= 2) {
     return sorted;
@@ -6438,10 +6486,10 @@ function deleteGradientStopAtIndex(
 }
 
 function moveGraphicGradientStopOffset(
-  paint: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>,
+  paint: GradientGraphicPaint,
   stopIndex: number,
   offset: number
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }> {
+): GradientGraphicPaint {
   const sorted = sortedGradientStops(paint.stops);
   const editIndex = Math.round(stopIndex);
   if (editIndex < 0 || editIndex >= sorted.length) {
@@ -6465,7 +6513,7 @@ function moveGraphicGradientStopOffset(
 
 function moveLinearGradientStartStop(
   paint: Extract<GraphicPaint, { kind: "linear-gradient" }>,
-  sortedStops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  sortedStops: GradientGraphicPaint["stops"],
   offset: number
 ): Extract<GraphicPaint, { kind: "linear-gradient" }> {
   const nextStop = sortedStops[1];
@@ -6495,7 +6543,7 @@ function moveLinearGradientStartStop(
 
 function moveLinearGradientEndStop(
   paint: Extract<GraphicPaint, { kind: "linear-gradient" }>,
-  sortedStops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  sortedStops: GradientGraphicPaint["stops"],
   offset: number
 ): Extract<GraphicPaint, { kind: "linear-gradient" }> {
   const previousStop = sortedStops[sortedStops.length - 2];
@@ -6523,12 +6571,12 @@ function moveLinearGradientEndStop(
 }
 
 function updateGradientStopAtIndex(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  stops: GradientGraphicPaint["stops"],
   stopIndex: number,
   updateStop: (
-    stop: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
-  ) => Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+    stop: GradientGraphicPaint["stops"][number]
+  ) => GradientGraphicPaint["stops"][number]
+): GradientGraphicPaint["stops"] {
   const sorted = sortedGradientStops(stops);
   const editIndex = Math.round(stopIndex);
   if (editIndex < 0 || editIndex >= sorted.length) {
@@ -6539,8 +6587,8 @@ function updateGradientStopAtIndex(
 }
 
 function sortedGradientStops(
-  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"]
-): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  stops: GradientGraphicPaint["stops"]
+): GradientGraphicPaint["stops"] {
   return stops
     .map((stop) => ({
       ...stop,
@@ -6552,13 +6600,13 @@ function sortedGradientStops(
 }
 
 function gradientStopColor(
-  stop: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
+  stop: GradientGraphicPaint["stops"][number]
 ): string {
   return normalizeWorkflowHexColor(stop.color) ?? "#111111";
 }
 
 function gradientStopOpacity(
-  stop: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"][number]
+  stop: GradientGraphicPaint["stops"][number]
 ): number {
   return clampWorkflowUnit(stop.opacity ?? 1);
 }
