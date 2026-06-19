@@ -803,7 +803,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.10.57-codex";
+const CURRENT_BUILD_STAMP = "6.19.11.16-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -15204,7 +15204,6 @@ function reactSvgSketchEffectPaths(plan: NativeArtVisualPlan, objectId: string) 
     return null;
   }
 
-  const transform = plan.projectedShapePathD ? undefined : plan.projectionTransform;
   return sketch.paths.map((path, index) => (
     <path
       key={`graphic-sketch-${objectId}-${index}`}
@@ -15216,7 +15215,30 @@ function reactSvgSketchEffectPaths(plan: NativeArtVisualPlan, objectId: string) 
       strokeOpacity={sketch.opacity === 1 ? undefined : sketch.opacity}
       strokeLinecap="round"
       strokeLinejoin="round"
-      transform={transform}
+      pointerEvents="none"
+    />
+  ));
+}
+
+function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: string, effectFilterId: string) {
+  const hasFilter = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
+  const sketch = plan.effects.find((effect) => effect.kind === "sketch");
+  if (!hasFilter || !sketch) {
+    return null;
+  }
+
+  return sketch.paths.map((path, index) => (
+    <path
+      key={`graphic-sketch-effect-source-${objectId}-${index}`}
+      className="graphic-glyph-effect-source"
+      data-graphic-effect-source="true"
+      d={path.d}
+      fill={path.fill && path.fill !== "none" ? "#000000" : "none"}
+      stroke="#000000"
+      strokeWidth={path.strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      filter={`url(#${effectFilterId})`}
       pointerEvents="none"
     />
   ));
@@ -15247,10 +15269,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const hitStrokeWidth = Math.max(strokeWidth + 10, 14);
   const closedFillHitTarget = plan.capabilities.supportsFill && !plan.capabilities.isOpenStroke;
   const pathFillHitTarget = freehandPath || closedFillHitTarget || !plan.capabilities.supportsStroke;
+  const hasSketchEffect = plan.effects.some((effect) => effect.kind === "sketch");
   const sketchPaths = reactSvgSketchEffectPaths(plan, object.id);
-  const shapeEffectSourceProps = reactSvgEffectSourceProps(plan, effectFilterId, closedFillHitTarget);
-  const strokeEffectSourceProps = reactSvgEffectSourceProps(plan, effectFilterId, false);
-  const pathEffectSourceProps = reactSvgEffectSourceProps(plan, effectFilterId, pathFillHitTarget);
+  const sketchEffectSourcePaths = reactSvgSketchEffectSourcePaths(plan, object.id, effectFilterId);
+  const shapeEffectSourceProps = hasSketchEffect ? undefined : reactSvgEffectSourceProps(plan, effectFilterId, closedFillHitTarget);
+  const strokeEffectSourceProps = hasSketchEffect ? undefined : reactSvgEffectSourceProps(plan, effectFilterId, false);
+  const pathEffectSourceProps = hasSketchEffect ? undefined : reactSvgEffectSourceProps(plan, effectFilterId, pathFillHitTarget);
   const fillPaintProps = fillMode === "gloss"
     ? { fill: `url(#${gradientId})`, fillOpacity: plan.fill.opacity === 1 ? undefined : plan.fill.opacity }
     : reactSvgPaintAttrs("fill", plan.fill.paint, fillPaintId);
@@ -15263,6 +15287,9 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     strokeMiterlimit: plan.stroke.miterLimit,
     vectorEffect: "non-scaling-stroke" as const
   };
+  const cleanStrokeProps = hasSketchEffect
+    ? { ...sharedStrokeProps, stroke: "none" }
+    : sharedStrokeProps;
   const markerStart = plan.markerStart && plan.markerStartTerminal
     ? reactSvgFlattenedMarker(plan.markerStart, plan.markerStartTerminal, markerStartId, "start", strokeColor, plan.stroke.opacity)
     : null;
@@ -15323,11 +15350,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               {...shapeEffectSourceProps}
             />
           ) : null}
+          {sketchEffectSourcePaths}
           <path
             className="graphic-glyph-stroke graphic-glyph-projected-shape"
             d={plan.projectedShapePathD}
             {...fillPaintProps}
-            {...sharedStrokeProps}
+            {...cleanStrokeProps}
           />
           {sketchPaths}
         </>
@@ -15357,6 +15385,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                   {...shapeEffectSourceProps}
                 />
               ) : null}
+              {sketchEffectSourcePaths}
               <ellipse
                 className="graphic-glyph-stroke graphic-glyph-shape"
                 cx={width / 2}
@@ -15364,7 +15393,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                 rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
                 ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
                 {...fillPaintProps}
-                {...sharedStrokeProps}
+                {...cleanStrokeProps}
               />
               {sketchPaths}
             </>
@@ -15396,6 +15425,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                   {...shapeEffectSourceProps}
                 />
               ) : null}
+              {sketchEffectSourcePaths}
               <rect
                 className="graphic-glyph-stroke graphic-glyph-shape"
                 x={strokeWidth / 2}
@@ -15405,7 +15435,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                 rx={cornerRadius}
                 ry={cornerRadius}
                 {...fillPaintProps}
-                {...sharedStrokeProps}
+                {...cleanStrokeProps}
               />
               {sketchPaths}
             </>
@@ -15429,11 +15459,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                 {...pathEffectSourceProps}
               />
             ) : null}
+            {sketchEffectSourcePaths}
             <path
               className="graphic-glyph-stroke graphic-glyph-path"
               d={visiblePathD}
               {...(freehandPath || plan.capabilities.supportsFill ? fillPaintProps : { fill: "none" })}
-              {...sharedStrokeProps}
+              {...cleanStrokeProps}
             />
             {sketchPaths}
             {markerStart}
@@ -15462,13 +15493,14 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                 {...strokeEffectSourceProps}
               />
             ) : null}
+            {sketchEffectSourcePaths}
             <line
               className="graphic-glyph-stroke"
               x1={visibleLine.x1}
               y1={visibleLine.y1}
               x2={visibleLine.x2}
               y2={visibleLine.y2}
-              {...sharedStrokeProps}
+              {...cleanStrokeProps}
             />
             {sketchPaths}
             {markerStart}

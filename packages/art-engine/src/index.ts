@@ -481,21 +481,24 @@ function nativeArtEffectPlans(object: GraphicObject, input: NativeArtEffectPlanI
   return visualEffectPlansForStyle({
     objectId: object.id,
     style: object.style,
-    sketchBasePathD
+    sketchBasePathD,
+    sketchStrokeWidthPx: input.stroke.width
   });
 }
 
 export function visualEffectPlansForStyle({
   objectId,
   style,
-  sketchBasePathD
+  sketchBasePathD,
+  sketchStrokeWidthPx = 1.5
 }: {
   objectId: string;
   style: Record<string, unknown>;
   sketchBasePathD?: string;
+  sketchStrokeWidthPx?: number;
 }): NativeArtEffectPlan[] {
   return visualEffectsForStyle(style)
-    .map((effect) => visualEffectPlan(objectId, effect, sketchBasePathD))
+    .map((effect) => visualEffectPlan(objectId, effect, sketchBasePathD, sketchStrokeWidthPx))
     .filter((effect): effect is NativeArtEffectPlan => effect !== undefined);
 }
 
@@ -567,7 +570,8 @@ export function defaultVisualEffectForKind(objectId: string, kind: VisualEffectK
 function visualEffectPlan(
   objectId: string,
   effect: VisualEffect,
-  sketchBasePathD?: string
+  sketchBasePathD?: string,
+  sketchStrokeWidthPx = 1.5
 ): NativeArtEffectPlan | undefined {
   if (effect.kind === "shadow") {
     return {
@@ -590,20 +594,21 @@ function visualEffectPlan(
     };
   }
 
-  return visualSketchEffectPlan(objectId, effect, sketchBasePathD);
+  return visualSketchEffectPlan(objectId, effect, sketchBasePathD, sketchStrokeWidthPx);
 }
 
 function visualSketchEffectPlan(
   objectId: string,
   effect: VisualEffect,
-  basePathD: string | undefined
+  basePathD: string | undefined,
+  sketchStrokeWidthPx = 1.5
 ): NativeArtSketchEffectPlan | undefined {
   if (!basePathD) {
     return undefined;
   }
 
   const color = graphicColor(effect.color, "#111111");
-  const strokeWidth = Math.max(0.5, metadataNumber(effect.strokeWidth) ?? 1.5);
+  const strokeWidth = Math.max(0.5, sketchStrokeWidthPx, metadataNumber(effect.strokeWidth) ?? 0);
   const seed = visualEffectSeed(objectId, effect, "sketch");
   const roughness = Math.max(0, metadataNumber(effect.roughness) ?? 1.25);
   const bowing = Math.max(0, metadataNumber(effect.bowing) ?? 0.8);

@@ -242,12 +242,12 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('id="graphic-gloss-art_svg_effects"');
     expect(result.contents).toContain('gradientUnits="userSpaceOnUse"');
     expect(result.contents).toContain('gradientTransform="matrix(');
-    expect(result.contents).toContain('id="graphic-effects-art_svg_effects"');
-    expect(result.contents).toContain('filterUnits="userSpaceOnUse"');
-    expect(result.contents).not.toContain('x="-40%"');
-    expect(result.contents).toContain("<feOffset");
-    expect(result.contents).toContain('filter="url(#graphic-effects-art_svg_effects)"');
-    expect(result.contents).toContain('data-graphic-effect-source="true"');
+    expect(result.contents).toContain('data-graphic-effect="shadow"');
+    expect(result.contents).toContain('fill="#52616b"');
+    expect(result.contents).toContain('stroke="#52616b"');
+    expect(result.contents).toContain('transform="translate(6 6)"');
+    expect(result.contents).not.toContain('filter="url(#graphic-effects-art_svg_effects)"');
+    expect(result.contents).not.toContain('data-graphic-effect-source="true"');
     expect(result.contents).not.toContain('in="SourceGraphic"');
     expect(result.contents).toContain('stop-color="#e4f0ed"');
     expect(result.contents).toContain('stop-color="#0d382e"');
@@ -295,14 +295,55 @@ describe("SVG export serialization", () => {
     const second = exportDocumentToSvg(document, { includeWarnings: true });
 
     expect(first.contents).toBe(second.contents);
-    expect(first.contents).toContain('id="graphic-effects-art_svg_glow_sketch"');
-    expect(first.contents).toContain('filterUnits="userSpaceOnUse"');
-    expect(first.contents).toContain("<feGaussianBlur");
-    expect(first.contents).toContain("<feFlood");
+    expect(first.contents).toContain('data-graphic-effect="glow"');
     expect(first.contents).toContain('data-graphic-effect="sketch"');
-    expect(first.contents).toContain('filter="url(#graphic-effects-art_svg_glow_sketch)"');
-    expect(first.contents).toContain('data-graphic-effect-source="true"');
+    expect(first.contents).toContain('stroke="#1d7f68"');
+    expect(first.contents).toContain('stroke-opacity="0.16"');
+    expect(first.contents).not.toContain('filter="url(#graphic-effects-art_svg_glow_sketch)"');
+    expect(first.contents).not.toContain('data-graphic-effect-source="true"');
     expect(first.warnings).toEqual([]);
+  });
+
+  it("exports sketch as the visible stroke for open art paths", () => {
+    const graphic = {
+      id: "art_svg_sketch_line",
+      type: "graphic",
+      x: 96,
+      y: 120,
+      width: 140,
+      height: 80,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 5,
+        effects: [
+          { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 },
+          { kind: "glow", color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 },
+          { kind: "sketch", color: "#111111", seed: 1357, roughness: 1.25, bowing: 0.8 }
+        ]
+      },
+      graphicKind: "line",
+      data: {
+        lineStart: { x: 0, y: 70 },
+        lineEnd: { x: 140, y: 0 }
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "SVG Sketch Line", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const result = exportDocumentToSvg(document);
+
+    expect(result.contents).toContain('data-graphic-effect="shadow"');
+    expect(result.contents).toContain('data-graphic-effect="glow"');
+    expect(result.contents).toContain('data-graphic-effect="sketch"');
+    expect(result.contents).toMatch(/data-graphic-effect="sketch"[^>]*stroke-width="5"/);
+    expect(result.contents).toMatch(/<line[^>]*data-object-id="art_svg_sketch_line"[^>]*stroke="none"/);
+    expect(result.contents).not.toMatch(/<line[^>]*data-object-id="art_svg_sketch_line"[^>]*stroke="#111111"/);
+    expect(result.contents).not.toContain('filter="url(#graphic-effects-art_svg_sketch_line)"');
+    expect(result.warnings).toEqual([]);
   });
 
   it("exports native graphic arrowheads as Illustrator-safe SVG geometry", () => {

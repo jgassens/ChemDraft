@@ -133,7 +133,7 @@ describe("art-engine native art planning", () => {
     expect(firstSketch?.paths.map((path) => path.d)).toEqual(secondSketch?.paths.map((path) => path.d));
   });
 
-  it("keeps effect defaults independent from object stroke and fill style", () => {
+  it("keeps color effect defaults independent while sketch stroke follows object stroke", () => {
     const graphic = {
       ...baseGraphic,
       id: "independent_effect_style",
@@ -157,7 +157,7 @@ describe("art-engine native art planning", () => {
     const sketch = plan.effects.find((effect) => effect.kind === "sketch");
 
     expect(glow).toMatchObject({ color: "#fdd835" });
-    expect(sketch).toMatchObject({ color: "#111111", strokeWidth: 1.5 });
+    expect(sketch).toMatchObject({ color: "#111111", strokeWidth: 12 });
   });
 
   it("plans a boolean union from two closed rectangles", () => {
