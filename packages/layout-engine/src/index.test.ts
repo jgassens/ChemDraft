@@ -954,6 +954,7 @@ describe("layout-engine page SVG planner", () => {
           fillColor: "#b3261e",
           strokeWidth: 1.5,
           fillMode: "gloss",
+          fillOpacity: 0.48,
           tiltXDegrees: 18,
           tiltYDegrees: -12
         },
@@ -1009,6 +1010,7 @@ describe("layout-engine page SVG planner", () => {
       fill: "url(#graphic-gloss-art_ellipse)",
       stroke: "#111111"
     });
+    expect(ellipsePath?.attrs["fill-opacity"]).toBeUndefined();
     expect(glossGradient?.attrs).toMatchObject({
       id: "graphic-gloss-art_ellipse",
       gradientUnits: "userSpaceOnUse"
@@ -1020,7 +1022,7 @@ describe("layout-engine page SVG planner", () => {
       "#b3261e",
       "#4f110d"
     ]);
-    expect(glossStops.every((fragment) => fragment.attrs["stop-opacity"] === undefined)).toBe(true);
+    expect(glossStops.every((fragment) => fragment.attrs["stop-opacity"] === 0.48)).toBe(true);
     expect(visibleFragments[2]?.attrs).toMatchObject({
       "data-object-id": "art_rect",
       fill: "#f8faf9",

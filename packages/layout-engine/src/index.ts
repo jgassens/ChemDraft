@@ -1691,8 +1691,7 @@ function graphicObjectFragment(
   const gradientId = `graphic-gloss-${object.id}`;
   const fillAttrs = plan.glossGradient
     ? {
-        fill: `url(#${gradientId})`,
-        "fill-opacity": plan.fill.opacity === 1 ? undefined : plan.fill.opacity
+        fill: `url(#${gradientId})`
       }
     : svgPaintAttrs("fill", plan.fill.paint, `graphic-fill-${object.id}`);
   const strokeAttrs = {
@@ -1716,7 +1715,7 @@ function graphicObjectFragment(
           r: plan.glossGradient.r,
           gradientTransform: plan.glossGradient.gradientTransform,
           gradientUnits: "userSpaceOnUse"
-        }, svgGradientStopFragments(plan.glossGradient.stops, `graphic-gloss-${object.id}`))
+        }, svgGradientStopFragments(plan.glossGradient.stops, `graphic-gloss-${object.id}`, plan.fill.opacity))
       ])
     ] : [])
   ];
@@ -2012,12 +2011,17 @@ function markerTerminalDirection(terminal: NativeArtStrokeTerminalPlan): LayoutP
   };
 }
 
-function svgGradientStopFragments(stops: readonly NativeArtGradientStopPlan[], id: string): PageSvgFragment[] {
+function svgGradientStopFragments(
+  stops: readonly NativeArtGradientStopPlan[],
+  id: string,
+  opacityMultiplier = 1
+): PageSvgFragment[] {
   return stops.map((stop, index) => {
+    const opacity = clamp(stop.opacity * opacityMultiplier, 0, 1);
     return elementFragment("stop", `${id}-stop-${index}`, {
       offset: `${Number((stop.offset * 100).toFixed(4))}%`,
       "stop-color": stop.color,
-      "stop-opacity": stop.opacity === 1 ? undefined : stop.opacity
+      "stop-opacity": opacity === 1 ? undefined : opacity
     });
   });
 }

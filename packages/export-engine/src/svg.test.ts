@@ -173,6 +173,7 @@ describe("SVG export serialization", () => {
       style: {
         strokeColor: "#111111",
         fillColor: "#1d7f68",
+        fillOpacity: 0.48,
         fillMode: "gloss",
         effect: "shadow",
         tiltXDegrees: 20,
@@ -188,6 +189,7 @@ describe("SVG export serialization", () => {
       style: {
         ...graphic.style,
         fillMode: "solid",
+        fillOpacity: 1,
         effect: "reflection",
         tiltXDegrees: 0,
         tiltYDegrees: 0
@@ -212,6 +214,8 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('gradientTransform="matrix(');
     expect(result.contents).toContain('stop-color="#e4f0ed"');
     expect(result.contents).toContain('stop-color="#0d382e"');
+    expect(result.contents.match(/stop-opacity="0.48"/g)).toHaveLength(4);
+    expect(result.contents).not.toContain('fill-opacity="0.48"');
     expect(result.contents).not.toContain('stop-opacity="0.92"');
     expect(result.contents).not.toContain('stop-opacity="0.42"');
     expect(result.contents).not.toContain('stop-opacity="0.78"');
