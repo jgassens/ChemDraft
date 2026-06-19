@@ -49,6 +49,7 @@ import {
   type GraphicFreehandPoint,
   type GraphicObjectData,
   type GraphicObject,
+  type GroupObject,
   type GraphicPaint,
   type GraphicObjectStyle,
   type PageLayout,
@@ -144,6 +145,16 @@ export interface ClipboardPasteResult {
   selectedObjectId?: string;
   editTextObjectId?: string;
   warnings: ClipboardTransferWarning[];
+}
+
+export const CHEMDRAFT_SELECTION_CLIPBOARD_TYPE = "application/x-chemdraft-selection+json";
+
+export interface ChemDraftSelectionClipboardPayload {
+  kind: "chemdraft-selection";
+  version: 1;
+  objects: DocumentObject[];
+  selectionIds: string[];
+  bounds: SelectionBounds;
 }
 
 export interface NativeTextSelectionRange {
@@ -3711,6 +3722,19 @@ export function selectedGraphicObjectIds(document: ChemDraftDocument): string[] 
   );
 }
 
+export function selectedMoleculeObjectIds(document: ChemDraftDocument): string[] {
+  const selectedIds = new Set(document.selection.objectIds);
+  if (selectedIds.size === 0) {
+    return [];
+  }
+
+  return document.pages.flatMap((page) =>
+    page.objects
+      .filter((object): object is MoleculeObject => object.type === "molecule" && selectedIds.has(object.id))
+      .map((object) => object.id)
+  );
+}
+
 export function selectedVisualEffectObjectIds(
   document: ChemDraftDocument,
   options: { excludeMoleculeObjectId?: string } = {}
@@ -4253,6 +4277,94 @@ export function applyGraphicObjectOpacityToSelection(
   ));
 }
 
+export function applyMoleculeObjectColorToSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  color: string,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const normalized = normalizeWorkflowHexColor(color);
+  if (!normalized) {
+    return document;
+  }
+
+  return updateMoleculeObjects(document, objectIds, (object) => {
+    if (target === "fill") {
+      const nextPaint = moleculePaintWithPrimaryColor(
+        moleculeFillPaintForObject(object),
+        normalized,
+        moleculeFillPaintOpacity(object)
+      );
+      return {
+        ...object.style,
+        fillColor: legacyColorForGraphicPaint(nextPaint, "none"),
+        fillMode: nextPaint.kind === "none" ? undefined : "solid",
+        fillPaint: nextPaint
+      };
+    }
+
+    return {
+      ...object.style,
+      bondColor: normalized,
+      atomLabelColor: normalized,
+      color: normalized,
+      strokeColor: normalized,
+      strokePaint: { kind: "solid", color: normalized, opacity: moleculeStrokePaintOpacity(object) }
+    };
+  });
+}
+
+export function applyMoleculeObjectNoneToSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  if (target !== "fill") {
+    return document;
+  }
+
+  return updateMoleculeObjects(document, objectIds, (object) => ({
+    ...object.style,
+    fillColor: "none",
+    fillMode: undefined,
+    fillPaint: { kind: "none" }
+  }));
+}
+
+export function applyMoleculeObjectPaintTypeToSelection(
+  document: ChemDraftDocument,
+  target: GraphicStylePaintTarget,
+  paintType: GraphicStylePaintType,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  if (target !== "fill") {
+    return document;
+  }
+
+  return updateMoleculeObjects(document, objectIds, (object) => {
+    const paint = moleculePaintForType(object, paintType);
+    return {
+      ...object.style,
+      fillColor: legacyColorForGraphicPaint(paint, "none"),
+      fillMode: paint.kind === "none" ? undefined : "solid",
+      fillPaint: paint
+    };
+  });
+}
+
+export function applyMoleculeObjectOpacityToSelection(
+  document: ChemDraftDocument,
+  key: "opacity" | "fillOpacity" | "strokeOpacity",
+  opacity: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const value = clampWorkflowUnit(opacity);
+  return updateMoleculeObjects(document, objectIds, (object) => ({
+    ...object.style,
+    [key]: value
+  }));
+}
+
 export function applyGraphicObjectEffectToSelection(
   document: ChemDraftDocument,
   effectKind: GraphicStyleEffectKind,
@@ -4559,16 +4671,23 @@ function validateNativeMoleculeColorTarget(
 }
 
 export function deleteSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {
-  const selectedIds = document.selection.objectIds.filter((objectId) =>
-    document.pages.some((page) => page.objects.some((object) => object.id === objectId))
-  );
-  if (selectedIds.length === 0) {
+  const page = firstPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  const selectedChildIds = new Set(resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds));
+  const affectedGroupIds = page.objects
+    .filter((object): object is GroupObject =>
+      object.type === "group" &&
+      (selectedIds.has(object.id) || object.childObjectIds.some((childId) => selectedChildIds.has(childId)))
+    )
+    .map((object) => object.id);
+  const objectIds = [...new Set([...selectedChildIds, ...affectedGroupIds])];
+  if (objectIds.length === 0) {
     return document;
   }
 
   return applyPatches(
     document,
-    selectedIds.map((objectId) => ({ op: "removeObject", objectId })),
+    objectIds.map((objectId) => ({ op: "removeObject", objectId })),
     { now: phase4Timestamp }
   );
 }
@@ -5932,6 +6051,38 @@ function updateVisualEffectObjects(
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
+function updateMoleculeObjects(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  updateStyle: (object: MoleculeObject) => Record<string, unknown>
+): ChemDraftDocument {
+  const targetIds = new Set(objectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule" || !targetIds.has(object.id)) {
+        return [];
+      }
+
+      const nextStyle = updateStyle(object);
+      return JSON.stringify(object.style) === JSON.stringify(nextStyle)
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              style: nextStyle
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
 function graphicFillPaintForObject(object: GraphicObject): GraphicPaint {
   if (object.style.fillPaint) {
     return object.style.fillPaint;
@@ -5953,6 +6104,33 @@ function graphicStrokePaintForObject(object: GraphicObject): GraphicPaint {
     typeof object.style.strokeColor === "string" ? object.style.strokeColor : undefined
   ) ?? "#111111";
   return { kind: "solid", color, opacity: graphicStrokePaintOpacity(object) };
+}
+
+function moleculeFillPaintForObject(object: MoleculeObject): GraphicPaint {
+  const paint = graphicPaintFromUnknown(object.style.fillPaint);
+  if (paint) {
+    return paint;
+  }
+
+  const fillColor = typeof object.style.fillColor === "string" ? object.style.fillColor : "none";
+  const color = normalizeWorkflowHexColor(fillColor);
+  return color
+    ? { kind: "solid", color, opacity: moleculeFillPaintOpacity(object) }
+    : { kind: "none" };
+}
+
+function moleculeStrokePaintForObject(object: MoleculeObject): GraphicPaint {
+  const paint = graphicPaintFromUnknown(object.style.strokePaint);
+  if (paint) {
+    return paint;
+  }
+
+  const color = normalizeWorkflowHexColor(
+    typeof object.style.bondColor === "string" ? object.style.bondColor :
+      typeof object.style.strokeColor === "string" ? object.style.strokeColor :
+        typeof object.style.color === "string" ? object.style.color : undefined
+  ) ?? "#111111";
+  return { kind: "solid", color, opacity: moleculeStrokePaintOpacity(object) };
 }
 
 function graphicPaintForType(
@@ -6001,6 +6179,51 @@ function graphicPaintForType(
   };
 }
 
+function moleculePaintForType(
+  object: MoleculeObject,
+  paintType: GraphicStylePaintType
+): GraphicPaint {
+  if (paintType === "none") {
+    return { kind: "none" };
+  }
+
+  const color = moleculePaintBaseColor(object, "fill");
+  const opacity = moleculeFillPaintOpacity(object);
+  if (paintType === "solid") {
+    return { kind: "solid", color, opacity };
+  }
+
+  const companionColor = gradientCompanionColor(color);
+  if (paintType === "linear-gradient") {
+    return {
+      kind: "linear-gradient",
+      units: "object",
+      x1: 0,
+      y1: 0,
+      x2: 1,
+      y2: 1,
+      stops: [
+        { offset: 0, color },
+        { offset: 1, color: companionColor }
+      ]
+    };
+  }
+
+  return {
+    kind: "radial-gradient",
+    units: "object",
+    cx: 0.38,
+    cy: 0.32,
+    r: 0.78,
+    fx: 0.28,
+    fy: 0.22,
+    stops: [
+      { offset: 0, color: companionColor },
+      { offset: 1, color }
+    ]
+  };
+}
+
 function graphicPaintBaseColor(object: GraphicObject, target: GraphicStylePaintTarget): string {
   const paint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
   const fallback = target === "fill"
@@ -6011,11 +6234,33 @@ function graphicPaintBaseColor(object: GraphicObject, target: GraphicStylePaintT
   return legacyColorForGraphicPaint(paint, fallback);
 }
 
+function moleculePaintBaseColor(object: MoleculeObject, target: GraphicStylePaintTarget): string {
+  const paint = target === "fill" ? moleculeFillPaintForObject(object) : moleculeStrokePaintForObject(object);
+  const fallback = target === "fill"
+    ? normalizeWorkflowHexColor(typeof object.style.fillColor === "string" ? object.style.fillColor : undefined) ?? "#1d7f68"
+    : normalizeWorkflowHexColor(
+      typeof object.style.bondColor === "string" ? object.style.bondColor :
+        typeof object.style.strokeColor === "string" ? object.style.strokeColor : undefined
+    ) ?? "#111111";
+  return legacyColorForGraphicPaint(paint, fallback);
+}
+
 function gradientCompanionColor(color: string): string {
   return color.toLowerCase() === "#ffffff" ? "#1d7f68" : "#ffffff";
 }
 
 function graphicPaintWithPrimaryColor(paint: GraphicPaint, color: string, opacity: number): GraphicPaint {
+  if (paint.kind === "linear-gradient" || paint.kind === "radial-gradient") {
+    return {
+      ...paint,
+      stops: gradientStopsWithPrimaryColor(paint.stops, color)
+    };
+  }
+
+  return { kind: "solid", color, opacity };
+}
+
+function moleculePaintWithPrimaryColor(paint: GraphicPaint, color: string, opacity: number): GraphicPaint {
   if (paint.kind === "linear-gradient" || paint.kind === "radial-gradient") {
     return {
       ...paint,
@@ -6346,6 +6591,87 @@ function graphicStrokePaintOpacity(object: GraphicObject): number {
   return object.style.strokePaint?.kind === "solid"
     ? clampWorkflowUnit(object.style.strokePaint.opacity ?? 1)
     : clampWorkflowUnit(object.style.strokeOpacity ?? 1);
+}
+
+function moleculeFillPaintOpacity(object: MoleculeObject): number {
+  if (typeof object.style.fillOpacity === "number") {
+    return clampWorkflowUnit(object.style.fillOpacity);
+  }
+  const paint = graphicPaintFromUnknown(object.style.fillPaint);
+  return paint?.kind === "solid"
+    ? clampWorkflowUnit(paint.opacity ?? 1)
+    : 1;
+}
+
+function moleculeStrokePaintOpacity(object: MoleculeObject): number {
+  if (typeof object.style.strokeOpacity === "number") {
+    return clampWorkflowUnit(object.style.strokeOpacity);
+  }
+  const paint = graphicPaintFromUnknown(object.style.strokePaint);
+  return paint?.kind === "solid"
+    ? clampWorkflowUnit(paint.opacity ?? 1)
+    : 1;
+}
+
+function graphicPaintFromUnknown(value: unknown): GraphicPaint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const paint = value as Partial<GraphicPaint> & Record<string, unknown>;
+  if (paint.kind === "none") {
+    return { kind: "none" };
+  }
+
+  if (paint.kind === "solid" && typeof paint.color === "string") {
+    return {
+      kind: "solid",
+      color: paint.color,
+      ...(typeof paint.opacity === "number" ? { opacity: clampWorkflowUnit(paint.opacity) } : {})
+    };
+  }
+
+  if (
+    paint.kind === "linear-gradient" &&
+    typeof paint.x1 === "number" &&
+    typeof paint.y1 === "number" &&
+    typeof paint.x2 === "number" &&
+    typeof paint.y2 === "number" &&
+    paint.units === "object" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "linear-gradient",
+      units: "object",
+      x1: clampWorkflowUnit(paint.x1),
+      y1: clampWorkflowUnit(paint.y1),
+      x2: clampWorkflowUnit(paint.x2),
+      y2: clampWorkflowUnit(paint.y2),
+      stops: sortedGradientStops(paint.stops as Extract<GraphicPaint, { kind: "linear-gradient" }>["stops"])
+    };
+  }
+
+  if (
+    paint.kind === "radial-gradient" &&
+    typeof paint.cx === "number" &&
+    typeof paint.cy === "number" &&
+    typeof paint.r === "number" &&
+    paint.units === "object" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "radial-gradient",
+      units: "object",
+      cx: clampWorkflowUnit(paint.cx),
+      cy: clampWorkflowUnit(paint.cy),
+      r: Math.max(0, paint.r),
+      ...(typeof paint.fx === "number" ? { fx: clampWorkflowUnit(paint.fx) } : {}),
+      ...(typeof paint.fy === "number" ? { fy: clampWorkflowUnit(paint.fy) } : {}),
+      stops: sortedGradientStops(paint.stops as Extract<GraphicPaint, { kind: "radial-gradient" }>["stops"])
+    };
+  }
+
+  return undefined;
 }
 
 function legacyColorForGraphicPaint(paint: GraphicPaint, fallback: string): string {
@@ -7441,12 +7767,19 @@ export interface SelectionBounds {
   centerY: number;
 }
 
+interface ObjectBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /** Union axis-aligned bounding box (and center) of the selected objects, in page coords. */
 export function selectionBounds(
   objects: readonly DocumentObject[],
   ids: readonly string[]
 ): SelectionBounds | undefined {
-  const set = new Set(ids);
+  const set = new Set(resolveGroupedDocumentObjectIds(objects, ids));
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -7473,6 +7806,171 @@ export function selectionBounds(
     centerX: (minX + maxX) / 2,
     centerY: (minY + maxY) / 2
   };
+}
+
+export function resolveGroupedDocumentObjectIds(
+  objects: readonly DocumentObject[],
+  ids: readonly string[]
+): string[] {
+  const objectById = new Map(objects.map((object) => [object.id, object] as const));
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  const visiting = new Set<string>();
+
+  const visit = (id: string) => {
+    if (seen.has(id) || visiting.has(id)) {
+      return;
+    }
+
+    const object = objectById.get(id);
+    if (!object) {
+      return;
+    }
+
+    if (object.type !== "group") {
+      seen.add(id);
+      resolved.push(id);
+      return;
+    }
+
+    visiting.add(id);
+    object.childObjectIds.forEach(visit);
+    visiting.delete(id);
+  };
+
+  ids.forEach(visit);
+  return resolved;
+}
+
+export function selectedGroupObjectIds(document: ChemDraftDocument): string[] {
+  const page = firstPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  return page.objects
+    .filter((object): object is GroupObject => object.type === "group" && selectedIds.has(object.id))
+    .map((object) => object.id);
+}
+
+function selectedTransformObjectIds(document: ChemDraftDocument): string[] {
+  const page = firstPage(document);
+  return resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds);
+}
+
+export function groupSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {
+  const page = firstPage(document);
+  const objectIds = selectedTransformObjectIds(document);
+  if (objectIds.length < 2) {
+    return document;
+  }
+
+  const bounds = selectionBounds(page.objects, objectIds);
+  if (!bounds) {
+    return document;
+  }
+
+  const group: GroupObject = {
+    id: nextObjectId(document, "group"),
+    type: "group",
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    rotation: 0,
+    style: {},
+    childObjectIds: objectIds
+  };
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object: group },
+      { op: "setSelection", pageId: page.id, objectIds: [group.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+export function ungroupSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {
+  const page = firstPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  const groups = page.objects.filter((object): object is GroupObject =>
+    object.type === "group" && selectedIds.has(object.id)
+  );
+  if (groups.length === 0) {
+    return document;
+  }
+
+  const childIds = resolveGroupedDocumentObjectIds(page.objects, groups.map((group) => group.id));
+  return applyPatches(
+    document,
+    [
+      ...groups.map((group) => ({ op: "removeObject" as const, objectId: group.id })),
+      { op: "setSelection" as const, pageId: page.id, objectIds: childIds }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+export function documentObjectVisualBounds(object: DocumentObject): ObjectBounds {
+  if (object.type !== "graphic") {
+    return {
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height
+    };
+  }
+
+  const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
+  const localBounds = rotatedGraphicLocalBounds(object, plan.frameBounds, object.rotation);
+  return {
+    x: object.x + localBounds.x,
+    y: object.y + localBounds.y,
+    width: localBounds.width,
+    height: localBounds.height
+  };
+}
+
+function rotatedGraphicLocalBounds(
+  object: GraphicObject,
+  bounds: ObjectBounds,
+  rotationDegrees: number
+): ObjectBounds {
+  if (Math.abs(rotationDegrees) < 0.001) {
+    return bounds;
+  }
+  if (
+    object.graphicKind === "ellipse" &&
+    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
+  ) {
+    return bounds;
+  }
+
+  const center = {
+    x: Math.max(object.width, 1) / 2,
+    y: Math.max(object.height, 1) / 2
+  };
+  const rotationRadians = degreesToRadians(rotationDegrees);
+  const corners = [
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+    { x: bounds.x, y: bounds.y + bounds.height }
+  ].map((point) => rotatePointAround(point, center, rotationRadians));
+  const minX = Math.min(...corners.map((point) => point.x));
+  const maxX = Math.max(...corners.map((point) => point.x));
+  const minY = Math.min(...corners.map((point) => point.y));
+  const maxY = Math.max(...corners.map((point) => point.y));
+
+  return {
+    x: roundLayoutCoordinate(minX),
+    y: roundLayoutCoordinate(minY),
+    width: roundLayoutCoordinate(maxX - minX),
+    height: roundLayoutCoordinate(maxY - minY)
+  };
+}
+
+function roundLayoutCoordinate(value: number): number {
+  return Number(value.toFixed(3));
 }
 
 /** Translate one object by a delta (no per-object clamping — the group clamps as a whole). */
@@ -7558,7 +8056,8 @@ export function moveDocumentObjects(
   dy: number
 ): ChemDraftDocument {
   const page = firstPage(document);
-  const bounds = selectionBounds(page.objects, ids);
+  const objectIds = resolveGroupedDocumentObjectIds(page.objects, ids);
+  const bounds = selectionBounds(page.objects, objectIds);
   if (!bounds) {
     return document;
   }
@@ -7569,7 +8068,7 @@ export function moveDocumentObjects(
     return document;
   }
 
-  const set = new Set(ids);
+  const set = new Set(objectIds);
   let next = document;
   for (const object of page.objects) {
     if (set.has(object.id)) {
@@ -7577,6 +8076,468 @@ export function moveDocumentObjects(
     }
   }
   return next;
+}
+
+export type DocumentAlignMode = "left" | "center" | "right" | "top" | "middle" | "bottom";
+export type DocumentDistributeAxis = "horizontal" | "vertical";
+export type DocumentDistributeMode = "centers" | "spacing";
+
+export function alignSelectedDocumentObjects(
+  document: ChemDraftDocument,
+  mode: DocumentAlignMode
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const objectIds = selectedTransformObjectIds(document);
+  const bounds = selectionBounds(page.objects, objectIds);
+  if (!bounds || objectIds.length < 2) {
+    return document;
+  }
+
+  const selectedIds = new Set(objectIds);
+  let next = document;
+  for (const object of page.objects) {
+    if (!selectedIds.has(object.id)) {
+      continue;
+    }
+    const objectCenterX = object.x + object.width / 2;
+    const objectCenterY = object.y + object.height / 2;
+    const dx = mode === "left"
+      ? bounds.x - object.x
+      : mode === "center"
+        ? bounds.centerX - objectCenterX
+        : mode === "right"
+          ? bounds.x + bounds.width - (object.x + object.width)
+          : 0;
+    const dy = mode === "top"
+      ? bounds.y - object.y
+      : mode === "middle"
+        ? bounds.centerY - objectCenterY
+        : mode === "bottom"
+          ? bounds.y + bounds.height - (object.y + object.height)
+          : 0;
+    next = translateDocumentObjectBy(next, object.id, dx, dy);
+  }
+  return next;
+}
+
+export function distributeSelectedDocumentObjects(
+  document: ChemDraftDocument,
+  axis: DocumentDistributeAxis,
+  mode: DocumentDistributeMode = "centers"
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const selectedIds = new Set(selectedTransformObjectIds(document));
+  const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id));
+  if (selectedObjects.length < 3) {
+    return document;
+  }
+
+  if (mode === "spacing") {
+    return distributeSelectedDocumentObjectsBySpacing(document, selectedObjects, axis);
+  }
+
+  const centerForAxis = (object: DocumentObject) => {
+    const bounds = documentObjectVisualBounds(object);
+    return axis === "horizontal"
+      ? bounds.x + bounds.width / 2
+      : bounds.y + bounds.height / 2;
+  };
+  const sortedObjects = [...selectedObjects].sort((a, b) => centerForAxis(a) - centerForAxis(b));
+  const firstCenter = centerForAxis(sortedObjects[0]);
+  const lastCenter = centerForAxis(sortedObjects[sortedObjects.length - 1]);
+  const spacing = (lastCenter - firstCenter) / (sortedObjects.length - 1);
+  if (Math.abs(spacing) < 1e-6) {
+    return document;
+  }
+
+  let next = document;
+  sortedObjects.forEach((object, index) => {
+    const targetCenter = firstCenter + spacing * index;
+    const delta = targetCenter - centerForAxis(object);
+    next = axis === "horizontal"
+      ? translateDocumentObjectBy(next, object.id, delta, 0)
+      : translateDocumentObjectBy(next, object.id, 0, delta);
+  });
+  return next;
+}
+
+function distributeSelectedDocumentObjectsBySpacing(
+  document: ChemDraftDocument,
+  selectedObjects: readonly DocumentObject[],
+  axis: DocumentDistributeAxis
+): ChemDraftDocument {
+  const visualBoundsById = new Map(selectedObjects.map((object) => [object.id, documentObjectVisualBounds(object)] as const));
+  const visualBoundsForObject = (object: DocumentObject): ObjectBounds => {
+    const bounds = visualBoundsById.get(object.id);
+    if (!bounds) {
+      throw new Error(`Expected visual bounds for selected object ${object.id}.`);
+    }
+    return bounds;
+  };
+  const startForAxis = (object: DocumentObject) => {
+    const bounds = visualBoundsForObject(object);
+    return axis === "horizontal" ? bounds.x : bounds.y;
+  };
+  const sizeForAxis = (object: DocumentObject) => {
+    const bounds = visualBoundsForObject(object);
+    return axis === "horizontal" ? bounds.width : bounds.height;
+  };
+  const sortedObjects = [...selectedObjects].sort((a, b) => startForAxis(a) - startForAxis(b));
+  const firstStart = startForAxis(sortedObjects[0]);
+  const lastObject = sortedObjects[sortedObjects.length - 1];
+  const lastEnd = startForAxis(lastObject) + sizeForAxis(lastObject);
+  const totalSize = sortedObjects.reduce((sum, object) => sum + sizeForAxis(object), 0);
+  const gap = (lastEnd - firstStart - totalSize) / (sortedObjects.length - 1);
+
+  let next = document;
+  let targetStart = firstStart;
+  sortedObjects.forEach((object, index) => {
+    if (index === 0 || index === sortedObjects.length - 1) {
+      targetStart += sizeForAxis(object) + gap;
+      return;
+    }
+    const delta = targetStart - startForAxis(object);
+    next = axis === "horizontal"
+      ? translateDocumentObjectBy(next, object.id, delta, 0)
+      : translateDocumentObjectBy(next, object.id, 0, delta);
+    targetStart += sizeForAxis(object) + gap;
+  });
+  return next;
+}
+
+export function duplicateSelectedDocumentObjects(
+  document: ChemDraftDocument,
+  offset: PagePoint = { x: 24, y: 24 }
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const selectedGroups = page.objects.filter((object): object is GroupObject =>
+    object.type === "group" && document.selection.objectIds.includes(object.id)
+  );
+  const selectedIds = new Set(selectedTransformObjectIds(document));
+  const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id));
+  if (selectedObjects.length === 0) {
+    return document;
+  }
+
+  let next = document;
+  const duplicateIds: string[] = [];
+  const duplicateIdByOriginalId = new Map<string, string>();
+  for (const object of selectedObjects) {
+    const duplicate = cloneDocumentObjectForDuplicate(next, object);
+    duplicateIds.push(duplicate.id);
+    duplicateIdByOriginalId.set(object.id, duplicate.id);
+    next = applyPatch(
+      next,
+      { op: "addObject", pageId: page.id, object: duplicate },
+      { now: phase4Timestamp }
+    );
+  }
+
+  const duplicateGroupIds: string[] = [];
+  const groupedDuplicateChildIds = new Set<string>();
+  for (const group of selectedGroups) {
+    const childObjectIds = group.childObjectIds
+      .map((childId) => duplicateIdByOriginalId.get(childId))
+      .filter((childId): childId is string => childId !== undefined);
+    if (childObjectIds.length < 2) {
+      continue;
+    }
+    childObjectIds.forEach((childId) => groupedDuplicateChildIds.add(childId));
+    const bounds = selectionBounds(next.pages[0].objects, childObjectIds);
+    if (!bounds) {
+      continue;
+    }
+    const duplicateGroup: GroupObject = {
+      id: nextObjectId(next, "group"),
+      type: "group",
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      rotation: 0,
+      style: {},
+      childObjectIds
+    };
+    duplicateGroupIds.push(duplicateGroup.id);
+    next = applyPatch(
+      next,
+      { op: "addObject", pageId: page.id, object: duplicateGroup },
+      { now: phase4Timestamp }
+    );
+  }
+
+  const selectionIds = [
+    ...duplicateGroupIds,
+    ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId))
+  ];
+
+  next = applyPatch(
+    next,
+    { op: "setSelection", pageId: page.id, objectIds: selectionIds },
+    { now: phase4Timestamp }
+  );
+
+  return moveDocumentObjects(next, selectionIds, offset.x, offset.y);
+}
+
+export function createSelectionClipboardPayload(
+  document: ChemDraftDocument
+): ChemDraftSelectionClipboardPayload | undefined {
+  const page = firstPage(document);
+  const selectedObjectIds = selectedTransformObjectIds(document);
+  const selectedIdSet = new Set(selectedObjectIds);
+  const objects = page.objects.filter((object) => selectedIdSet.has(object.id));
+  const selectedGroups = page.objects.filter((object): object is GroupObject =>
+    object.type === "group" && document.selection.objectIds.includes(object.id)
+  );
+  const bounds = selectionBounds(page.objects, selectedObjectIds);
+  if (objects.length === 0 || !bounds) {
+    return undefined;
+  }
+
+  return {
+    kind: "chemdraft-selection",
+    version: 1,
+    objects: structuredClone([
+      ...objects,
+      ...selectedGroups.filter((group) =>
+        group.childObjectIds.some((childId) => selectedIdSet.has(childId))
+      )
+    ]) as DocumentObject[],
+    selectionIds: document.selection.objectIds.filter((objectId) =>
+      selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
+    ),
+    bounds
+  };
+}
+
+export function serializeSelectionClipboardPayload(
+  payload: ChemDraftSelectionClipboardPayload
+): string {
+  return JSON.stringify(payload);
+}
+
+export function parseSelectionClipboardPayload(
+  text: string
+): ChemDraftSelectionClipboardPayload | undefined {
+  try {
+    const payload = JSON.parse(text) as Partial<ChemDraftSelectionClipboardPayload>;
+    if (
+      payload.kind !== "chemdraft-selection" ||
+      payload.version !== 1 ||
+      !Array.isArray(payload.objects) ||
+      !Array.isArray(payload.selectionIds) ||
+      !payload.bounds ||
+      typeof payload.bounds.x !== "number" ||
+      typeof payload.bounds.y !== "number" ||
+      typeof payload.bounds.width !== "number" ||
+      typeof payload.bounds.height !== "number"
+    ) {
+      return undefined;
+    }
+
+    const objects = payload.objects.filter(isClipboardDocumentObject);
+    if (objects.length === 0) {
+      return undefined;
+    }
+
+    return {
+      kind: "chemdraft-selection",
+      version: 1,
+      objects,
+      selectionIds: payload.selectionIds.filter((id): id is string => typeof id === "string"),
+      bounds: {
+        x: payload.bounds.x,
+        y: payload.bounds.y,
+        width: payload.bounds.width,
+        height: payload.bounds.height,
+        centerX: typeof payload.bounds.centerX === "number"
+          ? payload.bounds.centerX
+          : payload.bounds.x + payload.bounds.width / 2,
+        centerY: typeof payload.bounds.centerY === "number"
+          ? payload.bounds.centerY
+          : payload.bounds.y + payload.bounds.height / 2
+      }
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function pasteSelectionClipboardPayload(
+  document: ChemDraftDocument,
+  payload: ChemDraftSelectionClipboardPayload,
+  point: PagePoint
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const dx = point.x - payload.bounds.centerX;
+  const dy = point.y - payload.bounds.centerY;
+  const sourceGroups = payload.objects.filter((object): object is GroupObject => object.type === "group");
+  const sourceChildren = payload.objects.filter((object) => object.type !== "group");
+  const sourceChildIds = new Set(sourceChildren.map((object) => object.id));
+  let next = document;
+  const idBySourceId = new Map<string, string>();
+
+  for (const object of sourceChildren) {
+    const pasted = translatedClipboardObject(
+      cloneDocumentObjectForClipboardPaste(next, object),
+      dx,
+      dy
+    );
+    idBySourceId.set(object.id, pasted.id);
+    next = applyPatch(
+      next,
+      { op: "addObject", pageId: page.id, object: pasted },
+      { now: phase4Timestamp }
+    );
+  }
+
+  for (const group of sourceGroups) {
+    const childObjectIds = group.childObjectIds
+      .filter((childId) => sourceChildIds.has(childId))
+      .map((childId) => idBySourceId.get(childId))
+      .filter((childId): childId is string => childId !== undefined);
+    if (childObjectIds.length < 2) {
+      continue;
+    }
+
+    const pastedGroup: GroupObject = {
+      ...group,
+      id: nextObjectId(next, "group"),
+      x: group.x + dx,
+      y: group.y + dy,
+      childObjectIds
+    };
+    idBySourceId.set(group.id, pastedGroup.id);
+    next = applyPatch(
+      next,
+      { op: "addObject", pageId: page.id, object: pastedGroup },
+      { now: phase4Timestamp }
+    );
+  }
+
+  const selectedIds = payload.selectionIds
+    .map((sourceId) => idBySourceId.get(sourceId))
+    .filter((objectId): objectId is string => objectId !== undefined);
+  const fallbackSelectionIds = selectedIds.length > 0
+    ? selectedIds
+    : [...idBySourceId.values()];
+
+  return applyPatch(
+    next,
+    { op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds },
+    { now: phase4Timestamp }
+  );
+}
+
+export function rotateSelectedDocumentObjects90(document: ChemDraftDocument): ChemDraftDocument {
+  const page = firstPage(document);
+  const objectIds = selectedTransformObjectIds(document);
+  const bounds = selectionBounds(page.objects, objectIds);
+  if (!bounds) {
+    return document;
+  }
+
+  return rotateDocumentObjectsAroundPoint(
+    document,
+    objectIds,
+    { x: bounds.centerX, y: bounds.centerY },
+    90
+  );
+}
+
+function cloneDocumentObjectForDuplicate(
+  document: ChemDraftDocument,
+  object: DocumentObject
+): DocumentObject {
+  const duplicate = structuredClone(object) as DocumentObject;
+  duplicate.id = nextObjectId(document, duplicateObjectIdPrefix(object));
+  return duplicate;
+}
+
+function cloneDocumentObjectForClipboardPaste(
+  document: ChemDraftDocument,
+  object: DocumentObject
+): DocumentObject {
+  return cloneDocumentObjectForDuplicate(document, object);
+}
+
+function translatedClipboardObject(
+  object: DocumentObject,
+  dx: number,
+  dy: number
+): DocumentObject {
+  const nextX = object.x + dx;
+  const nextY = object.y + dy;
+  if (object.type === "molecule") {
+    return {
+      ...object,
+      x: nextX,
+      y: nextY,
+      atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+    };
+  }
+
+  if (object.type === "electron-mark" && object.markKind === "charge") {
+    return {
+      ...object,
+      x: nextX,
+      y: nextY,
+      anchor: {
+        ...object.anchor,
+        kind: "point",
+        point: { x: nextX + object.width / 2, y: nextY + object.height / 2 }
+      }
+    };
+  }
+
+  if (object.type === "graphic") {
+    return {
+      ...object,
+      x: nextX,
+      y: nextY,
+      data: translateGraphicObjectData(object.data, dx, dy)
+    };
+  }
+
+  return {
+    ...object,
+    x: nextX,
+    y: nextY
+  };
+}
+
+function isClipboardDocumentObject(value: unknown): value is DocumentObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const object = value as Partial<DocumentObject>;
+  return typeof object.id === "string" &&
+    typeof object.type === "string" &&
+    typeof object.x === "number" &&
+    typeof object.y === "number" &&
+    typeof object.width === "number" &&
+    typeof object.height === "number" &&
+    typeof object.rotation === "number" &&
+    typeof object.style === "object" &&
+    object.style !== null;
+}
+
+function duplicateObjectIdPrefix(object: DocumentObject): string {
+  switch (object.type) {
+    case "molecule":
+      return "mol_copy";
+    case "graphic":
+      return "art_copy";
+    case "text":
+      return "text_copy";
+    case "electron-mark":
+      return object.markKind === "charge" ? "charge_copy" : "electron_copy";
+    case "plus":
+      return "plus_copy";
+    default:
+      return `${object.type.replace(/[^a-z0-9]+/gi, "_")}_copy`;
+  }
 }
 
 /** Scale a molecule's atoms about an arbitrary external `center` (group-scale building block). */
@@ -7677,7 +8638,7 @@ export function rotateDocumentObjectsAroundPoint(
     return document;
   }
   const page = firstPage(document);
-  const set = new Set(ids);
+  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
   let next = document;
   for (const object of page.objects) {
     if (!set.has(object.id)) {
@@ -7704,7 +8665,7 @@ export function scaleDocumentObjectsAroundPoint(
     return document;
   }
   const page = firstPage(document);
-  const set = new Set(ids);
+  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
   let next = document;
   for (const object of page.objects) {
     if (!set.has(object.id)) {
@@ -7724,14 +8685,15 @@ export function flipSelectedDocumentObjects(
   axis: DocumentFlipAxis
 ): ChemDraftDocument {
   const page = firstPage(document);
-  const bounds = selectionBounds(page.objects, document.selection.objectIds);
+  const objectIds = selectedTransformObjectIds(document);
+  const bounds = selectionBounds(page.objects, objectIds);
   if (!bounds) {
     return document;
   }
 
   return flipDocumentObjectsAroundPoint(
     document,
-    document.selection.objectIds,
+    objectIds,
     { x: bounds.centerX, y: bounds.centerY },
     axis
   );
@@ -7748,7 +8710,7 @@ export function flipDocumentObjectsAroundPoint(
   }
 
   const page = firstPage(document);
-  const set = new Set(ids);
+  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
   let next = document;
   for (const object of page.objects) {
     if (!set.has(object.id)) {

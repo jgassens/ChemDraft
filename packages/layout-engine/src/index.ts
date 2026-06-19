@@ -7,6 +7,7 @@ import {
   type DocumentPage,
   type ElectronMarkObject,
   type ArrowObject,
+  type GraphicPaint,
   type GraphicObject,
   type MoleculeAtom,
   type MoleculeBond as CoreMoleculeBond,
@@ -1172,9 +1173,10 @@ export function planPageSvgRender(page: DocumentPage): PageSvgRenderPlan {
   const crossingHitTargets = crossings.map((crossing) => crossingHitTargetFragment(crossing));
 
   return {
-    fragments: page.objects.flatMap((object, layerIndex) =>
-      flattenDocumentObjectSvg(planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey))
-    ).concat(crossingHitTargets),
+    fragments: page.objects.flatMap((object, layerIndex) => {
+      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey);
+      return fragment ? flattenDocumentObjectSvg(fragment) : [];
+    }).concat(crossingHitTargets),
     crossings,
     warnings
   };
@@ -1227,7 +1229,7 @@ function planDocumentObjectSvg(
   layerIndex: number,
   warnings: PageSvgRenderWarning[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
-): PageSvgElementFragment {
+): PageSvgElementFragment | undefined {
   switch (object.type) {
     case "molecule":
       return planMoleculeObjectSvg(object, layerIndex, gapsByBondKey);
@@ -1243,6 +1245,8 @@ function planDocumentObjectSvg(
       return reactionArrowFragment(object, layerIndex);
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
+    case "group":
+      return undefined;
     default:
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
   }
@@ -1307,6 +1311,7 @@ function planNativeMoleculeGraphSvg(
 ): PageSvgElementFragment {
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
+  const moleculeStrokeOpacity = nativeMoleculeStrokeOpacity(object);
   const atomLabels: PageMoleculeAtomLabel[] = object.atoms.flatMap((atom) => {
     const label = atomDisplayLabel(atom, object.bonds);
     return label ? [{ atom, label }] : [];
@@ -1339,7 +1344,7 @@ function planNativeMoleculeGraphSvg(
     ? "single-bond"
     : "connected-carbon-chain";
   const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
-    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, atomLabels, drawingStyle, gapsByBondKey)
+    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey)
     : undefined;
   const effects = visualEffectPlansForStyle({
     objectId: object.id,
@@ -1348,6 +1353,7 @@ function planNativeMoleculeGraphSvg(
     sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
   });
   const effectFilterId = `molecule-effects-${object.id}`;
+  const fillUnderlayFragments = moleculeFillUnderlayFragments(object, drawingStyle);
   const bondLayerFragments = bondSegmentGroups.map(({ bond, segments }) =>
     elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
       "data-bond-layer-id": bond.id
@@ -1374,6 +1380,7 @@ function planNativeMoleculeGraphSvg(
           object,
           segment,
           drawingStyle,
+          moleculeStrokeOpacity,
           gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
         )
       )
@@ -1395,9 +1402,10 @@ function planNativeMoleculeGraphSvg(
     return elementFragment("g", `label-${object.id}-${atom.id}`, {
       class: "native-atom-label",
       "data-atom-label": label,
-      transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
-      fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
-      "font-family": drawingStyle.atomLabelFontFamily,
+        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
+        fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
+        "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+        "font-family": drawingStyle.atomLabelFontFamily,
       "font-size": drawingStyle.atomLabelFontSizePx,
       "font-weight": drawingStyle.atomLabelFontWeight
     }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
@@ -1427,7 +1435,6 @@ function planNativeMoleculeGraphSvg(
     effects,
     effectFilterId,
     bondSegmentGroups,
-    atomLabels,
     drawingStyle,
     gapsByBondKey
   );
@@ -1438,6 +1445,7 @@ function planNativeMoleculeGraphSvg(
     "data-atom-count": object.atoms.length,
     "data-bond-count": object.bonds.length,
     "data-style-preset-id": drawingStyle.stylePresetId,
+    opacity: nativeMoleculeObjectOpacity(object) === 1 ? undefined : nativeMoleculeObjectOpacity(object),
     transform: rotationTransform(object)
   }), [
     ...svgEffectDefinitionFragmentsForEffects(
@@ -1445,6 +1453,7 @@ function planNativeMoleculeGraphSvg(
       effectFilterId,
       svgEffectFilterRegionForBounds(effects, object)
     ),
+    ...fillUnderlayFragments,
     ...(effectSource ? [effectSource] : []),
     ...bondLayerFragments,
     ...labelBackgroundFragments,
@@ -1458,12 +1467,160 @@ function planNativeMoleculeGraphSvg(
   ]);
 }
 
+function moleculeFillUnderlayFragments(
+  object: MoleculeObject,
+  drawingStyle: NativeDrawingStyle
+): PageSvgElementFragment[] {
+  const paint = moleculeFillPaintForObject(object);
+  if (paint.kind === "none") {
+    return [];
+  }
+
+  const d = moleculeFillUnderlayPathD(object, drawingStyle);
+  if (!d) {
+    return [];
+  }
+
+  const paintId = `molecule-fill-${object.id}`;
+  return [
+    ...moleculePaintDefinitionFragments(paint, paintId, object),
+    elementFragment("path", `molecule-fill-underlay-${object.id}`, {
+      class: "native-molecule-fill-underlay",
+      "data-molecule-fill": "true",
+      d,
+      ...moleculePaintAttrs("fill", paint, paintId, moleculeFillOpacity(object)),
+      stroke: "none",
+      "pointer-events": "none"
+    })
+  ];
+}
+
+function moleculeFillUnderlayPathD(
+  object: MoleculeObject,
+  drawingStyle: NativeDrawingStyle
+): string | undefined {
+  const points = uniqueLayoutPoints(object.atoms.map((atom) => ({ x: atom.x, y: atom.y })));
+  if (points.length === 0) {
+    return rectPathD({
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height
+    });
+  }
+
+  const padding = Math.max(10, drawingStyle.bondStrokeWidthPx * 3.5);
+  if (points.length === 1) {
+    return circlePathD(points[0]!, padding * 1.35);
+  }
+
+  if (points.length === 2) {
+    return capsulePathD(points[0]!, points[1]!, padding);
+  }
+
+  const hull = convexHull(points);
+  if (hull.length < 3) {
+    return undefined;
+  }
+
+  const center = averagePoint(hull);
+  const expanded = hull.map((point) => expandPointFromCenter(point, center, padding));
+  return [
+    `M ${formatNumber(expanded[0]!.x)} ${formatNumber(expanded[0]!.y)}`,
+    ...expanded.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`),
+    "Z"
+  ].join(" ");
+}
+
+function moleculePaintAttrs(
+  attribute: "fill" | "stroke",
+  paint: GraphicPaint,
+  id: string,
+  opacity: number
+): Record<string, PageSvgAttributeValue> {
+  if (paint.kind === "solid") {
+    return {
+      [attribute]: paint.color,
+      [`${attribute}-opacity`]: opacity === 1 ? undefined : opacity
+    };
+  }
+
+  return {
+    [attribute]: moleculePaintValue(paint, id),
+    [`${attribute}-opacity`]: opacity === 1 ? undefined : opacity
+  };
+}
+
+function moleculePaintValue(paint: GraphicPaint, id: string): string {
+  if (paint.kind === "none") {
+    return "none";
+  }
+  if (paint.kind === "solid") {
+    return paint.color;
+  }
+  return `url(#${id})`;
+}
+
+function moleculePaintDefinitionFragments(
+  paint: GraphicPaint,
+  id: string,
+  object: MoleculeObject
+): PageSvgElementFragment[] {
+  if (paint.kind === "linear-gradient") {
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("linearGradient", `${id}-gradient`, {
+          id,
+          x1: object.x + object.width * paint.x1,
+          y1: object.y + object.height * paint.y1,
+          x2: object.x + object.width * paint.x2,
+          y2: object.y + object.height * paint.y2,
+          gradientUnits: "userSpaceOnUse"
+        }, moleculeGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  if (paint.kind === "radial-gradient") {
+    const radius = Math.max(object.width, object.height, 1) * paint.r;
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("radialGradient", `${id}-gradient`, {
+          id,
+          cx: object.x + object.width * paint.cx,
+          cy: object.y + object.height * paint.cy,
+          r: radius,
+          fx: paint.fx === undefined ? undefined : object.x + object.width * paint.fx,
+          fy: paint.fy === undefined ? undefined : object.y + object.height * paint.fy,
+          gradientUnits: "userSpaceOnUse"
+        }, moleculeGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  return [];
+}
+
+function moleculeGradientStopFragments(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  id: string
+): PageSvgElementFragment[] {
+  return [...stops]
+    .sort((left, right) => left.offset - right.offset)
+    .map((stop, index) =>
+      elementFragment("stop", `${id}-stop-${index}`, {
+        offset: `${formatNumber(clamp(stop.offset, 0, 1) * 100)}%`,
+        "stop-color": stop.color,
+        "stop-opacity": stop.opacity === undefined || stop.opacity === 1 ? undefined : clamp(stop.opacity, 0, 1)
+      })
+    );
+}
+
 function moleculeEffectSourceFragment(
   object: MoleculeObject,
   effects: readonly NativeArtEffectPlan[],
   effectFilterId: string,
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
-  atomLabels: readonly PageMoleculeAtomLabel[],
   drawingStyle: NativeDrawingStyle,
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
 ): PageSvgElementFragment | undefined {
@@ -1482,8 +1639,7 @@ function moleculeEffectSourceFragment(
           gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
         )
       )
-    ),
-    ...moleculeAtomLabelEffectSourceFragments(object, atomLabels, drawingStyle)
+    )
   ];
   if (children.length === 0) {
     return undefined;
@@ -1544,36 +1700,9 @@ function moleculeBondEffectSourceFragments(
   );
 }
 
-function moleculeAtomLabelEffectSourceFragments(
-  object: MoleculeObject,
-  atomLabels: readonly PageMoleculeAtomLabel[],
-  drawingStyle: NativeDrawingStyle
-): PageSvgElementFragment[] {
-  return atomLabels.map(({ atom, label }) => {
-    const anchor = atomLabelAnchor(atom);
-    return elementFragment("g", `molecule-effect-source-label-${object.id}-${atom.id}`, {
-      transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
-      fill: "#000000",
-      "font-family": drawingStyle.atomLabelFontFamily,
-      "font-size": drawingStyle.atomLabelFontSizePx,
-      "font-weight": drawingStyle.atomLabelFontWeight
-    }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
-      elementFragment("text", `molecule-effect-source-label-run-${object.id}-${atom.id}-${index}`, {
-        x: run.x,
-        y: run.y,
-        "dominant-baseline": "central",
-        "text-anchor": run.textAnchor,
-        "font-size": atomLabelRunFontSize(run.script, drawingStyle)
-      }, [textFragment(`molecule-effect-source-label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
-    ));
-  });
-}
-
 function moleculeEffectSketchBasePathD(
   object: MoleculeObject,
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
-  atomLabels: readonly PageMoleculeAtomLabel[],
-  drawingStyle: NativeDrawingStyle,
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
 ): string | undefined {
   const bondPathParts = bondSegmentGroups.flatMap(({ bond, segments }) =>
@@ -1584,8 +1713,7 @@ function moleculeEffectSketchBasePathD(
       ).map((visibleSegment) => linePathD(visibleSegment))
     )
   );
-  const labelPathParts = atomLabels.map(({ atom, label }) => rectPathD(atomLabelBox(atom, label, drawingStyle)));
-  return [...bondPathParts, ...labelPathParts].join(" ") || undefined;
+  return bondPathParts.join(" ") || undefined;
 }
 
 function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
@@ -1602,6 +1730,106 @@ function rectPathD(rect: { x: number; y: number; width: number; height: number }
     `H ${formatNumber(rect.x)}`,
     "Z"
   ].join(" ");
+}
+
+function circlePathD(center: LayoutPoint, radius: number): string {
+  return [
+    `M ${formatNumber(center.x - radius)} ${formatNumber(center.y)}`,
+    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(center.x + radius)} ${formatNumber(center.y)}`,
+    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(center.x - radius)} ${formatNumber(center.y)}`,
+    "Z"
+  ].join(" ");
+}
+
+function capsulePathD(start: LayoutPoint, end: LayoutPoint, radius: number): string {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.001) {
+    return circlePathD(start, radius);
+  }
+
+  const nx = -dy / length;
+  const ny = dx / length;
+  const startLeft = { x: start.x + nx * radius, y: start.y + ny * radius };
+  const endLeft = { x: end.x + nx * radius, y: end.y + ny * radius };
+  const endRight = { x: end.x - nx * radius, y: end.y - ny * radius };
+  const startRight = { x: start.x - nx * radius, y: start.y - ny * radius };
+  return [
+    `M ${formatNumber(startLeft.x)} ${formatNumber(startLeft.y)}`,
+    `L ${formatNumber(endLeft.x)} ${formatNumber(endLeft.y)}`,
+    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 0 1 ${formatNumber(endRight.x)} ${formatNumber(endRight.y)}`,
+    `L ${formatNumber(startRight.x)} ${formatNumber(startRight.y)}`,
+    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 0 1 ${formatNumber(startLeft.x)} ${formatNumber(startLeft.y)}`,
+    "Z"
+  ].join(" ");
+}
+
+function uniqueLayoutPoints(points: readonly LayoutPoint[]): LayoutPoint[] {
+  const seen = new Set<string>();
+  return points.filter((point) => {
+    const key = `${formatNumber(point.x)},${formatNumber(point.y)}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function convexHull(points: readonly LayoutPoint[]): LayoutPoint[] {
+  const sorted = [...points].sort((left, right) => left.x === right.x ? left.y - right.y : left.x - right.x);
+  if (sorted.length <= 1) {
+    return sorted;
+  }
+
+  const lower: LayoutPoint[] = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && crossProduct(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0) {
+      lower.pop();
+    }
+    lower.push(point);
+  }
+
+  const upper: LayoutPoint[] = [];
+  for (const point of [...sorted].reverse()) {
+    while (upper.length >= 2 && crossProduct(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0) {
+      upper.pop();
+    }
+    upper.push(point);
+  }
+
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
+}
+
+function crossProduct(origin: LayoutPoint, left: LayoutPoint, right: LayoutPoint): number {
+  return (left.x - origin.x) * (right.y - origin.y) - (left.y - origin.y) * (right.x - origin.x);
+}
+
+function averagePoint(points: readonly LayoutPoint[]): LayoutPoint {
+  const total = points.reduce((sum, point) => ({
+    x: sum.x + point.x,
+    y: sum.y + point.y
+  }), { x: 0, y: 0 });
+  return {
+    x: total.x / Math.max(points.length, 1),
+    y: total.y / Math.max(points.length, 1)
+  };
+}
+
+function expandPointFromCenter(point: LayoutPoint, center: LayoutPoint, distance: number): LayoutPoint {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.001) {
+    return point;
+  }
+  return {
+    x: point.x + dx / length * distance,
+    y: point.y + dy / length * distance
+  };
 }
 
 function nativeBondHoverDecoratorFragments(
@@ -1625,6 +1853,7 @@ function nativeBondSegmentFragments(
   object: MoleculeObject,
   segment: PageMoleculeBondSegment,
   drawingStyle: NativeDrawingStyle,
+  moleculeStrokeOpacity: number,
   crossingGaps: readonly BondCrossingGap[] = []
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
@@ -1649,6 +1878,7 @@ function nativeBondSegmentFragments(
         ...commonAttrs,
         points: nativeWedgePolygonPoints(visibleSegment, drawingStyle),
         fill: stroke,
+        "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
         stroke: "none"
       })
     );
@@ -1666,6 +1896,7 @@ function nativeBondSegmentFragments(
             x2: visibleHash.x2,
             y2: visibleHash.y2,
             stroke,
+            "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
             "stroke-width": drawingStyle.bondStrokeWidthPx,
             "stroke-linecap": "butt"
           })
@@ -1682,6 +1913,7 @@ function nativeBondSegmentFragments(
       x2: visibleSegment.x2,
       y2: visibleSegment.y2,
       stroke,
+      "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
       "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
       "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
       "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
@@ -3313,6 +3545,123 @@ function nativeMoleculeAtomLabelColor(
   return styleColorMapValue(object.style.atomLabelColors, atomId) ?? drawingStyle.atomLabelColor;
 }
 
+function nativeMoleculeStrokeOpacity(object: MoleculeObject): number {
+  return clamp(metadataNumber(object.style.strokeOpacity) ?? 1, 0, 1);
+}
+
+function nativeMoleculeObjectOpacity(object: MoleculeObject): number {
+  return clamp(metadataNumber(object.style.opacity) ?? 1, 0, 1);
+}
+
+function moleculeFillOpacity(object: MoleculeObject): number {
+  const explicitOpacity = metadataNumber(object.style.fillOpacity);
+  if (explicitOpacity !== undefined) {
+    return clamp(explicitOpacity, 0, 1);
+  }
+  const paint = moleculeFillPaintForObject(object);
+  return paint.kind === "solid"
+    ? clamp(paint.opacity ?? 1, 0, 1)
+    : clamp(metadataNumber(object.style.fillOpacity) ?? 1, 0, 1);
+}
+
+function moleculeFillPaintForObject(object: MoleculeObject): GraphicPaint {
+  const paint = graphicPaintFromMetadata(object.style.fillPaint);
+  if (paint) {
+    return paint;
+  }
+
+  const fillColor = metadataString(object.style.fillColor);
+  return fillColor && fillColor.toLowerCase() !== "none"
+    ? { kind: "solid", color: fillColor, opacity: moleculeFillOpacityFromStyle(object) }
+    : { kind: "none" };
+}
+
+function moleculeFillOpacityFromStyle(object: MoleculeObject): number {
+  return clamp(metadataNumber(object.style.fillOpacity) ?? 1, 0, 1);
+}
+
+function graphicPaintFromMetadata(value: unknown): GraphicPaint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const paint = value as Record<string, unknown>;
+  if (paint.kind === "none") {
+    return { kind: "none" };
+  }
+  if (paint.kind === "solid" && typeof paint.color === "string") {
+    return {
+      kind: "solid",
+      color: paint.color,
+      ...(typeof paint.opacity === "number" ? { opacity: clamp(paint.opacity, 0, 1) } : {})
+    };
+  }
+  if (
+    paint.kind === "linear-gradient" &&
+    paint.units === "object" &&
+    typeof paint.x1 === "number" &&
+    typeof paint.y1 === "number" &&
+    typeof paint.x2 === "number" &&
+    typeof paint.y2 === "number" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "linear-gradient",
+      units: "object",
+      x1: clamp(paint.x1, 0, 1),
+      y1: clamp(paint.y1, 0, 1),
+      x2: clamp(paint.x2, 0, 1),
+      y2: clamp(paint.y2, 0, 1),
+      stops: sanitizeGradientStops(paint.stops)
+    };
+  }
+  if (
+    paint.kind === "radial-gradient" &&
+    paint.units === "object" &&
+    typeof paint.cx === "number" &&
+    typeof paint.cy === "number" &&
+    typeof paint.r === "number" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "radial-gradient",
+      units: "object",
+      cx: clamp(paint.cx, 0, 1),
+      cy: clamp(paint.cy, 0, 1),
+      r: Math.max(0, paint.r),
+      ...(typeof paint.fx === "number" ? { fx: clamp(paint.fx, 0, 1) } : {}),
+      ...(typeof paint.fy === "number" ? { fy: clamp(paint.fy, 0, 1) } : {}),
+      stops: sanitizeGradientStops(paint.stops)
+    };
+  }
+  return undefined;
+}
+
+function sanitizeGradientStops(
+  stops: unknown[]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sanitized = stops.flatMap((stop) => {
+    if (!stop || typeof stop !== "object" || Array.isArray(stop)) {
+      return [];
+    }
+    const entry = stop as Record<string, unknown>;
+    return typeof entry.offset === "number" && typeof entry.color === "string"
+      ? [{
+          offset: clamp(entry.offset, 0, 1),
+          color: entry.color,
+          ...(typeof entry.opacity === "number" ? { opacity: clamp(entry.opacity, 0, 1) } : {})
+        }]
+      : [];
+  }).sort((left, right) => left.offset - right.offset);
+
+  return sanitized.length >= 2
+    ? sanitized
+    : [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ];
+}
+
 function styleColorMapValue(value: unknown, id: string): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -3323,7 +3672,7 @@ function styleColorMapValue(value: unknown, id: string): string | undefined {
 }
 
 function metadataString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function metadataNumber(value: unknown): number | undefined {

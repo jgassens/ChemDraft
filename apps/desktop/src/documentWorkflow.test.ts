@@ -10,7 +10,9 @@ import {
   type ChemDraftDocument,
   type ElectronMarkObject,
   type GraphicObject,
+  type GroupObject,
   type MoleculeObject,
+  type PlusObject,
   type TextObject,
   type VisualEffect
 } from "@chemdraft/chem-core";
@@ -43,9 +45,13 @@ import {
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectStrokeStyleToSelection,
+  applyMoleculeObjectColorToSelection,
+  applyMoleculeObjectOpacityToSelection,
+  applyMoleculeObjectPaintTypeToSelection,
   applyColorToNativeMoleculePart,
   applyNativeArtBooleanOperationToSelection,
   applyToolbarColorToSelection,
+  alignSelectedDocumentObjects,
   applyAnalysisToSelectedMolecule,
   applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultToSelectedObject,
@@ -72,12 +78,17 @@ import {
   createNativeSavePayload,
   createNativeSingleBondMolecule,
   createPhase4Document,
+  createSelectionClipboardPayload,
   deleteSelectedDocumentObjects,
+  documentObjectVisualBounds,
+  distributeSelectedDocumentObjects,
+  duplicateSelectedDocumentObjects,
   exportPhase4Cdxml,
   exportPhase4Svg,
   findNativeMoleculeDeleteHit,
   findNativeMoleculeAtomHit,
   flipDocumentObjectsAroundPoint,
+  groupSelectedDocumentObjects,
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
@@ -121,12 +132,15 @@ import {
   nativeTextObjectSizeForText,
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
+  resolveGroupedDocumentObjectIds,
   resolveToolbarColorSelection,
   resizeNativeMoleculeParts,
   rotateDocumentObject,
   rotateDocumentObjectsAroundPoint,
+  rotateSelectedDocumentObjects90,
   rotateNativeMoleculeObjectAroundPoint,
   rotateNativeMoleculeParts,
+  selectedGroupObjectIds,
   tiltNativeMoleculeProjectedPlane,
   tiltNativeMoleculeObjectsProjectedPlane,
   tiltNativeMoleculePartsProjectedPlane,
@@ -142,8 +156,12 @@ import {
   selectedGraphicObjectIds,
   selectedVisualEffectObjectIds,
   selectedArtBooleanEligibleObjectIds,
+  parseSelectionClipboardPayload,
+  pasteSelectionClipboardPayload,
+  serializeSelectionClipboardPayload,
   swapGraphicObjectFillAndStroke,
   toggleDocumentObjectSelection,
+  ungroupSelectedDocumentObjects,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
@@ -190,6 +208,16 @@ function graphicById(document: ChemDraftDocument, objectId: string): GraphicObje
     throw new Error(`Expected graphic "${objectId}".`);
   }
   return graphic;
+}
+
+function objectStyleById(document: ChemDraftDocument, objectId: string): Record<string, unknown> {
+  const object = document.pages
+    .flatMap((page) => page.objects)
+    .find((candidate) => candidate.id === objectId);
+  if (!object) {
+    throw new Error(`Expected object "${objectId}".`);
+  }
+  return object.style;
 }
 
 function exportedObjectTag(svg: string, objectId: string): string {
@@ -3972,6 +4000,51 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(redo(undo(history)).present, objectId).style.fillColor).toBe("#aabbcc");
   });
 
+  it("applies Art-toolbar molecule fill, stroke, and opacity without using the main color route", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Molecule Art Fill"),
+      { x: 260, y: 220 }
+    );
+    const molecule = selectedMolecule(document);
+
+    const filled = applyMoleculeObjectColorToSelection(document, "fill", "#1D7F68");
+    expect(moleculeById(filled, molecule.id).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 1 }
+    });
+
+    const linear = applyMoleculeObjectPaintTypeToSelection(filled, "fill", "linear-gradient");
+    expect(moleculeById(linear, molecule.id).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      units: "object",
+      stops: [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+
+    const translucent = applyMoleculeObjectOpacityToSelection(linear, "fillOpacity", 0.42);
+    expect(moleculeById(translucent, molecule.id).style.fillOpacity).toBe(0.42);
+
+    const stroked = applyMoleculeObjectColorToSelection(translucent, "stroke", "#B3261E");
+    expect(moleculeById(stroked, molecule.id).style).toMatchObject({
+      bondColor: "#b3261e",
+      atomLabelColor: "#b3261e",
+      strokeColor: "#b3261e"
+    });
+
+    const fadedStroke = applyMoleculeObjectOpacityToSelection(stroked, "strokeOpacity", 0.55);
+    expect(moleculeById(fadedStroke, molecule.id).style.strokeOpacity).toBe(0.55);
+
+    const mainToolbarColored = applyObjectColorToDocumentObjects(fadedStroke, "#1648FF", [molecule.id]);
+    expect(moleculeById(mainToolbarColored, molecule.id).style).toMatchObject({
+      bondColor: "#1648FF",
+      atomLabelColor: "#1648FF",
+      fillColor: "#1d7f68",
+      fillOpacity: 0.42
+    });
+  });
+
   it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", () => {
     const withGraphic = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Gradient Paint Selection"),
@@ -4932,6 +5005,71 @@ describe("Phase 4 document workflow", () => {
     expect(restoredMolecule.bonds).toEqual(originalMolecule.bonds);
     expect(restoredMolecule.structure).toBe(originalMolecule.structure);
     expect(restoredMolecule.chemistry).toEqual(originalMolecule.chemistry);
+  });
+
+  it("does not apply visual effect metadata to selected text, plus signs, or charge symbols", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Visual Effects Ignore Symbols"),
+      { x: 260, y: 220 }
+    );
+    const moleculeId = withMolecule.selection.objectIds[0];
+    if (!moleculeId) {
+      throw new Error("Expected inserted native molecule to be selected.");
+    }
+
+    const pageId = withMolecule.pages[0].id;
+    const textObject: TextObject = {
+      id: "text_visual_effect_guard",
+      type: "text",
+      x: 120,
+      y: 140,
+      width: 80,
+      height: 28,
+      rotation: 0,
+      style: { color: "#111111" },
+      text: "N",
+      spans: []
+    };
+    const plusObject: PlusObject = {
+      id: "plus_visual_effect_guard",
+      type: "plus",
+      x: 180,
+      y: 140,
+      width: 24,
+      height: 24,
+      rotation: 0,
+      style: {}
+    };
+    const chargeObject: ElectronMarkObject = {
+      id: "charge_visual_effect_guard",
+      type: "electron-mark",
+      x: 220,
+      y: 140,
+      width: 18,
+      height: 18,
+      rotation: 0,
+      style: {},
+      markKind: "charge",
+      anchor: { kind: "point", point: { x: 229, y: 149 } },
+      charge: 1
+    };
+    const mixedSelection = selectAllDocumentObjects(
+      applyPatches(withMolecule, [
+        { op: "addObject", pageId, object: textObject },
+        { op: "addObject", pageId, object: plusObject },
+        { op: "addObject", pageId, object: chargeObject }
+      ]),
+      pageId
+    );
+
+    expect(selectedVisualEffectObjectIds(mixedSelection)).toEqual([moleculeId]);
+
+    const sketched = applyVisualEffectToSelection(mixedSelection, "sketch");
+    expect(moleculeVisualEffects(sketched, moleculeId)?.map((effect) => effect.kind)).toEqual(["sketch"]);
+    for (const objectId of [textObject.id, plusObject.id, chargeObject.id]) {
+      expect(objectStyleById(sketched, objectId).visualEffects).toBeUndefined();
+      expect(objectStyleById(sketched, objectId).effects).toBeUndefined();
+    }
   });
 
   it("edits rectangle corner radius through native graphic workflow helpers", () => {
@@ -6010,6 +6148,52 @@ describe("Phase 4 document workflow", () => {
     });
     expect(molecule?.atoms).toHaveLength(2);
     expect(molecule?.bonds).toHaveLength(1);
+  });
+
+  it("serializes and pastes ChemDraft selections with fresh object and group ids", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("ChemDraft Selection Clipboard"),
+      { x: 240, y: 220 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withGraphic = insertNativeArtGraphicObject(withMolecule, { x: 360, y: 240 }, "tool.art.rect");
+    const graphicId = withGraphic.selection.objectIds[0];
+    if (!graphicId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+    const selected = applyPatch(withGraphic, {
+      op: "setSelection",
+      pageId: withGraphic.pages[0].id,
+      objectIds: [molecule.id, graphicId]
+    });
+    const grouped = groupSelectedDocumentObjects(selected);
+    const group = grouped.pages[0].objects.find((object): object is GroupObject =>
+      object.type === "group" && grouped.selection.objectIds.includes(object.id)
+    );
+    if (!group) {
+      throw new Error("Expected copied selection to be grouped.");
+    }
+
+    const payload = createSelectionClipboardPayload(grouped);
+    if (!payload) {
+      throw new Error("Expected selection clipboard payload.");
+    }
+    const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload));
+    if (!parsed) {
+      throw new Error("Expected serialized selection payload to parse.");
+    }
+
+    const pasted = pasteSelectionClipboardPayload(grouped, parsed, { x: 560, y: 520 });
+    const pastedGroupId = pasted.selection.objectIds[0];
+    const pastedGroup = pasted.pages[0].objects.find((object): object is GroupObject =>
+      object.type === "group" && object.id === pastedGroupId
+    );
+    expect(pastedGroup).toBeDefined();
+    expect(pastedGroup?.id).not.toBe(group.id);
+    expect(pastedGroup?.childObjectIds).toHaveLength(2);
+    expect(pastedGroup?.childObjectIds).not.toEqual(group.childObjectIds);
+    expect(pasted.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+    expect(pasted.pages[0].objects.filter((object) => object.type === "graphic")).toHaveLength(2);
   });
 
   it("sizes pasted text boxes to the text block instead of a fixed placeholder frame", () => {
@@ -7852,6 +8036,401 @@ describe("group transforms (multi-object selection)", () => {
     expect(n2.y - m2.y).toBeCloseTo(-25);
     expect(n2.x - n1.x).toBeCloseTo(m2.x - m1.x); // relative layout unchanged
     expect(moleculeAtomTotal(moved)).toBe(atomsBefore);
+  });
+
+  it("creates invisible group metadata and resolves it to child objects", () => {
+    const { document, ids } = twoMolecules();
+    const selected = applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]);
+    const beforeBounds = selectionBounds(selected.pages[0].objects, ids);
+    if (!beforeBounds) {
+      throw new Error("Expected selected group bounds.");
+    }
+
+    const grouped = groupSelectedDocumentObjects(selected);
+    const group = grouped.pages[0].objects.find((object): object is GroupObject => object.type === "group");
+
+    expect(group).toBeDefined();
+    expect(group?.childObjectIds).toEqual(ids);
+    expect(grouped.selection.objectIds).toEqual([group?.id]);
+    expect(selectedGroupObjectIds(grouped)).toEqual([group?.id]);
+    expect(resolveGroupedDocumentObjectIds(grouped.pages[0].objects, grouped.selection.objectIds)).toEqual(ids);
+    expect(selectionBounds(grouped.pages[0].objects, grouped.selection.objectIds)).toEqual(beforeBounds);
+  });
+
+  it("moves and rotates selected group children through the group id", () => {
+    const { document, ids, m1, m2 } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    const moved = moveDocumentObjects(grouped, grouped.selection.objectIds, 40, -25);
+    const movedFirst = moved.pages[0].objects.find((object) => object.id === m1.id)!;
+    const movedSecond = moved.pages[0].objects.find((object) => object.id === m2.id)!;
+    expect(moved.selection.objectIds).toEqual([groupId]);
+    expect(movedFirst.x - m1.x).toBeCloseTo(40);
+    expect(movedSecond.y - m2.y).toBeCloseTo(-25);
+
+    const beforeRotateBounds = selectionBounds(grouped.pages[0].objects, grouped.selection.objectIds);
+    if (!beforeRotateBounds) {
+      throw new Error("Expected grouped selection bounds.");
+    }
+    const expectedRotated = rotateDocumentObjectsAroundPoint(
+      grouped,
+      ids,
+      { x: beforeRotateBounds.centerX, y: beforeRotateBounds.centerY },
+      90
+    );
+    const rotated = rotateSelectedDocumentObjects90(grouped);
+    const expectedFirst = expectedRotated.pages[0].objects.find((object) => object.id === m1.id)!;
+    const expectedSecond = expectedRotated.pages[0].objects.find((object) => object.id === m2.id)!;
+    const rotatedFirst = rotated.pages[0].objects.find((object) => object.id === m1.id)!;
+    const rotatedSecond = rotated.pages[0].objects.find((object) => object.id === m2.id)!;
+    expect(rotated.selection.objectIds).toEqual([groupId]);
+    expect(rotatedFirst).toEqual(expectedFirst);
+    expect(rotatedSecond).toEqual(expectedSecond);
+  });
+
+  it("ungroups selected group metadata back to its children", () => {
+    const { document, ids } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    const ungrouped = ungroupSelectedDocumentObjects(grouped);
+
+    expect(ungrouped.pages[0].objects.some((object) => object.id === groupId)).toBe(false);
+    expect(ungrouped.selection.objectIds).toEqual(ids);
+  });
+
+  it("duplicates a selected group as a new grouped copy", () => {
+    const { document, ids } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+
+    const duplicated = duplicateSelectedDocumentObjects(grouped);
+    const duplicateGroupId = selectedGroupObjectIds(duplicated)[0];
+    const duplicateChildIds = resolveGroupedDocumentObjectIds(duplicated.pages[0].objects, duplicated.selection.objectIds);
+
+    expect(duplicateGroupId).toBeDefined();
+    expect(duplicated.selection.objectIds).toEqual([duplicateGroupId]);
+    expect(duplicateChildIds).toHaveLength(ids.length);
+    expect(duplicateChildIds.some((objectId) => ids.includes(objectId))).toBe(false);
+  });
+
+  it("deletes a selected group and its child objects", () => {
+    const { document, ids } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+
+    const deleted = deleteSelectedDocumentObjects(grouped);
+
+    expect(deleted.pages[0].objects.filter((object) => ids.includes(object.id))).toHaveLength(0);
+    expect(selectedGroupObjectIds(deleted)).toEqual([]);
+  });
+
+  it("aligns mixed selected objects to the shared selection bounds", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Align Selection"),
+      { x: 220, y: 180 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withLine = insertNativeArtGraphicObject(withMolecule, { x: 420, y: 260 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected inserted line object to be selected.");
+    }
+    const withText = insertNativeTextObject(withLine, { x: 560, y: 340 }, "Align");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const ids = [molecule.id, lineId, textId];
+    const selected = applyPatches(withText, [
+      { op: "setSelection", pageId: withText.pages[0].id, objectIds: ids }
+    ]);
+    const bounds = selectionBounds(selected.pages[0].objects, ids);
+    if (!bounds) {
+      throw new Error("Expected selected object bounds.");
+    }
+    const selectedObjectsIn = (document: ChemDraftDocument) =>
+      ids.map((id) => {
+        const object = document.pages[0].objects.find((candidate) => candidate.id === id);
+        if (!object) {
+          throw new Error(`Expected selected object ${id}.`);
+        }
+        return object;
+      });
+
+    const leftAligned = alignSelectedDocumentObjects(selected, "left");
+    selectedObjectsIn(leftAligned).forEach((object) => {
+      expect(object.x).toBeCloseTo(bounds.x, 6);
+    });
+
+    const centerAligned = alignSelectedDocumentObjects(selected, "center");
+    selectedObjectsIn(centerAligned).forEach((object) => {
+      expect(object.x + object.width / 2).toBeCloseTo(bounds.centerX, 6);
+    });
+
+    const bottomAligned = alignSelectedDocumentObjects(selected, "bottom");
+    selectedObjectsIn(bottomAligned).forEach((object) => {
+      expect(object.y + object.height).toBeCloseTo(bounds.y + bounds.height, 6);
+    });
+  });
+
+  it("distributes selected objects by centers or equal gaps while preserving the outer anchors", () => {
+    const document = createPhase4Document("Distribute Selection");
+    const pageId = document.pages[0].id;
+    const objects: TextObject[] = [
+      { id: "text_left", type: "text", x: 100, y: 180, width: 40, height: 24, rotation: 0, style: {}, text: "A", spans: [] },
+      { id: "text_middle", type: "text", x: 260, y: 500, width: 20, height: 24, rotation: 0, style: {}, text: "B", spans: [] },
+      { id: "text_right", type: "text", x: 520, y: 260, width: 60, height: 24, rotation: 0, style: {}, text: "C", spans: [] }
+    ];
+    const ids = objects.map((object) => object.id);
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ids }
+    ]);
+    const objectById = (current: ChemDraftDocument, id: string): TextObject => {
+      const object = current.pages[0].objects.find((candidate): candidate is TextObject =>
+        candidate.id === id && candidate.type === "text"
+      );
+      if (!object) {
+        throw new Error(`Expected text object ${id}.`);
+      }
+      return object;
+    };
+    const centerX = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.x + object.width / 2;
+    };
+    const centerY = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.y + object.height / 2;
+    };
+    const rightEdge = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.x + object.width;
+    };
+    const bottomEdge = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.y + object.height;
+    };
+
+    const horizontal = distributeSelectedDocumentObjects(selected, "horizontal");
+    expect(centerX(horizontal, "text_left")).toBeCloseTo(centerX(selected, "text_left"), 6);
+    expect(centerX(horizontal, "text_right")).toBeCloseTo(centerX(selected, "text_right"), 6);
+    expect(centerX(horizontal, "text_middle")).toBeCloseTo(
+      (centerX(selected, "text_left") + centerX(selected, "text_right")) / 2,
+      6
+    );
+
+    const vertical = distributeSelectedDocumentObjects(selected, "vertical");
+    expect(centerY(vertical, "text_left")).toBeCloseTo(centerY(selected, "text_left"), 6);
+    expect(centerY(vertical, "text_middle")).toBeCloseTo(centerY(selected, "text_middle"), 6);
+    expect(centerY(vertical, "text_right")).toBeCloseTo(
+      (centerY(selected, "text_left") + centerY(selected, "text_middle")) / 2,
+      6
+    );
+
+    const horizontalGaps = distributeSelectedDocumentObjects(selected, "horizontal", "spacing");
+    expect(objectById(horizontalGaps, "text_left").x).toBeCloseTo(objectById(selected, "text_left").x, 6);
+    expect(rightEdge(horizontalGaps, "text_right")).toBeCloseTo(rightEdge(selected, "text_right"), 6);
+    const leftToMiddleGap = objectById(horizontalGaps, "text_middle").x - rightEdge(horizontalGaps, "text_left");
+    const middleToRightGap = objectById(horizontalGaps, "text_right").x - rightEdge(horizontalGaps, "text_middle");
+    expect(leftToMiddleGap).toBeCloseTo(middleToRightGap, 6);
+
+    const verticalGaps = distributeSelectedDocumentObjects(selected, "vertical", "spacing");
+    expect(objectById(verticalGaps, "text_left").y).toBeCloseTo(objectById(selected, "text_left").y, 6);
+    expect(bottomEdge(verticalGaps, "text_middle")).toBeCloseTo(bottomEdge(selected, "text_middle"), 6);
+    const topToMiddleGap = objectById(verticalGaps, "text_right").y - bottomEdge(verticalGaps, "text_left");
+    const middleToBottomGap = objectById(verticalGaps, "text_middle").y - bottomEdge(verticalGaps, "text_right");
+    expect(topToMiddleGap).toBeCloseTo(middleToBottomGap, 6);
+  });
+
+  it("distributes rotated art by visible bounds instead of hidden object boxes", () => {
+    const document = createPhase4Document("Visual Bounds Distribute");
+    const pageId = document.pages[0].id;
+    const objects: GraphicObject[] = [
+      {
+        id: "visual_top",
+        type: "graphic",
+        graphicKind: "rect",
+        x: 180,
+        y: 100,
+        width: 76,
+        height: 185,
+        rotation: -6,
+        style: { strokeColor: "#111111", strokeWidth: 2, fillPaint: { kind: "none" } },
+        data: {}
+      },
+      {
+        id: "visual_middle",
+        type: "graphic",
+        graphicKind: "ellipse",
+        x: 190,
+        y: 360,
+        width: 72,
+        height: 72,
+        rotation: 0,
+        style: { strokeColor: "#111111", strokeWidth: 2, fillPaint: { kind: "none" } },
+        data: {}
+      },
+      {
+        id: "visual_bottom",
+        type: "graphic",
+        graphicKind: "rect",
+        x: 170,
+        y: 650,
+        width: 108,
+        height: 88,
+        rotation: 0,
+        style: { strokeColor: "#111111", strokeWidth: 2, fillPaint: { kind: "none" } },
+        data: {}
+      }
+    ];
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: objects.map((object) => object.id) }
+    ]);
+    const objectById = (current: ChemDraftDocument, id: string): GraphicObject => {
+      const object = current.pages[0].objects.find((candidate): candidate is GraphicObject =>
+        candidate.id === id && candidate.type === "graphic"
+      );
+      if (!object) {
+        throw new Error(`Expected graphic object ${id}.`);
+      }
+      return object;
+    };
+    const visualCenterY = (current: ChemDraftDocument, id: string) => {
+      const bounds = documentObjectVisualBounds(objectById(current, id));
+      return bounds.y + bounds.height / 2;
+    };
+    const visualGap = (current: ChemDraftDocument, upperId: string, lowerId: string) => {
+      const upper = documentObjectVisualBounds(objectById(current, upperId));
+      const lower = documentObjectVisualBounds(objectById(current, lowerId));
+      return lower.y - (upper.y + upper.height);
+    };
+
+    const centers = distributeSelectedDocumentObjects(selected, "vertical", "centers");
+    const equalGaps = distributeSelectedDocumentObjects(selected, "vertical", "spacing");
+
+    expect(objectById(centers, "visual_middle").y).not.toBeCloseTo(objectById(equalGaps, "visual_middle").y, 3);
+    expect(visualCenterY(centers, "visual_middle")).toBeCloseTo(
+      (visualCenterY(selected, "visual_top") + visualCenterY(selected, "visual_bottom")) / 2,
+      3
+    );
+    expect(visualGap(equalGaps, "visual_top", "visual_middle")).toBeCloseTo(
+      visualGap(equalGaps, "visual_middle", "visual_bottom"),
+      3
+    );
+  });
+
+  it("duplicates selected objects as offset copies and selects the duplicates", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Duplicate Selection"),
+      { x: 220, y: 180 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withLine = insertNativeArtGraphicObject(withMolecule, { x: 420, y: 260 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected inserted line object to be selected.");
+    }
+    const linePoints = nativeGraphicPathEditPoints(graphicById(withLine, lineId));
+    if (!linePoints) {
+      throw new Error("Expected line object to expose edit points.");
+    }
+    const editedLine = updateNativeGraphicPathHandle(
+      withLine,
+      lineId,
+      "end",
+      { x: linePoints.end.x + 18, y: linePoints.end.y + 12 }
+    );
+    const selected = applyPatches(editedLine, [
+      { op: "setSelection", pageId: editedLine.pages[0].id, objectIds: [molecule.id, lineId] }
+    ]);
+    const beforeLine = graphicById(selected, lineId);
+    const beforeBounds = selectionBounds(selected.pages[0].objects, selected.selection.objectIds);
+    if (!beforeBounds) {
+      throw new Error("Expected selected object bounds.");
+    }
+
+    const duplicated = duplicateSelectedDocumentObjects(selected);
+    const duplicateIds = duplicated.selection.objectIds;
+    const duplicateObjects = duplicated.pages[0].objects.filter((object) => duplicateIds.includes(object.id));
+    const duplicateMolecule = duplicateObjects.find((object): object is MoleculeObject => object.type === "molecule");
+    const duplicateLine = duplicateObjects.find((object): object is GraphicObject => object.type === "graphic");
+    const duplicateBounds = selectionBounds(duplicated.pages[0].objects, duplicateIds);
+
+    expect(duplicated.pages[0].objects).toHaveLength(selected.pages[0].objects.length + 2);
+    expect(duplicateIds).toHaveLength(2);
+    expect(duplicateIds).not.toContain(molecule.id);
+    expect(duplicateIds).not.toContain(lineId);
+    expect(duplicateMolecule).toBeDefined();
+    expect(duplicateLine).toBeDefined();
+    expect(duplicateBounds?.centerX).toBeCloseTo(beforeBounds.centerX + 24, 6);
+    expect(duplicateBounds?.centerY).toBeCloseTo(beforeBounds.centerY + 24, 6);
+    expect(duplicateMolecule?.atoms[0]?.x).toBeCloseTo(molecule.atoms[0].x + 24, 6);
+    expect(duplicateMolecule?.atoms[0]?.y).toBeCloseTo(molecule.atoms[0].y + 24, 6);
+    expectPointToBeClose(duplicateLine?.data.lineStart, translatedPoint(beforeLine.data.lineStart!, 24, 24));
+    expectPointToBeClose(duplicateLine?.data.lineEnd, translatedPoint(beforeLine.data.lineEnd!, 24, 24));
+  });
+
+  it("rotates the selected objects 90 degrees around the shared selection center", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Rotate 90 Selection"),
+      { x: 260, y: 190 },
+      "tool.art.line"
+    );
+    const lineId = withLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected inserted line object to be selected.");
+    }
+    const withText = insertNativeTextObject(withLine, { x: 480, y: 280 }, "90");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const selected = applyPatches(withText, [
+      { op: "setSelection", pageId: withText.pages[0].id, objectIds: [lineId, textId] }
+    ]);
+    const beforeLine = graphicById(selected, lineId);
+    const beforeText = selected.pages[0].objects.find((object): object is TextObject => object.id === textId && object.type === "text");
+    const bounds = selectionBounds(selected.pages[0].objects, selected.selection.objectIds);
+    if (!beforeText || !bounds) {
+      throw new Error("Expected text object and selection bounds.");
+    }
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const beforeLineCenter = { x: beforeLine.x + beforeLine.width / 2, y: beforeLine.y + beforeLine.height / 2 };
+    const beforeTextCenter = { x: beforeText.x + beforeText.width / 2, y: beforeText.y + beforeText.height / 2 };
+
+    const rotated = rotateSelectedDocumentObjects90(selected);
+    const rotatedLine = graphicById(rotated, lineId);
+    const rotatedText = rotated.pages[0].objects.find((object): object is TextObject => object.id === textId && object.type === "text");
+
+    expect(rotated.selection.objectIds).toEqual([lineId, textId]);
+    expect(rotatedLine.rotation).toBeCloseTo(90, 6);
+    expect(rotatedText?.rotation).toBeCloseTo(90, 6);
+    expectPointToBeClose(
+      { x: rotatedLine.x + rotatedLine.width / 2, y: rotatedLine.y + rotatedLine.height / 2 },
+      rotatedPointAround(beforeLineCenter, groupCenter, 90)
+    );
+    expectPointToBeClose(
+      rotatedText ? { x: rotatedText.x + rotatedText.width / 2, y: rotatedText.y + rotatedText.height / 2 } : undefined,
+      rotatedPointAround(beforeTextCenter, groupCenter, 90)
+    );
   });
 
   it("group-moves edited line graphic path geometry with the object", () => {

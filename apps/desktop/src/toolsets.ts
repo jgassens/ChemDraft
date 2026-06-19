@@ -35,9 +35,12 @@ export function createDefaultVisibleToolsetIds(
 
 export function getToolsetCommandGroups(
   toolsetId: string,
-  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry,
+  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
 ): CommandSpec[][] {
-  return registry.require(toolsetId).groups.map((group) => group.items.map(toolsetItemToCommandSpec));
+  return registry.require(toolsetId).groups.map((group) =>
+    group.items.map((item) => mergeToolsetCommandSpec(toolsetItemToCommandSpec(item), commandOverrides.get(item.commandId)))
+  );
 }
 
 export function getToolsetCommandSpecs(
@@ -88,6 +91,21 @@ function toolsetItemToCommandSpec(item: DesktopToolsetDefinition["groups"][numbe
     description: `${item.title ?? item.commandId} toolset action`,
     source: item.commandId.startsWith("plugin.") ? "plugin" : "core",
     enabled: item.disabledReason ? false : true
+  };
+}
+
+function mergeToolsetCommandSpec(base: CommandSpec, override: CommandSpec | undefined): CommandSpec {
+  if (!override) {
+    return base;
+  }
+
+  return {
+    ...base,
+    enabled: override.enabled,
+    disabledReason: override.disabledReason,
+    description: override.description ?? base.description,
+    source: override.source,
+    category: override.category ?? base.category
   };
 }
 

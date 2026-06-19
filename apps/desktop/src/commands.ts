@@ -11,6 +11,7 @@ import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
   nativeSingleLetterElements,
+  selectedGroupObjectIds,
   selectedArtBooleanEligibleObjectIds,
   type NativeSingleLetterElement
 } from "./documentWorkflow";
@@ -44,7 +45,8 @@ export function createQuickActions(
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },
-    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: false },
+    { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: document.selection.objectIds.length > 0 },
+    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: document.selection.objectIds.length > 0 },
     { id: "clipboard.paste", title: "Paste", icon: "paste", shortcut: "Cmd+V", source: "core" },
     { id: "view.zoomOut", title: "Zoom Out", icon: "zoomOut", shortcut: "Cmd+-", source: "core" },
     { id: "view.zoomIn", title: "Zoom In", icon: "zoomIn", shortcut: "Cmd++", source: "core" },
@@ -304,6 +306,11 @@ export const objectGradientAddStopCommand = {
 export const objectGradientDeleteStopCommand = {
   id: "object.gradient.deleteStop",
   title: "Delete Gradient Stop"
+} as const;
+
+export const distributeModeCommandIds = {
+  centers: "layout.distribute.mode.centers",
+  spacing: "layout.distribute.mode.spacing"
 } as const;
 
 export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
@@ -819,8 +826,137 @@ export function textStylePatchForCommand(
 
 export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
+  const hasMultiSelection = document.selection.objectIds.length >= 2;
+  const hasDistributableSelection = document.selection.objectIds.length >= 3;
+  const hasSelectedGroup = selectedGroupObjectIds(document).length > 0;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    {
+      id: "layout.alignLeft",
+      title: "Align Left",
+      icon: "align",
+      assetName: "Custom_Left",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the left edge of the selection"
+    },
+    {
+      id: "layout.alignCenter",
+      title: "Align Center",
+      icon: "align",
+      assetName: "Custom_Center",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the horizontal center of the selection"
+    },
+    {
+      id: "layout.alignRight",
+      title: "Align Right",
+      icon: "align",
+      assetName: "Custom_Right",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the right edge of the selection"
+    },
+    {
+      id: "layout.alignTop",
+      title: "Align Top",
+      icon: "align",
+      assetName: "Custom_Top",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the top edge of the selection"
+    },
+    {
+      id: "layout.alignMiddle",
+      title: "Align Middle",
+      icon: "align",
+      assetName: "Custom_Middle",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the vertical middle of the selection"
+    },
+    {
+      id: "layout.alignBottom",
+      title: "Align Bottom",
+      icon: "align",
+      assetName: "Custom_Bottom",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the bottom edge of the selection"
+    },
+    {
+      id: "layout.distributeHorizontal",
+      title: "Distribute Horizontally",
+      icon: "align",
+      assetName: "Custom_Horizontal",
+      source: "core",
+      category: "layout",
+      enabled: hasDistributableSelection,
+      disabledReason: "Select at least three objects",
+      description: "Distribute selected document objects evenly from left to right"
+    },
+    {
+      id: "layout.distributeVertical",
+      title: "Distribute Vertically",
+      icon: "align",
+      assetName: "Custom_Vertical",
+      source: "core",
+      category: "layout",
+      enabled: hasDistributableSelection,
+      disabledReason: "Select at least three objects",
+      description: "Distribute selected document objects evenly from top to bottom"
+    },
+    {
+      id: distributeModeCommandIds.centers,
+      title: "Distribute by Centers",
+      icon: "align",
+      source: "core",
+      category: "layout",
+      description: "Use center-to-center spacing for distribute buttons"
+    },
+    {
+      id: distributeModeCommandIds.spacing,
+      title: "Distribute Equal Gaps",
+      icon: "align",
+      source: "core",
+      category: "layout",
+      description: "Use equal empty space between object bounds for distribute buttons"
+    },
+    {
+      id: "layout.group",
+      title: "Group",
+      icon: "group",
+      assetName: "Custom_Group",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Treat selected document objects as one grouped selection"
+    },
+    {
+      id: "layout.ungroup",
+      title: "Ungroup",
+      icon: "group",
+      assetName: "Custom_Ungroup",
+      source: "core",
+      category: "layout",
+      enabled: hasSelectedGroup,
+      disabledReason: "Select a group",
+      description: "Restore a grouped selection to its child objects"
+    },
     {
       id: "layout.bringToFront",
       title: "Bring to Front",
@@ -880,6 +1016,26 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       category: "layout",
       enabled: hasSelection,
       description: "Mirror the selected document objects top to bottom"
+    },
+    {
+      id: "layout.rotate90",
+      title: "Rotate 90 Degrees",
+      icon: "align",
+      assetName: "Custom_Rotation",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Rotate the selected document objects 90 degrees around the selection center"
+    },
+    {
+      id: "layout.duplicate",
+      title: "Duplicate",
+      icon: "group",
+      assetName: "Art_Bring_Forward",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Duplicate the selected document objects and select the copies"
     },
     {
       id: artBooleanOperationCommandIds.union,

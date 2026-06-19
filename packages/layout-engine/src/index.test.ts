@@ -810,6 +810,40 @@ describe("layout-engine page SVG planner", () => {
     expect(arrowFragments.flatMap((fragment) => fragment.children)).toEqual([]);
   });
 
+  it("skips group metadata while exporting grouped children", () => {
+    const page = pageWithObjects([
+      {
+        id: "text_group_child",
+        type: "text",
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 40,
+        rotation: 0,
+        style: {},
+        text: "grouped",
+        spans: []
+      },
+      {
+        id: "group_001",
+        type: "group",
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 40,
+        rotation: 0,
+        style: {},
+        childObjectIds: ["text_group_child"]
+      }
+    ]);
+
+    const plan = planPageSvgRender(page);
+
+    expect(plan.fragments.some((fragment) => fragment.attrs["data-object-id"] === "group_001")).toBe(false);
+    expect(plan.fragments.some((fragment) => fragment.attrs["data-object-id"] === "text_group_child")).toBe(true);
+    expect(plan.warnings.some((warning) => warning.objectId === "group_001")).toBe(false);
+  });
+
   it("keeps the visible primitive stream stable while flattening object wrappers", () => {
     const page = pageWithObjects([
       moleculeObject({
@@ -923,6 +957,11 @@ describe("layout-engine page SVG planner", () => {
     const page = pageWithObjects([
       moleculeObject({
         id: "mol_effects",
+        structure: "CO",
+        atoms: [
+          { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "O", x: 220, y: 180, formalCharge: 0 }
+        ],
         style: {
           ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
           source: "chemdraft-native-drawing",
@@ -950,11 +989,67 @@ describe("layout-engine page SVG planner", () => {
     expect(fragments.find((fragment) =>
       fragment.attrs["data-molecule-effect-source"] === "true"
     )?.attrs.filter).toBe("url(#molecule-effects-mol_effects)");
+    expect(fragments.some((fragment) => fragment.key.startsWith("molecule-effect-source-label-"))).toBe(false);
     expect(fragments.some((fragment) =>
       fragment.attrs.class === "native-molecule-sketch" &&
       fragment.attrs["data-molecule-effect"] === "sketch"
     )).toBe(true);
     expect(fragments.some((fragment) => String(fragment.attrs.class).includes("native-bond-line"))).toBe(true);
+    expect(fragments.some((fragment) => fragment.attrs.class === "native-atom-label")).toBe(true);
+  });
+
+  it("renders molecule fill underlays and stroke opacity from art style metadata", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_fill",
+        structure: "C1CCCCC1",
+        atoms: [
+          { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 180, y: 140, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 240, y: 140, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 280, y: 180, formalCharge: 0 },
+          { id: "atom_005", element: "C", x: 240, y: 220, formalCharge: 0 },
+          { id: "atom_006", element: "C", x: 180, y: 220, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+          { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+          { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+          { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+          { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+          { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#1d7f68" },
+              { offset: 1, color: "#ffffff" }
+            ]
+          },
+          fillOpacity: 0.44,
+          strokeOpacity: 0.58
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    expect(fill?.tag).toBe("path");
+    expect(fill?.attrs.fill).toBe("url(#molecule-fill-mol_fill)");
+    expect(fill?.attrs["fill-opacity"]).toBe(0.44);
+    expect(fragments.some((fragment) =>
+      fragment.tag === "linearGradient" && fragment.attrs.id === "molecule-fill-mol_fill"
+    )).toBe(true);
+    expect(fragments.find((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line")
+    )?.attrs["stroke-opacity"]).toBe(0.58);
   });
 
   it("renders styled native art graphics as exportable shape primitives", () => {

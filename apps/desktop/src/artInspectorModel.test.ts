@@ -470,11 +470,16 @@ describe("ArtInspectorModel", () => {
     expect(selectedGraphicObjectsForArtInspector(document)).toEqual([circle]);
   });
 
-  it("models selected molecules as shared visual-effect targets without graphic paint controls", () => {
+  it("models selected molecules as art fill/stroke targets from the Art toolbar", () => {
     const molecule = moleculeObject("mol_effect", {
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
         source: "chemdraft-native-drawing",
+        bondColor: "#263238",
+        fillColor: "#1d7f68",
+        fillPaint: { kind: "solid", color: "#1d7f68", opacity: 0.4 },
+        fillOpacity: 0.4,
+        strokeOpacity: 0.72,
         visualEffects: [
           { kind: "glow", color: "#ffee66", opacity: 0.7, blurPx: 9, spreadPx: 2 }
         ]
@@ -495,10 +500,14 @@ describe("ArtInspectorModel", () => {
       selectedCount: 1,
       selectedObjectIds: ["mol_effect"],
       selectedGraphicIds: [],
-      supportsFillAny: false,
-      supportsStrokeAny: false,
+      supportsFillAny: true,
+      supportsStrokeAny: true,
       supportsDashAny: false,
       values: {
+        fillColor: { value: "#1d7f68", mixed: false },
+        strokeColor: { value: "#263238", mixed: false },
+        fillOpacity: { value: 0.4, mixed: false },
+        strokeOpacity: { value: 0.72, mixed: false },
         effect: { value: "glow", mixed: false }
       },
       effectKinds: ["glow"],

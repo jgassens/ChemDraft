@@ -152,6 +152,8 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('flood-color="#fdd835"');
     expect(result.contents).toContain('data-molecule-effect-source="true" filter="url(#molecule-effects-mol_svg_effects)"');
     expect(result.contents).toContain('data-molecule-effect="sketch"');
+    expect(result.contents).not.toContain("molecule-effect-source-label");
+    expect(result.contents).toContain('data-atom-label="OH"');
     expect(result.contents).toContain('data-object-id="mol_svg_effects"');
     expect(result.contents).not.toContain("native-bond-hit-target");
   });

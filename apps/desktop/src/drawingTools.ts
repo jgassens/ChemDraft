@@ -441,6 +441,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.pen", "Pen", "mechanism", usageHint("click points", "drag handles", "Enter ends, Esc cancels")],
     ["tool.art.polyline", "Polyline", "bond", usageHint("click points", "Backspace removes point", "Enter/double-click ends, Esc cancels")],
     ["tool.art.scissors", "Scissors", "select", usageHint("click path to split", "click path for more", "Esc exits")],
+    ["tool.art.measure", "Tape Measure", "align", usageHint("drag between points", "Shift constrains angle", "Esc exits")],
     ["tool.art.pencil", "Pencil", "mechanism", usageHint("drag to draw", "keep dragging to continue", "release ends, Esc cancels")],
     ["tool.art.brush", "Brush", "style", usageHint("drag to paint", "keep dragging to continue", "release ends, Esc cancels")],
     ["tool.art.eyedropper", "Eyedropper", "style", usageHint("click source art", "⌥ copies full appearance", "Esc exits")],

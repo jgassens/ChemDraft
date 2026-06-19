@@ -20,6 +20,7 @@ export const toolbarAssetNames = [
   "Art_Select",
   "Art_Send_Backward",
   "Art_Send_To_Back",
+  "Art_Tape_Measure",
   "Art_Text",
   "Art_Wavy_Line",
   "Custom_Arrow",
@@ -51,6 +52,7 @@ export const toolbarAssetNames = [
   "Custom_FormulaStyle",
   "Custom_Front",
   "Custom_Horizontal",
+  "Custom_Group",
   "Custom_Lasso",
   "Custom_Left",
   "Custom_Lobe",
@@ -71,6 +73,7 @@ export const toolbarAssetNames = [
   "Custom_Tools",
   "Custom_Top",
   "Custom_Vertical",
+  "Custom_Ungroup",
   "Custom_p_Orbital",
   "Custom_s_Orbital"
 ] as const;

@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   projectGraphicObjectPoint
 } from "@chemdraft/art-engine";
+import { inchRulerUnit } from "@chemdraft/viewport-engine";
 import {
   allShellCommands,
   atomElementActions,
@@ -85,6 +86,7 @@ import {
   ObjectLayerContextMenu,
   SelectionLassoOverlay,
   SelectionMarqueeOverlay,
+  TapeMeasureOverlay,
   activeNativeTargetShortcutCommand,
   cumulativeObjectResizeScale,
   cumulativeRotationReadoutDegrees,
@@ -521,6 +523,29 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("width:calc(792px * var(--page-scale))");
     expect(markup).toContain("height:calc(612px * var(--page-scale))");
     expect(markup).toContain('d="M 20 30 L 70 35 L 65 90 L 22 88 Z"');
+  });
+
+  it("renders the tape measure overlay in ruler units", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TapeMeasureOverlay, {
+        measurement: {
+          startPoint: { x: 96, y: 96 },
+          latestPoint: { x: 288, y: 96 },
+          constrained: true,
+          dragging: false
+        },
+        pageWidth: 816,
+        pageHeight: 1056,
+        rulerUnit: inchRulerUnit
+      })
+    );
+
+    expect(markup).toContain("tape-measure-overlay");
+    expect(markup).toContain('data-tape-measure-constrained="true"');
+    expect(markup).toContain('viewBox="0 0 816 1056"');
+    expect(markup).toContain('x1="96"');
+    expect(markup).toContain('x2="288"');
+    expect(markup).toContain(">2.00 in</div>");
   });
 
   it("selects every whole native molecule inside a marquee instead of keeping only the first one", () => {
@@ -1003,8 +1028,20 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "layout.sendBackward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.bringToFront")).toBe(true);
     expect(commands.some((command) => command.id === "layout.sendToBack")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignLeft")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignCenter")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignRight")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignTop")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignMiddle")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignBottom")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.distributeHorizontal")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.distributeVertical")).toBe(true);
     expect(commands.some((command) => command.id === "layout.flipHorizontal")).toBe(true);
     expect(commands.some((command) => command.id === "layout.flipVertical")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.rotate90")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.duplicate")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.group")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.ungroup")).toBe(true);
     expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
     expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(commands.some((command) => command.id === "tool.art.circle")).toBe(true);
@@ -1375,7 +1412,11 @@ describe("ChemDraft desktop shell", () => {
       "layout.sendBackward",
       "layout.sendToBack",
       "layout.flipHorizontal",
-      "layout.flipVertical"
+      "layout.flipVertical",
+      "layout.rotate90",
+      "layout.duplicate",
+      "layout.group",
+      "layout.ungroup"
     ]);
     const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 
@@ -1419,6 +1460,36 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.select")).not.toContain('data-active="true"');
     expect(buttonMarkupForCommand(markup, "tool.select")).not.toContain('aria-pressed="true"');
     expect(buttonMarkupForCommand(markup, "tool.wedgeBond")).not.toContain('data-active="true"');
+  });
+
+  it("merges live layout command state into the main toolbar distribute buttons", () => {
+    const document = createPhase4Document("Main Toolbar Distribute");
+    const pageId = document.pages[0].id;
+    const objects: DocumentObject[] = [
+      { id: "main_toolbar_a", type: "text", x: 120, y: 180, width: 40, height: 24, rotation: 0, style: {}, text: "A", spans: [] },
+      { id: "main_toolbar_b", type: "text", x: 260, y: 210, width: 40, height: 24, rotation: 0, style: {}, text: "B", spans: [] },
+      { id: "main_toolbar_c", type: "text", x: 440, y: 190, width: 40, height: 24, rotation: 0, style: {}, text: "C", spans: [] }
+    ];
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: objects.map((object) => object.id) }
+    ]);
+    const overrides = new Map(createLayerActions(selected).map((command) => [command.id, command] as const));
+    const markup = renderToStaticMarkup(
+      createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.main", desktopToolsetRegistry, overrides),
+        currentDistributeMode: "spacing",
+        orientation: "horizontal",
+        onInvoke: () => undefined
+      })
+    );
+
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).not.toContain("disabled");
+    expect(buttonMarkupForCommand(markup, "layout.distributeVertical")).not.toContain("disabled");
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-distribute-mode="spacing"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain("Distribute Horizontally: equal gaps");
+    expect(toolPaletteSource).toContain("toolbar-distribute-menu");
+    expect(toolPaletteSource).toContain("distributeModeCommandIds.spacing");
   });
 
   it("matches rotate-handle tangential drag speed to projected-plane tilt speed", () => {
@@ -1861,6 +1932,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="tool.art.pen"');
     expect(markup).toContain('data-command-id="tool.art.polyline"');
     expect(markup).toContain('data-command-id="tool.art.scissors"');
+    expect(markup).toContain('data-command-id="tool.art.measure"');
     expect(markup).toContain('data-command-id="tool.eraser"');
     expect(markup).toContain('data-command-id="tool.art.pencil"');
     expect(markup).toContain('data-command-id="tool.art.brush"');
@@ -1868,6 +1940,18 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="tool.art.arc270"');
     expect(markup).toContain('data-command-id="layout.bringForward"');
     expect(markup).toContain('data-command-id="layout.sendToBack"');
+    expect(markup).toContain('data-command-id="layout.alignLeft"');
+    expect(markup).toContain('data-command-id="layout.alignCenter"');
+    expect(markup).toContain('data-command-id="layout.alignRight"');
+    expect(markup).toContain('data-command-id="layout.alignTop"');
+    expect(markup).toContain('data-command-id="layout.alignMiddle"');
+    expect(markup).toContain('data-command-id="layout.alignBottom"');
+    expect(markup).toContain('data-command-id="layout.distributeHorizontal"');
+    expect(markup).toContain('data-command-id="layout.distributeVertical"');
+    expect(markup).toContain('data-command-id="layout.rotate90"');
+    expect(markup).toContain('data-command-id="layout.duplicate"');
+    expect(markup).toContain('data-command-id="layout.group"');
+    expect(markup).toContain('data-command-id="layout.ungroup"');
     expect(markup).toContain('data-command-id="art.boolean.union"');
     expect(markup).toContain('data-command-id="art.boolean.subtract"');
     expect(markup).toContain('data-command-id="art.boolean.intersect"');
@@ -1883,12 +1967,19 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.art.pen")).toContain('data-toolbar-asset="Art_Pen"');
     expect(buttonMarkupForCommand(markup, "tool.art.polyline")).toContain('data-toolbar-asset="Art_Polyline"');
     expect(buttonMarkupForCommand(markup, "tool.art.scissors")).toContain('data-toolbar-asset="Art_Scissors"');
+    expect(buttonMarkupForCommand(markup, "tool.art.measure")).toContain('data-toolbar-asset="Art_Tape_Measure"');
     expect(buttonMarkupForCommand(markup, "tool.eraser")).toContain('data-toolbar-asset="Art_Eraser"');
     expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-toolbar-asset="Art_Pencil"');
     expect(buttonMarkupForCommand(markup, "tool.art.brush")).toContain('data-toolbar-asset="Art_Brush"');
     expect(buttonMarkupForCommand(markup, "tool.art.arrow")).toContain('data-toolbar-asset="Art_Arrow"');
     expect(buttonMarkupForCommand(markup, "tool.art.arc270")).toContain('data-toolbar-asset="Art_Arc_Circular"');
+    expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-toolbar-asset="Custom_Left"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-toolbar-asset="Custom_Horizontal"');
     expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-toolbar-asset="Art_Send_To_Back"');
+    expect(buttonMarkupForCommand(markup, "layout.rotate90")).toContain('data-toolbar-asset="Custom_Rotation"');
+    expect(buttonMarkupForCommand(markup, "layout.duplicate")).toContain('data-toolbar-asset="Art_Bring_Forward"');
+    expect(buttonMarkupForCommand(markup, "layout.group")).toContain('data-toolbar-asset="Custom_Group"');
+    expect(buttonMarkupForCommand(markup, "layout.ungroup")).toContain('data-toolbar-asset="Custom_Ungroup"');
     expect(rectInspectorMarkup).toContain('data-toolbar-style-controls="art"');
     expect(rectInspectorMarkup).toContain('aria-label="Fill color"');
     expect(rectInspectorMarkup).toContain('aria-label="Open object color picker"');
@@ -2035,8 +2126,8 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
-      width: 900,
-      minWidth: 820
+      width: 1040,
+      minWidth: 920
     });
     expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
       "tool.art.pencil",
@@ -2066,10 +2157,22 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("tool.select") ?? []]).toEqual(["Art_Select"]);
     expect([...assetNamesByCommandId.get("tool.text") ?? []]).toEqual(["Art_Text"]);
     expect([...assetNamesByCommandId.get("tool.eraser") ?? []]).toEqual(["Art_Eraser"]);
+    expect([...assetNamesByCommandId.get("layout.alignLeft") ?? []]).toEqual(["Custom_Left"]);
+    expect([...assetNamesByCommandId.get("layout.alignCenter") ?? []]).toEqual(["Custom_Center"]);
+    expect([...assetNamesByCommandId.get("layout.alignRight") ?? []]).toEqual(["Custom_Right"]);
+    expect([...assetNamesByCommandId.get("layout.alignTop") ?? []]).toEqual(["Custom_Top"]);
+    expect([...assetNamesByCommandId.get("layout.alignMiddle") ?? []]).toEqual(["Custom_Middle"]);
+    expect([...assetNamesByCommandId.get("layout.alignBottom") ?? []]).toEqual(["Custom_Bottom"]);
+    expect([...assetNamesByCommandId.get("layout.distributeHorizontal") ?? []]).toEqual(["Custom_Horizontal"]);
+    expect([...assetNamesByCommandId.get("layout.distributeVertical") ?? []]).toEqual(["Custom_Vertical"]);
     expect([...assetNamesByCommandId.get("layout.bringToFront") ?? []]).toEqual(["Art_Bring_To_Front"]);
     expect([...assetNamesByCommandId.get("layout.bringForward") ?? []]).toEqual(["Art_Bring_Forward"]);
     expect([...assetNamesByCommandId.get("layout.sendBackward") ?? []]).toEqual(["Art_Send_Backward"]);
     expect([...assetNamesByCommandId.get("layout.sendToBack") ?? []]).toEqual(["Art_Send_To_Back"]);
+    expect([...assetNamesByCommandId.get("layout.rotate90") ?? []]).toEqual(["Custom_Rotation"]);
+    expect([...assetNamesByCommandId.get("layout.duplicate") ?? []]).toEqual(["Art_Bring_Forward"]);
+    expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
+    expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
   });
 
   it("keeps sparse floating toolsets compact", () => {
@@ -2327,14 +2430,21 @@ describe("ChemDraft desktop shell", () => {
   it("keeps functional metadata on asset-backed palette commands", () => {
     const assetCommands = paletteGroups.flat().filter((command) => command.assetName);
     const eyedropperCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.eyedropper");
+    const measureCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.measure");
 
-    expect(assetCommands.length).toBeGreaterThanOrEqual(49);
+    expect(assetCommands.length).toBeGreaterThanOrEqual(50);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.every((command) => command.description)).toBe(true);
     expect(eyedropperCommand).toMatchObject({
       id: "tool.art.eyedropper",
       title: "Eyedropper",
       assetName: "Art_Eyedropper",
+      category: "art"
+    });
+    expect(measureCommand).toMatchObject({
+      id: "tool.art.measure",
+      title: "Tape Measure",
+      assetName: "Art_Tape_Measure",
       category: "art"
     });
     expect(assetCommands.find((command) => command.assetName === "Custom_Bond_Wedge")).toMatchObject({

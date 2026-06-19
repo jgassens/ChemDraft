@@ -133,8 +133,8 @@ export function createArtInspectorModel({
     }
     return { object, plan: undefined };
   });
-  const supportsFill = planned.map((entry) => entry.plan?.capabilities.supportsFill === true);
-  const supportsStroke = planned.map((entry) => entry.plan?.capabilities.supportsStroke === true);
+  const supportsFill = planned.map((entry) => entry.object.type === "molecule" || entry.plan?.capabilities.supportsFill === true);
+  const supportsStroke = planned.map((entry) => entry.object.type === "molecule" || entry.plan?.capabilities.supportsStroke === true);
   const supportsDash = planned.map((entry) => entry.plan?.capabilities.supportsDash === true);
   const supportsLineEnds = planned.map((entry) => entry.plan?.capabilities.supportsLineCap === true);
   const supportsCorners = planned.map((entry) => entry.plan?.capabilities.supportsLineJoin === true);
@@ -150,13 +150,13 @@ export function createArtInspectorModel({
       : requestedPaintTarget;
 
   const values = {
-    fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarPaintType(object) : undefined),
-    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : undefined),
-    fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarColor(object) : undefined),
-    strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarColor(object) : undefined),
+    fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarPaintType(object) : moleculeFillToolbarPaintType(object)),
+    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : moleculeStrokeToolbarPaintType(object)),
+    fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarColor(object) : moleculeFillToolbarColor(object)),
+    strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarColor(object) : moleculeStrokeToolbarColor(object)),
     objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
-    fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.fillOpacity, 1) : undefined),
-    strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.strokeOpacity, 1) : undefined),
+    fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => metadataNumberValue(object.style.fillOpacity, 1)),
+    strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeOpacity, 1)),
     effect: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => visualToolbarEffectValue(object)),
     strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.strokeWidth, 1.5) : undefined),
     dash: uniformSupportedValue(planned, supportsDash, ({ object }) => object.type === "graphic" ? metadataStringValue(object.style.strokeDasharray) ?? "solid" : undefined),
@@ -332,6 +332,26 @@ function graphicStrokeToolbarColor(object: GraphicObject): string | null {
   return normalizeToolbarHexColor(metadataColor(object.style.strokeColor, object.style.color, "#111111"));
 }
 
+function moleculeFillToolbarColor(object: MoleculeObject): string | null {
+  const paint = graphicPaintFromMetadata(object.style.fillPaint);
+  if (paint?.kind === "solid") {
+    return normalizeToolbarHexColor(paint.color);
+  }
+  if (paint?.kind === "linear-gradient" || paint?.kind === "radial-gradient") {
+    return representativeGradientStopColor(paint);
+  }
+  const fillColor = metadataStringValue(object.style.fillColor);
+  return fillColor?.toLowerCase() === "none" ? null : normalizeToolbarHexColor(fillColor);
+}
+
+function moleculeStrokeToolbarColor(object: MoleculeObject): string | null {
+  const paint = graphicPaintFromMetadata(object.style.strokePaint);
+  if (paint?.kind === "solid") {
+    return normalizeToolbarHexColor(paint.color);
+  }
+  return normalizeToolbarHexColor(metadataColor(object.style.bondColor, object.style.strokeColor, object.style.color, "#111111"));
+}
+
 function representativeGradientStopColor(paint: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>): string | null {
   return [...paint.stops]
     .reverse()
@@ -346,10 +366,8 @@ function gradientModelForTarget(
   target: ArtInspectorPaintTarget
 ): ArtInspectorGradientModel {
   const paints = planned
-    .filter((entry, index): entry is Extract<ArtInspectorPlannedEntry, { object: GraphicObject }> =>
-      entry.object.type === "graphic" && supported[index]
-    )
-    .map(({ object }) => target === "fill" ? object.style.fillPaint : object.style.strokePaint);
+    .filter((_, index) => supported[index])
+    .map(({ object }) => objectPaintForTarget(object, target));
   if (paints.length === 0) {
     return { paintType: null, stops: [], mixed: false, editable: false, canAddStop: false, canDeleteStop: false };
   }
@@ -424,6 +442,35 @@ function graphicStrokeToolbarPaintType(object: GraphicObject): ArtInspectorPaint
     return object.style.strokePaint.kind;
   }
   return metadataStringValue(object.style.strokeColor)?.toLowerCase() === "none" ? "none" : "solid";
+}
+
+function moleculeFillToolbarPaintType(object: MoleculeObject): ArtInspectorPaintType {
+  const paint = graphicPaintFromMetadata(object.style.fillPaint);
+  if (paint) {
+    return paint.kind;
+  }
+  return metadataStringValue(object.style.fillColor)?.toLowerCase() === "none" ||
+    metadataStringValue(object.style.fillColor) === undefined
+    ? "none"
+    : "solid";
+}
+
+function moleculeStrokeToolbarPaintType(object: MoleculeObject): ArtInspectorPaintType {
+  const paint = graphicPaintFromMetadata(object.style.strokePaint);
+  return paint?.kind === "solid" ? "solid" : "solid";
+}
+
+function objectPaintForTarget(
+  object: ArtInspectorStyleObject,
+  target: ArtInspectorPaintTarget
+): GraphicPaint | undefined {
+  if (object.type === "graphic") {
+    return target === "fill" ? object.style.fillPaint : object.style.strokePaint;
+  }
+
+  return target === "fill"
+    ? graphicPaintFromMetadata(object.style.fillPaint)
+    : graphicPaintFromMetadata(object.style.strokePaint);
 }
 
 function visualToolbarEffectValue(object: ArtInspectorStyleObject): ArtInspectorEffectValue {
@@ -540,6 +587,79 @@ function metadataNumberValue(value: unknown, fallback: number): number {
 
 function metadataStringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function graphicPaintFromMetadata(value: unknown): GraphicPaint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const paint = value as Record<string, unknown>;
+  if (paint.kind === "none") {
+    return { kind: "none" };
+  }
+  if (paint.kind === "solid" && typeof paint.color === "string") {
+    return {
+      kind: "solid",
+      color: paint.color,
+      ...(typeof paint.opacity === "number" ? { opacity: clampToolbarUnit(paint.opacity) } : {})
+    };
+  }
+  if (
+    paint.kind === "linear-gradient" &&
+    paint.units === "object" &&
+    typeof paint.x1 === "number" &&
+    typeof paint.y1 === "number" &&
+    typeof paint.x2 === "number" &&
+    typeof paint.y2 === "number" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "linear-gradient",
+      units: "object",
+      x1: clampToolbarUnit(paint.x1),
+      y1: clampToolbarUnit(paint.y1),
+      x2: clampToolbarUnit(paint.x2),
+      y2: clampToolbarUnit(paint.y2),
+      stops: normalizedGradientStops({
+        kind: "linear-gradient",
+        units: "object",
+        x1: 0,
+        y1: 0,
+        x2: 1,
+        y2: 1,
+        stops: paint.stops as Extract<GraphicPaint, { kind: "linear-gradient" }>["stops"]
+      }).map((stop) => ({ ...stop }))
+    };
+  }
+  if (
+    paint.kind === "radial-gradient" &&
+    paint.units === "object" &&
+    typeof paint.cx === "number" &&
+    typeof paint.cy === "number" &&
+    typeof paint.r === "number" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "radial-gradient",
+      units: "object",
+      cx: clampToolbarUnit(paint.cx),
+      cy: clampToolbarUnit(paint.cy),
+      r: Math.max(0, paint.r),
+      ...(typeof paint.fx === "number" ? { fx: clampToolbarUnit(paint.fx) } : {}),
+      ...(typeof paint.fy === "number" ? { fy: clampToolbarUnit(paint.fy) } : {}),
+      stops: normalizedGradientStops({
+        kind: "radial-gradient",
+        units: "object",
+        cx: 0.5,
+        cy: 0.5,
+        r: 0.5,
+        stops: paint.stops as Extract<GraphicPaint, { kind: "radial-gradient" }>["stops"]
+      }).map((stop) => ({ ...stop }))
+    };
+  }
+
+  return undefined;
 }
 
 function metadataColor(...values: unknown[]): string {

@@ -39,6 +39,7 @@ import {
   type DocumentPatch,
   type GraphicFreehandPoint,
   type GraphicObject,
+  type GroupObject,
   type MoleculeObject,
   type NativeDrawingStyle,
   type NativeTextStyle,
@@ -93,6 +94,7 @@ import {
   artBooleanOperationCommandIds,
   createLayerActions,
   createQuickActions,
+  distributeModeCommandIds,
   editActions,
   objectColorForCommand,
   objectEffectColorForCommand,
@@ -140,8 +142,9 @@ import {
   withStandaloneDrawingToolCommands,
   type ActiveToolState
 } from "./drawingTools";
-import { clipboardPayloadFromDataTransfer, readClipboardPayload } from "./clipboard";
+import { clipboardPayloadFromDataTransfer, readClipboardPayload, writeClipboardText } from "./clipboard";
 import {
+  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
@@ -177,10 +180,16 @@ import {
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectStrokeStyleToSelection,
+  applyMoleculeObjectColorToSelection,
+  applyMoleculeObjectNoneToSelection,
+  applyMoleculeObjectOpacityToSelection,
+  applyMoleculeObjectPaintTypeToSelection,
   createNativeSavePayload,
   createPhase4Document,
+  createSelectionClipboardPayload,
   cleanUpNativeMolecules2d,
   deleteNativeGraphicPathNode,
+  documentObjectVisualBounds,
   deleteSelectedDocumentObjects,
   splitNativeGraphicPathSegmentAtPoint,
   exportPhase4Cdxml,
@@ -213,12 +222,19 @@ import {
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
+  alignSelectedDocumentObjects,
+  distributeSelectedDocumentObjects,
+  duplicateSelectedDocumentObjects,
   flipSelectedDocumentObjects,
+  groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  resolveGroupedDocumentObjectIds,
   type SelectionBounds,
   rotateDocumentObjectsAroundPoint,
+  rotateSelectedDocumentObjects90,
   scaleDocumentObjectsAroundPoint,
+  ungroupSelectedDocumentObjects,
   moveNativeMoleculeParts,
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
@@ -231,7 +247,10 @@ import {
   resizeNativeTextObjectBox,
   resolveToolbarColorSelection,
   selectedGraphicObjectIds,
+  selectedMoleculeObjectIds,
   selectedVisualEffectObjectIds,
+  parseSelectionClipboardPayload,
+  pasteSelectionClipboardPayload,
   rotateNativeMoleculeParts,
   rotateDocumentObject,
   rotateNativeMoleculeObjectAroundPoint,
@@ -263,6 +282,7 @@ import {
   deleteGraphicObjectGradientStopAtIndexForSelection,
   reverseGraphicObjectGradientStopsForSelection,
   rotateGraphicObjectGradientStopsForSelection,
+  serializeSelectionClipboardPayload,
   swapGraphicObjectFillAndStroke,
   type GraphicStylePaintTarget,
   type NativeGraphicGradientHandleId,
@@ -283,6 +303,9 @@ import {
   type NativeBondOrderValue,
   type NativeChargeValue,
   type NativeSingleLetterElement,
+  type DocumentAlignMode,
+  type DocumentDistributeAxis,
+  type DocumentDistributeMode,
   type ImportedPageFitRecommendation
 } from "./documentWorkflow";
 import { KetcherEditorHost } from "./KetcherEditorHost";
@@ -407,6 +430,15 @@ type NativeDoubleBondSidePreview = {
   objectId: string;
   bondId: string;
   side: NativeDoubleBondSide;
+};
+type TapeMeasureOverlayState = {
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  constrained: boolean;
+  dragging: boolean;
+};
+type TapeMeasureDragState = TapeMeasureOverlayState & {
+  pointerId: number;
 };
 type ObjectDragState = {
   pointerId: number;
@@ -803,7 +835,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.11.16-codex";
+const CURRENT_BUILD_STAMP = "6.19.15.43-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -1011,6 +1043,7 @@ export function MainWindow({
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
+  const tapeMeasureDragRef = useRef<TapeMeasureDragState | null>(null);
   const pathArtDrawRef = useRef<PathArtDrawState | null>(null);
   const bezierArtNodeDragRef = useRef<BezierArtNodeDragState | null>(null);
   const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
@@ -1024,6 +1057,7 @@ export function MainWindow({
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
   const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
+  const selectionClipboardPayloadRef = useRef<ReturnType<typeof createSelectionClipboardPayload>>(undefined);
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
@@ -1075,6 +1109,7 @@ export function MainWindow({
   const [selectedNativeMoleculePart, setSelectedNativeMoleculePart] = useState<NativeMoleculeSelectionPart | undefined>();
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
   const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
+  const [tapeMeasure, setTapeMeasure] = useState<TapeMeasureOverlayState | undefined>();
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
@@ -1320,6 +1355,10 @@ export function MainWindow({
     [canRedo, canUndo, document, selectedMolecule]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
+  const toolsetCommandOverrides = useMemo(
+    () => new Map(layerActions.map((action) => [action.id, action] as const)),
+    [layerActions]
+  );
   const pageCssVars = useMemo(
     () =>
       ({
@@ -1356,6 +1395,13 @@ export function MainWindow({
     return byMoleculeId;
   }, [activePage.objects]);
   const activeTool = activeToolState.activeCommandId;
+  const [distributeMode, setDistributeMode] = useState<DocumentDistributeMode>("centers");
+  useEffect(() => {
+    if (activeTool !== "tool.art.measure") {
+      tapeMeasureDragRef.current = null;
+      setTapeMeasure(undefined);
+    }
+  }, [activeTool]);
   const toolCommandSpecs = useMemo(
     () => withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
     [toolsetRegistry]
@@ -2412,10 +2458,71 @@ export function MainWindow({
     setStatus(result.status);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointForViewport, textStyleDefaults]);
 
+  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+    const nextDocument = pasteSelectionClipboardPayload(
+      documentRef.current,
+      payload,
+      pastePointForViewport()
+    );
+    if (nextDocument === documentRef.current) {
+      setStatus("Clipboard selection unchanged");
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setStatus("Pasted ChemDraft selection");
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointForViewport]);
+
+  const copySelectionToClipboard = useCallback(async (mode: "copy" | "cut") => {
+    const payload = createSelectionClipboardPayload(documentRef.current);
+    if (!payload) {
+      setStatus(mode === "copy" ? "Select objects before copying" : "Select objects before cutting");
+      return;
+    }
+
+    selectionClipboardPayloadRef.current = payload;
+    const text = serializeSelectionClipboardPayload(payload);
+    await writeClipboardText(text);
+
+    if (mode === "cut") {
+      const nextDocument = deleteSelectedDocumentObjects(documentRef.current);
+      if (nextDocument !== documentRef.current) {
+        commitDocumentChange(nextDocument);
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+        setFreeformNativeBond(undefined);
+      }
+      setStatus("Cut ChemDraft selection");
+      return;
+    }
+
+    setStatus("Copied ChemDraft selection");
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+
   const pasteClipboard = useCallback(async () => {
     const rawPayload = await readClipboardPayload();
+    const selectionPayload = rawPayload.textItems
+      .map((item) => parseSelectionClipboardPayload(item.text))
+      .find((payload) => payload !== undefined) ??
+      selectionClipboardPayloadRef.current;
+    if (selectionPayload) {
+      applySelectionClipboardPayload(selectionPayload);
+      return;
+    }
+
     applyDetectedClipboardPayload(inspectClipboardPayload(rawPayload));
-  }, [applyDetectedClipboardPayload]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
@@ -2554,17 +2661,22 @@ export function MainWindow({
     }
 
     const graphicObjectIds = selectedGraphicObjectIds(currentDocument);
+    const moleculeObjectIds = selectedMoleculeObjectIds(currentDocument).filter((objectId) =>
+      objectId !== selectedNativeMoleculePart?.objectId
+    );
     const visualEffectObjectIds = selectedVisualEffectObjectIds(currentDocument, {
       excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
     });
 
     const noneCommand = objectStyleNoneCommands.find((command) => command.id === commandId);
     if (noneCommand) {
+      let nextDocument = applyGraphicObjectNoneToSelection(currentDocument, noneCommand.target, graphicObjectIds);
+      nextDocument = applyMoleculeObjectNoneToSelection(nextDocument, noneCommand.target, moleculeObjectIds);
       return {
-        document: applyGraphicObjectNoneToSelection(currentDocument, noneCommand.target, graphicObjectIds),
+        document: nextDocument,
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: noneCommand.target === "fill" ? "Removed selected graphic fill" : "Removed selected graphic stroke"
+        targeted: graphicObjectIds.length > 0 || (noneCommand.target === "fill" && moleculeObjectIds.length > 0),
+        message: noneCommand.target === "fill" ? "Removed selected fill" : "Removed selected graphic stroke"
       };
     }
 
@@ -2694,23 +2806,27 @@ export function MainWindow({
 
     const paintType = objectPaintTypeForCommand(commandId);
     if (paintType) {
+      let nextDocument = applyGraphicObjectPaintTypeToSelection(currentDocument, target, paintType, graphicObjectIds);
+      nextDocument = applyMoleculeObjectPaintTypeToSelection(nextDocument, target, paintType, moleculeObjectIds);
       return {
-        document: applyGraphicObjectPaintTypeToSelection(currentDocument, target, paintType, graphicObjectIds),
+        document: nextDocument,
         handled: true,
-        targeted: graphicObjectIds.length > 0,
+        targeted: graphicObjectIds.length > 0 || (target === "fill" && moleculeObjectIds.length > 0),
         message: paintType === "gloss"
-          ? "Applied selected graphic gloss fill"
-          : `Updated selected graphic ${target} paint`
+          ? "Applied selected gloss fill"
+          : `Updated selected ${target} paint`
       };
     }
 
     const opacity = objectOpacityForCommand(commandId);
     if (opacity) {
+      let nextDocument = applyGraphicObjectOpacityToSelection(currentDocument, opacity.key, opacity.value, graphicObjectIds);
+      nextDocument = applyMoleculeObjectOpacityToSelection(nextDocument, opacity.key, opacity.value, moleculeObjectIds);
       return {
-        document: applyGraphicObjectOpacityToSelection(currentDocument, opacity.key, opacity.value, graphicObjectIds),
+        document: nextDocument,
         handled: true,
-        targeted: graphicObjectIds.length > 0,
-        message: "Updated selected graphic opacity"
+        targeted: graphicObjectIds.length > 0 || moleculeObjectIds.length > 0,
+        message: "Updated selected object opacity"
       };
     }
 
@@ -2815,12 +2931,14 @@ export function MainWindow({
       return { document: currentDocument, handled: false, targeted: false, message: "" };
     }
 
-    if (graphicObjectIds.length > 0) {
+    if (graphicObjectIds.length > 0 || moleculeObjectIds.length > 0) {
+      let nextDocument = applyGraphicObjectColorToSelection(currentDocument, target, selectedColor, graphicObjectIds);
+      nextDocument = applyMoleculeObjectColorToSelection(nextDocument, target, selectedColor, moleculeObjectIds);
       return {
-        document: applyGraphicObjectColorToSelection(currentDocument, target, selectedColor, graphicObjectIds),
+        document: nextDocument,
         handled: true,
         targeted: true,
-        message: target === "fill" ? "Updated selected graphic fill" : "Updated selected graphic stroke"
+        message: target === "fill" ? "Updated selected fill" : "Updated selected stroke"
       };
     }
 
@@ -3390,6 +3508,12 @@ export function MainWindow({
         if (action.id === "edit.selectAll") {
           selectAllCanvasObjects();
         }
+        if (action.id === "clipboard.copy") {
+          await copySelectionToClipboard("copy");
+        }
+        if (action.id === "clipboard.cut") {
+          await copySelectionToClipboard("cut");
+        }
         if (action.id === "document.open") {
           await openDocumentFromNativePicker();
         }
@@ -3483,6 +3607,13 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (action.id === distributeModeCommandIds.centers || action.id === distributeModeCommandIds.spacing) {
+          const nextMode: DocumentDistributeMode = action.id === distributeModeCommandIds.spacing ? "spacing" : "centers";
+          setDistributeMode(nextMode);
+          setStatus(nextMode === "spacing" ? "Distribute mode: equal gaps" : "Distribute mode: centers");
+          return;
+        }
+
         const artBooleanOperation = artBooleanOperationByCommandId[action.id];
         if (artBooleanOperation) {
           let operationStatus = "";
@@ -3503,6 +3634,47 @@ export function MainWindow({
           setStatus(changed ? action.title : "No selected object");
           return;
         }
+
+        const alignMode = alignModeForCommandId(action.id);
+        if (alignMode) {
+          const changed = commitDocumentChange((current) => alignSelectedDocumentObjects(current, alignMode));
+          setStatus(changed ? action.title : "Select at least two objects");
+          return;
+        }
+
+        const distributeAxis = distributeAxisForCommandId(action.id);
+        if (distributeAxis) {
+          const changed = commitDocumentChange((current) =>
+            distributeSelectedDocumentObjects(current, distributeAxis, distributeMode)
+          );
+          setStatus(changed ? action.title : "Select at least three objects");
+          return;
+        }
+
+        if (action.id === "layout.rotate90") {
+          const changed = commitDocumentChange((current) => rotateSelectedDocumentObjects90(current));
+          setStatus(changed ? action.title : "No selected object");
+          return;
+        }
+
+        if (action.id === "layout.duplicate") {
+          const changed = commitDocumentChange((current) => duplicateSelectedDocumentObjects(current));
+          setStatus(changed ? action.title : "No selected object");
+          return;
+        }
+
+        if (action.id === "layout.group") {
+          const changed = commitDocumentChange((current) => groupSelectedDocumentObjects(current));
+          setStatus(changed ? "Grouped selection" : "Select at least two objects");
+          return;
+        }
+
+        if (action.id === "layout.ungroup") {
+          const changed = commitDocumentChange((current) => ungroupSelectedDocumentObjects(current));
+          setStatus(changed ? "Ungrouped selection" : "Select a group");
+          return;
+        }
+
         const placement = action.id === "layout.bringToFront"
           ? "front"
           : action.id === "layout.bringForward"
@@ -3675,9 +3847,11 @@ export function MainWindow({
     cleanUpSelectedStructure3d,
     cleanUpSelectedStructure,
     commitDocumentChange,
+    copySelectionToClipboard,
     currentArtStyle,
     currentEyedropperStatus,
     deleteHoveredNativeTarget,
+    distributeMode,
     document,
     flashArtPaintTargetControls,
     layerActions,
@@ -3772,6 +3946,16 @@ export function MainWindow({
         return;
       }
 
+      const selectionPayload =
+        parseSelectionClipboardPayload(event.clipboardData.getData(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)) ??
+        parseSelectionClipboardPayload(event.clipboardData.getData("text/plain")) ??
+        selectionClipboardPayloadRef.current;
+      if (selectionPayload) {
+        event.preventDefault();
+        applySelectionClipboardPayload(selectionPayload);
+        return;
+      }
+
       const detectedPayload = inspectClipboardPayload(clipboardPayloadFromDataTransfer(event.clipboardData));
       if (detectedPayload.kind === "empty") {
         return;
@@ -3785,7 +3969,7 @@ export function MainWindow({
     return () => {
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -4108,6 +4292,23 @@ export function MainWindow({
     }
   }, []);
 
+  const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
+    const drag = tapeMeasureDragRef.current;
+    if (!drag || (event && drag.pointerId !== event.pointerId)) {
+      return;
+    }
+
+    tapeMeasureDragRef.current = null;
+    const page = pageRef.current;
+    if (page?.hasPointerCapture(drag.pointerId)) {
+      page.releasePointerCapture(drag.pointerId);
+    }
+    const currentTarget = event?.currentTarget;
+    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
+      currentTarget.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (shouldIgnoreShortcutTarget(event.target) || event.defaultPrevented) {
@@ -4180,6 +4381,15 @@ export function MainWindow({
         return;
       }
 
+      if (event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.measure") {
+        event.preventDefault();
+        clearTapeMeasureDrag();
+        setTapeMeasure(undefined);
+        switchToSelectTool();
+        setStatus(selectToolStatusLabel());
+        return;
+      }
+
       if (event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper") {
         event.preventDefault();
         restoreToolAfterEyedropper();
@@ -4235,6 +4445,7 @@ export function MainWindow({
     clearNativeFreehandArtDrag,
     clearNativePathArtDraw,
     clearProjectedPlaneTiltDrag,
+    clearTapeMeasureDrag,
     finishNativePathArtDraw,
     replacePresentDocument,
     restoreToolAfterEyedropper,
@@ -5848,9 +6059,13 @@ export function MainWindow({
     if (event.button !== 0 || activeToolState.activeKind !== "selection") {
       return;
     }
+    const resolvedSelectionObjectIds = resolveGroupedDocumentObjectIds(
+      document.pages[0].objects,
+      document.selection.objectIds
+    );
     const ids = mode === "projected-plane-tilt"
-      ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, document.selection.objectIds)
-      : document.selection.objectIds;
+      ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, resolvedSelectionObjectIds)
+      : resolvedSelectionObjectIds;
     const point = pagePointFromPointerEvent(event);
     const bounds = ids.length > 1 ? visualSelectionBounds(document.pages[0].objects, ids) : undefined;
     if (!point || !bounds) {
@@ -5908,6 +6123,25 @@ export function MainWindow({
     (event: PointerEvent<HTMLButtonElement>) => handleGroupTransformPointerDown("resize", event),
   [handleGroupTransformPointerDown]);
 
+  const startTapeMeasureDrag = useCallback((event: ObjectPointerEvent, point: ClientPoint) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const drag: TapeMeasureDragState = {
+      pointerId: event.pointerId,
+      startPoint: point,
+      latestPoint: constrainTapeMeasurePoint(point, point, event.shiftKey),
+      constrained: event.shiftKey,
+      dragging: false
+    };
+    tapeMeasureDragRef.current = drag;
+    setTapeMeasure(drag);
+    setSelectedNativeMoleculePart(undefined);
+    setActiveGraphicTransformObjectId(undefined);
+    clearTransientInteractionChrome();
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus("Measure: drag endpoint");
+  }, [clearTransientInteractionChrome]);
+
   const startSelectionLasso = useCallback((event: ObjectPointerEvent, point: ClientPoint) => {
     event.preventDefault();
     event.stopPropagation();
@@ -5954,6 +6188,11 @@ export function MainWindow({
     setObjectContextMenu(undefined);
     const point = pagePointFromPointerEvent(event);
     if (!point) {
+      return;
+    }
+
+    if (activeToolState.activeCommandId === "tool.art.measure") {
+      startTapeMeasureDrag(event, point);
       return;
     }
 
@@ -6085,6 +6324,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
+    startTapeMeasureDrag,
     startSelectionMarquee,
     startSelectionLasso,
     startOrAppendNativePathArtPoint,
@@ -6124,6 +6364,23 @@ export function MainWindow({
           replacePresentDocument(groupTransformDocument(groupTransform, point, event.shiftKey));
         }
       }
+      return;
+    }
+
+    const tapeMeasureDrag = tapeMeasureDragRef.current;
+    if (tapeMeasureDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      const latestPoint = constrainTapeMeasurePoint(tapeMeasureDrag.startPoint, point, event.shiftKey);
+      tapeMeasureDrag.latestPoint = latestPoint;
+      tapeMeasureDrag.constrained = event.shiftKey;
+      tapeMeasureDrag.dragging = true;
+      setTapeMeasure({ ...tapeMeasureDrag });
+      setStatus(`Measure: ${formatTapeMeasureDistance(tapeMeasureDrag.startPoint, latestPoint, pageRulerUnit)}`);
       return;
     }
 
@@ -6485,6 +6742,7 @@ export function MainWindow({
     document,
     groupProjectedPlaneTiltFromDrag,
     groupTransformDocument,
+    pageRulerUnit,
     pagePointFromPointerEvent,
     previewObjectDrag,
     previewObjectRotateDrag,
@@ -6535,6 +6793,23 @@ export function MainWindow({
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
+      return;
+    }
+
+    const tapeMeasureDrag = tapeMeasureDragRef.current;
+    if (tapeMeasureDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? tapeMeasureDrag.latestPoint;
+      const latestPoint = constrainTapeMeasurePoint(tapeMeasureDrag.startPoint, point, event.shiftKey);
+      const finalMeasure = {
+        startPoint: tapeMeasureDrag.startPoint,
+        latestPoint,
+        constrained: event.shiftKey,
+        dragging: false
+      };
+      setTapeMeasure(finalMeasure);
+      setStatus(`Measure: ${formatTapeMeasureDistance(finalMeasure.startPoint, finalMeasure.latestPoint, pageRulerUnit)}`);
+      clearTapeMeasureDrag(event);
       return;
     }
 
@@ -6829,6 +7104,7 @@ export function MainWindow({
     clearProjectedPlaneTiltDrag,
     clearTransientInteractionChrome,
     clearNativePlacementDrag,
+    clearTapeMeasureDrag,
     clearTextResize,
     commitGraphicCornerRadius,
     commitGraphicGradientDrag,
@@ -6849,11 +7125,20 @@ export function MainWindow({
     groupProjectedPlaneTiltFromDrag,
     groupTransformDocument,
     installDocumentHistory,
+    pageRulerUnit,
     pagePointFromPointerEvent,
     replacePresentDocument
   ]);
 
   const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
+    const tapeMeasureDrag = tapeMeasureDragRef.current;
+    if (tapeMeasureDrag?.pointerId === event.pointerId) {
+      setTapeMeasure(undefined);
+      clearTapeMeasureDrag(event);
+      setStatus("Measurement canceled");
+      return;
+    }
+
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       if (groupTransform.dragging) {
@@ -6959,7 +7244,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -6975,6 +7260,10 @@ export function MainWindow({
     }
 
     if (selectionLassoRef.current) {
+      return;
+    }
+
+    if (tapeMeasureDragRef.current) {
       return;
     }
 
@@ -7015,6 +7304,12 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    const selectableObjectId = activeToolState.activeKind === "selection"
+      ? selectableDocumentObjectIdForPointer(currentDocument, objectId)
+      : objectId;
+    const groupedPointerObjectIds = activeToolState.activeKind === "selection"
+      ? groupedDragObjectIdsForPointer(currentDocument, objectId)
+      : undefined;
     const chargeMarkActive = object?.type === "electron-mark" && object.markKind === "charge";
     const nativeMoleculeHit = object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(
@@ -7024,6 +7319,11 @@ export function MainWindow({
           hitToleranceForScale(viewportRef.current.scale)
         )
       : undefined;
+
+    if (activeToolState.activeCommandId === "tool.art.measure" && point) {
+      startTapeMeasureDrag(event, point);
+      return;
+    }
 
     if (activeToolState.activeCommandId === "tool.art.scissors" && point) {
       event.preventDefault();
@@ -7250,12 +7550,12 @@ export function MainWindow({
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
-        replacePresentDocument((current) => selectDocumentObject(current, objectId));
+        replacePresentDocument((current) => selectDocumentObject(current, selectableObjectId));
         clearTransientInteractionChrome();
         setActiveGraphicTransformObjectId(undefined);
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(undefined);
-        setStatus("Selected molecule");
+        setStatus(selectableObjectId === objectId ? "Selected molecule" : "Selected group");
         return;
       }
 
@@ -7293,20 +7593,23 @@ export function MainWindow({
       const dragIntent = nativeMoleculeSelectionDragIntent(document, objectId, selectedNativeMoleculePart, nativeMoleculeHit);
       if (dragIntent.kind === "whole-object") {
         event.stopPropagation();
-        const groupObjectIds = document.selection.objectIds.length > 1 &&
-          document.selection.objectIds.includes(objectId)
-          ? [...document.selection.objectIds]
-          : undefined;
+        const groupObjectIds = groupedPointerObjectIds;
+        const selectedDocument = groupObjectIds && document.selection.objectIds.includes(selectableObjectId)
+          ? document
+          : groupObjectIds ? selectDocumentObject(document, selectableObjectId) : document;
+        if (selectedDocument !== document) {
+          replacePresentDocument(selectedDocument);
+        }
         objectDragRef.current = {
           pointerId: event.pointerId,
           objectId,
-          startDocument: document,
+          startDocument: selectedDocument,
           startPoint: point,
           latestPoint: point,
           startObjectX: object.x,
           startObjectY: object.y,
           groupObjectIds,
-          artPreviewProxies: createArtTransformDragPreviewProxies(document, groupObjectIds ?? [objectId], viewportRef.current.scale),
+          artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, groupObjectIds ?? [objectId], viewportRef.current.scale),
           dragging: false
         };
         captureElement.setPointerCapture(event.pointerId);
@@ -7372,7 +7675,7 @@ export function MainWindow({
     ) {
       event.preventDefault();
       event.stopPropagation();
-      const nextDocument = toggleDocumentObjectSelection(document, document.pages[0].id, objectId);
+      const nextDocument = toggleDocumentObjectSelection(document, document.pages[0].id, selectableObjectId);
       replacePresentDocument(nextDocument);
       clearTransientInteractionChrome();
       setSelectedNativeMoleculePart(undefined);
@@ -7419,13 +7722,12 @@ export function MainWindow({
         return;
       }
 
-      const groupObjectIds = document.selection.objectIds.length > 1 &&
-        document.selection.objectIds.includes(objectId)
-        ? [...document.selection.objectIds]
-        : undefined;
+      const groupObjectIds = groupedPointerObjectIds;
       const selectedDocument = groupObjectIds
-        ? document
-        : selectDocumentObject(document, objectId);
+        ? document.selection.objectIds.includes(selectableObjectId)
+          ? document
+          : selectDocumentObject(document, selectableObjectId)
+        : selectDocumentObject(document, selectableObjectId);
       replacePresentDocument(selectedDocument);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -7564,6 +7866,7 @@ export function MainWindow({
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startSelectionLasso,
+    startTapeMeasureDrag,
     toggleDocumentObjectSelection
   ]);
 
@@ -9141,8 +9444,9 @@ export function MainWindow({
                   <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
                 </div>
                 <ToolPalette
-                  groups={getToolsetCommandGroups(toolset.id, toolsetRegistry)}
+                  groups={getToolsetCommandGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
                   activeTool={activeTool}
+                  currentDistributeMode={distributeMode}
                   mode="floating"
                   orientation={toolset.gridLayout?.orientation ?? "vertical"}
                   title={toolset.title}
@@ -9283,6 +9587,14 @@ export function MainWindow({
                     ))}
                   </svg>
                 ) : null}
+                {tapeMeasure ? (
+                  <TapeMeasureOverlay
+                    measurement={tapeMeasure}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                    rulerUnit={pageRulerUnit}
+                  />
+                ) : null}
                 {selectionMarquee ? (
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
@@ -9298,21 +9610,25 @@ export function MainWindow({
                   />
                 ) : null}
                 {(() => {
+                  const resolvedSelectionObjectIds = resolveGroupedDocumentObjectIds(
+                    document.pages[0].objects,
+                    document.selection.objectIds
+                  );
                   const groupSelectionActive = activeToolState.activeKind === "selection" &&
-                    document.selection.objectIds.length > 1 &&
+                    resolvedSelectionObjectIds.length > 1 &&
                     !selectedNativeMoleculePart;
                   const rawGroupSelectionBounds = groupSelectionActive
-                    ? visualSelectionBounds(document.pages[0].objects, document.selection.objectIds)
+                    ? visualSelectionBounds(document.pages[0].objects, resolvedSelectionObjectIds)
                     : undefined;
                   const groupSelectionBounds = rawGroupSelectionBounds
                     ? previewedGroupSelectionBounds(
                         rawGroupSelectionBounds,
-                        document.selection.objectIds,
+                        resolvedSelectionObjectIds,
                         objectTransformPreview
                       )
                     : undefined;
                   const groupProjectedPlaneTiltObjectIds = rawGroupSelectionBounds
-                    ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, document.selection.objectIds)
+                    ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, resolvedSelectionObjectIds)
                     : [];
                   return (
                   <>
@@ -9327,7 +9643,7 @@ export function MainWindow({
                   // While a multi-selection group is active, individual members defer their
                   // own resize/rotate handles to the single group overlay.
                   const inGroupSelection = groupSelectionBounds !== undefined &&
-                    document.selection.objectIds.includes(object.id);
+                    resolvedSelectionObjectIds.includes(object.id);
                   const objectRenderKey = object.type === "molecule"
                     ? `${object.id}:${selected ? "selected" : "idle"}:${inGroupSelection ? "grouped" : "solo"}:${nativeSelectionRenderKey(selectedPart)}`
                     : object.id;
@@ -11780,13 +12096,57 @@ function isLayerCommandId(commandId: string): boolean {
     commandId === "layout.bringForward" ||
     commandId === "layout.sendBackward" ||
     commandId === "layout.sendToBack" ||
+    commandId === "layout.alignLeft" ||
+    commandId === "layout.alignCenter" ||
+    commandId === "layout.alignRight" ||
+    commandId === "layout.alignTop" ||
+    commandId === "layout.alignMiddle" ||
+    commandId === "layout.alignBottom" ||
+    commandId === "layout.distributeHorizontal" ||
+    commandId === "layout.distributeVertical" ||
+    commandId === distributeModeCommandIds.centers ||
+    commandId === distributeModeCommandIds.spacing ||
     commandId === "layout.flipHorizontal" ||
     commandId === "layout.flipVertical" ||
+    commandId === "layout.rotate90" ||
+    commandId === "layout.duplicate" ||
+    commandId === "layout.group" ||
+    commandId === "layout.ungroup" ||
     commandId === artBooleanOperationCommandIds.union ||
     commandId === artBooleanOperationCommandIds.subtract ||
     commandId === artBooleanOperationCommandIds.intersect ||
     commandId === artBooleanOperationCommandIds.split
   );
+}
+
+function alignModeForCommandId(commandId: string): DocumentAlignMode | undefined {
+  switch (commandId) {
+    case "layout.alignLeft":
+      return "left";
+    case "layout.alignCenter":
+      return "center";
+    case "layout.alignRight":
+      return "right";
+    case "layout.alignTop":
+      return "top";
+    case "layout.alignMiddle":
+      return "middle";
+    case "layout.alignBottom":
+      return "bottom";
+    default:
+      return undefined;
+  }
+}
+
+function distributeAxisForCommandId(commandId: string): DocumentDistributeAxis | undefined {
+  switch (commandId) {
+    case "layout.distributeHorizontal":
+      return "horizontal";
+    case "layout.distributeVertical":
+      return "vertical";
+    default:
+      return undefined;
+  }
 }
 
 function createDefaultToolsetPositions(registry: DesktopToolsetRegistry): Record<string, PalettePosition> {
@@ -11943,6 +12303,95 @@ function rulerFramesEqual(left: RulerFrame, right: RulerFrame): boolean {
 
 function formatRulerText(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function constrainTapeMeasurePoint(startPoint: ClientPoint, point: ClientPoint, constrained: boolean): ClientPoint {
+  if (!constrained) {
+    return point;
+  }
+
+  const dx = point.x - startPoint.x;
+  const dy = point.y - startPoint.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.001) {
+    return point;
+  }
+
+  const snappedAngle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+  return {
+    x: startPoint.x + Math.cos(snappedAngle) * length,
+    y: startPoint.y + Math.sin(snappedAngle) * length
+  };
+}
+
+function formatTapeMeasureDistance(
+  startPoint: ClientPoint,
+  latestPoint: ClientPoint,
+  rulerUnit: RulerUnitState
+): string {
+  const distancePx = Math.hypot(latestPoint.x - startPoint.x, latestPoint.y - startPoint.y);
+  if (rulerUnit.kind === "pixel") {
+    return `${Math.round(distancePx)} px`;
+  }
+
+  const value = distancePx / rulerUnit.pixelsPerUnit;
+  const formatted = value >= 10 ? value.toFixed(1) : value.toFixed(2);
+  return `${formatted} ${rulerUnit.label}`;
+}
+
+export function TapeMeasureOverlay({
+  measurement,
+  pageWidth,
+  pageHeight,
+  rulerUnit
+}: {
+  measurement: TapeMeasureOverlayState;
+  pageWidth: number;
+  pageHeight: number;
+  rulerUnit: RulerUnitState;
+}) {
+  const label = formatTapeMeasureDistance(measurement.startPoint, measurement.latestPoint, rulerUnit);
+  const midpoint = {
+    x: (measurement.startPoint.x + measurement.latestPoint.x) / 2,
+    y: (measurement.startPoint.y + measurement.latestPoint.y) / 2
+  };
+
+  return (
+    <div
+      className="tape-measure-overlay"
+      aria-hidden="true"
+      data-tape-measure-dragging={measurement.dragging ? "true" : undefined}
+      data-tape-measure-constrained={measurement.constrained ? "true" : undefined}
+    >
+      <svg
+        className="tape-measure-line-layer"
+        viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+        style={{
+          width: `calc(${pageWidth}px * var(--page-scale))`,
+          height: `calc(${pageHeight}px * var(--page-scale))`
+        }}
+      >
+        <line
+          className="tape-measure-line"
+          x1={measurement.startPoint.x}
+          y1={measurement.startPoint.y}
+          x2={measurement.latestPoint.x}
+          y2={measurement.latestPoint.y}
+        />
+        <circle className="tape-measure-endpoint" cx={measurement.startPoint.x} cy={measurement.startPoint.y} r={3.5} />
+        <circle className="tape-measure-endpoint" cx={measurement.latestPoint.x} cy={measurement.latestPoint.y} r={3.5} />
+      </svg>
+      <div
+        className="tape-measure-label"
+        style={{
+          left: `calc(${midpoint.x}px * var(--page-scale))`,
+          top: `calc(${midpoint.y}px * var(--page-scale))`
+        }}
+      >
+        {label}
+      </div>
+    </div>
+  );
 }
 
 function CrosshairOverlay({
@@ -12500,6 +12949,10 @@ export function selectionInSelectionRect(
   let nativeSelection: NativeMoleculeSelectionPart | undefined;
 
   for (const object of objects) {
+    if (object.type === "group") {
+      continue;
+    }
+
     if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
       const moleculeSelection = nativeMoleculeSelectionInRect(object, rect);
       if (!moleculeSelection) {
@@ -12539,6 +12992,10 @@ export function eraserObjectIdsInSelectionRect(
   const objectIds: string[] = [];
 
   for (const object of objects) {
+    if (object.type === "group") {
+      continue;
+    }
+
     if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
       if (nativeMoleculeSelectionInRect(object, rect)) {
         objectIds.push(object.id);
@@ -12551,7 +13008,7 @@ export function eraserObjectIdsInSelectionRect(
       if (
         plan.capabilities.isOpenStroke
           ? graphicObjectIntersectsRect(object, rect)
-          : rectangleIntersectsRect(rect, visualObjectBounds(object))
+          : rectangleIntersectsRect(rect, documentObjectVisualBounds(object))
       ) {
         objectIds.push(object.id);
       }
@@ -12578,6 +13035,10 @@ export function selectionInSelectionLasso(
   let nativeSelection: NativeMoleculeSelectionPart | undefined;
 
   for (const object of objects) {
+    if (object.type === "group") {
+      continue;
+    }
+
     if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
       const moleculeSelection = nativeMoleculeSelectionInPolygon(object, points);
       if (!moleculeSelection) {
@@ -12666,11 +13127,40 @@ function objectBounds(object: DocumentObject): { x: number; y: number; width: nu
   };
 }
 
+function parentGroupForDocumentObject(
+  objects: readonly DocumentObject[],
+  objectId: string
+): GroupObject | undefined {
+  return objects.find((object): object is GroupObject =>
+    object.type === "group" && object.childObjectIds.includes(objectId)
+  );
+}
+
+function selectableDocumentObjectIdForPointer(document: ChemDraftDocument, objectId: string): string {
+  return parentGroupForDocumentObject(document.pages[0]?.objects ?? [], objectId)?.id ?? objectId;
+}
+
+function groupedDragObjectIdsForPointer(document: ChemDraftDocument, objectId: string): string[] | undefined {
+  const objects = document.pages[0]?.objects ?? [];
+  const resolvedSelectionIds = resolveGroupedDocumentObjectIds(objects, document.selection.objectIds);
+  if (resolvedSelectionIds.length > 1 && resolvedSelectionIds.includes(objectId)) {
+    return resolvedSelectionIds;
+  }
+
+  const parentGroup = parentGroupForDocumentObject(objects, objectId);
+  if (!parentGroup) {
+    return undefined;
+  }
+
+  const groupObjectIds = resolveGroupedDocumentObjectIds(objects, [parentGroup.id]);
+  return groupObjectIds.length > 1 ? groupObjectIds : undefined;
+}
+
 export function visualSelectionBounds(
   objects: readonly DocumentObject[],
   ids: readonly string[]
 ): SelectionBounds | undefined {
-  const selectedIds = new Set(ids);
+  const selectedIds = new Set(resolveGroupedDocumentObjectIds(objects, ids));
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -12682,7 +13172,7 @@ export function visualSelectionBounds(
       continue;
     }
 
-    const bounds = visualObjectBounds(object);
+    const bounds = documentObjectVisualBounds(object);
     minX = Math.min(minX, bounds.x);
     minY = Math.min(minY, bounds.y);
     maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -12733,25 +13223,6 @@ function objectTransformPreviewCoversSelection(
 
   const previewIds = new Set(preview.objectIds);
   return selectedIds.every((id) => previewIds.has(id));
-}
-
-function visualObjectBounds(object: DocumentObject): { x: number; y: number; width: number; height: number } {
-  if (object.type !== "graphic") {
-    return objectBounds(object);
-  }
-
-  const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
-  const localBounds = rotatedGraphicLocalBounds(
-    object,
-    plan.frameBounds,
-    graphicVisualCssRotationDegrees(object, undefined)
-  );
-  return {
-    x: object.x + localBounds.x,
-    y: object.y + localBounds.y,
-    width: localBounds.width,
-    height: localBounds.height
-  };
 }
 
 function pointInsideObjectBounds(
@@ -13573,18 +14044,32 @@ function reactSvgAttributeName(name: string): string {
   return {
     class: "className",
     "baseline-shift": "baselineShift",
+    "clip-path": "clipPath",
+    "color-interpolation-filters": "colorInterpolationFilters",
     "dominant-baseline": "dominantBaseline",
+    "fill-opacity": "fillOpacity",
+    "flood-color": "floodColor",
+    "flood-opacity": "floodOpacity",
     "font-family": "fontFamily",
     "font-size": "fontSize",
     "font-style": "fontStyle",
     "font-weight": "fontWeight",
     "letter-spacing": "letterSpacing",
+    "marker-end": "markerEnd",
+    "marker-start": "markerStart",
+    "pointer-events": "pointerEvents",
+    "stop-color": "stopColor",
+    "stop-opacity": "stopOpacity",
     "stroke-dasharray": "strokeDasharray",
+    "stroke-dashoffset": "strokeDashoffset",
     "stroke-linecap": "strokeLinecap",
     "stroke-linejoin": "strokeLinejoin",
+    "stroke-miterlimit": "strokeMiterlimit",
+    "stroke-opacity": "strokeOpacity",
     "stroke-width": "strokeWidth",
     "text-anchor": "textAnchor",
-    "text-decoration": "textDecoration"
+    "text-decoration": "textDecoration",
+    "vector-effect": "vectorEffect"
   }[name] ?? name;
 }
 
@@ -13732,6 +14217,10 @@ function DocumentObjectView({
       editor.select();
     }
   }, [editingText, object]);
+
+  if (object.type === "group") {
+    return null;
+  }
 
   const handleObjectPointerDown = (event: ObjectPointerEvent) => {
     onPointerDown(object.id, event);

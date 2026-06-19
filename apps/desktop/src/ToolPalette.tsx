@@ -15,6 +15,7 @@ import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 import {
   normalizeHexColor,
+  distributeModeCommandIds,
   objectFillOpacityCommandId,
   objectOpacityCommandId,
   objectColorCommands,
@@ -55,6 +56,7 @@ import type { ToolsetArtPaintTarget, ToolsetArtStylePayload } from "./window-man
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
+export type ToolPaletteDistributeMode = "centers" | "spacing";
 
 const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   command.id === "text.color.black"
@@ -66,6 +68,7 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
 ));
 const TOOLTIP_DELAY_MS = 650;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
+const DISTRIBUTE_MENU_HOLD_MS = 420;
 
 export function ToolPalette({
   groups,
@@ -76,6 +79,7 @@ export function ToolPalette({
   showMainStyleControls = false,
   showTextStyleControls = false,
   showArtStyleControls = false,
+  currentDistributeMode = "centers",
   currentObjectColor,
   currentArtStyle,
   currentArtStyleTarget = "fill",
@@ -95,6 +99,7 @@ export function ToolPalette({
   showMainStyleControls?: boolean;
   showTextStyleControls?: boolean;
   showArtStyleControls?: boolean;
+  currentDistributeMode?: ToolPaletteDistributeMode;
   currentObjectColor?: string;
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
@@ -145,6 +150,7 @@ export function ToolPalette({
                 active={tool.enabled !== false && activeTool === tool.id}
                 tooltipId={tooltipId}
                 tooltipVisible={visibleTooltipId === tooltipId}
+                distributeMode={currentDistributeMode}
                 onTooltipEnter={() => requestTooltip(tooltipId)}
                 onTooltipLeave={() => clearTooltip(tooltipId)}
                 onInvoke={onInvoke}
@@ -2209,6 +2215,7 @@ export function CommandIconButton({
   active = false,
   tooltipId,
   tooltipVisible,
+  distributeMode = "centers",
   onTooltipEnter,
   onTooltipLeave,
   separated = false,
@@ -2218,12 +2225,30 @@ export function CommandIconButton({
   active?: boolean;
   tooltipId?: string;
   tooltipVisible?: boolean;
+  distributeMode?: ToolPaletteDistributeMode;
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
   separated?: boolean;
   onInvoke: (commandId: string) => void;
 }) {
   const disabled = command.enabled === false;
+  if (isDistributeCommandId(command.id)) {
+    return (
+      <DistributeCommandIconButton
+        active={active}
+        command={command}
+        disabled={disabled}
+        distributeMode={distributeMode}
+        separated={separated}
+        tooltipId={tooltipId}
+        tooltipVisible={tooltipVisible}
+        onInvoke={onInvoke}
+        onTooltipEnter={onTooltipEnter}
+        onTooltipLeave={onTooltipLeave}
+      />
+    );
+  }
+
   const activeState = active && !disabled;
   const shortcut = command.shortcut ?? command.defaultShortcut;
   const shortcutLabel = command.shortcutLabel ?? shortcut;
@@ -2276,6 +2301,237 @@ export function CommandIconButton({
       </button>
     </span>
   );
+}
+
+function DistributeCommandIconButton({
+  command,
+  active,
+  disabled,
+  distributeMode,
+  tooltipId,
+  tooltipVisible,
+  onTooltipEnter,
+  onTooltipLeave,
+  separated,
+  onInvoke
+}: {
+  command: CommandSpec;
+  active: boolean;
+  disabled: boolean;
+  distributeMode: ToolPaletteDistributeMode;
+  tooltipId?: string;
+  tooltipVisible?: boolean;
+  onTooltipEnter?: () => void;
+  onTooltipLeave?: () => void;
+  separated?: boolean;
+  onInvoke: (commandId: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const shellRef = useRef<HTMLSpanElement | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdOpenedRef = useRef(false);
+  const activeState = active && !disabled;
+  const shortcut = command.shortcut ?? command.defaultShortcut;
+  const shortcutLabel = command.shortcutLabel ?? shortcut;
+  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const modeLabel = distributeMode === "spacing" ? "equal gaps" : "centers";
+  const shortcutText = ` (${visibleShortcutLabel})`;
+  const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
+  const tooltipText = `${command.title}: ${modeLabel}${shortcutText}${stateText}`;
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current !== undefined) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = undefined;
+    }
+  }, []);
+
+  const openMenu = useCallback(() => {
+    holdOpenedRef.current = true;
+    setMenuOpen(true);
+    onTooltipLeave?.();
+  }, [onTooltipLeave]);
+
+  const chooseMode = useCallback((commandId: string) => {
+    onInvoke(commandId);
+    setMenuOpen(false);
+    onTooltipLeave?.();
+  }, [onInvoke, onTooltipLeave]);
+
+  useEffect(() => () => {
+    clearHoldTimer();
+  }, [clearHoldTimer]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && shellRef.current?.contains(target)) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [menuOpen]);
+
+  return (
+    <span
+      className={["icon-button-shell", "distribute-button-shell", separated ? "separated" : ""].filter(Boolean).join(" ")}
+      data-command-tooltip-owner={command.id}
+      data-distribute-menu-open={menuOpen ? "true" : undefined}
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
+      ref={shellRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget) && !menuOpen) {
+          onTooltipLeave?.();
+        }
+      }}
+      onClickCapture={() => onTooltipLeave?.()}
+      onPointerCancel={() => onTooltipLeave?.()}
+      onPointerDownCapture={() => onTooltipLeave?.()}
+      onPointerEnter={() => onTooltipEnter?.()}
+      onPointerLeave={() => onTooltipLeave?.()}
+      onMouseEnter={() => onTooltipEnter?.()}
+      onMouseLeave={() => onTooltipLeave?.()}
+    >
+      <button
+        type="button"
+        className={["icon-button", "distribute-mode-button", activeState ? "active" : ""].filter(Boolean).join(" ")}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={tooltipText}
+        aria-pressed={activeState || undefined}
+        data-active={activeState ? "true" : undefined}
+        data-command-id={command.id}
+        data-disabled={disabled ? "true" : undefined}
+        data-distribute-mode={distributeMode}
+        data-shortcut-label={visibleShortcutLabel}
+        data-toolbar-asset={command.assetName}
+        data-tooltip={tooltipText}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0) {
+            return;
+          }
+          holdOpenedRef.current = false;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          clearHoldTimer();
+          holdTimerRef.current = setTimeout(openMenu, DISTRIBUTE_MENU_HOLD_MS);
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+          if (disabled || holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          onInvoke(command.id);
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            openMenu();
+            return;
+          }
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onInvoke(command.id);
+          }
+        }}
+      >
+        {command.assetName ? (
+          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        ) : (
+          <Icon name={command.icon} />
+        )}
+        <span className="distribute-mode-indicator" data-distribute-mode={distributeMode} aria-hidden="true">
+          <span />
+          <span />
+        </span>
+        <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
+      </button>
+      {menuOpen ? (
+        <div className="toolbar-distribute-menu" role="menu" aria-label="Distribute mode">
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={distributeMode === "centers"}
+            data-command-id={distributeModeCommandIds.centers}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.centers);
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.centers);
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.centers);
+            }}
+          >
+            Centers
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={distributeMode === "spacing"}
+            data-command-id={distributeModeCommandIds.spacing}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.spacing);
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.spacing);
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.spacing);
+            }}
+          >
+            Equal gaps
+          </button>
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+function isDistributeCommandId(commandId: string): boolean {
+  return commandId === "layout.distributeHorizontal" || commandId === "layout.distributeVertical";
 }
 
 function ArtToolIcon({ commandId }: { commandId: string }) {
