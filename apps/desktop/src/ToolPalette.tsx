@@ -26,6 +26,7 @@ import {
   objectGradientStopColorCommandId,
   objectGradientStopOffsetCommandId,
   objectGradientStopOpacityCommandId,
+  objectEffectCommands,
   objectPaintTypeCommandId,
   objectPaintTypeCommands,
   objectStrokeDashCommands,
@@ -623,6 +624,10 @@ function ArtToolbarStyleControls({
   const objectOpacity = currentArtStyle?.values.objectOpacity.value ?? 1;
   const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
   const strokeOpacity = currentArtStyle?.values.strokeOpacity.value ?? 1;
+  const activeEffectValue = currentArtStyle?.values.effect.value ?? "none";
+  const activeEffectCommandId = currentArtStyle?.values.effect.mixed || activeEffectValue === "multiple"
+    ? "object.effect.mixed"
+    : objectEffectCommands.find((command) => command.effectKind === activeEffectValue)?.id ?? objectEffectCommands[0].id;
   const strokeWidthCommandId = closestObjectStrokeWidthCommandId(currentArtStyle?.values.strokeWidth.value ?? undefined);
   const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.values.dash.value ?? undefined);
   const strokeCap = currentArtStyle?.values.lineEnds.value ?? "butt";
@@ -1062,6 +1067,27 @@ function ArtToolbarStyleControls({
         >
           ⇄
         </button>
+        <label className="toolbar-control-label art-effect-control" title="Art effect">
+          <select
+            className="toolbar-select"
+            value={activeEffectCommandId}
+            aria-label="Art effect"
+            disabled={!selected}
+            data-art-effect-select="true"
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {currentArtStyle?.values.effect.mixed || activeEffectValue === "multiple" ? (
+              <option value="object.effect.mixed">Effect: Multiple</option>
+            ) : null}
+            {objectEffectCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {`Effect: ${command.label}`}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       <div className="art-inspector-row art-inspector-opacity-row">
         {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}

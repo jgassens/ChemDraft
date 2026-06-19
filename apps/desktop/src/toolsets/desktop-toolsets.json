@@ -228,16 +228,6 @@
           ]
         },
         {
-          "id": "core.art.effects",
-          "title": "Effects",
-          "items": [
-            { "commandId": "object.effect.shadow", "title": "Shadow", "icon": "style", "category": "object-style" },
-            { "commandId": "object.effect.glow", "title": "Glow", "icon": "style", "category": "object-style" },
-            { "commandId": "object.effect.sketch", "title": "Sketch", "icon": "style", "category": "object-style" },
-            { "commandId": "object.effect.none", "title": "Clear Effects", "icon": "style", "category": "object-style" }
-          ]
-        },
-        {
           "id": "core.art.arrange",
           "items": [
             { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "category": "layout" },

@@ -227,6 +227,28 @@ describe("ToolPalette art color popover", () => {
     expect([...restoredFillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
   });
 
+  it("invokes native effect commands from the visible art effect selector", () => {
+    const { onInvoke } = renderPalette();
+    const effectSelect = container.querySelector<HTMLSelectElement>('[data-art-effect-select="true"]');
+    if (!effectSelect) {
+      throw new Error("Expected art effect selector.");
+    }
+
+    expect(effectSelect.getAttribute("aria-label")).toBe("Art effect");
+    expect([...effectSelect.options].map((option) => option.value)).toEqual([
+      "object.effect.none",
+      "object.effect.shadow",
+      "object.effect.glow",
+      "object.effect.sketch"
+    ]);
+
+    act(() => {
+      effectSelect.value = "object.effect.glow";
+      effectSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.effect.glow");
+  });
+
   it("drags gradient stop markers directly across the gradient rail", () => {
     const { onCommit, onPreview } = renderPalette({ currentArtStyle: gradientArtInspectorModel() });
     const rail = container.querySelector<HTMLDivElement>('[data-art-gradient-rail="fill"]');

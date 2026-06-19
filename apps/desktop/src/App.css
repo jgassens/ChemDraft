@@ -603,8 +603,8 @@ textarea:focus-visible,
   grid-auto-rows: minmax(24px, auto);
   align-items: center;
   gap: var(--cd-space-2);
-  width: 372px;
-  min-width: 372px;
+  width: 460px;
+  min-width: 460px;
   min-height: 140px;
   padding: var(--cd-space-2);
   border: 1px solid var(--cd-border-subtle);
@@ -765,6 +765,10 @@ textarea:focus-visible,
 
 .art-paint-type-control {
   width: 74px;
+}
+
+.art-effect-control {
+  width: 112px;
 }
 
 .art-color-popover {

@@ -364,6 +364,46 @@ describe("ArtInspectorModel", () => {
     expect(model.skippedObjectIdsByControl.fill).toEqual([{ objectId: "line", reason: "open-stroke" }]);
   });
 
+  it("reports art effect state for visible toolbar controls", () => {
+    const plain = rectGraphic("plain");
+    const shadow = rectGraphic("shadow", {
+      style: {
+        effects: [{ kind: "shadow", color: "#52616b" }]
+      }
+    });
+    const stacked = rectGraphic("stacked", {
+      style: {
+        effects: [{ kind: "shadow" }, { kind: "sketch", seed: 42 }]
+      }
+    });
+    const legacyShadow = rectGraphic("legacy_shadow", {
+      style: {
+        effect: "shadow"
+      }
+    });
+
+    expect(createArtInspectorModel({
+      document: documentWithSelectedGraphics([plain]),
+      selectedGraphicObjects: [plain]
+    }).values.effect).toEqual({ value: "none", mixed: false });
+    expect(createArtInspectorModel({
+      document: documentWithSelectedGraphics([shadow]),
+      selectedGraphicObjects: [shadow]
+    }).values.effect).toEqual({ value: "shadow", mixed: false });
+    expect(createArtInspectorModel({
+      document: documentWithSelectedGraphics([stacked]),
+      selectedGraphicObjects: [stacked]
+    }).values.effect).toEqual({ value: "multiple", mixed: false });
+    expect(createArtInspectorModel({
+      document: documentWithSelectedGraphics([legacyShadow]),
+      selectedGraphicObjects: [legacyShadow]
+    }).values.effect).toEqual({ value: "shadow", mixed: false });
+    expect(createArtInspectorModel({
+      document: documentWithSelectedGraphics([plain, shadow]),
+      selectedGraphicObjects: [plain, shadow]
+    }).values.effect).toEqual({ value: null, mixed: true });
+  });
+
   it("selects graphics from the current document selection without carrying UI state", () => {
     const line = pathGraphic("line", "line");
     const circle = ellipseGraphic("circle");

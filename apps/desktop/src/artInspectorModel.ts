@@ -3,6 +3,7 @@ import type { ChemDraftDocument, GraphicObject, GraphicPaint } from "@chemdraft/
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
 export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
+export type ArtInspectorEffectValue = "none" | "shadow" | "glow" | "sketch" | "multiple";
 export type ArtInspectorLineCap = "butt" | "round" | "square";
 export type ArtInspectorLineJoin = "miter" | "round" | "bevel";
 const MAX_ART_INSPECTOR_GRADIENT_STOPS = 8;
@@ -79,6 +80,7 @@ export interface ArtInspectorModel {
     objectOpacity: ArtInspectorMixedValue<number>;
     fillOpacity: ArtInspectorMixedValue<number>;
     strokeOpacity: ArtInspectorMixedValue<number>;
+    effect: ArtInspectorMixedValue<ArtInspectorEffectValue>;
     strokeWidth: ArtInspectorMixedValue<number>;
     dash: ArtInspectorMixedValue<string>;
     lineEnds: ArtInspectorMixedValue<ArtInspectorLineCap>;
@@ -133,6 +135,7 @@ export function createArtInspectorModel({
     objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
     fillOpacity: uniformSupportedValue(planned, supportsFill, ({ object }) => metadataNumberValue(object.style.fillOpacity, 1)),
     strokeOpacity: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeOpacity, 1)),
+    effect: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => graphicToolbarEffectValue(object)),
     strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => metadataNumberValue(object.style.strokeWidth, 1.5)),
     dash: uniformSupportedValue(planned, supportsDash, ({ object }) => metadataStringValue(object.style.strokeDasharray) ?? "solid"),
     lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan.stroke.lineCap),
@@ -368,6 +371,19 @@ function graphicStrokeToolbarPaintType(object: GraphicObject): ArtInspectorPaint
     return object.style.strokePaint.kind;
   }
   return metadataStringValue(object.style.strokeColor)?.toLowerCase() === "none" ? "none" : "solid";
+}
+
+function graphicToolbarEffectValue(object: GraphicObject): ArtInspectorEffectValue {
+  const explicitEffects = Array.isArray(object.style.effects) ? object.style.effects : [];
+  const effectKinds = [
+    ...(object.style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow") ? ["shadow" as const] : []),
+    ...explicitEffects.map((effect) => effect.kind)
+  ];
+  const uniqueEffectKinds = [...new Set(effectKinds)];
+  if (uniqueEffectKinds.length === 0) {
+    return "none";
+  }
+  return uniqueEffectKinds.length === 1 ? uniqueEffectKinds[0] : "multiple";
 }
 
 function metadataNumberValue(value: unknown, fallback: number): number {
