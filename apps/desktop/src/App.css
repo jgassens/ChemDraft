@@ -2615,6 +2615,10 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.native-molecule-overlay-visual {
+  pointer-events: none;
+}
+
 .native-bond-line {
   pointer-events: none;
 }

@@ -2804,7 +2804,8 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
-    expect(mainWindowSource).toContain('const svgObjects = plannedDisplayPage.objects.filter((object) => object.type !== "graphic")');
+    expect(mainWindowSource).toContain("const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object))");
+    expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
     expect(mainWindowSource).toContain('data-graphic-corner-radius-handle="true"');
@@ -4184,6 +4185,35 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("z-index:2");
 
     expect(markup).not.toContain("native-bond-knockout");
+  });
+
+  it("renders native molecule visuals in the same object layer stack as art graphics", () => {
+    const withMolecule = insertNativeSingleBondMolecule(createPhase4Document("Mixed Art Molecule Layers"), { x: 220, y: 240 });
+    const moleculeId = withMolecule.selection.objectIds[0] ?? "";
+    const withRect = insertNativeArtGraphicObject(withMolecule, { x: 220, y: 240 }, "tool.art.rect");
+    const rectId = withRect.selection.objectIds[0] ?? "";
+    const sentBack = reorderSelectedDocumentObject(withRect, "back");
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: sentBack,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    const pageSvgStart = markup.indexOf('data-page-svg-surface="true"');
+    const rectOverlayIndex = markup.indexOf(`data-object-id="${rectId}" data-layer-index="0" data-graphic-kind="rect"`);
+    const moleculeOverlayIndex = markup.indexOf(`data-object-id="${moleculeId}" data-layer-index="1" data-structure="CC"`);
+    const moleculeVisualIndex = markup.indexOf('data-native-molecule-overlay-visual="true"', moleculeOverlayIndex);
+    const moleculeBondIndex = markup.indexOf('class="native-bond-line native-bond-single"', moleculeVisualIndex);
+
+    expect(sentBack.pages[0].objects.map((object) => object.id)).toEqual([rectId, moleculeId]);
+    expect(pageSvgStart).toBeGreaterThan(-1);
+    expect(rectOverlayIndex).toBeGreaterThan(-1);
+    expect(moleculeOverlayIndex).toBeGreaterThan(-1);
+    expect(markup.slice(pageSvgStart, rectOverlayIndex)).not.toContain(`data-object-id="${moleculeId}"`);
+    expect(rectOverlayIndex).toBeLessThan(moleculeOverlayIndex);
+    expect(moleculeVisualIndex).toBeGreaterThan(moleculeOverlayIndex);
+    expect(moleculeBondIndex).toBeGreaterThan(moleculeVisualIndex);
   });
 
   it("renders selected atom layer controls in the object context menu", () => {

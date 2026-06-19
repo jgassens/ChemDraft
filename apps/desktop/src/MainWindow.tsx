@@ -36,6 +36,7 @@ import {
   type ChemDraftDocument,
   type DocumentHistory,
   type DocumentObject,
+  type DocumentPage,
   type DocumentPatch,
   type GraphicFreehandPoint,
   type GraphicObject,
@@ -837,7 +838,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.17.58-codex";
+const CURRENT_BUILD_STAMP = "6.19.18.49-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -1340,7 +1341,7 @@ export function MainWindow({
     };
   }, [activePage, nativeDoubleBondSidePreview]);
   const editorSvgDisplayPage = useMemo(() => {
-    const svgObjects = plannedDisplayPage.objects.filter((object) => object.type !== "graphic");
+    const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object));
     if (svgObjects.length === plannedDisplayPage.objects.length) {
       return plannedDisplayPage;
     }
@@ -1349,6 +1350,8 @@ export function MainWindow({
   }, [plannedDisplayPage]);
   const pageSvgRenderPlan = useMemo(() =>
     markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage)), [editorSvgDisplayPage]);
+  const nativeMoleculeOverlayFragments = useMemo(() =>
+    markFrame("planNativeMoleculeOverlayRender", () => nativeMoleculeOverlayFragmentsByObjectId(plannedDisplayPage)), [plannedDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
@@ -9676,6 +9679,7 @@ export function MainWindow({
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
+                      nativeMoleculeSvgFragments={nativeMoleculeOverlayFragments.get(object.id)}
                       rotateReadout={objectRotateReadout?.objectId === object.id ? objectRotateReadout : undefined}
                       projectedPlaneTiltReadout={
                         projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
@@ -13996,6 +14000,39 @@ function PageSvgSurface({
   );
 }
 
+function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
+  if (object.type === "graphic") {
+    return false;
+  }
+
+  return object.type !== "molecule" || !isNativeMoleculeGraph(object);
+}
+
+function nativeMoleculeOverlayFragmentsByObjectId(page: DocumentPage): ReadonlyMap<string, readonly PageSvgElementFragment[]> {
+  const nativeMoleculeIds = new Set(page.objects
+    .filter((object): object is MoleculeObject => object.type === "molecule" && isNativeMoleculeGraph(object))
+    .map((object) => object.id));
+  if (nativeMoleculeIds.size === 0) {
+    return new Map();
+  }
+
+  const byObjectId = new Map<string, PageSvgElementFragment[]>();
+  planPageSvgRender(page).fragments.forEach((fragment) => {
+    const objectId = typeof fragment.attrs["data-object-id"] === "string"
+      ? fragment.attrs["data-object-id"]
+      : undefined;
+    if (!objectId || !nativeMoleculeIds.has(objectId)) {
+      return;
+    }
+
+    const fragments = byObjectId.get(objectId) ?? [];
+    fragments.push(fragment);
+    byObjectId.set(objectId, fragments);
+  });
+
+  return byObjectId;
+}
+
 function renderPageSvgFragment(
   fragment: PageSvgFragment,
   handlers: {
@@ -14031,6 +14068,28 @@ function renderPageSvgFragment(
     { ...props, key: fragment.key },
     ...fragment.children.map((child) => renderPageSvgFragment(child, handlers))
   );
+}
+
+function renderStaticPageSvgFragment(
+  fragment: PageSvgFragment
+): ReturnType<typeof createElement> | string {
+  if (fragment.kind === "text") {
+    return fragment.text;
+  }
+
+  return createElement(
+    fragment.tag,
+    { ...staticSvgProps(fragment.attrs), key: fragment.key },
+    ...fragment.children.map((child) => renderStaticPageSvgFragment(child))
+  );
+}
+
+function staticSvgProps(attrs: Record<string, PageSvgAttributeValue>): Record<string, unknown> {
+  const props = reactSvgProps(attrs);
+  delete props["data-object-id"];
+  delete props["data-layer-index"];
+  delete props["data-object-type"];
+  return props;
 }
 
 function reactSvgProps(attrs: Record<string, PageSvgAttributeValue>): Record<string, unknown> {
@@ -14097,6 +14156,7 @@ function DocumentObjectView({
   hoverDestructive,
   freeformPreview,
   doubleBondSidePreview,
+  nativeMoleculeSvgFragments,
   rotateReadout,
   projectedPlaneTiltReadout,
   rotationInput,
@@ -14160,6 +14220,7 @@ function DocumentObjectView({
   hoverDestructive: boolean;
   freeformPreview?: FreeformNativeBondPreview;
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
+  nativeMoleculeSvgFragments?: readonly PageSvgElementFragment[];
   rotateReadout?: ObjectRotateReadoutState;
   projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
   rotationInput?: RotationInputState;
@@ -14617,6 +14678,15 @@ function DocumentObjectView({
           onContextMenu={handleObjectContextMenu}
         >
           <svg className="native-molecule-overlay" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true">
+            {nativeMoleculeSvgFragments && nativeMoleculeSvgFragments.length > 0 ? (
+              <g
+                className="native-molecule-overlay-visual"
+                data-native-molecule-overlay-visual="true"
+                transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}
+              >
+                {nativeMoleculeSvgFragments.map((fragment) => renderStaticPageSvgFragment(fragment))}
+              </g>
+            ) : null}
             {selectionBlob}
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
