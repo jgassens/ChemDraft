@@ -28,6 +28,7 @@ import {
   objectGradientStopOpacityCommandId,
   objectEffectCommands,
   objectEffectColorCommandId,
+  objectEffectDisableCommandId,
   objectEffectOpacityCommandId,
   objectEffectSizeCommandId,
   objectPaintTypeCommandId,
@@ -1172,11 +1173,24 @@ function ArtToolbarStyleControls({
                 onClick={() => {
                   if (effectKind !== "none") {
                     setFocusedEffectKind(effectKind);
-                  } else {
-                    setFocusedEffectKind(undefined);
-                    setEffectColorOpen(false);
+                    if (!active) {
+                      onInvoke(command.id);
+                    }
+                    return;
                   }
+
+                  setFocusedEffectKind(undefined);
+                  setEffectColorOpen(false);
                   onInvoke(command.id);
+                }}
+                onDoubleClick={() => {
+                  if (effectKind === "none" || !active) {
+                    return;
+                  }
+
+                  setFocusedEffectKind(undefined);
+                  setEffectColorOpen(false);
+                  onInvoke(objectEffectDisableCommandId(effectKind));
                 }}
               >
                 {command.label}

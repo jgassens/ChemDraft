@@ -7,7 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette } from "./ToolPalette";
-import { objectEffectOpacityCommandId, objectEffectSizeCommandId, objectGradientStopOffsetCommandId } from "./commands";
+import {
+  objectEffectDisableCommandId,
+  objectEffectOpacityCommandId,
+  objectEffectSizeCommandId,
+  objectGradientStopOffsetCommandId
+} from "./commands";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -281,9 +286,25 @@ describe("ToolPalette art color popover", () => {
     });
     expect(onInvoke).toHaveBeenCalledWith("object.effect.none");
 
-    const { onPreview, onCommit } = renderPalette({ currentArtStyle: effectArtInspectorModel() });
+    const {
+      onCommit,
+      onInvoke: onEffectInvoke,
+      onPreview
+    } = renderPalette({ currentArtStyle: effectArtInspectorModel() });
     expect(container.querySelector('[data-art-effect-controls="glow"]')).not.toBeNull();
-    expect(container.querySelector<HTMLButtonElement>('[data-art-effect-button="glow"]')?.className).toContain("active");
+    const activeGlowButton = container.querySelector<HTMLButtonElement>('[data-art-effect-button="glow"]');
+    expect(activeGlowButton?.className).toContain("active");
+    if (!activeGlowButton) {
+      throw new Error("Expected active glow effect button.");
+    }
+    act(() => {
+      activeGlowButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onEffectInvoke).not.toHaveBeenCalledWith("object.effect.glow");
+    act(() => {
+      activeGlowButton.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(onEffectInvoke).toHaveBeenCalledWith(objectEffectDisableCommandId("glow"));
     const effectColorTrigger = container.querySelector<HTMLButtonElement>('[data-art-effect-color-trigger="glow"]');
     if (!effectColorTrigger) {
       throw new Error("Expected effect color trigger.");

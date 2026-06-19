@@ -213,8 +213,10 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('gradientUnits="userSpaceOnUse"');
     expect(result.contents).toContain('gradientTransform="matrix(');
     expect(result.contents).toContain('id="graphic-effects-art_svg_effects"');
-    expect(result.contents).toContain("<feDropShadow");
+    expect(result.contents).toContain("<feOffset");
     expect(result.contents).toContain('filter="url(#graphic-effects-art_svg_effects)"');
+    expect(result.contents).toContain('data-graphic-effect-source="true"');
+    expect(result.contents).not.toContain('in="SourceGraphic"');
     expect(result.contents).toContain('stop-color="#e4f0ed"');
     expect(result.contents).toContain('stop-color="#0d382e"');
     expect(result.contents.match(/stop-opacity="0.48"/g)).toHaveLength(4);
@@ -266,6 +268,7 @@ describe("SVG export serialization", () => {
     expect(first.contents).toContain("<feFlood");
     expect(first.contents).toContain('data-graphic-effect="sketch"');
     expect(first.contents).toContain('filter="url(#graphic-effects-art_svg_glow_sketch)"');
+    expect(first.contents).toContain('data-graphic-effect-source="true"');
     expect(first.warnings).toEqual([]);
   });
 

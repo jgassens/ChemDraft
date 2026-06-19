@@ -381,6 +381,7 @@ export const customObjectGradientDeleteStopCommandPrefix = "object.gradient.dele
 export const customObjectEffectColorCommandPrefix = "object.effect.color.";
 export const customObjectEffectOpacityCommandPrefix = "object.effect.opacity.";
 export const customObjectEffectSizeCommandPrefix = "object.effect.size.";
+export const customObjectEffectDisableCommandPrefix = "object.effect.disable.";
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
@@ -430,6 +431,10 @@ export function objectEffectOpacityCommandId(effectKind: ObjectAdjustableEffectK
 
 export function objectEffectSizeCommandId(effectKind: ObjectAdjustableEffectKind, size: number): string {
   return `${customObjectEffectSizeCommandPrefix}${effectKind}.${unitPercent(size)}`;
+}
+
+export function objectEffectDisableCommandId(effectKind: ObjectAdjustableEffectKind): string {
+  return `${customObjectEffectDisableCommandPrefix}${effectKind}`;
 }
 
 export function objectOpacityForCommand(commandId: string): { key: "opacity" | "fillOpacity" | "strokeOpacity"; value: number } | undefined {
@@ -521,6 +526,14 @@ export function objectEffectSizeForCommand(commandId: string): { effectKind: Obj
   return effectKind
     ? { effectKind, size: unitFromCommandSuffix(sizeText ?? "0", 0) }
     : undefined;
+}
+
+export function objectEffectDisableForCommand(commandId: string): ObjectAdjustableEffectKind | undefined {
+  if (!commandId.startsWith(customObjectEffectDisableCommandPrefix)) {
+    return undefined;
+  }
+
+  return objectAdjustableEffectKind(commandId.slice(customObjectEffectDisableCommandPrefix.length));
 }
 
 export function textColorForCommand(commandId: string): string | undefined {

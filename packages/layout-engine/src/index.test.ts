@@ -993,22 +993,24 @@ describe("layout-engine page SVG planner", () => {
       "radialGradient",
       "stop",
       "filter",
-      "feDropShadow",
       "feMorphology",
       "feGaussianBlur",
+      "feOffset",
       "feFlood",
       "feComposite",
       "feMerge",
       "feMergeNode"
     ]);
     const visibleFragments = fragments.filter((fragment) =>
-      !svgDefinitionTags.has(fragment.tag)
+      !svgDefinitionTags.has(fragment.tag) && fragment.attrs.class !== "graphic-glyph-effect-source"
     );
     const ellipsePath = visibleFragments.find((fragment) => fragment.attrs["data-object-id"] === "art_ellipse");
     const glossGradient = fragments.find((fragment) => fragment.tag === "radialGradient");
     const glossStops = fragments.filter((fragment) => fragment.tag === "stop");
     const shadowFilter = fragments.find((fragment) => fragment.tag === "filter" && fragment.attrs.id === "graphic-effects-art_rect");
-    const shadowPrimitive = fragments.find((fragment) => fragment.tag === "feDropShadow");
+    const shadowOffset = fragments.find((fragment) => fragment.tag === "feOffset");
+    const shadowColor = fragments.find((fragment) => fragment.tag === "feFlood" && fragment.attrs.result === "graphic-effects-art_rect-shadow-color");
+    const effectSource = fragments.find((fragment) => fragment.attrs["data-graphic-effect-source"] === "true");
 
     expect(visibleFragments.map((fragment) => fragment.tag)).toEqual(["path", "path", "rect"]);
     expect(visibleFragments[0]?.attrs).toMatchObject({
@@ -1041,14 +1043,20 @@ describe("layout-engine page SVG planner", () => {
     expect(visibleFragments[2]?.attrs).toMatchObject({
       "data-object-id": "art_rect",
       fill: "#f8faf9",
-      filter: "url(#graphic-effects-art_rect)",
       rx: 7,
       ry: 7
     });
     expect(shadowFilter).toBeDefined();
-    expect(shadowPrimitive?.attrs).toMatchObject({
+    expect(effectSource?.attrs).toMatchObject({
+      filter: "url(#graphic-effects-art_rect)",
+      fill: "#000000",
+      stroke: "#000000"
+    });
+    expect(shadowOffset?.attrs).toMatchObject({
       dx: 6,
-      dy: 6,
+      dy: 6
+    });
+    expect(shadowColor?.attrs).toMatchObject({
       "flood-color": "#52616b"
     });
     expect(plan.warnings.map((warning) => warning.code)).toEqual([]);

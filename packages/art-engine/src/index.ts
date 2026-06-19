@@ -23,6 +23,7 @@ import {
 const minimumArcSweepRadians = Math.PI / 180;
 const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
 const transientFreehandPathCache = new WeakMap<GraphicObject, { revision: string; pathD?: string }>();
+const defaultGlowEffectColor = "#fdd835";
 
 export interface NativeArtPoint {
   x: number;
@@ -511,7 +512,7 @@ function nativeArtEffectPlan(
   if (effect.kind === "glow") {
     return {
       kind: "glow",
-      color: graphicColor(effect.color, input.stroke.color, input.fill.color, "#1d7f68"),
+      color: graphicColor(effect.color, defaultGlowEffectColor),
       opacity: clampUnit(metadataNumber(effect.opacity) ?? 0.42),
       blurPx: Math.max(0, metadataNumber(effect.blurPx) ?? 7),
       spreadPx: Math.max(0, metadataNumber(effect.spreadPx) ?? 1.2)
@@ -531,8 +532,8 @@ function nativeArtSketchEffectPlan(
     return undefined;
   }
 
-  const color = graphicColor(effect.color, input.stroke.color, input.fill.color, "#111111");
-  const strokeWidth = Math.max(0.5, metadataNumber(input.stroke.width) ?? 1.5);
+  const color = graphicColor(effect.color, "#111111");
+  const strokeWidth = Math.max(0.5, metadataNumber(effect.strokeWidth) ?? 1.5);
   const seed = nativeArtEffectSeed(object, effect, "sketch");
   const roughness = Math.max(0, metadataNumber(effect.roughness) ?? 1.25);
   const bowing = Math.max(0, metadataNumber(effect.bowing) ?? 0.8);

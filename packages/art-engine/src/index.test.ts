@@ -133,6 +133,33 @@ describe("art-engine native art planning", () => {
     expect(firstSketch?.paths.map((path) => path.d)).toEqual(secondSketch?.paths.map((path) => path.d));
   });
 
+  it("keeps effect defaults independent from object stroke and fill style", () => {
+    const graphic = {
+      ...baseGraphic,
+      id: "independent_effect_style",
+      graphicKind: "path",
+      width: 120,
+      height: 24,
+      style: {
+        ...baseGraphic.style,
+        strokeColor: "#b3261e",
+        fillColor: "#1648ff",
+        strokeWidth: 12,
+        effects: [{ kind: "glow" }, { kind: "sketch" }]
+      },
+      data: {
+        pathD: "M 0 12 L 120 12"
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+    const glow = plan.effects.find((effect) => effect.kind === "glow");
+    const sketch = plan.effects.find((effect) => effect.kind === "sketch");
+
+    expect(glow).toMatchObject({ color: "#fdd835" });
+    expect(sketch).toMatchObject({ color: "#111111", strokeWidth: 1.5 });
+  });
+
   it("plans a boolean union from two closed rectangles", () => {
     const first = {
       ...baseGraphic,

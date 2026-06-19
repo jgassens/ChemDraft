@@ -26,6 +26,7 @@ import {
   applyGraphicObjectEffectOpacityToSelection,
   applyGraphicObjectEffectSizeToSelection,
   applyGraphicObjectEffectToSelection,
+  deactivateGraphicObjectEffectForSelection,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOffsetForSelection,
@@ -4806,7 +4807,8 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(sketched, objectId).style.effects?.find((effect) => effect.kind === "sketch")).toMatchObject({
       seed: expect.any(Number),
       roughness: 1.25,
-      bowing: 0.8
+      bowing: 0.8,
+      strokeWidth: 1.5
     });
 
     const recolored = applyGraphicObjectEffectColorToSelection(sketched, "shadow", "#123456");
@@ -4823,7 +4825,7 @@ describe("Phase 4 document workflow", () => {
     const resized = applyGraphicObjectEffectSizeToSelection(recolored, "glow", 0.5);
     expect(graphicById(resized, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
       kind: "glow",
-      color: "#1d7f68",
+      color: "#fdd835",
       opacity: 0.42,
       blurPx: 9,
       spreadPx: 2
@@ -4836,9 +4838,39 @@ describe("Phase 4 document workflow", () => {
       spreadPx: 2
     });
 
-    const cleared = applyGraphicObjectEffectToSelection(faded, "none");
+    const disabledGlow = deactivateGraphicObjectEffectForSelection(faded, "glow");
+    expect(graphicById(disabledGlow, objectId).style.effects?.map((effect) => effect.kind)).toEqual(["shadow", "sketch"]);
+    expect(graphicById(disabledGlow, objectId).style.inactiveEffects).toEqual([
+      { kind: "glow", color: "#fdd835", opacity: 0.72, blurPx: 9, spreadPx: 2 }
+    ]);
+
+    const restoredGlow = applyGraphicObjectEffectToSelection(disabledGlow, "glow");
+    expect(graphicById(restoredGlow, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      color: "#fdd835",
+      opacity: 0.72,
+      blurPx: 9,
+      spreadPx: 2
+    });
+    expect(graphicById(restoredGlow, objectId).style.inactiveEffects).toBeUndefined();
+
+    const activeClickAgain = applyGraphicObjectEffectToSelection(restoredGlow, "glow");
+    expect(graphicById(activeClickAgain, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      color: "#fdd835",
+      opacity: 0.72,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const cleared = applyGraphicObjectEffectToSelection(activeClickAgain, "none");
     expect(graphicById(cleared, objectId).style.effect).toBeUndefined();
     expect(graphicById(cleared, objectId).style.effects).toBeUndefined();
+    expect(graphicById(cleared, objectId).style.inactiveEffects?.map((effect) => effect.kind)).toEqual(["shadow", "sketch", "glow"]);
+
+    const restoredAfterClear = applyGraphicObjectEffectToSelection(cleared, "shadow");
+    expect(graphicById(restoredAfterClear, objectId).style.effects).toEqual([
+      { kind: "shadow", color: "#123456", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 }
+    ]);
+    expect(graphicById(restoredAfterClear, objectId).style.inactiveEffects?.map((effect) => effect.kind)).toEqual(["sketch", "glow"]);
   });
 
   it("edits rectangle corner radius through native graphic workflow helpers", () => {

@@ -96,6 +96,7 @@ import {
   editActions,
   objectColorForCommand,
   objectEffectColorForCommand,
+  objectEffectDisableForCommand,
   objectEffectOpacityForCommand,
   objectEffectForCommand,
   objectEffectSizeForCommand,
@@ -168,6 +169,7 @@ import {
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
   applyGraphicObjectEffectColorToSelection,
+  deactivateGraphicObjectEffectForSelection,
   applyGraphicObjectEffectOpacityToSelection,
   applyGraphicObjectEffectSizeToSelection,
   applyGraphicObjectEffectToSelection,
@@ -800,7 +802,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.9.11-codex";
+const CURRENT_BUILD_STAMP = "6.19.9.55-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -2702,6 +2704,16 @@ export function MainWindow({
         handled: true,
         targeted: graphicObjectIds.length > 0,
         message: "Updated selected graphic opacity"
+      };
+    }
+
+    const disabledEffectKind = objectEffectDisableForCommand(commandId);
+    if (disabledEffectKind) {
+      return {
+        document: deactivateGraphicObjectEffectForSelection(currentDocument, disabledEffectKind, graphicObjectIds),
+        handled: true,
+        targeted: graphicObjectIds.length > 0,
+        message: `Disabled selected graphic ${disabledEffectKind} effect`
       };
     }
 
@@ -10348,9 +10360,6 @@ export function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
     const strokePaintId = `preview-stroke-${object.id}`;
     const glossPaintId = `preview-gloss-${object.id}`;
     const effectFilterId = `preview-effects-${object.id}`;
-    const effectFilterAttr = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow")
-      ? `filter="url(#${xmlAttributeValue(effectFilterId)})"`
-      : "";
     const strokeAttrs = [
       previewSvgPaintAttrs("stroke", plan.stroke.paint, strokePaintId),
       `stroke-width="${xmlAttributeValue(plan.stroke.width)}"`,
@@ -10358,8 +10367,7 @@ export function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
       `stroke-linecap="${xmlAttributeValue(plan.stroke.lineCap)}"`,
       `stroke-linejoin="${xmlAttributeValue(plan.stroke.lineJoin)}"`,
       `stroke-miterlimit="${xmlAttributeValue(plan.stroke.miterLimit)}"`,
-      `vector-effect="${plan.projectionTransform ? "none" : "non-scaling-stroke"}"`,
-      effectFilterAttr
+      `vector-effect="${plan.projectionTransform ? "none" : "non-scaling-stroke"}"`
     ].filter(Boolean).join(" ");
     const fillAttrs = plan.fill.mode === "gloss" && plan.glossGradient
       ? previewSvgGlossPaintAttrs(glossPaintId, plan.fill.opacity)
@@ -10376,20 +10384,39 @@ export function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
       ? ` transform="${xmlAttributeValue(plan.projectionTransform)}"`
       : "";
     let body = "";
+    const closedFillEffectSource = plan.capabilities.supportsFill && !plan.capabilities.isOpenStroke;
+    const pathFillEffectSource = freehandPath || closedFillEffectSource || !plan.capabilities.supportsStroke;
 
     if (plan.projectedShapePathD) {
-      body = `<path d="${xmlAttributeValue(plan.projectedShapePathD)}" ${fillAttrs} ${strokeAttrs}/>`;
+      body = [
+        previewSvgEffectSourcePath(plan, effectFilterId, plan.projectedShapePathD, closedFillEffectSource),
+        `<path d="${xmlAttributeValue(plan.projectedShapePathD)}" ${fillAttrs} ${strokeAttrs}/>`
+      ].filter(Boolean).join("");
     } else if (object.graphicKind === "path" && pathD) {
       const pathFillAttrs = freehandPath || plan.capabilities.supportsFill
         ? fillAttrs
         : `fill="none"`;
-      body = `<path d="${xmlAttributeValue(pathD)}" ${pathFillAttrs} ${strokeAttrs}${projectionTransform}/>`;
+      body = [
+        previewSvgEffectSourcePath(plan, effectFilterId, pathD, pathFillEffectSource, projectionTransform),
+        `<path d="${xmlAttributeValue(pathD)}" ${pathFillAttrs} ${strokeAttrs}${projectionTransform}/>`
+      ].filter(Boolean).join("");
     } else if (object.graphicKind === "line" && plan.visibleLine) {
-      body = `<line x1="${xmlAttributeValue(plan.visibleLine.x1)}" y1="${xmlAttributeValue(plan.visibleLine.y1)}" x2="${xmlAttributeValue(plan.visibleLine.x2)}" y2="${xmlAttributeValue(plan.visibleLine.y2)}" fill="none" ${strokeAttrs}${projectionTransform}/>`;
+      body = [
+        previewSvgEffectSourceLine(plan, effectFilterId, plan.visibleLine, projectionTransform),
+        `<line x1="${xmlAttributeValue(plan.visibleLine.x1)}" y1="${xmlAttributeValue(plan.visibleLine.y1)}" x2="${xmlAttributeValue(plan.visibleLine.x2)}" y2="${xmlAttributeValue(plan.visibleLine.y2)}" fill="none" ${strokeAttrs}${projectionTransform}/>`
+      ].filter(Boolean).join("");
     } else if (object.graphicKind === "rect") {
-      body = `<rect x="${xmlAttributeValue(plan.stroke.width / 2)}" y="${xmlAttributeValue(plan.stroke.width / 2)}" width="${xmlAttributeValue(Math.max(width - plan.stroke.width, 0.5))}" height="${xmlAttributeValue(Math.max(height - plan.stroke.width, 0.5))}" rx="${xmlAttributeValue(plan.cornerRadius)}" ry="${xmlAttributeValue(plan.cornerRadius)}" ${fillAttrs} ${strokeAttrs}${projectionTransform}/>`;
+      const rectGeometry = `x="${xmlAttributeValue(plan.stroke.width / 2)}" y="${xmlAttributeValue(plan.stroke.width / 2)}" width="${xmlAttributeValue(Math.max(width - plan.stroke.width, 0.5))}" height="${xmlAttributeValue(Math.max(height - plan.stroke.width, 0.5))}" rx="${xmlAttributeValue(plan.cornerRadius)}" ry="${xmlAttributeValue(plan.cornerRadius)}"`;
+      body = [
+        previewSvgEffectSourceShape(plan, effectFilterId, "rect", rectGeometry, closedFillEffectSource, projectionTransform),
+        `<rect ${rectGeometry} ${fillAttrs} ${strokeAttrs}${projectionTransform}/>`
+      ].filter(Boolean).join("");
     } else if (object.graphicKind === "ellipse") {
-      body = `<ellipse cx="${xmlAttributeValue(width / 2)}" cy="${xmlAttributeValue(height / 2)}" rx="${xmlAttributeValue(Math.max(width / 2 - plan.stroke.width / 2, 0.5))}" ry="${xmlAttributeValue(Math.max(height / 2 - plan.stroke.width / 2, 0.5))}" ${fillAttrs} ${strokeAttrs}${projectionTransform}/>`;
+      const ellipseGeometry = `cx="${xmlAttributeValue(width / 2)}" cy="${xmlAttributeValue(height / 2)}" rx="${xmlAttributeValue(Math.max(width / 2 - plan.stroke.width / 2, 0.5))}" ry="${xmlAttributeValue(Math.max(height / 2 - plan.stroke.width / 2, 0.5))}"`;
+      body = [
+        previewSvgEffectSourceShape(plan, effectFilterId, "ellipse", ellipseGeometry, closedFillEffectSource, projectionTransform),
+        `<ellipse ${ellipseGeometry} ${fillAttrs} ${strokeAttrs}${projectionTransform}/>`
+      ].filter(Boolean).join("");
     }
 
     if (!body) {
@@ -10449,6 +10476,69 @@ function previewSvgGlossDefinition(
   return `<defs><radialGradient id="${xmlAttributeValue(id)}" cx="${xmlAttributeValue(gradient.cx)}" cy="${xmlAttributeValue(gradient.cy)}" r="${xmlAttributeValue(gradient.r)}"${previewSvgGradientTransformAttr(gradient.gradientTransform)} gradientUnits="userSpaceOnUse">${previewSvgGradientStops(gradient.stops)}</radialGradient></defs>`;
 }
 
+function previewSvgEffectSourceAttrs(
+  plan: NativeArtVisualPlan,
+  effectFilterId: string,
+  includeFill: boolean
+): string {
+  const hasFilter = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
+  if (!hasFilter) {
+    return "";
+  }
+
+  const fill = includeFill && plan.fill.paint.kind !== "none" ? "#000000" : "none";
+  const stroke = plan.capabilities.supportsStroke && plan.stroke.paint.kind !== "none" ? "#000000" : "none";
+  return [
+    `class="graphic-glyph-effect-source"`,
+    `data-graphic-effect-source="true"`,
+    `fill="${fill}"`,
+    `stroke="${stroke}"`,
+    `stroke-width="${xmlAttributeValue(plan.stroke.width)}"`,
+    plan.stroke.dasharray ? `stroke-dasharray="${xmlAttributeValue(plan.stroke.dasharray)}"` : "",
+    `stroke-linecap="${xmlAttributeValue(plan.stroke.lineCap)}"`,
+    `stroke-linejoin="${xmlAttributeValue(plan.stroke.lineJoin)}"`,
+    `stroke-miterlimit="${xmlAttributeValue(plan.stroke.miterLimit)}"`,
+    `vector-effect="${plan.projectionTransform ? "none" : "non-scaling-stroke"}"`,
+    `pointer-events="none"`,
+    `filter="url(#${xmlAttributeValue(effectFilterId)})"`
+  ].filter(Boolean).join(" ");
+}
+
+function previewSvgEffectSourcePath(
+  plan: NativeArtVisualPlan,
+  effectFilterId: string,
+  pathD: string,
+  includeFill: boolean,
+  transform = ""
+): string {
+  const attrs = previewSvgEffectSourceAttrs(plan, effectFilterId, includeFill);
+  return attrs ? `<path d="${xmlAttributeValue(pathD)}" ${attrs}${transform}/>` : "";
+}
+
+function previewSvgEffectSourceLine(
+  plan: NativeArtVisualPlan,
+  effectFilterId: string,
+  line: NonNullable<NativeArtVisualPlan["visibleLine"]>,
+  transform = ""
+): string {
+  const attrs = previewSvgEffectSourceAttrs(plan, effectFilterId, false);
+  return attrs
+    ? `<line x1="${xmlAttributeValue(line.x1)}" y1="${xmlAttributeValue(line.y1)}" x2="${xmlAttributeValue(line.x2)}" y2="${xmlAttributeValue(line.y2)}" ${attrs}${transform}/>`
+    : "";
+}
+
+function previewSvgEffectSourceShape(
+  plan: NativeArtVisualPlan,
+  effectFilterId: string,
+  tag: "ellipse" | "rect",
+  geometry: string,
+  includeFill: boolean,
+  transform = ""
+): string {
+  const attrs = previewSvgEffectSourceAttrs(plan, effectFilterId, includeFill);
+  return attrs ? `<${tag} ${geometry} ${attrs}${transform}/>` : "";
+}
+
 function previewSvgEffectDefinition(plan: NativeArtVisualPlan, id: string): string {
   const effects = plan.effects.filter((effect): effect is Extract<NativeArtVisualPlan["effects"][number], { kind: "shadow" | "glow" }> =>
     effect.kind === "shadow" || effect.kind === "glow"
@@ -10461,8 +10551,16 @@ function previewSvgEffectDefinition(plan: NativeArtVisualPlan, id: string): stri
   const mergeInputs: string[] = [];
   effects.forEach((effect) => {
     if (effect.kind === "shadow") {
+      const blurResult = `${id}-shadow-blur`;
+      const offsetResult = `${id}-shadow-offset`;
+      const floodResult = `${id}-shadow-color`;
       const result = `${id}-shadow`;
-      children.push(`<feDropShadow dx="${xmlAttributeValue(effect.offsetX)}" dy="${xmlAttributeValue(effect.offsetY)}" stdDeviation="${xmlAttributeValue(effect.blurPx)}" flood-color="${xmlAttributeValue(effect.color)}" flood-opacity="${xmlAttributeValue(effect.opacity)}" result="${xmlAttributeValue(result)}"/>`);
+      children.push(
+        `<feGaussianBlur in="SourceAlpha" stdDeviation="${xmlAttributeValue(effect.blurPx)}" result="${xmlAttributeValue(blurResult)}"/>`,
+        `<feOffset in="${xmlAttributeValue(blurResult)}" dx="${xmlAttributeValue(effect.offsetX)}" dy="${xmlAttributeValue(effect.offsetY)}" result="${xmlAttributeValue(offsetResult)}"/>`,
+        `<feFlood flood-color="${xmlAttributeValue(effect.color)}" flood-opacity="${xmlAttributeValue(effect.opacity)}" result="${xmlAttributeValue(floodResult)}"/>`,
+        `<feComposite in="${xmlAttributeValue(floodResult)}" in2="${xmlAttributeValue(offsetResult)}" operator="in" result="${xmlAttributeValue(result)}"/>`
+      );
       mergeInputs.push(result);
       return;
     }
@@ -10484,8 +10582,7 @@ function previewSvgEffectDefinition(plan: NativeArtVisualPlan, id: string): stri
   });
 
   const mergeNodes = [
-    ...mergeInputs.map((input) => `<feMergeNode in="${xmlAttributeValue(input)}"/>`),
-    `<feMergeNode in="SourceGraphic"/>`
+    ...mergeInputs.map((input) => `<feMergeNode in="${xmlAttributeValue(input)}"/>`)
   ].join("");
   return `<defs><filter id="${xmlAttributeValue(id)}" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">${children.join("")}<feMerge>${mergeNodes}</feMerge></filter></defs>`;
 }
@@ -14977,17 +15074,21 @@ function reactSvgEffectDefinitions(plan: NativeArtVisualPlan, id: string) {
   const mergeInputs: string[] = [];
   effects.forEach((effect) => {
     if (effect.kind === "shadow") {
+      const blurResult = `${id}-shadow-blur`;
+      const offsetResult = `${id}-shadow-offset`;
+      const floodResult = `${id}-shadow-color`;
       const result = `${id}-shadow`;
       filterChildren.push(
-        <feDropShadow
-          key={result}
+        <feGaussianBlur key={blurResult} in="SourceAlpha" stdDeviation={effect.blurPx} result={blurResult} />,
+        <feOffset
+          key={offsetResult}
+          in={blurResult}
           dx={effect.offsetX}
           dy={effect.offsetY}
-          stdDeviation={effect.blurPx}
-          floodColor={effect.color}
-          floodOpacity={effect.opacity}
-          result={result}
-        />
+          result={offsetResult}
+        />,
+        <feFlood key={floodResult} floodColor={effect.color} floodOpacity={effect.opacity} result={floodResult} />,
+        <feComposite key={result} in={floodResult} in2={offsetResult} operator="in" result={result} />
       );
       mergeInputs.push(result);
       return;
@@ -15023,11 +15124,34 @@ function reactSvgEffectDefinitions(plan: NativeArtVisualPlan, id: string) {
         {filterChildren}
         <feMerge>
           {mergeInputs.map((input, index) => <feMergeNode key={`${id}-merge-${index}`} in={input} />)}
-          <feMergeNode in="SourceGraphic" />
         </feMerge>
       </filter>
     </defs>
   );
+}
+
+function reactSvgEffectSourceProps(plan: NativeArtVisualPlan, effectFilterId: string, includeFill: boolean) {
+  const hasFilter = plan.effects.some((candidate) => candidate.kind === "shadow" || candidate.kind === "glow");
+  if (!hasFilter) {
+    return undefined;
+  }
+
+  const sourceFill = includeFill && plan.fill.paint.kind !== "none" ? "#000000" : "none";
+  const sourceStroke = plan.capabilities.supportsStroke && plan.stroke.paint.kind !== "none" ? "#000000" : "none";
+  return {
+    className: "graphic-glyph-effect-source",
+    "data-graphic-effect-source": "true",
+    fill: sourceFill,
+    stroke: sourceStroke,
+    strokeWidth: plan.stroke.width,
+    strokeDasharray: plan.stroke.dasharray,
+    strokeLinecap: plan.stroke.lineCap,
+    strokeLinejoin: plan.stroke.lineJoin,
+    strokeMiterlimit: plan.stroke.miterLimit,
+    vectorEffect: "non-scaling-stroke" as const,
+    pointerEvents: "none" as const,
+    filter: `url(#${effectFilterId})`
+  };
 }
 
 function reactSvgSketchEffectPaths(plan: NativeArtVisualPlan, objectId: string) {
@@ -15079,10 +15203,10 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const hitStrokeWidth = Math.max(strokeWidth + 10, 14);
   const closedFillHitTarget = plan.capabilities.supportsFill && !plan.capabilities.isOpenStroke;
   const pathFillHitTarget = freehandPath || closedFillHitTarget || !plan.capabilities.supportsStroke;
-  const filterProps = plan.effects.some((candidate) => candidate.kind === "shadow" || candidate.kind === "glow")
-    ? { filter: `url(#${effectFilterId})` }
-    : {};
   const sketchPaths = reactSvgSketchEffectPaths(plan, object.id);
+  const shapeEffectSourceProps = reactSvgEffectSourceProps(plan, effectFilterId, closedFillHitTarget);
+  const strokeEffectSourceProps = reactSvgEffectSourceProps(plan, effectFilterId, false);
+  const pathEffectSourceProps = reactSvgEffectSourceProps(plan, effectFilterId, pathFillHitTarget);
   const fillPaintProps = fillMode === "gloss"
     ? { fill: `url(#${gradientId})`, fillOpacity: plan.fill.opacity === 1 ? undefined : plan.fill.opacity }
     : reactSvgPaintAttrs("fill", plan.fill.paint, fillPaintId);
@@ -15093,8 +15217,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
     strokeLinecap: plan.stroke.lineCap,
     strokeLinejoin: plan.stroke.lineJoin,
     strokeMiterlimit: plan.stroke.miterLimit,
-    vectorEffect: "non-scaling-stroke" as const,
-    ...filterProps
+    vectorEffect: "non-scaling-stroke" as const
   };
   const markerStart = plan.markerStart && plan.markerStartTerminal
     ? reactSvgFlattenedMarker(plan.markerStart, plan.markerStartTerminal, markerStartId, "start", strokeColor, plan.stroke.opacity)
@@ -15150,6 +15273,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               pointerEvents="all"
             />
           ) : null}
+          {shapeEffectSourceProps ? (
+            <path
+              d={plan.projectedShapePathD}
+              {...shapeEffectSourceProps}
+            />
+          ) : null}
           <path
             className="graphic-glyph-stroke graphic-glyph-projected-shape"
             d={plan.projectedShapePathD}
@@ -15175,6 +15304,15 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                 vectorEffect="non-scaling-stroke"
                 pointerEvents="all"
               />
+              {shapeEffectSourceProps ? (
+                <ellipse
+                  cx={width / 2}
+                  cy={height / 2}
+                  rx={Math.max(width / 2 - strokeWidth / 2, 0.5)}
+                  ry={Math.max(height / 2 - strokeWidth / 2, 0.5)}
+                  {...shapeEffectSourceProps}
+                />
+              ) : null}
               <ellipse
                 className="graphic-glyph-stroke graphic-glyph-shape"
                 cx={width / 2}
@@ -15203,6 +15341,17 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
                 vectorEffect="non-scaling-stroke"
                 pointerEvents="all"
               />
+              {shapeEffectSourceProps ? (
+                <rect
+                  x={strokeWidth / 2}
+                  y={strokeWidth / 2}
+                  width={Math.max(width - strokeWidth, 0.5)}
+                  height={Math.max(height - strokeWidth, 0.5)}
+                  rx={cornerRadius}
+                  ry={cornerRadius}
+                  {...shapeEffectSourceProps}
+                />
+              ) : null}
               <rect
                 className="graphic-glyph-stroke graphic-glyph-shape"
                 x={strokeWidth / 2}
@@ -15230,6 +15379,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               vectorEffect="non-scaling-stroke"
               pointerEvents={pathFillHitTarget ? "all" : "stroke"}
             />
+            {pathEffectSourceProps ? (
+              <path
+                d={visiblePathD}
+                {...pathEffectSourceProps}
+              />
+            ) : null}
             <path
               className="graphic-glyph-stroke graphic-glyph-path"
               d={visiblePathD}
@@ -15254,6 +15409,15 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
               vectorEffect="non-scaling-stroke"
               pointerEvents="stroke"
             />
+            {strokeEffectSourceProps ? (
+              <line
+                x1={visibleLine.x1}
+                y1={visibleLine.y1}
+                x2={visibleLine.x2}
+                y2={visibleLine.y2}
+                {...strokeEffectSourceProps}
+              />
+            ) : null}
             <line
               className="graphic-glyph-stroke"
               x1={visibleLine.x1}

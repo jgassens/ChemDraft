@@ -1692,9 +1692,6 @@ function graphicObjectFragment(
   const freehandPath = graphicObjectIsFreehandPath(object);
   const gradientId = `graphic-gloss-${object.id}`;
   const effectFilterId = `graphic-effects-${object.id}`;
-  const effectFilterAttrs = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow")
-    ? { filter: `url(#${effectFilterId})` }
-    : {};
   const fillAttrs = plan.glossGradient
     ? {
         fill: `url(#${gradientId})`
@@ -1707,9 +1704,13 @@ function graphicObjectFragment(
     "stroke-dasharray": plan.stroke.dasharray,
     "stroke-linecap": plan.stroke.lineCap,
     "stroke-linejoin": plan.stroke.lineJoin,
-    "stroke-miterlimit": plan.stroke.miterLimit,
-    ...effectFilterAttrs
+    "stroke-miterlimit": plan.stroke.miterLimit
   };
+  const closedFillEffectSource = plan.capabilities.supportsFill && !plan.capabilities.isOpenStroke;
+  const pathFillEffectSource = freehandPath || closedFillEffectSource || !plan.capabilities.supportsStroke;
+  const shapeEffectSourceAttrs = svgEffectSourceAttrs(plan, effectFilterId, closedFillEffectSource);
+  const strokeEffectSourceAttrs = svgEffectSourceAttrs(plan, effectFilterId, false);
+  const pathEffectSourceAttrs = svgEffectSourceAttrs(plan, effectFilterId, pathFillEffectSource);
   const children: PageSvgFragment[] = [
     ...svgPaintDefinitionFragments(plan.fill.paint, `graphic-fill-${object.id}`),
     ...svgPaintDefinitionFragments(plan.stroke.paint, `graphic-stroke-${object.id}`),
@@ -1731,6 +1732,12 @@ function graphicObjectFragment(
 
   if (plan.projectedShapePathD) {
     renderedGraphic = true;
+    if (shapeEffectSourceAttrs) {
+      children.push(elementFragment("path", `graphic-effect-source-${object.id}`, {
+        d: plan.projectedShapePathD,
+        ...shapeEffectSourceAttrs
+      }));
+    }
     children.push(elementFragment("path", `graphic-projected-${object.id}`, {
       d: plan.projectedShapePathD,
       ...strokeAttrs,
@@ -1740,6 +1747,16 @@ function graphicObjectFragment(
   } else if (object.graphicKind === "line" && plan.line) {
     renderedGraphic = true;
     const visibleLine = plan.visibleLine ?? plan.line;
+    if (strokeEffectSourceAttrs) {
+      children.push(elementFragment("line", `graphic-effect-source-${object.id}`, {
+        x1: visibleLine.x1,
+        y1: visibleLine.y1,
+        x2: visibleLine.x2,
+        y2: visibleLine.y2,
+        ...strokeEffectSourceAttrs,
+        transform: plan.projectionTransform
+      }));
+    }
     children.push(elementFragment("line", `graphic-line-${object.id}`, {
       x1: visibleLine.x1,
       y1: visibleLine.y1,
@@ -1750,6 +1767,13 @@ function graphicObjectFragment(
     }));
   } else if (object.graphicKind === "path" && plan.pathD) {
     renderedGraphic = true;
+    if (pathEffectSourceAttrs) {
+      children.push(elementFragment("path", `graphic-effect-source-${object.id}`, {
+        d: plan.visiblePathD ?? plan.pathD,
+        ...pathEffectSourceAttrs,
+        transform: plan.projectionTransform
+      }));
+    }
     children.push(elementFragment("path", `graphic-path-${object.id}`, {
       d: plan.visiblePathD ?? plan.pathD,
       ...strokeAttrs,
@@ -1759,6 +1783,17 @@ function graphicObjectFragment(
     }));
   } else if (object.graphicKind === "rect") {
     renderedGraphic = true;
+    if (shapeEffectSourceAttrs) {
+      children.push(elementFragment("rect", `graphic-effect-source-${object.id}`, {
+        x: object.x + plan.stroke.width / 2,
+        y: object.y + plan.stroke.width / 2,
+        width: Math.max(object.width - plan.stroke.width, 0.5),
+        height: Math.max(object.height - plan.stroke.width, 0.5),
+        rx: plan.cornerRadius,
+        ry: plan.cornerRadius,
+        ...shapeEffectSourceAttrs
+      }));
+    }
     children.push(elementFragment("rect", `graphic-rect-${object.id}`, {
       x: object.x + plan.stroke.width / 2,
       y: object.y + plan.stroke.width / 2,
@@ -1771,6 +1806,15 @@ function graphicObjectFragment(
     }));
   } else if (object.graphicKind === "ellipse") {
     renderedGraphic = true;
+    if (shapeEffectSourceAttrs) {
+      children.push(elementFragment("ellipse", `graphic-effect-source-${object.id}`, {
+        cx: object.x + object.width / 2,
+        cy: object.y + object.height / 2,
+        rx: Math.max(object.width / 2 - plan.stroke.width / 2, 0.5),
+        ry: Math.max(object.height / 2 - plan.stroke.width / 2, 0.5),
+        ...shapeEffectSourceAttrs
+      }));
+    }
     children.push(elementFragment("ellipse", `graphic-ellipse-${object.id}`, {
       cx: object.x + object.width / 2,
       cy: object.y + object.height / 2,
@@ -1865,6 +1909,32 @@ function svgPaintDefinitionFragments(paint: NativeArtPaintPlan, id: string): Pag
   return [];
 }
 
+function svgEffectSourceAttrs(
+  plan: NativeArtVisualPlan,
+  effectFilterId: string,
+  includeFill: boolean
+): Record<string, PageSvgAttributeValue> | undefined {
+  const hasFilter = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
+  if (!hasFilter) {
+    return undefined;
+  }
+
+  return {
+    class: "graphic-glyph-effect-source",
+    "data-graphic-effect-source": "true",
+    fill: includeFill && plan.fill.paint.kind !== "none" ? "#000000" : "none",
+    stroke: plan.capabilities.supportsStroke && plan.stroke.paint.kind !== "none" ? "#000000" : "none",
+    "stroke-width": plan.stroke.width,
+    "stroke-dasharray": plan.stroke.dasharray,
+    "stroke-linecap": plan.stroke.lineCap,
+    "stroke-linejoin": plan.stroke.lineJoin,
+    "stroke-miterlimit": plan.stroke.miterLimit,
+    "vector-effect": "non-scaling-stroke",
+    "pointer-events": "none",
+    filter: `url(#${effectFilterId})`
+  };
+}
+
 function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): PageSvgFragment[] {
   const effects = plan.effects.filter((effect): effect is Extract<NativeArtEffectPlan, { kind: "shadow" | "glow" }> =>
     effect.kind === "shadow" || effect.kind === "glow"
@@ -1877,15 +1947,34 @@ function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): Pa
   const mergeInputs: string[] = [];
   effects.forEach((effect) => {
     if (effect.kind === "shadow") {
+      const blurResult = `${id}-shadow-blur`;
+      const offsetResult = `${id}-shadow-offset`;
+      const floodResult = `${id}-shadow-color`;
       const result = `${id}-shadow`;
-      filterChildren.push(elementFragment("feDropShadow", result, {
-        dx: effect.offsetX,
-        dy: effect.offsetY,
-        stdDeviation: effect.blurPx,
-        "flood-color": effect.color,
-        "flood-opacity": effect.opacity,
-        result
-      }));
+      filterChildren.push(
+        elementFragment("feGaussianBlur", blurResult, {
+          in: "SourceAlpha",
+          stdDeviation: effect.blurPx,
+          result: blurResult
+        }),
+        elementFragment("feOffset", offsetResult, {
+          in: blurResult,
+          dx: effect.offsetX,
+          dy: effect.offsetY,
+          result: offsetResult
+        }),
+        elementFragment("feFlood", floodResult, {
+          "flood-color": effect.color,
+          "flood-opacity": effect.opacity,
+          result: floodResult
+        }),
+        elementFragment("feComposite", result, {
+          in: floodResult,
+          in2: offsetResult,
+          operator: "in",
+          result
+        })
+      );
       mergeInputs.push(result);
       return;
     }
@@ -1925,8 +2014,7 @@ function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): Pa
   });
 
   filterChildren.push(elementFragment("feMerge", `${id}-merge`, {}, [
-    ...mergeInputs.map((input, index) => elementFragment("feMergeNode", `${id}-merge-${index}`, { in: input })),
-    elementFragment("feMergeNode", `${id}-merge-source`, { in: "SourceGraphic" })
+    ...mergeInputs.map((input, index) => elementFragment("feMergeNode", `${id}-merge-${index}`, { in: input }))
   ]));
 
   return [

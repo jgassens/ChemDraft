@@ -441,7 +441,6 @@ function effectColorForToolbar(
   effect: NonNullable<GraphicObject["style"]["effects"]>[number] | undefined
 ): string {
   return normalizeToolbarHexColor(effect?.color) ??
-    (kind === "sketch" ? graphicStrokeToolbarColor(object) : null) ??
     defaultEffectColor(kind);
 }
 
@@ -471,7 +470,8 @@ function effectSizeForToolbar(
 
   const roughness = Math.max(0, typeof effect?.roughness === "number" ? effect.roughness : 1.25);
   const bowing = Math.max(0, typeof effect?.bowing === "number" ? effect.bowing : 0.8);
-  return clampToolbarUnit(Math.max(roughness / 3, bowing / 2));
+  const strokeWidth = Math.max(0, typeof effect?.strokeWidth === "number" ? effect.strokeWidth : 1.5);
+  return clampToolbarUnit(Math.max(roughness / 3, bowing / 2, strokeWidth / 4));
 }
 
 function defaultEffectColor(kind: ArtInspectorEffectKind): string {
@@ -479,7 +479,7 @@ function defaultEffectColor(kind: ArtInspectorEffectKind): string {
     return "#52616b";
   }
   if (kind === "glow") {
-    return "#1d7f68";
+    return "#fdd835";
   }
   return "#111111";
 }

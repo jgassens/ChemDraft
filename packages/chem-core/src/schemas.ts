@@ -97,6 +97,7 @@ export const GraphicEffectSchema = z
     spreadPx: z.number().finite().optional(),
     roughness: z.number().finite().nonnegative().optional(),
     bowing: z.number().finite().nonnegative().optional(),
+    strokeWidth: z.number().finite().positive().optional(),
     seed: z.number().int().positive().optional()
   })
   .strict();
@@ -143,6 +144,7 @@ export const GraphicObjectStyleSchema = z
     fillMode: z.enum(["solid", "gloss"]).optional(),
     effect: z.enum(["shadow", "reflection"]).optional(),
     effects: z.array(GraphicEffectSchema).optional(),
+    inactiveEffects: z.array(GraphicEffectSchema).optional(),
     tiltXDegrees: z.number().finite().optional(),
     tiltYDegrees: z.number().finite().optional(),
     artToolId: z.string().optional(),

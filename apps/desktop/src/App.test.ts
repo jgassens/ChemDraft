@@ -2522,7 +2522,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("art-object-content");
     expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain('id="graphic-effects-');
-    expect(markup).toContain("feDropShadow");
+    expect(markup).toContain("feOffset");
+    expect(markup).toContain('data-graphic-effect-source="true"');
     expect(markup).toContain('filter="url(#graphic-effects-');
     expect(markup).toContain('rx="7"');
     expect(markup).toContain('data-graphic-corner-radius-handle="true"');

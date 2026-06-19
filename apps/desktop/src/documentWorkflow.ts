@@ -4233,17 +4233,45 @@ export function applyGraphicObjectEffectToSelection(
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
   return updateGraphicObjects(document, objectIds, (object) => {
-    const { effect: _legacyEffect, effects: _effects, ...baseStyle } = object.style;
+    const { effect: _legacyEffect, effects: _effects, inactiveEffects: _inactiveEffects, ...baseStyle } = object.style;
+    const existingEffects = graphicEffectsForStyle(object.style);
+    const inactiveEffects = inactiveGraphicEffectsForStyle(object.style);
     if (effectKind === "none") {
-      return baseStyle;
+      return graphicStyleWithEffects(baseStyle, [], mergeGraphicEffectsByKind(inactiveEffects, existingEffects));
     }
 
-    const existingEffects = graphicEffectsForStyle(object.style)
-      .filter((effect) => effect.kind !== effectKind);
-    return {
-      ...baseStyle,
-      effects: [...existingEffects, defaultGraphicEffectForKind(object, effectKind)]
-    };
+    if (existingEffects.some((effect) => effect.kind === effectKind)) {
+      return graphicStyleWithEffects(baseStyle, existingEffects, inactiveEffects);
+    }
+
+    const restoredEffect = inactiveEffects.find((effect) => effect.kind === effectKind) ??
+      defaultGraphicEffectForKind(object, effectKind);
+    return graphicStyleWithEffects(
+      baseStyle,
+      [...existingEffects, restoredEffect],
+      inactiveEffects.filter((effect) => effect.kind !== effectKind)
+    );
+  });
+}
+
+export function deactivateGraphicObjectEffectForSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const existingEffects = graphicEffectsForStyle(object.style);
+    const removedEffect = existingEffects.find((effect) => effect.kind === effectKind);
+    if (!removedEffect) {
+      return object.style;
+    }
+
+    const { effect: _legacyEffect, effects: _effects, inactiveEffects: _inactiveEffects, ...baseStyle } = object.style;
+    return graphicStyleWithEffects(
+      baseStyle,
+      existingEffects.filter((effect) => effect.kind !== effectKind),
+      mergeGraphicEffectsByKind(inactiveGraphicEffectsForStyle(object.style), [removedEffect])
+    );
   });
 }
 
@@ -4300,7 +4328,8 @@ export function applyGraphicObjectEffectSizeToSelection(
     return {
       ...effect,
       roughness: value * 3,
-      bowing: value * 2
+      bowing: value * 2,
+      strokeWidth: Math.max(0.5, value * 4)
     };
   });
 }
@@ -5633,6 +5662,7 @@ function copyGraphicAppearanceStyle(target: GraphicObjectStyle, source: GraphicO
   copyOptionalGraphicStyleKey(target, source, "opacity");
   copyOptionalGraphicStyleKey(target, source, "effect");
   copyOptionalGraphicStyleKey(target, source, "effects");
+  copyOptionalGraphicStyleKey(target, source, "inactiveEffects");
 }
 
 function copyGraphicFillStyle(target: GraphicObjectStyle, source: GraphicObjectStyle): void {
@@ -5728,14 +5758,44 @@ function graphicEffectsForStyle(style: GraphicObjectStyle): GraphicEffect[] {
     : [...effects];
 }
 
+function inactiveGraphicEffectsForStyle(style: GraphicObjectStyle): GraphicEffect[] {
+  return Array.isArray(style.inactiveEffects) ? [...style.inactiveEffects] : [];
+}
+
+function mergeGraphicEffectsByKind(
+  existingEffects: readonly GraphicEffect[],
+  incomingEffects: readonly GraphicEffect[]
+): GraphicEffect[] {
+  return [...existingEffects, ...incomingEffects].reduce<GraphicEffect[]>((effects, effect) => {
+    const existingIndex = effects.findIndex((candidate) => candidate.kind === effect.kind);
+    if (existingIndex >= 0) {
+      effects[existingIndex] = effect;
+      return effects;
+    }
+    return [...effects, effect];
+  }, []);
+}
+
+function graphicStyleWithEffects(
+  baseStyle: Omit<GraphicObjectStyle, "effect" | "effects" | "inactiveEffects">,
+  effects: readonly GraphicEffect[],
+  inactiveEffects: readonly GraphicEffect[]
+): GraphicObjectStyle {
+  return {
+    ...baseStyle,
+    ...(effects.length > 0 ? { effects: [...effects] } : {}),
+    ...(inactiveEffects.length > 0 ? { inactiveEffects: [...inactiveEffects] } : {})
+  };
+}
+
 function defaultGraphicEffectForKind(object: GraphicObject, kind: Exclude<GraphicStyleEffectKind, "none">): GraphicEffect {
   if (kind === "shadow") {
     return { kind, color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 };
   }
   if (kind === "glow") {
-    return { kind, color: "#1d7f68", opacity: 0.42, blurPx: 7, spreadPx: 1.2 };
+    return { kind, color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 };
   }
-  return { kind, seed: graphicStyleEffectSeed(object.id, kind), roughness: 1.25, bowing: 0.8 };
+  return { kind, color: "#111111", seed: graphicStyleEffectSeed(object.id, kind), roughness: 1.25, bowing: 0.8, strokeWidth: 1.5 };
 }
 
 function updateGraphicObjectEffectForSelection(
@@ -5745,15 +5805,17 @@ function updateGraphicObjectEffectForSelection(
   updateEffect: (effect: GraphicEffect, object: GraphicObject) => GraphicEffect
 ): ChemDraftDocument {
   return updateGraphicObjects(document, objectIds, (object) => {
-    const { effect: _legacyEffect, effects: _effects, ...baseStyle } = object.style;
+    const { effect: _legacyEffect, effects: _effects, inactiveEffects: _inactiveEffects, ...baseStyle } = object.style;
     const existingEffects = graphicEffectsForStyle(object.style);
+    const inactiveEffects = inactiveGraphicEffectsForStyle(object.style);
     const nextEffects = existingEffects.some((effect) => effect.kind === effectKind)
       ? existingEffects.map((effect) => effect.kind === effectKind ? updateEffect(effect, object) : effect)
       : [...existingEffects, updateEffect(defaultGraphicEffectForKind(object, effectKind), object)];
-    return {
-      ...baseStyle,
-      effects: nextEffects
-    };
+    return graphicStyleWithEffects(
+      baseStyle,
+      nextEffects,
+      inactiveEffects.filter((effect) => effect.kind !== effectKind)
+    );
   });
 }
 
