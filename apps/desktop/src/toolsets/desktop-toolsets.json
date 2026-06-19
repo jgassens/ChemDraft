@@ -183,7 +183,7 @@
       "source": "core",
       "defaultVisible": true,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 820, "height": 190, "minWidth": 740, "minHeight": 170 },
+      "preferredWindowSize": { "width": 900, "height": 190, "minWidth": 820, "minHeight": 170 },
       "category": "core",
       "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [
@@ -225,6 +225,16 @@
           "items": [
             { "commandId": "tool.art.pencil", "title": "Pencil", "icon": "mechanism", "assetName": "Art_Pencil", "category": "art" },
             { "commandId": "tool.art.brush", "title": "Brush", "icon": "style", "assetName": "Art_Brush", "category": "art" }
+          ]
+        },
+        {
+          "id": "core.art.effects",
+          "title": "Effects",
+          "items": [
+            { "commandId": "object.effect.shadow", "title": "Shadow", "icon": "style", "category": "object-style" },
+            { "commandId": "object.effect.glow", "title": "Glow", "icon": "style", "category": "object-style" },
+            { "commandId": "object.effect.sketch", "title": "Sketch", "icon": "style", "category": "object-style" },
+            { "commandId": "object.effect.none", "title": "Clear Effects", "icon": "style", "category": "object-style" }
           ]
         },
         {

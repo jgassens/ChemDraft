@@ -2,6 +2,7 @@ import {
   MinimalPageSizePresetIds,
   findPageSizePreset,
   type ChemDraftDocument,
+  type GraphicEffect,
   type MoleculeObject,
   type NativeTextStyle,
   type TextSpan
@@ -320,6 +321,20 @@ export const objectPaintTypeCommands = [
   label: string;
 }[];
 
+export type ObjectEffectKind = GraphicEffect["kind"] | "none";
+
+export const objectEffectCommands = [
+  { id: "object.effect.none", title: "Clear Art Effects", effectKind: "none", label: "Clear" },
+  { id: "object.effect.shadow", title: "Art Effect: Shadow", effectKind: "shadow", label: "Shadow" },
+  { id: "object.effect.glow", title: "Art Effect: Glow", effectKind: "glow", label: "Glow" },
+  { id: "object.effect.sketch", title: "Art Effect: Sketch", effectKind: "sketch", label: "Sketch" }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  effectKind: ObjectEffectKind;
+  label: string;
+}[];
+
 export const objectStrokeWidthCommands = [
   { id: "object.stroke.width.1", title: "Stroke Width: 1 px", strokeWidth: 1 },
   { id: "object.stroke.width.1_5", title: "Stroke Width: 1.5 px", strokeWidth: 1.5 },
@@ -486,6 +501,10 @@ export function objectPaintTypeForCommand(commandId: string): ObjectPaintType | 
   return objectPaintTypeCommands.find((command) => command.id === commandId)?.paintType;
 }
 
+export function objectEffectForCommand(commandId: string): ObjectEffectKind | undefined {
+  return objectEffectCommands.find((command) => command.id === commandId)?.effectKind;
+}
+
 export function objectPaintTypeCommandId(paintType: ObjectPaintType): string {
   return objectPaintTypeCommands.find((command) => command.paintType === paintType)?.id ??
     objectPaintTypeCommands[1].id;
@@ -621,6 +640,13 @@ export const objectStyleActions: CommandSpec[] = [
     category: "object-style"
   },
   ...objectPaintTypeCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectEffectCommands.map(({ id, title }) => ({
     id,
     title,
     icon: "style",

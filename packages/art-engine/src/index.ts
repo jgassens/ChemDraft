@@ -1,4 +1,5 @@
 import type {
+  GraphicEffect,
   GraphicFreehandOptions,
   GraphicFreehandPoint,
   GraphicGradientStop,
@@ -9,6 +10,8 @@ import type {
 } from "@chemdraft/chem-core";
 import Flatten from "@flatten-js/core";
 import { getStroke, type StrokeOptions } from "perfect-freehand";
+import type { PathInfo } from "roughjs/bin/core";
+import rough from "roughjs/bin/rough";
 import SVGPathCommander from "svg-path-commander";
 import {
   getPathBBox,
@@ -130,6 +133,43 @@ export interface NativeArtGlossGradientPlan {
   gradientTransform?: string;
 }
 
+export interface NativeArtShadowEffectPlan {
+  kind: "shadow";
+  color: string;
+  opacity: number;
+  offsetX: number;
+  offsetY: number;
+  blurPx: number;
+}
+
+export interface NativeArtGlowEffectPlan {
+  kind: "glow";
+  color: string;
+  opacity: number;
+  blurPx: number;
+  spreadPx: number;
+}
+
+export interface NativeArtSketchPathPlan {
+  d: string;
+  stroke: string;
+  strokeWidth: number;
+  fill?: string;
+}
+
+export interface NativeArtSketchEffectPlan {
+  kind: "sketch";
+  color: string;
+  opacity: number;
+  seed: number;
+  roughness: number;
+  bowing: number;
+  strokeWidth: number;
+  paths: NativeArtSketchPathPlan[];
+}
+
+export type NativeArtEffectPlan = NativeArtShadowEffectPlan | NativeArtGlowEffectPlan | NativeArtSketchEffectPlan;
+
 export interface NativeArtVisualPlan {
   objectId: string;
   kind: GraphicObject["graphicKind"];
@@ -142,6 +182,7 @@ export interface NativeArtVisualPlan {
   fill: NativeArtFillPlan;
   cornerRadius: number;
   effect?: string;
+  effects: NativeArtEffectPlan[];
   projectionMatrix?: NativeArtProjectionMatrix;
   projectionTransform?: string;
   frameBounds: NativeArtBounds;
@@ -364,6 +405,19 @@ export function planNativeArtVisual(
   const projectedShapePathD = matrix && (object.graphicKind === "ellipse" || object.graphicKind === "rect")
     ? projectedArtShapePathD(object, coordinateSpace, matrix, stroke.width)
     : undefined;
+  const effects = nativeArtEffectPlans(object, {
+    coordinateSpace,
+    width,
+    height,
+    stroke,
+    fill,
+    cornerRadius,
+    line: visibleStroke?.line ?? line,
+    pathD: visibleStroke?.pathD ?? pathD,
+    projectedShapePathD,
+    projectionTransform,
+    capabilities
+  });
 
   return {
     objectId: object.id,
@@ -376,7 +430,8 @@ export function planNativeArtVisual(
     stroke,
     fill,
     cornerRadius,
-    effect: metadataString(object.style.effect),
+    effect: effects[0]?.kind ?? metadataString(object.style.effect),
+    effects,
     projectionMatrix: matrix,
     projectionTransform,
     frameBounds,
@@ -399,6 +454,174 @@ export function planNativeArtVisual(
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
       : undefined
   };
+}
+
+interface NativeArtEffectPlanInput {
+  coordinateSpace: NativeArtVisualCoordinateSpace;
+  width: number;
+  height: number;
+  stroke: NativeArtStrokePlan;
+  fill: NativeArtFillPlan;
+  cornerRadius: number;
+  line?: { x1: number; y1: number; x2: number; y2: number };
+  pathD?: string;
+  projectedShapePathD?: string;
+  projectionTransform?: string;
+  capabilities: NativeArtCapabilities;
+}
+
+function nativeArtEffectPlans(object: GraphicObject, input: NativeArtEffectPlanInput): NativeArtEffectPlan[] {
+  return nativeArtGraphicEffects(object)
+    .map((effect) => nativeArtEffectPlan(object, effect, input))
+    .filter((effect): effect is NativeArtEffectPlan => effect !== undefined);
+}
+
+function nativeArtGraphicEffects(object: GraphicObject): GraphicEffect[] {
+  const explicitEffects = Array.isArray(object.style.effects) ? object.style.effects : [];
+  const effects: GraphicEffect[] = [];
+  if (object.style.effect === "shadow" && !explicitEffects.some((effect) => effect.kind === "shadow")) {
+    effects.push({ kind: "shadow" });
+  }
+
+  explicitEffects.forEach((effect) => {
+    if (!effects.some((candidate) => candidate.kind === effect.kind)) {
+      effects.push(effect);
+    }
+  });
+
+  return effects;
+}
+
+function nativeArtEffectPlan(
+  object: GraphicObject,
+  effect: GraphicEffect,
+  input: NativeArtEffectPlanInput
+): NativeArtEffectPlan | undefined {
+  if (effect.kind === "shadow") {
+    return {
+      kind: "shadow",
+      color: graphicColor(effect.color, "#52616b"),
+      opacity: clampUnit(metadataNumber(effect.opacity) ?? 0.28),
+      offsetX: metadataNumber(effect.offsetX) ?? 6,
+      offsetY: metadataNumber(effect.offsetY) ?? 6,
+      blurPx: Math.max(0, metadataNumber(effect.blurPx) ?? 3)
+    };
+  }
+
+  if (effect.kind === "glow") {
+    return {
+      kind: "glow",
+      color: graphicColor(effect.color, input.stroke.color, input.fill.color, "#1d7f68"),
+      opacity: clampUnit(metadataNumber(effect.opacity) ?? 0.42),
+      blurPx: Math.max(0, metadataNumber(effect.blurPx) ?? 7),
+      spreadPx: Math.max(0, metadataNumber(effect.spreadPx) ?? 1.2)
+    };
+  }
+
+  return nativeArtSketchEffectPlan(object, effect, input);
+}
+
+function nativeArtSketchEffectPlan(
+  object: GraphicObject,
+  effect: GraphicEffect,
+  input: NativeArtEffectPlanInput
+): NativeArtSketchEffectPlan | undefined {
+  const basePathD = nativeArtSketchBasePathD(object, input);
+  if (!basePathD) {
+    return undefined;
+  }
+
+  const color = graphicColor(effect.color, input.stroke.color, input.fill.color, "#111111");
+  const strokeWidth = Math.max(0.5, metadataNumber(input.stroke.width) ?? 1.5);
+  const seed = nativeArtEffectSeed(object, effect, "sketch");
+  const roughness = Math.max(0, metadataNumber(effect.roughness) ?? 1.25);
+  const bowing = Math.max(0, metadataNumber(effect.bowing) ?? 0.8);
+  const drawable = rough.generator().path(basePathD, {
+    seed,
+    roughness,
+    bowing,
+    stroke: color,
+    strokeWidth,
+    fill: "none",
+    disableMultiStrokeFill: true,
+    preserveVertices: true,
+    fixedDecimalPlaceDigits: 3
+  });
+  const paths = rough.generator().toPaths(drawable)
+    .map((path) => nativeArtSketchPathPlan(path))
+    .filter((path): path is NativeArtSketchPathPlan => path !== undefined);
+
+  return paths.length > 0
+    ? {
+        kind: "sketch",
+        color,
+        opacity: clampUnit(metadataNumber(effect.opacity) ?? 1),
+        seed,
+        roughness,
+        bowing,
+        strokeWidth,
+        paths
+      }
+    : undefined;
+}
+
+function nativeArtSketchPathPlan(path: PathInfo): NativeArtSketchPathPlan | undefined {
+  if (!path.d.trim()) {
+    return undefined;
+  }
+
+  return {
+    d: path.d,
+    stroke: path.stroke,
+    strokeWidth: path.strokeWidth,
+    fill: path.fill && path.fill !== "none" ? path.fill : undefined
+  };
+}
+
+function nativeArtSketchBasePathD(object: GraphicObject, input: NativeArtEffectPlanInput): string | undefined {
+  if (input.projectedShapePathD) {
+    return input.projectedShapePathD;
+  }
+
+  if (object.graphicKind === "line" && input.line) {
+    return `M ${formatNumber(input.line.x1)} ${formatNumber(input.line.y1)} L ${formatNumber(input.line.x2)} ${formatNumber(input.line.y2)}`;
+  }
+
+  if (object.graphicKind === "path" && input.pathD) {
+    return input.pathD;
+  }
+
+  const offset = input.coordinateSpace === "page" ? { x: object.x, y: object.y } : { x: 0, y: 0 };
+  if (object.graphicKind === "rect") {
+    return pointsPathD(
+      roundedRectPathPoints(input.width, input.height, input.cornerRadius, input.stroke.width, offset),
+      true
+    );
+  }
+
+  if (object.graphicKind === "ellipse") {
+    return pointsPathD(ellipsePathPoints(input.width, input.height, input.stroke.width, offset), true);
+  }
+
+  return undefined;
+}
+
+function nativeArtEffectSeed(object: GraphicObject, effect: GraphicEffect, kind: NativeArtEffectPlan["kind"]): number {
+  const explicitSeed = metadataNumber(effect.seed);
+  if (explicitSeed !== undefined && Number.isInteger(explicitSeed) && explicitSeed > 0) {
+    return Math.min(explicitSeed, 2147483646);
+  }
+
+  return nativeArtStablePositiveSeed(`${object.id}:${kind}`);
+}
+
+function nativeArtStablePositiveSeed(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 2147483646 + 1;
 }
 
 function nativeArtMarkerHandles(input: {

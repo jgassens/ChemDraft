@@ -17,6 +17,7 @@ import {
 } from "@chemdraft/chem-core";
 import { planNativeArtVisual as planNativeArtVisualFromArtEngine } from "@chemdraft/art-engine";
 import type {
+  NativeArtEffectPlan,
   NativeArtFillPlan,
   NativeArtGradientStopPlan,
   NativeArtGlossGradientPlan,
@@ -30,6 +31,7 @@ import type {
 } from "@chemdraft/art-engine";
 
 export type {
+  NativeArtEffectPlan,
   NativeArtFillPlan,
   NativeArtGradientStopPlan,
   NativeArtGlossGradientPlan,
@@ -1689,6 +1691,10 @@ function graphicObjectFragment(
   const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
   const freehandPath = graphicObjectIsFreehandPath(object);
   const gradientId = `graphic-gloss-${object.id}`;
+  const effectFilterId = `graphic-effects-${object.id}`;
+  const effectFilterAttrs = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow")
+    ? { filter: `url(#${effectFilterId})` }
+    : {};
   const fillAttrs = plan.glossGradient
     ? {
         fill: `url(#${gradientId})`
@@ -1701,11 +1707,13 @@ function graphicObjectFragment(
     "stroke-dasharray": plan.stroke.dasharray,
     "stroke-linecap": plan.stroke.lineCap,
     "stroke-linejoin": plan.stroke.lineJoin,
-    "stroke-miterlimit": plan.stroke.miterLimit
+    "stroke-miterlimit": plan.stroke.miterLimit,
+    ...effectFilterAttrs
   };
   const children: PageSvgFragment[] = [
     ...svgPaintDefinitionFragments(plan.fill.paint, `graphic-fill-${object.id}`),
     ...svgPaintDefinitionFragments(plan.stroke.paint, `graphic-stroke-${object.id}`),
+    ...svgEffectDefinitionFragments(plan, effectFilterId),
     ...(plan.glossGradient ? [
       elementFragment("defs", `graphic-gloss-defs-${object.id}`, {}, [
         elementFragment("radialGradient", `graphic-gloss-gradient-${object.id}`, {
@@ -1774,6 +1782,7 @@ function graphicObjectFragment(
   }
 
   if (renderedGraphic) {
+    children.push(...svgSketchEffectFragments(plan, object.id));
     children.push(...svgFlattenedGraphicMarkerFragments(plan, object.id));
     return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
       opacity: plan.opacity === 1 ? undefined : plan.opacity,
@@ -1854,6 +1863,106 @@ function svgPaintDefinitionFragments(paint: NativeArtPaintPlan, id: string): Pag
   }
 
   return [];
+}
+
+function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): PageSvgFragment[] {
+  const effects = plan.effects.filter((effect): effect is Extract<NativeArtEffectPlan, { kind: "shadow" | "glow" }> =>
+    effect.kind === "shadow" || effect.kind === "glow"
+  );
+  if (effects.length === 0) {
+    return [];
+  }
+
+  const filterChildren: PageSvgFragment[] = [];
+  const mergeInputs: string[] = [];
+  effects.forEach((effect) => {
+    if (effect.kind === "shadow") {
+      const result = `${id}-shadow`;
+      filterChildren.push(elementFragment("feDropShadow", result, {
+        dx: effect.offsetX,
+        dy: effect.offsetY,
+        stdDeviation: effect.blurPx,
+        "flood-color": effect.color,
+        "flood-opacity": effect.opacity,
+        result
+      }));
+      mergeInputs.push(result);
+      return;
+    }
+
+    const spreadResult = `${id}-glow-spread`;
+    const blurInput = effect.spreadPx > 0 ? spreadResult : "SourceAlpha";
+    const blurResult = `${id}-glow-blur`;
+    const floodResult = `${id}-glow-color`;
+    const compositeResult = `${id}-glow`;
+    if (effect.spreadPx > 0) {
+      filterChildren.push(elementFragment("feMorphology", spreadResult, {
+        in: "SourceAlpha",
+        operator: "dilate",
+        radius: effect.spreadPx,
+        result: spreadResult
+      }));
+    }
+    filterChildren.push(
+      elementFragment("feGaussianBlur", blurResult, {
+        in: blurInput,
+        stdDeviation: effect.blurPx,
+        result: blurResult
+      }),
+      elementFragment("feFlood", floodResult, {
+        "flood-color": effect.color,
+        "flood-opacity": effect.opacity,
+        result: floodResult
+      }),
+      elementFragment("feComposite", compositeResult, {
+        in: floodResult,
+        in2: blurResult,
+        operator: "in",
+        result: compositeResult
+      })
+    );
+    mergeInputs.push(compositeResult);
+  });
+
+  filterChildren.push(elementFragment("feMerge", `${id}-merge`, {}, [
+    ...mergeInputs.map((input, index) => elementFragment("feMergeNode", `${id}-merge-${index}`, { in: input })),
+    elementFragment("feMergeNode", `${id}-merge-source`, { in: "SourceGraphic" })
+  ]));
+
+  return [
+    elementFragment("defs", `${id}-defs`, {}, [
+      elementFragment("filter", id, {
+        id,
+        x: "-40%",
+        y: "-40%",
+        width: "180%",
+        height: "180%",
+        "color-interpolation-filters": "sRGB"
+      }, filterChildren)
+    ])
+  ];
+}
+
+function svgSketchEffectFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
+  const sketch = plan.effects.find((effect) => effect.kind === "sketch");
+  if (!sketch) {
+    return [];
+  }
+
+  const transform = plan.projectedShapePathD ? undefined : plan.projectionTransform;
+  return sketch.paths.map((path, index) => elementFragment("path", `graphic-sketch-${objectId}-${index}`, {
+    class: "graphic-glyph-sketch",
+    "data-graphic-effect": "sketch",
+    d: path.d,
+    fill: path.fill ?? "none",
+    stroke: path.stroke,
+    "stroke-width": path.strokeWidth,
+    "stroke-opacity": sketch.opacity === 1 ? undefined : sketch.opacity,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    transform,
+    "pointer-events": "none"
+  }));
 }
 
 function svgFlattenedGraphicMarkerFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
@@ -2027,7 +2136,7 @@ function svgGradientStopFragments(
 }
 
 function warnForGraphicSvgEffects(object: GraphicObject, warnings: PageSvgRenderWarning[]): void {
-  if (object.style.effect === "shadow" || object.style.effect === "reflection") {
+  if (object.style.effect === "reflection") {
     warnings.push({
       code: "export.svg.graphic_effect_approximation",
       message: `SVG export omitted the native ${object.style.effect} graphic effect.`,

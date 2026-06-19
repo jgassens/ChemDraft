@@ -651,6 +651,11 @@ describe("native document validation and serialization", () => {
         strokeMiterLimit: 3,
         fillMode: "gloss",
         effect: "shadow",
+        effects: [
+          { kind: "shadow", color: "#111111", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 4 },
+          { kind: "glow", color: "#1d7f68", opacity: 0.4, blurPx: 8 },
+          { kind: "sketch", seed: 7319, roughness: 1.2, bowing: 0.8 }
+        ],
         tiltXDegrees: 12,
         tiltYDegrees: -8,
         artToolCommandId: "tool.art.roundedRectGloss"
@@ -698,6 +703,11 @@ describe("native document validation and serialization", () => {
         strokeLineJoin: "bevel",
         fillMode: "gloss",
         effect: "shadow",
+        effects: [
+          { kind: "shadow", color: "#111111", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 4 },
+          { kind: "glow", color: "#1d7f68", opacity: 0.4, blurPx: 8 },
+          { kind: "sketch", seed: 7319, roughness: 1.2, bowing: 0.8 }
+        ],
         tiltXDegrees: 12,
         tiltYDegrees: -8
       },

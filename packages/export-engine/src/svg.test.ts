@@ -161,7 +161,7 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain("&quot;objectId&quot;:&quot;unknown_svg_001&quot;");
   });
 
-  it("exports supported native graphic gloss and tilt while warning for unsupported effects", () => {
+  it("exports supported native graphic gloss, tilt, and shadow while warning for unsupported effects", () => {
     const graphic = {
       id: "art_svg_effects",
       type: "graphic",
@@ -212,6 +212,9 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('id="graphic-gloss-art_svg_effects"');
     expect(result.contents).toContain('gradientUnits="userSpaceOnUse"');
     expect(result.contents).toContain('gradientTransform="matrix(');
+    expect(result.contents).toContain('id="graphic-effects-art_svg_effects"');
+    expect(result.contents).toContain("<feDropShadow");
+    expect(result.contents).toContain('filter="url(#graphic-effects-art_svg_effects)"');
     expect(result.contents).toContain('stop-color="#e4f0ed"');
     expect(result.contents).toContain('stop-color="#0d382e"');
     expect(result.contents.match(/stop-opacity="0.48"/g)).toHaveLength(4);
@@ -219,15 +222,51 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain('stop-opacity="0.92"');
     expect(result.contents).not.toContain('stop-opacity="0.42"');
     expect(result.contents).not.toContain('stop-opacity="0.78"');
-    expect(result.warnings.map((warning) => warning.code)).toEqual([
-      "export.svg.graphic_effect_approximation",
-      "export.svg.graphic_effect_approximation"
-    ]);
+    expect(result.warnings.map((warning) => warning.code)).toEqual(["export.svg.graphic_effect_approximation"]);
     expect(result.warnings.map((warning) => warning.message)).toContain(
       "SVG export omitted the native reflection graphic effect."
     );
     expect(result.contents).not.toContain("export.svg.graphic_gloss_approximation");
     expect(result.contents).not.toContain("export.svg.graphic_tilt_approximation");
+  });
+
+  it("exports native glow and sketch effects as stable SVG effect geometry", () => {
+    const graphic = {
+      id: "art_svg_glow_sketch",
+      type: "graphic",
+      x: 90,
+      y: 120,
+      width: 84,
+      height: 46,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        fillColor: "#f8faf9",
+        strokeWidth: 2,
+        effects: [
+          { kind: "glow", color: "#1d7f68", opacity: 0.5, blurPx: 9, spreadPx: 2 },
+          { kind: "sketch", color: "#111111", seed: 2468, roughness: 1.3, bowing: 0.7 }
+        ]
+      },
+      graphicKind: "ellipse",
+      data: {}
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "SVG Graphic Effects", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const first = exportDocumentToSvg(document, { includeWarnings: true });
+    const second = exportDocumentToSvg(document, { includeWarnings: true });
+
+    expect(first.contents).toBe(second.contents);
+    expect(first.contents).toContain('id="graphic-effects-art_svg_glow_sketch"');
+    expect(first.contents).toContain("<feGaussianBlur");
+    expect(first.contents).toContain("<feFlood");
+    expect(first.contents).toContain('data-graphic-effect="sketch"');
+    expect(first.contents).toContain('filter="url(#graphic-effects-art_svg_glow_sketch)"');
+    expect(first.warnings).toEqual([]);
   });
 
   it("exports native graphic arrowheads as Illustrator-safe SVG geometry", () => {

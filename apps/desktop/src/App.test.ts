@@ -1846,12 +1846,18 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="art.boolean.subtract"');
     expect(markup).toContain('data-command-id="art.boolean.intersect"');
     expect(markup).toContain('data-command-id="art.boolean.split"');
+    expect(markup).toContain('data-command-id="object.effect.shadow"');
+    expect(markup).toContain('data-command-id="object.effect.glow"');
+    expect(markup).toContain('data-command-id="object.effect.sketch"');
+    expect(markup).toContain('data-command-id="object.effect.none"');
     expect(markup).not.toContain('data-command-id="tool.art.circleGloss"');
     expect(markup).not.toContain('data-command-id="tool.art.rectShadow"');
     expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
     const booleanCommandIds = new Set(["art.boolean.union", "art.boolean.subtract", "art.boolean.intersect", "art.boolean.split"]);
-    expect(artGroups.flat().filter((command) => !booleanCommandIds.has(command.id)).every((command) => command.assetName)).toBe(true);
+    const styleCommandIds = new Set(["object.effect.shadow", "object.effect.glow", "object.effect.sketch", "object.effect.none"]);
+    expect(artGroups.flat().filter((command) => !booleanCommandIds.has(command.id) && !styleCommandIds.has(command.id)).every((command) => command.assetName)).toBe(true);
     expect(artGroups.flat().filter((command) => booleanCommandIds.has(command.id)).every((command) => command.assetName === undefined)).toBe(true);
+    expect(artGroups.flat().filter((command) => styleCommandIds.has(command.id)).every((command) => command.assetName === undefined)).toBe(true);
     expect(markup).not.toContain("data-art-tool-icon=");
     expect(buttonMarkupForCommand(markup, "tool.art.roundedRect")).toContain('data-toolbar-asset="Art_Rounded_Rectangle"');
     expect(buttonMarkupForCommand(markup, "tool.art.pen")).toContain('data-toolbar-asset="Art_Pen"');
@@ -1996,8 +2002,8 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
-      width: 820,
-      minWidth: 740
+      width: 900,
+      minWidth: 820
     });
     expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
       "tool.art.pencil",
@@ -2482,7 +2488,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-object-type="graphic"');
     expect(markup).not.toContain("art-object-content");
     expect(markup).not.toContain("graphic-object selected");
-    expect(markup).toContain("graphic-glyph-shadow");
+    expect(markup).toContain('id="graphic-effects-');
+    expect(markup).toContain("feDropShadow");
+    expect(markup).toContain('filter="url(#graphic-effects-');
     expect(markup).toContain('rx="7"');
     expect(markup).toContain('data-graphic-corner-radius-handle="true"');
     expect(markup).toContain('data-graphic-corner-radius-readout="true"');

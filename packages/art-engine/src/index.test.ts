@@ -51,15 +51,86 @@ describe("art-engine native art planning", () => {
       require.resolve("perfect-freehand").replace(/dist\/cjs\/index\.js$/, "package.json"),
       "utf8"
     )) as { license: string };
+    const roughPackage = require("roughjs/package.json") as { license: string };
 
     expect(pathCommanderPackage.license).toBe("MIT");
     expect(domMatrixPackage.license).toBe("MIT");
     expect(flattenPackage.license).toBe("MIT");
     expect(perfectFreehandPackage.license).toBe("MIT");
+    expect(roughPackage.license).toBe("MIT");
     expect(Object.keys(artEnginePackage.dependencies ?? {})).toContain("@flatten-js/core");
-    ["makerjs", "d3-path", "bezier-js", "svg-pathdata", "roughjs"].forEach((dependency) => {
+    expect(Object.keys(artEnginePackage.dependencies ?? {})).toContain("roughjs");
+    ["makerjs", "d3-path", "bezier-js", "svg-pathdata"].forEach((dependency) => {
       expect(Object.keys(artEnginePackage.dependencies ?? {})).not.toContain(dependency);
     });
+  });
+
+  it("plans native art effects from legacy and explicit metadata", () => {
+    const graphic = {
+      ...baseGraphic,
+      id: "effect_rect",
+      graphicKind: "rect",
+      width: 90,
+      height: 46,
+      style: {
+        ...baseGraphic.style,
+        fillColor: "#f8faf9",
+        effect: "shadow",
+        effects: [
+          { kind: "glow", color: "#1d7f68", opacity: 0.5, blurPx: 9 },
+          { kind: "sketch", seed: 1729, roughness: 1.4, bowing: 0.7 }
+        ]
+      },
+      data: {
+        cornerRadiusPx: 6
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+
+    expect(plan.effects.map((effect) => effect.kind)).toEqual(["shadow", "glow", "sketch"]);
+    expect(plan.effects[0]).toMatchObject({
+      kind: "shadow",
+      offsetX: 6,
+      offsetY: 6
+    });
+    expect(plan.effects[1]).toMatchObject({
+      kind: "glow",
+      color: "#1d7f68",
+      opacity: 0.5,
+      blurPx: 9
+    });
+    const sketch = plan.effects.find((effect) => effect.kind === "sketch");
+    expect(sketch).toMatchObject({
+      kind: "sketch",
+      seed: 1729,
+      roughness: 1.4,
+      bowing: 0.7
+    });
+    expect(sketch?.paths.length).toBeGreaterThan(0);
+    expect(sketch?.paths[0]?.d).toMatch(/^M/);
+  });
+
+  it("uses a stable generated sketch seed when none is stored", () => {
+    const graphic = {
+      ...baseGraphic,
+      id: "stable_sketch_seed",
+      graphicKind: "ellipse",
+      width: 80,
+      height: 42,
+      style: {
+        ...baseGraphic.style,
+        effects: [{ kind: "sketch" }]
+      }
+    } satisfies GraphicObject;
+
+    const first = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const second = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const firstSketch = first.effects.find((effect) => effect.kind === "sketch");
+    const secondSketch = second.effects.find((effect) => effect.kind === "sketch");
+
+    expect(firstSketch?.seed).toBe(secondSketch?.seed);
+    expect(firstSketch?.paths.map((path) => path.d)).toEqual(secondSketch?.paths.map((path) => path.d));
   });
 
   it("plans a boolean union from two closed rectangles", () => {

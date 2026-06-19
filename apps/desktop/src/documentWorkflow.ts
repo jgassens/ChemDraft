@@ -39,6 +39,7 @@ import {
   type DocumentPatch,
   type DocumentObject,
   type ElectronMarkObject,
+  type GraphicEffect,
   type GraphicFreehandOptions,
   type GraphicFreehandPoint,
   type GraphicObjectData,
@@ -255,6 +256,7 @@ export interface NativeGraphicPathSegmentSplit {
 }
 export type NativeGraphicMarkerHandleId = NativeArtMarkerHandleId;
 export type NativeGraphicCornerRadiusEditPoint = NativeArtPoint;
+export type GraphicStyleEffectKind = GraphicEffect["kind"] | "none";
 
 const artOutlineStyle = {
   strokeColor: "#111111",
@@ -4224,6 +4226,26 @@ export function applyGraphicObjectOpacityToSelection(
   ));
 }
 
+export function applyGraphicObjectEffectToSelection(
+  document: ChemDraftDocument,
+  effectKind: GraphicStyleEffectKind,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjects(document, objectIds, (object) => {
+    const { effect: _legacyEffect, effects: _effects, ...baseStyle } = object.style;
+    if (effectKind === "none") {
+      return baseStyle;
+    }
+
+    const existingEffects = graphicEffectsForStyle(object.style)
+      .filter((effect) => effect.kind !== effectKind);
+    return {
+      ...baseStyle,
+      effects: [...existingEffects, defaultGraphicEffectForKind(object, effectKind)]
+    };
+  });
+}
+
 export function applyGraphicObjectStrokeStyleToSelection(
   document: ChemDraftDocument,
   style: Pick<GraphicObjectStyle, "strokeWidth" | "strokeDasharray" | "strokeLineCap" | "strokeLineJoin" | "strokeMiterLimit">,
@@ -5542,7 +5564,8 @@ function graphicObjectHasVisibleFill(object: GraphicObject): boolean {
   return typeof fillColor === "string" ||
     object.style.fillMode === "solid" ||
     object.style.fillMode === "gloss" ||
-    object.style.effect === "shadow";
+    object.style.effect === "shadow" ||
+    object.style.effects?.some((effect) => effect.kind === "shadow") === true;
 }
 
 function copyGraphicAppearanceStyle(target: GraphicObjectStyle, source: GraphicObjectStyle): void {
@@ -5550,6 +5573,7 @@ function copyGraphicAppearanceStyle(target: GraphicObjectStyle, source: GraphicO
   copyGraphicStrokeStyle(target, source);
   copyOptionalGraphicStyleKey(target, source, "opacity");
   copyOptionalGraphicStyleKey(target, source, "effect");
+  copyOptionalGraphicStyleKey(target, source, "effects");
 }
 
 function copyGraphicFillStyle(target: GraphicObjectStyle, source: GraphicObjectStyle): void {
@@ -5636,6 +5660,33 @@ function graphicObjectSupportedStrokeStyle(
 
 function hasGraphicStyleKey(style: Partial<GraphicObjectStyle>, key: keyof GraphicObjectStyle): boolean {
   return Object.prototype.hasOwnProperty.call(style, key);
+}
+
+function graphicEffectsForStyle(style: GraphicObjectStyle): GraphicEffect[] {
+  const effects = Array.isArray(style.effects) ? style.effects : [];
+  return style.effect === "shadow" && !effects.some((effect) => effect.kind === "shadow")
+    ? [{ kind: "shadow" }, ...effects]
+    : [...effects];
+}
+
+function defaultGraphicEffectForKind(object: GraphicObject, kind: Exclude<GraphicStyleEffectKind, "none">): GraphicEffect {
+  if (kind === "shadow") {
+    return { kind, color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 };
+  }
+  if (kind === "glow") {
+    return { kind, color: "#1d7f68", opacity: 0.42, blurPx: 7, spreadPx: 1.2 };
+  }
+  return { kind, seed: graphicStyleEffectSeed(object.id, kind), roughness: 1.25, bowing: 0.8 };
+}
+
+function graphicStyleEffectSeed(objectId: string, kind: Exclude<GraphicStyleEffectKind, "none">): number {
+  let hash = 2166136261;
+  const value = `${objectId}:${kind}`;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 2147483646 + 1;
 }
 
 function updateGraphicObjects(

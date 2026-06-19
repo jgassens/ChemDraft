@@ -86,6 +86,21 @@ export const GraphicPaintSchema = z.discriminatedUnion("kind", [
     .strict()
 ]);
 
+export const GraphicEffectSchema = z
+  .object({
+    kind: z.enum(["shadow", "glow", "sketch"]),
+    color: z.string().optional(),
+    opacity: OpacitySchema.optional(),
+    offsetX: z.number().finite().optional(),
+    offsetY: z.number().finite().optional(),
+    blurPx: z.number().finite().nonnegative().optional(),
+    spreadPx: z.number().finite().optional(),
+    roughness: z.number().finite().nonnegative().optional(),
+    bowing: z.number().finite().nonnegative().optional(),
+    seed: z.number().int().positive().optional()
+  })
+  .strict();
+
 export const AnchorSchema = z
   .object({
     kind: z.enum(["point", "object", "atom", "bond"]),
@@ -127,6 +142,7 @@ export const GraphicObjectStyleSchema = z
     strokeMiterLimit: z.number().finite().positive().optional(),
     fillMode: z.enum(["solid", "gloss"]).optional(),
     effect: z.enum(["shadow", "reflection"]).optional(),
+    effects: z.array(GraphicEffectSchema).optional(),
     tiltXDegrees: z.number().finite().optional(),
     tiltYDegrees: z.number().finite().optional(),
     artToolId: z.string().optional(),
@@ -545,6 +561,7 @@ export type TextObject = z.infer<typeof TextObjectSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
 export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
+export type GraphicEffect = z.infer<typeof GraphicEffectSchema>;
 export type GraphicMarker = z.infer<typeof GraphicMarkerSchema>;
 export type GraphicPathNode = z.infer<typeof GraphicPathNodeSchema>;
 export type GraphicFreehandPoint = z.infer<typeof GraphicFreehandPointSchema>;

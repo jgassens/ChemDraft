@@ -988,12 +988,27 @@ describe("layout-engine page SVG planner", () => {
     const plan = planPageSvgRender(page);
     const fragments = plan.fragments.flatMap(elementFragments);
 
+    const svgDefinitionTags = new Set([
+      "defs",
+      "radialGradient",
+      "stop",
+      "filter",
+      "feDropShadow",
+      "feMorphology",
+      "feGaussianBlur",
+      "feFlood",
+      "feComposite",
+      "feMerge",
+      "feMergeNode"
+    ]);
     const visibleFragments = fragments.filter((fragment) =>
-      fragment.tag !== "defs" && fragment.tag !== "radialGradient" && fragment.tag !== "stop"
+      !svgDefinitionTags.has(fragment.tag)
     );
     const ellipsePath = visibleFragments.find((fragment) => fragment.attrs["data-object-id"] === "art_ellipse");
     const glossGradient = fragments.find((fragment) => fragment.tag === "radialGradient");
     const glossStops = fragments.filter((fragment) => fragment.tag === "stop");
+    const shadowFilter = fragments.find((fragment) => fragment.tag === "filter" && fragment.attrs.id === "graphic-effects-art_rect");
+    const shadowPrimitive = fragments.find((fragment) => fragment.tag === "feDropShadow");
 
     expect(visibleFragments.map((fragment) => fragment.tag)).toEqual(["path", "path", "rect"]);
     expect(visibleFragments[0]?.attrs).toMatchObject({
@@ -1026,10 +1041,17 @@ describe("layout-engine page SVG planner", () => {
     expect(visibleFragments[2]?.attrs).toMatchObject({
       "data-object-id": "art_rect",
       fill: "#f8faf9",
+      filter: "url(#graphic-effects-art_rect)",
       rx: 7,
       ry: 7
     });
-    expect(plan.warnings.map((warning) => warning.code)).toEqual(["export.svg.graphic_effect_approximation"]);
+    expect(shadowFilter).toBeDefined();
+    expect(shadowPrimitive?.attrs).toMatchObject({
+      dx: 6,
+      dy: 6,
+      "flood-color": "#52616b"
+    });
+    expect(plan.warnings.map((warning) => warning.code)).toEqual([]);
   });
 
   it("exports native graphic paint plans as SVG gradients and stroke metadata", () => {

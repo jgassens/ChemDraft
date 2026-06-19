@@ -22,6 +22,7 @@ import {
   applyObjectColorToDocumentObjects,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
+  applyGraphicObjectEffectToSelection,
   addGraphicObjectGradientStopForSelection,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOffsetForSelection,
@@ -4755,6 +4756,7 @@ describe("Phase 4 document workflow", () => {
             ...graphicById(paintedSource, sourceId).style,
             opacity: 0.7,
             effect: "shadow",
+            effects: [{ kind: "sketch", seed: 3919 }],
             tiltXDegrees: 35
           }
         }
@@ -4772,9 +4774,41 @@ describe("Phase 4 document workflow", () => {
       strokeColor: "#b3261e",
       strokeWidth: 5,
       opacity: 0.7,
-      effect: "shadow"
+      effect: "shadow",
+      effects: [
+        { kind: "sketch", seed: 3919 }
+      ]
     });
     expect(graphicById(copiedFull, targetId).style.tiltXDegrees).toBeUndefined();
+  });
+
+  it("applies and clears native art effect metadata through workflow helpers", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Effects"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted rectangle art object to be selected.");
+    }
+
+    const shadowed = applyGraphicObjectEffectToSelection(inserted, "shadow");
+    expect(graphicById(shadowed, objectId).style.effects).toEqual([
+      { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 }
+    ]);
+
+    const sketched = applyGraphicObjectEffectToSelection(shadowed, "sketch");
+    expect(graphicById(sketched, objectId).style.effects?.map((effect) => effect.kind)).toEqual(["shadow", "sketch"]);
+    expect(graphicById(sketched, objectId).style.effects?.find((effect) => effect.kind === "sketch")).toMatchObject({
+      seed: expect.any(Number),
+      roughness: 1.25,
+      bowing: 0.8
+    });
+
+    const cleared = applyGraphicObjectEffectToSelection(sketched, "none");
+    expect(graphicById(cleared, objectId).style.effect).toBeUndefined();
+    expect(graphicById(cleared, objectId).style.effects).toBeUndefined();
   });
 
   it("edits rectangle corner radius through native graphic workflow helpers", () => {
