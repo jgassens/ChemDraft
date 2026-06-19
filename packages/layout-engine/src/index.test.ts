@@ -1044,12 +1044,78 @@ describe("layout-engine page SVG planner", () => {
     expect(fill?.tag).toBe("path");
     expect(fill?.attrs.fill).toBe("url(#molecule-fill-mol_fill)");
     expect(fill?.attrs["fill-opacity"]).toBe(0.44);
+    expect(fill?.attrs.d).toBe("M 140 180 L 180 140 L 240 140 L 280 180 L 240 220 L 180 220 Z");
     expect(fragments.some((fragment) =>
       fragment.tag === "linearGradient" && fragment.attrs.id === "molecule-fill-mol_fill"
     )).toBe(true);
     expect(fragments.find((fragment) =>
       String(fragment.attrs.class).includes("native-bond-line")
     )?.attrs["stroke-opacity"]).toBe(0.58);
+  });
+
+  it("fills fused molecule rings as separate ring interiors instead of an expanded outer hull", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_fused_fill",
+        structure: "C1CCC2CCCCC2C1",
+        atoms: [
+          { id: "atom_001", element: "C", x: 100, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 140, y: 110, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 220, y: 110, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 260, y: 180, formalCharge: 0 },
+          { id: "atom_005", element: "C", x: 220, y: 250, formalCharge: 0 },
+          { id: "atom_006", element: "C", x: 140, y: 250, formalCharge: 0 },
+          { id: "atom_007", element: "C", x: 300, y: 80, formalCharge: 0 },
+          { id: "atom_008", element: "C", x: 360, y: 140, formalCharge: 0 },
+          { id: "atom_009", element: "C", x: 360, y: 220, formalCharge: 0 },
+          { id: "atom_010", element: "C", x: 300, y: 280, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+          { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+          { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+          { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+          { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+          { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" },
+          { id: "bond_007", fromAtomId: "atom_003", toAtomId: "atom_007", order: "single" },
+          { id: "bond_008", fromAtomId: "atom_007", toAtomId: "atom_008", order: "single" },
+          { id: "bond_009", fromAtomId: "atom_008", toAtomId: "atom_009", order: "single" },
+          { id: "bond_010", fromAtomId: "atom_009", toAtomId: "atom_010", order: "single" },
+          { id: "bond_011", fromAtomId: "atom_010", toAtomId: "atom_004", order: "single" }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: { kind: "solid", color: "#d02626" }
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    const pathD = String(fill?.attrs.d ?? "");
+    const pathNumbers = [...pathD.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
+
+    expect((pathD.match(/M /g) ?? [])).toHaveLength(2);
+    expect(pathD).toContain("M 100 180 L 140 110 L 220 110 L 260 180 L 220 250 L 140 250 Z");
+    expect(pathD).toContain("M 220 110");
+    expect(pathD).toContain("L 300 80");
+    expect(pathNumbers.every((value) => value >= 80 && value <= 360)).toBe(true);
+  });
+
+  it("does not invent molecule fills for acyclic chains", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_chain_fill",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: { kind: "solid", color: "#d02626" }
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+
+    expect(fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true")).toBeUndefined();
   });
 
   it("renders styled native art graphics as exportable shape primitives", () => {

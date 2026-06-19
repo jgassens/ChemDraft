@@ -1497,39 +1497,175 @@ function moleculeFillUnderlayFragments(
 
 function moleculeFillUnderlayPathD(
   object: MoleculeObject,
-  drawingStyle: NativeDrawingStyle
+  _drawingStyle: NativeDrawingStyle
 ): string | undefined {
-  const points = uniqueLayoutPoints(object.atoms.map((atom) => ({ x: atom.x, y: atom.y })));
-  if (points.length === 0) {
-    return rectPathD({
-      x: object.x,
-      y: object.y,
-      width: object.width,
-      height: object.height
-    });
-  }
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const ringPaths = moleculeFillRingCycles(object)
+    .map((cycle) => moleculeRingPathD(cycle, atomById))
+    .filter((path): path is string => Boolean(path));
 
-  const padding = Math.max(10, drawingStyle.bondStrokeWidthPx * 3.5);
-  if (points.length === 1) {
-    return circlePathD(points[0]!, padding * 1.35);
-  }
-
-  if (points.length === 2) {
-    return capsulePathD(points[0]!, points[1]!, padding);
-  }
-
-  const hull = convexHull(points);
-  if (hull.length < 3) {
+  if (ringPaths.length === 0) {
     return undefined;
   }
 
-  const center = averagePoint(hull);
-  const expanded = hull.map((point) => expandPointFromCenter(point, center, padding));
+  return ringPaths.join(" ");
+}
+
+interface MoleculeFillRingCycle {
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+}
+
+interface MoleculeFillAdjacencyEdge {
+  atomId: string;
+  bondId: string;
+}
+
+const maxMoleculeFillCycleLength = 12;
+const maxMoleculeFillCycles = 256;
+
+function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[] {
+  if (object.atoms.length < 3 || object.bonds.length < 3) {
+    return [];
+  }
+
+  const atomIds = object.atoms.map((atom) => atom.id);
+  const atomIdSet = new Set(atomIds);
+  const sortedAtomIds = [...atomIds].sort();
+  const sortedAtomIndex = new Map(sortedAtomIds.map((atomId, index) => [atomId, index]));
+  const adjacency = new Map<string, MoleculeFillAdjacencyEdge[]>(
+    sortedAtomIds.map((atomId) => [atomId, []])
+  );
+  const bondedPairs = new Map<string, string>();
+
+  object.bonds.forEach((bond) => {
+    if (
+      !atomIdSet.has(bond.fromAtomId) ||
+      !atomIdSet.has(bond.toAtomId) ||
+      bond.fromAtomId === bond.toAtomId
+    ) {
+      return;
+    }
+
+    adjacency.get(bond.fromAtomId)?.push({ atomId: bond.toAtomId, bondId: bond.id });
+    adjacency.get(bond.toAtomId)?.push({ atomId: bond.fromAtomId, bondId: bond.id });
+    bondedPairs.set(moleculeFillBondPairKey(bond.fromAtomId, bond.toAtomId), bond.id);
+  });
+  adjacency.forEach((edges) => edges.sort((left, right) => left.atomId.localeCompare(right.atomId)));
+
+  const cycles = new Map<string, MoleculeFillRingCycle>();
+  const maxCycleLength = Math.min(maxMoleculeFillCycleLength, object.atoms.length);
+
+  sortedAtomIds.forEach((startAtomId) => {
+    const startIndex = sortedAtomIndex.get(startAtomId) ?? 0;
+    const visit = (
+      currentAtomId: string,
+      atomPath: string[],
+      bondPath: string[],
+      visitedAtomIds: Set<string>
+    ) => {
+      if (cycles.size >= maxMoleculeFillCycles) {
+        return;
+      }
+
+      (adjacency.get(currentAtomId) ?? []).forEach((edge) => {
+        if (edge.atomId === startAtomId) {
+          if (atomPath.length < 3) {
+            return;
+          }
+          const cycleBondIds = [...bondPath, edge.bondId];
+          const cycleKey = moleculeFillCycleKey(cycleBondIds);
+          const cycle = { atomIds: [...atomPath], bondIds: cycleBondIds };
+          if (!cycles.has(cycleKey) && moleculeFillCycleIsChordless(cycle, bondedPairs)) {
+            cycles.set(cycleKey, cycle);
+          }
+          return;
+        }
+
+        const edgeIndex = sortedAtomIndex.get(edge.atomId);
+        if (
+          edgeIndex === undefined ||
+          edgeIndex < startIndex ||
+          visitedAtomIds.has(edge.atomId) ||
+          atomPath.length >= maxCycleLength
+        ) {
+          return;
+        }
+
+        visitedAtomIds.add(edge.atomId);
+        visit(edge.atomId, [...atomPath, edge.atomId], [...bondPath, edge.bondId], visitedAtomIds);
+        visitedAtomIds.delete(edge.atomId);
+      });
+    };
+
+    visit(startAtomId, [startAtomId], [], new Set([startAtomId]));
+  });
+
+  return [...cycles.values()].sort((left, right) =>
+    moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
+  );
+}
+
+function moleculeFillCycleIsChordless(
+  cycle: MoleculeFillRingCycle,
+  bondedPairs: ReadonlyMap<string, string>
+): boolean {
+  const atomCount = cycle.atomIds.length;
+  const cycleBondPairs = new Set<string>();
+  cycle.atomIds.forEach((atomId, index) => {
+    const nextAtomId = cycle.atomIds[(index + 1) % atomCount];
+    if (nextAtomId) {
+      cycleBondPairs.add(moleculeFillBondPairKey(atomId, nextAtomId));
+    }
+  });
+
+  for (let leftIndex = 0; leftIndex < atomCount; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < atomCount; rightIndex += 1) {
+      const isCycleNeighbor = rightIndex === leftIndex + 1 || (leftIndex === 0 && rightIndex === atomCount - 1);
+      if (isCycleNeighbor) {
+        continue;
+      }
+
+      const pairKey = moleculeFillBondPairKey(cycle.atomIds[leftIndex]!, cycle.atomIds[rightIndex]!);
+      if (bondedPairs.has(pairKey) && !cycleBondPairs.has(pairKey)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function moleculeRingPathD(
+  cycle: MoleculeFillRingCycle,
+  atomById: ReadonlyMap<string, MoleculeAtom>
+): string | undefined {
+  const atoms = cycle.atomIds.map((atomId) => atomById.get(atomId));
+  if (atoms.some((atom) => !atom)) {
+    return undefined;
+  }
+  const ringAtoms = atoms as MoleculeAtom[];
+  if (ringAtoms.length < 3) {
+    return undefined;
+  }
+
   return [
-    `M ${formatNumber(expanded[0]!.x)} ${formatNumber(expanded[0]!.y)}`,
-    ...expanded.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`),
+    `M ${formatNumber(ringAtoms[0]!.x)} ${formatNumber(ringAtoms[0]!.y)}`,
+    ...ringAtoms.slice(1).map((atom) => `L ${formatNumber(atom.x)} ${formatNumber(atom.y)}`),
     "Z"
   ].join(" ");
+}
+
+function moleculeFillCycleKey(bondIds: readonly string[]): string {
+  return [...bondIds].sort().join("|");
+}
+
+function moleculeFillCycleSortKey(cycle: MoleculeFillRingCycle): string {
+  return [...cycle.atomIds].sort().join("|");
+}
+
+function moleculeFillBondPairKey(firstAtomId: string, secondAtomId: string): string {
+  return firstAtomId < secondAtomId ? `${firstAtomId}|${secondAtomId}` : `${secondAtomId}|${firstAtomId}`;
 }
 
 function moleculePaintAttrs(
@@ -1718,118 +1854,6 @@ function moleculeEffectSketchBasePathD(
 
 function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
   return `M ${formatNumber(segment.x1)} ${formatNumber(segment.y1)} L ${formatNumber(segment.x2)} ${formatNumber(segment.y2)}`;
-}
-
-function rectPathD(rect: { x: number; y: number; width: number; height: number }): string {
-  const right = rect.x + rect.width;
-  const bottom = rect.y + rect.height;
-  return [
-    `M ${formatNumber(rect.x)} ${formatNumber(rect.y)}`,
-    `H ${formatNumber(right)}`,
-    `V ${formatNumber(bottom)}`,
-    `H ${formatNumber(rect.x)}`,
-    "Z"
-  ].join(" ");
-}
-
-function circlePathD(center: LayoutPoint, radius: number): string {
-  return [
-    `M ${formatNumber(center.x - radius)} ${formatNumber(center.y)}`,
-    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(center.x + radius)} ${formatNumber(center.y)}`,
-    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(center.x - radius)} ${formatNumber(center.y)}`,
-    "Z"
-  ].join(" ");
-}
-
-function capsulePathD(start: LayoutPoint, end: LayoutPoint, radius: number): string {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const length = Math.hypot(dx, dy);
-  if (length < 0.001) {
-    return circlePathD(start, radius);
-  }
-
-  const nx = -dy / length;
-  const ny = dx / length;
-  const startLeft = { x: start.x + nx * radius, y: start.y + ny * radius };
-  const endLeft = { x: end.x + nx * radius, y: end.y + ny * radius };
-  const endRight = { x: end.x - nx * radius, y: end.y - ny * radius };
-  const startRight = { x: start.x - nx * radius, y: start.y - ny * radius };
-  return [
-    `M ${formatNumber(startLeft.x)} ${formatNumber(startLeft.y)}`,
-    `L ${formatNumber(endLeft.x)} ${formatNumber(endLeft.y)}`,
-    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 0 1 ${formatNumber(endRight.x)} ${formatNumber(endRight.y)}`,
-    `L ${formatNumber(startRight.x)} ${formatNumber(startRight.y)}`,
-    `A ${formatNumber(radius)} ${formatNumber(radius)} 0 0 1 ${formatNumber(startLeft.x)} ${formatNumber(startLeft.y)}`,
-    "Z"
-  ].join(" ");
-}
-
-function uniqueLayoutPoints(points: readonly LayoutPoint[]): LayoutPoint[] {
-  const seen = new Set<string>();
-  return points.filter((point) => {
-    const key = `${formatNumber(point.x)},${formatNumber(point.y)}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
-function convexHull(points: readonly LayoutPoint[]): LayoutPoint[] {
-  const sorted = [...points].sort((left, right) => left.x === right.x ? left.y - right.y : left.x - right.x);
-  if (sorted.length <= 1) {
-    return sorted;
-  }
-
-  const lower: LayoutPoint[] = [];
-  for (const point of sorted) {
-    while (lower.length >= 2 && crossProduct(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0) {
-      lower.pop();
-    }
-    lower.push(point);
-  }
-
-  const upper: LayoutPoint[] = [];
-  for (const point of [...sorted].reverse()) {
-    while (upper.length >= 2 && crossProduct(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0) {
-      upper.pop();
-    }
-    upper.push(point);
-  }
-
-  lower.pop();
-  upper.pop();
-  return [...lower, ...upper];
-}
-
-function crossProduct(origin: LayoutPoint, left: LayoutPoint, right: LayoutPoint): number {
-  return (left.x - origin.x) * (right.y - origin.y) - (left.y - origin.y) * (right.x - origin.x);
-}
-
-function averagePoint(points: readonly LayoutPoint[]): LayoutPoint {
-  const total = points.reduce((sum, point) => ({
-    x: sum.x + point.x,
-    y: sum.y + point.y
-  }), { x: 0, y: 0 });
-  return {
-    x: total.x / Math.max(points.length, 1),
-    y: total.y / Math.max(points.length, 1)
-  };
-}
-
-function expandPointFromCenter(point: LayoutPoint, center: LayoutPoint, distance: number): LayoutPoint {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  const length = Math.hypot(dx, dy);
-  if (length < 0.001) {
-    return point;
-  }
-  return {
-    x: point.x + dx / length * distance,
-    y: point.y + dy / length * distance
-  };
 }
 
 function nativeBondHoverDecoratorFragments(
