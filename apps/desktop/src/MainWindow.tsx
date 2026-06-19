@@ -230,6 +230,7 @@ import {
   selectAllDocumentObjects,
   selectDocumentObject,
   selectDocumentObjects,
+  toggleDocumentObjectSelection,
   setDocumentPageOrientation,
   setDocumentPageSize,
   updateNativeTextObjectScript,
@@ -791,7 +792,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.18.19.11-codex";
+const CURRENT_BUILD_STAMP = "6.18.20.18-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -1098,6 +1099,7 @@ export function MainWindow({
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const fileStateRef = useRef<NativeFileState>(fileState);
   const statusRef = useRef(status);
+  const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
@@ -3184,7 +3186,7 @@ export function MainWindow({
   }, []);
 
   const openExportDialog = useCallback(() => {
-    setExportDialog(createDefaultExportDialogState(documentRef.current));
+    setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
     setStatus("Export ready");
   }, []);
 
@@ -3205,8 +3207,11 @@ export function MainWindow({
     }
 
     try {
+      const defaultPath = exportDialog.destinationPath ??
+        nativePathJoin(lastExportDirectoryRef.current, exportDialog.filename) ??
+        exportDialog.filename;
       const path = await pickNativeExportPath(
-        exportDialog.destinationPath ?? exportDialog.filename,
+        defaultPath,
         descriptor.menuLabel,
         descriptor.extensions
       );
@@ -3215,6 +3220,7 @@ export function MainWindow({
         return;
       }
 
+      lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
       setExportDialog((current) => current
         ? {
             ...current,
@@ -3255,9 +3261,10 @@ export function MainWindow({
         return;
       }
 
+      const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename;
       const path = dialog.destinationPath
         ? ensureExportFileExtension(dialog.destinationPath, descriptor.extensions)
-        : await pickNativeExportPath(filename, descriptor.menuLabel, descriptor.extensions);
+        : await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions);
 
       if (!path) {
         setStatus(`${descriptor.menuLabel} export canceled`);
@@ -3266,6 +3273,7 @@ export function MainWindow({
       }
 
       await writeNativeExportResult(path, result);
+      lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
       setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
       setExportDialog(undefined);
     } catch (error) {
@@ -7287,6 +7295,31 @@ export function MainWindow({
 
     if (
       activeToolState.activeKind === "selection" &&
+      event.shiftKey &&
+      object &&
+      shouldActivateDocumentObject(object, "selection")
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const nextDocument = toggleDocumentObjectSelection(document, document.pages[0].id, objectId);
+      replacePresentDocument(nextDocument);
+      clearTransientInteractionChrome();
+      setSelectedNativeMoleculePart(undefined);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveGraphicTransformObjectId(undefined);
+      setSelectedGraphicPathNode(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setStatus(selectionStatusLabel({ objectIds: nextDocument.selection.objectIds }));
+      return;
+    }
+
+    if (
+      activeToolState.activeKind === "selection" &&
       object?.type === "graphic" &&
       graphicObjectHasDirectEditChrome(object, effectiveArtPaintTarget)
     ) {
@@ -7459,7 +7492,8 @@ export function MainWindow({
     startAtomLabelEdit,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
-    startSelectionLasso
+    startSelectionLasso,
+    toggleDocumentObjectSelection
   ]);
 
   function isTransformHandleSecondPress(
@@ -9363,9 +9397,13 @@ export function MainWindow({
             onCancel={cancelExportDialog}
             onChooseDestination={chooseExportDestination}
             onFilenameChange={(filename) => {
-              // Editing the name makes it authoritative again; drop any previously chosen
-              // destination so submit re-prompts with the new name instead of writing the old path.
-              setExportDialog((current) => current ? { ...current, filename, destinationPath: undefined } : current);
+              setExportDialog((current) => current
+                ? {
+                    ...current,
+                    filename,
+                    destinationPath: nativePathWithBasename(current.destinationPath, filename)
+                  }
+                : current);
             }}
             onFormatChange={(format) => {
               const descriptor = getExportFormatDescriptor(format);
@@ -9820,11 +9858,16 @@ function ExportDialog({
   );
 }
 
-function createDefaultExportDialogState(document: ChemDraftDocument): ExportDialogState {
+function createDefaultExportDialogState(
+  document: ChemDraftDocument,
+  destinationDirectory?: string
+): ExportDialogState {
   const descriptor = getExportFormatDescriptor("pdf");
+  const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
   return {
     format: descriptor.id,
-    filename: createExportFilename(document, descriptor.extensions[0] ?? descriptor.id),
+    filename,
+    destinationPath: nativePathJoin(destinationDirectory, filename),
     svg: {
       includeWarnings: true,
       includePageGuides: false
@@ -9852,11 +9895,12 @@ function createDefaultExportDialogState(document: ChemDraftDocument): ExportDial
 function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
   const descriptor = getExportFormatDescriptor(format);
   const rasterFormat = rasterExportFormatForDialogFormat(format);
+  const filename = replaceExportFileExtension(state.filename, descriptor);
   return {
     ...state,
     format,
-    filename: replaceExportFileExtension(state.filename, descriptor),
-    destinationPath: undefined,
+    filename,
+    destinationPath: nativePathWithBasename(state.destinationPath, filename),
     raster: {
       ...state.raster,
       background: rasterFormat === "png" ? state.raster.background : "white"
@@ -17544,8 +17588,28 @@ function ensureExportFileExtension(path: string, extensions: readonly string[]):
   return extensionPattern.test(path) ? path : `${path}.${extensions[0]}`;
 }
 
-function nativePathBasename(path: string): string {
+export function nativePathBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+export function nativePathDirname(path: string): string | undefined {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const separatorIndex = normalized.lastIndexOf("/");
+  if (separatorIndex <= 0) {
+    return undefined;
+  }
+  return normalized.slice(0, separatorIndex);
+}
+
+export function nativePathJoin(directory: string | undefined, filename: string): string | undefined {
+  if (!directory) {
+    return undefined;
+  }
+  return `${directory.replace(/[\\/]+$/, "")}/${filename}`;
+}
+
+export function nativePathWithBasename(path: string | undefined, filename: string): string | undefined {
+  return nativePathJoin(path ? nativePathDirname(path) : undefined, filename);
 }
 
 function downloadText(filename: string, contents: string, mimeType: string): void {

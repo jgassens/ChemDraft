@@ -161,7 +161,7 @@ describe("lasso selection interactions", () => {
     target: EventTarget,
     type: "pointerdown" | "pointermove" | "pointerup",
     point: { x: number; y: number },
-    options: { altKey?: boolean; pointerId?: number } = {}
+    options: { altKey?: boolean; detail?: number; pointerId?: number; shiftKey?: boolean } = {}
   ) {
     const event = new MouseEvent(type, {
       altKey: options.altKey ?? false,
@@ -170,7 +170,9 @@ describe("lasso selection interactions", () => {
       buttons: type === "pointerup" ? 0 : 1,
       cancelable: true,
       clientX: point.x,
-      clientY: point.y
+      clientY: point.y,
+      detail: options.detail ?? 1,
+      shiftKey: options.shiftKey ?? false
     });
     Object.defineProperties(event, {
       isPrimary: { value: true },
@@ -179,6 +181,46 @@ describe("lasso selection interactions", () => {
     });
     target.dispatchEvent(event);
   }
+
+  it("Shift-double-click adds mixed art objects to the selected group", async () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Shift Group Selection"),
+      { x: 160, y: 150 },
+      "tool.art.rect"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withLine = insertNativeArtGraphicObject(withRect, { x: 330, y: 160 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!rectId || !lineId) {
+      throw new Error("Expected rectangle and line.");
+    }
+
+    await renderMainWindow(withLine, "tool.select");
+
+    const rect = graphicElement(rectId);
+    const line = graphicElement(lineId);
+    const rectPoint = { x: 190, y: 180 };
+    const linePoint = { x: 330, y: 160 };
+
+    await act(async () => {
+      dispatchPointer(rect, "pointerdown", rectPoint, { pointerId: 21 });
+      dispatchPointer(rect, "pointerup", rectPoint, { pointerId: 21 });
+    });
+
+    expect(container.querySelector('[data-group-selection="true"]')).toBeNull();
+    expect(graphicInteractionMode(rectId)).toBeDefined();
+
+    await act(async () => {
+      dispatchPointer(line, "pointerdown", linePoint, { detail: 2, pointerId: 22, shiftKey: true });
+      dispatchPointer(line, "pointerup", linePoint, { detail: 2, pointerId: 22, shiftKey: true });
+    });
+
+    expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-group-rotate-handle="true"]')).toHaveLength(1);
+    expect(graphicInteractionMode(rectId)).toBeUndefined();
+    expect(graphicInteractionMode(lineId)).toBeUndefined();
+    expect(activeToolCommandId()).toBe("tool.select");
+  });
 
   it("starts from canvas space and Alt-lasso subtracts a selected graphic from the group", async () => {
     const firstInserted = insertNativeArtGraphicObject(

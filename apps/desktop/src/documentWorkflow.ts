@@ -3852,6 +3852,11 @@ function nativeArtBooleanSuccessStatus(
   resultCount: number,
   skippedInputs: readonly NativeArtBooleanSkippedInput[]
 ): string {
+  if (operation === "subtract") {
+    const subtractCount = Math.max(0, eligibleCount - 1);
+    return `Subtracted ${subtractCount} closed art ${subtractCount === 1 ? "shape" : "shapes"} from first selected shape${nativeArtBooleanSkippedStatus(skippedInputs)}`;
+  }
+
   const sourceText = `${eligibleCount} closed art ${eligibleCount === 1 ? "shape" : "shapes"}`;
   const resultText = operation === "split"
     ? ` into ${resultCount} ${resultCount === 1 ? "piece" : "pieces"}`
@@ -6203,6 +6208,17 @@ export function selectDocumentObjects(
     },
     { now: phase4Timestamp }
   );
+}
+
+export function toggleDocumentObjectSelection(
+  document: ChemDraftDocument,
+  pageId: string,
+  objectId: string
+): ChemDraftDocument {
+  const objectIds = document.selection.objectIds.includes(objectId)
+    ? document.selection.objectIds.filter((candidate) => candidate !== objectId)
+    : [...document.selection.objectIds, objectId];
+  return selectDocumentObjects(document, pageId, objectIds);
 }
 
 export function selectAllDocumentObjects(document: ChemDraftDocument, pageId: string): ChemDraftDocument {

@@ -131,6 +131,7 @@ import {
   selectedGraphicObjectIds,
   selectedArtBooleanEligibleObjectIds,
   swapGraphicObjectFillAndStroke,
+  toggleDocumentObjectSelection,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
@@ -4450,6 +4451,32 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
+  it("toggles object selection while preserving explicit order", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Selection Toggle Order"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withLine = insertNativeArtGraphicObject(withRect, { x: 320, y: 220 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!rectId || !lineId) {
+      throw new Error("Expected a rectangle and line.");
+    }
+    const pageId = withLine.pages[0].id;
+    const rectSelected = applyPatches(withLine, [{
+      op: "setSelection",
+      pageId,
+      objectIds: [rectId]
+    }]);
+
+    const bothSelected = toggleDocumentObjectSelection(rectSelected, pageId, lineId);
+    const lineOnly = toggleDocumentObjectSelection(bothSelected, pageId, rectId);
+
+    expect(bothSelected.selection.objectIds).toEqual([rectId, lineId]);
+    expect(lineOnly.selection.objectIds).toEqual([lineId]);
+  });
+
   it("applies native art boolean union and exports the result as SVG", () => {
     const withFirst = insertNativeArtGraphicObject(
       createPhase4Document("Boolean Art Union"),
@@ -4519,13 +4546,25 @@ describe("Phase 4 document workflow", () => {
     const subtracted = applyNativeArtBooleanOperationToSelection(selectedForSubtract, "subtract");
     const subtractGraphic = graphicById(subtracted.document, subtracted.resultObjectIds[0] ?? "");
     expect(subtracted.changed).toBe(true);
+    expect(subtracted.status).toBe("Subtracted 1 closed art shape from first selected shape");
     expect((subtractGraphic.data.pathD?.match(/M /g) ?? [])).toHaveLength(2);
     expect(subtractGraphic.data.pathD).toContain("Z");
 
-    const selectedForIntersect = applyPatches(withCircle, [{
+    const withFirstEllipse = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Intersect Ellipses"),
+      { x: 220, y: 180 },
+      "tool.art.ellipseFilled"
+    );
+    const firstEllipseId = withFirstEllipse.selection.objectIds[0];
+    const withSecondEllipse = insertNativeArtGraphicObject(withFirstEllipse, { x: 250, y: 180 }, "tool.art.ellipseFilled");
+    const secondEllipseId = withSecondEllipse.selection.objectIds[0];
+    if (!firstEllipseId || !secondEllipseId) {
+      throw new Error("Expected intersect ellipses.");
+    }
+    const selectedForIntersect = applyPatches(withSecondEllipse, [{
       op: "setSelection",
-      pageId: withCircle.pages[0].id,
-      objectIds: [rectId, circleId]
+      pageId: withSecondEllipse.pages[0].id,
+      objectIds: [firstEllipseId, secondEllipseId]
     }]);
     const intersected = applyNativeArtBooleanOperationToSelection(selectedForIntersect, "intersect");
     const intersectGraphic = graphicById(intersected.document, intersected.resultObjectIds[0] ?? "");

@@ -21,6 +21,7 @@ import {
 import {
   allShellCommands,
   atomElementActions,
+  createLayerActions,
   createQuickActions,
   editActions,
   normalizeHexColor,
@@ -72,6 +73,7 @@ import {
   nativePolylinePathDocument,
   openNativeDocument,
   reorderSelectedDocumentObject,
+  selectDocumentObjects,
   selectionBounds,
   setDocumentPageOrientation,
   setDocumentPageSize,
@@ -99,6 +101,9 @@ import {
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  nativePathDirname,
+  nativePathJoin,
+  nativePathWithBasename,
   isSelectionDoublePress,
   manualRotationDeltaDegrees,
   planBondDepthPatches,
@@ -1078,7 +1083,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
     expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentRef.current, dialog)");
-    expect(mainWindowSource).toContain("await pickNativeExportPath(filename, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
     expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
     expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");
@@ -1939,6 +1945,35 @@ describe("ChemDraft desktop shell", () => {
     )) as { license: string };
 
     expect(reactColorfulPackage.license).toBe("MIT");
+  });
+
+  it("keeps art boolean commands disabled for a closed shape plus open line", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Mixed Boolean Selection"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withLine = insertNativeArtGraphicObject(withRect, { x: 320, y: 220 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!rectId || !lineId) {
+      throw new Error("Expected a rectangle and a line.");
+    }
+
+    const selected = selectDocumentObjects(withLine, withLine.pages[0].id, [rectId, lineId]);
+    const booleanCommands = createLayerActions(selected).filter((command) => command.id.startsWith("art.boolean."));
+
+    expect(booleanCommands).toHaveLength(4);
+    expect(booleanCommands.every((command) => command.enabled === false)).toBe(true);
+    expect(booleanCommands.every((command) => command.disabledReason === "Select at least two closed art shapes")).toBe(true);
+  });
+
+  it("preserves the last native export folder while changing export basenames", () => {
+    expect(nativePathDirname("/Users/me/Desktop/figure.svg")).toBe("/Users/me/Desktop");
+    expect(nativePathDirname("figure.svg")).toBeUndefined();
+    expect(nativePathJoin("/Users/me/Desktop", "figure.pdf")).toBe("/Users/me/Desktop/figure.pdf");
+    expect(nativePathJoin(undefined, "figure.pdf")).toBeUndefined();
+    expect(nativePathWithBasename("/Users/me/Desktop/figure.svg", "renamed.pdf")).toBe("/Users/me/Desktop/renamed.pdf");
   });
 
   it("registers built-in and plugin fixture toolsets", () => {
