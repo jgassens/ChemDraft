@@ -1,0 +1,143 @@
+--- a/Code/MinimalLib/minilib.cpp	2026-06-15 18:16:46
++++ b/Code/MinimalLib/minilib.cpp	2026-06-15 18:58:43
+@@ -40,6 +40,9 @@
+ #include <GraphMol/CIPLabeler/CIPLabeler.h>
+ #include <GraphMol/Abbreviations/Abbreviations.h>
+ #include <GraphMol/MolTransforms/MolTransforms.h>
++#include <GraphMol/DistGeomHelpers/Embedder.h>
++#include <GraphMol/ForceFieldHelpers/MMFF/MMFF.h>
++#include <GraphMol/ForceFieldHelpers/UFF/UFF.h>
+ #include <Geometry/Transform3D.h>
+ #include <DataStructs/BitOps.h>
+ #include <DataStructs/ExplicitBitVect.h>
+@@ -471,6 +474,130 @@
+   MolOps::addHs(get(), false, addCoords);
+   MolOps::assignStereochemistry(get(), true, true);
+   return true;
++}
++
++// --- ChemDraft 3D conformer binding -----------------------------------------
++// Embedding stays engine-private here; the JS side only ever receives plain data
++// (raw engine-order coordinates + atom-map arrays), so the result is
++// structured-clone-safe to post across the worker boundary. The atom map is built
++// from a per-atom property stamped on every INPUT atom (including explicit input H)
++// BEFORE addHs, so it is order-independent and never assumes how RDKit appends H.
++// Coordinates are emitted in ENGINE-atom order; the JS adapter scatters them onto
++// original atoms via engineToOriginalAtom. The embed also returns its 3D molblock so
++// the adapter can re-derive a pristine copy for each refinement mode (no long-lived
++// WASM handle is kept on the JS side).
++namespace {
++constexpr const char *CHEMDRAFT_ORIG_IDX_PROP = "__chemdraftOrigIdx";
++
++bj::object chemdraftConformerJson(RDKit::ROMol &mol, bool ok, bool includeMolblock) {
++  bj::object out;
++  out["embedOk"] = ok;
++  bj::array engineToOriginal;
++  bj::array generatedH;
++  bj::array coords;
++  for (auto atom : mol.atoms()) {
++    int o = atom->hasProp(CHEMDRAFT_ORIG_IDX_PROP)
++                ? atom->getProp<int>(CHEMDRAFT_ORIG_IDX_PROP)
++                : -1;
++    engineToOriginal.push_back(o);
++    if (o < 0 && atom->getAtomicNum() == 1) {
++      generatedH.push_back(static_cast<int>(atom->getIdx()));
++    }
++  }
++  if (ok && mol.getNumConformers() > 0) {
++    const auto &conf = mol.getConformer();
++    for (auto atom : mol.atoms()) {
++      const auto &p = conf.getAtomPos(atom->getIdx());
++      coords.push_back(p.x);
++      coords.push_back(p.y);
++      coords.push_back(p.z);
++    }
++  }
++  out["coords3dByEngineAtom"] = coords;
++  out["engineToOriginalAtom"] = engineToOriginal;
++  out["generatedHydrogenEngineAtoms"] = generatedH;
++  if (includeMolblock) {
++    out["molblock"] = MolToMolBlock(mol);
++  }
++  return out;
++}
++}  // namespace
++
++std::string JSMolBase::generate_3d_embed(const std::string &details_json) {
++  int seed = -1;
++  unsigned int maxIterations = 0;   // 0 => RDKit default
++  unsigned int timeoutSeconds = 0;  // 0 => no timeout
++  bool useRandomCoords = false;     // ETKDG eigenvalue-decomposition start by default
++  if (!details_json.empty()) {
++    auto parsed = bj::parse(details_json);
++    if (parsed.is_object()) {
++      const auto &o = parsed.as_object();
++      if (auto *p = o.if_contains("seed")) {
++        seed = static_cast<int>(p->to_number<int64_t>());
++      }
++      if (auto *p = o.if_contains("maxIterations")) {
++        maxIterations = static_cast<unsigned int>(p->to_number<int64_t>());
++      }
++      if (auto *p = o.if_contains("timeoutSeconds")) {
++        timeoutSeconds = static_cast<unsigned int>(p->to_number<int64_t>());
++      }
++      if (auto *p = o.if_contains("useRandomCoords")) {
++        useRandomCoords = p->is_bool() ? p->as_bool() : p->to_number<int64_t>() != 0;
++      }
++    }
++  }
++  for (auto atom : get().atoms()) {
++    atom->setProp<int>(CHEMDRAFT_ORIG_IDX_PROP, static_cast<int>(atom->getIdx()));
++  }
++  MolOps::addHs(get());
++  RDKit::DGeomHelpers::EmbedParameters params = RDKit::DGeomHelpers::ETKDGv3;
++  params.randomSeed = seed;
++  params.enforceChirality = true;
++  params.maxIterations = maxIterations;
++  params.timeout = timeoutSeconds;
++  params.useRandomCoords = useRandomCoords;
++  int confId = RDKit::DGeomHelpers::EmbedMolecule(get(), params);
++  return bj::serialize(chemdraftConformerJson(get(), confId >= 0, true));
++}
++
++std::string JSMolBase::optimize_3d_conformer(const std::string &details_json) {
++  std::string forceField = "mmff94";
++  int maxIters = 200;
++  if (!details_json.empty()) {
++    auto parsed = bj::parse(details_json);
++    if (parsed.is_object()) {
++      const auto &o = parsed.as_object();
++      if (auto *p = o.if_contains("forceField")) {
++        forceField = bj::value_to<std::string>(*p);
++      }
++      if (auto *p = o.if_contains("maxIters")) {
++        maxIters = static_cast<int>(p->to_number<int64_t>());
++      }
++    }
++  }
++  std::pair<int, double> res(-1, -1.0);
++  std::string ffName = "MMFF94";
++  bool ran = get().getNumConformers() > 0;
++  if (ran) {
++    if (forceField == "uff") {
++      ffName = "UFF";
++      res = RDKit::UFF::UFFOptimizeMolecule(get(), maxIters);
++    } else {
++      std::string variant = (forceField == "mmff94s") ? "MMFF94s" : "MMFF94";
++      ffName = variant;
++      res = RDKit::MMFF::MMFFOptimizeMolecule(get(), maxIters, variant);
++    }
++  }
++  bj::object out = chemdraftConformerJson(get(), ran && res.first != -1, false);
++  bj::object ff;
++  ff["name"] = ffName;
++  // res.first: 0 = converged, 1 = needs more iters, -1 = FF setup failed.
++  ff["status"] = res.first == 0 ? "converged"
++                                 : (res.first == 1 ? "not-converged" : "setup-failed");
++  ff["energy"] = res.second;
++  ff["iterations"] = maxIters;
++  out["forceField"] = ff;
++  return bj::serialize(out);
+ }
+ 
+ std::string JSMolBase::condense_abbreviations(double maxCoverage,

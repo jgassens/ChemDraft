@@ -1338,6 +1338,12 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("Use {recommendedLabel}");
   });
 
+  it("also offers the page-size choice when a pasted structure overflows the current page", () => {
+    // The SMILES paste path runs the same page-fit recommendation as the CDXML import path.
+    expect(mainWindowSource).toContain("recommendImportedPageFit(nextDocument)");
+    expect(mainWindowSource).toContain('displayName: "The pasted structure"');
+  });
+
   it("builds keyboard shortcuts from command definitions", () => {
     const registry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), "macos");
 
@@ -1621,6 +1627,16 @@ describe("ChemDraft desktop shell", () => {
       "page.setOrientation.portrait",
       "page.setOrientation.landscape"
     ]);
+  });
+
+  it("exposes a custom page-size command and wires it to the custom-size dialog", () => {
+    const commands = allShellCommands(createPhase4Document());
+    expect(commands.some((command) => command.id === "page.setSizeCustom")).toBe(true);
+    // The command opens the dialog, which applies a custom size via the workflow helper.
+    expect(mainWindowSource).toContain("register(pageCustomSizeAction");
+    expect(mainWindowSource).toContain("openCustomPageSizeDialog()");
+    expect(mainWindowSource).toContain("setDocumentCustomPageSize(current, size)");
+    expect(mainWindowSource).toContain("<CustomPageSizeDialog");
   });
 
   it("defines disabled toolbar customization command placeholders", () => {

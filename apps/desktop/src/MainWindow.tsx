@@ -31,6 +31,10 @@ import {
   nativeTextStyleFromObjectStyle,
   redo as redoDocumentHistory,
   undo as undoDocumentHistory,
+  cssPxToPageSize,
+  pageSizeToCssPx,
+  pageLayoutSourceUnit,
+  type PageSizeUnit,
   type BondRef,
   type ArrowObject,
   type BracketObject,
@@ -146,6 +150,9 @@ import {
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
+  pageCustomSizeAction,
+  PAGE_CUSTOM_SIZE_COMMAND_ID,
+  PREFERENCES_COMMAND_ID,
   type CommandSpec
 } from "./commands";
 import {
@@ -208,8 +215,14 @@ import {
   createPhase4Document,
   createSelectionClipboardPayload,
   cleanUpNativeMolecules2d,
+  attachSpin3dModelFromConformer,
+  conformerGraphSignature,
   deleteNativeGraphicPathNode,
   documentObjectVisualBounds,
+  spin3dModelCoordsForMolecule,
+  validSpin3dModelFor,
+  type ProjectedPlaneTiltDocumentResult,
+  type Spin3dEngineProvenance,
   flattenSpunMolecule,
   deleteSelectedDocumentObjects,
   splitNativeGraphicPathSegmentAtPoint,
@@ -290,6 +303,7 @@ import {
   toggleDocumentObjectSelection,
   setDocumentPageOrientation,
   setDocumentPageSize,
+  setDocumentCustomPageSize,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
@@ -351,7 +365,9 @@ import {
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
+  togglePreferencesWindow,
   toggleToolsetWindow,
   type ToolsetArtPaintTarget
 } from "./window-manager";
@@ -369,9 +385,22 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
-import { applyTrackballDrag, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
+import {
+  applyTrackballDrag,
+  quatFromAxisAngle,
+  quatMultiply,
+  quatNormalize,
+  quatToViewMatrix,
+  type Quaternion,
+  type Vec3
+} from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
+import {
+  conformerOptionsForSpin3d,
+  loadSpin3dSettings,
+  type Spin3dSettings
+} from "./spin3dSettings";
 import {
   SPIN3D_DEBUGGER_COMMAND_ID,
   broadcastSpin3dTraceEvent,
@@ -593,6 +622,17 @@ type BezierArtNodeDragState = {
   latestPoint: ClientPoint;
   dragging: boolean;
 };
+// Captured at pointer-down when a whole molecule carries a valid persisted Spin 3D
+// model, so the rotate handles re-project the real conformer instead of shearing the
+// flattened 2D drawing. Snapshotting here avoids re-reading/re-validating per frame.
+type Spin3dRotateSnapshot = {
+  /** Committed orientation at pointer-down; per-drag deltas compose onto this (no drift). */
+  startOrientation: Quaternion;
+  /** Conformer (math frame, y-up), reordered into the current molecule's atom order. */
+  coords3d: Float64Array;
+  atomIds: string[];
+  engine?: Spin3dEngineProvenance;
+};
 type ObjectRotateDragState = {
   pointerId: number;
   objectId: string;
@@ -604,6 +644,7 @@ type ObjectRotateDragState = {
   latestPoint: ClientPoint;
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   dragging: boolean;
+  spin3dModel?: Spin3dRotateSnapshot;
 };
 type ObjectRotateReadoutState = {
   objectId: string;
@@ -625,6 +666,11 @@ type ProjectedPlaneTiltDragState = {
   latestTiltYRad: number;
   clamped: boolean;
   dragging: boolean;
+  spin3dModel?: Spin3dRotateSnapshot;
+  /** Last flatten that committed (depth-cued 2D + the orientation that produced it).
+   *  On a stereo-refused frame the preview holds this instead of snapping back. */
+  lastValidPreviewDocument?: ChemDraftDocument;
+  lastValidOrientation?: Quaternion;
 };
 type ProjectedPlaneTiltReadoutState = {
   objectId: string;
@@ -875,6 +921,13 @@ export interface SelectionClipboardPasteState {
   pasteCount: number;
   sourceAction: SelectionClipboardSourceAction;
 }
+// Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
+// they are parsed + validated on Apply.
+type CustomPageSizeDialogState = {
+  width: string;
+  height: string;
+  unit: PageSizeUnit;
+};
 
 const RULER_THICKNESS = 32;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
@@ -918,6 +971,21 @@ const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 
+// Spin 3D speculative-work cap. RDKit ETKDG embeds even large polycyclics in ~1-2 s, so
+// prefetching them on selection (to make the Spin 3D click instant) is cheap. The worker
+// independently refuses a speculative embed for a large structure on the OCL engine (where
+// it would be ~45 s and uninterruptible), so this generous cap is safe under either engine.
+const SPIN_PREFETCH_MAX_ATOMS = 200;
+// The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
+// fine for small structures, catastrophic for a 60-atom branched chain.
+const SPIN_IN_PAGE_MAX_ATOMS = 30;
+
+// Unit axes (math frame: x right, y up, z toward viewer) for composing the per-drag
+// rotation quaternion that 3D-backed X/Y/Z rotation feeds into flattenSpunMolecule.
+const SPIN_AXIS_X: Vec3 = [1, 0, 0];
+const SPIN_AXIS_Y: Vec3 = [0, 1, 0];
+const SPIN_AXIS_Z: Vec3 = [0, 0, 1];
+
 function selectToolStatusLabel(): string {
   return drawingToolStatusLabel("tool.select", "Selection Tool");
 }
@@ -950,25 +1018,6 @@ function eyedropperChooseTargetStatusLabel(target: GraphicStylePaintTarget): str
 function eyedropperSameTargetStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
   return `Eyedropper: ${targetLabel} target selected; click different source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
-}
-
-// Spin 3D speculative-work caps. Prefetch is a surprise cost: above this size the
-// conformer is only computed when the user actually clicks Spin 3D.
-const SPIN_PREFETCH_MAX_ATOMS = 40;
-// The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
-// fine for small structures, catastrophic for a 60-atom branched chain.
-const SPIN_IN_PAGE_MAX_ATOMS = 30;
-
-// Identity of the 3D conformer a molecule would embed to — connectivity, elements,
-// charges, and bond orders, in atom-array order (coords3d is indexed by that order).
-// Deliberately position-independent: dragging or flattening a molecule (which only
-// moves its 2D x/y) keeps the signature stable, so the spin model memo survives those.
-// Editing the graph (add/remove atom, change element/charge/bond order) changes it,
-// invalidating a stale memo.
-function conformerGraphSignature(molecule: MoleculeObject): string {
-  const atoms = molecule.atoms.map((atom) => `${atom.id}:${atom.element}:${atom.formalCharge}`).join(",");
-  const bonds = molecule.bonds.map((bond) => `${bond.fromAtomId}>${bond.toAtomId}:${bond.order}`).join(",");
-  return `${atoms}|${bonds}`;
 }
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -1206,6 +1255,7 @@ export function MainWindow({
   const [status, setStatus] = useState("Blank native document");
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
+  const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
@@ -2314,20 +2364,29 @@ export function MainWindow({
       applySpin({ ...state, dragging: false, lastClient: undefined });
       return;
     }
-    commitDocumentChange(outcome.document);
-    // Remember this conformer + orientation so a later re-spin of the same (unedited)
-    // structure reopens here instead of re-snapping to a fresh embed. The graph is
-    // unchanged by the flatten, so signing the just-committed molecule is equivalent.
+    // Persist the conformer + committed orientation ON the molecule (under
+    // compatibility.unknown) so the ordinary X/Y/Z rotate handles re-project this real 3D
+    // model — durable across save/reload. The graph is unchanged by the flatten, so signing
+    // the just-committed molecule is equivalent. Also kept in the session memo so a re-spin
+    // reopens here instead of re-snapping to a fresh embed.
     const flattened = outcome.document.pages
       .flatMap((page) => page.objects)
       .find((object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule");
+    let committedDocument = outcome.document;
     if (flattened) {
+      committedDocument = attachSpin3dModelFromConformer(outcome.document, state.objectId, {
+        coords3d: state.coords3d,
+        orientation: state.quat,
+        engine: state.engine
+      });
       spin3dModelCacheRef.current.set(state.objectId, {
         signature: conformerGraphSignature(flattened),
         coords3d: state.coords3d,
-        quat: state.quat
+        quat: state.quat,
+        engine: state.engine
       });
     }
+    commitDocumentChange(committedDocument);
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
     setStatus(
@@ -2346,12 +2405,42 @@ export function MainWindow({
   // of re-snapping to a fresh embed's readable angle — letting the user fine-tune position.
   // Self-invalidating: the stored signature keys on graph identity, so editing the molecule
   // forces a fresh embed (treated as first-time again). Not persisted across reload.
-  const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion }>>(
+  const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance }>>(
     new Map()
   );
   // The generation currently awaited (no overlay yet): repeated Spin 3D clicks for
   // the same structure are absorbed instead of stacking engine jobs in the worker.
   const spin3dPendingRef = useRef<{ molfile: string; objectId: string; cancel: () => void } | undefined>(undefined);
+
+  // Molfile of the last speculative prefetch, so a stable selection doesn't re-prefetch.
+  const lastSpinPrefetchRef = useRef<string | undefined>(undefined);
+
+  // User-chosen 3D refinement mode (Fast/Balanced/Quality), loaded from localStorage and
+  // updated live from the Preferences window via a cross-window event. Mirrored into a ref
+  // so the spin/prefetch callbacks can read the latest value without re-creating on change.
+  const [spin3dSettings, setSpin3dSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
+  const spin3dSettingsRef = useRef(spin3dSettings);
+  useEffect(() => {
+    spin3dSettingsRef.current = spin3dSettings;
+    // A mode change must invalidate the last speculative prefetch so the next
+    // selection re-prefetches under the new mode.
+    lastSpinPrefetchRef.current = undefined;
+  }, [spin3dSettings]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForSpin3dSettings((next) => setSpin3dSettings(next)).then((listener) => {
+      if (disposed) {
+        listener();
+        return;
+      }
+      unlisten = listener;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
   const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array): {
@@ -2459,33 +2548,51 @@ export function MainWindow({
       return;
     }
 
+    // Refinement mode (Fast/Balanced/Quality) for this spin — read from the ref so the
+    // callback need not re-create when the setting changes. Shared by the worker path
+    // and the in-page fallback so both honour the user's choice.
+    const conformerOptions = conformerOptionsForSpin3d(spin3dSettingsRef.current, molecule.atoms.length);
+
     // Already-modeled structure: reopen the stored conformer at its committed orientation
     // so the overlay lands exactly on the current drawing (no re-snap), letting the user
-    // fine-tune. Only when the graph is unchanged since the flatten (signature match).
+    // fine-tune. Prefer the session memo, then the model persisted on the molecule (which
+    // survives reload), and only fall through to a fresh embed if neither is valid. Both are
+    // graph-signature gated, so an edited structure re-embeds.
     const memo = spin3dModelCacheRef.current.get(objectId);
-    if (memo && memo.signature === conformerGraphSignature(molecule)) {
+    const memoHit = memo && memo.signature === conformerGraphSignature(molecule) ? memo : undefined;
+    let reopen: { coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance } | undefined =
+      memoHit ? { coords3d: memoHit.coords3d, quat: memoHit.quat, engine: memoHit.engine } : undefined;
+    if (!reopen) {
+      const documentModel = validSpin3dModelFor(molecule);
+      const coords3d = documentModel ? spin3dModelCoordsForMolecule(documentModel, molecule) : undefined;
+      if (documentModel && coords3d) {
+        reopen = { coords3d, quat: documentModel.orientation, engine: documentModel.engine };
+      }
+    }
+    if (reopen) {
       // Supersede any in-flight generation and invalidate stale async callbacks.
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, memo.coords3d);
+      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d);
       applySpin({
         objectId,
-        quat: memo.quat,
-        coords3d: memo.coords3d,
+        quat: reopen.quat,
+        coords3d: reopen.coords3d,
         bondPairs,
         bondRender,
         atomLabels,
         atoms,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
-        dragging: false
+        dragging: false,
+        engine: reopen.engine
       });
       traceInfo("spin.reused", {
         atomCount: molecule.atoms.length,
-        message: "cached model — reopened at committed orientation (no re-snap)"
+        message: "reused stored model — reopened at committed orientation (no re-snap)"
       });
-      commandSpan.complete({ message: "reused cached model" });
+      commandSpan.complete({ message: "reused stored model" });
       setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
       return;
     }
@@ -2567,7 +2674,8 @@ export function MainWindow({
         atoms,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
-        dragging: false
+        dragging: false,
+        engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
       });
       setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
     };
@@ -2585,7 +2693,15 @@ export function MainWindow({
       });
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
       const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
-      applySpin({ ...state, coords3d, bondPairs, bondRender, atomLabels, placement });
+      applySpin({
+        ...state,
+        coords3d,
+        bondPairs,
+        bondRender,
+        atomLabels,
+        placement,
+        engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
+      });
     };
 
     const runInPage = async (): Promise<void> => {
@@ -2610,17 +2726,17 @@ export function MainWindow({
           path,
           atomCount: molecule.atoms.length
         }, emitTrace);
-        const { embedded, refine } = await ocl.withOclConformerTrace(
+        const { embedded, refineFromEmbedded } = await ocl.withOclConformerTrace(
           (event) => emitTrace(createSpin3dTraceEventFromOcl(event, { sessionId, requestId: requestToken, path })),
           () => ocl.generate3DConformerProgressive(
             { molfile, originalAtomCount: molecule.atoms.length },
-            { optimize: "auto", maxMinimiseIterations: 800 }
+            conformerOptions
           )
         );
         generateSpan.complete({ warningCount: embedded.warnings.length });
         if (spin3dRequestRef.current !== requestToken) return;
         handleEmbedded(embedded);
-        if (embedded.embed.status !== "ok" || !refine) return;
+        if (embedded.embed.status !== "ok" || !refineFromEmbedded) return;
         // Let the overlay paint before the synchronous minimise blocks this thread.
         await new Promise((resolve) => setTimeout(resolve, 30));
         if (spin3dRequestRef.current !== requestToken) return;
@@ -2634,7 +2750,7 @@ export function MainWindow({
         }, emitTrace);
         const refined = await ocl.withOclConformerTrace(
           (event) => emitTrace(createSpin3dTraceEventFromOcl(event, { sessionId, requestId: requestToken, path })),
-          async () => refine()
+          async () => refineFromEmbedded()
         );
         refineSpan.complete({ warningCount: refined.warnings.length });
         handleRefined(refined);
@@ -2654,7 +2770,7 @@ export function MainWindow({
       traceInfo("worker.client", { path: "worker", message: "available" });
       let retriedAfterCrash = false;
       const dispatch = (): void => {
-        const cancel = client.generate(molfile, molecule.atoms.length, {
+        const cancel = client.generate(molfile, molecule.atoms.length, conformerOptions, spin3dSettingsRef.current.enginePreference, {
           onEmbedded: (result) => {
             if (spin3dRequestRef.current === requestToken) handleEmbedded(result);
           },
@@ -2703,7 +2819,6 @@ export function MainWindow({
 
   // Speculatively generate the conformer when a single eligible molecule is selected:
   // by the time the user reaches the Spin 3D button the result is usually cached.
-  const lastSpinPrefetchRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (spin3dState) return;
     const selectedIds = [
@@ -2736,10 +2851,11 @@ export function MainWindow({
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
       client.warmup({ sessionId: `warmup:${Date.now()}` });
-      client.prefetch(molfile, molecule.atoms.length, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
+      const options = conformerOptionsForSpin3d(spin3dSettings, molecule.atoms.length);
+      client.prefetch(molfile, molecule.atoms.length, options, spin3dSettings.enginePreference, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
     }, 250);
     return () => clearTimeout(timer);
-  }, [document, selectedNativeMoleculePart, spin3dState]);
+  }, [document, selectedNativeMoleculePart, spin3dState, spin3dSettings]);
 
   const handleSpinOverlayPointerDown = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
@@ -3157,9 +3273,15 @@ export function MainWindow({
       commitDocumentChange(nextDocument);
       resetPasteUiState();
       const stereoCount = depiction.bonds.filter((bond) => bond.wedge).length;
-      setStatus(
-        `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereo bond${stereoCount === 1 ? "" : "s"}` : ""}`
-      );
+      // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
+      // the same page-resize prompt the external-CDXML import path uses, when the pasted
+      // content overflows and a larger preset (up to A0) would fit it.
+      const fit = recommendImportedPageFit(nextDocument);
+      setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
+      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereo bond${stereoCount === 1 ? "" : "s"}` : ""}`;
+      setStatus(fit
+        ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
+        : baseStatus);
       return true;
     } catch {
       return false;
@@ -3874,7 +3996,7 @@ export function MainWindow({
     const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
     setPageFitPrompt(undefined);
     setStatus(changed
-      ? `Page changed to ${pageFitPromptLayoutLabel(pageFitPrompt.recommendedPageTitle, pageFitPrompt.recommendedOrientation)}`
+      ? `Page changed to ${pageFitRecommendedLabel(pageFitPrompt)}`
       : "Page already fits imported content");
   }, [commitDocumentChange, pageFitPrompt]);
 
@@ -3886,6 +4008,20 @@ export function MainWindow({
     setPageFitPrompt(undefined);
     setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
   }, [pageFitPrompt]);
+
+  const openCustomPageSizeDialog = useCallback(() => {
+    const layout = documentRef.current.pages[0]?.layout;
+    const unit: PageSizeUnit = layout ? pageLayoutSourceUnit(layout) : "inch";
+    const width = layout?.sourceWidth ?? (layout ? cssPxToPageSize(layout.widthPx, unit) : 8.5);
+    const height = layout?.sourceHeight ?? (layout ? cssPxToPageSize(layout.heightPx, unit) : 11);
+    setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height) });
+  }, []);
+
+  const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
+    commitDocumentChange((current) => setDocumentCustomPageSize(current, size));
+    setCustomPageSizeDialog(undefined);
+    setStatus(`Page size: custom ${formatPageSizeFieldValue(size.width)} × ${formatPageSizeFieldValue(size.height)} ${pageSizeUnitShortLabel(size.unit)}`);
+  }, [commitDocumentChange]);
 
   const openDocumentFromNativePicker = useCallback(async () => {
     if (!isDesktopRuntime()) {
@@ -4465,6 +4601,13 @@ export function MainWindow({
 
     viewActions.forEach((action) => {
       register(action, () => {
+        if (action.id === PREFERENCES_COMMAND_ID) {
+          void togglePreferencesWindow().catch(() => {
+            setStatus("Preferences unavailable");
+          });
+          return;
+        }
+
         if (action.id === SPIN3D_DEBUGGER_COMMAND_ID) {
           void toggleSpin3dDebuggerWindow().catch(() => {
             setStatus("3D debugger unavailable");
@@ -4499,6 +4642,10 @@ export function MainWindow({
       });
     });
 
+    register(pageCustomSizeAction, () => {
+      openCustomPageSizeDialog();
+    });
+
     toolbarCustomizationActions.forEach((action) => {
       register(action, () => {
         setStatus(action.disabledReason ?? "Toolbar customization UI is not implemented yet");
@@ -4530,6 +4677,7 @@ export function MainWindow({
     nativePalette,
     openExportDialog,
     openDocumentFromNativePicker,
+    openCustomPageSizeDialog,
     pasteClipboard,
     quickActions,
     resetDocumentHistory,
@@ -5949,17 +6097,31 @@ export function MainWindow({
       : rotateDocumentObject(drag.startDocument, drag.objectId, degrees);
   }, []);
 
+  // Snapshot the molecule's persisted Spin 3D model for a whole-molecule rotate drag.
+  // Returns undefined unless a valid (graph-matching) model is present and its conformer
+  // maps cleanly onto the current atoms — callers then fall back to the legacy 2.5D tilt.
+  const spin3dRotateSnapshotFor = useCallback((molecule: MoleculeObject): Spin3dRotateSnapshot | undefined => {
+    const model = validSpin3dModelFor(molecule);
+    if (!model) return undefined;
+    const coords3d = spin3dModelCoordsForMolecule(model, molecule);
+    if (!coords3d) return undefined;
+    return {
+      startOrientation: model.orientation,
+      coords3d,
+      atomIds: molecule.atoms.map((atom) => atom.id),
+      engine: model.engine
+    };
+  }, []);
+
   const projectedPlaneTiltFromDrag = useCallback((
     drag: ProjectedPlaneTiltDragState,
     point: ClientPoint
-  ) => {
+  ): ProjectedPlaneTiltDocumentResult => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
-    const tiltDelta = object && object.type !== "molecule"
-      ? documentObjectProjectedPlaneTiltVectorFromDrag(drag.startPoint, point)
-      : projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
-    const rawTiltXRad = drag.startTiltXRad + tiltDelta.xRad;
-    const rawTiltYRad = drag.startTiltYRad + tiltDelta.yRad;
     if (object && object.type !== "molecule") {
+      const tiltDelta = documentObjectProjectedPlaneTiltVectorFromDrag(drag.startPoint, point);
+      const rawTiltXRad = drag.startTiltXRad + tiltDelta.xRad;
+      const rawTiltYRad = drag.startTiltYRad + tiltDelta.yRad;
       const wrappedTilt = wrapProjectedPlaneTiltVectorRadians(rawTiltXRad, rawTiltYRad);
       const tiltXRad = wrappedTilt.tiltXRad;
       const tiltYRad = wrappedTilt.tiltYRad;
@@ -5971,15 +6133,55 @@ export function MainWindow({
       );
       return {
         document,
+        tiltRad: tiltXRad,
         tiltXRad,
         tiltYRad,
+        rotationDegrees: 0,
         clamped: wrappedTilt.clamped,
         changed: document !== drag.startDocument
       };
     }
 
-    const tiltXRad = rawTiltXRad;
-    const tiltYRad = rawTiltYRad;
+    // 3D-backed whole-molecule rotation: re-project the stored conformer through the
+    // SAME flattenSpunMolecule pipeline Spin 3D commits, so atom positions, wedges,
+    // crossings AND bond depth cues all move together for the current orientation.
+    if (drag.spin3dModel && !drag.target) {
+      const model = drag.spin3dModel;
+      const delta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
+      // Delta is always measured from drag start and composed onto the start orientation,
+      // so repeated moves never accumulate drift. Vertical drag → X axis, horizontal → Y.
+      const deltaQuat = quatMultiply(
+        quatFromAxisAngle(SPIN_AXIS_Y, delta.yRad),
+        quatFromAxisAngle(SPIN_AXIS_X, delta.xRad)
+      );
+      const nextQuat = quatNormalize(quatMultiply(deltaQuat, model.startOrientation));
+      let document = drag.lastValidPreviewDocument ?? drag.startDocument;
+      let changed = document !== drag.startDocument;
+      try {
+        const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat));
+        if (outcome.status === "committed" && outcome.document !== drag.startDocument) {
+          drag.lastValidPreviewDocument = outcome.document;
+          drag.lastValidOrientation = nextQuat;
+          document = outcome.document;
+          changed = true;
+        }
+        // status !== "committed": a stereo-refused view — keep the last valid preview.
+      } catch {
+        // A flatten guard threw (e.g. a stale atom reference) — hold the last valid preview.
+      }
+      return {
+        document,
+        tiltRad: delta.xRad,
+        tiltXRad: delta.xRad,
+        tiltYRad: delta.yRad,
+        rotationDegrees: 0,
+        clamped: false,
+        changed
+      };
+    }
+    const tiltDelta = projectedPlaneTiltVectorFromDrag(drag.startPoint, point);
+    const tiltXRad = drag.startTiltXRad + tiltDelta.xRad;
+    const tiltYRad = drag.startTiltYRad + tiltDelta.yRad;
     return drag.target
       ? tiltNativeMoleculePartsProjectedPlane(
         drag.startDocument,
@@ -6172,10 +6374,33 @@ export function MainWindow({
       return false;
     }
 
+    // 3D-backed whole-molecule Z rotate: a pure in-plane (screen-Z) rotation is identical
+    // to the existing 2D atom rotation — depth ordering, wedges and bond depthWeight are
+    // unchanged, so we keep that cheap path (no re-flatten, no new stereo-refusal risk) and
+    // only fold a screen-Z quaternion into the stored orientation so the next X/Y drag
+    // re-projects from a consistent source instead of jumping.
+    let committed = rotated;
+    if (drag.spin3dModel && !drag.target) {
+      const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      // NOTE the negated angle: flattenSpunMolecule flips Y on output (math y-up → document
+      // y-down), so a +θ screen rotation (rotateDocumentObject, which is what the user sees)
+      // corresponds to a −θ rotation about the math-frame +Z axis. Folding +θ here would store
+      // an orientation that twists opposite to the drawing, making the next reopen/X-Y tilt jump.
+      const nextQuat = quatNormalize(quatMultiply(
+        quatFromAxisAngle(SPIN_AXIS_Z, -degrees * Math.PI / 180),
+        drag.spin3dModel.startOrientation
+      ));
+      committed = attachSpin3dModelFromConformer(rotated, drag.objectId, {
+        coords3d: drag.spin3dModel.coords3d,
+        orientation: nextQuat,
+        engine: drag.spin3dModel.engine
+      });
+    }
+
     const currentHistory = documentHistoryRef.current;
     installDocumentHistory({
       past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: rotated,
+      present: committed,
       future: []
     });
     return true;
@@ -6193,6 +6418,29 @@ export function MainWindow({
       result.clamped,
       true
     );
+
+    // 3D-backed commit: attach the updated 3D model AND keep its orientation in lock-step
+    // with the depth-cued geometry actually committed. If the final frame was refused, we
+    // commit the last valid preview and attach lastValidOrientation (NOT the refused quat),
+    // so the stored model never drifts away from the displayed depth/wedge/crossing state.
+    if (drag.spin3dModel) {
+      const finalDocument = drag.lastValidPreviewDocument;
+      const finalOrientation = drag.lastValidOrientation;
+      if (!result.changed || !finalDocument || !finalOrientation || finalDocument === drag.startDocument) {
+        replacePresentDocument(drag.startDocument);
+        return false;
+      }
+      const modeled = attachSpin3dModelFromConformer(finalDocument, drag.objectId, {
+        coords3d: drag.spin3dModel.coords3d,
+        orientation: finalOrientation,
+        engine: drag.spin3dModel.engine
+      });
+      const currentHistory = documentHistoryRef.current;
+      installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, modeled));
+      setStatus("3D rotation applied");
+      return true;
+    }
+
     if (!result.changed || result.document === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -8834,7 +9082,12 @@ export function MainWindow({
         : object.rotation,
       latestPoint: point,
       artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
-      dragging: false
+      dragging: false,
+      // Keep the stored conformer's orientation in sync when Z-rotating a modeled
+      // whole molecule (whole-molecule only; fragments/text stay on the legacy path).
+      spin3dModel: !selectedFragmentTarget && object.type === "molecule"
+        ? spin3dRotateSnapshotFor(object)
+        : undefined
     };
     objectRotateMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-rotate" });
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
@@ -8854,6 +9107,7 @@ export function MainWindow({
     replacePresentDocument,
     openObjectRotateInput,
     selectedNativeMoleculePart,
+    spin3dRotateSnapshotFor,
   ]);
 
   const handleObjectRotateDoubleClick = useCallback((objectId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -8990,6 +9244,11 @@ export function MainWindow({
       ? 0
       : (transform.tiltYDegrees ?? 0) * Math.PI / 180;
     const startRotationDegrees = selectedFragmentTarget ? 0 : transform.rotationDegrees;
+    // Whole molecule with a stored Spin 3D model → rotate the real conformer (v1 is
+    // whole-molecule only; fragments stay on the legacy projected-plane tilt).
+    const spin3dModel = !selectedFragmentTarget && object.type === "molecule"
+      ? spin3dRotateSnapshotFor(object)
+      : undefined;
     projectedPlaneTiltDragRef.current = {
       pointerId: event.pointerId,
       objectId,
@@ -9007,7 +9266,10 @@ export function MainWindow({
       latestTiltXRad: startTiltXRad,
       latestTiltYRad: startTiltYRad,
       clamped: false,
-      dragging: false
+      dragging: false,
+      spin3dModel,
+      lastValidPreviewDocument: selectedDocument,
+      lastValidOrientation: spin3dModel?.startOrientation
     };
     projectedPlaneTiltMachineRef.current = interactionReducer(initialInteractionState(), {
       type: "pointerDown",
@@ -9029,6 +9291,7 @@ export function MainWindow({
     openProjectedPlaneTiltInput,
     replacePresentDocument,
     selectedNativeMoleculePart,
+    spin3dRotateSnapshotFor,
   ]);
 
   const handleProjectedPlaneTiltDoubleClick = useCallback((objectId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -10853,6 +11116,14 @@ export function MainWindow({
             onResize={acceptPageFitRecommendation}
           />
         ) : null}
+        {customPageSizeDialog ? (
+          <CustomPageSizeDialog
+            state={customPageSizeDialog}
+            onChange={setCustomPageSizeDialog}
+            onCancel={() => setCustomPageSizeDialog(undefined)}
+            onApply={applyCustomPageSize}
+          />
+        ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>
@@ -10911,7 +11182,7 @@ interface ImportedPageFitPromptProps {
 
 function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPageFitPromptProps) {
   const currentLabel = pageFitPromptLayoutLabel(recommendation.currentPageTitle, recommendation.currentOrientation);
-  const recommendedLabel = pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
+  const recommendedLabel = pageFitRecommendedLabel(recommendation);
   const overflow = [
     recommendation.overflowLeftPx > 0 ? `${Math.ceil(recommendation.overflowLeftPx)} px left of the page` : undefined,
     recommendation.overflowTopPx > 0 ? `${Math.ceil(recommendation.overflowTopPx)} px above the page` : undefined,
@@ -10951,6 +11222,142 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
 
 function pageFitPromptLayoutLabel(pageTitle: string, orientation: "portrait" | "landscape"): string {
   return `${pageTitle} ${orientation === "landscape" ? "Landscape" : "Portrait"}`;
+}
+
+/** The recommended-size label: a custom title already carries its dimensions, so the
+ *  portrait/landscape suffix (meaningful only for presets) is omitted for it. */
+function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation): string {
+  return recommendation.recommendedPresetId === "custom"
+    ? recommendation.recommendedPageTitle
+    : pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
+}
+
+function formatPageSizeFieldValue(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+function pageSizeUnitShortLabel(unit: PageSizeUnit): string {
+  return unit === "inch" ? "in" : unit === "mm" ? "mm" : "px";
+}
+
+const customPageFieldLabelStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  fontSize: 12,
+  color: "var(--cd-text-secondary)"
+};
+
+const customPageInputStyle: CSSProperties = {
+  width: 110,
+  padding: "6px 8px",
+  borderRadius: 6,
+  border: "1px solid var(--cd-border-subtle)",
+  background: "var(--cd-bg-panel)",
+  color: "var(--cd-text-primary)",
+  fontSize: 13
+};
+
+interface CustomPageSizeDialogProps {
+  state: CustomPageSizeDialogState;
+  onChange: (next: CustomPageSizeDialogState) => void;
+  onCancel: () => void;
+  onApply: (size: { width: number; height: number; unit: PageSizeUnit }) => void;
+}
+
+function CustomPageSizeDialog({ state, onChange, onCancel, onApply }: CustomPageSizeDialogProps) {
+  const width = Number.parseFloat(state.width);
+  const height = Number.parseFloat(state.height);
+  const valid = Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0;
+  const selectUnit = state.unit === "mm" ? "mm" : "inch";
+
+  const changeUnit = (unit: PageSizeUnit) => {
+    if (unit === state.unit) {
+      return;
+    }
+    // Convert the entered values so the physical size is preserved across the unit switch.
+    const convert = (raw: string): string => {
+      const value = Number.parseFloat(raw);
+      return Number.isFinite(value)
+        ? formatPageSizeFieldValue(cssPxToPageSize(pageSizeToCssPx(value, state.unit), unit))
+        : raw;
+    };
+    onChange({ unit, width: convert(state.width), height: convert(state.height) });
+  };
+
+  const submit = () => {
+    if (valid) {
+      onApply({ width, height, unit: state.unit });
+    }
+  };
+  const onFieldKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      submit();
+    }
+  };
+
+  return (
+    <div aria-label="Custom page size" aria-modal="true" role="dialog" style={exportDialogBackdropStyle}>
+      <section style={exportDialogPanelStyle}>
+        <div style={exportDialogHeaderStyle}>
+          <h2 style={exportDialogTitleStyle}>Custom Page Size</h2>
+        </div>
+        <p style={exportDialogHintStyle}>Enter the page width and height. Margins are kept from the current page.</p>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <label style={customPageFieldLabelStyle}>
+            Width
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={state.width}
+              style={customPageInputStyle}
+              onChange={(event) => onChange({ ...state, width: event.target.value })}
+              onKeyDown={onFieldKeyDown}
+              autoFocus
+            />
+          </label>
+          <span style={{ paddingBottom: 8, color: "var(--cd-text-secondary)" }}>×</span>
+          <label style={customPageFieldLabelStyle}>
+            Height
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={state.height}
+              style={customPageInputStyle}
+              onChange={(event) => onChange({ ...state, height: event.target.value })}
+              onKeyDown={onFieldKeyDown}
+            />
+          </label>
+          <label style={customPageFieldLabelStyle}>
+            Units
+            <select
+              value={selectUnit}
+              style={customPageInputStyle}
+              onChange={(event) => changeUnit(event.target.value as PageSizeUnit)}
+            >
+              <option value="inch">Inches</option>
+              <option value="mm">Millimeters</option>
+            </select>
+          </label>
+        </div>
+        <div style={exportDialogFooterStyle}>
+          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            style={{ ...exportDialogPrimaryButtonStyle, opacity: valid ? 1 : 0.5, cursor: valid ? "pointer" : "not-allowed" }}
+            onClick={submit}
+            disabled={!valid}
+          >
+            Apply
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 interface ExportDialogProps {
@@ -13180,6 +13587,8 @@ interface Spin3dState {
   selectionBox: { x: number; y: number; width: number; height: number };
   dragging: boolean;
   lastClient?: { x: number; y: number };
+  /** Engine provenance recorded into the persisted 3D model on flatten (best-effort). */
+  engine?: Spin3dEngineProvenance;
 }
 
 /**

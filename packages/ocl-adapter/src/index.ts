@@ -314,9 +314,10 @@ function readConformerMapping(
 /**
  * Two-stage generation: the embedded conformer is delivered as soon as it exists
  * (already collision-free with correct E/Z + R/S parities — fully usable for an
- * interactive overlay); `refine()` then runs the (capped) MMFF94 minimisation on
- * the SAME in-memory conformer and re-reads the coordinates. This splits the two
- * dominant latency costs so callers can put the overlay up after the first.
+ * interactive overlay); `refineFromEmbedded()` then runs the (capped) MMFF94
+ * minimisation from the embedded coordinates and re-reads them. This splits the two
+ * dominant latency costs so callers can put the overlay up after the first, and is
+ * re-runnable so a caller can try different iteration caps without re-embedding.
  */
 export async function generate3DConformerProgressive(
   input: ConformerInput,
@@ -427,24 +428,41 @@ export async function generate3DConformerProgressive(
     return { embedded };
   }
 
-  // MMFF94 minimisation is SINGLE-SHOT: ForceFieldMMFF94.minimise() runs to its termination
-  // condition in one call and is NOT reliably resumable — re-minimising from already-relaxed
-  // coordinates can warp geometry (notably flattening aromatic rings). So refine() runs the
-  // (capped) minimisation exactly once and caches its result; any later call returns that
-  // same result without touching the conformer again.
-  let ff: InstanceType<typeof OCL.ForceFieldMMFF94> | null = null;
-  let ffSetupFailed = false;
-  let refined: Generate3DConformerResult | undefined;
-  const refine = (maxItsOverride?: number): Generate3DConformerResult => {
-    if (refined) return refined;
-    let forceField: Generate3DConformerResult["forceField"];
+  // Embed-stage warnings, snapshotted so each (re-runnable) refinement starts from them
+  // rather than appending to a shared array — otherwise deriving multiple modes from one
+  // embed would duplicate/accumulate mapping warnings across calls.
+  const embeddedWarnings: ChemistryWarning[] = [...warnings];
+
+  // Snapshot the pristine embedded coordinates so refinement can be re-run from them
+  // for different iteration caps / modes WITHOUT re-embedding. MMFF94's minimise() is
+  // single-shot and mutates the conformer in place, and re-minimising from already-
+  // relaxed coordinates warps geometry (notably flattening aromatic rings); restoring
+  // the embed before each run keeps every call independent and reproducible.
+  const engineAtomCount = conformer.getAllAtoms();
+  const embeddedCoords = new Float64Array(engineAtomCount * 3);
+  for (let i = 0; i < engineAtomCount; i++) {
+    embeddedCoords[i * 3] = conformer.getAtomX(i);
+    embeddedCoords[i * 3 + 1] = conformer.getAtomY(i);
+    embeddedCoords[i * 3 + 2] = conformer.getAtomZ(i);
+  }
+  const restoreEmbeddedCoords = (): void => {
+    for (let i = 0; i < engineAtomCount; i++) {
+      conformer.setAtomX(i, embeddedCoords[i * 3]);
+      conformer.setAtomY(i, embeddedCoords[i * 3 + 1]);
+      conformer.setAtomZ(i, embeddedCoords[i * 3 + 2]);
+    }
+  };
+
+  const refineFromEmbedded = (maxItsOverride?: number): Generate3DConformerResult => {
     const maxIts = maxItsOverride ?? options.maxMinimiseIterations;
+    restoreEmbeddedCoords(); // every refinement starts from the pristine embed
+    // Per-call warnings: start from the embed-stage snapshot so re-running a different mode
+    // never inherits or re-appends a prior call's refine/mapping warnings.
+    const refineWarnings: ChemistryWarning[] = [...embeddedWarnings];
+    let forceField: Generate3DConformerResult["forceField"];
     const refineSpan = startOclTraceSpan("mmff94-refine", { atomCount: originalAtomCount });
     try {
-      if (!ff && !ffSetupFailed) {
-        ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
-      }
-      if (!ff) throw new Error("force field unavailable");
+      const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
       const rc = maxIts !== undefined ? ff.minimise({ maxIts }) : ff.minimise();
       forceField = {
         name: "MMFF94",
@@ -454,23 +472,18 @@ export async function generate3DConformerProgressive(
       };
       refineSpan.complete({ atomCount: originalAtomCount, message: forceField.status });
     } catch (error) {
-      const alreadyFailed = ffSetupFailed;
-      ffSetupFailed = true;
-      ff = null;
       forceField = { name: "MMFF94", status: "setup-failed" };
-      if (!alreadyFailed) {
-        warnings.push({
-          code: "ocl.forcefield-unavailable",
-          message: `MMFF94 setup failed: ${(error as Error).message}`,
-          severity: "warning"
-        });
-      }
+      refineWarnings.push({
+        code: "ocl.forcefield-unavailable",
+        message: `MMFF94 setup failed: ${(error as Error).message}`,
+        severity: "warning"
+      });
       refineSpan.fail(error, { atomCount: originalAtomCount });
     }
     const refinedMappingSpan = startOclTraceSpan("atom-mapping.refined", { atomCount: originalAtomCount });
-    const refinedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
-    refinedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: warnings.length });
-    refined = {
+    const refinedMapping = readConformerMapping(conformer, originalAtomCount, refineWarnings);
+    refinedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: refineWarnings.length });
+    return {
       mapping: refinedMapping,
       originalAtomCount,
       generatedAtomCount: refinedMapping.generatedHydrogenEngineAtoms.length,
@@ -479,12 +492,11 @@ export async function generate3DConformerProgressive(
       embed: { status: "ok" },
       forceField,
       unsupportedFeatures: [...unsupportedFeatures],
-      warnings: [...warnings]
+      warnings: [...refineWarnings]
     };
-    return refined;
   };
 
-  return { embedded, refine };
+  return { embedded, refineFromEmbedded };
 }
 
 export const oclConformerGenerator: ConformerGenerator3D = {
@@ -499,7 +511,7 @@ export const oclConformerGenerator: ConformerGenerator3D = {
     input: ConformerInput,
     options: Generate3DConformerOptions = {}
   ): Promise<Generate3DConformerResult> {
-    const { embedded, refine } = await generate3DConformerProgressive(input, options);
-    return refine ? refine() : embedded;
+    const { embedded, refineFromEmbedded } = await generate3DConformerProgressive(input, options);
+    return refineFromEmbedded ? refineFromEmbedded() : embedded;
   }
 };

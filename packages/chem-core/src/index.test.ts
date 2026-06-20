@@ -7,8 +7,11 @@ import {
   applyPatches,
   ChemDraftSyntheticStylePreset,
   createPageLayout,
+  createCustomPageLayout,
   createDocumentHistory,
   createEmptyDocument,
+  cssPxToPageSize,
+  pageSizeToCssPx,
   DefaultNativeDrawingStyle,
   DefaultNativeTextStyle,
   deserializeDocument,
@@ -349,6 +352,27 @@ describe("page layout presets and migration", () => {
       sourceWidth: 297,
       sourceHeight: 210
     });
+  });
+
+  it("builds a custom page layout from a chosen unit and round-trips conversions", () => {
+    const inches = createCustomPageLayout(13.5, 9, "inch");
+    expect(inches).toMatchObject({
+      presetId: "custom",
+      orientation: "landscape", // wider than tall
+      widthPx: inchesToCssPx(13.5),
+      heightPx: inchesToCssPx(9),
+      sourceUnit: "inch",
+      sourceWidth: 13.5,
+      sourceHeight: 9
+    });
+
+    const metric = createCustomPageLayout(210, 360, "mm");
+    expect(metric).toMatchObject({ presetId: "custom", orientation: "portrait", sourceUnit: "mm" });
+    expect(metric.widthPx).toBeCloseTo(mmToCssPx(210), 6);
+
+    // Unit conversions are inverses (used by the dialog's unit toggle).
+    expect(cssPxToPageSize(pageSizeToCssPx(5, "inch"), "inch")).toBeCloseTo(5, 9);
+    expect(cssPxToPageSize(pageSizeToCssPx(127, "mm"), "mm")).toBeCloseTo(127, 9);
   });
 
   it("enforces the invariant between page layout geometry and denormalized page dimensions", () => {

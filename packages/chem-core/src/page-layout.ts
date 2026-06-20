@@ -107,6 +107,63 @@ export function mmToCssPx(mm: number): number {
   return (mm / MM_PER_INCH) * CSS_PX_PER_INCH;
 }
 
+export function cssPxToInches(px: number): number {
+  return px / CSS_PX_PER_INCH;
+}
+
+export function cssPxToMm(px: number): number {
+  return (px / CSS_PX_PER_INCH) * MM_PER_INCH;
+}
+
+/** Convert a length expressed in `unit` to CSS px (the document's internal coordinate unit). */
+export function pageSizeToCssPx(value: number, unit: PageSizeUnit): number {
+  if (unit === "inch") return inchesToCssPx(value);
+  if (unit === "mm") return mmToCssPx(value);
+  return value; // css-px
+}
+
+/** Convert a CSS-px length to `unit`. */
+export function cssPxToPageSize(px: number, unit: PageSizeUnit): number {
+  if (unit === "inch") return cssPxToInches(px);
+  if (unit === "mm") return cssPxToMm(px);
+  return px; // css-px
+}
+
+/** The physical unit a layout was authored in — used to keep custom sizes / fit prompts in
+ *  the same unit family as the current page (US presets ⇒ inch, A-series ⇒ mm). */
+export function pageLayoutSourceUnit(layout: PageLayout): PageSizeUnit {
+  return layout.sourceUnit ?? "inch";
+}
+
+/**
+ * Build a layout for a user-chosen custom page size. `width`/`height` are in `unit`
+ * (the source-of-truth the SVG/print path renders from); the px fields are derived. The
+ * orientation field is informational for a custom page (the px dimensions already encode
+ * it): landscape when wider than tall.
+ */
+export function createCustomPageLayout(
+  width: number,
+  height: number,
+  unit: PageSizeUnit,
+  margins: PageMargin = DefaultPageMarginPx
+): PageLayout {
+  const widthPx = pageSizeToCssPx(width, unit);
+  const heightPx = pageSizeToCssPx(height, unit);
+  return {
+    presetId: "custom",
+    orientation: widthPx >= heightPx ? "landscape" : "portrait",
+    widthPx,
+    heightPx,
+    marginTopPx: margins.top,
+    marginRightPx: margins.right,
+    marginBottomPx: margins.bottom,
+    marginLeftPx: margins.left,
+    sourceUnit: unit,
+    sourceWidth: width,
+    sourceHeight: height
+  };
+}
+
 export function findPageSizePreset(presetId: PageSizePresetId): PageSizePreset {
   const preset = PageSizePresets.find((candidate) => candidate.id === presetId);
   if (!preset) {

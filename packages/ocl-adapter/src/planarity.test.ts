@@ -70,11 +70,11 @@ describe("PAH planarity: a single capped refine flattens fused aromatics", () =>
   for (const [name, smiles] of Object.entries(PAHS)) {
     it(`${name} is planar after one refine() call`, async () => {
       const molfile = OCL.Molecule.fromSmiles(smiles).toMolfile();
-      const { embedded, refine } = await generate3DConformerProgressive({ molfile }, { seed: 42, optimize: "auto" });
+      const { embedded, refineFromEmbedded } = await generate3DConformerProgressive({ molfile }, { seed: 42, optimize: "auto" });
       expect(embedded.embed.status).toBe("ok");
 
       // ONE capped call, exactly as the worker drives it (size cap >= 240 here).
-      const refined = refine!(800);
+      const refined = refineFromEmbedded!(800);
       const rms = planarityRms(refined.mapping.coords3dByOriginalAtom);
 
       // Flat aromatics should sit essentially in-plane. The old chunked path left

@@ -1,0 +1,13 @@
+--- a/Code/MinimalLib/minilib.h	2026-06-15 18:16:46
++++ b/Code/MinimalLib/minilib.h	2026-06-15 18:58:43
+@@ -160,6 +160,10 @@
+   bool remove_hs_in_place() { return remove_hs_in_place(""); }
+   std::string add_hs() const;
+   bool add_hs_in_place();
++  // ChemDraft: 3D conformer embedding + force-field refinement (returns a
++  // structured-clone-safe JSON payload of raw coordinate + atom-map arrays).
++  std::string generate_3d_embed(const std::string &details_json);
++  std::string optimize_3d_conformer(const std::string &details_json);
+   double normalize_depiction(int canonicalize, double scaleFactor);
+   double normalize_depiction(int canonicalize) {
+     return normalize_depiction(canonicalize, -1.);

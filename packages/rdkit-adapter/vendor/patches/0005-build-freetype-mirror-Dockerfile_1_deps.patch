@@ -1,0 +1,11 @@
+--- a/Code/MinimalLib/docker/Dockerfile_1_deps	2026-06-15 19:24:20
++++ b/Code/MinimalLib/docker/Dockerfile_1_deps	2026-06-15 19:24:20
+@@ -83,7 +83,7 @@
+ RUN echo "source /opt/emsdk/emsdk_env.sh > /dev/null 2>&1" >> ~/.bashrc
+ 
+ WORKDIR /src
+-RUN wget -q https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.gz && \
++RUN wget -q https://downloads.sourceforge.net/project/freetype/freetype2/${FREETYPE_VERSION}/freetype-${FREETYPE_VERSION}.tar.gz && \
+   tar xzf freetype-${FREETYPE_VERSION}.tar.gz
+ WORKDIR /src/freetype-${FREETYPE_VERSION}
+ RUN mkdir build

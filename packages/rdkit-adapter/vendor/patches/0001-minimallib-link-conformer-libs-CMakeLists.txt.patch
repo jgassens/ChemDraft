@@ -1,0 +1,12 @@
+--- a/Code/MinimalLib/CMakeLists.txt	2026-06-15 18:16:45
++++ b/Code/MinimalLib/CMakeLists.txt	2026-06-15 18:58:43
+@@ -5,7 +5,8 @@
+         "CIPLabeler;MolDraw2D;Depictor;"
+         "Descriptors;SubstructMatch;FileParsers;"
+         "SmilesParse;GraphMol;RDGeometryLib;"
+-        "RDGeneral;RGroupDecomposition;Fingerprints")
++        "RDGeneral;RGroupDecomposition;Fingerprints;"
++        "DistGeomHelpers;ForceFieldHelpers;DistGeometry;ForceField;Alignment")
+     if(RDK_BUILD_INCHI_SUPPORT)
+         add_definitions(-DRDK_BUILD_INCHI_SUPPORT)
+         set(MINIMAL_LIB_LIBRARIES "${MINIMAL_LIB_LIBRARIES};RDInchiLib")

@@ -14,12 +14,26 @@
  */
 import {
   ensureOclResources,
-  generate3DConformerProgressive,
+  generate3DConformerProgressive as oclGenerate3DConformerProgressive,
   setOclResourcesUrl,
   withOclConformerTrace
 } from "@chemdraft/ocl-adapter";
-import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
+import {
+  ensureRdkit,
+  generate3DConformerProgressive as rdkitGenerate3DConformerProgressive
+} from "@chemdraft/rdkit-adapter";
+import { defaultRefineForceField } from "@chemdraft/chemistry-adapter";
+import type {
+  ConformerEngineName,
+  ConformerRefineOptions,
+  Generate3DConformerOptions,
+  Generate3DConformerResult,
+  ProgressiveConformerResult
+} from "@chemdraft/chemistry-adapter";
+import type { Spin3dEnginePreference } from "./spin3dSettings";
 import { oclResourcesUrl } from "./oclResources";
+import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
+import { qualityRefineIterationsFor } from "./spin3dRefineCaps";
 import {
   createSpin3dTraceEvent,
   createSpin3dTraceEventFromOcl,
@@ -33,6 +47,12 @@ export interface ConformerWorkRequest {
   molfile?: string;
   originalAtomCount?: number;
   sessionId?: string;
+  /** Conformer refinement options for this request (Spin 3D mode → engine options).
+   *  Embedding ignores these (it is force-field-independent and cached by molfile);
+   *  only the refinement stage reads `optimize` / `maxMinimiseIterations`. */
+  options?: Generate3DConformerOptions;
+  /** Which embed engine to use (Spin 3D Engine setting). Default "auto". */
+  enginePreference?: Spin3dEnginePreference;
 }
 
 export interface ConformerWorkResponse {
@@ -43,48 +63,85 @@ export interface ConformerWorkResponse {
   trace?: Spin3dTraceEvent;
 }
 
-/**
- * Depiction-grade minimisation caps, scaled by size: MMFF94 cost per iteration grows
- * with the atom-pair count, and the planarising/strain-relief work happens in the
- * early iterations. 800 on a 63-atom branched chain measured ~9s of uninterruptible
- * worker time; these caps bound the worst case while keeping small molecules ideal.
- */
-function refineIterationsFor(atomCount: number | undefined): number {
-  const n = atomCount ?? 0;
-  if (n <= 30) return 800;
-  if (n <= 60) return 400;
-  return 240;
-}
-
 /** Speculative work only: structures above this never prefetch-refine in the
  *  background — the (size-capped) refine runs on demand when actually spun. */
 const BACKGROUND_REFINE_MAX_ATOMS = 40;
+/** On the OCL engine, structures above this are not prefetch-EMBEDDED either: OCL's embed
+ *  is ~45 s and uninterruptible, so a speculative one would block a click. RDKit embeds are
+ *  fast and have no such cap. */
+const OCL_PREFETCH_MAX_ATOMS = 40;
 const CACHE_LIMIT = 6;
+
+/** Force field a given engine will ACTUALLY refine a request with. RDKit honours
+ *  MMFF94/UFF (`defaultRefineForceField`); OCL ships only MMFF94 and silently refines with
+ *  it regardless, so its effective field is always "mmff94" — keying or labelling an OCL
+ *  refine as "uff" would only cause a redundant identical re-minimise on an MMFF94↔UFF toggle. */
+function effectiveRefineForceField(
+  options: Generate3DConformerOptions | undefined,
+  engine: ConformerEngineName
+): NonNullable<ConformerRefineOptions["forceField"]> {
+  if (engine === "openchemlib") return "mmff94";
+  return defaultRefineForceField(options?.optimize);
+}
+
+/**
+ * Stable key for a refined result within a single embedded conformer. Embedding is
+ * force-field-independent, so the cache holds ONE embed per molfile and memoises the
+ * refined coordinates per refinement mode here — switching Fast/Balanced/Quality (or
+ * MMFF94↔UFF) reuses the embed and never reuses another mode's refined geometry.
+ * `"none"` (Fast) is never stored: it has no refined stage. The key is the engine's
+ * EFFECTIVE force field + iteration cap, so MMFF94 and UFF refines of the same embed don't
+ * collide on RDKit, while an OCL embed (MMFF94-only) shares one key across both selections.
+ */
+function refinementKeyFor(
+  options: Generate3DConformerOptions | undefined,
+  atomCount: number | undefined,
+  engine: ConformerEngineName
+): string {
+  const optimize = options?.optimize ?? "auto";
+  if (optimize === "none") return "none";
+  const maxIts = options?.maxMinimiseIterations ?? qualityRefineIterationsFor(atomCount);
+  return `${effectiveRefineForceField(options, engine)}:${maxIts}`;
+}
 
 interface CacheEntry {
   embedded: Generate3DConformerResult;
-  refined?: Generate3DConformerResult;
+  /** Which engine produced this embed. A cached entry is reused only when it satisfies the
+   *  engine currently in effect (see cacheEntrySatisfies) so an OCL-fallback embed is never
+   *  served as a fresh RDKit one — except a `rdkitFallback` entry, which an RDKit/auto
+   *  request reuses (re-running RDKit would just fail again). */
+  engine: ConformerEngineName;
+  /** This OCL embed was produced because the RDKit embed FAILED for this molfile (RDKit
+   *  ETKDG can't embed some large/flexible structures). Lets an RDKit/auto request reuse it
+   *  instead of pointlessly re-failing RDKit and re-running the slow OCL fallback each spin. */
+  rdkitFallback?: boolean;
   traceSessionId?: string;
   traceRequestId?: number;
-  /** Pending MMFF94 minimisation on the live OCL conformer. Held until consumed —
-   *  run by a background refine job (after a prefetch) or on demand when a real
-   *  generate hits this entry. NOTE: OCL's minimise() is single-shot (not resumable),
-   *  so this thunk is meant to be invoked exactly ONCE with the size cap; it is cleared
-   *  immediately after, or KEPT only when a background run is skipped because a click is
-   *  waiting (an on-demand re-spin then runs it). */
-  refine?: (maxIts?: number) => Generate3DConformerResult;
+  /** Refined coordinates memoised per refinement mode (see refinementKeyFor). */
+  refinedByMode: Map<string, Generate3DConformerResult>;
+  /** Re-runnable minimisation from the embedded coordinates (each run starts from the
+   *  pristine embed), so different modes/force fields can be derived from the one embed
+   *  without re-embedding. Absent only when the embed itself failed. */
+  refineFromEmbedded?: (maxIts?: number, options?: ConformerRefineOptions) => Generate3DConformerResult;
+  /** Release any engine-held native/WASM resources for this entry. Called on eviction.
+   *  (RDKit keeps no long-lived handle, so this is a no-op there; the contract is kept so
+   *  an engine that DOES hold handles can free them deterministically.) */
+  dispose?: () => void;
 }
 
 const cache = new Map<string, CacheEntry>();
 
 function cachePut(molfile: string, entry: CacheEntry): void {
+  const existing = cache.get(molfile);
+  if (existing && existing !== entry) existing.dispose?.(); // replaced by a different entry
   cache.delete(molfile);
   cache.set(molfile, entry);
   while (cache.size > CACHE_LIMIT) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
+    cache.get(oldest)?.dispose?.(); // free engine-held resources before eviction
     cache.delete(oldest);
-    if (pendingRefine === oldest) pendingRefine = null; // evicted — nothing left to refine
+    if (pendingRefine?.molfile === oldest) pendingRefine = null; // evicted — nothing left to refine
   }
 }
 
@@ -155,12 +212,13 @@ function postOclTrace(request: ConformerWorkRequest, event: Parameters<typeof cr
 let running = false;
 const pendingGenerates: ConformerWorkRequest[] = [];
 let pendingPrefetch: ConformerWorkRequest | null = null;
-let pendingRefine: string | null = null; // molfile with a cached entry awaiting idle refinement
+// molfile with a cached entry awaiting idle refinement, plus the mode to refine it in
+let pendingRefine: { molfile: string; options?: Generate3DConformerOptions } | null = null;
 let pendingWarmup: ConformerWorkRequest | null = null;
 
 type WorkItem =
   | { kind: "request"; request: ConformerWorkRequest }
-  | { kind: "refine"; molfile: string };
+  | { kind: "refine"; molfile: string; options?: Generate3DConformerOptions };
 
 function takeNextWorkItem(): WorkItem | null {
   const generate = pendingGenerates.shift();
@@ -171,9 +229,9 @@ function takeNextWorkItem(): WorkItem | null {
     return { kind: "request", request: prefetch };
   }
   if (pendingRefine !== null) {
-    const refineMolfile = pendingRefine;
+    const { molfile: refineMolfile, options: refineOptions } = pendingRefine;
     pendingRefine = null;
-    return { kind: "refine", molfile: refineMolfile };
+    return { kind: "refine", molfile: refineMolfile, options: refineOptions };
   }
   if (pendingWarmup) {
     const warmup = pendingWarmup;
@@ -184,39 +242,43 @@ function takeNextWorkItem(): WorkItem | null {
 }
 
 /**
- * Run the entry's MMFF94 minimisation as ONE size-capped call, upgrading the cache
- * entry in place and returning the refined result.
+ * Run the requested mode's MMFF94 minimisation as ONE size-capped call, memoising the
+ * refined result on the entry (per mode) and returning it.
  *
- * CRITICAL: OCL's `ForceFieldMMFF94.minimise()` is NOT resumable. Only the FIRST call
- * on a force-field instance moves atoms; any later call (capped or not) is a no-op that
- * returns rc 1 with the energy frozen. An earlier "chunked" design called minimise in
- * small batches to stay responsive — it left every structure at ~6 iterations of polish
- * (i.e. the raw, often non-planar embed), which is why flat aromatics came out warped.
- * So the minimisation cannot be split, time-boxed, or resumed across calls: a single
- * `minimise({maxIts: cap})` is the only thing that actually converges the geometry.
+ * CRITICAL: OCL's `ForceFieldMMFF94.minimise()` runs to termination in a single,
+ * uninterruptible call — it cannot be time-boxed or split into resumable batches (an
+ * earlier "chunked" design left structures at ~6 iterations, i.e. the raw non-planar
+ * embed, warping flat aromatics). `refineFromEmbedded(cap)` is therefore one capped
+ * call. It IS re-runnable across modes because it restores the pristine embed first,
+ * so deriving a second mode from the same embed is safe (and cheap — no re-embed).
  *
- *   • cap  — size-based iteration ceiling (refineIterationsFor). Bounds how long this one
- *            uninterruptible call blocks the worker; small/medium molecules converge well
- *            inside it (e.g. pentacene at ~240 in <100ms).
+ *   • cap  — iteration ceiling for this mode (request options, else the size default).
  *
  * `preemptible` only governs whether we START: if a user `generate` is already queued we
- * skip and KEEP the thunk (an on-demand re-spin will refine then), rather than block the
- * click behind a minimisation we can't interrupt once begun. The embedded conformer is
- * already on screen, so this stage-2 polish hot-swaps under the live overlay when done.
+ * skip and KEEP the embed's refine capability (an on-demand re-spin refines then), rather
+ * than block the click behind a minimisation we can't interrupt once begun. The embedded
+ * conformer is already on screen, so this stage-2 polish hot-swaps under the live overlay.
  */
 async function runRefine(
   entry: CacheEntry,
   request: ConformerWorkRequest,
   options: { preemptible: boolean; stage: string }
 ): Promise<Generate3DConformerResult | undefined> {
-  const refine = entry.refine;
-  if (!refine) return entry.refined; // already refined (or no refinement)
-  if (options.preemptible && pendingGenerates.length > 0) {
-    return entry.refined; // a click is waiting — refine this on demand instead of blocking it
-  }
+  if ((request.options?.optimize ?? "auto") === "none") return undefined; // Fast — no refine stage
 
   const atomCount = entry.embedded.originalAtomCount;
-  const cap = refineIterationsFor(atomCount);
+  const key = refinementKeyFor(request.options, atomCount, entry.engine);
+  const cached = entry.refinedByMode.get(key);
+  if (cached) return cached; // this mode already refined for this embed
+
+  const refine = entry.refineFromEmbedded;
+  if (!refine) return undefined; // embed produced no refinement capability
+  if (options.preemptible && pendingGenerates.length > 0) {
+    return undefined; // a click is waiting — refine this on demand instead of blocking it
+  }
+
+  const cap = request.options?.maxMinimiseIterations ?? qualityRefineIterationsFor(atomCount);
+  const forceField = effectiveRefineForceField(request.options, entry.engine);
   const span = startSpin3dTraceSpan({
     sessionId: traceSessionId(request),
     requestId: request.id,
@@ -228,24 +290,29 @@ async function runRefine(
 
   const startedAt = Date.now();
   let status: "converged" | "capped" | "error" = "capped";
+  let errorMessage: string | undefined;
+  let refined: Generate3DConformerResult | undefined;
   try {
-    entry.refined = refine(cap);
-    status = entry.refined.forceField?.returnCode === 0 ? "converged" : "capped";
-  } catch {
-    status = "error"; // leave the entry at its embedded coords
+    refined = refine(cap, { forceField });
+    entry.refinedByMode.set(key, refined);
+    // Use the engine-reported status, not returnCode: OCL sets returnCode but RDKit only
+    // reports `status`, so keying on returnCode mislabelled every converged RDKit refine.
+    status = refined.forceField?.status === "converged" ? "converged" : "capped";
+  } catch (error) {
+    status = "error"; // leave the entry at its embedded coords (refinement is cosmetic)
+    errorMessage = error instanceof Error ? error.message : String(error);
   }
-  entry.refine = undefined; // single shot — minimise can't be resumed, so the thunk is spent
   span.complete({
-    message: `${cap} iters · ${status} · ${Date.now() - startedAt}ms`,
-    warningCount: entry.refined?.warnings.length
+    message: `${cap} iters · ${status} · ${Date.now() - startedAt}ms · ${key}${errorMessage ? ` · ${errorMessage}` : ""}`,
+    warningCount: refined?.warnings.length
   });
-  return entry.refined;
+  return refined;
 }
 
-function scheduleBackgroundRefine(molfile: string): void {
-  // Newest wins: a superseded molecule keeps its refine thunk in the cache and
-  // refines on demand if the user actually spins it.
-  pendingRefine = molfile;
+function scheduleBackgroundRefine(molfile: string, options: Generate3DConformerOptions | undefined): void {
+  // Newest wins: a superseded molecule keeps its embed (and refine capability) in the
+  // cache and refines on demand if the user actually spins it.
+  pendingRefine = { molfile, options };
 }
 
 async function drain(): Promise<void> {
@@ -262,7 +329,8 @@ async function drain(): Promise<void> {
             id: entry.traceRequestId ?? 0,
             sessionId: entry.traceSessionId ?? "background-refine",
             molfile: item.molfile,
-            originalAtomCount: entry.embedded.originalAtomCount
+            originalAtomCount: entry.embedded.originalAtomCount,
+            options: item.options
           };
           await runRefine(entry, request, {
             preemptible: true,
@@ -322,8 +390,13 @@ function submit(request: ConformerWorkRequest): void {
     }
     pendingGenerates.push(request);
   } else if (request.kind === "prefetch") {
-    // Already computed? Nothing to do. Otherwise keep only the latest pending prefetch.
-    if (request.molfile && cache.has(request.molfile)) {
+    // Already computed UNDER THE ENGINE this prefetch would use? Nothing to do. A cached
+    // embed produced by a DIFFERENT engine (e.g. after the user switched the Engine setting)
+    // must NOT short-circuit the re-prefetch — let it through so runGenerate re-embeds under
+    // the now-selected engine. When the engine can't be resolved without probing, don't skip.
+    const cached = request.molfile ? cache.get(request.molfile) : undefined;
+    const resolvedEngine = resolvedEngineForPreference(request.enginePreference);
+    if (cached && resolvedEngine !== undefined && cacheEntrySatisfies(cached, resolvedEngine)) {
       postTrace(request, {
         kind: "worker",
         stage: "worker.prefetch.skip",
@@ -349,6 +422,67 @@ function submit(request: ConformerWorkRequest): void {
   void drain();
 }
 
+// Engine selection. RDKit ETKDG is the fast embed; it is used when its WASM module is
+// available (a loader has been registered and initialised). Otherwise — including when no
+// loader is registered (the default until the WASM ships) — OpenChemLib is used. The probe
+// runs once: an init/load failure permanently selects OCL (a transparent fallback). NOTE: an
+// RDKit *embed* failure is NOT a fallback trigger — it surfaces as a failed embed so the slow
+// OCL embed is never silently re-run behind the user's back.
+//
+// The user's Engine setting overrides this: "openchemlib" forces the legacy engine (and
+// skips the RDKit probe entirely); "auto"/"rdkit" prefer RDKit when available (neither can
+// conjure RDKit if its WASM won't load, so both fall back to OCL in that case).
+let rdkitState: "unknown" | "available" | "unavailable" = "unknown";
+
+/** The engine `currentEngine(preference)` would resolve to RIGHT NOW without probing, or
+ *  `undefined` when it can't be known yet (an "auto"/"rdkit" preference whose RDKit probe
+ *  hasn't run). Lets synchronous callers (the prefetch dedupe) compare a cached entry's
+ *  engine against the selected one without forcing the async probe. */
+function resolvedEngineForPreference(
+  preference: Spin3dEnginePreference = "auto"
+): ConformerEngineName | undefined {
+  if (preference === "openchemlib") return "openchemlib";
+  if (rdkitState === "available") return "rdkit-wasm";
+  if (rdkitState === "unavailable") return "openchemlib";
+  return undefined; // "unknown" — needs the async probe below to decide
+}
+
+async function currentEngine(preference: Spin3dEnginePreference = "auto"): Promise<ConformerEngineName> {
+  const resolved = resolvedEngineForPreference(preference);
+  if (resolved !== undefined) return resolved;
+  // preference is "auto"/"rdkit" and RDKit hasn't been probed yet — probe once.
+  try {
+    await ensureRdkit();
+    rdkitState = "available";
+  } catch {
+    rdkitState = "unavailable";
+  }
+  return rdkitState === "available" ? "rdkit-wasm" : "openchemlib";
+}
+
+/** Whether a cached entry can serve a request resolving to `engine`. An exact engine match
+ *  always qualifies; additionally an RDKit/auto request reuses a `rdkitFallback` OCL entry,
+ *  since re-running RDKit on that molfile would just fail again and re-incur the OCL embed. */
+function cacheEntrySatisfies(entry: CacheEntry, engine: ConformerEngineName): boolean {
+  return entry.engine === engine || (engine === "rdkit-wasm" && entry.rdkitFallback === true);
+}
+
+async function embedConformer(
+  request: ConformerWorkRequest,
+  engine: ConformerEngineName
+): Promise<ProgressiveConformerResult> {
+  const input = { molfile: request.molfile ?? "", originalAtomCount: request.originalAtomCount };
+  // Embedding is force-field-independent; always request the refine capability so any mode
+  // can be derived from this one embed. The per-mode iteration cap is applied in runRefine.
+  if (engine === "rdkit-wasm") {
+    return rdkitGenerate3DConformerProgressive(input, { optimize: "auto" });
+  }
+  return withOclConformerTrace(
+    (event) => postOclTrace(request, event),
+    () => oclGenerate3DConformerProgressive(input, { optimize: "auto" })
+  );
+}
+
 async function runGenerate(request: ConformerWorkRequest): Promise<void> {
   const molfile = request.molfile ?? "";
   const isPrefetch = request.kind === "prefetch";
@@ -361,8 +495,9 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
     atomCount: request.originalAtomCount
   }, (trace) => post({ id: request.id, stage: "trace", trace }));
   try {
+    const engine = await currentEngine(request.enginePreference);
     const hit = cache.get(molfile);
-    if (hit) {
+    if (hit && cacheEntrySatisfies(hit, engine)) {
       cachePut(molfile, hit); // refresh LRU position
       postTrace(request, {
         kind: "worker",
@@ -383,7 +518,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       // user-priority job) so double bonds/conjugation reach planar MMFF94
       // geometry; it hot-swaps under the live overlay. The user spun THIS molecule,
       // so refine it even if another generate is queued (not preemptible).
-      if (pendingRefine === molfile) pendingRefine = null; // consuming it here
+      if (pendingRefine?.molfile === molfile) pendingRefine = null; // consuming it here
       const refined = await runRefine(hit, request, {
         preemptible: false,
         stage: "worker.refine"
@@ -403,13 +538,45 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       atomCount: request.originalAtomCount,
       queueDepth: queueDepth()
     });
-    const { embedded, refine } = await withOclConformerTrace(
-      (event) => postOclTrace(request, event),
-      () => generate3DConformerProgressive(
-        { molfile, originalAtomCount: request.originalAtomCount },
-        { optimize: "auto", maxMinimiseIterations: refineIterationsFor(request.originalAtomCount) }
-      )
-    );
+    // Speculative embeds are cheap on RDKit (~1 s) but ~45 s and uninterruptible on OCL.
+    // For a large structure on the OCL engine, skip the prefetch embed entirely so it can
+    // never park a multi-second job ahead of a click; it embeds on demand when actually spun.
+    if (isPrefetch && engine === "openchemlib" && (request.originalAtomCount ?? 0) > OCL_PREFETCH_MAX_ATOMS) {
+      postTrace(request, {
+        kind: "worker",
+        stage: "worker.prefetch.skip-large-ocl",
+        status: "info",
+        atomCount: request.originalAtomCount,
+        queueDepth: queueDepth()
+      });
+      runSpan.complete({ cacheStatus: "miss" });
+      return;
+    }
+    let { embedded, refineFromEmbedded } = await embedConformer(request, engine);
+    let effectiveEngine = engine;
+    let rdkitFallback = false;
+    // RDKit ETKDG cannot embed some large / highly flexible structures (e.g. long peptides)
+    // that the legacy OCL ConformerGenerator still handles. For a real (non-speculative) spin,
+    // fall back to OCL so the user gets a conformer instead of a hard failure. Prefetches stay
+    // cheap — they never trigger the slow, uninterruptible OCL embed speculatively; the
+    // on-demand generate does the fallback when the user actually clicks. A forced
+    // "openchemlib" preference is already on OCL, so there is nothing to fall back to.
+    if (embedded.embed.status !== "ok" && engine === "rdkit-wasm" && !isPrefetch) {
+      postTrace(request, {
+        kind: "worker",
+        stage: "worker.embed.rdkit-failed-ocl-fallback",
+        status: "info",
+        atomCount: request.originalAtomCount,
+        queueDepth: queueDepth()
+      });
+      const fallback = await embedConformer(request, "openchemlib");
+      embedded = fallback.embedded;
+      refineFromEmbedded = fallback.refineFromEmbedded;
+      if (fallback.embedded.embed.status === "ok") {
+        effectiveEngine = "openchemlib";
+        rdkitFallback = true;
+      }
+    }
     if (embedded.embed.status !== "ok") {
       if (!isPrefetch) post({ id: request.id, stage: "embedded", result: embedded });
       runSpan.complete({ cacheStatus: "miss", warningCount: embedded.warnings.length });
@@ -418,7 +585,10 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
     if (!isPrefetch) post({ id: request.id, stage: "embedded", result: embedded });
     const entry: CacheEntry = {
       embedded,
-      refine,
+      engine: effectiveEngine,
+      rdkitFallback,
+      refineFromEmbedded,
+      refinedByMode: new Map(),
       traceSessionId: traceSessionId(request),
       traceRequestId: request.id
     };
@@ -430,7 +600,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       // priority background job; large ones only refine on demand when actually
       // spun, so speculative work can never occupy the worker for many seconds.
       if ((request.originalAtomCount ?? 0) <= BACKGROUND_REFINE_MAX_ATOMS) {
-        scheduleBackgroundRefine(molfile);
+        scheduleBackgroundRefine(molfile, request.options);
       } else {
         postTrace(request, {
           kind: "worker",
@@ -464,26 +634,28 @@ async function runWarmup(request: ConformerWorkRequest): Promise<void> {
     stage: "worker.warmup",
     path: "worker"
   }, (trace) => post({ id: request.id, stage: "trace", trace }));
+  const warmupMolfile = [
+    "", "  warmup", "",
+    "  3  2  0  0  0  0  0  0  0  0999 V2000",
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+    "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+    "    2.2500    1.2990    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+    "  1  2  1  0  0  0  0",
+    "  2  3  1  0  0  0  0",
+    "M  END"
+  ].join("\n");
   try {
+    // Warm whichever engine is in effect first, so the first real embed skips its
+    // first-call cost (RDKit: WASM module init + JIT; OCL: torsion tables + JIT).
+    const engine = await currentEngine();
+    if (engine === "rdkit-wasm") {
+      await rdkitGenerate3DConformerProgressive({ molfile: warmupMolfile }, { optimize: "none" });
+    }
     await withOclConformerTrace((event) => postOclTrace(request, event), async () => {
       await ensureOclResources();
-      // A tiny throwaway embed warms OCL's lazily-built torsion tables + JIT so
-      // the first real molecule doesn't pay the ~1s first-call cost.
-      await generate3DConformerProgressive(
-        {
-          molfile: [
-            "", "  warmup", "",
-            "  3  2  0  0  0  0  0  0  0  0999 V2000",
-            "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
-            "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
-            "    2.2500    1.2990    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
-            "  1  2  1  0  0  0  0",
-            "  2  3  1  0  0  0  0",
-            "M  END"
-          ].join("\n")
-        },
-        { optimize: "none" }
-      );
+      // A tiny throwaway embed warms OCL's lazily-built torsion tables + JIT so the first
+      // real molecule doesn't pay the ~1s first-call cost (OCL is always the fallback).
+      await oclGenerate3DConformerProgressive({ molfile: warmupMolfile }, { optimize: "none" });
     });
     span.complete();
   } catch (error) {
@@ -494,6 +666,9 @@ async function runWarmup(request: ConformerWorkRequest): Promise<void> {
 }
 
 setOclResourcesUrl(oclResourcesUrl);
+// Register the RDKit ETKDG WASM loader so currentEngine() can select it. If the vendored
+// module is absent or fails to init, currentEngine() falls back to OCL (transparently).
+registerRdkitWasmLoader();
 
 globalThis.addEventListener("message", (event: MessageEvent<ConformerWorkRequest>) => {
   submit(event.data);
