@@ -186,7 +186,7 @@
       "source": "core",
       "defaultVisible": true,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 1120, "height": 218, "minWidth": 1040, "minHeight": 198 },
+      "preferredWindowSize": { "width": 860, "height": 190, "minWidth": 760, "minHeight": 170 },
       "category": "core",
       "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [

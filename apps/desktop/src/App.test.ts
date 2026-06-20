@@ -2113,14 +2113,16 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain('.app-shell[data-active-tool="tool.art.eyedropper"] .page');
     expect(appCss).toContain("cursor: crosshair;");
     expect(appCss).toContain(".art-toolbar-style-controls");
-    expect(appCss).toContain("grid-template-rows: 58px minmax(120px, auto);");
+    expect(appCss).toContain("grid-template-rows: 58px auto;");
     expect(appCss).toContain(".art-toolbar-command-band");
-    expect(appCss).toContain("grid-template-rows: 28px minmax(46px, auto);");
-    expect(appCss).toContain("grid-auto-rows: minmax(26px, auto);");
-    expect(appCss).toContain("grid-template-columns: repeat(3, minmax(160px, 1fr));");
+    expect(appCss).toContain("grid-template-rows: auto;");
+    expect(appCss).toContain("grid-auto-rows: auto;");
+    expect(appCss).toContain("grid-template-columns: minmax(260px, 520px);");
+    expect(appCss).toContain("grid-template-columns: 50px minmax(180px, 1fr) 48px;");
     expect(appCss).toContain(".art-inspector-slider-value");
     expect(appCss).toContain(".art-stroke-control-label");
     expect(appCss).toContain(".color-picker-wheel-stack .react-colorful");
+    expect(readFileSync(join(__dirname, "PaletteWindow.tsx"), "utf8")).toContain("new ResizeObserver");
   });
 
   it("keeps the art inspector color picker dependency license acceptable", () => {
@@ -2181,8 +2183,8 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
-      width: 1120,
-      minWidth: 1040
+      width: 860,
+      minWidth: 760
     });
     expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
       "tool.art.pencil",

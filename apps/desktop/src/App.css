@@ -376,7 +376,7 @@ textarea:focus-visible,
 .tool-palette.floating.horizontal.art-style-palette {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 58px minmax(120px, auto);
+  grid-template-rows: 58px auto;
   align-items: stretch;
   justify-items: stretch;
   align-content: start;
@@ -643,13 +643,13 @@ textarea:focus-visible,
   box-sizing: border-box;
   grid-column: 1;
   grid-row: 2;
-  grid-template-rows: 28px minmax(46px, auto);
-  grid-auto-rows: minmax(26px, auto);
+  grid-template-rows: auto;
+  grid-auto-rows: auto;
   align-items: start;
   gap: var(--cd-space-2);
   width: 100%;
   min-width: 0;
-  min-height: 120px;
+  min-height: 0;
   padding: var(--cd-space-2);
   border: 1px solid var(--cd-border-subtle);
   border-radius: var(--cd-radius-panel);
@@ -670,6 +670,7 @@ textarea:focus-visible,
 
 .art-inspector-main-row {
   align-items: stretch;
+  flex-wrap: wrap;
   min-height: 28px;
 }
 
@@ -843,8 +844,8 @@ textarea:focus-visible,
 
 .art-effect-row {
   display: grid;
-  grid-template-columns: 82px minmax(82px, 1fr) minmax(82px, 1fr);
-  column-gap: var(--cd-space-3);
+  grid-template-columns: minmax(260px, 520px);
+  row-gap: var(--cd-space-2);
 }
 
 .art-effect-color-trigger {
@@ -867,36 +868,41 @@ textarea:focus-visible,
 
 .art-inspector-opacity-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
-  align-items: end;
-  column-gap: 24px;
-  min-height: 46px;
+  grid-template-columns: minmax(260px, 520px);
+  align-items: start;
+  row-gap: var(--cd-space-2);
+  min-height: 0;
 }
 
 .art-inspector-slider {
   display: grid;
-  grid-template-rows: 17px 21px;
-  gap: 4px;
+  grid-template-columns: 50px minmax(180px, 1fr) 48px;
+  align-items: center;
+  column-gap: var(--cd-space-3);
   min-width: 0;
 }
 
 .art-inspector-slider-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
+  display: contents;
   color: var(--cd-text-secondary);
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
 }
 
+.art-inspector-slider-label {
+  grid-column: 1;
+}
+
 .art-inspector-slider-value {
+  grid-column: 3;
+  justify-self: end;
   color: var(--cd-text-primary);
   font-variant-numeric: tabular-nums;
 }
 
 .art-inspector-slider input {
+  grid-column: 2;
   width: 100%;
   height: 21px;
   min-width: 0;
