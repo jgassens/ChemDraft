@@ -158,10 +158,12 @@ import {
   selectedLayerObjectIds,
   selectedVisualEffectObjectIds,
   selectedArtBooleanEligibleObjectIds,
+  selectDocumentObject,
   parseSelectionClipboardPayload,
   pasteSelectionClipboardPayload,
   serializeSelectionClipboardPayload,
   swapGraphicObjectFillAndStroke,
+  selectDocumentObjects,
   toggleDocumentObjectSelection,
   ungroupSelectedDocumentObjects,
   updateNativeTextObjectScript,
@@ -8098,6 +8100,25 @@ describe("group transforms (multi-object selection)", () => {
     expect(selectedGroupObjectIds(grouped)).toEqual([group?.id]);
     expect(resolveGroupedDocumentObjectIds(grouped.pages[0].objects, grouped.selection.objectIds)).toEqual(ids);
     expect(selectionBounds(grouped.pages[0].objects, grouped.selection.objectIds)).toEqual(beforeBounds);
+  });
+
+  it("promotes grouped child selection gestures back to the group id", () => {
+    const { document, ids } = twoMolecules();
+    const pageId = document.pages[0].id;
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId, objectIds: ids }
+    ]));
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    expect(selectDocumentObject(grouped, ids[0]).selection.objectIds).toEqual([groupId]);
+    expect(selectDocumentObjects(grouped, pageId, ids).selection.objectIds).toEqual([groupId]);
+
+    const emptySelection = selectDocumentObjects(grouped, pageId, []);
+    expect(toggleDocumentObjectSelection(emptySelection, pageId, ids[0]).selection.objectIds).toEqual([groupId]);
+    expect(toggleDocumentObjectSelection(grouped, pageId, ids[0]).selection.objectIds).toEqual([]);
   });
 
   it("moves and rotates selected group children through the group id", () => {

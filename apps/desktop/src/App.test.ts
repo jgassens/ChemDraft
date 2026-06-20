@@ -599,6 +599,48 @@ describe("ChemDraft desktop shell", () => {
     expect(selection.nativeSelection).toBeUndefined();
   });
 
+  it("promotes marquee, lasso, and drag hits on grouped native molecules to the group", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Grouped Molecule Selection"), { x: 220, y: 240 });
+    const second = insertNativeSingleBondMolecule(first, { x: 360, y: 260 });
+    const molecules = second.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const grouped = groupSelectedDocumentObjects(selectDocumentObjects(
+      second,
+      second.pages[0].id,
+      molecules.map((molecule) => molecule.id)
+    ));
+    const groupId = grouped.selection.objectIds[0];
+    const child = grouped.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id === molecules[0].id
+    );
+    const atom = child?.atoms[0];
+    if (!groupId || !child || !atom) {
+      throw new Error("Expected grouped molecule fixture.");
+    }
+
+    const rectSelection = selectionInSelectionRect(grouped.pages[0].objects, {
+      x: atom.x - 3,
+      y: atom.y - 3
+    }, {
+      x: atom.x + 3,
+      y: atom.y + 3
+    });
+    const lassoSelection = selectionInSelectionLasso(grouped.pages[0].objects, [
+      { x: atom.x - 5, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y + 5 },
+      { x: atom.x - 5, y: atom.y + 5 }
+    ]);
+
+    expect(rectSelection).toEqual({ objectIds: [groupId], nativeSelection: undefined });
+    expect(lassoSelection).toEqual({ objectIds: [groupId], nativeSelection: undefined });
+    expect(nativeMoleculeSelectionDragIntent(
+      grouped,
+      child.id,
+      undefined,
+      { kind: "atom", atomId: atom.id, distanceToPointer: 0 }
+    )).toEqual({ kind: "whole-object" });
+  });
+
   it("does not pull adjacent text into a molecule marquee unless the text box is enclosed", () => {
     const withMolecule = insertNativeSingleBondMolecule(createPhase4Document("Marquee Text Guard"), { x: 220, y: 240 });
     const withText = insertNativeTextObject(withMolecule, { x: 264, y: 212 }, "hello");

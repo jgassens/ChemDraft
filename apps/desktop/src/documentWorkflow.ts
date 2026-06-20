@@ -6817,13 +6817,14 @@ export function selectDocumentObject(document: ChemDraftDocument, objectId: stri
   if (!page) {
     throw new Error(`Cannot select document object: object "${objectId}" does not exist.`);
   }
+  const selectableObjectId = selectableDocumentObjectIdForSelection(page.objects, objectId);
 
   return applyPatch(
     document,
     {
       op: "setSelection",
       pageId: page.id,
-      objectIds: [objectId]
+      objectIds: [selectableObjectId]
     },
     { now: phase4Timestamp }
   );
@@ -6834,12 +6835,16 @@ export function selectDocumentObjects(
   pageId: string,
   objectIds: readonly string[]
 ): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  const selectableObjectIds = page
+    ? promoteDocumentObjectIdsToSelectableGroups(page.objects, objectIds)
+    : [...objectIds];
   return applyPatch(
     document,
     {
       op: "setSelection",
       pageId,
-      objectIds: [...objectIds]
+      objectIds: selectableObjectIds
     },
     { now: phase4Timestamp }
   );
@@ -6850,9 +6855,14 @@ export function toggleDocumentObjectSelection(
   pageId: string,
   objectId: string
 ): ChemDraftDocument {
-  const objectIds = document.selection.objectIds.includes(objectId)
-    ? document.selection.objectIds.filter((candidate) => candidate !== objectId)
-    : [...document.selection.objectIds, objectId];
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  const currentIds = page
+    ? promoteDocumentObjectIdsToSelectableGroups(page.objects, document.selection.objectIds)
+    : document.selection.objectIds;
+  const selectableObjectId = page ? selectableDocumentObjectIdForSelection(page.objects, objectId) : objectId;
+  const objectIds = currentIds.includes(selectableObjectId)
+    ? currentIds.filter((candidate) => candidate !== selectableObjectId)
+    : [...currentIds, selectableObjectId];
   return selectDocumentObjects(document, pageId, objectIds);
 }
 
@@ -7955,6 +7965,55 @@ export function resolveGroupedDocumentObjectIds(
 
   ids.forEach(visit);
   return resolved;
+}
+
+function selectableDocumentObjectIdForSelection(
+  objects: readonly DocumentObject[],
+  objectId: string
+): string {
+  const objectById = new Map(objects.map((object) => [object.id, object] as const));
+  const outerGroupIdsByChildId = new Map<string, string>();
+  const visiting = new Set<string>();
+
+  const visitGroup = (group: GroupObject, parentGroupId: string) => {
+    if (visiting.has(group.id)) {
+      return;
+    }
+
+    visiting.add(group.id);
+    for (const childId of group.childObjectIds) {
+      outerGroupIdsByChildId.set(childId, parentGroupId);
+      const child = objectById.get(childId);
+      if (child?.type === "group") {
+        visitGroup(child, parentGroupId);
+      }
+    }
+    visiting.delete(group.id);
+  };
+
+  for (const object of objects) {
+    if (object.type === "group" && !outerGroupIdsByChildId.has(object.id)) {
+      visitGroup(object, object.id);
+    }
+  }
+
+  return outerGroupIdsByChildId.get(objectId) ?? objectId;
+}
+
+export function promoteDocumentObjectIdsToSelectableGroups(
+  objects: readonly DocumentObject[],
+  objectIds: readonly string[]
+): string[] {
+  const selectableObjectIds: string[] = [];
+
+  for (const objectId of objectIds) {
+    const selectableObjectId = selectableDocumentObjectIdForSelection(objects, objectId);
+    if (!selectableObjectIds.includes(selectableObjectId)) {
+      selectableObjectIds.push(selectableObjectId);
+    }
+  }
+
+  return selectableObjectIds;
 }
 
 export function selectedGroupObjectIds(document: ChemDraftDocument): string[] {

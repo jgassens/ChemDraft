@@ -230,6 +230,7 @@ import {
   groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
   type SelectionBounds,
   rotateDocumentObjectsAroundPoint,
@@ -844,7 +845,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.20.8.50-codex";
+const CURRENT_BUILD_STAMP = "6.20.9.18-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -7558,6 +7559,25 @@ export function MainWindow({
         return;
       }
 
+      if (event.shiftKey && selectableObjectId !== objectId) {
+        event.stopPropagation();
+        const nextDocument = toggleDocumentObjectSelection(document, document.pages[0].id, selectableObjectId);
+        replacePresentDocument(nextDocument);
+        clearTransientInteractionChrome();
+        setSelectedNativeMoleculePart(undefined);
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveGraphicTransformObjectId(undefined);
+        setSelectedGraphicPathNode(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+        setStatus(selectionStatusLabel({ objectIds: nextDocument.selection.objectIds }));
+        return;
+      }
+
       if (event.shiftKey && nativeMoleculeHit) {
         event.stopPropagation();
         const nextSelectedNativePart = nativeSelectionWithHitToggled(
@@ -7826,8 +7846,9 @@ export function MainWindow({
       return;
     }
 
-    replacePresentDocument((current) => selectDocumentObject(current, objectId));
-    setActiveEditorObjectId(object?.type === "molecule" ? object.id : undefined);
+    const activationObjectId = activeToolState.activeKind === "selection" ? selectableObjectId : objectId;
+    replacePresentDocument((current) => selectDocumentObject(current, activationObjectId));
+    setActiveEditorObjectId(object?.type === "molecule" && activationObjectId === object.id ? object.id : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveGraphicTransformObjectId(undefined);
     setSelectedGraphicPathNode(undefined);
@@ -12987,7 +13008,7 @@ export function selectionInSelectionRect(
     }
   }
 
-  return { objectIds, nativeSelection };
+  return promotedSelectionForGroupedObjects(objects, objectIds, nativeSelection);
 }
 
 export function eraserObjectIdsInSelectionRect(
@@ -13073,7 +13094,30 @@ export function selectionInSelectionLasso(
     }
   }
 
-  return { objectIds, nativeSelection };
+  return promotedSelectionForGroupedObjects(objects, objectIds, nativeSelection);
+}
+
+function promotedSelectionForGroupedObjects(
+  objects: readonly DocumentObject[],
+  objectIds: readonly string[],
+  nativeSelection: NativeMoleculeSelectionPart | undefined
+): { objectIds: string[]; nativeSelection?: NativeMoleculeSelectionPart } {
+  const selectableObjectIds = promoteDocumentObjectIdsToSelectableGroups(objects, objectIds);
+  if (!nativeSelection) {
+    return { objectIds: selectableObjectIds, nativeSelection: undefined };
+  }
+
+  const nativeSelectableId = promoteDocumentObjectIdsToSelectableGroups(objects, [nativeSelection.objectId])[0];
+  if (!nativeSelectableId || nativeSelectableId === nativeSelection.objectId) {
+    return { objectIds: selectableObjectIds, nativeSelection };
+  }
+
+  return {
+    objectIds: selectableObjectIds.includes(nativeSelectableId)
+      ? selectableObjectIds
+      : [...selectableObjectIds, nativeSelectableId],
+    nativeSelection: undefined
+  };
 }
 
 function selectionSubtractStatusLabel(selection: { objectIds: readonly string[]; nativeSelection?: NativeMoleculeSelectionPart }): string {
@@ -13144,7 +13188,7 @@ function parentGroupForDocumentObject(
 }
 
 function selectableDocumentObjectIdForPointer(document: ChemDraftDocument, objectId: string): string {
-  return parentGroupForDocumentObject(document.pages[0]?.objects ?? [], objectId)?.id ?? objectId;
+  return promoteDocumentObjectIdsToSelectableGroups(document.pages[0]?.objects ?? [], [objectId])[0] ?? objectId;
 }
 
 function groupedDragObjectIdsForPointer(document: ChemDraftDocument, objectId: string): string[] | undefined {
@@ -13904,6 +13948,14 @@ export function nativeMoleculeSelectionDragIntent(
     return { kind: "none" };
   }
 
+  const selectableObjectId = promoteDocumentObjectIdsToSelectableGroups(
+    document.pages[0]?.objects ?? [],
+    [objectId]
+  )[0] ?? objectId;
+  if (selectableObjectId !== objectId) {
+    return { kind: "whole-object" };
+  }
+
   if (isWholeNativeMoleculeSelected(document, objectId, selectedPart)) {
     return { kind: "whole-object" };
   }
@@ -14029,7 +14081,11 @@ function isWholeNativeMoleculeSelected(
   objectId: string,
   selectedPart: NativeMoleculeSelectionPart | undefined
 ): boolean {
-  return document.selection.objectIds.includes(objectId) && selectedPart?.objectId !== objectId;
+  const selectedObjectIds = resolveGroupedDocumentObjectIds(
+    document.pages[0]?.objects ?? [],
+    document.selection.objectIds
+  );
+  return selectedObjectIds.includes(objectId) && selectedPart?.objectId !== objectId;
 }
 
 function selectionStatusLabel(selection: {
