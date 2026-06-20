@@ -2186,6 +2186,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
     expect(toolPaletteSource).toContain("IroColorWheel");
+    expect(toolPaletteSource).toContain('sliderType: "value"');
+    expect(toolPaletteSource).not.toContain("wheelLightness: false");
     expect(toolPaletteSource).toContain("ColorPickerPopoverBody");
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");

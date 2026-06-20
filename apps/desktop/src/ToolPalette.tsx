@@ -2239,10 +2239,7 @@ function IroColorWheel({
       handleRadius: 6,
       layout: [
         {
-          component: iro.ui.Wheel,
-          options: {
-            wheelLightness: false
-          }
+          component: iro.ui.Wheel
         },
         {
           component: iro.ui.Slider,
