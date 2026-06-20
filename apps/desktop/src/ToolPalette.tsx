@@ -96,7 +96,7 @@ const ART_ARRANGE_FLYOUTS = [
   },
   {
     id: "transform",
-    title: "Transform",
+    title: "Flip",
     commandIds: [
       "layout.flipHorizontal",
       "layout.flipVertical",
@@ -131,6 +131,43 @@ const ART_SHAPE_COMMAND_IDS = [
   "tool.art.roundedRect",
   "tool.art.circle",
   "tool.art.ellipse"
+] as const;
+
+const ART_SELECTION_COLUMN_COMMAND_IDS = [
+  "tool.select",
+  "tool.eraser",
+  "tool.lasso",
+  "tool.text"
+] as const;
+
+const ART_PATH_COMMAND_IDS = [
+  "tool.art.line",
+  "tool.art.lineWavy",
+  "tool.art.pen",
+  "tool.art.polyline",
+  "tool.art.scissors",
+  "tool.art.measure",
+  "tool.art.arrow",
+  "tool.art.arc270",
+  "tool.art.arc90",
+  "tool.art.pencil",
+  "tool.art.eyedropper"
+] as const;
+
+const ART_BOOLEAN_COMMAND_IDS = [
+  "art.boolean.union",
+  "art.boolean.subtract",
+  "art.boolean.intersect",
+  "art.boolean.split"
+] as const;
+
+const ART_ARRANGE_COLUMN_ITEM_IDS = [
+  "align",
+  "layout.distributeHorizontal",
+  "layout.distributeVertical",
+  "layer",
+  "transform",
+  "group"
 ] as const;
 
 export function ToolPalette({
@@ -180,98 +217,95 @@ export function ToolPalette({
     clearTooltip
   } = usePaletteTooltipState();
 
-  const toolGroupElements = groups.map((group, groupIndex) => {
-    const shapeFlyout = showArtStyleControls ? artShapeFlyoutForGroup(group) : undefined;
-    if (shapeFlyout) {
-      const tooltipId = `${groupIndex}-0-art-shape-${shapeFlyout.id}`;
-      return (
-        <div
-          className="tool-group art-shape-flyout-group"
-          key={`art-shape-${group.map((tool) => tool.id).join("-")}`}
-          data-art-shape-flyout-group="true"
-        >
-          <CommandFlyoutButton
-            commands={shapeFlyout.commands}
-            distributeMode={currentDistributeMode}
-            title={shapeFlyout.title}
-            primaryAssetName="Art_Shapes"
-            activeCommandId={activeTool}
-            tooltipId={tooltipId}
-            tooltipVisible={visibleTooltipId === tooltipId}
-            onInvoke={onInvoke}
-            onTooltipEnter={() => requestTooltip(tooltipId)}
-            onTooltipLeave={() => clearTooltip(tooltipId)}
-          />
-        </div>
-      );
-    }
+  const renderCommandButton = (
+    command: CommandSpec,
+    tooltipId: string,
+    key: string | number
+  ) => (
+    <CommandIconButton
+      key={key}
+      command={command}
+      active={command.enabled !== false && activeTool === command.id}
+      tooltipId={tooltipId}
+      tooltipVisible={visibleTooltipId === tooltipId}
+      distributeMode={currentDistributeMode}
+      onTooltipEnter={() => requestTooltip(tooltipId)}
+      onTooltipLeave={() => clearTooltip(tooltipId)}
+      onInvoke={onInvoke}
+    />
+  );
 
-    const arrangeItems = showArtStyleControls ? artArrangeToolbarItemsForGroup(group) : [];
-    if (arrangeItems.length > 0) {
-      return (
-        <div
-          className="tool-group art-arrange-flyout-group"
-          key={`art-arrange-${group.map((tool) => tool.id).join("-")}`}
-          data-art-arrange-flyout-group="true"
-        >
-          {arrangeItems.map((item, itemIndex) => {
-            const tooltipId = `${groupIndex}-${itemIndex}-art-arrange-${item.id}`;
-            if (item.kind === "command") {
-              return (
-                <CommandIconButton
-                  key={item.command.id}
-                  command={item.command}
-                  active={item.command.enabled !== false && activeTool === item.command.id}
-                  tooltipId={tooltipId}
-                  tooltipVisible={visibleTooltipId === tooltipId}
-                  distributeMode={currentDistributeMode}
-                  onTooltipEnter={() => requestTooltip(tooltipId)}
-                  onTooltipLeave={() => clearTooltip(tooltipId)}
-                  onInvoke={onInvoke}
-                />
-              );
-            }
+  const renderCommandFlyout = ({
+    commands,
+    flyoutId,
+    key,
+    primaryAssetName,
+    title,
+    tooltipId
+  }: {
+    commands: CommandSpec[];
+    flyoutId: string;
+    key: string | number;
+    primaryAssetName?: ToolbarAssetName;
+    title: string;
+    tooltipId: string;
+  }) => (
+    <CommandFlyoutButton
+      key={key}
+      commands={commands}
+      distributeMode={currentDistributeMode}
+      flyoutId={flyoutId}
+      title={title}
+      primaryAssetName={primaryAssetName}
+      activeCommandId={activeTool}
+      tooltipId={tooltipId}
+      tooltipVisible={visibleTooltipId === tooltipId}
+      onInvoke={onInvoke}
+      onTooltipEnter={() => requestTooltip(tooltipId)}
+      onTooltipLeave={() => clearTooltip(tooltipId)}
+    />
+  );
 
-            return (
-              <CommandFlyoutButton
-                key={item.flyout.id}
-                commands={item.flyout.commands}
-                distributeMode={currentDistributeMode}
-                title={item.flyout.title}
-                activeCommandId={activeTool}
-                tooltipId={tooltipId}
-                tooltipVisible={visibleTooltipId === tooltipId}
-                onInvoke={onInvoke}
-                onTooltipEnter={() => requestTooltip(tooltipId)}
-                onTooltipLeave={() => clearTooltip(tooltipId)}
-              />
-            );
-          })}
-        </div>
-      );
-    }
+  const toolGroupElements = groups.map((group, groupIndex) => (
+    <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
+      {group.map((tool, toolIndex) => {
+        const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+        return renderCommandButton(tool, tooltipId, tool.id);
+      })}
+    </div>
+  ));
 
-    return (
-      <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
-        {group.map((tool, toolIndex) => {
-          const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
-          return (
-            <CommandIconButton
-              key={tool.id}
-              command={tool}
-              active={tool.enabled !== false && activeTool === tool.id}
-              tooltipId={tooltipId}
-              tooltipVisible={visibleTooltipId === tooltipId}
-              distributeMode={currentDistributeMode}
-              onTooltipEnter={() => requestTooltip(tooltipId)}
-              onTooltipLeave={() => clearTooltip(tooltipId)}
-              onInvoke={onInvoke}
-            />
-          );
-        })}
-      </div>
-    );
-  });
+  const artCommandColumnElements = showArtStyleControls
+    ? artToolbarCommandColumns(groups).map((column, columnIndex) => {
+        const elements = column.items.map((item, itemIndex) => {
+          const tooltipId = `art-column-${columnIndex}-${itemIndex}-${item.id}`;
+          if (item.kind === "command") {
+            return renderCommandButton(item.command, tooltipId, item.id);
+          }
+
+          return renderCommandFlyout({
+            commands: item.flyout.commands,
+            flyoutId: item.flyout.id,
+            key: item.id,
+            primaryAssetName: item.primaryAssetName,
+            title: item.flyout.title,
+            tooltipId
+          });
+        });
+
+        return (
+          <div
+            className="art-toolbar-command-column"
+            data-art-command-column={column.id}
+            data-art-arrange-column={column.containsArrangeItems ? "true" : undefined}
+            data-art-shape-flyout-column={column.containsShapeFlyout ? "true" : undefined}
+            key={column.id}
+          >
+            {elements}
+          </div>
+        );
+      })
+    : [];
 
   return (
     <aside
@@ -297,7 +331,9 @@ export function ToolPalette({
       ) : null}
       {showArtStyleControls ? (
         <div className="art-toolbar-command-band" data-art-command-band="true">
-          {toolGroupElements}
+          <div className="art-toolbar-command-grid" data-art-command-grid="true">
+            {artCommandColumnElements}
+          </div>
         </div>
       ) : toolGroupElements}
       {showMainStyleControls ? (
@@ -2547,6 +2583,76 @@ type ArtArrangeToolbarItem =
   | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout }
   | { kind: "command"; id: string; command: CommandSpec };
 
+type ArtToolbarCommandItem =
+  | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout; primaryAssetName?: ToolbarAssetName }
+  | { kind: "command"; id: string; command: CommandSpec };
+
+type ArtToolbarCommandColumn = {
+  id: string;
+  containsArrangeItems?: boolean;
+  containsShapeFlyout?: boolean;
+  items: ArtToolbarCommandItem[];
+};
+
+function artToolbarCommandColumns(groups: CommandSpec[][]): ArtToolbarCommandColumn[] {
+  const commands = groups.flat();
+  const commandById = new Map(commands.map((command) => [command.id, command] as const));
+  const shapeFlyout = artShapeFlyoutForGroup(commands);
+  const arrangeItemById = new Map(artArrangeToolbarItemsForGroup(commands).map((item) => [item.id, item] as const));
+  const commandItems = (commandIds: readonly string[]): ArtToolbarCommandItem[] =>
+    commandIds.flatMap((commandId) => {
+      const command = commandById.get(commandId);
+      return command ? [{ kind: "command" as const, id: command.id, command }] : [];
+    });
+  const arrangeItems = (itemIds: readonly string[]): ArtToolbarCommandItem[] => {
+    const items: ArtToolbarCommandItem[] = [];
+    itemIds.forEach((itemId) => {
+      const item = arrangeItemById.get(itemId);
+      if (!item) {
+        return;
+      }
+
+      items.push(
+        item.kind === "command"
+          ? { kind: "command", id: item.command.id, command: item.command }
+          : { kind: "flyout", id: item.flyout.id, flyout: item.flyout }
+      );
+    });
+    return items;
+  };
+
+  const drawingItems: ArtToolbarCommandItem[] = commandItems(ART_PATH_COMMAND_IDS);
+  if (shapeFlyout) {
+    drawingItems.push({
+      kind: "flyout",
+      id: `art-shape-${shapeFlyout.id}`,
+      flyout: shapeFlyout,
+      primaryAssetName: "Art_Shapes"
+    });
+  }
+
+  return [
+    {
+      id: "selection",
+      items: commandItems(ART_SELECTION_COLUMN_COMMAND_IDS)
+    },
+    {
+      id: "drawing",
+      containsShapeFlyout: Boolean(shapeFlyout),
+      items: drawingItems
+    },
+    {
+      id: "arrange",
+      containsArrangeItems: true,
+      items: arrangeItems(ART_ARRANGE_COLUMN_ITEM_IDS)
+    },
+    {
+      id: "boolean",
+      items: commandItems(ART_BOOLEAN_COMMAND_IDS)
+    }
+  ];
+}
+
 function artArrangeToolbarItemsForGroup(group: CommandSpec[]): ArtArrangeToolbarItem[] {
   if (!group.some((command) => ART_ARRANGE_COMMAND_IDS.has(command.id))) {
     return [];
@@ -2600,6 +2706,7 @@ function artShapeFlyoutForGroup(group: CommandSpec[]): ArtArrangeFlyout | undefi
 function CommandFlyoutButton({
   commands,
   distributeMode,
+  flyoutId,
   title,
   primaryAssetName,
   activeCommandId,
@@ -2611,6 +2718,7 @@ function CommandFlyoutButton({
 }: {
   commands: CommandSpec[];
   distributeMode: ToolPaletteDistributeMode;
+  flyoutId: string;
   title: string;
   primaryAssetName?: ToolbarAssetName;
   activeCommandId?: string;
@@ -2694,7 +2802,7 @@ function CommandFlyoutButton({
   return (
     <span
       className="icon-button-shell command-flyout-shell"
-      data-command-flyout={title.toLowerCase()}
+      data-command-flyout={flyoutId}
       data-command-tooltip-owner={primaryCommand.id}
       data-tooltip-owner-id={tooltipId}
       data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
@@ -2725,7 +2833,7 @@ function CommandFlyoutButton({
         aria-pressed={activeState || undefined}
         data-command-id={primaryCommand.id}
         data-active={activeState ? "true" : undefined}
-        data-command-flyout-button={title.toLowerCase()}
+        data-command-flyout-button={flyoutId}
         data-command-flyout-ids={commands.map((command) => command.id).join(" ")}
         data-disabled={primaryDisabled ? "true" : undefined}
         data-shortcut-label={visibleShortcutLabel}
@@ -2784,7 +2892,7 @@ function CommandFlyoutButton({
         className="toolbar-command-flyout-menu"
         role="menu"
         aria-label={`${title} commands`}
-        data-command-flyout-menu={title.toLowerCase()}
+        data-command-flyout-menu={flyoutId}
         hidden={!menuOpen}
       >
         {commands.map((command) => {

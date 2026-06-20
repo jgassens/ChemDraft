@@ -1953,6 +1953,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('aria-label="ChemDraft floating Art Toolbar"');
     expect(markup).toContain('data-toolset-id="core.art"');
     expect(markup).toContain('data-command-id="tool.select"');
+    expect(markup).toContain('data-command-id="tool.lasso"');
     expect(markup).not.toContain('data-command-id="tool.art.directEdit"');
     expect(markup).toContain('data-command-id="tool.text"');
     expect(markup).toContain('data-command-id="tool.art.rect"');
@@ -1966,10 +1967,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="tool.art.scissors"');
     expect(markup).toContain('data-command-id="tool.art.measure"');
     expect(markup).toContain('data-command-id="tool.eraser"');
-    expect(markup).toContain('data-command-id="tool.art.pencil"');
-    expect(markup).toContain('data-command-id="tool.art.brush"');
     expect(markup).toContain('data-command-id="tool.art.arrow"');
     expect(markup).toContain('data-command-id="tool.art.arc270"');
+    expect(markup).toContain('data-command-id="tool.art.arc90"');
+    expect(markup).toContain('data-command-id="tool.art.pencil"');
     expect(markup).toContain('data-command-id="layout.bringForward"');
     expect(markup).toContain('data-command-id="layout.sendToBack"');
     expect(markup).toContain('data-command-id="layout.alignLeft"');
@@ -1986,10 +1987,16 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="layout.duplicate"');
     expect(markup).toContain('data-command-id="layout.group"');
     expect(markup).toContain('data-command-id="layout.ungroup"');
-    expect(markup).toContain('data-art-shape-flyout-group="true"');
+    expect(markup).toContain('data-art-command-grid="true"');
+    expect(markup.match(/data-art-command-column=/g) ?? []).toHaveLength(4);
+    expect(markup).toContain('data-art-command-column="selection"');
+    expect(markup).toContain('data-art-command-column="drawing"');
+    expect(markup).toContain('data-art-command-column="arrange"');
+    expect(markup).toContain('data-art-command-column="boolean"');
+    expect(markup).toContain('data-art-shape-flyout-column="true"');
     expect(markup).toContain('data-command-flyout="shapes"');
     expect(markup).toContain('data-command-flyout-menu="shapes"');
-    expect(markup).toContain('data-art-arrange-flyout-group="true"');
+    expect(markup.match(/data-art-arrange-column="true"/g) ?? []).toHaveLength(1);
     expect(markup).toContain('data-command-flyout="align"');
     expect(markup).toContain('data-command-flyout="layer"');
     expect(markup).toContain('data-command-flyout="transform"');
@@ -2014,10 +2021,11 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.art.scissors")).toContain('data-toolbar-asset="Art_Scissors"');
     expect(buttonMarkupForCommand(markup, "tool.art.measure")).toContain('data-toolbar-asset="Art_Tape_Measure"');
     expect(buttonMarkupForCommand(markup, "tool.eraser")).toContain('data-toolbar-asset="Art_Eraser"');
-    expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-toolbar-asset="Art_Pencil"');
-    expect(buttonMarkupForCommand(markup, "tool.art.brush")).toContain('data-toolbar-asset="Art_Brush"');
+    expect(buttonMarkupForCommand(markup, "tool.lasso")).toContain('data-toolbar-asset="Custom_Lasso"');
     expect(buttonMarkupForCommand(markup, "tool.art.arrow")).toContain('data-toolbar-asset="Art_Arrow"');
     expect(buttonMarkupForCommand(markup, "tool.art.arc270")).toContain('data-toolbar-asset="Art_Arc_Circular"');
+    expect(buttonMarkupForCommand(markup, "tool.art.arc90")).toContain('data-toolbar-asset="Art_Arc_Quarter"');
+    expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-toolbar-asset="Art_Pencil"');
     expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-toolbar-asset="Custom_Left"');
     expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-shortcut-label="⌥⇧⌘L"');
     expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-toolbar-asset="Custom_Horizontal"');
@@ -2115,6 +2123,8 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain(".art-toolbar-style-controls");
     expect(appCss).toContain("grid-template-rows: 58px auto;");
     expect(appCss).toContain(".art-toolbar-command-band");
+    expect(appCss).toContain(".art-toolbar-command-grid");
+    expect(appCss).toContain("grid-template-columns: repeat(4, max-content);");
     expect(appCss).toContain("grid-template-rows: auto;");
     expect(appCss).toContain("grid-auto-rows: auto;");
     expect(appCss).toContain("grid-template-columns: minmax(260px, 520px);");
@@ -2183,7 +2193,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
-      width: 860,
+      width: 560,
       minWidth: 760
     });
     expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([

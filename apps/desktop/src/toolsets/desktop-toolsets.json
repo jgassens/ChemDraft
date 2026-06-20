@@ -186,7 +186,7 @@
       "source": "core",
       "defaultVisible": true,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 860, "height": 190, "minWidth": 760, "minHeight": 170 },
+      "preferredWindowSize": { "width": 560, "height": 190, "minWidth": 760, "minHeight": 170 },
       "category": "core",
       "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [
@@ -195,6 +195,7 @@
           "items": [
             { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Art_Select", "shortcutDisplay": "V", "category": "selection" },
             { "commandId": "tool.eraser", "title": "Eraser", "icon": "select", "assetName": "Art_Eraser", "category": "selection" },
+            { "commandId": "tool.lasso", "title": "Lasso", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "category": "selection" },
             { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
