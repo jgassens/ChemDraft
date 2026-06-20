@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
-import { HexColorPicker } from "react-colorful";
+import iro from "@jaames/iro";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 import {
@@ -1816,6 +1816,10 @@ function hexToRgbaCss(color: string, opacity: number): string {
 }
 
 type ColorPickerTab = "color" | "palettes";
+type IroColorPickerInstance = ReturnType<typeof iro.ColorPicker>;
+type IroColorLike = {
+  hexString: string;
+};
 type ColorCommand = {
   id: string;
   title: string;
@@ -2116,7 +2120,11 @@ function ColorPickerPopoverBody({
       {tab === "color" ? (
         <div className="color-picker-color-panel" role="tabpanel" aria-label="Color wheel and channel values">
           <div className="color-picker-wheel-stack">
-            <HexColorPicker color={normalizedValue} onChange={previewColor} onChangeEnd={commitColor} />
+            <IroColorWheel
+              color={normalizedValue}
+              onCommitColor={commitColor}
+              onPreviewColor={previewColor}
+            />
             <label className="color-wheel-control">
               <span className="visually-hidden">System color wheel</span>
               <input
@@ -2193,6 +2201,106 @@ function ColorPickerPopoverBody({
         </div>
       )}
     </>
+  );
+}
+
+function IroColorWheel({
+  color,
+  onCommitColor,
+  onPreviewColor
+}: {
+  color: string;
+  onCommitColor: (color: string) => void;
+  onPreviewColor: (color: string) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const pickerRef = useRef<IroColorPickerInstance | null>(null);
+  const onCommitRef = useRef(onCommitColor);
+  const onPreviewRef = useRef(onPreviewColor);
+
+  useEffect(() => {
+    onCommitRef.current = onCommitColor;
+  }, [onCommitColor]);
+
+  useEffect(() => {
+    onPreviewRef.current = onPreviewColor;
+  }, [onPreviewColor]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
+
+    const picker = iro.ColorPicker(host, {
+      borderColor: "#9eb2ba",
+      borderWidth: 1,
+      color,
+      handleRadius: 6,
+      layout: [
+        {
+          component: iro.ui.Wheel,
+          options: {
+            wheelLightness: false
+          }
+        },
+        {
+          component: iro.ui.Slider,
+          options: {
+            sliderType: "value"
+          }
+        }
+      ],
+      margin: 8,
+      padding: 3,
+      sliderSize: 13,
+      width: 112
+    });
+    pickerRef.current = picker;
+
+    const previewColor = (iroColor: IroColorLike) => {
+      const normalized = normalizeHexColor(iroColor.hexString);
+      if (normalized) {
+        onPreviewRef.current(normalized);
+      }
+    };
+    const commitColor = (iroColor: IroColorLike) => {
+      const normalized = normalizeHexColor(iroColor.hexString);
+      if (normalized) {
+        onCommitRef.current(normalized);
+      }
+    };
+
+    picker.on("input:change", previewColor);
+    picker.on("input:end", commitColor);
+
+    return () => {
+      picker.off("input:change", previewColor);
+      picker.off("input:end", commitColor);
+      pickerRef.current = null;
+      host.replaceChildren();
+    };
+  }, []);
+
+  useEffect(() => {
+    const normalized = normalizeHexColor(color);
+    const picker = pickerRef.current;
+    if (!normalized || !picker) {
+      return;
+    }
+
+    if (normalizeHexColor(picker.color.hexString) !== normalized) {
+      picker.color.hexString = normalized;
+    }
+  }, [color]);
+
+  return (
+    <div
+      ref={hostRef}
+      className="iro-color-picker"
+      aria-label="Iro color wheel"
+      data-palette-control="true"
+    />
   );
 }
 

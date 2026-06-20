@@ -12,7 +12,7 @@ All toolbar actions must be command-backed. Dependency-native objects must never
 - `GraphicObjectStyleSchema` supports paint, opacity, stroke width, dash, cap, join, miter, gloss/effect, and tilt fields.
 - `GraphicObjectDataSchema` supports line/path/arc metadata, `cornerRadiusPx`, and legacy path fields.
 - `@chemdraft/art-engine` owns native art planning, projection, bounds, capabilities, paint plans, path handles, and uses `svg-path-commander`.
-- `ToolPalette.tsx` already uses `react-colorful`.
+- `ToolPalette.tsx` uses `@jaames/iro` for the shared color wheel/slider, with RGB/CMYK/HEX fields and palette swatches kept in owned React UI.
 - Editor layering invariant: in editor mode, `GraphicObject`s remain filtered out of `PageSvgSurface` and render only through the overlay. Export and editor may consume the same art-engine plan, but editor mode must not reintroduce duplicate or frozen graphics.
 
 ## Locked Model Decisions
@@ -56,7 +56,7 @@ Phase 10 adds:
 Already present:
 
 - `svg-path-commander` in `@chemdraft/art-engine`
-- `react-colorful` in `apps/desktop`
+- `@jaames/iro` in `apps/desktop`
 
 Add later, one phase at a time:
 
@@ -298,7 +298,7 @@ Behavior:
 
 - Fill/stroke type controls: none, solid, linear, radial, gloss preset.
 - Gradient rail and stop list.
-- Stop color and opacity editing with `react-colorful`.
+- Stop color and opacity editing with the shared `@jaames/iro` color popover.
 - Add, delete, reverse, and rotate stops.
 - Linear start/end handles and radial center/radius/focus handles on canvas.
 
@@ -458,4 +458,3 @@ Each implementation phase should run:
 - `git diff --check`.
 - Browser interaction QA for visible behavior changes.
 - Built-app QA with `./run-app` when the user needs to test the desktop bundle.
-

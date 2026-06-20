@@ -1026,30 +1026,41 @@ textarea:focus-visible,
 
 .color-picker-color-panel {
   display: grid;
-  grid-template-columns: 142px minmax(0, 1fr);
+  grid-template-columns: 158px minmax(0, 1fr);
   gap: 10px;
   padding-top: 8px;
 }
 
 .color-picker-wheel-stack {
   display: grid;
-  grid-template-columns: 96px 38px;
+  grid-template-columns: 112px 38px;
   gap: 8px;
   align-items: center;
 }
 
-.color-picker-wheel-stack .react-colorful {
-  width: 96px;
-  height: 110px;
+.iro-color-picker,
+.iro-color-picker .IroColorPicker,
+.iro-color-picker .IroWheel,
+.iro-color-picker .IroSlider {
+  -webkit-app-region: no-drag;
 }
 
-.color-picker-wheel-stack .react-colorful__saturation {
-  border-radius: var(--cd-radius-control) var(--cd-radius-control) 0 0;
+.iro-color-picker {
+  width: 112px;
+  min-height: 133px;
 }
 
-.color-picker-wheel-stack .react-colorful__hue {
-  height: 14px;
-  border-radius: 0 0 var(--cd-radius-control) var(--cd-radius-control);
+.iro-color-picker .IroColorPicker {
+  cursor: crosshair;
+}
+
+.iro-color-picker .IroSlider {
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.iro-color-picker .IroHandle {
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.25));
 }
 
 .color-wheel-control {
@@ -1134,6 +1145,18 @@ textarea:focus-visible,
   color: var(--cd-text-primary);
   font: inherit;
   font-size: 10px;
+}
+
+.color-channel-group input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.color-channel-group input[type="number"]::-webkit-outer-spin-button,
+.color-channel-group input[type="number"]::-webkit-inner-spin-button {
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .color-hex-field input {

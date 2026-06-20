@@ -2185,7 +2185,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('tool.id === "tool.art.eyedropper" && activeToolState.activeCommandId === "tool.art.eyedropper"');
     expect(mainWindowSource).toContain('event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
-    expect(toolPaletteSource).toContain("HexColorPicker");
+    expect(toolPaletteSource).toContain("IroColorWheel");
     expect(toolPaletteSource).toContain("ColorPickerPopoverBody");
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");
@@ -2203,17 +2203,19 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("grid-template-columns: 50px minmax(180px, 1fr) 48px;");
     expect(appCss).toContain(".art-inspector-slider-value");
     expect(appCss).toContain(".art-stroke-control-label");
-    expect(appCss).toContain(".color-picker-wheel-stack .react-colorful");
+    expect(appCss).toContain(".iro-color-picker .IroColorPicker");
+    expect(appCss).toContain('.color-channel-group input[type="number"]::-webkit-inner-spin-button');
+    expect(appCss).toContain("appearance: textfield;");
     expect(readFileSync(join(__dirname, "PaletteWindow.tsx"), "utf8")).toContain("new ResizeObserver");
   });
 
   it("keeps the art inspector color picker dependency license acceptable", () => {
-    const reactColorfulPackage = JSON.parse(readFileSync(
-      join(dirname(require.resolve("react-colorful")), "../package.json"),
+    const iroPackage = JSON.parse(readFileSync(
+      join(dirname(require.resolve("@jaames/iro")), "../package.json"),
       "utf8"
     )) as { license: string };
 
-    expect(reactColorfulPackage.license).toBe("MIT");
+    expect(iroPackage.license).toBe("MPL-2.0");
   });
 
   it("keeps art boolean commands disabled for a closed shape plus open line", () => {

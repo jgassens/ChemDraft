@@ -205,6 +205,9 @@ describe("ToolPalette art color popover", () => {
     expect(popover.querySelector('[aria-label="RGB color"]')).not.toBeNull();
     expect(popover.querySelector('[aria-label="CMYK color"]')).not.toBeNull();
     expect(popover.querySelector(".color-hex-field")).not.toBeNull();
+    expect(popover.querySelector(".iro-color-picker .IroColorPicker")).not.toBeNull();
+    expect(popover.querySelector(".iro-color-picker .IroWheel")).not.toBeNull();
+    expect(popover.querySelector(".iro-color-picker .IroSlider")).not.toBeNull();
     act(() => {
       popover.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       popover.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
