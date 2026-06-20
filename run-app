@@ -183,6 +183,16 @@ resign_local_bundle() {
 launch_bundle() {
   local bundle="$1"
 
+  # On newer macOS builds, LaunchServices can keep stale metadata for repeatedly rebuilt
+  # unsigned development bundles and then report kLSNoExecutableErr even when
+  # Contents/MacOS/$CFBundleExecutable exists and codesign verifies. Register the exact bundle
+  # path just before opening so ./run-app does not accidentally launch another checkout with the
+  # same bundle id or fail against stale cache state.
+  if [ -x /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister ]; then
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+      -f "$bundle" >/dev/null 2>&1 || true
+  fi
+
   if ! open -n "$bundle"; then
     echo "macOS open failed. The bundle was built, but LaunchServices refused to open it."
     echo "Check for stale ChemDraft processes, then run ./run-app again."
