@@ -162,7 +162,19 @@ export const atomElementActions: CommandSpec[] = nativeSingleLetterElements.map(
   description: `Set the hovered native atom to ${element}`
 }));
 
+/** Opens the Preferences window (Spin 3D refinement mode, future app settings). */
+export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
+
 export const viewActions: CommandSpec[] = [
+  {
+    id: PREFERENCES_COMMAND_ID,
+    title: "Preferences…",
+    icon: "inspector",
+    source: "core",
+    shortcut: "Cmd+,",
+    category: "view",
+    description: "Open or close the Preferences window"
+  },
   {
     id: SPIN3D_DEBUGGER_COMMAND_ID,
     title: "Toggle 3D Debugger",
@@ -202,6 +214,18 @@ export const pageSizeActions: CommandSpec[] = MinimalPageSizePresetIds.map((pres
     description: `Set the active page size to ${preset.title}`
   };
 });
+
+/** Opens the custom page-size dialog (File ▸ Page Setup ▸ Custom Size…). */
+export const PAGE_CUSTOM_SIZE_COMMAND_ID = "page.setSizeCustom";
+
+export const pageCustomSizeAction: CommandSpec = {
+  id: PAGE_CUSTOM_SIZE_COMMAND_ID,
+  title: "Set Page Size: Custom…",
+  icon: "grid",
+  source: "core",
+  category: "page",
+  description: "Enter a custom page width and height in inches or millimeters"
+};
 
 export const pageOrientationActions: CommandSpec[] = [
   {
@@ -516,6 +540,7 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...drawerActions,
     ...viewActions,
     ...pageSizeActions,
+    pageCustomSizeAction,
     ...pageOrientationActions,
     ...textToolbarActions,
     ...toolbarCustomizationActions,

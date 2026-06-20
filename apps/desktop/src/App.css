@@ -124,6 +124,95 @@ body.spin3d-debugger-window-body #root {
   background: var(--cd-bg-panel-raised);
 }
 
+html.preferences-window-html {
+  min-width: 0;
+  background: var(--cd-bg-panel-raised);
+}
+
+body.preferences-window-body,
+body.preferences-window-body #root {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--cd-bg-panel-raised);
+}
+
+.preferences-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--cd-text-primary);
+  background: var(--cd-bg-panel-raised);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.preferences-header {
+  padding: var(--cd-space-6);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.preferences-header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.preferences-section {
+  padding: var(--cd-space-6);
+  overflow-y: auto;
+}
+
+.preferences-section h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.preferences-section-hint {
+  margin: var(--cd-space-2) 0 var(--cd-space-5);
+  color: var(--cd-text-secondary);
+}
+
+.preferences-radio-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-3);
+}
+
+.preferences-radio {
+  display: flex;
+  gap: var(--cd-space-4);
+  align-items: flex-start;
+  padding: var(--cd-space-4);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-md, 8px);
+  cursor: pointer;
+}
+
+.preferences-radio[data-selected="true"] {
+  border-color: var(--cd-accent);
+  box-shadow: var(--cd-focus-ring);
+}
+
+.preferences-radio input {
+  margin-top: 2px;
+}
+
+.preferences-radio-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preferences-radio-body small {
+  color: var(--cd-text-secondary);
+}
+
 button,
 select,
 input,

@@ -4,6 +4,9 @@ import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
   createPageLayout,
+  createCustomPageLayout,
+  cssPxToPageSize,
+  pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
   moleculeToMolfileV2000,
   PageSizePresets,
@@ -27,6 +30,7 @@ import {
   type ObjectReorderPlacement,
   type PageOrientation,
   type PageSizePresetId,
+  type PageSizeUnit,
   type StereoCenterReport,
   type TextSpan,
   type TextObject,
@@ -5251,6 +5255,183 @@ export interface FlattenSpunOutcome {
   stereoCenters: StereoCenterReport[];
 }
 
+// ---------------------------------------------------------------------------
+// Persisted Spin 3D model (the "3D source of truth" for 3D-backed rotation).
+//
+// After Spin 3D flattens a molecule we keep its conformer + committed view
+// orientation so the ordinary X/Y/Z rotate handles can re-project the real 3D
+// model instead of shearing the flattened 2D drawing. It lives under the
+// permissive `compatibility.unknown` record (NOT a strict schema field) using a
+// versioned, namespaced key — so it survives save/reload while older builds can
+// still open new files (the key is simply ignored there). Validated on read; a
+// stale model (graph edited since it was written) is ignored via the
+// graph-signature gate, so we never have to proactively clear it.
+// ---------------------------------------------------------------------------
+export const SPIN3D_MODEL_KEY = "chemdraft.spin3d.model.v1";
+
+type Spin3dOrientation = { x: number; y: number; z: number; w: number };
+
+export interface Spin3dEngineProvenance {
+  name: string;
+  version?: string;
+  forceField?: string;
+}
+
+export interface Spin3dDocumentModelV1 {
+  kind: typeof SPIN3D_MODEL_KEY;
+  /** conformerGraphSignature(molecule) at write time — the validity gate. */
+  graphSignature: string;
+  /** Defines coords3d order; robust to positional reordering of atoms. */
+  atomIds: string[];
+  /** Flat [x,y,z,...] in the MATH frame (y-up), in atomIds order. */
+  coords3d: number[];
+  /** The committed view orientation; the conformer is re-projected through this. */
+  orientation: Spin3dOrientation;
+  engine?: Spin3dEngineProvenance;
+  updatedAt: string;
+}
+
+// Deliberately position-independent: dragging or flattening a molecule (which only
+// moves its 2D x/y) keeps the signature stable, so a stored spin model survives those.
+// Editing the graph (add/remove atom, change element/charge/bond order) changes it,
+// invalidating a stale model.
+export function conformerGraphSignature(molecule: MoleculeObject): string {
+  const atoms = molecule.atoms.map((atom) => `${atom.id}:${atom.element}:${atom.formalCharge}`).join(",");
+  const bonds = molecule.bonds.map((bond) => `${bond.fromAtomId}>${bond.toAtomId}:${bond.order}`).join(",");
+  return `${atoms}|${bonds}`;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Reads + structurally validates the persisted Spin 3D model (no graph-match check). */
+export function readSpin3dModel(molecule: MoleculeObject): Spin3dDocumentModelV1 | undefined {
+  const raw = molecule.compatibility?.unknown?.[SPIN3D_MODEL_KEY];
+  if (!raw || typeof raw !== "object") return undefined;
+  const model = raw as Partial<Spin3dDocumentModelV1>;
+  if (model.kind !== SPIN3D_MODEL_KEY) return undefined;
+  if (typeof model.graphSignature !== "string") return undefined;
+  if (!Array.isArray(model.atomIds) || !model.atomIds.every((id) => typeof id === "string")) return undefined;
+  if (!Array.isArray(model.coords3d) || !model.coords3d.every(isFiniteNumber)) return undefined;
+  if (model.coords3d.length !== model.atomIds.length * 3) return undefined;
+  const orientation = model.orientation;
+  if (
+    !orientation ||
+    !isFiniteNumber(orientation.x) ||
+    !isFiniteNumber(orientation.y) ||
+    !isFiniteNumber(orientation.z) ||
+    !isFiniteNumber(orientation.w)
+  ) {
+    return undefined;
+  }
+  if (typeof model.updatedAt !== "string") return undefined;
+  return model as Spin3dDocumentModelV1;
+}
+
+/** The persisted model only if it still matches the molecule's current graph. */
+export function validSpin3dModelFor(molecule: MoleculeObject): Spin3dDocumentModelV1 | undefined {
+  const model = readSpin3dModel(molecule);
+  return model && model.graphSignature === conformerGraphSignature(molecule) ? model : undefined;
+}
+
+/** coords3d reordered from the model's atomIds order into the molecule's current atom order. */
+export function spin3dModelCoordsForMolecule(
+  model: Spin3dDocumentModelV1,
+  molecule: MoleculeObject
+): Float64Array | undefined {
+  const indexById = new Map(model.atomIds.map((id, index) => [id, index]));
+  const out = new Float64Array(molecule.atoms.length * 3);
+  for (let i = 0; i < molecule.atoms.length; i += 1) {
+    const src = indexById.get(molecule.atoms[i].id);
+    if (src === undefined) return undefined;
+    out[i * 3] = model.coords3d[src * 3];
+    out[i * 3 + 1] = model.coords3d[src * 3 + 1];
+    out[i * 3 + 2] = model.coords3d[src * 3 + 2];
+  }
+  return out;
+}
+
+/** Build a v1 model for `molecule` (coords3d must already be in molecule.atoms order). */
+export function buildSpin3dModel(args: {
+  molecule: MoleculeObject;
+  coords3d: ArrayLike<number>;
+  orientation: Spin3dOrientation;
+  engine?: Spin3dEngineProvenance;
+}): Spin3dDocumentModelV1 {
+  return {
+    kind: SPIN3D_MODEL_KEY,
+    graphSignature: conformerGraphSignature(args.molecule),
+    atomIds: args.molecule.atoms.map((atom) => atom.id),
+    coords3d: Array.from(args.coords3d),
+    orientation: {
+      x: args.orientation.x,
+      y: args.orientation.y,
+      z: args.orientation.z,
+      w: args.orientation.w
+    },
+    engine: args.engine,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function findMoleculeObjectById(document: ChemDraftDocument, objectId: string): MoleculeObject | undefined {
+  return document.pages
+    .flatMap((page) => page.objects)
+    .find((object): object is MoleculeObject => object.id === objectId && object.type === "molecule");
+}
+
+function persistSpin3dModel(
+  document: ChemDraftDocument,
+  objectId: string,
+  molecule: MoleculeObject,
+  model: Spin3dDocumentModelV1
+): ChemDraftDocument {
+  const existing = molecule.compatibility;
+  const compatibility = {
+    ...(existing ?? {}),
+    warnings: existing?.warnings ?? [],
+    unknown: { ...(existing?.unknown ?? {}), [SPIN3D_MODEL_KEY]: model }
+  };
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId, changes: { compatibility } },
+    { now: phase4Timestamp }
+  );
+}
+
+/**
+ * Persist `model` under the molecule's `compatibility.unknown`, merging (never
+ * clobbering) any existing compatibility data. Returns the document unchanged if the
+ * object is missing. Goes through `applyPatch`, so the result is schema-validated.
+ */
+export function attachSpin3dModel(
+  document: ChemDraftDocument,
+  objectId: string,
+  model: Spin3dDocumentModelV1
+): ChemDraftDocument {
+  const molecule = findMoleculeObjectById(document, objectId);
+  if (!molecule) return document;
+  return persistSpin3dModel(document, objectId, molecule, model);
+}
+
+/**
+ * Build a v1 model from a conformer + committed orientation and persist it in one pass:
+ * finds the molecule ONCE, signs its current graph, and attaches. Returns the document
+ * unchanged if the object is missing. Use this from the rotate/flatten commit paths so the
+ * find → buildSpin3dModel → attach sequence lives in a single place.
+ */
+export function attachSpin3dModelFromConformer(
+  document: ChemDraftDocument,
+  objectId: string,
+  conformer: { coords3d: ArrayLike<number>; orientation: Spin3dOrientation; engine?: Spin3dEngineProvenance }
+): ChemDraftDocument {
+  const molecule = findMoleculeObjectById(document, objectId);
+  if (!molecule) return document;
+  const model = buildSpin3dModel({ molecule, ...conformer });
+  return persistSpin3dModel(document, objectId, molecule, model);
+}
+
 function pointBondLengths(
   atoms: readonly { x: number; y: number }[],
   bondPairs: readonly (readonly [number, number])[]
@@ -6199,16 +6380,28 @@ export function openNativeDocument(contents: string): ChemDraftOpenResult {
 }
 
 const importedPageFitPaddingPx = 24;
-const importedPageFitCandidatePresetIds: readonly PageSizePresetId[] = [
-  "letter",
-  "legal",
-  "a4",
-  "a3",
-  "a2",
-  "a1",
-  "a0"
-];
 
+/** Round a page dimension UP to a tidy value in its unit, so the page always fully contains
+ *  the content (rounding down could clip it): 0.01" for inches, 1 mm / 1 px otherwise. */
+function roundUpPageSize(value: number, unit: PageSizeUnit): number {
+  if (unit === "inch") return Math.ceil(value * 100) / 100;
+  return Math.ceil(value);
+}
+
+function pageSizeUnitLabel(unit: PageSizeUnit): string {
+  return unit === "inch" ? "in" : unit === "mm" ? "mm" : "px";
+}
+
+function formatPageSizeValue(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+/**
+ * Recommend a CUSTOM page sized to exactly contain the content (plus a small margin) when it
+ * overflows the current page — including content larger than any standard preset. The custom
+ * size is expressed in the current page's unit (US presets ⇒ inches, A-series ⇒ mm) so the
+ * suggestion reads naturally and round-trips through the print/SVG path.
+ */
 export function recommendImportedPageFit(document: ChemDraftDocument): ImportedPageFitRecommendation | undefined {
   const page = document.pages[0];
   if (!page || page.objects.length === 0) {
@@ -6226,33 +6419,15 @@ export function recommendImportedPageFit(document: ChemDraftDocument): ImportedP
   const requiredWidthPx = contentBounds.width + importedPageFitPaddingPx * 2;
   const requiredHeightPx = contentBounds.height + importedPageFitPaddingPx * 2;
 
+  // Size a custom page to the content, in the current page's unit (rounded up so nothing clips).
+  const unit = pageLayoutSourceUnit(page.layout);
+  const widthValue = roundUpPageSize(cssPxToPageSize(requiredWidthPx, unit), unit);
+  const heightValue = roundUpPageSize(cssPxToPageSize(requiredHeightPx, unit), unit);
   const currentMargin = pageMarginFromLayout(page.layout);
-  const candidates = importedPageFitCandidatePresetIds.flatMap((presetId) => (["portrait", "landscape"] as const).map((orientation) => {
-    const preset = PageSizePresets.find((candidate) => candidate.id === presetId);
-    const layout = createPageLayout(presetId, orientation, currentMargin);
-    return preset
-      ? {
-          presetId,
-          orientation,
-          title: preset.title,
-          layout,
-          area: layout.widthPx * layout.heightPx
-        }
-      : undefined;
-  })).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
-  const matchingCandidate = candidates
-    .filter((candidate) =>
-      candidate.layout.widthPx >= requiredWidthPx &&
-      candidate.layout.heightPx >= requiredHeightPx
-    )
-    .sort((left, right) => left.area - right.area || pageOrientationSortValue(left.orientation) - pageOrientationSortValue(right.orientation))[0];
+  const recommendedLayout = createCustomPageLayout(widthValue, heightValue, unit, currentMargin);
 
-  if (!matchingCandidate) {
-    return undefined;
-  }
-
-  const translateX = importedContentFitDelta(contentBounds.x, contentBounds.width, matchingCandidate.layout.widthPx);
-  const translateY = importedContentFitDelta(contentBounds.y, contentBounds.height, matchingCandidate.layout.heightPx);
+  const translateX = importedContentFitDelta(contentBounds.x, contentBounds.width, recommendedLayout.widthPx);
+  const translateY = importedContentFitDelta(contentBounds.y, contentBounds.height, recommendedLayout.heightPx);
 
   return {
     pageId: page.id,
@@ -6260,10 +6435,10 @@ export function recommendImportedPageFit(document: ChemDraftDocument): ImportedP
     currentPresetId: page.layout.presetId,
     currentOrientation: page.layout.orientation,
     currentPageTitle: PageSizePresets.find((candidate) => candidate.id === page.layout.presetId)?.title ?? page.layout.presetId,
-    recommendedPresetId: matchingCandidate.presetId,
-    recommendedOrientation: matchingCandidate.orientation,
-    recommendedPageTitle: matchingCandidate.title,
-    recommendedLayout: matchingCandidate.layout,
+    recommendedPresetId: "custom",
+    recommendedOrientation: recommendedLayout.orientation,
+    recommendedPageTitle: `Custom ${formatPageSizeValue(widthValue)} × ${formatPageSizeValue(heightValue)} ${pageSizeUnitLabel(unit)}`,
+    recommendedLayout,
     contentBounds,
     requiredWidthPx,
     requiredHeightPx,
@@ -6313,6 +6488,25 @@ export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageS
   );
 }
 
+/** Apply a user-entered custom page size (width/height in `unit`), keeping current margins. */
+export function setDocumentCustomPageSize(
+  document: ChemDraftDocument,
+  size: { width: number; height: number; unit: PageSizeUnit }
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const layout = createCustomPageLayout(size.width, size.height, size.unit, pageMarginFromLayout(page.layout));
+
+  return applyPatch(
+    document,
+    {
+      op: "updatePageLayout",
+      pageId: page.id,
+      layout
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 export function setDocumentPageOrientation(
   document: ChemDraftDocument,
   orientation: PageOrientation
@@ -6344,10 +6538,6 @@ function boundsForPageObjects(objects: readonly DocumentObject[]): PageObjectBou
     width: Math.max(0, maxX - minX),
     height: Math.max(0, maxY - minY)
   };
-}
-
-function pageOrientationSortValue(orientation: PageOrientation): number {
-  return orientation === "landscape" ? 0 : 1;
 }
 
 function importedContentFitDelta(min: number, size: number, extent: number): number {

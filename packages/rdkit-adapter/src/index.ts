@@ -8,6 +8,10 @@ import type {
   StructureValidationResult
 } from "@chemdraft/chemistry-adapter";
 
+// Real RDKit ETKDGv3 3D conformer engine (custom MinimalLib WASM — see vendor/BUILD.md).
+// Separate from the fixture-backed structure-analysis placeholder below.
+export * from "./conformer";
+
 export const rdkitAdapterStatus = "placeholder" as const;
 
 const placeholderWarning: ChemistryWarning = {

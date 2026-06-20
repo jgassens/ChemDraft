@@ -185,9 +185,9 @@ describe("ocl-adapter — adversarial mapping", () => {
 });
 
 describe("ocl-adapter — progressive (embed-first) generation", () => {
-  it("embedded stage is immediately usable and refine() matches the one-shot API", async () => {
+  it("embedded stage is immediately usable and refineFromEmbedded() matches the one-shot API", async () => {
     const molfile = molfileFromSmiles("C[C@H](F)CC(=O)O");
-    const { embedded, refine } = await generate3DConformerProgressive(
+    const { embedded, refineFromEmbedded } = await generate3DConformerProgressive(
       { molfile },
       { seed: 7, optimize: "auto" }
     );
@@ -201,8 +201,8 @@ describe("ocl-adapter — progressive (embed-first) generation", () => {
     expect(flat3d.size).toBeGreaterThan(1); // genuinely 3D, not a flat layout
 
     // Stage 2: refinement on the same conformer reports MMFF94 and keeps the mapping.
-    expect(refine).toBeDefined();
-    const refined = refine!();
+    expect(refineFromEmbedded).toBeDefined();
+    const refined = refineFromEmbedded!();
     expect(refined.forceField?.name).toBe("MMFF94");
     expect(["converged", "not-converged"]).toContain(refined.forceField?.status);
     expect(refined.mapping.originalToEngineAtom).toEqual(embedded.mapping.originalToEngineAtom);
@@ -215,12 +215,33 @@ describe("ocl-adapter — progressive (embed-first) generation", () => {
   it("optimize:'none' yields no refine stage; a capped refine still reports a force field run", async () => {
     const molfile = molfileFromSmiles("CCCCCCCC");
     const none = await generate3DConformerProgressive({ molfile }, { optimize: "none" });
-    expect(none.refine).toBeUndefined();
+    expect(none.refineFromEmbedded).toBeUndefined();
     expect(none.embedded.forceField).toEqual({ name: "none", status: "not-run" });
 
     const capped = await generate3DConformerProgressive({ molfile }, { optimize: "auto", maxMinimiseIterations: 50 });
-    const refined = capped.refine!();
+    const refined = capped.refineFromEmbedded!();
     expect(refined.forceField?.name).toBe("MMFF94");
     expect(refined.forceField?.returnCode).toBeDefined();
+  });
+
+  it("refineFromEmbedded is re-runnable from the pristine embed (different caps from one embed)", async () => {
+    // The worker derives Fast/Balanced/Quality from a SINGLE embed; refining again at a
+    // different cap must restart from the embedded coordinates, not the relaxed ones.
+    const molfile = molfileFromSmiles("c1ccc2ccccc2c1"); // naphthalene — strained raw embed
+    const { refineFromEmbedded } = await generate3DConformerProgressive(
+      { molfile },
+      { seed: 7, optimize: "auto" }
+    );
+    expect(refineFromEmbedded).toBeDefined();
+
+    const low = refineFromEmbedded!(20);
+    const high = refineFromEmbedded!(800);
+    // A second pass at the SAME cap reproduces the SAME geometry (proves it restarts
+    // from the embed each time rather than continuing from the previous minimisation).
+    const lowAgain = refineFromEmbedded!(20);
+    expect([...lowAgain.mapping.coords3dByOriginalAtom]).toEqual([...low.mapping.coords3dByOriginalAtom]);
+    // More iterations changes the geometry (otherwise the cap is doing nothing).
+    expect([...high.mapping.coords3dByOriginalAtom]).not.toEqual([...low.mapping.coords3dByOriginalAtom]);
+    expect(high.mapping.originalToEngineAtom).toEqual(low.mapping.originalToEngineAtom);
   });
 });
