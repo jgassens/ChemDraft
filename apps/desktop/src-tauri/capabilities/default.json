@@ -13,7 +13,8 @@
     "toolset-core-orbitals",
     "toolset-core-layout",
     "toolset-core-style",
-    "toolset-plugin-fixture"
+    "toolset-plugin-fixture",
+    "spin3d-debugger"
   ],
   "permissions": [
     "core:default",
@@ -40,6 +41,7 @@
     "allow-toggle-tool-palette",
     "allow-tool-palette-state",
     "allow-route-palette-command",
+    "allow-toggle-spin3d-debugger-window",
     "allow-rasterize-svg",
     "dialog:allow-open",
     "dialog:allow-save",

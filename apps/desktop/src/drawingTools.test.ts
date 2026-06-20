@@ -160,6 +160,22 @@ describe("Phase 7 drawing tool activation", () => {
     });
   });
 
+  it("activates the manifest-backed lasso and eraser tools", () => {
+    for (const commandId of ["tool.lasso", "tool.eraser"]) {
+      const command = getToolsetCommandSpecs().find((candidate) => candidate.id === commandId);
+      if (!command) {
+        throw new Error(`Expected ${commandId} to be registered by the toolset manifest.`);
+      }
+
+      const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+      expect(result.outcome).toBe("activated");
+      expect(result.state.activeCommandId).toBe(commandId);
+      expect(result.state.activeKind).toBe("selection");
+      expect(command.enabled).toBe(true);
+    }
+  });
+
   it("keeps unavailable tools from changing the active tool", () => {
     const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.chain");
     if (!command) {

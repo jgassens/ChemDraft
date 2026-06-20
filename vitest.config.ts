@@ -10,6 +10,8 @@ export default defineConfig({
     alias: {
       "@chemdraft/chem-core": workspacePackage("./packages/chem-core/src/index.ts"),
       "@chemdraft/art-engine": workspacePackage("./packages/art-engine/src/index.ts"),
+      "@chemdraft/ocl-adapter": workspacePackage("./packages/ocl-adapter/src/index.ts"),
+      "@chemdraft/chemistry-adapter": workspacePackage("./packages/chemistry-adapter/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("./packages/cdx-compat/src/index.ts"),
       "@chemdraft/fixtures": workspacePackage("./packages/fixtures/src/index.ts"),
       "@chemdraft/style-compat": workspacePackage("./packages/style-compat/src/index.ts"),
@@ -18,6 +20,11 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["apps/**/*.test.ts", "packages/**/*.test.ts", "examples/plugins/**/*.test.ts"]
+    include: [
+      "apps/**/*.test.ts",
+      "packages/**/*.test.ts",
+      "examples/plugins/**/*.test.ts",
+      "tools/**/*.test.ts"
+    ]
   }
 });

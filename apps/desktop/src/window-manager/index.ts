@@ -105,6 +105,15 @@ export async function toggleToolsetWindow(toolsetId: string): Promise<ToolsetWin
   return invokeToolsetWindow("toggle_toolset_window", toolsetId);
 }
 
+export async function toggleSpin3dDebuggerWindow(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("toggle_spin3d_debugger_window");
+}
+
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<ToolsetWindowState[]>("list_toolset_window_states");

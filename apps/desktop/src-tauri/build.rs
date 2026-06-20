@@ -15,6 +15,7 @@ fn main() {
             "toggle_tool_palette",
             "tool_palette_state",
             "route_palette_command",
+            "toggle_spin3d_debugger_window",
         ]),
     ))
     .expect("failed to run Tauri build script");

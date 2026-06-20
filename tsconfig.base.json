@@ -22,6 +22,7 @@
       "@chemdraft/editor-adapter": ["packages/editor-adapter/src/index.ts"],
       "@chemdraft/ketcher-adapter": ["packages/ketcher-adapter/src/index.ts"],
       "@chemdraft/chemistry-adapter": ["packages/chemistry-adapter/src/index.ts"],
+      "@chemdraft/ocl-adapter": ["packages/ocl-adapter/src/index.ts"],
       "@chemdraft/rdkit-adapter": ["packages/rdkit-adapter/src/index.ts"],
       "@chemdraft/cdx-compat": ["packages/cdx-compat/src/index.ts"],
       "@chemdraft/clipboard-adapter": ["packages/clipboard-adapter/src/index.ts"],

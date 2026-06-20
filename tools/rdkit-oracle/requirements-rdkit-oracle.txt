@@ -1,0 +1,5 @@
+# Dev-only native-RDKit stereo oracle. NEVER shipped; not an app runtime dependency.
+# Pinned so the external corpus judge cannot drift under us. If this exact wheel is
+# unavailable on a given machine, install the closest available version and record it
+# in the oracle report (see tools/rdkit-oracle/README.md).
+rdkit==2026.3.3

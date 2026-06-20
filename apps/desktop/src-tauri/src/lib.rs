@@ -18,12 +18,17 @@ use objc2_app_kit::{
 use objc2_foundation::NSString;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
+const SPIN3D_DEBUGGER_WINDOW_ROUTE: &str = "/?window=spin3d-debugger";
+const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
+const AGENT_BRIDGE_ENV_VAR: &str = "CHEMDRAFT_AGENT_BRIDGE";
+const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -48,6 +53,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "view.toggleCrosshairs",
     "layout.group",
     "layout.ungroup",
+    SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
     "chemistry.validateSelection",
 ];
@@ -131,6 +137,15 @@ struct ClipboardReadPayload {
 struct ClipboardWriteTextItem {
     r#type: String,
     text: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentBridgeStatus {
+    enabled: bool,
+    source: String,
+    env_var: String,
+    cli_arg: String,
 }
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -321,6 +336,8 @@ pub fn run() {
             toggle_tool_palette,
             tool_palette_state,
             route_palette_command,
+            toggle_spin3d_debugger_window,
+            agent_bridge_status,
             take_pending_open_document,
             export::rasterize_svg
         ])
@@ -791,6 +808,88 @@ fn route_palette_command(app: tauri::AppHandle, command_id: String) -> Result<()
 }
 
 #[tauri::command]
+fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(SPIN3D_DEBUGGER_WINDOW_LABEL) {
+        if window.is_visible().unwrap_or(false) {
+            return window.hide().map_err(|error| error.to_string());
+        }
+    }
+
+    ensure_spin3d_debugger_window(&app).map(|_| ())
+}
+
+fn ensure_spin3d_debugger_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    if let Some(window) = app.get_webview_window(SPIN3D_DEBUGGER_WINDOW_LABEL) {
+        window.show().map_err(|error| error.to_string())?;
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(window);
+    }
+
+    WebviewWindowBuilder::new(
+        app,
+        spin3d_debugger_window_label(),
+        WebviewUrl::App(spin3d_debugger_window_route().into()),
+    )
+    .title("ChemDraft 3D Debugger")
+    .inner_size(720.0, 460.0)
+    .min_inner_size(520.0, 320.0)
+    .resizable(true)
+    .accept_first_mouse(true)
+    .visible(true)
+    .center()
+    .build()
+    .map_err(|error| error.to_string())
+}
+
+fn spin3d_debugger_window_label() -> &'static str {
+    SPIN3D_DEBUGGER_WINDOW_LABEL
+}
+
+fn spin3d_debugger_window_route() -> &'static str {
+    SPIN3D_DEBUGGER_WINDOW_ROUTE
+}
+
+#[tauri::command]
+fn agent_bridge_status() -> AgentBridgeStatus {
+    let env_value = std::env::var(AGENT_BRIDGE_ENV_VAR).ok();
+    agent_bridge_status_from(env_value.as_deref(), std::env::args())
+}
+
+fn agent_bridge_status_from<I, S>(env_value: Option<&str>, args: I) -> AgentBridgeStatus
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let source = if agent_bridge_flag_enabled(env_value) {
+        "environment"
+    } else if args
+        .into_iter()
+        .any(|arg| arg.as_ref() == AGENT_BRIDGE_CLI_ARG)
+    {
+        "argument"
+    } else {
+        "disabled"
+    };
+
+    AgentBridgeStatus {
+        enabled: source != "disabled",
+        source: source.to_string(),
+        env_var: AGENT_BRIDGE_ENV_VAR.to_string(),
+        cli_arg: AGENT_BRIDGE_CLI_ARG.to_string(),
+    }
+}
+
+fn agent_bridge_flag_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on" | "enabled")
+    )
+}
+
+#[tauri::command]
 fn take_pending_open_document(
     state: tauri::State<'_, PendingOpenDocument>,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
@@ -1117,6 +1216,14 @@ fn create_view_menu<R: Runtime>(
         Some("CmdOrCtrl+Shift+R"),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
+    let debugger_separator = PredefinedMenuItem::separator(app)?;
+    let debugger = MenuItem::with_id(
+        app,
+        SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
+        "3D Debugger",
+        true,
+        None::<&str>,
+    )?;
     let toolbars_menu = create_toolbars_menu(app, toolset_manifest, layout_state)?;
     let customize_toolbars = MenuItem::with_id(
         app,
@@ -1134,6 +1241,8 @@ fn create_view_menu<R: Runtime>(
             &show_rulers,
             &show_crosshairs,
             &separator,
+            &debugger,
+            &debugger_separator,
             &toolbars_menu,
             &customize_toolbars,
         ],
@@ -2032,6 +2141,47 @@ mod tests {
     fn layout_menu_commands_are_routed() {
         expect_true(is_routed_menu_command("layout.group"));
         expect_true(is_routed_menu_command("layout.ungroup"));
+    }
+
+    #[test]
+    fn spin3d_debugger_menu_command_is_routed() {
+        expect_true(is_routed_menu_command(SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID));
+    }
+
+    #[test]
+    fn spin3d_debugger_window_route_is_not_a_toolset_window() {
+        let toolsets = vec![toolset("core.main", true)];
+
+        expect_eq(SPIN3D_DEBUGGER_WINDOW_LABEL, spin3d_debugger_window_label());
+        expect_eq(SPIN3D_DEBUGGER_WINDOW_ROUTE, spin3d_debugger_window_route());
+        expect_eq(
+            None,
+            toolset_id_for_window_label_from_toolsets(&toolsets, spin3d_debugger_window_label()),
+        );
+    }
+
+    #[test]
+    fn agent_bridge_is_disabled_without_explicit_launch_gate() {
+        let status = agent_bridge_status_from(None, ["ChemDraft"]);
+
+        expect_false(status.enabled);
+        expect_eq("disabled", status.source.as_str());
+    }
+
+    #[test]
+    fn agent_bridge_can_be_enabled_by_environment_flag() {
+        let status = agent_bridge_status_from(Some("true"), ["ChemDraft"]);
+
+        expect_true(status.enabled);
+        expect_eq("environment", status.source.as_str());
+    }
+
+    #[test]
+    fn agent_bridge_can_be_enabled_by_launch_argument() {
+        let status = agent_bridge_status_from(None, ["ChemDraft", AGENT_BRIDGE_CLI_ARG]);
+
+        expect_true(status.enabled);
+        expect_eq("argument", status.source.as_str());
     }
 
     #[test]

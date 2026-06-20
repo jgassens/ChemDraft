@@ -151,6 +151,38 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain("<rect");
   });
 
+  it("exports flattened depth cues as greyed far bonds", () => {
+    const depthMolecule = {
+      ...moleculeObject(),
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        source: "chemdraft-native-drawing"
+      },
+      structure: "CC",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 160, y: 160, formalCharge: 0 }
+      ],
+      bonds: [{
+        id: "bond_001",
+        fromAtomId: "atom_001",
+        toAtomId: "atom_002",
+        order: "single",
+        display: { depthWeight: 0 }
+      }]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Depth Cue Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: depthMolecule },
+      { now: timestamp }
+    );
+
+    const result = exportDocumentToSvg(document);
+
+    expect(result.contents).toContain('stroke="#969696"');
+    expect(result.contents).toContain('stroke-width="1.2"');
+  });
+
   it("exports native stereobond display styles as SVG geometry", () => {
     const styledMolecule = {
       ...moleculeObject(),

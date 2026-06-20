@@ -1619,4 +1619,31 @@ describe("layout-engine page SVG planner", () => {
     const midpointY = 0.25 * 170 + 0.5 * 10 + 0.25 * 170;
     expect(midpointY).toBe(90);
   });
+
+  it("renders flattened depth cues as a grey-to-black bond color ramp", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_depth",
+        atoms: [
+          { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 180, y: 180, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 220, y: 180, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 260, y: 180, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_far", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { depthWeight: 0 } },
+          { id: "bond_mid", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single", display: { depthWeight: 0.5 } },
+          { id: "bond_near", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single", display: { depthWeight: 1 } }
+        ]
+      })
+    ]);
+
+    const lines = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => String(fragment.attrs.class).includes("native-bond-line"));
+
+    expect(lines.map((fragment) => fragment.attrs["data-bond-id"])).toEqual(["bond_far", "bond_mid", "bond_near"]);
+    expect(lines.map((fragment) => fragment.attrs.stroke)).toEqual(["#969696", "#4b4b4b", "#000000"]);
+    expect(lines.map((fragment) => fragment.attrs["stroke-width"])).toEqual([1.2, 2, 2.8]);
+  });
 });

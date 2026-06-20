@@ -50,6 +50,9 @@ importers:
       '@chemdraft/layout-engine':
         specifier: workspace:*
         version: link:../../packages/layout-engine
+      '@chemdraft/ocl-adapter':
+        specifier: workspace:*
+        version: link:../../packages/ocl-adapter
       '@chemdraft/plugin-host':
         specifier: workspace:*
         version: link:../../packages/plugin-host
@@ -86,6 +89,9 @@ importers:
       ketcher-standalone:
         specifier: ^3.12.0
         version: 3.12.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      openchemlib:
+        specifier: ^9.22.1
+        version: 9.22.1
       raphael:
         specifier: ^2.3.0
         version: 2.3.0
@@ -210,6 +216,19 @@ importers:
         version: link:../chem-core
 
   packages/mechanism-tools: {}
+
+  packages/ocl-adapter:
+    dependencies:
+      '@chemdraft/chemistry-adapter':
+        specifier: workspace:*
+        version: link:../chemistry-adapter
+      openchemlib:
+        specifier: ^9.22.1
+        version: 9.22.1
+    devDependencies:
+      '@chemdraft/chem-core':
+        specifier: workspace:*
+        version: link:../chem-core
 
   packages/plugin-api:
     dependencies:
@@ -1893,6 +1912,9 @@ packages:
   object.assign@4.1.7:
     resolution: {integrity: sha512-nK28WOo+QIjBkDduTINE4JkF/UJJKyf2EJxvJKfblDpyg0Q+pkOHNTL0Qwy6NP6FhE/EnzV73BxxqcJaXY9anw==}
     engines: {node: '>= 0.4'}
+
+  openchemlib@9.22.1:
+    resolution: {integrity: sha512-2eVe8uVNipaeWXuZMVk7vSqiPwyoWe2+klSjMopTDMtpr1n8hO8Q5er3+nXxBc5wMC4XRssZyVDhC/r8uj28xA==}
 
   p-limit@2.3.0:
     resolution: {integrity: sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==}
@@ -4214,6 +4236,8 @@ snapshots:
       es-object-atoms: 1.1.2
       has-symbols: 1.1.0
       object-keys: 1.1.1
+
+  openchemlib@9.22.1: {}
 
   p-limit@2.3.0:
     dependencies:

@@ -64,6 +64,7 @@ import {
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
+  applyNativeMoleculePartsDelete,
   applyNativeMoleculePartDeleteTarget,
   applyNativeTemplatePlacementPlan,
   applyNativeTemplateToolAtPoint,
@@ -2296,6 +2297,25 @@ describe("Phase 4 document workflow", () => {
     cleanedMolecule.bonds.forEach((bond) => {
       expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
     });
+  });
+
+  it("cleanup strips perspective depth weights left by a 3D flatten", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Cleanup Depth Weights"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const weighted = applyPatches(document, [{
+      op: "updateObject",
+      objectId: molecule.id,
+      changes: {
+        bonds: molecule.bonds.map((bond) => ({
+          ...bond,
+          display: { ...(bond.display ?? {}), depthWeight: 0.9 }
+        }))
+      }
+    }]);
+    const cleaned = cleanUpNativeMolecules2d(weighted, [molecule.id]);
+    const cleanedMolecule = moleculeById(cleaned, molecule.id);
+
+    expect(cleanedMolecule.bonds.every((bond) => bond.display?.depthWeight === undefined)).toBe(true);
   });
 
   it("cleans up sp1 native geometry as linear while preserving chemistry", () => {
@@ -6816,6 +6836,36 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: "atom_001",
       distanceToPointer: 0
+    });
+
+    expect(empty.pages[0].objects).toEqual([]);
+    expect(empty.selection.objectIds).toEqual([]);
+  });
+
+  it("deletes a lassoed fragment (atoms plus their incident bonds) and rebuilds the remaining graph", () => {
+    const hexane = growHexaneChain(
+      insertNativeSingleBondMolecule(createPhase4Document("Parts Delete Fragment"), { x: 240, y: 320 })
+    );
+    const trimmed = applyNativeMoleculePartsDelete(hexane, {
+      objectId: selectedMolecule(hexane).id,
+      atomIds: ["atom_004", "atom_005", "atom_006"],
+      bondIds: []
+    });
+    const molecule = selectedMolecule(trimmed);
+
+    expect(selectedMolecule(hexane).atoms).toHaveLength(6);
+    expect(molecule.atoms.map((atom) => atom.id)).toEqual(["atom_001", "atom_002", "atom_003"]);
+    expect(molecule.bonds).toHaveLength(2);
+    expect(molecule.structure).toBe("CCC");
+    expect(molecule.chemistry).toMatchObject({ atomCount: 3, bondCount: 2 });
+  });
+
+  it("removes the molecule object when a parts delete clears every atom", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Parts Delete Empty"), { x: 220, y: 260 });
+    const empty = applyNativeMoleculePartsDelete(ethane, {
+      objectId: selectedMolecule(ethane).id,
+      atomIds: ["atom_001", "atom_002"],
+      bondIds: []
     });
 
     expect(empty.pages[0].objects).toEqual([]);
