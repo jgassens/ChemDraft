@@ -2193,7 +2193,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
-      width: 560,
+      width: 420,
       minWidth: 760
     });
     expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
