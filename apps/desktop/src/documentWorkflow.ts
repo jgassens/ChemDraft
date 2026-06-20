@@ -6830,6 +6830,23 @@ export function selectDocumentObject(document: ChemDraftDocument, objectId: stri
   );
 }
 
+export function selectDocumentObjectWithinGroup(document: ChemDraftDocument, objectId: string): ChemDraftDocument {
+  const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
+  if (!page) {
+    throw new Error(`Cannot select document object within group: object "${objectId}" does not exist.`);
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "setSelection",
+      pageId: page.id,
+      objectIds: [objectId]
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 export function selectDocumentObjects(
   document: ChemDraftDocument,
   pageId: string,

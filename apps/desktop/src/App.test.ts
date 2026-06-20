@@ -75,6 +75,7 @@ import {
   nativePolylinePathDocument,
   openNativeDocument,
   reorderSelectedDocumentObject,
+  selectDocumentObjectWithinGroup,
   selectDocumentObjects,
   selectionBounds,
   setDocumentPageOrientation,
@@ -129,6 +130,7 @@ import {
   rotationReadoutDegrees,
   eraserObjectIdsInSelectionRect,
   graphicArtTransformPreviewSvgDataUrl,
+  groupedDragObjectIdsForPointer,
   selectionInSelectionLasso,
   selectionInSelectionRect,
   shouldActivateDocumentObject,
@@ -635,6 +637,17 @@ describe("ChemDraft desktop shell", () => {
     expect(lassoSelection).toEqual({ objectIds: [groupId], nativeSelection: undefined });
     expect(nativeMoleculeSelectionDragIntent(
       grouped,
+      child.id,
+      undefined,
+      { kind: "atom", atomId: atom.id, distanceToPointer: 0 }
+    )).toEqual({ kind: "whole-object" });
+    expect(groupedDragObjectIdsForPointer(grouped, child.id)).toEqual(molecules.map((molecule) => molecule.id));
+
+    const drilledIntoChild = selectDocumentObjectWithinGroup(grouped, child.id);
+    expect(drilledIntoChild.selection.objectIds).toEqual([child.id]);
+    expect(groupedDragObjectIdsForPointer(drilledIntoChild, child.id)).toBeUndefined();
+    expect(nativeMoleculeSelectionDragIntent(
+      drilledIntoChild,
       child.id,
       undefined,
       { kind: "atom", atomId: atom.id, distanceToPointer: 0 }

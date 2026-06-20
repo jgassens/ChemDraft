@@ -159,6 +159,7 @@ import {
   selectedVisualEffectObjectIds,
   selectedArtBooleanEligibleObjectIds,
   selectDocumentObject,
+  selectDocumentObjectWithinGroup,
   parseSelectionClipboardPayload,
   pasteSelectionClipboardPayload,
   serializeSelectionClipboardPayload,
@@ -8119,6 +8120,25 @@ describe("group transforms (multi-object selection)", () => {
     const emptySelection = selectDocumentObjects(grouped, pageId, []);
     expect(toggleDocumentObjectSelection(emptySelection, pageId, ids[0]).selection.objectIds).toEqual([groupId]);
     expect(toggleDocumentObjectSelection(grouped, pageId, ids[0]).selection.objectIds).toEqual([]);
+
+    const directChildSelection = selectDocumentObjectWithinGroup(grouped, ids[0]);
+    expect(directChildSelection.selection.objectIds).toEqual([ids[0]]);
+
+    const movedChild = moveDocumentObjects(directChildSelection, directChildSelection.selection.objectIds, 30, 0);
+    const movedFirst = movedChild.pages[0].objects.find((object) => object.id === ids[0]);
+    const movedSecond = movedChild.pages[0].objects.find((object) => object.id === ids[1]);
+    const originalFirst = grouped.pages[0].objects.find((object) => object.id === ids[0]);
+    const originalSecond = grouped.pages[0].objects.find((object) => object.id === ids[1]);
+    if (!movedFirst || !movedSecond || !originalFirst || !originalSecond) {
+      throw new Error("Expected grouped child fixtures.");
+    }
+    expect(movedFirst.x - originalFirst.x).toBeCloseTo(30);
+    expect(movedSecond.x).toBeCloseTo(originalSecond.x);
+    expect(selectedGroupObjectIds(movedChild)).toEqual([]);
+    expect(movedChild.pages[0].objects.find((object) => object.id === groupId)).toBeDefined();
+
+    const cleared = selectDocumentObjects(movedChild, pageId, []);
+    expect(selectDocumentObject(cleared, ids[0]).selection.objectIds).toEqual([groupId]);
   });
 
   it("moves and rotates selected group children through the group id", () => {

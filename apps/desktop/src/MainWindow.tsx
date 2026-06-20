@@ -263,6 +263,7 @@ import {
   tiltNativeMoleculePartsProjectedPlane,
   selectAllDocumentObjects,
   selectDocumentObject,
+  selectDocumentObjectWithinGroup,
   selectDocumentObjects,
   toggleDocumentObjectSelection,
   setDocumentPageOrientation,
@@ -845,7 +846,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.20.9.32-codex";
+const CURRENT_BUILD_STAMP = "6.20.9.49-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -7543,6 +7544,37 @@ export function MainWindow({
       return;
     }
 
+    if (
+      activeToolState.activeKind === "selection" &&
+      object &&
+      object.type !== "molecule" &&
+      selectableObjectId !== objectId &&
+      !currentDocument.selection.objectIds.includes(objectId)
+    ) {
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
+      const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+      if (doublePress) {
+        lastSelectionPressRef.current = press;
+        event.preventDefault();
+        event.stopPropagation();
+        replacePresentDocument((current) => selectDocumentObjectWithinGroup(current, objectId));
+        clearTransientInteractionChrome();
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveGraphicTransformObjectId(undefined);
+        setSelectedGraphicPathNode(undefined);
+        setActiveAtomLabelEdit(undefined);
+        hoveredNativeAtomPointRef.current = undefined;
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+        setSelectedNativeMoleculePart(undefined);
+        setStatus("Selected grouped object");
+        return;
+      }
+    }
+
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
       event.preventDefault();
       const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
@@ -7550,12 +7582,17 @@ export function MainWindow({
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
-        replacePresentDocument((current) => selectDocumentObject(current, selectableObjectId));
+        const drillIntoGroupedChild = selectableObjectId !== objectId;
+        replacePresentDocument((current) => drillIntoGroupedChild
+          ? selectDocumentObjectWithinGroup(current, objectId)
+          : selectDocumentObject(current, selectableObjectId));
         clearTransientInteractionChrome();
         setActiveGraphicTransformObjectId(undefined);
         hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(undefined);
-        setStatus(selectableObjectId === objectId ? "Selected molecule" : "Selected group");
+        setStatus(drillIntoGroupedChild
+          ? "Selected grouped molecule"
+          : selectableObjectId === objectId ? "Selected molecule" : "Selected group");
         return;
       }
 
@@ -7746,7 +7783,9 @@ export function MainWindow({
         ? document.selection.objectIds.includes(selectableObjectId)
           ? document
           : selectDocumentObject(document, selectableObjectId)
-        : selectDocumentObject(document, selectableObjectId);
+        : document.selection.objectIds.includes(objectId)
+          ? document
+          : selectDocumentObject(document, selectableObjectId);
       replacePresentDocument(selectedDocument);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -7846,7 +7885,10 @@ export function MainWindow({
       return;
     }
 
-    const activationObjectId = activeToolState.activeKind === "selection" ? selectableObjectId : objectId;
+    const activationObjectId =
+      activeToolState.activeKind === "selection" && !document.selection.objectIds.includes(objectId)
+        ? selectableObjectId
+        : objectId;
     replacePresentDocument((current) => selectDocumentObject(current, activationObjectId));
     setActiveEditorObjectId(object?.type === "molecule" && activationObjectId === object.id ? object.id : undefined);
     setActiveTextEditObjectId(undefined);
@@ -13191,8 +13233,12 @@ function selectableDocumentObjectIdForPointer(document: ChemDraftDocument, objec
   return promoteDocumentObjectIdsToSelectableGroups(document.pages[0]?.objects ?? [], [objectId])[0] ?? objectId;
 }
 
-function groupedDragObjectIdsForPointer(document: ChemDraftDocument, objectId: string): string[] | undefined {
+export function groupedDragObjectIdsForPointer(document: ChemDraftDocument, objectId: string): string[] | undefined {
   const objects = document.pages[0]?.objects ?? [];
+  if (document.selection.objectIds.length === 1 && document.selection.objectIds.includes(objectId)) {
+    return undefined;
+  }
+
   const resolvedSelectionIds = resolveGroupedDocumentObjectIds(objects, document.selection.objectIds);
   if (resolvedSelectionIds.length > 1 && resolvedSelectionIds.includes(objectId)) {
     return resolvedSelectionIds;
