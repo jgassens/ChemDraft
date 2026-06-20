@@ -50,7 +50,7 @@ import {
   textSizeCommands
 } from "./commands";
 import { Icon } from "./icons";
-import { toolbarAsset } from "./toolbarAssets";
+import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import type { ToolsetArtPaintTarget, ToolsetArtStylePayload } from "./window-manager";
 
@@ -126,6 +126,13 @@ const ART_ARRANGE_COMMAND_IDS: ReadonlySet<string> = new Set<string>(
   ]
 );
 
+const ART_SHAPE_COMMAND_IDS = [
+  "tool.art.rect",
+  "tool.art.roundedRect",
+  "tool.art.circle",
+  "tool.art.ellipse"
+] as const;
+
 export function ToolPalette({
   groups,
   activeTool = "tool.select",
@@ -196,6 +203,31 @@ export function ToolPalette({
         />
       ) : null}
       {groups.map((group, groupIndex) => {
+        const shapeFlyout = showArtStyleControls ? artShapeFlyoutForGroup(group) : undefined;
+        if (shapeFlyout) {
+          const tooltipId = `${groupIndex}-0-art-shape-${shapeFlyout.id}`;
+          return (
+            <div
+              className="tool-group art-shape-flyout-group"
+              key={`art-shape-${group.map((tool) => tool.id).join("-")}`}
+              data-art-shape-flyout-group="true"
+            >
+              <CommandFlyoutButton
+                commands={shapeFlyout.commands}
+                distributeMode={currentDistributeMode}
+                title={shapeFlyout.title}
+                primaryAssetName="Art_Shapes"
+                activeCommandId={activeTool}
+                tooltipId={tooltipId}
+                tooltipVisible={visibleTooltipId === tooltipId}
+                onInvoke={onInvoke}
+                onTooltipEnter={() => requestTooltip(tooltipId)}
+                onTooltipLeave={() => clearTooltip(tooltipId)}
+              />
+            </div>
+          );
+        }
+
         const arrangeItems = showArtStyleControls ? artArrangeToolbarItemsForGroup(group) : [];
         if (arrangeItems.length > 0) {
           return (
@@ -228,6 +260,7 @@ export function ToolPalette({
                     commands={item.flyout.commands}
                     distributeMode={currentDistributeMode}
                     title={item.flyout.title}
+                    activeCommandId={activeTool}
                     tooltipId={tooltipId}
                     tooltipVisible={visibleTooltipId === tooltipId}
                     onInvoke={onInvoke}
@@ -2451,10 +2484,26 @@ function artArrangeToolbarItemsForGroup(group: CommandSpec[]): ArtArrangeToolbar
   return items;
 }
 
+function artShapeFlyoutForGroup(group: CommandSpec[]): ArtArrangeFlyout | undefined {
+  if (!group.some((command) => ART_SHAPE_COMMAND_IDS.includes(command.id as typeof ART_SHAPE_COMMAND_IDS[number]))) {
+    return undefined;
+  }
+
+  const commandById = new Map(group.map((command) => [command.id, command] as const));
+  const commands = ART_SHAPE_COMMAND_IDS.flatMap((commandId) => {
+    const command = commandById.get(commandId);
+    return command ? [command] : [];
+  });
+
+  return commands.length > 0 ? { id: "shapes", title: "Shapes", commands } : undefined;
+}
+
 function CommandFlyoutButton({
   commands,
   distributeMode,
   title,
+  primaryAssetName,
+  activeCommandId,
   tooltipId,
   tooltipVisible,
   onTooltipEnter,
@@ -2464,6 +2513,8 @@ function CommandFlyoutButton({
   commands: CommandSpec[];
   distributeMode: ToolPaletteDistributeMode;
   title: string;
+  primaryAssetName?: ToolbarAssetName;
+  activeCommandId?: string;
   tooltipId?: string;
   tooltipVisible?: boolean;
   onTooltipEnter?: () => void;
@@ -2476,6 +2527,8 @@ function CommandFlyoutButton({
   const holdOpenedRef = useRef(false);
   const primaryCommand = commands[0];
   const primaryDisabled = primaryCommand.enabled === false;
+  const flyoutAssetName = primaryAssetName ?? primaryCommand.assetName;
+  const activeState = commands.some((command) => command.enabled !== false && command.id === activeCommandId);
   const shortcut = primaryCommand.shortcut ?? primaryCommand.defaultShortcut;
   const shortcutLabel = primaryCommand.shortcutLabel ?? shortcut;
   const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
@@ -2562,16 +2615,22 @@ function CommandFlyoutButton({
     >
       <button
         type="button"
-        className="icon-button command-flyout-button"
+        className={[
+          "icon-button",
+          "command-flyout-button",
+          activeState ? "active" : ""
+        ].filter(Boolean).join(" ")}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-label={tooltipText}
+        aria-pressed={activeState || undefined}
         data-command-id={primaryCommand.id}
+        data-active={activeState ? "true" : undefined}
         data-command-flyout-button={title.toLowerCase()}
         data-command-flyout-ids={commands.map((command) => command.id).join(" ")}
         data-disabled={primaryDisabled ? "true" : undefined}
         data-shortcut-label={visibleShortcutLabel}
-        data-toolbar-asset={primaryCommand.assetName}
+        data-toolbar-asset={flyoutAssetName}
         data-tooltip={tooltipText}
         onPointerDown={(event) => {
           event.stopPropagation();
@@ -2614,8 +2673,8 @@ function CommandFlyoutButton({
           }
         }}
       >
-        {primaryCommand.assetName ? (
-          <img className="tool-icon-image" src={toolbarAsset(primaryCommand.assetName)} alt="" aria-hidden="true" />
+        {flyoutAssetName ? (
+          <img className="tool-icon-image" src={toolbarAsset(flyoutAssetName)} alt="" aria-hidden="true" />
         ) : (
           <Icon name={primaryCommand.icon} />
         )}

@@ -1164,6 +1164,31 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "Backspace" })).toBe("edit.deleteHoveredNativeTarget");
     expect(registry.resolve({ key: "Delete" })).toBe("edit.forwardDeleteHoveredNativeTarget");
     expect(registry.conflicts()).toEqual([]);
+
+    let layoutDocument = insertNativeArtGraphicObject(createPhase4Document("Layout Shortcuts"), { x: 120, y: 120 }, "tool.art.rect");
+    layoutDocument = insertNativeArtGraphicObject(layoutDocument, { x: 240, y: 160 }, "tool.art.circle");
+    layoutDocument = insertNativeArtGraphicObject(layoutDocument, { x: 360, y: 220 }, "tool.art.ellipse");
+    const layoutPage = layoutDocument.pages[0];
+    const selectedLayoutDocument = selectDocumentObjects(
+      layoutDocument,
+      layoutPage.id,
+      layoutPage.objects.map((object) => object.id)
+    );
+    const layoutRegistry = createDesktopShortcutRegistry(allShellCommands(selectedLayoutDocument), "macos");
+
+    expect(layoutRegistry.resolve({ key: "l", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignLeft");
+    expect(layoutRegistry.resolve({ key: "c", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignCenter");
+    expect(layoutRegistry.resolve({ key: "r", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignRight");
+    expect(layoutRegistry.resolve({ key: "t", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignTop");
+    expect(layoutRegistry.resolve({ key: "m", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignMiddle");
+    expect(layoutRegistry.resolve({ key: "b", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignBottom");
+    expect(layoutRegistry.resolve({ key: "h", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.distributeHorizontal");
+    expect(layoutRegistry.resolve({ key: "v", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.distributeVertical");
+    expect(layoutRegistry.resolve({ key: "]", metaKey: true, shiftKey: true })).toBe("layout.bringToFront");
+    expect(layoutRegistry.resolve({ key: "]", metaKey: true })).toBe("layout.bringForward");
+    expect(layoutRegistry.resolve({ key: "[", metaKey: true })).toBe("layout.sendBackward");
+    expect(layoutRegistry.resolve({ key: "[", metaKey: true, shiftKey: true })).toBe("layout.sendToBack");
+    expect(layoutRegistry.conflicts()).toEqual([]);
   });
 
   it("only exposes undo and redo shortcuts when document history can move", () => {
@@ -1955,6 +1980,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="layout.duplicate"');
     expect(markup).toContain('data-command-id="layout.group"');
     expect(markup).toContain('data-command-id="layout.ungroup"');
+    expect(markup).toContain('data-art-shape-flyout-group="true"');
+    expect(markup).toContain('data-command-flyout="shapes"');
+    expect(markup).toContain('data-command-flyout-menu="shapes"');
     expect(markup).toContain('data-art-arrange-flyout-group="true"');
     expect(markup).toContain('data-command-flyout="align"');
     expect(markup).toContain('data-command-flyout="layer"');
@@ -1971,6 +1999,8 @@ describe("ChemDraft desktop shell", () => {
     expect(artGroups.flat().filter((command) => !booleanCommandIds.has(command.id)).every((command) => command.assetName)).toBe(true);
     expect(artGroups.flat().filter((command) => booleanCommandIds.has(command.id)).every((command) => command.assetName === undefined)).toBe(true);
     expect(markup).not.toContain("data-art-tool-icon=");
+    expect(buttonMarkupForCommand(markup, "tool.art.rect")).toContain('data-command-flyout-button="shapes"');
+    expect(buttonMarkupForCommand(markup, "tool.art.rect")).toContain('data-toolbar-asset="Art_Shapes"');
     expect(buttonMarkupForCommand(markup, "tool.art.roundedRect")).toContain('data-toolbar-asset="Art_Rounded_Rectangle"');
     expect(buttonMarkupForCommand(markup, "tool.art.pen")).toContain('data-toolbar-asset="Art_Pen"');
     expect(buttonMarkupForCommand(markup, "tool.art.polyline")).toContain('data-toolbar-asset="Art_Polyline"');
@@ -1982,9 +2012,12 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.art.arrow")).toContain('data-toolbar-asset="Art_Arrow"');
     expect(buttonMarkupForCommand(markup, "tool.art.arc270")).toContain('data-toolbar-asset="Art_Arc_Circular"');
     expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-toolbar-asset="Custom_Left"');
+    expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-shortcut-label="⌥⇧⌘L"');
     expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-toolbar-asset="Custom_Horizontal"');
     expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-distribute-mode="centers"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-shortcut-label="⌥⇧⌘H"');
     expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-toolbar-asset="Art_Send_To_Back"');
+    expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-shortcut-label="⇧⌘["');
     expect(buttonMarkupForCommand(markup, "layout.flipHorizontal")).toContain('data-toolbar-asset="Custom_Flip_Horizontal"');
     expect(buttonMarkupForCommand(markup, "layout.flipVertical")).toContain('data-toolbar-asset="Custom_Flip_Vertical"');
     expect(buttonMarkupForCommand(markup, "layout.rotate90")).toContain('data-toolbar-asset="Custom_Rotation"');
@@ -2168,6 +2201,7 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("tool.select") ?? []]).toEqual(["Art_Select"]);
     expect([...assetNamesByCommandId.get("tool.text") ?? []]).toEqual(["Art_Text"]);
     expect([...assetNamesByCommandId.get("tool.eraser") ?? []]).toEqual(["Art_Eraser"]);
+    expect([...assetNamesByCommandId.get("tool.art.rect") ?? []]).toEqual(["Art_Rectangle"]);
     expect([...assetNamesByCommandId.get("layout.alignLeft") ?? []]).toEqual(["Custom_Left"]);
     expect([...assetNamesByCommandId.get("layout.alignCenter") ?? []]).toEqual(["Custom_Center"]);
     expect([...assetNamesByCommandId.get("layout.alignRight") ?? []]).toEqual(["Custom_Right"]);
@@ -2417,8 +2451,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-tooltip-owner-id="');
     expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
-    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⌘⇧K)"');
-    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⌘⇧K)</span>");
+    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⇧⌘K)"');
+    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⇧⌘K)</span>");
     expect(appCss).toContain(".tool-tooltip");
     expect(appCss).not.toContain("@keyframes cd-tooltip-auto-hide");
     expect(appCss).not.toContain(".icon-button-shell:hover .tool-tooltip");
@@ -2467,7 +2501,7 @@ describe("ChemDraft desktop shell", () => {
       id: structureCleanupCommandId,
       title: "Clean up Structure 2D",
       shortcut: "Shift+Cmd+K",
-      shortcutLabel: "⌘⇧K",
+      shortcutLabel: "⇧⌘K",
       category: "structure"
     });
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({

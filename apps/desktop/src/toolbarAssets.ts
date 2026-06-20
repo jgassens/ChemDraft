@@ -20,6 +20,7 @@ export const toolbarAssetNames = [
   "Art_Select",
   "Art_Send_Backward",
   "Art_Send_To_Back",
+  "Art_Shapes",
   "Art_Tape_Measure",
   "Art_Text",
   "Art_Wavy_Line",

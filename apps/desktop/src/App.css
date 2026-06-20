@@ -1477,7 +1477,8 @@ textarea:focus-visible,
   overflow: visible;
 }
 
-.art-arrange-flyout-group {
+.art-arrange-flyout-group,
+.art-shape-flyout-group {
   overflow: visible;
 }
 
