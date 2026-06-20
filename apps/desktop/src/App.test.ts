@@ -1983,6 +1983,7 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.art.arc270")).toContain('data-toolbar-asset="Art_Arc_Circular"');
     expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-toolbar-asset="Custom_Left"');
     expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-toolbar-asset="Custom_Horizontal"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-distribute-mode="centers"');
     expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-toolbar-asset="Art_Send_To_Back"');
     expect(buttonMarkupForCommand(markup, "layout.flipHorizontal")).toContain('data-toolbar-asset="Custom_Flip_Horizontal"');
     expect(buttonMarkupForCommand(markup, "layout.flipVertical")).toContain('data-toolbar-asset="Custom_Flip_Vertical"');

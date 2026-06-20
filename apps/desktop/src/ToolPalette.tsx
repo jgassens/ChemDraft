@@ -85,14 +85,6 @@ const ART_ARRANGE_FLYOUTS = [
     ]
   },
   {
-    id: "distribute",
-    title: "Distribute",
-    commandIds: [
-      "layout.distributeHorizontal",
-      "layout.distributeVertical"
-    ]
-  },
-  {
     id: "layer",
     title: "Layer",
     commandIds: [
@@ -122,8 +114,16 @@ const ART_ARRANGE_FLYOUTS = [
   }
 ] as const;
 
+const ART_ARRANGE_STANDALONE_COMMAND_IDS = [
+  "layout.distributeHorizontal",
+  "layout.distributeVertical"
+] as const;
+
 const ART_ARRANGE_COMMAND_IDS: ReadonlySet<string> = new Set<string>(
-  ART_ARRANGE_FLYOUTS.flatMap((flyout) => flyout.commandIds)
+  [
+    ...ART_ARRANGE_FLYOUTS.flatMap((flyout) => flyout.commandIds),
+    ...ART_ARRANGE_STANDALONE_COMMAND_IDS
+  ]
 );
 
 export function ToolPalette({
@@ -196,22 +196,38 @@ export function ToolPalette({
         />
       ) : null}
       {groups.map((group, groupIndex) => {
-        const arrangeFlyouts = showArtStyleControls ? artArrangeFlyoutsForGroup(group) : [];
-        if (arrangeFlyouts.length > 0) {
+        const arrangeItems = showArtStyleControls ? artArrangeToolbarItemsForGroup(group) : [];
+        if (arrangeItems.length > 0) {
           return (
             <div
               className="tool-group art-arrange-flyout-group"
               key={`art-arrange-${group.map((tool) => tool.id).join("-")}`}
               data-art-arrange-flyout-group="true"
             >
-              {arrangeFlyouts.map((flyout, flyoutIndex) => {
-                const tooltipId = `${groupIndex}-${flyoutIndex}-art-arrange-${flyout.id}`;
+              {arrangeItems.map((item, itemIndex) => {
+                const tooltipId = `${groupIndex}-${itemIndex}-art-arrange-${item.id}`;
+                if (item.kind === "command") {
+                  return (
+                    <CommandIconButton
+                      key={item.command.id}
+                      command={item.command}
+                      active={item.command.enabled !== false && activeTool === item.command.id}
+                      tooltipId={tooltipId}
+                      tooltipVisible={visibleTooltipId === tooltipId}
+                      distributeMode={currentDistributeMode}
+                      onTooltipEnter={() => requestTooltip(tooltipId)}
+                      onTooltipLeave={() => clearTooltip(tooltipId)}
+                      onInvoke={onInvoke}
+                    />
+                  );
+                }
+
                 return (
                   <CommandFlyoutButton
-                    key={flyout.id}
-                    commands={flyout.commands}
+                    key={item.flyout.id}
+                    commands={item.flyout.commands}
                     distributeMode={currentDistributeMode}
-                    title={flyout.title}
+                    title={item.flyout.title}
                     tooltipId={tooltipId}
                     tooltipVisible={visibleTooltipId === tooltipId}
                     onInvoke={onInvoke}
@@ -2395,20 +2411,44 @@ type ArtArrangeFlyout = {
   commands: CommandSpec[];
 };
 
-function artArrangeFlyoutsForGroup(group: CommandSpec[]): ArtArrangeFlyout[] {
+type ArtArrangeToolbarItem =
+  | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout }
+  | { kind: "command"; id: string; command: CommandSpec };
+
+function artArrangeToolbarItemsForGroup(group: CommandSpec[]): ArtArrangeToolbarItem[] {
   if (!group.some((command) => ART_ARRANGE_COMMAND_IDS.has(command.id))) {
     return [];
   }
 
   const commandById = new Map(group.map((command) => [command.id, command] as const));
-  return ART_ARRANGE_FLYOUTS.map((flyout) => ({
+  const flyoutById = new Map<string, ArtArrangeFlyout>(ART_ARRANGE_FLYOUTS.map((flyout) => [flyout.id, {
     id: flyout.id,
     title: flyout.title,
     commands: flyout.commandIds.flatMap((commandId) => {
       const command = commandById.get(commandId);
       return command ? [command] : [];
     })
-  })).filter((flyout) => flyout.commands.length > 0);
+  }] as const).filter(([, flyout]) => flyout.commands.length > 0));
+  const items: ArtArrangeToolbarItem[] = [];
+  const pushFlyout = (id: string) => {
+    const flyout = flyoutById.get(id);
+    if (flyout) {
+      items.push({ kind: "flyout", id, flyout });
+    }
+  };
+
+  pushFlyout("align");
+  ART_ARRANGE_STANDALONE_COMMAND_IDS.forEach((commandId) => {
+    const command = commandById.get(commandId);
+    if (command) {
+      items.push({ kind: "command", id: command.id, command });
+    }
+  });
+  pushFlyout("layer");
+  pushFlyout("transform");
+  pushFlyout("group");
+
+  return items;
 }
 
 function CommandFlyoutButton({
