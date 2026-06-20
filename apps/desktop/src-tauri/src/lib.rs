@@ -11,9 +11,11 @@ use tauri::{
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSFloatingWindowLevel, NSPasteboard, NSWindow, NSWindowAnimationBehavior,
-    NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
+    NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
+    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
 };
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
@@ -31,9 +33,6 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "document.open",
     "document.save",
     "document.saveAs",
-    "clipboard.cut",
-    "clipboard.copy",
-    "clipboard.paste",
     "export.open",
     "page.setSize.letter",
     "page.setSize.legal",
@@ -125,6 +124,13 @@ struct ClipboardTextItem {
 struct ClipboardReadPayload {
     types: Vec<String>,
     text_items: Vec<ClipboardTextItem>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardWriteTextItem {
+    r#type: String,
+    text: String,
 }
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -308,6 +314,7 @@ pub fn run() {
             focus_main_document_window,
             route_toolset_command,
             read_clipboard_payload,
+            write_clipboard_text_items,
             open_tool_palette,
             close_tool_palette,
             focus_tool_palette,
@@ -548,6 +555,37 @@ fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
     read_clipboard_payload_impl()
 }
 
+#[tauri::command]
+fn write_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    write_clipboard_text_items_impl(normalize_clipboard_write_text_items(items)?)
+}
+
+fn normalize_clipboard_write_text_items(
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<Vec<ClipboardWriteTextItem>, String> {
+    let mut seen_types = Vec::<String>::new();
+    let mut normalized_items = Vec::<ClipboardWriteTextItem>::new();
+
+    for item in items {
+        let item_type = item.r#type.trim().to_string();
+        if item_type.is_empty() || item.text.is_empty() || seen_types.contains(&item_type) {
+            continue;
+        }
+
+        seen_types.push(item_type.clone());
+        normalized_items.push(ClipboardWriteTextItem {
+            r#type: item_type,
+            text: item.text,
+        });
+    }
+
+    if normalized_items.is_empty() {
+        return Err("Clipboard write requires at least one text item.".to_string());
+    }
+
+    Ok(normalized_items)
+}
+
 #[cfg(target_os = "macos")]
 fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     let pasteboard = NSPasteboard::generalPasteboard();
@@ -580,6 +618,43 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         .unwrap_or_default();
 
     Ok(ClipboardReadPayload { types, text_items })
+}
+
+#[cfg(target_os = "macos")]
+fn write_clipboard_text_items_impl(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+
+    let failed_types = items
+        .iter()
+        .filter_map(|item| {
+            if set_clipboard_text_item(&pasteboard, item) {
+                None
+            } else {
+                Some(item.r#type.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if failed_types.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not write clipboard text for type(s): {}",
+            failed_types.join(", ")
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextItem) -> bool {
+    let text = NSString::from_str(&item.text);
+    if item.r#type == "text/plain" {
+        return pasteboard.setString_forType(&text, unsafe { NSPasteboardTypeString });
+    }
+
+    let pasteboard_type = NSString::from_str(&item.r#type);
+    pasteboard.setString_forType(&text, &pasteboard_type)
 }
 
 #[cfg(target_os = "macos")]
@@ -678,6 +753,11 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         types: Vec::new(),
         text_items: Vec::new(),
     })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    Err("Native clipboard writes are only implemented for macOS.".to_string())
 }
 
 #[tauri::command]
@@ -880,9 +960,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::undo(app, None)?,
                     &PredefinedMenuItem::redo(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "clipboard.cut", "Cut", true, Some("CmdOrCtrl+X"))?,
-                    &MenuItem::with_id(app, "clipboard.copy", "Copy", true, Some("CmdOrCtrl+C"))?,
-                    &MenuItem::with_id(app, "clipboard.paste", "Paste", true, Some("CmdOrCtrl+V"))?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
                     &MenuItem::with_id(
@@ -1822,6 +1902,13 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_edit_menu_commands_are_system_owned() {
+        expect_false(is_routed_menu_command("clipboard.cut"));
+        expect_false(is_routed_menu_command("clipboard.copy"));
+        expect_false(is_routed_menu_command("clipboard.paste"));
+    }
+
+    #[test]
     fn default_capability_allows_native_export_file_writes() {
         let capability = include_str!("../capabilities/default.json");
         let parsed: serde_json::Value =
@@ -1867,6 +1954,8 @@ mod tests {
             "allow-load-toolset-customization-state",
             "allow-list-toolset-window-states",
             "allow-route-toolset-command",
+            "allow-read-clipboard-payload",
+            "allow-write-clipboard-text-items",
             "allow-open-toolset-window",
             "allow-toggle-toolset-window",
         ] {
@@ -1963,6 +2052,40 @@ mod tests {
             .collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_write_items_are_normalized_before_native_write() {
+        let items = normalize_clipboard_write_text_items(vec![
+            ClipboardWriteTextItem {
+                r#type: " application/vnd.chemdraft.selection+json ".to_string(),
+                text: "{}".to_string(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "text/plain".to_string(),
+                text: "{}".to_string(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "text/plain".to_string(),
+                text: "duplicate".to_string(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "".to_string(),
+                text: "missing type".to_string(),
+            },
+        ])
+        .expect("valid clipboard write items should normalize");
+
+        expect_eq(
+            vec![
+                "application/vnd.chemdraft.selection+json".to_string(),
+                "text/plain".to_string(),
+            ],
+            items
+                .iter()
+                .map(|item| item.r#type.clone())
+                .collect::<Vec<_>>(),
+        );
     }
 
     fn expect_true(value: bool) {

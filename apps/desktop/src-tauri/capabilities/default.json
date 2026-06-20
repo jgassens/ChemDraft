@@ -33,6 +33,7 @@
     "allow-focus-main-document-window",
     "allow-route-toolset-command",
     "allow-read-clipboard-payload",
+    "allow-write-clipboard-text-items",
     "allow-open-tool-palette",
     "allow-close-tool-palette",
     "allow-focus-tool-palette",

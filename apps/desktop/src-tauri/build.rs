@@ -7,6 +7,8 @@ fn main() {
             "toggle_toolset_window",
             "list_toolset_window_states",
             "route_toolset_command",
+            "read_clipboard_payload",
+            "write_clipboard_text_items",
             "open_tool_palette",
             "close_tool_palette",
             "focus_tool_palette",

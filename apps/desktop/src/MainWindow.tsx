@@ -143,7 +143,13 @@ import {
   withStandaloneDrawingToolCommands,
   type ActiveToolState
 } from "./drawingTools";
-import { clipboardPayloadFromDataTransfer, readClipboardPayload, writeClipboardText } from "./clipboard";
+import {
+  clipboardPayloadFromDataTransfer,
+  readClipboardPayload,
+  writeClipboardDataTransfer,
+  writeClipboardTextItems,
+  type ClipboardWriteTextItem
+} from "./clipboard";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
   applyClipboardPastePayload,
@@ -232,6 +238,7 @@ import {
   moveDocumentObjects,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
+  type ChemDraftSelectionClipboardPayload,
   type SelectionBounds,
   rotateDocumentObjectsAroundPoint,
   rotateSelectedDocumentObjects90,
@@ -816,6 +823,13 @@ type ExportDialogState = {
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
 };
+type SelectionClipboardSourceAction = "copy" | "cut" | "external";
+
+export interface SelectionClipboardPasteState {
+  key: string;
+  pasteCount: number;
+  sourceAction: SelectionClipboardSourceAction;
+}
 
 const RULER_THICKNESS = 32;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
@@ -846,7 +860,8 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.20.11.5-codex";
+const CURRENT_BUILD_STAMP = "6.20.11.45-codex";
+const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -1069,6 +1084,7 @@ export function MainWindow({
   const textResizeRef = useRef<TextResizeState | null>(null);
   const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
   const selectionClipboardPayloadRef = useRef<ReturnType<typeof createSelectionClipboardPayload>>(undefined);
+  const selectionClipboardPasteStateRef = useRef<SelectionClipboardPasteState | undefined>(undefined);
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
   const textEditorFocusTimeoutsRef = useRef<number[]>([]);
   const selectionMarqueeRef = useRef<SelectionMarqueeState | null>(null);
@@ -2472,16 +2488,22 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointForViewport, textStyleDefaults]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+    const placement = nextSelectionClipboardPastePlacement(
+      payload,
+      selectionClipboardPasteStateRef.current,
+      activePage
+    );
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
       payload,
-      pastePointForViewport()
+      placement.point
     );
     if (nextDocument === documentRef.current) {
       setStatus("Clipboard selection unchanged");
       return;
     }
 
+    selectionClipboardPasteStateRef.current = placement.state;
     commitDocumentChange(nextDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -2491,7 +2513,21 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setStatus("Pasted ChemDraft selection");
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointForViewport]);
+  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange]);
+
+  const deleteSelectionAfterClipboardCut = useCallback(() => {
+    const nextDocument = deleteSelectedDocumentObjects(documentRef.current);
+    if (nextDocument !== documentRef.current) {
+      commitDocumentChange(nextDocument);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setSelectedNativeMoleculePart(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+    }
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const copySelectionToClipboard = useCallback(async (mode: "copy" | "cut") => {
     const payload = createSelectionClipboardPayload(documentRef.current);
@@ -2500,28 +2536,23 @@ export function MainWindow({
       return;
     }
 
+    const didWrite = await writeClipboardTextItems(selectionClipboardTextItems(payload));
+    if (!didWrite) {
+      setStatus(mode === "copy" ? "Copy failed: clipboard unavailable" : "Cut canceled: clipboard unavailable");
+      return;
+    }
+
     selectionClipboardPayloadRef.current = payload;
-    const text = serializeSelectionClipboardPayload(payload);
-    await writeClipboardText(text);
+    selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
 
     if (mode === "cut") {
-      const nextDocument = deleteSelectedDocumentObjects(documentRef.current);
-      if (nextDocument !== documentRef.current) {
-        commitDocumentChange(nextDocument);
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setSelectedNativeMoleculePart(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
-        setFreeformNativeBond(undefined);
-      }
+      deleteSelectionAfterClipboardCut();
       setStatus("Cut ChemDraft selection");
       return;
     }
 
     setStatus("Copied ChemDraft selection");
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+  }, [deleteSelectionAfterClipboardCut]);
 
   const pasteClipboard = useCallback(async () => {
     const rawPayload = await readClipboardPayload();
@@ -3942,6 +3973,46 @@ export function MainWindow({
   }, [document.selection.objectIds, objectResizeInput, selectedNativeMoleculePart, updateObjectResizeInput]);
 
   useEffect(() => {
+    const writeSelectionClipboardEvent = (
+      event: ClipboardEvent,
+      mode: "copy" | "cut"
+    ): boolean => {
+      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target) || !event.clipboardData) {
+        return false;
+      }
+
+      const payload = createSelectionClipboardPayload(documentRef.current);
+      if (!payload) {
+        return false;
+      }
+
+      const didWrite = writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload));
+      if (!didWrite) {
+        setStatus(mode === "copy" ? "Copy failed: clipboard unavailable" : "Cut canceled: clipboard unavailable");
+        return false;
+      }
+
+      event.preventDefault();
+      selectionClipboardPayloadRef.current = payload;
+      selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
+      if (mode === "cut") {
+        deleteSelectionAfterClipboardCut();
+        setStatus("Cut ChemDraft selection");
+        return true;
+      }
+
+      setStatus("Copied ChemDraft selection");
+      return true;
+    };
+
+    const handleCopy = (event: ClipboardEvent) => {
+      writeSelectionClipboardEvent(event, "copy");
+    };
+
+    const handleCut = (event: ClipboardEvent) => {
+      writeSelectionClipboardEvent(event, "cut");
+    };
+
     const handlePaste = (event: ClipboardEvent) => {
       if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target) || !event.clipboardData) {
         return;
@@ -3966,11 +4037,15 @@ export function MainWindow({
       applyDetectedClipboardPayload(detectedPayload);
     };
 
+    window.addEventListener("copy", handleCopy);
+    window.addEventListener("cut", handleCut);
     window.addEventListener("paste", handlePaste);
     return () => {
+      window.removeEventListener("copy", handleCopy);
+      window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, deleteSelectionAfterClipboardCut]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -4431,6 +4506,9 @@ export function MainWindow({
 
       const commandId = shortcutRegistry.resolve(event);
       if (!commandId) {
+        return;
+      }
+      if (shouldLetSystemClipboardHandleCommand(commandId)) {
         return;
       }
 
@@ -12117,6 +12195,117 @@ export function activeNativeTargetShortcutCommand(
     hoveredTarget ?? nativeDeleteTargetFromSelectionPart(document, selectedPart),
     key
   );
+}
+
+export function shouldLetSystemClipboardHandleCommand(commandId: string): boolean {
+  return (
+    commandId === "clipboard.copy" ||
+    commandId === "clipboard.cut" ||
+    commandId === "clipboard.paste"
+  );
+}
+
+export function selectionClipboardTextItems(
+  payload: ChemDraftSelectionClipboardPayload
+): ClipboardWriteTextItem[] {
+  const text = serializeSelectionClipboardPayload(payload);
+  return [
+    { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text },
+    { type: "text/plain", text }
+  ];
+}
+
+export function selectionClipboardPayloadKey(payload: ChemDraftSelectionClipboardPayload): string {
+  return serializeSelectionClipboardPayload(payload);
+}
+
+export function initialSelectionClipboardPasteState(
+  payload: ChemDraftSelectionClipboardPayload,
+  sourceAction: SelectionClipboardSourceAction
+): SelectionClipboardPasteState {
+  return {
+    key: selectionClipboardPayloadKey(payload),
+    pasteCount: 0,
+    sourceAction
+  };
+}
+
+export function nextSelectionClipboardPastePlacement(
+  payload: ChemDraftSelectionClipboardPayload,
+  previousState: SelectionClipboardPasteState | undefined,
+  page: DocumentPage
+): { point: ClientPoint; state: SelectionClipboardPasteState } {
+  const key = selectionClipboardPayloadKey(payload);
+  const sourceAction = previousState?.key === key ? previousState.sourceAction : "external";
+  const previousPasteCount = previousState?.key === key ? previousState.pasteCount : 0;
+  const offsetIndex = sourceAction === "cut" ? previousPasteCount : previousPasteCount + 1;
+  return {
+    point: selectionClipboardPastePoint(payload.bounds, page, offsetIndex),
+    state: {
+      key,
+      sourceAction,
+      pasteCount: previousPasteCount + 1
+    }
+  };
+}
+
+export function selectionClipboardPastePoint(
+  bounds: SelectionBounds,
+  page: DocumentPage,
+  offsetIndex: number
+): ClientPoint {
+  if (offsetIndex <= 0) {
+    return { x: bounds.centerX, y: bounds.centerY };
+  }
+
+  const offset = SELECTION_CLIPBOARD_PASTE_OFFSET_PX * offsetIndex;
+  const candidates: ClientPoint[] = [
+    { x: bounds.centerX + offset, y: bounds.centerY + offset },
+    { x: bounds.centerX - offset, y: bounds.centerY - offset },
+    { x: bounds.centerX + offset, y: bounds.centerY - offset },
+    { x: bounds.centerX - offset, y: bounds.centerY + offset }
+  ];
+  const fittingCandidate = candidates.find((point) =>
+    selectionClipboardPasteBoundsFitPage(bounds, point, page)
+  );
+  if (fittingCandidate) {
+    return fittingCandidate;
+  }
+
+  return clampSelectionClipboardPastePoint(candidates[0], bounds, page);
+}
+
+function selectionClipboardPasteBoundsFitPage(
+  bounds: SelectionBounds,
+  point: ClientPoint,
+  page: DocumentPage
+): boolean {
+  const halfWidth = bounds.width / 2;
+  const halfHeight = bounds.height / 2;
+  return (
+    point.x - halfWidth >= 0 &&
+    point.y - halfHeight >= 0 &&
+    point.x + halfWidth <= page.width &&
+    point.y + halfHeight <= page.height
+  );
+}
+
+function clampSelectionClipboardPastePoint(
+  point: ClientPoint,
+  bounds: SelectionBounds,
+  page: DocumentPage
+): ClientPoint {
+  const halfWidth = bounds.width / 2;
+  const halfHeight = bounds.height / 2;
+  const minX = Math.min(halfWidth, page.width / 2);
+  const maxX = Math.max(page.width - halfWidth, page.width / 2);
+  const minY = Math.min(halfHeight, page.height / 2);
+  const maxY = Math.max(page.height - halfHeight, page.height / 2);
+
+  return {
+    x: clamp(point.x, minX, maxX),
+    y: clamp(point.y, minY, maxY)
+  };
 }
 
 export function nativeDeleteTargetFromSelectionPart(

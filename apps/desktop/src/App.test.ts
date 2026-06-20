@@ -60,8 +60,10 @@ import {
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
+  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
   createNativeArtGraphicObject,
   createPhase4Document,
+  createSelectionClipboardPayload,
   groupSelectedDocumentObjects,
   insertAdapterFallbackMolecule,
   insertNativeArtGraphicObject,
@@ -117,6 +119,8 @@ import {
   nativeSelectionWithHitToggled,
   pagePointFromRenderedPageRect,
   documentObjectProjectedPlaneTiltVectorFromDrag,
+  initialSelectionClipboardPasteState,
+  nextSelectionClipboardPastePlacement,
   parseRotationInputDegrees,
   parseObjectResizeInputPercent,
   projectedPlaneTiltCommitHistory,
@@ -135,7 +139,9 @@ import {
   selectionInSelectionRect,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
+  shouldLetSystemClipboardHandleCommand,
   shouldOpenMoleculeEditorFromObjectClick,
+  selectionClipboardTextItems,
   visualSelectionBounds,
   shouldUseViewportWheelZoom
 } from "./MainWindow";
@@ -1261,6 +1267,117 @@ describe("ChemDraft desktop shell", () => {
     const groupedRegistry = createDesktopShortcutRegistry(allShellCommands(groupedLayoutDocument), "macos");
     expect(groupedRegistry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBe("layout.ungroup");
     expect(groupedRegistry.conflicts()).toEqual([]);
+  });
+
+  it("lets system clipboard events own copy cut and paste shortcuts", () => {
+    expect(shouldLetSystemClipboardHandleCommand("clipboard.copy")).toBe(true);
+    expect(shouldLetSystemClipboardHandleCommand("clipboard.cut")).toBe(true);
+    expect(shouldLetSystemClipboardHandleCommand("clipboard.paste")).toBe(true);
+    expect(shouldLetSystemClipboardHandleCommand("layout.group")).toBe(false);
+    expect(mainWindowSource).toContain('window.addEventListener("copy", handleCopy)');
+    expect(mainWindowSource).toContain('window.addEventListener("cut", handleCut)');
+    expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
+  });
+
+  it("copies ChemDraft selections as private and plain text clipboard flavors", () => {
+    let document = insertNativeArtGraphicObject(createPhase4Document("Selection Clipboard"), { x: 120, y: 140 }, "tool.art.rect");
+    document = insertNativeArtGraphicObject(document, { x: 220, y: 140 }, "tool.art.circle");
+    const payload = createSelectionClipboardPayload(document);
+
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const items = selectionClipboardTextItems(payload);
+    expect(items.map((item) => item.type)).toEqual([
+      CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
+      "text/plain"
+    ]);
+    expect(items[0].text).toBe(items[1].text);
+    expect(JSON.parse(items[0].text)).toMatchObject({
+      kind: "chemdraft-selection",
+      version: 1
+    });
+  });
+
+  it("offsets copied selection pastes and steps repeated pastes", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Offset Selection Clipboard"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const copyState = initialSelectionClipboardPasteState(payload, "copy");
+    const firstPaste = nextSelectionClipboardPastePlacement(payload, copyState, document.pages[0]);
+    const secondPaste = nextSelectionClipboardPastePlacement(payload, firstPaste.state, document.pages[0]);
+
+    expect(firstPaste.point).toMatchObject({
+      x: payload.bounds.centerX + 24,
+      y: payload.bounds.centerY + 24
+    });
+    expect(secondPaste.point).toMatchObject({
+      x: payload.bounds.centerX + 48,
+      y: payload.bounds.centerY + 48
+    });
+  });
+
+  it("keeps the first cut paste at the source point, then offsets repeated pastes", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Cut Selection Clipboard"),
+      { x: 160, y: 180 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const cutState = initialSelectionClipboardPasteState(payload, "cut");
+    const firstPaste = nextSelectionClipboardPastePlacement(payload, cutState, document.pages[0]);
+    const secondPaste = nextSelectionClipboardPastePlacement(payload, firstPaste.state, document.pages[0]);
+
+    expect(firstPaste.point).toMatchObject({
+      x: payload.bounds.centerX,
+      y: payload.bounds.centerY
+    });
+    expect(secondPaste.point).toMatchObject({
+      x: payload.bounds.centerX + 24,
+      y: payload.bounds.centerY + 24
+    });
+  });
+
+  it("flips the selection paste offset when the normal offset would leave the page", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Edge Offset Selection Clipboard"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const page = document.pages[0];
+    const edgePayload = {
+      ...payload,
+      bounds: {
+        ...payload.bounds,
+        centerX: page.width - payload.bounds.width / 2 - 2,
+        centerY: page.height - payload.bounds.height / 2 - 2
+      }
+    };
+    const paste = nextSelectionClipboardPastePlacement(
+      edgePayload,
+      initialSelectionClipboardPasteState(edgePayload, "copy"),
+      page
+    );
+
+    expect(paste.point.x).toBeLessThan(edgePayload.bounds.centerX);
+    expect(paste.point.y).toBeLessThan(edgePayload.bounds.centerY);
   });
 
   it("only exposes undo and redo shortcuts when document history can move", () => {
