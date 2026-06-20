@@ -11,6 +11,7 @@ import {
   objectEffectDisableCommandId,
   objectEffectOpacityCommandId,
   objectEffectSizeCommandId,
+  objectCustomColorCommandId,
   objectGradientStopOffsetCommandId
 } from "./commands";
 import { getToolsetCommandGroups } from "./toolsets";
@@ -190,6 +191,11 @@ describe("ToolPalette art color popover", () => {
     renderPalette({ onCancel });
 
     const popover = openPicker();
+    expect(popover.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Color");
+    expect(popover.querySelector('[aria-label="Color wheel and channel values"]')).not.toBeNull();
+    expect(popover.querySelector('[aria-label="RGB color"]')).not.toBeNull();
+    expect(popover.querySelector('[aria-label="CMYK color"]')).not.toBeNull();
+    expect(popover.querySelector(".color-hex-field")).not.toBeNull();
     act(() => {
       popover.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       popover.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
@@ -224,6 +230,36 @@ describe("ToolPalette art color popover", () => {
       colorTrigger().dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it("uses shared color picker palettes for art colors", () => {
+    const { onCommit, onPreview } = renderPalette();
+    const popover = openPicker();
+    const palettesTab = [...popover.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      .find((button) => button.textContent === "Palettes");
+    if (!palettesTab) {
+      throw new Error("Expected palettes tab.");
+    }
+
+    act(() => {
+      palettesTab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(popover.querySelector('[data-color-palette="crayola"]')).not.toBeNull();
+    expect(popover.querySelector('[data-color-palette="colorblind"]')).not.toBeNull();
+    expect(popover.querySelector('[data-color-palette="seasonal"]')).not.toBeNull();
+
+    const redSwatch = popover.querySelector<HTMLButtonElement>('[data-color-palette="crayola"] [aria-label="Crayola red"]');
+    if (!redSwatch) {
+      throw new Error("Expected Crayola red swatch.");
+    }
+
+    act(() => {
+      redSwatch.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onPreview).toHaveBeenCalledWith(objectCustomColorCommandId("#ed0a3f"));
+    expect(onCommit).toHaveBeenCalledWith(objectCustomColorCommandId("#ed0a3f"));
   });
 
   it("invokes native paint type commands from the art style selector", () => {
@@ -331,7 +367,9 @@ describe("ToolPalette art color popover", () => {
     act(() => {
       effectColorTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(container.querySelector('[aria-label="Effect color mixer"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Color wheel and channel values"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="RGB color"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="CMYK color"]')).not.toBeNull();
 
     const effectOpacity = container.querySelector<HTMLInputElement>('[data-art-inspector-slider="glow-effect-opacity"] input');
     const effectSize = container.querySelector<HTMLInputElement>('[data-art-inspector-slider="glow-effect-size"] input');

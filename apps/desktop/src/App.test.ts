@@ -1804,9 +1804,15 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="text.script.superscript"');
     expect(appCss).toContain(".toolbar-color-popover");
     expect(appCss).toContain(".color-picker-tabs");
+    expect(appCss).toContain(".color-picker-color-panel");
     expect(appCss).toContain(".color-wheel-face");
     expect(appCss).toContain(".color-channel-group");
     expect(appCss).toContain(".color-hex-field");
+    expect(appCss).toContain(".color-palette-section");
+    expect(appCss).toContain(".color-palette-swatch");
+    expect(toolPaletteSource).toContain("8 color Crayola box");
+    expect(toolPaletteSource).toContain("Colorblind safe");
+    expect(toolPaletteSource).toContain("Seasonal colors:");
   });
 
   it("renders the art toolbar as a command-backed object surface", () => {
@@ -2099,6 +2105,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper"');
     expect(toolPaletteSource).toContain("function ArtToolIcon");
     expect(toolPaletteSource).toContain("HexColorPicker");
+    expect(toolPaletteSource).toContain("ColorPickerPopoverBody");
     expect(toolPaletteSource).toContain("objectOpacityCommandId");
     expect(toolPaletteSource).toContain("objectStrokeDashCommands");
     expect(toolPaletteSource).toContain("supportsFillAny");
@@ -2109,7 +2116,7 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("grid-auto-rows: minmax(24px, auto);");
     expect(appCss).toContain(".art-inspector-slider-value");
     expect(appCss).toContain(".art-stroke-control-label");
-    expect(appCss).toContain(".art-color-popover .react-colorful");
+    expect(appCss).toContain(".color-picker-wheel-stack .react-colorful");
   });
 
   it("keeps the art inspector color picker dependency license acceptable", () => {

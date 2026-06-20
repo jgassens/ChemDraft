@@ -785,8 +785,6 @@ function ArtToolbarStyleControls({
       : activeEffectKinds[0];
   const visibleEffectModel = visibleEffectKind ? currentArtStyle?.effectControls[visibleEffectKind] : undefined;
   const currentEffectColor = visibleEffectModel?.color.value ?? "#52616b";
-  const draftEffectRgb = useMemo(() => hexToRgbColor(draftEffectColor) ?? { r: 17, g: 17, b: 17 }, [draftEffectColor]);
-  const draftEffectCmyk = useMemo(() => rgbToCmykColor(draftEffectRgb), [draftEffectRgb]);
   const effectOpacity = visibleEffectModel?.opacity.value ?? 1;
   const effectSize = visibleEffectModel?.size.value ?? 0.25;
   const showEffectControls = selected && visibleEffectKind !== undefined && (visibleEffectModel?.presentCount ?? 0) > 0;
@@ -956,30 +954,6 @@ function ArtToolbarStyleControls({
     }
     setDraftEffectColor(normalized);
     invokeOrCommit(objectEffectColorCommandId(visibleEffectKind, normalized));
-  };
-
-  const updateEffectRgbChannel = (channel: keyof RgbColor, value: string) => {
-    updateEffectColor(rgbToHexColor({
-      ...draftEffectRgb,
-      [channel]: clampColorChannel(value)
-    }));
-  };
-
-  const updateEffectCmykChannel = (channel: keyof CmykColor, value: string) => {
-    updateEffectColor(rgbToHexColor(cmykToRgbColor({
-      ...draftEffectCmyk,
-      [channel]: clampPercentChannel(value)
-    })));
-  };
-
-  const updateEffectHexInput = (value: string) => {
-    const normalized = normalizeHexColor(value);
-    if (normalized) {
-      updateEffectColor(normalized);
-      return;
-    }
-
-    setDraftEffectColor(`#${value.replace(/[^0-9a-f]/gi, "").slice(0, 6).toLowerCase()}`.padEnd(7, "0"));
   };
 
   const updateGradientStopColor = (color: string) => {
@@ -1288,6 +1262,7 @@ function ArtToolbarStyleControls({
             )} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
             onClick={() => {
+              setEffectColorOpen(false);
               setGradientStopColorOpen(false);
               setColorOpen((open) => !open);
             }}
@@ -1297,7 +1272,12 @@ function ArtToolbarStyleControls({
           </button>
           {colorOpen ? (
             <div className="art-color-popover" role="dialog" aria-label="Art color picker">
-              <HexColorPicker color={draftColor} onChange={updateColor} onChangeEnd={commitColor} />
+              <ColorPickerPopoverBody
+                activeColor={currentColor}
+                value={draftColor}
+                onCommitColor={commitColor}
+                onPreviewColor={updateColor}
+              />
             </div>
           ) : null}
         </div>
@@ -1419,65 +1399,12 @@ function ArtToolbarStyleControls({
                 role="dialog"
                 aria-label={`${effectLabel(visibleEffectKind)} effect color picker`}
               >
-                <HexColorPicker color={draftEffectColor} onChange={updateEffectColor} onChangeEnd={commitEffectColor} />
-                <div className="color-mixer-panel" role="group" aria-label="Effect color mixer">
-                  <label className="color-wheel-control">
-                    <span className="visually-hidden">Effect color wheel</span>
-                    <input
-                      className="color-wheel-input"
-                      type="color"
-                      value={draftEffectColor}
-                      aria-label="Effect color wheel"
-                      onChange={(event) => updateEffectColor(event.currentTarget.value)}
-                      onBlur={(event) => commitEffectColor(event.currentTarget.value)}
-                    />
-                    <span className="color-wheel-face" aria-hidden="true">
-                      <span className="color-wheel-current" style={{ "--picker-color": draftEffectColor } as CSSProperties} />
-                    </span>
-                  </label>
-                  <div className="color-channel-groups">
-                    <div className="color-channel-group" aria-label="Effect RGB color">
-                      {(["r", "g", "b"] as const).map((channel) => (
-                        <label key={channel}>
-                          <span>{channel.toUpperCase()}</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={255}
-                            value={draftEffectRgb[channel]}
-                            onBlur={() => commitEffectColor(draftEffectColor)}
-                            onChange={(event) => updateEffectRgbChannel(channel, event.currentTarget.value)}
-                          />
-                        </label>
-                      ))}
-                    </div>
-                    <div className="color-channel-group" aria-label="Effect CMYK color">
-                      {(["c", "m", "y", "k"] as const).map((channel) => (
-                        <label key={channel}>
-                          <span>{channel.toUpperCase()}</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={100}
-                            value={draftEffectCmyk[channel]}
-                            onBlur={() => commitEffectColor(draftEffectColor)}
-                            onChange={(event) => updateEffectCmykChannel(channel, event.currentTarget.value)}
-                          />
-                        </label>
-                      ))}
-                    </div>
-                    <label className="color-hex-field">
-                      <span>HEX</span>
-                      <input
-                        type="text"
-                        value={draftEffectColor.toUpperCase()}
-                        spellCheck={false}
-                        onBlur={() => commitEffectColor(draftEffectColor)}
-                        onChange={(event) => updateEffectHexInput(event.currentTarget.value)}
-                      />
-                    </label>
-                  </div>
-                </div>
+                <ColorPickerPopoverBody
+                  activeColor={currentEffectColor}
+                  value={draftEffectColor}
+                  onCommitColor={commitEffectColor}
+                  onPreviewColor={updateEffectColor}
+                />
               </div>
             ) : null}
           </div>
@@ -1665,6 +1592,7 @@ function ArtToolbarStyleControls({
               style={{ "--picker-color": currentGradientStopColor } as CSSProperties}
               onClick={() => {
                 setColorOpen(false);
+                setEffectColorOpen(false);
                 setGradientStopColorOpen((open) => !open);
               }}
             >
@@ -1673,10 +1601,11 @@ function ArtToolbarStyleControls({
             </button>
             {gradientStopColorOpen ? (
               <div className="art-color-popover" role="dialog" aria-label="Gradient stop color picker">
-                <HexColorPicker
-                  color={draftGradientStopColor}
-                  onChange={updateGradientStopColor}
-                  onChangeEnd={commitGradientStopColor}
+                <ColorPickerPopoverBody
+                  activeColor={currentGradientStopColor}
+                  value={draftGradientStopColor}
+                  onCommitColor={commitGradientStopColor}
+                  onPreviewColor={updateGradientStopColor}
                 />
               </div>
             ) : null}
@@ -1844,9 +1773,18 @@ function hexToRgbaCss(color: string, opacity: number): string {
   return `rgb(${red} ${green} ${blue} / ${Math.max(0, Math.min(1, opacity))})`;
 }
 
-type ColorPickerTab = "palette" | "mixer";
+type ColorPickerTab = "color" | "palettes";
 type ColorCommand = {
   id: string;
+  title: string;
+  color: string;
+};
+type ColorPaletteSet = {
+  id: string;
+  title: string;
+  colors: ColorPaletteEntry[];
+};
+type ColorPaletteEntry = {
   title: string;
   color: string;
 };
@@ -1864,9 +1802,90 @@ export interface CmykColor {
   k: number;
 }
 
+const CRAYOLA_EIGHT_COLORS: ColorPaletteEntry[] = [
+  { title: "Crayola red", color: "#ed0a3f" },
+  { title: "Crayola orange", color: "#ff8833" },
+  { title: "Crayola yellow", color: "#fbe870" },
+  { title: "Crayola green", color: "#01a368" },
+  { title: "Crayola blue", color: "#0066ff" },
+  { title: "Crayola violet", color: "#8359a3" },
+  { title: "Crayola brown", color: "#af593e" },
+  { title: "Crayola black", color: "#000000" }
+];
+
+const COLORBLIND_SAFE_COLORS: ColorPaletteEntry[] = [
+  { title: "Colorblind safe black", color: "#000000" },
+  { title: "Colorblind safe orange", color: "#e69f00" },
+  { title: "Colorblind safe sky blue", color: "#56b4e9" },
+  { title: "Colorblind safe bluish green", color: "#009e73" },
+  { title: "Colorblind safe yellow", color: "#f0e442" },
+  { title: "Colorblind safe blue", color: "#0072b2" },
+  { title: "Colorblind safe vermillion", color: "#d55e00" },
+  { title: "Colorblind safe purple", color: "#cc79a7" }
+];
+
+const SEASONAL_COLORS_BY_SEASON: Record<string, ColorPaletteEntry[]> = {
+  spring: [
+    { title: "Spring leaf", color: "#78a85a" },
+    { title: "Spring moss", color: "#a6c76c" },
+    { title: "Spring sky", color: "#8cc7d9" },
+    { title: "Spring rain", color: "#5f9eb7" },
+    { title: "Spring blossom", color: "#f2a7b5" },
+    { title: "Spring lilac", color: "#b89bd8" },
+    { title: "Spring cream", color: "#f7e8a4" },
+    { title: "Spring soil", color: "#8a6848" }
+  ],
+  summer: [
+    { title: "Summer sun", color: "#f5c542" },
+    { title: "Summer marigold", color: "#f28c28" },
+    { title: "Summer coral", color: "#ef6f61" },
+    { title: "Summer berry", color: "#b8336a" },
+    { title: "Summer sea", color: "#1ca7a8" },
+    { title: "Summer pool", color: "#3e8ed0" },
+    { title: "Summer grass", color: "#55a630" },
+    { title: "Summer night", color: "#294c60" }
+  ],
+  autumn: [
+    { title: "Autumn maple", color: "#c0392b" },
+    { title: "Autumn pumpkin", color: "#d97706" },
+    { title: "Autumn gold", color: "#c49a2c" },
+    { title: "Autumn olive", color: "#6f7d35" },
+    { title: "Autumn bark", color: "#6b4f3f" },
+    { title: "Autumn plum", color: "#7b3f61" },
+    { title: "Autumn fog", color: "#9a8f80" },
+    { title: "Autumn ink", color: "#2f3e46" }
+  ],
+  winter: [
+    { title: "Winter ice", color: "#d8eef2" },
+    { title: "Winter frost", color: "#9bc6d9" },
+    { title: "Winter blue", color: "#3b6ea8" },
+    { title: "Winter pine", color: "#1f5f4b" },
+    { title: "Winter berry", color: "#a41623" },
+    { title: "Winter mauve", color: "#8d6a9f" },
+    { title: "Winter stone", color: "#7b8794" },
+    { title: "Winter charcoal", color: "#263238" }
+  ]
+};
+
+function colorPickerPaletteSets(now = new Date()): ColorPaletteSet[] {
+  const month = now.getMonth();
+  const season = month >= 2 && month <= 4
+    ? "spring"
+    : month >= 5 && month <= 7
+      ? "summer"
+      : month >= 8 && month <= 10
+        ? "autumn"
+        : "winter";
+
+  return [
+    { id: "crayola", title: "8 color Crayola box", colors: CRAYOLA_EIGHT_COLORS },
+    { id: "colorblind", title: "Colorblind safe", colors: COLORBLIND_SAFE_COLORS },
+    { id: "seasonal", title: `Seasonal colors: ${season}`, colors: SEASONAL_COLORS_BY_SEASON[season] }
+  ];
+}
+
 function ColorPickerControl({
   compact = false,
-  colorCommands = textColorCommands,
   currentColor,
   customColorCommandId = textCustomColorCommandId,
   label = "Text color",
@@ -1876,7 +1895,6 @@ function ColorPickerControl({
   onInvoke
 }: {
   compact?: boolean;
-  colorCommands?: readonly ColorCommand[];
   currentColor: string;
   customColorCommandId?: (color: string) => string;
   label?: string;
@@ -1887,10 +1905,7 @@ function ColorPickerControl({
 }) {
   const normalizedCurrentColor = normalizeHexColor(currentColor) ?? textColorCommands[0].color;
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<ColorPickerTab>("palette");
   const [draftHex, setDraftHex] = useState(normalizedCurrentColor);
-  const draftRgb = useMemo(() => hexToRgbColor(draftHex) ?? { r: 17, g: 17, b: 17 }, [draftHex]);
-  const draftCmyk = useMemo(() => rgbToCmykColor(draftRgb), [draftRgb]);
 
   useEffect(() => {
     onOpenChange?.(open);
@@ -1919,35 +1934,6 @@ function ColorPickerControl({
     onInvoke(customColorCommandId(normalized));
   };
 
-  const applyPresetColor = (command: ColorCommand) => {
-    setDraftHex(command.color);
-    onInvoke(command.id);
-  };
-
-  const updateRgbChannel = (channel: keyof RgbColor, value: string) => {
-    applyColor(rgbToHexColor({
-      ...draftRgb,
-      [channel]: clampColorChannel(value)
-    }));
-  };
-
-  const updateCmykChannel = (channel: keyof CmykColor, value: string) => {
-    applyColor(rgbToHexColor(cmykToRgbColor({
-      ...draftCmyk,
-      [channel]: clampPercentChannel(value)
-    })));
-  };
-
-  const updateHexInput = (value: string) => {
-    const normalized = normalizeHexColor(value);
-    if (normalized) {
-      applyColor(normalized);
-      return;
-    }
-
-    setDraftHex(`#${value.replace(/[^0-9a-f]/gi, "").slice(0, 6).toLowerCase()}`.padEnd(7, "0"));
-  };
-
   return (
     <div
       className={["toolbar-color-picker", compact ? "compact" : ""].filter(Boolean).join(" ")}
@@ -1973,98 +1959,198 @@ function ColorPickerControl({
       </button>
       {open ? (
         <div className="toolbar-color-popover" role="dialog" aria-label={dialogLabel}>
-          <div className="color-picker-tabs" role="tablist" aria-label="Color picker mode">
-            <button
-              type="button"
-              className={tab === "palette" ? "active" : ""}
-              role="tab"
-              aria-selected={tab === "palette"}
-              onClick={() => setTab("palette")}
-            >
-              Palette
-            </button>
-            <button
-              type="button"
-              className={tab === "mixer" ? "active" : ""}
-              role="tab"
-              aria-selected={tab === "mixer"}
-              onClick={() => setTab("mixer")}
-            >
-              Mixer
-            </button>
-          </div>
-          {tab === "palette" ? (
-            <div className="color-preset-panel" role="tabpanel" aria-label="Preset colors">
-              <div className="color-preset-grid">
-                {colorCommands.map((command) => (
-                  <ColorPresetSwatchButton
-                    active={normalizeHexColor(command.color) === normalizedCurrentColor}
-                    command={command}
-                    key={command.id}
-                    onApply={applyPresetColor}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="color-mixer-panel" role="tabpanel" aria-label="Custom color mixer">
-              <label className="color-wheel-control">
-                <span className="visually-hidden">Color wheel</span>
-                <input
-                  className="color-wheel-input"
-                  type="color"
-                  value={draftHex}
-                  aria-label="Color wheel"
-                  onChange={(event) => applyColor(event.currentTarget.value)}
-                />
-                <span className="color-wheel-face" aria-hidden="true">
-                  <span className="color-wheel-current" style={{ "--picker-color": draftHex } as CSSProperties} />
-                </span>
-              </label>
-              <div className="color-channel-groups">
-                <div className="color-channel-group" aria-label="RGB color">
-                  {(["r", "g", "b"] as const).map((channel) => (
-                    <label key={channel}>
-                      <span>{channel.toUpperCase()}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={255}
-                        value={draftRgb[channel]}
-                        onChange={(event) => updateRgbChannel(channel, event.currentTarget.value)}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <div className="color-channel-group" aria-label="CMYK color">
-                  {(["c", "m", "y", "k"] as const).map((channel) => (
-                    <label key={channel}>
-                      <span>{channel.toUpperCase()}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={draftCmyk[channel]}
-                        onChange={(event) => updateCmykChannel(channel, event.currentTarget.value)}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <label className="color-hex-field">
-                  <span>HEX</span>
-                  <input
-                    type="text"
-                    value={draftHex.toUpperCase()}
-                    spellCheck={false}
-                    onChange={(event) => updateHexInput(event.currentTarget.value)}
-                  />
-                </label>
-              </div>
-            </div>
-          )}
+          <ColorPickerPopoverBody
+            activeColor={normalizedCurrentColor}
+            value={draftHex}
+            onCommitColor={applyColor}
+            onPreviewColor={applyColor}
+          />
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ColorPickerPopoverBody({
+  activeColor,
+  value,
+  onCommitColor,
+  onPreviewColor
+}: {
+  activeColor?: string;
+  value: string;
+  onCommitColor: (color: string) => void;
+  onPreviewColor: (color: string) => void;
+}) {
+  const normalizedValue = normalizeHexColor(value) ?? "#111111";
+  const normalizedActiveColor = normalizeHexColor(activeColor ?? value) ?? normalizedValue;
+  const [tab, setTab] = useState<ColorPickerTab>("color");
+  const [hexInput, setHexInput] = useState(normalizedValue.toUpperCase());
+  const draftRgb = useMemo(() => hexToRgbColor(normalizedValue) ?? { r: 17, g: 17, b: 17 }, [normalizedValue]);
+  const draftCmyk = useMemo(() => rgbToCmykColor(draftRgb), [draftRgb]);
+  const palettes = useMemo(() => colorPickerPaletteSets(), []);
+
+  useEffect(() => {
+    setHexInput(normalizedValue.toUpperCase());
+  }, [normalizedValue]);
+
+  const previewColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+
+    setHexInput(normalized.toUpperCase());
+    onPreviewColor(normalized);
+  };
+
+  const commitColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+
+    setHexInput(normalized.toUpperCase());
+    onCommitColor(normalized);
+  };
+
+  const applyAndCommitColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+
+    setHexInput(normalized.toUpperCase());
+    onPreviewColor(normalized);
+    onCommitColor(normalized);
+  };
+
+  const updateRgbChannel = (channel: keyof RgbColor, channelValue: string) => {
+    applyAndCommitColor(rgbToHexColor({
+      ...draftRgb,
+      [channel]: clampColorChannel(channelValue)
+    }));
+  };
+
+  const updateCmykChannel = (channel: keyof CmykColor, channelValue: string) => {
+    applyAndCommitColor(rgbToHexColor(cmykToRgbColor({
+      ...draftCmyk,
+      [channel]: clampPercentChannel(channelValue)
+    })));
+  };
+
+  const updateHexInput = (nextValue: string) => {
+    const cleaned = nextValue.replace(/[^0-9a-f]/gi, "").slice(0, 6);
+    const displayValue = `#${cleaned}`.toUpperCase();
+    setHexInput(displayValue);
+    const normalized = normalizeHexColor(displayValue);
+    if (normalized) {
+      applyAndCommitColor(normalized);
+    }
+  };
+
+  return (
+    <>
+      <div className="color-picker-tabs" role="tablist" aria-label="Color picker mode">
+        <button
+          type="button"
+          className={tab === "color" ? "active" : ""}
+          role="tab"
+          aria-selected={tab === "color"}
+          onClick={() => setTab("color")}
+        >
+          Color
+        </button>
+        <button
+          type="button"
+          className={tab === "palettes" ? "active" : ""}
+          role="tab"
+          aria-selected={tab === "palettes"}
+          onClick={() => setTab("palettes")}
+        >
+          Palettes
+        </button>
+      </div>
+      {tab === "color" ? (
+        <div className="color-picker-color-panel" role="tabpanel" aria-label="Color wheel and channel values">
+          <div className="color-picker-wheel-stack">
+            <HexColorPicker color={normalizedValue} onChange={previewColor} onChangeEnd={commitColor} />
+            <label className="color-wheel-control">
+              <span className="visually-hidden">System color wheel</span>
+              <input
+                className="color-wheel-input"
+                type="color"
+                value={normalizedValue}
+                aria-label="System color wheel"
+                onChange={(event) => applyAndCommitColor(event.currentTarget.value)}
+              />
+              <span className="color-wheel-face" aria-hidden="true">
+                <span className="color-wheel-current" style={{ "--picker-color": normalizedValue } as CSSProperties} />
+              </span>
+            </label>
+          </div>
+          <div className="color-channel-groups">
+            <div className="color-channel-group" aria-label="RGB color">
+              {(["r", "g", "b"] as const).map((channel) => (
+                <label key={channel}>
+                  <span>{channel.toUpperCase()}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    value={draftRgb[channel]}
+                    onChange={(event) => updateRgbChannel(channel, event.currentTarget.value)}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="color-channel-group" aria-label="CMYK color">
+              {(["c", "m", "y", "k"] as const).map((channel) => (
+                <label key={channel}>
+                  <span>{channel.toUpperCase()}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={draftCmyk[channel]}
+                    onChange={(event) => updateCmykChannel(channel, event.currentTarget.value)}
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="color-hex-field">
+              <span>HEX</span>
+              <input
+                type="text"
+                value={hexInput}
+                spellCheck={false}
+                onChange={(event) => updateHexInput(event.currentTarget.value)}
+              />
+            </label>
+          </div>
+        </div>
+      ) : (
+        <div className="color-palette-panel" role="tabpanel" aria-label="Color palettes">
+          {palettes.map((palette) => (
+            <section className="color-palette-section" data-color-palette={palette.id} key={palette.id}>
+              <h3>{palette.title}</h3>
+              <div className="color-palette-grid">
+                {palette.colors.map((entry) => (
+                  <ColorPaletteSwatchButton
+                    active={normalizeHexColor(entry.color) === normalizedActiveColor}
+                    color={entry.color}
+                    key={`${palette.id}-${entry.color}`}
+                    paletteId={palette.id}
+                    title={entry.title}
+                    onApply={applyAndCommitColor}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -2125,27 +2211,34 @@ function ToolbarColorSwatchButton({
   );
 }
 
-function ColorPresetSwatchButton({
+function ColorPaletteSwatchButton({
   active,
-  command,
+  color,
+  paletteId,
+  title,
   onApply
 }: {
   active: boolean;
-  command: ColorCommand;
-  onApply: (command: ColorCommand) => void;
+  color: string;
+  paletteId: string;
+  title: string;
+  onApply: (color: string) => void;
 }) {
-  const invokeHandlers = usePaletteButtonInvoke(command.id, () => onApply(command));
+  const normalizedColor = normalizeHexColor(color) ?? "#111111";
 
   return (
     <button
       type="button"
-      className={["color-preset-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
-      aria-label={command.title}
+      className={["color-palette-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
+      title={title}
+      aria-label={title}
       aria-pressed={active}
-      data-command-id={command.id}
-      style={{ "--swatch-color": command.color } as CSSProperties}
-      {...invokeHandlers}
+      data-color-palette-swatch={paletteId}
+      data-palette-control="true"
+      style={{ "--swatch-color": normalizedColor } as CSSProperties}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={() => onApply(normalizedColor)}
     />
   );
 }
