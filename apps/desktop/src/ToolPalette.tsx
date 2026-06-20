@@ -69,6 +69,62 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
 const TOOLTIP_DELAY_MS = 650;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
 const DISTRIBUTE_MENU_HOLD_MS = 420;
+const COMMAND_FLYOUT_HOLD_MS = 420;
+
+const ART_ARRANGE_FLYOUTS = [
+  {
+    id: "align",
+    title: "Align",
+    commandIds: [
+      "layout.alignLeft",
+      "layout.alignCenter",
+      "layout.alignRight",
+      "layout.alignTop",
+      "layout.alignMiddle",
+      "layout.alignBottom"
+    ]
+  },
+  {
+    id: "distribute",
+    title: "Distribute",
+    commandIds: [
+      "layout.distributeHorizontal",
+      "layout.distributeVertical"
+    ]
+  },
+  {
+    id: "layer",
+    title: "Layer",
+    commandIds: [
+      "layout.bringToFront",
+      "layout.bringForward",
+      "layout.sendBackward",
+      "layout.sendToBack"
+    ]
+  },
+  {
+    id: "transform",
+    title: "Transform",
+    commandIds: [
+      "layout.flipHorizontal",
+      "layout.flipVertical",
+      "layout.rotate90",
+      "layout.duplicate"
+    ]
+  },
+  {
+    id: "group",
+    title: "Group",
+    commandIds: [
+      "layout.group",
+      "layout.ungroup"
+    ]
+  }
+] as const;
+
+const ART_ARRANGE_COMMAND_IDS: ReadonlySet<string> = new Set<string>(
+  ART_ARRANGE_FLYOUTS.flatMap((flyout) => flyout.commandIds)
+);
 
 export function ToolPalette({
   groups,
@@ -139,26 +195,56 @@ export function ToolPalette({
           data-tauri-drag-region="true"
         />
       ) : null}
-      {groups.map((group, groupIndex) => (
-        <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
-          {group.map((tool, toolIndex) => {
-            const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
-            return (
-              <CommandIconButton
-                key={tool.id}
-                command={tool}
-                active={tool.enabled !== false && activeTool === tool.id}
-                tooltipId={tooltipId}
-                tooltipVisible={visibleTooltipId === tooltipId}
-                distributeMode={currentDistributeMode}
-                onTooltipEnter={() => requestTooltip(tooltipId)}
-                onTooltipLeave={() => clearTooltip(tooltipId)}
-                onInvoke={onInvoke}
-              />
-            );
-          })}
-        </div>
-      ))}
+      {groups.map((group, groupIndex) => {
+        const arrangeFlyouts = showArtStyleControls ? artArrangeFlyoutsForGroup(group) : [];
+        if (arrangeFlyouts.length > 0) {
+          return (
+            <div
+              className="tool-group art-arrange-flyout-group"
+              key={`art-arrange-${group.map((tool) => tool.id).join("-")}`}
+              data-art-arrange-flyout-group="true"
+            >
+              {arrangeFlyouts.map((flyout, flyoutIndex) => {
+                const tooltipId = `${groupIndex}-${flyoutIndex}-art-arrange-${flyout.id}`;
+                return (
+                  <CommandFlyoutButton
+                    key={flyout.id}
+                    commands={flyout.commands}
+                    distributeMode={currentDistributeMode}
+                    title={flyout.title}
+                    tooltipId={tooltipId}
+                    tooltipVisible={visibleTooltipId === tooltipId}
+                    onInvoke={onInvoke}
+                    onTooltipEnter={() => requestTooltip(tooltipId)}
+                    onTooltipLeave={() => clearTooltip(tooltipId)}
+                  />
+                );
+              })}
+            </div>
+          );
+        }
+
+        return (
+          <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
+            {group.map((tool, toolIndex) => {
+              const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+              return (
+                <CommandIconButton
+                  key={tool.id}
+                  command={tool}
+                  active={tool.enabled !== false && activeTool === tool.id}
+                  tooltipId={tooltipId}
+                  tooltipVisible={visibleTooltipId === tooltipId}
+                  distributeMode={currentDistributeMode}
+                  onTooltipEnter={() => requestTooltip(tooltipId)}
+                  onTooltipLeave={() => clearTooltip(tooltipId)}
+                  onInvoke={onInvoke}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
       {showMainStyleControls ? (
         <MainToolbarStyleControls
           currentTextStyle={currentTextStyle}
@@ -2299,6 +2385,252 @@ export function CommandIconButton({
         )}
         <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
       </button>
+    </span>
+  );
+}
+
+type ArtArrangeFlyout = {
+  id: string;
+  title: string;
+  commands: CommandSpec[];
+};
+
+function artArrangeFlyoutsForGroup(group: CommandSpec[]): ArtArrangeFlyout[] {
+  if (!group.some((command) => ART_ARRANGE_COMMAND_IDS.has(command.id))) {
+    return [];
+  }
+
+  const commandById = new Map(group.map((command) => [command.id, command] as const));
+  return ART_ARRANGE_FLYOUTS.map((flyout) => ({
+    id: flyout.id,
+    title: flyout.title,
+    commands: flyout.commandIds.flatMap((commandId) => {
+      const command = commandById.get(commandId);
+      return command ? [command] : [];
+    })
+  })).filter((flyout) => flyout.commands.length > 0);
+}
+
+function CommandFlyoutButton({
+  commands,
+  distributeMode,
+  title,
+  tooltipId,
+  tooltipVisible,
+  onTooltipEnter,
+  onTooltipLeave,
+  onInvoke
+}: {
+  commands: CommandSpec[];
+  distributeMode: ToolPaletteDistributeMode;
+  title: string;
+  tooltipId?: string;
+  tooltipVisible?: boolean;
+  onTooltipEnter?: () => void;
+  onTooltipLeave?: () => void;
+  onInvoke: (commandId: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const shellRef = useRef<HTMLSpanElement | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdOpenedRef = useRef(false);
+  const primaryCommand = commands[0];
+  const primaryDisabled = primaryCommand.enabled === false;
+  const shortcut = primaryCommand.shortcut ?? primaryCommand.defaultShortcut;
+  const shortcutLabel = primaryCommand.shortcutLabel ?? shortcut;
+  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const shortcutText = ` (${visibleShortcutLabel})`;
+  const stateText = primaryDisabled ? `: ${primaryCommand.disabledReason ?? "unavailable"}` : "";
+  const distributeText = commands.some((command) => isDistributeCommandId(command.id))
+    ? `: ${distributeMode === "spacing" ? "equal gaps" : "centers"}`
+    : "";
+  const tooltipText = `${title}${distributeText}: ${primaryCommand.title}; hold for choices${shortcutText}${stateText}`;
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current !== undefined) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = undefined;
+    }
+  }, []);
+
+  const openMenu = useCallback(() => {
+    holdOpenedRef.current = true;
+    setMenuOpen(true);
+    onTooltipLeave?.();
+  }, [onTooltipLeave]);
+
+  const chooseCommand = useCallback((command: CommandSpec) => {
+    if (command.enabled === false) {
+      return;
+    }
+    onInvoke(command.id);
+    setMenuOpen(false);
+    onTooltipLeave?.();
+  }, [onInvoke, onTooltipLeave]);
+
+  useEffect(() => () => {
+    clearHoldTimer();
+  }, [clearHoldTimer]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && shellRef.current?.contains(target)) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [menuOpen]);
+
+  return (
+    <span
+      className="icon-button-shell command-flyout-shell"
+      data-command-flyout={title.toLowerCase()}
+      data-command-tooltip-owner={primaryCommand.id}
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
+      ref={shellRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget) && !menuOpen) {
+          onTooltipLeave?.();
+        }
+      }}
+      onClickCapture={() => onTooltipLeave?.()}
+      onPointerCancel={() => onTooltipLeave?.()}
+      onPointerDownCapture={() => onTooltipLeave?.()}
+      onPointerEnter={() => onTooltipEnter?.()}
+      onPointerLeave={() => onTooltipLeave?.()}
+      onMouseEnter={() => onTooltipEnter?.()}
+      onMouseLeave={() => onTooltipLeave?.()}
+    >
+      <button
+        type="button"
+        className="icon-button command-flyout-button"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={tooltipText}
+        data-command-id={primaryCommand.id}
+        data-command-flyout-button={title.toLowerCase()}
+        data-command-flyout-ids={commands.map((command) => command.id).join(" ")}
+        data-disabled={primaryDisabled ? "true" : undefined}
+        data-shortcut-label={visibleShortcutLabel}
+        data-toolbar-asset={primaryCommand.assetName}
+        data-tooltip={tooltipText}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0) {
+            return;
+          }
+          holdOpenedRef.current = false;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          clearHoldTimer();
+          holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+          if (primaryDisabled || holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          onInvoke(primaryCommand.id);
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            openMenu();
+            return;
+          }
+          if ((event.key === "Enter" || event.key === " ") && !primaryDisabled) {
+            event.preventDefault();
+            onInvoke(primaryCommand.id);
+          }
+        }}
+      >
+        {primaryCommand.assetName ? (
+          <img className="tool-icon-image" src={toolbarAsset(primaryCommand.assetName)} alt="" aria-hidden="true" />
+        ) : (
+          <Icon name={primaryCommand.icon} />
+        )}
+        <span className="command-flyout-indicator" aria-hidden="true" />
+        <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
+      </button>
+      <div
+        className="toolbar-command-flyout-menu"
+        role="menu"
+        aria-label={`${title} commands`}
+        data-command-flyout-menu={title.toLowerCase()}
+        hidden={!menuOpen}
+      >
+        {commands.map((command) => {
+          const disabled = command.enabled === false;
+          const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
+          const itemText = disabled
+            ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
+            : command.title;
+          return (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={disabled}
+              data-command-id={command.id}
+              data-shortcut-label={itemShortcut ?? "No shortcut"}
+              data-toolbar-asset={command.assetName}
+              data-tooltip={itemText}
+              key={command.id}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseCommand(command);
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseCommand(command);
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseCommand(command);
+              }}
+            >
+              {command.assetName ? (
+                <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+              ) : (
+                <Icon name={command.icon} />
+              )}
+              <span>{command.title}</span>
+            </button>
+          );
+        })}
+      </div>
     </span>
   );
 }

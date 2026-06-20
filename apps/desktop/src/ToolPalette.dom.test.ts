@@ -13,6 +13,7 @@ import {
   objectEffectSizeCommandId,
   objectGradientStopOffsetCommandId
 } from "./commands";
+import { getToolsetCommandGroups } from "./toolsets";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -399,5 +400,59 @@ describe("ToolPalette art color popover", () => {
       marker.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 47, buttons: 0 }));
     });
     expect(onCommit).toHaveBeenCalledWith(objectGradientStopOffsetCommandId(0, 0.37));
+  });
+});
+
+describe("ToolPalette arrange flyouts", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("opens art arrange flyout menus and invokes submenu commands", () => {
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showArtStyleControls: true,
+        onInvoke
+      }));
+    });
+
+    const transformButton = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="transform"]');
+    if (!transformButton) {
+      throw new Error("Expected transform flyout button.");
+    }
+    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
+    expect(transformMenu?.hidden).toBe(true);
+
+    act(() => {
+      transformButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(transformMenu?.hidden).toBe(false);
+
+    const flipVertical = container.querySelector<HTMLButtonElement>('[data-command-flyout-menu="transform"] [data-command-id="layout.flipVertical"]');
+    if (!flipVertical) {
+      throw new Error("Expected flip vertical menu command.");
+    }
+    act(() => {
+      flipVertical.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onInvoke).toHaveBeenCalledWith("layout.flipVertical");
+    expect(transformMenu?.hidden).toBe(true);
   });
 });

@@ -1477,8 +1477,32 @@ textarea:focus-visible,
   overflow: visible;
 }
 
+.art-arrange-flyout-group {
+  overflow: visible;
+}
+
+.command-flyout-shell {
+  overflow: visible;
+}
+
 .distribute-mode-button {
   position: relative;
+}
+
+.command-flyout-button {
+  position: relative;
+}
+
+.command-flyout-indicator {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 0;
+  height: 0;
+  border-top: 4px solid var(--cd-accent);
+  border-right: 3px solid transparent;
+  border-left: 3px solid transparent;
+  pointer-events: none;
 }
 
 .distribute-mode-indicator {
@@ -1528,6 +1552,26 @@ textarea:focus-visible,
   gap: 2px;
 }
 
+.toolbar-command-flyout-menu {
+  position: absolute;
+  z-index: 75;
+  top: calc(100% + 5px);
+  left: 0;
+  display: grid;
+  min-width: 150px;
+  max-width: 196px;
+  padding: 4px;
+  border: 1px solid var(--cd-border-strong);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control-opaque);
+  box-shadow: var(--cd-shadow-floating);
+  gap: 2px;
+}
+
+.toolbar-command-flyout-menu[hidden] {
+  display: none;
+}
+
 .toolbar-distribute-menu button {
   display: flex;
   align-items: center;
@@ -1545,6 +1589,35 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+.toolbar-command-flyout-menu button {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  min-height: 25px;
+  padding: 3px 8px 3px 5px;
+  border: 1px solid transparent;
+  border-radius: var(--cd-radius-control);
+  background: transparent;
+  color: var(--cd-text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  line-height: 1.1;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.toolbar-command-flyout-menu button .tool-icon-image {
+  width: 18px;
+  height: 18px;
+}
+
+.toolbar-command-flyout-menu button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .toolbar-distribute-menu button:hover,
 .toolbar-distribute-menu button[aria-checked="true"] {
   border-color: var(--cd-accent-border);
@@ -1552,8 +1625,26 @@ textarea:focus-visible,
   color: var(--cd-accent-text);
 }
 
+.toolbar-command-flyout-menu button:hover:not(:disabled) {
+  border-color: var(--cd-accent-border);
+  background: var(--cd-bg-active);
+  color: var(--cd-accent-text);
+}
+
+.toolbar-command-flyout-menu button:disabled {
+  color: var(--cd-text-disabled);
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
 .tool-palette.horizontal .toolbar-distribute-menu,
 .tool-palette.floating.horizontal .toolbar-distribute-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+}
+
+.tool-palette.horizontal .toolbar-command-flyout-menu,
+.tool-palette.floating.horizontal .toolbar-command-flyout-menu {
   top: auto;
   bottom: calc(100% + 5px);
 }

@@ -246,6 +246,8 @@
             { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
             { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "category": "layout" },
             { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "category": "layout" },
+            { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "category": "layout" },
+            { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
             { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
             { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
             { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "category": "layout" },
