@@ -47,6 +47,8 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setOrientation.landscape",
     "view.toggleRulers",
     "view.toggleCrosshairs",
+    "layout.group",
+    "layout.ungroup",
     "structure.cleanup2d",
     "chemistry.validateSelection",
 ];
@@ -881,6 +883,15 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &MenuItem::with_id(app, "clipboard.cut", "Cut", true, Some("CmdOrCtrl+X"))?,
                     &MenuItem::with_id(app, "clipboard.copy", "Copy", true, Some("CmdOrCtrl+C"))?,
                     &MenuItem::with_id(app, "clipboard.paste", "Paste", true, Some("CmdOrCtrl+V"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "layout.ungroup",
+                        "Ungroup",
+                        true,
+                        Some("CmdOrCtrl+Shift+G"),
+                    )?,
                 ],
             )?,
             &view_menu,
@@ -1926,6 +1937,12 @@ mod tests {
     #[test]
     fn structure_menu_commands_are_routed() {
         expect_true(is_routed_menu_command("structure.cleanup2d"));
+    }
+
+    #[test]
+    fn layout_menu_commands_are_routed() {
+        expect_true(is_routed_menu_command("layout.group"));
+        expect_true(is_routed_menu_command("layout.ungroup"));
     }
 
     #[test]
