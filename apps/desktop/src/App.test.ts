@@ -1994,6 +1994,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-flyout="layer"');
     expect(markup).toContain('data-command-flyout="transform"');
     expect(markup).toContain('data-command-flyout-menu="group"');
+    expect(markup).toContain('data-art-command-band="true"');
     expect(markup).toContain('data-command-id="art.boolean.union"');
     expect(markup).toContain('data-command-id="art.boolean.subtract"');
     expect(markup).toContain('data-command-id="art.boolean.intersect"');
@@ -2112,8 +2113,11 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain('.app-shell[data-active-tool="tool.art.eyedropper"] .page');
     expect(appCss).toContain("cursor: crosshair;");
     expect(appCss).toContain(".art-toolbar-style-controls");
-    expect(appCss).toContain("grid-template-rows: 24px minmax(35px, auto);");
-    expect(appCss).toContain("grid-auto-rows: minmax(24px, auto);");
+    expect(appCss).toContain("grid-template-rows: 58px minmax(120px, auto);");
+    expect(appCss).toContain(".art-toolbar-command-band");
+    expect(appCss).toContain("grid-template-rows: 28px minmax(46px, auto);");
+    expect(appCss).toContain("grid-auto-rows: minmax(26px, auto);");
+    expect(appCss).toContain("grid-template-columns: repeat(3, minmax(160px, 1fr));");
     expect(appCss).toContain(".art-inspector-slider-value");
     expect(appCss).toContain(".art-stroke-control-label");
     expect(appCss).toContain(".color-picker-wheel-stack .react-colorful");
@@ -2177,8 +2181,8 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
-      width: 1040,
-      minWidth: 920
+      width: 1120,
+      minWidth: 1040
     });
     expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
       "tool.art.pencil",

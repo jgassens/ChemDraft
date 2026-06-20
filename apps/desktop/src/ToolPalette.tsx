@@ -180,6 +180,99 @@ export function ToolPalette({
     clearTooltip
   } = usePaletteTooltipState();
 
+  const toolGroupElements = groups.map((group, groupIndex) => {
+    const shapeFlyout = showArtStyleControls ? artShapeFlyoutForGroup(group) : undefined;
+    if (shapeFlyout) {
+      const tooltipId = `${groupIndex}-0-art-shape-${shapeFlyout.id}`;
+      return (
+        <div
+          className="tool-group art-shape-flyout-group"
+          key={`art-shape-${group.map((tool) => tool.id).join("-")}`}
+          data-art-shape-flyout-group="true"
+        >
+          <CommandFlyoutButton
+            commands={shapeFlyout.commands}
+            distributeMode={currentDistributeMode}
+            title={shapeFlyout.title}
+            primaryAssetName="Art_Shapes"
+            activeCommandId={activeTool}
+            tooltipId={tooltipId}
+            tooltipVisible={visibleTooltipId === tooltipId}
+            onInvoke={onInvoke}
+            onTooltipEnter={() => requestTooltip(tooltipId)}
+            onTooltipLeave={() => clearTooltip(tooltipId)}
+          />
+        </div>
+      );
+    }
+
+    const arrangeItems = showArtStyleControls ? artArrangeToolbarItemsForGroup(group) : [];
+    if (arrangeItems.length > 0) {
+      return (
+        <div
+          className="tool-group art-arrange-flyout-group"
+          key={`art-arrange-${group.map((tool) => tool.id).join("-")}`}
+          data-art-arrange-flyout-group="true"
+        >
+          {arrangeItems.map((item, itemIndex) => {
+            const tooltipId = `${groupIndex}-${itemIndex}-art-arrange-${item.id}`;
+            if (item.kind === "command") {
+              return (
+                <CommandIconButton
+                  key={item.command.id}
+                  command={item.command}
+                  active={item.command.enabled !== false && activeTool === item.command.id}
+                  tooltipId={tooltipId}
+                  tooltipVisible={visibleTooltipId === tooltipId}
+                  distributeMode={currentDistributeMode}
+                  onTooltipEnter={() => requestTooltip(tooltipId)}
+                  onTooltipLeave={() => clearTooltip(tooltipId)}
+                  onInvoke={onInvoke}
+                />
+              );
+            }
+
+            return (
+              <CommandFlyoutButton
+                key={item.flyout.id}
+                commands={item.flyout.commands}
+                distributeMode={currentDistributeMode}
+                title={item.flyout.title}
+                activeCommandId={activeTool}
+                tooltipId={tooltipId}
+                tooltipVisible={visibleTooltipId === tooltipId}
+                onInvoke={onInvoke}
+                onTooltipEnter={() => requestTooltip(tooltipId)}
+                onTooltipLeave={() => clearTooltip(tooltipId)}
+              />
+            );
+          })}
+        </div>
+      );
+    }
+
+    return (
+      <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
+        {group.map((tool, toolIndex) => {
+          const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+          return (
+            <CommandIconButton
+              key={tool.id}
+              command={tool}
+              active={tool.enabled !== false && activeTool === tool.id}
+              tooltipId={tooltipId}
+              tooltipVisible={visibleTooltipId === tooltipId}
+              distributeMode={currentDistributeMode}
+              onTooltipEnter={() => requestTooltip(tooltipId)}
+              onTooltipLeave={() => clearTooltip(tooltipId)}
+              onInvoke={onInvoke}
+            />
+          );
+        })}
+      </div>
+    );
+  });
+
   return (
     <aside
       className={[
@@ -202,98 +295,11 @@ export function ToolPalette({
           data-tauri-drag-region="true"
         />
       ) : null}
-      {groups.map((group, groupIndex) => {
-        const shapeFlyout = showArtStyleControls ? artShapeFlyoutForGroup(group) : undefined;
-        if (shapeFlyout) {
-          const tooltipId = `${groupIndex}-0-art-shape-${shapeFlyout.id}`;
-          return (
-            <div
-              className="tool-group art-shape-flyout-group"
-              key={`art-shape-${group.map((tool) => tool.id).join("-")}`}
-              data-art-shape-flyout-group="true"
-            >
-              <CommandFlyoutButton
-                commands={shapeFlyout.commands}
-                distributeMode={currentDistributeMode}
-                title={shapeFlyout.title}
-                primaryAssetName="Art_Shapes"
-                activeCommandId={activeTool}
-                tooltipId={tooltipId}
-                tooltipVisible={visibleTooltipId === tooltipId}
-                onInvoke={onInvoke}
-                onTooltipEnter={() => requestTooltip(tooltipId)}
-                onTooltipLeave={() => clearTooltip(tooltipId)}
-              />
-            </div>
-          );
-        }
-
-        const arrangeItems = showArtStyleControls ? artArrangeToolbarItemsForGroup(group) : [];
-        if (arrangeItems.length > 0) {
-          return (
-            <div
-              className="tool-group art-arrange-flyout-group"
-              key={`art-arrange-${group.map((tool) => tool.id).join("-")}`}
-              data-art-arrange-flyout-group="true"
-            >
-              {arrangeItems.map((item, itemIndex) => {
-                const tooltipId = `${groupIndex}-${itemIndex}-art-arrange-${item.id}`;
-                if (item.kind === "command") {
-                  return (
-                    <CommandIconButton
-                      key={item.command.id}
-                      command={item.command}
-                      active={item.command.enabled !== false && activeTool === item.command.id}
-                      tooltipId={tooltipId}
-                      tooltipVisible={visibleTooltipId === tooltipId}
-                      distributeMode={currentDistributeMode}
-                      onTooltipEnter={() => requestTooltip(tooltipId)}
-                      onTooltipLeave={() => clearTooltip(tooltipId)}
-                      onInvoke={onInvoke}
-                    />
-                  );
-                }
-
-                return (
-                  <CommandFlyoutButton
-                    key={item.flyout.id}
-                    commands={item.flyout.commands}
-                    distributeMode={currentDistributeMode}
-                    title={item.flyout.title}
-                    activeCommandId={activeTool}
-                    tooltipId={tooltipId}
-                    tooltipVisible={visibleTooltipId === tooltipId}
-                    onInvoke={onInvoke}
-                    onTooltipEnter={() => requestTooltip(tooltipId)}
-                    onTooltipLeave={() => clearTooltip(tooltipId)}
-                  />
-                );
-              })}
-            </div>
-          );
-        }
-
-        return (
-          <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
-            {group.map((tool, toolIndex) => {
-              const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
-              return (
-                <CommandIconButton
-                  key={tool.id}
-                  command={tool}
-                  active={tool.enabled !== false && activeTool === tool.id}
-                  tooltipId={tooltipId}
-                  tooltipVisible={visibleTooltipId === tooltipId}
-                  distributeMode={currentDistributeMode}
-                  onTooltipEnter={() => requestTooltip(tooltipId)}
-                  onTooltipLeave={() => clearTooltip(tooltipId)}
-                  onInvoke={onInvoke}
-                />
-              );
-            })}
-          </div>
-        );
-      })}
+      {showArtStyleControls ? (
+        <div className="art-toolbar-command-band" data-art-command-band="true">
+          {toolGroupElements}
+        </div>
+      ) : toolGroupElements}
       {showMainStyleControls ? (
         <MainToolbarStyleControls
           currentTextStyle={currentTextStyle}
@@ -1184,7 +1190,7 @@ function ArtToolbarStyleControls({
         }
       }}
     >
-      <div className="art-inspector-row">
+      <div className="art-inspector-row art-inspector-main-row">
         <div className="art-target-toggle" role="group" aria-label="Art paint target">
           {supportsFill ? (
             <button
