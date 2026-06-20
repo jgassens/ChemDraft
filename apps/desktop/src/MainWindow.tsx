@@ -770,6 +770,12 @@ export interface BondDepthContext {
   relevantCrossings: BondDepthMenuCrossing[];
   hasOverrides: boolean;
 }
+export interface LayerCommandSelectionResult {
+  document: ChemDraftDocument;
+  placement?: ObjectReorderPlacement;
+  bondDepthCommandId?: BondDepthCommandId;
+  bondDepthContext?: BondDepthContext;
+}
 type LayerContextMenuItem = {
   commandId: string;
   label: string;
@@ -838,7 +844,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.19.18.49-codex";
+const CURRENT_BUILD_STAMP = "6.19.19.39-codex";
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
   [artBooleanOperationCommandIds.subtract]: "subtract",
@@ -3667,16 +3673,17 @@ export function MainWindow({
           return;
         }
 
-        const placement = action.id === "layout.bringToFront"
-          ? "front"
-          : action.id === "layout.bringForward"
-            ? "forward"
-            : action.id === "layout.sendToBack"
-              ? "back"
-              : "backward";
-        const changed = commitDocumentChange((current) =>
-          reorderSelectedDocumentObjectWithCrossingDefaults(current, placement)
-        );
+        let result: LayerCommandSelectionResult | undefined;
+        const changed = commitDocumentChange((current) => {
+          result = applyLayerCommandToDocumentSelection(current, action.id, { selectedNativeMoleculePart });
+          return result.document;
+        });
+        if (result?.bondDepthCommandId) {
+          setStatus(changed
+            ? bondDepthStatusForCommand(result.bondDepthCommandId)
+            : result.bondDepthContext ? "Bond depth unchanged" : "No crossing bond under selected molecule part");
+          return;
+        }
         setStatus(changed ? action.title : "No selected object");
       });
     });
@@ -8752,7 +8759,7 @@ export function MainWindow({
     setObjectContextMenu({
       objectId,
       targetKind,
-      bondDepthContext: bondDepthContextFromNativeSelection(nextSelectedNativePart, pageSvgRenderPlan.crossings),
+      bondDepthContext: bondDepthContextFromNativeSelection(nextSelectedNativePart, pageSvgRenderPlan.crossings, currentDocument),
       x: event.clientX,
       y: event.clientY
     });
@@ -13554,18 +13561,33 @@ function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): 
   return part?.kind === "parts" ? [...part.bondIds] : [];
 }
 
-export function bondDepthRefsFromNativeSelection(part: NativeMoleculeSelectionPart | undefined): BondRef[] {
-  return nativeSelectionBondIds(part).map((bondId) => ({
+export function bondDepthRefsFromNativeSelection(
+  part: NativeMoleculeSelectionPart | undefined,
+  document?: ChemDraftDocument
+): BondRef[] {
+  const molecule = part && document
+    ? nativeMoleculeForSelectionPart(document, part)
+    : undefined;
+  const atomIds = new Set(nativeSelectionAtomIds(part));
+  const explicitBondIds = nativeSelectionBondIds(part);
+  const incidentBondIds = molecule
+    ? molecule.bonds
+        .filter((bond) => atomIds.has(bond.fromAtomId) || atomIds.has(bond.toAtomId))
+        .map((bond) => bond.id)
+    : [];
+
+  return uniqueBondRefs([...explicitBondIds, ...incidentBondIds].map((bondId) => ({
     objectId: part?.objectId ?? "",
     bondId
-  })).filter((ref) => ref.objectId.length > 0);
+  })).filter((ref) => ref.objectId.length > 0));
 }
 
 export function bondDepthContextFromNativeSelection(
   part: NativeMoleculeSelectionPart | undefined,
-  crossings: readonly ResolvedBondCrossing[]
+  crossings: readonly ResolvedBondCrossing[],
+  document?: ChemDraftDocument
 ): BondDepthContext | undefined {
-  const targetBondRefs = uniqueBondRefs(bondDepthRefsFromNativeSelection(part));
+  const targetBondRefs = uniqueBondRefs(bondDepthRefsFromNativeSelection(part, document));
   if (targetBondRefs.length === 0) {
     return undefined;
   }
@@ -13582,6 +13604,86 @@ export function bondDepthContextFromNativeSelection(
     relevantCrossings,
     hasOverrides: relevantCrossings.some((crossing) => crossing.hasOverride)
   };
+}
+
+export function applyLayerCommandToDocumentSelection(
+  document: ChemDraftDocument,
+  commandId: string,
+  options: {
+    selectedNativeMoleculePart?: NativeMoleculeSelectionPart;
+    crossings?: readonly ResolvedBondCrossing[];
+  } = {}
+): LayerCommandSelectionResult {
+  const placement = objectLayerPlacementForCommandId(commandId);
+  if (!placement) {
+    return { document };
+  }
+
+  const bondDepthCommandId = bondDepthCommandIdForObjectLayerCommand(commandId);
+  if (options.selectedNativeMoleculePart && bondDepthCommandId) {
+    const page = document.pages[0];
+    const crossings = options.crossings ?? planPageSvgRender(page).crossings;
+    const bondDepthContext = bondDepthContextFromNativeSelection(
+      options.selectedNativeMoleculePart,
+      crossings,
+      document
+    );
+    const patches = planBondDepthPatches(page.id, bondDepthContext, bondDepthCommandId);
+    return {
+      document: patches.length > 0 ? applyPatches(document, patches) : document,
+      placement,
+      bondDepthCommandId,
+      bondDepthContext
+    };
+  }
+
+  return {
+    document: reorderSelectedDocumentObjectWithCrossingDefaults(document, placement),
+    placement
+  };
+}
+
+export function bondDepthCommandIdForObjectLayerCommand(commandId: string): BondDepthCommandId | undefined {
+  if (commandId === "layout.bringToFront" || commandId === "layout.bringForward") {
+    return "bondDepth.bringInFront";
+  }
+
+  if (commandId === "layout.sendToBack" || commandId === "layout.sendBackward") {
+    return "bondDepth.sendBehind";
+  }
+
+  return undefined;
+}
+
+function objectLayerPlacementForCommandId(commandId: string): ObjectReorderPlacement | undefined {
+  if (commandId === "layout.bringToFront") {
+    return "front";
+  }
+
+  if (commandId === "layout.bringForward") {
+    return "forward";
+  }
+
+  if (commandId === "layout.sendToBack") {
+    return "back";
+  }
+
+  if (commandId === "layout.sendBackward") {
+    return "backward";
+  }
+
+  return undefined;
+}
+
+function nativeMoleculeForSelectionPart(
+  document: ChemDraftDocument,
+  part: NativeMoleculeSelectionPart
+): MoleculeObject | undefined {
+  return document.pages
+    .flatMap((page) => page.objects)
+    .find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id === part.objectId
+    );
 }
 
 export function planBondDepthPatches(

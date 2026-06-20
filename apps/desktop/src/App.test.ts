@@ -94,6 +94,7 @@ import {
   objectResizeReadoutPercent,
   objectResizeInputDraftPercent,
   objectResizeScaleFromDrag,
+  applyLayerCommandToDocumentSelection,
   bondDepthContextFromNativeSelection,
   bondDepthRefsFromNativeSelection,
   crossingClearPatchesForObjectLayerPlacement,
@@ -4445,6 +4446,14 @@ describe("ChemDraft desktop shell", () => {
       kind: "atom",
       atomId: "atom_001"
     })).toEqual([]);
+
+    const atomDocument = insertNativeSingleBondMolecule(createPhase4Document("Atom Depth Refs"), { x: 200, y: 220 });
+    const atomMolecule = atomDocument.pages[0].objects[0] as MoleculeObject;
+    expect(bondDepthRefsFromNativeSelection({
+      objectId: atomMolecule.id,
+      kind: "atom",
+      atomId: "atom_001"
+    }, atomDocument)).toEqual([{ objectId: atomMolecule.id, bondId: "bond_001" }]);
   });
 
   it("derives relevant crossing context from selected bonds", () => {
@@ -4522,6 +4531,64 @@ describe("ChemDraft desktop shell", () => {
       pageId: "page_001",
       crossing: { bonds: crossingOne.bonds, front: bondA }
     }]);
+  });
+
+  it("routes layer commands on selected molecule parts to bond depth instead of object order", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Part Layer Command"), { x: 180, y: 180 });
+    const document = insertNativeSingleBondMolecule(first, { x: 180, y: 180 });
+    const horizontal = document.pages[0].objects[0] as MoleculeObject;
+    const vertical = document.pages[0].objects[1] as MoleculeObject;
+    const crossingDocument = applyPatch(document, {
+      op: "updateObject",
+      objectId: vertical.id,
+      changes: {
+        x: 158,
+        y: 138,
+        width: 44,
+        height: 84,
+        atoms: [
+          { ...vertical.atoms[0], x: 180, y: 140 },
+          { ...vertical.atoms[1], x: 180, y: 220 }
+        ]
+      }
+    });
+    const originalOrder = crossingDocument.pages[0].objects.map((object) => object.id);
+    const bondSelection = {
+      objectId: vertical.id,
+      kind: "bond" as const,
+      bondId: "bond_001"
+    };
+    const atomSelection = {
+      objectId: vertical.id,
+      kind: "atom" as const,
+      atomId: "atom_001"
+    };
+
+    const bondResult = applyLayerCommandToDocumentSelection(crossingDocument, "layout.sendToBack", {
+      selectedNativeMoleculePart: bondSelection
+    });
+    const atomResult = applyLayerCommandToDocumentSelection(crossingDocument, "layout.sendBackward", {
+      selectedNativeMoleculePart: atomSelection
+    });
+
+    expect(bondResult.bondDepthCommandId).toBe("bondDepth.sendBehind");
+    expect(atomResult.bondDepthCommandId).toBe("bondDepth.sendBehind");
+    expect(bondResult.document.pages[0].objects.map((object) => object.id)).toEqual(originalOrder);
+    expect(atomResult.document.pages[0].objects.map((object) => object.id)).toEqual(originalOrder);
+    expect(bondResult.bondDepthContext?.targetBondRefs).toEqual([
+      { objectId: vertical.id, bondId: "bond_001" }
+    ]);
+    expect(atomResult.bondDepthContext?.targetBondRefs).toEqual([
+      { objectId: vertical.id, bondId: "bond_001" }
+    ]);
+    expect(bondResult.document.pages[0].crossings).toEqual([{
+      bonds: [
+        { objectId: horizontal.id, bondId: "bond_001" },
+        { objectId: vertical.id, bondId: "bond_001" }
+      ],
+      front: { objectId: horizontal.id, bondId: "bond_001" }
+    }]);
+    expect(atomResult.document.pages[0].crossings).toEqual(bondResult.document.pages[0].crossings);
   });
 
   it("skips selected-selected crossings for directional depth and clears defaults", () => {
