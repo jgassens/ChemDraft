@@ -62,6 +62,7 @@ import {
   applySingleBondToolAtPoint,
   createNativeArtGraphicObject,
   createPhase4Document,
+  groupSelectedDocumentObjects,
   insertAdapterFallbackMolecule,
   insertNativeArtGraphicObject,
   insertNativeSingleBondMolecule,
@@ -1184,11 +1185,17 @@ describe("ChemDraft desktop shell", () => {
     expect(layoutRegistry.resolve({ key: "b", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignBottom");
     expect(layoutRegistry.resolve({ key: "h", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.distributeHorizontal");
     expect(layoutRegistry.resolve({ key: "v", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.distributeVertical");
+    expect(layoutRegistry.resolve({ key: "g", metaKey: true })).toBe("layout.group");
     expect(layoutRegistry.resolve({ key: "]", metaKey: true, shiftKey: true })).toBe("layout.bringToFront");
     expect(layoutRegistry.resolve({ key: "]", metaKey: true })).toBe("layout.bringForward");
     expect(layoutRegistry.resolve({ key: "[", metaKey: true })).toBe("layout.sendBackward");
     expect(layoutRegistry.resolve({ key: "[", metaKey: true, shiftKey: true })).toBe("layout.sendToBack");
     expect(layoutRegistry.conflicts()).toEqual([]);
+
+    const groupedLayoutDocument = groupSelectedDocumentObjects(selectedLayoutDocument);
+    const groupedRegistry = createDesktopShortcutRegistry(allShellCommands(groupedLayoutDocument), "macos");
+    expect(groupedRegistry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBe("layout.ungroup");
+    expect(groupedRegistry.conflicts()).toEqual([]);
   });
 
   it("only exposes undo and redo shortcuts when document history can move", () => {

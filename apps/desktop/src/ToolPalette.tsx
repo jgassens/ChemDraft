@@ -2732,7 +2732,7 @@ function CommandFlyoutButton({
   const shellRef = useRef<HTMLSpanElement | null>(null);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
-  const primaryCommand = commands[0];
+  const primaryCommand = commands.find((command) => command.enabled !== false) ?? commands[0];
   const primaryDisabled = primaryCommand.enabled === false;
   const flyoutAssetName = primaryAssetName ?? primaryCommand.assetName;
   const activeState = commands.some((command) => command.enabled !== false && command.id === activeCommandId);

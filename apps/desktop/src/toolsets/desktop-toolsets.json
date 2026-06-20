@@ -84,8 +84,8 @@
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
             { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
             { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
-            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "category": "layout" },
-            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "category": "layout" },
+            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "shortcutDisplay": "Cmd+G", "category": "layout" },
+            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "shortcutDisplay": "Shift+Cmd+G", "category": "layout" },
             { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "shortcutDisplay": "Shift+Cmd+]", "category": "layout" },
             { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "shortcutDisplay": "Cmd+]", "category": "layout" },
             { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "shortcutDisplay": "Cmd+[", "category": "layout" },
@@ -251,8 +251,8 @@
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
             { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
             { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
-            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "category": "layout" },
-            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "category": "layout" }
+            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "shortcutDisplay": "Cmd+G", "category": "layout" },
+            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "shortcutDisplay": "Shift+Cmd+G", "category": "layout" }
           ]
         },
         {
@@ -311,8 +311,8 @@
             { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
             { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
             { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
-            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "category": "layout" },
-            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "category": "layout" },
+            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "shortcutDisplay": "Cmd+G", "category": "layout" },
+            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "shortcutDisplay": "Shift+Cmd+G", "category": "layout" },
             { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "shortcutDisplay": "Shift+Cmd+]", "category": "layout" },
             { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "shortcutDisplay": "Cmd+]", "category": "layout" },
             { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "shortcutDisplay": "Cmd+[", "category": "layout" },

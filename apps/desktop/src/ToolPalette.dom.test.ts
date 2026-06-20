@@ -12,7 +12,8 @@ import {
   objectEffectOpacityCommandId,
   objectEffectSizeCommandId,
   objectCustomColorCommandId,
-  objectGradientStopOffsetCommandId
+  objectGradientStopOffsetCommandId,
+  type CommandSpec
 } from "./commands";
 import { getToolsetCommandGroups } from "./toolsets";
 
@@ -68,6 +69,14 @@ function gradientArtInspectorModel() {
     selectedGraphicObjects: selectedGraphicObjectsForArtInspector(gradientDocument),
     requestedPaintTarget: "fill"
   });
+}
+
+function artToolsetGroupsWith(overrides: Record<string, Partial<CommandSpec>>) {
+  return getToolsetCommandGroups("core.art").map((group) => (
+    group.map((command) => (
+      overrides[command.id] ? { ...command, ...overrides[command.id] } : command
+    ))
+  ));
 }
 
 function effectArtInspectorModel() {
@@ -492,6 +501,45 @@ describe("ToolPalette arrange flyouts", () => {
 
     expect(onInvoke).toHaveBeenCalledWith("layout.flipVertical");
     expect(transformMenu?.hidden).toBe(true);
+  });
+
+  it("uses ungroup as the group flyout primary action when a group is selected", () => {
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: artToolsetGroupsWith({
+          "layout.group": {
+            enabled: false,
+            disabledReason: "Select at least two objects"
+          },
+          "layout.ungroup": {
+            enabled: true,
+            shortcut: "Shift+Cmd+G",
+            shortcutLabel: "⇧⌘G"
+          }
+        }),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showArtStyleControls: true,
+        onInvoke
+      }));
+    });
+
+    const groupButton = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="group"]');
+    if (!groupButton) {
+      throw new Error("Expected group flyout button.");
+    }
+
+    expect(groupButton.getAttribute("data-command-id")).toBe("layout.ungroup");
+    expect(groupButton.getAttribute("data-toolbar-asset")).toBe("Custom_Ungroup");
+    expect(groupButton.getAttribute("data-shortcut-label")).toBe("⇧⌘G");
+    expect(groupButton.getAttribute("data-disabled")).toBeNull();
+    expect(groupButton.getAttribute("aria-label")).toContain("Ungroup");
+
+    act(() => {
+      groupButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("layout.ungroup");
   });
 
   it("consolidates art shape tools behind one active flyout button", () => {
