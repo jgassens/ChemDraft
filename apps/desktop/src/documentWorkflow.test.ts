@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, type ChemDraftDocument, type ElectronMarkObject, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
+import { applyPatches, deserializeDocument, serializeDocument, inchesToCssPx, mmToCssPx, type ChemDraftDocument, type ElectronMarkObject, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
@@ -67,6 +67,7 @@ import {
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
   recommendImportedPageFit,
+  setDocumentCustomPageSize,
   moveDocumentObject,
   moveNativeMoleculeParts,
   nativeTextObjectMinimumDimensions,
@@ -705,7 +706,7 @@ describe("Phase 4 document workflow", () => {
     expect(reopened.document).toEqual(document);
   });
 
-  it("recommends a larger landscape page for oversized imported CDXML content", () => {
+  it("recommends a custom page sized exactly to oversized imported content", () => {
     const document = createPhase4Document("Oversized Import");
     const oversizedMolecule: MoleculeObject = {
       id: "mol_oversized_import",
@@ -733,21 +734,44 @@ describe("Phase 4 document workflow", () => {
 
     const recommendation = recommendImportedPageFit(imported);
 
+    // A custom exact-fit, in the current page's unit (US Letter ⇒ inches), wider than tall.
     expect(recommendation).toMatchObject({
       currentPresetId: "letter",
       currentOrientation: "portrait",
-      recommendedPresetId: "a1",
-      recommendedOrientation: "landscape",
-      recommendedPageTitle: "A1"
+      recommendedPresetId: "custom",
+      recommendedOrientation: "landscape"
     });
-    expect(recommendation?.requiredWidthPx).toBeGreaterThan(imported.pages[0].width);
-    expect(recommendation?.requiredHeightPx).toBeGreaterThan(imported.pages[0].height);
+    expect(recommendation?.recommendedPageTitle).toMatch(/^Custom .+ in$/);
+    expect(recommendation?.recommendedLayout.sourceUnit).toBe("inch");
+    // The custom layout fully contains the content (rounded up, never clipped).
+    expect(recommendation!.recommendedLayout.widthPx).toBeGreaterThanOrEqual(recommendation!.requiredWidthPx);
+    expect(recommendation!.recommendedLayout.heightPx).toBeGreaterThanOrEqual(recommendation!.requiredHeightPx);
 
     const resized = applyImportedPageFitRecommendation(imported, recommendation!);
-    expect(resized.pages[0].layout).toMatchObject({ presetId: "a1", orientation: "landscape" });
+    expect(resized.pages[0].layout.presetId).toBe("custom");
     expect(resized.pages[0].width).toBeGreaterThanOrEqual(recommendation!.requiredWidthPx);
     expect(resized.pages[0].height).toBeGreaterThanOrEqual(recommendation!.requiredHeightPx);
-    expect(resized.pages[0].objects[0]).toEqual(oversizedMolecule);
+    // Identity/size preserved; the content is nudged onto the exactly-sized page so it fits.
+    const placed = resized.pages[0].objects[0] as MoleculeObject;
+    expect(placed).toMatchObject({ id: "mol_oversized_import", type: "molecule", width: 2500, height: 1300 });
+    expect(placed.x).toBeGreaterThanOrEqual(0);
+    expect(placed.y).toBeGreaterThanOrEqual(0);
+    expect(placed.x + placed.width).toBeLessThanOrEqual(resized.pages[0].width + 1e-6);
+    expect(placed.y + placed.height).toBeLessThanOrEqual(resized.pages[0].height + 1e-6);
+  });
+
+  it("applies a custom page size in inches or millimetres and round-trips through the schema", () => {
+    const inches = setDocumentCustomPageSize(createPhase4Document("Custom in"), { width: 13, height: 9, unit: "inch" });
+    expect(inches.pages[0].layout).toMatchObject({ presetId: "custom", sourceUnit: "inch", sourceWidth: 13, sourceHeight: 9, orientation: "landscape" });
+    expect(inches.pages[0].width).toBeCloseTo(inchesToCssPx(13), 6);
+    expect(inches.pages[0].height).toBeCloseTo(inchesToCssPx(9), 6);
+    // Survives strict serialize → deserialize (the schema accepts the custom layout).
+    expect(deserializeDocument(serializeDocument(inches)).pages[0].layout.sourceWidth).toBe(13);
+
+    const metric = setDocumentCustomPageSize(createPhase4Document("Custom mm"), { width: 300, height: 400, unit: "mm" });
+    expect(metric.pages[0].layout).toMatchObject({ presetId: "custom", sourceUnit: "mm", orientation: "portrait" });
+    expect(metric.pages[0].width).toBeCloseTo(mmToCssPx(300), 6);
+    expect(metric.pages[0].height).toBeCloseTo(mmToCssPx(400), 6);
   });
 
   it("creates and inserts a real native single-bond molecule through document patches", () => {

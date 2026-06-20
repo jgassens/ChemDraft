@@ -132,6 +132,19 @@ export interface ConformerRefineOptions {
 }
 
 /**
+ * Default refinement force field for an embed-time `optimize` choice: UFF only when the
+ * user explicitly asked for it, MMFF94 otherwise. Shared by the conformer worker (which
+ * keys its per-mode cache on the force field) and the RDKit adapter (which runs it), so
+ * the two can never drift. A per-refine `ConformerRefineOptions.forceField` override takes
+ * precedence over this default at the engine.
+ */
+export function defaultRefineForceField(
+  optimize: Generate3DConformerOptions["optimize"]
+): NonNullable<ConformerRefineOptions["forceField"]> {
+  return optimize === "uff" ? "uff" : "mmff94";
+}
+
+/**
  * Two-stage conformer delivery for latency-sensitive UI: the embedded conformer is
  * usable (collision-free, parities respected) the moment it exists; force-field
  * refinement is strictly cosmetic polish and can land later. `refineFromEmbedded`

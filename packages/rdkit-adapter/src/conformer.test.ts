@@ -35,6 +35,9 @@ interface MockHooks {
     molblock: string;
   }>;
   parseReturnsNull?: boolean;
+  /** Simulate a real ETKDG embed that only succeeds with `useRandomCoords:true` (a large,
+   *  flexible molecule): the first attempt returns embedOk:false, the random-coords retry ok. */
+  failUnlessRandomCoords?: boolean;
 }
 
 function installMock(hooks: MockHooks = {}) {
@@ -52,8 +55,10 @@ function installMock(hooks: MockHooks = {}) {
       return {
         generate_3d_embed(details: string): string {
           embedDetails.push(details);
+          const useRandomCoords = (JSON.parse(details) as { useRandomCoords?: boolean }).useRandomCoords === true;
+          const embedOk = hooks.failUnlessRandomCoords ? useRandomCoords : true;
           return JSON.stringify({
-            embedOk: true,
+            embedOk,
             coords3dByEngineAtom: EMBED_ENGINE_COORDS,
             engineToOriginalAtom: ENGINE_TO_ORIGINAL,
             generatedHydrogenEngineAtoms: GENERATED_H,
@@ -112,7 +117,7 @@ describe("rdkit conformer adapter — embed mapping", () => {
   it("passes the embed seed + timeout rail to the binding", async () => {
     const mock = installMock();
     await generate3DConformerProgressive(INPUT, { optimize: "mmff94", seed: 42 });
-    expect(JSON.parse(mock.embedDetails[0])).toEqual({ seed: 42, timeoutSeconds: 10 });
+    expect(JSON.parse(mock.embedDetails[0])).toEqual({ seed: 42, timeoutSeconds: 10, useRandomCoords: false });
   });
 });
 
@@ -170,6 +175,25 @@ describe("rdkit conformer adapter — lifecycle + failure", () => {
     const result = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
     expect(result.embedded.embed.status).toBe("failed");
     expect(result.refineFromEmbedded).toBeUndefined();
+  });
+
+  it("retries a large molecule's failed embed with useRandomCoords and succeeds", async () => {
+    const mock = installMock({ failUnlessRandomCoords: true });
+    const result = await generate3DConformerProgressive(
+      { molfile: INPUT.molfile, originalAtomCount: 64 },
+      { optimize: "mmff94" }
+    );
+    expect(result.embedded.embed.status).toBe("ok");
+    expect(mock.embedDetails).toHaveLength(2); // default start failed, random-coords retry ran
+    expect(JSON.parse(mock.embedDetails[0]).useRandomCoords).toBe(false);
+    expect(JSON.parse(mock.embedDetails[1]).useRandomCoords).toBe(true);
+  });
+
+  it("does NOT retry a small molecule's failed embed (random coords only helps large ones)", async () => {
+    const mock = installMock({ failUnlessRandomCoords: true });
+    const result = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" }); // 3 atoms
+    expect(result.embedded.embed.status).toBe("failed");
+    expect(mock.embedDetails).toHaveLength(1); // no second attempt
   });
 
   it("reports a failed embed when the molfile cannot be parsed", async () => {

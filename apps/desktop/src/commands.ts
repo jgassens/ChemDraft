@@ -215,6 +215,18 @@ export const pageSizeActions: CommandSpec[] = MinimalPageSizePresetIds.map((pres
   };
 });
 
+/** Opens the custom page-size dialog (File ▸ Page Setup ▸ Custom Size…). */
+export const PAGE_CUSTOM_SIZE_COMMAND_ID = "page.setSizeCustom";
+
+export const pageCustomSizeAction: CommandSpec = {
+  id: PAGE_CUSTOM_SIZE_COMMAND_ID,
+  title: "Set Page Size: Custom…",
+  icon: "grid",
+  source: "core",
+  category: "page",
+  description: "Enter a custom page width and height in inches or millimeters"
+};
+
 export const pageOrientationActions: CommandSpec[] = [
   {
     id: "page.setOrientation.portrait",
@@ -528,6 +540,7 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...drawerActions,
     ...viewActions,
     ...pageSizeActions,
+    pageCustomSizeAction,
     ...pageOrientationActions,
     ...textToolbarActions,
     ...toolbarCustomizationActions,

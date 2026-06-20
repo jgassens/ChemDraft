@@ -48,6 +48,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setSize.a1",
     "page.setSize.a0",
     "page.setSize.a5",
+    "page.setSizeCustom",
     "page.setOrientation.portrait",
     "page.setOrientation.landscape",
     "view.toggleRulers",
@@ -1105,6 +1106,8 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &MenuItem::with_id(app, "page.setSize.a1", "A1", true, None::<&str>)?,
             &MenuItem::with_id(app, "page.setSize.a0", "A0", true, None::<&str>)?,
             &MenuItem::with_id(app, "page.setSize.a5", "A5", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "page.setSizeCustom", "Custom Size…", true, None::<&str>)?,
         ],
     )?;
     let orientation_menu = Submenu::with_items(

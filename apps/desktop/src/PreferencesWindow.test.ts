@@ -2,30 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreferencesWindow } from "./PreferencesWindow";
+import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
-
-class MemoryStorage {
-  private store = new Map<string, string>();
-  get length() {
-    return this.store.size;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) as string) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-  key(index: number): string | null {
-    return [...this.store.keys()][index] ?? null;
-  }
-}
 
 let storage: MemoryStorage;
 

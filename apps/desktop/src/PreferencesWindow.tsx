@@ -82,14 +82,16 @@ export function PreferencesWindow() {
     };
   }, []);
 
+  // `update` is an event handler (a discrete radio click), so deriving `next` from the
+  // current `settings` closure is safe and keeps the persist/broadcast side effects OUT of
+  // the setState updater — a function React may invoke twice (StrictMode / concurrent
+  // re-render), which would otherwise double-write localStorage and double-emit the event.
   const update = (patch: Partial<Spin3dSettings>): void => {
-    setSettings((current) => {
-      const next = { ...current, ...patch };
-      saveSpin3dSettings(next);
-      // Tell the document window to pick up the change live (localStorage persists it).
-      void broadcastSpin3dSettings(next);
-      return next;
-    });
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    saveSpin3dSettings(next);
+    // Tell the document window to pick up the change live (localStorage persists it).
+    void broadcastSpin3dSettings(next);
   };
 
   return (

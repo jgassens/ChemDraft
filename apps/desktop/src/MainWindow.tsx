@@ -22,6 +22,10 @@ import {
   nativeTextStyleFromObjectStyle,
   redo as redoDocumentHistory,
   undo as undoDocumentHistory,
+  cssPxToPageSize,
+  pageSizeToCssPx,
+  pageLayoutSourceUnit,
+  type PageSizeUnit,
   type BondRef,
   type ChemDraftDocument,
   type DocumentHistory,
@@ -99,6 +103,8 @@ import {
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
+  pageCustomSizeAction,
+  PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
   type CommandSpec
 } from "./commands";
@@ -136,8 +142,7 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   cleanUpNativeMolecules2d,
-  attachSpin3dModel,
-  buildSpin3dModel,
+  attachSpin3dModelFromConformer,
   conformerGraphSignature,
   spin3dModelCoordsForMolecule,
   validSpin3dModelFor,
@@ -191,6 +196,7 @@ import {
   selectDocumentObjects,
   setDocumentPageOrientation,
   setDocumentPageSize,
+  setDocumentCustomPageSize,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
@@ -646,6 +652,13 @@ type ExportDialogState = {
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
 };
+// Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
+// they are parsed + validated on Apply.
+type CustomPageSizeDialogState = {
+  width: string;
+  height: string;
+  unit: PageSizeUnit;
+};
 
 const RULER_THICKNESS = 32;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
@@ -879,6 +892,7 @@ export function MainWindow({
   const [status, setStatus] = useState("Blank native document");
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
+  const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
@@ -1837,15 +1851,13 @@ export function MainWindow({
       .find((object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule");
     let committedDocument = outcome.document;
     if (flattened) {
-      const model = buildSpin3dModel({
-        molecule: flattened,
+      committedDocument = attachSpin3dModelFromConformer(outcome.document, state.objectId, {
         coords3d: state.coords3d,
         orientation: state.quat,
         engine: state.engine
       });
-      committedDocument = attachSpin3dModel(outcome.document, state.objectId, model);
       spin3dModelCacheRef.current.set(state.objectId, {
-        signature: model.graphSignature,
+        signature: conformerGraphSignature(flattened),
         coords3d: state.coords3d,
         quat: state.quat,
         engine: state.engine
@@ -2696,9 +2708,15 @@ export function MainWindow({
       commitDocumentChange(nextDocument);
       resetPasteUiState();
       const stereoCount = depiction.bonds.filter((bond) => bond.wedge).length;
-      setStatus(
-        `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereo bond${stereoCount === 1 ? "" : "s"}` : ""}`
-      );
+      // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
+      // the same page-resize prompt the external-CDXML import path uses, when the pasted
+      // content overflows and a larger preset (up to A0) would fit it.
+      const fit = recommendImportedPageFit(nextDocument);
+      setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
+      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereo bond${stereoCount === 1 ? "" : "s"}` : ""}`;
+      setStatus(fit
+        ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
+        : baseStatus);
       return true;
     } catch {
       return false;
@@ -2939,7 +2957,7 @@ export function MainWindow({
     const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
     setPageFitPrompt(undefined);
     setStatus(changed
-      ? `Page changed to ${pageFitPromptLayoutLabel(pageFitPrompt.recommendedPageTitle, pageFitPrompt.recommendedOrientation)}`
+      ? `Page changed to ${pageFitRecommendedLabel(pageFitPrompt)}`
       : "Page already fits imported content");
   }, [commitDocumentChange, pageFitPrompt]);
 
@@ -2951,6 +2969,20 @@ export function MainWindow({
     setPageFitPrompt(undefined);
     setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
   }, [pageFitPrompt]);
+
+  const openCustomPageSizeDialog = useCallback(() => {
+    const layout = documentRef.current.pages[0]?.layout;
+    const unit: PageSizeUnit = layout ? pageLayoutSourceUnit(layout) : "inch";
+    const width = layout?.sourceWidth ?? (layout ? cssPxToPageSize(layout.widthPx, unit) : 8.5);
+    const height = layout?.sourceHeight ?? (layout ? cssPxToPageSize(layout.heightPx, unit) : 11);
+    setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height) });
+  }, []);
+
+  const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
+    commitDocumentChange((current) => setDocumentCustomPageSize(current, size));
+    setCustomPageSizeDialog(undefined);
+    setStatus(`Page size: custom ${formatPageSizeFieldValue(size.width)} × ${formatPageSizeFieldValue(size.height)} ${pageSizeUnitShortLabel(size.unit)}`);
+  }, [commitDocumentChange]);
 
   const openDocumentFromNativePicker = useCallback(async () => {
     if (!isDesktopRuntime()) {
@@ -3436,6 +3468,10 @@ export function MainWindow({
       });
     });
 
+    register(pageCustomSizeAction, () => {
+      openCustomPageSizeDialog();
+    });
+
     toolbarCustomizationActions.forEach((action) => {
       register(action, () => {
         setStatus(action.disabledReason ?? "Toolbar customization UI is not implemented yet");
@@ -3461,6 +3497,7 @@ export function MainWindow({
     nativePalette,
     openExportDialog,
     openDocumentFromNativePicker,
+    openCustomPageSizeDialog,
     pasteClipboard,
     quickActions,
     resetDocumentHistory,
@@ -4409,19 +4446,19 @@ export function MainWindow({
     let committed = rotated;
     if (drag.spin3dModel && !drag.target) {
       const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      // NOTE the negated angle: flattenSpunMolecule flips Y on output (math y-up → document
+      // y-down), so a +θ screen rotation (rotateDocumentObject, which is what the user sees)
+      // corresponds to a −θ rotation about the math-frame +Z axis. Folding +θ here would store
+      // an orientation that twists opposite to the drawing, making the next reopen/X-Y tilt jump.
       const nextQuat = quatNormalize(quatMultiply(
-        quatFromAxisAngle(SPIN_AXIS_Z, degrees * Math.PI / 180),
+        quatFromAxisAngle(SPIN_AXIS_Z, -degrees * Math.PI / 180),
         drag.spin3dModel.startOrientation
       ));
-      const flattened = findDocumentObject(rotated, drag.objectId);
-      if (flattened?.type === "molecule") {
-        committed = attachSpin3dModel(rotated, drag.objectId, buildSpin3dModel({
-          molecule: flattened,
-          coords3d: drag.spin3dModel.coords3d,
-          orientation: nextQuat,
-          engine: drag.spin3dModel.engine
-        }));
-      }
+      committed = attachSpin3dModelFromConformer(rotated, drag.objectId, {
+        coords3d: drag.spin3dModel.coords3d,
+        orientation: nextQuat,
+        engine: drag.spin3dModel.engine
+      });
     }
 
     const currentHistory = documentHistoryRef.current;
@@ -4457,15 +4494,11 @@ export function MainWindow({
         replacePresentDocument(drag.startDocument);
         return false;
       }
-      const flattened = findDocumentObject(finalDocument, drag.objectId);
-      const modeled = flattened?.type === "molecule"
-        ? attachSpin3dModel(finalDocument, drag.objectId, buildSpin3dModel({
-          molecule: flattened,
-          coords3d: drag.spin3dModel.coords3d,
-          orientation: finalOrientation,
-          engine: drag.spin3dModel.engine
-        }))
-        : finalDocument;
+      const modeled = attachSpin3dModelFromConformer(finalDocument, drag.objectId, {
+        coords3d: drag.spin3dModel.coords3d,
+        orientation: finalOrientation,
+        engine: drag.spin3dModel.engine
+      });
       const currentHistory = documentHistoryRef.current;
       installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, modeled));
       setStatus("3D rotation applied");
@@ -7465,6 +7498,14 @@ export function MainWindow({
             onResize={acceptPageFitRecommendation}
           />
         ) : null}
+        {customPageSizeDialog ? (
+          <CustomPageSizeDialog
+            state={customPageSizeDialog}
+            onChange={setCustomPageSizeDialog}
+            onCancel={() => setCustomPageSizeDialog(undefined)}
+            onApply={applyCustomPageSize}
+          />
+        ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>
@@ -7523,7 +7564,7 @@ interface ImportedPageFitPromptProps {
 
 function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPageFitPromptProps) {
   const currentLabel = pageFitPromptLayoutLabel(recommendation.currentPageTitle, recommendation.currentOrientation);
-  const recommendedLabel = pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
+  const recommendedLabel = pageFitRecommendedLabel(recommendation);
   const overflow = [
     recommendation.overflowLeftPx > 0 ? `${Math.ceil(recommendation.overflowLeftPx)} px left of the page` : undefined,
     recommendation.overflowTopPx > 0 ? `${Math.ceil(recommendation.overflowTopPx)} px above the page` : undefined,
@@ -7563,6 +7604,142 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
 
 function pageFitPromptLayoutLabel(pageTitle: string, orientation: "portrait" | "landscape"): string {
   return `${pageTitle} ${orientation === "landscape" ? "Landscape" : "Portrait"}`;
+}
+
+/** The recommended-size label: a custom title already carries its dimensions, so the
+ *  portrait/landscape suffix (meaningful only for presets) is omitted for it. */
+function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation): string {
+  return recommendation.recommendedPresetId === "custom"
+    ? recommendation.recommendedPageTitle
+    : pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
+}
+
+function formatPageSizeFieldValue(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+function pageSizeUnitShortLabel(unit: PageSizeUnit): string {
+  return unit === "inch" ? "in" : unit === "mm" ? "mm" : "px";
+}
+
+const customPageFieldLabelStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  fontSize: 12,
+  color: "var(--cd-text-secondary)"
+};
+
+const customPageInputStyle: CSSProperties = {
+  width: 110,
+  padding: "6px 8px",
+  borderRadius: 6,
+  border: "1px solid var(--cd-border-subtle)",
+  background: "var(--cd-bg-panel)",
+  color: "var(--cd-text-primary)",
+  fontSize: 13
+};
+
+interface CustomPageSizeDialogProps {
+  state: CustomPageSizeDialogState;
+  onChange: (next: CustomPageSizeDialogState) => void;
+  onCancel: () => void;
+  onApply: (size: { width: number; height: number; unit: PageSizeUnit }) => void;
+}
+
+function CustomPageSizeDialog({ state, onChange, onCancel, onApply }: CustomPageSizeDialogProps) {
+  const width = Number.parseFloat(state.width);
+  const height = Number.parseFloat(state.height);
+  const valid = Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0;
+  const selectUnit = state.unit === "mm" ? "mm" : "inch";
+
+  const changeUnit = (unit: PageSizeUnit) => {
+    if (unit === state.unit) {
+      return;
+    }
+    // Convert the entered values so the physical size is preserved across the unit switch.
+    const convert = (raw: string): string => {
+      const value = Number.parseFloat(raw);
+      return Number.isFinite(value)
+        ? formatPageSizeFieldValue(cssPxToPageSize(pageSizeToCssPx(value, state.unit), unit))
+        : raw;
+    };
+    onChange({ unit, width: convert(state.width), height: convert(state.height) });
+  };
+
+  const submit = () => {
+    if (valid) {
+      onApply({ width, height, unit: state.unit });
+    }
+  };
+  const onFieldKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      submit();
+    }
+  };
+
+  return (
+    <div aria-label="Custom page size" aria-modal="true" role="dialog" style={exportDialogBackdropStyle}>
+      <section style={exportDialogPanelStyle}>
+        <div style={exportDialogHeaderStyle}>
+          <h2 style={exportDialogTitleStyle}>Custom Page Size</h2>
+        </div>
+        <p style={exportDialogHintStyle}>Enter the page width and height. Margins are kept from the current page.</p>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <label style={customPageFieldLabelStyle}>
+            Width
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={state.width}
+              style={customPageInputStyle}
+              onChange={(event) => onChange({ ...state, width: event.target.value })}
+              onKeyDown={onFieldKeyDown}
+              autoFocus
+            />
+          </label>
+          <span style={{ paddingBottom: 8, color: "var(--cd-text-secondary)" }}>×</span>
+          <label style={customPageFieldLabelStyle}>
+            Height
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={state.height}
+              style={customPageInputStyle}
+              onChange={(event) => onChange({ ...state, height: event.target.value })}
+              onKeyDown={onFieldKeyDown}
+            />
+          </label>
+          <label style={customPageFieldLabelStyle}>
+            Units
+            <select
+              value={selectUnit}
+              style={customPageInputStyle}
+              onChange={(event) => changeUnit(event.target.value as PageSizeUnit)}
+            >
+              <option value="inch">Inches</option>
+              <option value="mm">Millimeters</option>
+            </select>
+          </label>
+        </div>
+        <div style={exportDialogFooterStyle}>
+          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            style={{ ...exportDialogPrimaryButtonStyle, opacity: valid ? 1 : 0.5, cursor: valid ? "pointer" : "not-allowed" }}
+            onClick={submit}
+            disabled={!valid}
+          >
+            Apply
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 interface ExportDialogProps {

@@ -4,6 +4,9 @@ import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
   createPageLayout,
+  createCustomPageLayout,
+  cssPxToPageSize,
+  pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
   moleculeToMolfileV2000,
   PageSizePresets,
@@ -27,6 +30,7 @@ import {
   type ObjectReorderPlacement,
   type PageOrientation,
   type PageSizePresetId,
+  type PageSizeUnit,
   type StereoCenterReport,
   type TextSpan,
   type TextObject,
@@ -5371,20 +5375,18 @@ export function buildSpin3dModel(args: {
   };
 }
 
-/**
- * Persist `model` under the molecule's `compatibility.unknown`, merging (never
- * clobbering) any existing compatibility data. Returns the document unchanged if the
- * object is missing. Goes through `applyPatch`, so the result is schema-validated.
- */
-export function attachSpin3dModel(
-  document: ChemDraftDocument,
-  objectId: string,
-  model: Spin3dDocumentModelV1
-): ChemDraftDocument {
-  const molecule = document.pages
+function findMoleculeObjectById(document: ChemDraftDocument, objectId: string): MoleculeObject | undefined {
+  return document.pages
     .flatMap((page) => page.objects)
     .find((object): object is MoleculeObject => object.id === objectId && object.type === "molecule");
-  if (!molecule) return document;
+}
+
+function persistSpin3dModel(
+  document: ChemDraftDocument,
+  objectId: string,
+  molecule: MoleculeObject,
+  model: Spin3dDocumentModelV1
+): ChemDraftDocument {
   const existing = molecule.compatibility;
   const compatibility = {
     ...(existing ?? {}),
@@ -5396,6 +5398,38 @@ export function attachSpin3dModel(
     { op: "updateObject", objectId, changes: { compatibility } },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * Persist `model` under the molecule's `compatibility.unknown`, merging (never
+ * clobbering) any existing compatibility data. Returns the document unchanged if the
+ * object is missing. Goes through `applyPatch`, so the result is schema-validated.
+ */
+export function attachSpin3dModel(
+  document: ChemDraftDocument,
+  objectId: string,
+  model: Spin3dDocumentModelV1
+): ChemDraftDocument {
+  const molecule = findMoleculeObjectById(document, objectId);
+  if (!molecule) return document;
+  return persistSpin3dModel(document, objectId, molecule, model);
+}
+
+/**
+ * Build a v1 model from a conformer + committed orientation and persist it in one pass:
+ * finds the molecule ONCE, signs its current graph, and attaches. Returns the document
+ * unchanged if the object is missing. Use this from the rotate/flatten commit paths so the
+ * find → buildSpin3dModel → attach sequence lives in a single place.
+ */
+export function attachSpin3dModelFromConformer(
+  document: ChemDraftDocument,
+  objectId: string,
+  conformer: { coords3d: ArrayLike<number>; orientation: Spin3dOrientation; engine?: Spin3dEngineProvenance }
+): ChemDraftDocument {
+  const molecule = findMoleculeObjectById(document, objectId);
+  if (!molecule) return document;
+  const model = buildSpin3dModel({ molecule, ...conformer });
+  return persistSpin3dModel(document, objectId, molecule, model);
 }
 
 function pointBondLengths(
@@ -6346,16 +6380,28 @@ export function openNativeDocument(contents: string): ChemDraftOpenResult {
 }
 
 const importedPageFitPaddingPx = 24;
-const importedPageFitCandidatePresetIds: readonly PageSizePresetId[] = [
-  "letter",
-  "legal",
-  "a4",
-  "a3",
-  "a2",
-  "a1",
-  "a0"
-];
 
+/** Round a page dimension UP to a tidy value in its unit, so the page always fully contains
+ *  the content (rounding down could clip it): 0.01" for inches, 1 mm / 1 px otherwise. */
+function roundUpPageSize(value: number, unit: PageSizeUnit): number {
+  if (unit === "inch") return Math.ceil(value * 100) / 100;
+  return Math.ceil(value);
+}
+
+function pageSizeUnitLabel(unit: PageSizeUnit): string {
+  return unit === "inch" ? "in" : unit === "mm" ? "mm" : "px";
+}
+
+function formatPageSizeValue(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+/**
+ * Recommend a CUSTOM page sized to exactly contain the content (plus a small margin) when it
+ * overflows the current page — including content larger than any standard preset. The custom
+ * size is expressed in the current page's unit (US presets ⇒ inches, A-series ⇒ mm) so the
+ * suggestion reads naturally and round-trips through the print/SVG path.
+ */
 export function recommendImportedPageFit(document: ChemDraftDocument): ImportedPageFitRecommendation | undefined {
   const page = document.pages[0];
   if (!page || page.objects.length === 0) {
@@ -6373,33 +6419,15 @@ export function recommendImportedPageFit(document: ChemDraftDocument): ImportedP
   const requiredWidthPx = contentBounds.width + importedPageFitPaddingPx * 2;
   const requiredHeightPx = contentBounds.height + importedPageFitPaddingPx * 2;
 
+  // Size a custom page to the content, in the current page's unit (rounded up so nothing clips).
+  const unit = pageLayoutSourceUnit(page.layout);
+  const widthValue = roundUpPageSize(cssPxToPageSize(requiredWidthPx, unit), unit);
+  const heightValue = roundUpPageSize(cssPxToPageSize(requiredHeightPx, unit), unit);
   const currentMargin = pageMarginFromLayout(page.layout);
-  const candidates = importedPageFitCandidatePresetIds.flatMap((presetId) => (["portrait", "landscape"] as const).map((orientation) => {
-    const preset = PageSizePresets.find((candidate) => candidate.id === presetId);
-    const layout = createPageLayout(presetId, orientation, currentMargin);
-    return preset
-      ? {
-          presetId,
-          orientation,
-          title: preset.title,
-          layout,
-          area: layout.widthPx * layout.heightPx
-        }
-      : undefined;
-  })).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
-  const matchingCandidate = candidates
-    .filter((candidate) =>
-      candidate.layout.widthPx >= requiredWidthPx &&
-      candidate.layout.heightPx >= requiredHeightPx
-    )
-    .sort((left, right) => left.area - right.area || pageOrientationSortValue(left.orientation) - pageOrientationSortValue(right.orientation))[0];
+  const recommendedLayout = createCustomPageLayout(widthValue, heightValue, unit, currentMargin);
 
-  if (!matchingCandidate) {
-    return undefined;
-  }
-
-  const translateX = importedContentFitDelta(contentBounds.x, contentBounds.width, matchingCandidate.layout.widthPx);
-  const translateY = importedContentFitDelta(contentBounds.y, contentBounds.height, matchingCandidate.layout.heightPx);
+  const translateX = importedContentFitDelta(contentBounds.x, contentBounds.width, recommendedLayout.widthPx);
+  const translateY = importedContentFitDelta(contentBounds.y, contentBounds.height, recommendedLayout.heightPx);
 
   return {
     pageId: page.id,
@@ -6407,10 +6435,10 @@ export function recommendImportedPageFit(document: ChemDraftDocument): ImportedP
     currentPresetId: page.layout.presetId,
     currentOrientation: page.layout.orientation,
     currentPageTitle: PageSizePresets.find((candidate) => candidate.id === page.layout.presetId)?.title ?? page.layout.presetId,
-    recommendedPresetId: matchingCandidate.presetId,
-    recommendedOrientation: matchingCandidate.orientation,
-    recommendedPageTitle: matchingCandidate.title,
-    recommendedLayout: matchingCandidate.layout,
+    recommendedPresetId: "custom",
+    recommendedOrientation: recommendedLayout.orientation,
+    recommendedPageTitle: `Custom ${formatPageSizeValue(widthValue)} × ${formatPageSizeValue(heightValue)} ${pageSizeUnitLabel(unit)}`,
+    recommendedLayout,
     contentBounds,
     requiredWidthPx,
     requiredHeightPx,
@@ -6460,6 +6488,25 @@ export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageS
   );
 }
 
+/** Apply a user-entered custom page size (width/height in `unit`), keeping current margins. */
+export function setDocumentCustomPageSize(
+  document: ChemDraftDocument,
+  size: { width: number; height: number; unit: PageSizeUnit }
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const layout = createCustomPageLayout(size.width, size.height, size.unit, pageMarginFromLayout(page.layout));
+
+  return applyPatch(
+    document,
+    {
+      op: "updatePageLayout",
+      pageId: page.id,
+      layout
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 export function setDocumentPageOrientation(
   document: ChemDraftDocument,
   orientation: PageOrientation
@@ -6491,10 +6538,6 @@ function boundsForPageObjects(objects: readonly DocumentObject[]): PageObjectBou
     width: Math.max(0, maxX - minX),
     height: Math.max(0, maxY - minY)
   };
-}
-
-function pageOrientationSortValue(orientation: PageOrientation): number {
-  return orientation === "landscape" ? 0 : 1;
 }
 
 function importedContentFitDelta(min: number, size: number, extent: number): number {

@@ -16,7 +16,9 @@
  * (structured-clone-safe across the worker boundary).
  */
 import {
+  defaultRefineForceField,
   parseV2000AtomBlock,
+  type ChemistryWarning,
   type ConformerEngineName,
   type ConformerForceFieldReport,
   type ConformerGenerator3D,
@@ -93,6 +95,10 @@ interface OptimizePayload {
 
 const ENGINE: ConformerEngineName = "rdkit-wasm";
 const DEFAULT_EMBED_TIMEOUT_SECONDS = 10;
+// At/above this heavy-atom count, a failed ETKDG embed is retried with random starting
+// coordinates: ETKDG's default (eigenvalue-decomposition) start fails on large, highly
+// flexible molecules (e.g. long peptides) that random coords embeds successfully.
+const RANDOM_COORDS_RETRY_MIN_ATOMS = 50;
 
 type RefineForceField = NonNullable<ConformerRefineOptions["forceField"]>;
 
@@ -100,8 +106,9 @@ function refineForceFieldFor(
   optimize: Generate3DConformerOptions["optimize"],
   override: ConformerRefineOptions["forceField"]
 ): RefineForceField {
-  if (override) return override;
-  return optimize === "uff" ? "uff" : "mmff94";
+  // A per-refine override wins; otherwise fall back to the shared embed-time default
+  // (kept in the contract package so the worker's cache key and this engine can't drift).
+  return override ?? defaultRefineForceField(optimize);
 }
 
 function reportNameFor(forceField: RefineForceField): ConformerForceFieldReport["name"] {
@@ -192,20 +199,46 @@ export async function generate3DConformerProgressive(
   const rdkit = await ensureRdkit();
   const version = rdkit.version?.() ?? "unknown";
 
-  const mol = rdkit.get_mol(input.molfile, JSON.stringify({ removeHs: false }));
-  if (!mol) return failedEmbed(input, "RDKit could not parse the molfile", version);
+  // One embed attempt with a fresh, transient mol handle (the embed adds Hs + mutates it).
+  // A binding throw / malformed JSON surfaces as a graceful failed embed (so the worker can
+  // fall back) rather than rejecting the whole promise.
+  type EmbedAttempt =
+    | { kind: "parse-failed" }
+    | { kind: "error"; message: string }
+    | { kind: "payload"; payload: EmbedPayload };
+  const attemptEmbed = (useRandomCoords: boolean): EmbedAttempt => {
+    const mol = rdkit.get_mol(input.molfile, JSON.stringify({ removeHs: false }));
+    if (!mol) return { kind: "parse-failed" };
+    try {
+      const json = mol.generate_3d_embed(
+        JSON.stringify({ seed: options.seed ?? -1, timeoutSeconds: DEFAULT_EMBED_TIMEOUT_SECONDS, useRandomCoords })
+      );
+      return { kind: "payload", payload: JSON.parse(json) as EmbedPayload };
+    } catch (error) {
+      return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    } finally {
+      mol.delete(); // plain-data payload captured; never hold a WASM handle across calls
+    }
+  };
 
-  let payload: EmbedPayload;
-  try {
-    payload = JSON.parse(
-      mol.generate_3d_embed(
-        JSON.stringify({ seed: options.seed ?? -1, timeoutSeconds: DEFAULT_EMBED_TIMEOUT_SECONDS })
-      )
-    ) as EmbedPayload;
-  } finally {
-    mol.delete(); // plain-data payload captured; never hold a WASM handle across calls
+  let attempt = attemptEmbed(false);
+  if (attempt.kind === "parse-failed") {
+    return failedEmbed(input, "RDKit could not parse the molfile", version);
   }
-
+  // Retry a failed/empty embed of a large structure with random starting coordinates — the
+  // standard ETKDG remedy for big, flexible molecules (long peptides). NOTE: this takes
+  // effect only once the vendored WASM is rebuilt to honour `useRandomCoords` (see
+  // vendor/BUILD.md); the currently shipped binding ignores the flag, so the worker's OCL
+  // fallback is what actually rescues such structures today.
+  const embedFailed = attempt.kind === "error" || !attempt.payload.embedOk;
+  if (embedFailed && (input.originalAtomCount ?? 0) >= RANDOM_COORDS_RETRY_MIN_ATOMS) {
+    const retry = attemptEmbed(true);
+    if (retry.kind === "payload" && retry.payload.embedOk) attempt = retry;
+  }
+  if (attempt.kind === "error") {
+    return failedEmbed(input, `RDKit embed failed: ${attempt.message}`, version);
+  }
+  const payload = attempt.payload;
   if (!payload.embedOk) {
     return failedEmbed(input, "RDKit ETKDG embedding found no conformer (or timed out)", version);
   }
@@ -215,6 +248,18 @@ export async function generate3DConformerProgressive(
   const originalToEngineAtom = invertMapping(engineToOriginalAtom, originalAtomCount);
   const generatedHydrogenEngineAtoms = payload.generatedHydrogenEngineAtoms;
   const explicitInputHydrogens = explicitInputHydrogenCount(input.molfile, originalAtomCount);
+
+  // Warn (rather than silently placing the atom at the origin) when an original atom never
+  // mapped to an engine atom — parity with the OCL adapter's ocl.unmapped-original-atoms.
+  const embedWarnings: ChemistryWarning[] = [];
+  const unmapped = originalToEngineAtom.reduce((count, engineIdx) => (engineIdx < 0 ? count + 1 : count), 0);
+  if (unmapped > 0) {
+    embedWarnings.push({
+      code: "rdkit.unmapped-original-atoms",
+      message: `${unmapped} original atom(s) were not located in the RDKit conformer; they default to the origin.`,
+      severity: "error"
+    });
+  }
 
   const buildResult = (
     coords3dByOriginalAtom: Float64Array,
@@ -240,7 +285,7 @@ export async function generate3DConformerProgressive(
     embed: { status: "ok" },
     forceField,
     unsupportedFeatures: [],
-    warnings: []
+    warnings: [...embedWarnings]
   });
 
   const embeddedCoords = scatterToOriginal(payload.coords3dByEngineAtom, engineToOriginalAtom, originalAtomCount);
@@ -260,17 +305,26 @@ export async function generate3DConformerProgressive(
     if (!work) {
       return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
     }
-    let optimized: OptimizePayload;
+    let optimized: OptimizePayload | undefined;
     try {
       optimized = JSON.parse(
         work.optimize_3d_conformer(
           JSON.stringify({ forceField, maxIters: maxIts ?? options.maxMinimiseIterations })
         )
       ) as OptimizePayload;
+    } catch {
+      optimized = undefined; // a binding throw / bad JSON → keep the embed (handled below)
     } finally {
       work.delete();
     }
-    if (!optimized.embedOk) {
+    if (!optimized || !optimized.embedOk) {
+      return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
+    }
+    // The refine re-parses the embed molblock and scatters via the ORIGINAL engine→original
+    // map, which assumes the re-parse preserved engine atom order. If the optimised coordinate
+    // count differs from the embed's, that assumption broke — keep the embed coords rather
+    // than scatter onto the wrong atoms.
+    if (optimized.coords3dByEngineAtom.length !== payload.coords3dByEngineAtom.length) {
       return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
     }
     const refinedCoords = scatterToOriginal(optimized.coords3dByEngineAtom, engineToOriginalAtom, originalAtomCount);

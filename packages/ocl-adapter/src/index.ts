@@ -428,6 +428,11 @@ export async function generate3DConformerProgressive(
     return { embedded };
   }
 
+  // Embed-stage warnings, snapshotted so each (re-runnable) refinement starts from them
+  // rather than appending to a shared array — otherwise deriving multiple modes from one
+  // embed would duplicate/accumulate mapping warnings across calls.
+  const embeddedWarnings: ChemistryWarning[] = [...warnings];
+
   // Snapshot the pristine embedded coordinates so refinement can be re-run from them
   // for different iteration caps / modes WITHOUT re-embedding. MMFF94's minimise() is
   // single-shot and mutates the conformer in place, and re-minimising from already-
@@ -448,10 +453,12 @@ export async function generate3DConformerProgressive(
     }
   };
 
-  let ffSetupWarned = false;
   const refineFromEmbedded = (maxItsOverride?: number): Generate3DConformerResult => {
     const maxIts = maxItsOverride ?? options.maxMinimiseIterations;
     restoreEmbeddedCoords(); // every refinement starts from the pristine embed
+    // Per-call warnings: start from the embed-stage snapshot so re-running a different mode
+    // never inherits or re-appends a prior call's refine/mapping warnings.
+    const refineWarnings: ChemistryWarning[] = [...embeddedWarnings];
     let forceField: Generate3DConformerResult["forceField"];
     const refineSpan = startOclTraceSpan("mmff94-refine", { atomCount: originalAtomCount });
     try {
@@ -466,19 +473,16 @@ export async function generate3DConformerProgressive(
       refineSpan.complete({ atomCount: originalAtomCount, message: forceField.status });
     } catch (error) {
       forceField = { name: "MMFF94", status: "setup-failed" };
-      if (!ffSetupWarned) {
-        ffSetupWarned = true;
-        warnings.push({
-          code: "ocl.forcefield-unavailable",
-          message: `MMFF94 setup failed: ${(error as Error).message}`,
-          severity: "warning"
-        });
-      }
+      refineWarnings.push({
+        code: "ocl.forcefield-unavailable",
+        message: `MMFF94 setup failed: ${(error as Error).message}`,
+        severity: "warning"
+      });
       refineSpan.fail(error, { atomCount: originalAtomCount });
     }
     const refinedMappingSpan = startOclTraceSpan("atom-mapping.refined", { atomCount: originalAtomCount });
-    const refinedMapping = readConformerMapping(conformer, originalAtomCount, warnings);
-    refinedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: warnings.length });
+    const refinedMapping = readConformerMapping(conformer, originalAtomCount, refineWarnings);
+    refinedMappingSpan.complete({ atomCount: originalAtomCount, warningCount: refineWarnings.length });
     return {
       mapping: refinedMapping,
       originalAtomCount,
@@ -488,7 +492,7 @@ export async function generate3DConformerProgressive(
       embed: { status: "ok" },
       forceField,
       unsupportedFeatures: [...unsupportedFeatures],
-      warnings: [...warnings]
+      warnings: [...refineWarnings]
     };
   };
 

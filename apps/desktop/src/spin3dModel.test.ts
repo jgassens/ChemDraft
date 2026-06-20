@@ -16,6 +16,7 @@ import {
   conformerGraphSignature,
   createPhase4Document,
   flattenSpunMolecule,
+  rotateDocumentObject,
   readSpin3dModel,
   spin3dModelCoordsForMolecule,
   validSpin3dModelFor,
@@ -192,5 +193,44 @@ describe("spin3d model — depth-cue invariant", () => {
     expect(weightsB.some((value) => typeof value === "number")).toBe(true);
     expect(new Set(weightsB.filter((value): value is number => typeof value === "number")).size).toBeGreaterThan(1);
     expect(JSON.stringify(weightsA)).not.toEqual(JSON.stringify(weightsB));
+  });
+});
+
+describe("spin3d model — Z-rotate keeps the stored orientation in lock-step with the drawing", () => {
+  // A screen-Z rotate is shown via the cheap 2D rotateDocumentObject path, but the stored
+  // orientation gets a Z quaternion folded in. flattenSpunMolecule flips Y on output (math
+  // y-up → document y-down), so a +θ screen rotation is a −θ rotation about the math-frame +Z.
+  // The commit therefore folds quatFromAxisAngle(Z, −θ); reopening must reproduce the same
+  // drawing the 2D rotate produced, or the next reopen/X-Y tilt jumps. This pins that sign.
+  const bondAngle = (document: ChemDraftDocument, fromId: string, toId: string): number => {
+    const atoms = moleculeOf(document).atoms;
+    const from = atoms.find((atom) => atom.id === fromId)!;
+    const to = atoms.find((atom) => atom.id === toId)!;
+    return Math.atan2(to.y - from.y, to.x - from.x);
+  };
+  const angularGap = (a: number, b: number): number => {
+    const diff = Math.abs(a - b) % (2 * Math.PI);
+    return Math.min(diff, 2 * Math.PI - diff);
+  };
+
+  it("re-projecting at the folded (−θ) orientation matches the 2D-rotated drawing", () => {
+    const THETA_DEG = 40;
+    const theta = (THETA_DEG * Math.PI) / 180;
+    const base = documentWith(molecule());
+
+    // The committed Spin 3D drawing at identity, then the user's screen-Z 2D rotate of it.
+    const committed = flattenSpunMolecule(base, "mol", CHAIN_COORDS3D, quatToViewMatrix(IDENTITY_QUAT));
+    expect(committed.status).toBe("committed");
+    const rotated = rotateDocumentObject(committed.document, "mol", THETA_DEG);
+
+    // Reopen = re-project the conformer through the orientation the commit stores: the code
+    // folds quatFromAxisAngle(Z, −θ) onto the (here identity) start orientation.
+    const reopened = flattenSpunMolecule(base, "mol", CHAIN_COORDS3D, quatToViewMatrix(quatFromAxisAngle([0, 0, 1], -theta)));
+    expect(reopened.status).toBe("committed");
+    expect(angularGap(bondAngle(rotated, "a0", "a3"), bondAngle(reopened.document, "a0", "a3"))).toBeLessThan(0.02);
+
+    // Teeth: the un-negated sign rotates the opposite way (~2θ off), proving the test bites.
+    const wrongSign = flattenSpunMolecule(base, "mol", CHAIN_COORDS3D, quatToViewMatrix(quatFromAxisAngle([0, 0, 1], theta)));
+    expect(angularGap(bondAngle(rotated, "a0", "a3"), bondAngle(wrongSign.document, "a0", "a3"))).toBeGreaterThan(0.1);
   });
 });

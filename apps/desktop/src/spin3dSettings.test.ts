@@ -11,32 +11,11 @@ import {
   type Spin3dSettings
 } from "./spin3dSettings";
 import { balancedRefineIterationsFor, qualityRefineIterationsFor } from "./spin3dRefineCaps";
-
-const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
-
 // jsdom in this project doesn't expose localStorage, and the module reads
 // globalThis.localStorage — so stub a minimal in-memory store for these tests.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  get length() {
-    return this.store.size;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) as string) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-  key(index: number): string | null {
-    return [...this.store.keys()][index] ?? null;
-  }
-}
+import { MemoryStorage } from "./testSupport/memoryStorage";
+
+const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
 
 let storage: MemoryStorage;
 

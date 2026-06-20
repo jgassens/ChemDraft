@@ -10,7 +10,7 @@
  #include <Geometry/Transform3D.h>
  #include <DataStructs/BitOps.h>
  #include <DataStructs/ExplicitBitVect.h>
-@@ -471,6 +474,125 @@
+@@ -471,6 +474,130 @@
    MolOps::addHs(get(), false, addCoords);
    MolOps::assignStereochemistry(get(), true, true);
    return true;
@@ -67,6 +67,7 @@
 +  int seed = -1;
 +  unsigned int maxIterations = 0;   // 0 => RDKit default
 +  unsigned int timeoutSeconds = 0;  // 0 => no timeout
++  bool useRandomCoords = false;     // ETKDG eigenvalue-decomposition start by default
 +  if (!details_json.empty()) {
 +    auto parsed = bj::parse(details_json);
 +    if (parsed.is_object()) {
@@ -80,6 +81,9 @@
 +      if (auto *p = o.if_contains("timeoutSeconds")) {
 +        timeoutSeconds = static_cast<unsigned int>(p->to_number<int64_t>());
 +      }
++      if (auto *p = o.if_contains("useRandomCoords")) {
++        useRandomCoords = p->is_bool() ? p->as_bool() : p->to_number<int64_t>() != 0;
++      }
 +    }
 +  }
 +  for (auto atom : get().atoms()) {
@@ -91,6 +95,7 @@
 +  params.enforceChirality = true;
 +  params.maxIterations = maxIterations;
 +  params.timeout = timeoutSeconds;
++  params.useRandomCoords = useRandomCoords;
 +  int confId = RDKit::DGeomHelpers::EmbedMolecule(get(), params);
 +  return bj::serialize(chemdraftConformerJson(get(), confId >= 0, true));
 +}
