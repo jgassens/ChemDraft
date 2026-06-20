@@ -49,7 +49,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document())),
+    () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }),
     []
   );
 

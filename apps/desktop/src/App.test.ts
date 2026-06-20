@@ -1216,10 +1216,20 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "k", metaKey: true, shiftKey: true })).toBe(structureCleanupCommandId);
     expect(registry.resolve({ key: "+" })).toBe("tool.plus");
     expect(registry.resolve({ key: "-" })).toBe("tool.minus");
+    expect(registry.resolve({ key: "g", metaKey: true })).toBeUndefined();
+    expect(registry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBeUndefined();
     expect(registry.resolve({ key: "o" })).toBeUndefined();
     expect(registry.resolve({ key: "Backspace" })).toBe("edit.deleteHoveredNativeTarget");
     expect(registry.resolve({ key: "Delete" })).toBe("edit.forwardDeleteHoveredNativeTarget");
     expect(registry.conflicts()).toEqual([]);
+
+    const detachedPaletteRegistry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), {
+      platform: "macos",
+      includeDisabled: true
+    });
+    expect(detachedPaletteRegistry.resolve({ key: "g", metaKey: true })).toBe("layout.group");
+    expect(detachedPaletteRegistry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBe("layout.ungroup");
+    expect(detachedPaletteRegistry.conflicts()).toEqual([]);
 
     let layoutDocument = insertNativeArtGraphicObject(createPhase4Document("Layout Shortcuts"), { x: 120, y: 120 }, "tool.art.rect");
     layoutDocument = insertNativeArtGraphicObject(layoutDocument, { x: 240, y: 160 }, "tool.art.circle");
