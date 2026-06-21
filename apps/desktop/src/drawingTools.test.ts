@@ -3,6 +3,7 @@ import {
   activateDrawingToolCommand,
   coreDrawingToolDefinitions,
   createActiveToolState,
+  drawingToolStatusLabel,
   getDrawingToolCommandSpecs,
   getDrawingToolDefinition,
   isDrawingToolCommand,
@@ -17,11 +18,14 @@ describe("Phase 7 drawing tool activation", () => {
       coreDrawingToolDefinitions.filter((definition) => definition.kind === kind).map((definition) => definition.commandId);
 
     expect(commandsForKind("selection")).toContain("tool.select");
+    expect(commandsForKind("selection")).toContain("tool.art.directEdit");
     expect(commandsForKind("bond")).toContain("tool.bond");
     expect(commandsForKind("atom")).toContain("tool.atom");
     expect(commandsForKind("ring")).toContain("tool.cyclopentane");
     expect(commandsForKind("text")).toContain("tool.text");
     expect(commandsForKind("arrow")).toContain("tool.reactionArrow");
+    expect(commandsForKind("art")).toContain("tool.art.circle");
+    expect(commandsForKind("art")).toContain("tool.art.arc90Dashed");
   });
 
   it("starts with the selection tool active", () => {
@@ -45,7 +49,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Single Bond active");
+    expect(result.status).toBe("Single Bond: click canvas or atom; click atom to extend; Esc exits");
     expect(result.state).toMatchObject({
       activeCommandId: "tool.bond",
       activeKind: "bond",
@@ -63,7 +67,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(current, command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Single Bond active");
+    expect(result.status).toBe("Single Bond: click canvas or atom; click atom to extend; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.bond");
     expect(result.state.activeKind).toBe("bond");
     expect(command.enabled).toBe(true);
@@ -78,10 +82,82 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(createActiveToolState(), command);
 
     expect(result.outcome).toBe("activated");
-    expect(result.status).toBe("Text Tool active");
+    expect(result.status).toBe("Text: click canvas to type; edit selected text; Esc exits");
     expect(result.state.activeCommandId).toBe("tool.text");
     expect(result.state.activeKind).toBe("text");
     expect(command.enabled).toBe(true);
+  });
+
+  it("activates manifest-backed art tools without requiring an editor adapter", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.circle");
+    if (!command) {
+      throw new Error("Expected tool.art.circle to be registered by the toolset manifest.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Circle: click canvas; select object to edit; Esc exits");
+    expect(result.state.activeCommandId).toBe("tool.art.circle");
+    expect(result.state.activeKind).toBe("art");
+    expect(command.enabled).toBe(true);
+  });
+
+  it("keeps direct edit registered as a hidden selection-mode command", () => {
+    const toolsetCommands = getToolsetCommandSpecs();
+    const command = withStandaloneDrawingToolCommands(toolsetCommands).find((candidate) => candidate.id === "tool.art.directEdit");
+    if (!command) {
+      throw new Error("Expected tool.art.directEdit to remain registered as a standalone drawing command.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState("tool.art.circle"), command);
+
+    expect(toolsetCommands.some((candidate) => candidate.id === "tool.art.directEdit")).toBe(false);
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Direct Edit: drag art handles; double-click object for transform; Esc exits");
+    expect(result.state.activeCommandId).toBe("tool.art.directEdit");
+    expect(result.state.activeKind).toBe("selection");
+    expect(command.enabled).toBe(true);
+  });
+
+  it("shows brief usage text for one-shot art utilities", () => {
+    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.art.scissors");
+    if (!command) {
+      throw new Error("Expected tool.art.scissors to be registered by the toolset manifest.");
+    }
+
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.status).toBe("Scissors: click path to split; click path for more; Esc exits");
+    expect(result.state.activeCommandId).toBe("tool.art.scissors");
+  });
+
+  it("formats every enabled drawing tool hint as action, optional action, and exit action", () => {
+    for (const definition of coreDrawingToolDefinitions) {
+      const disabledReason = "disabledReason" in definition ? definition.disabledReason : undefined;
+      if (disabledReason) {
+        continue;
+      }
+      const usageHint = "usageHint" in definition ? definition.usageHint : undefined;
+      expect(usageHint, definition.commandId).toBeDefined();
+      const usage = drawingToolStatusLabel(definition.commandId, definition.title).split(": ")[1];
+      expect(usage.split("; "), definition.commandId).toHaveLength(3);
+      expect(usage.split("; ").every((segment) => segment.trim().length > 0), definition.commandId).toBe(true);
+    }
+  });
+
+  it("keeps preset art variants registered for compatibility without showing them in the primary art toolbar", () => {
+    const toolsetCommands = getToolsetCommandSpecs();
+    const withStandalone = withStandaloneDrawingToolCommands(toolsetCommands);
+
+    expect(toolsetCommands.some((command) => command.id === "tool.art.circleGloss")).toBe(false);
+    expect(toolsetCommands.some((command) => command.id === "tool.art.rectShadow")).toBe(false);
+    expect(withStandalone.find((command) => command.id === "tool.art.circleGloss")).toMatchObject({
+      id: "tool.art.circleGloss",
+      title: "Gloss Circle",
+      enabled: true
+    });
   });
 
   it("activates the manifest-backed lasso and eraser tools", () => {
@@ -149,6 +225,8 @@ describe("Phase 7 drawing tool activation", () => {
     expect(drawingCommands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.benzene")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "tool.reactionArrow")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "tool.art.directEdit")).toBe(true);
+    expect(drawingCommands.some((command) => command.id === "tool.art.rectShadow")).toBe(true);
     expect(drawingCommands.some((command) => command.id === "plugin.fixture.toolset.ping")).toBe(false);
   });
 
@@ -158,6 +236,34 @@ describe("Phase 7 drawing tool activation", () => {
     expect(getDrawingToolDefinition("tool.equilibriumArrow")).toMatchObject({
       kind: "arrow",
       category: "arrows"
+    });
+    expect(getDrawingToolDefinition("tool.art.lineWavy")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.polyline")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.scissors")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.pen")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.pencil")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.brush")).toMatchObject({
+      kind: "art",
+      category: "art"
+    });
+    expect(getDrawingToolDefinition("tool.art.eyedropper")).toMatchObject({
+      kind: "art",
+      category: "art"
     });
   });
 });

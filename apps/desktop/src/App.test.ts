@@ -1,22 +1,42 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   DefaultNativeTextStyle,
   applyPatch,
+  applyPatches,
   createDocumentHistory,
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
   type DocumentObject,
+  type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
 import {
+  projectGraphicObjectPoint
+} from "@chemdraft/art-engine";
+import { inchRulerUnit } from "@chemdraft/viewport-engine";
+import {
   allShellCommands,
   atomElementActions,
+  createLayerActions,
   createQuickActions,
   editActions,
   normalizeHexColor,
+  objectColorForCommand,
+  objectCustomColorCommandId,
+  objectGradientDeleteStopCommandId,
+  objectGradientDeleteStopIndexForCommand,
+  objectGradientStopColorCommandId,
+  objectGradientStopColorForCommand,
+  objectGradientStopOffsetCommandId,
+  objectGradientStopOffsetForCommand,
+  objectGradientStopOpacityCommandId,
+  objectGradientStopOpacityForCommand,
+  objectStyleActions,
   pageOrientationActions,
   pageSizeActions,
   paletteGroups,
@@ -32,36 +52,55 @@ import {
 } from "./commands";
 import {
   applyAnalysisToSelectedMolecule,
+  applyObjectColorToDocumentObjects,
+  applyDocumentObjectProjectedPlaneTilt,
   applyFreeformSingleBondToolAtPoint,
+  applyGraphicObjectColorToSelection,
+  applyGraphicObjectOpacityToSelection,
   applyNativeAtomElementTarget,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
+  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
+  createNativeArtGraphicObject,
   createPhase4Document,
+  createSelectionClipboardPayload,
+  groupSelectedDocumentObjects,
   insertAdapterFallbackMolecule,
+  insertNativeArtGraphicObject,
   insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule,
   insertNativeTextObject,
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
+  nativeFreehandStrokeDocument,
+  nativeGraphicPathEditPoints,
+  nativePolylinePathDocument,
   openNativeDocument,
   reorderSelectedDocumentObject,
+  selectDocumentObjectWithinGroup,
+  selectDocumentObjects,
+  selectionBounds,
+  selectionClipboardPlainText,
   setDocumentPageOrientation,
   setDocumentPageSize,
-  tiltNativeMoleculeProjectedPlane
+  tiltNativeMoleculeProjectedPlane,
+  updateNativeGraphicPathHandle
 } from "./documentWorkflow";
 import {
   MainWindow,
   ObjectLayerContextMenu,
   SelectionLassoOverlay,
   SelectionMarqueeOverlay,
+  TapeMeasureOverlay,
   activeNativeTargetShortcutCommand,
-  cumulativeMoleculeResizeScale,
+  cumulativeObjectResizeScale,
   cumulativeRotationReadoutDegrees,
   hoveredNativeTargetShortcutCommand,
-  moleculeResizeReadoutPercent,
-  moleculeResizeInputDraftPercent,
-  moleculeResizeScaleFromDrag,
+  objectResizeReadoutPercent,
+  objectResizeInputDraftPercent,
+  objectResizeScaleFromDrag,
+  applyLayerCommandToDocumentSelection,
   bondDepthContextFromNativeSelection,
   bondDepthRefsFromNativeSelection,
   crossingClearPatchesForObjectLayerPlacement,
@@ -71,6 +110,9 @@ import {
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  nativePathDirname,
+  nativePathJoin,
+  nativePathWithBasename,
   isSelectionDoublePress,
   manualRotationDeltaDegrees,
   planBondDepthPatches,
@@ -78,25 +120,37 @@ import {
   nativeMoleculeSelectionDragIntent,
   nativeSelectionWithHitToggled,
   pagePointFromRenderedPageRect,
+  documentObjectProjectedPlaneTiltVectorFromDrag,
+  initialSelectionClipboardPasteState,
+  nextSelectionClipboardPastePlacement,
   parseRotationInputDegrees,
-  parseMoleculeResizeInputPercent,
+  parseObjectResizeInputPercent,
   projectedPlaneTiltCommitHistory,
   projectedPlaneTiltRadiansFromDrag,
   projectedPlaneTiltReadoutDegrees,
   projectedPlaneTiltReadoutLabel,
   projectedPlaneTiltVectorFromDrag,
   rotationDeltaDegrees,
+  rotationInputHomeDraftDegrees,
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
+  eraserObjectIdsInSelectionRect,
+  graphicArtTransformPreviewSvgDataUrl,
+  groupedDragObjectIdsForPointer,
+  selectionInSelectionLasso,
   selectionInSelectionRect,
   selectionInSelectionPolygon,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
+  shouldLetSystemClipboardHandleCommand,
   shouldOpenMoleculeEditorFromObjectClick,
+  selectionClipboardTextItems,
+  visualSelectionBounds,
   shouldUseViewportWheelZoom
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { ToolPalette, cmykToRgbColor, hexToRgbColor, rgbToCmykColor, rgbToHexColor } from "./ToolPalette";
+import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DEFAULT_TOOLSET_ID,
@@ -149,6 +203,7 @@ const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.ur
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
 const desktopToolsetsSource = readFileSync(new URL("./toolsets/desktop-toolsets.json", import.meta.url), "utf8");
+const require = createRequire(import.meta.url);
 const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="External CDXML Fixture">
@@ -213,6 +268,11 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.native-bond-hover\s*{[^}]*stroke-opacity:\s*0\.32;/s);
     expect(appCss).not.toContain(".native-bond-hit-target:hover");
     expect(appCss).not.toContain(".native-atom-hit-target:hover");
+    expect(appCss).toMatch(/\.graphic-glyph-hit-target\s*{[^}]*pointer-events:\s*stroke;/s);
+    expect(appCss).toMatch(/\.graphic-object,\s*\.graphic-visual-shell,\s*\.graphic-glyph-shell\s*{[^}]*pointer-events:\s*none;/s);
+    expect(appCss).toMatch(/\.graphic-glyph-stroke\s*{[^}]*pointer-events:\s*visiblePainted;/s);
+    expect(appCss).toMatch(/\.graphic-glyph-shape,\s*\.graphic-glyph-projected-shape,\s*\.graphic-glyph-path\s*{[^}]*pointer-events:\s*visiblePainted;/s);
+    expect(appCss).toMatch(/\.graphic-glyph-hit-target\[data-graphic-hit-fill="true"\]\s*{[^}]*pointer-events:\s*all;/s);
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
@@ -231,8 +291,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("selectedFragmentBounds ? documentObjectCenter(selectedFragmentBounds) : documentObjectCenter(object)");
     expect(mainWindowSource).toContain('title={`3D rotate ${transformTargetLabel}`}');
     expect(mainWindowSource).toContain('data-tilt3d-icon="circular-arrow"');
-    expect(appCss).toMatch(/\.native-molecule-tilt3d-handle\s*{[^}]*color:\s*var\(--cd-accent\);/s);
-    expect(appCss).toContain(".native-molecule-tilt3d-arrowhead");
+    expect(appCss).toMatch(/\.object-tilt3d-handle\s*{[^}]*color:\s*var\(--cd-accent\);/s);
+    expect(appCss).toContain(".object-tilt3d-arrowhead");
     // NOTE: a blanket "no conformer imports" assertion used to live here, but the Spin 3D
     // feature now legitimately uses the conformer worker/OCL adapter in MainWindow's overlay
     // path (and SMILES paste references OpenChemLib in a status message). The 3D-cleanup item
@@ -394,6 +454,16 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("font-variant-numeric: tabular-nums;");
   });
 
+  it("renders in-window fallback palette titles as explicit drag surfaces", () => {
+    const markup = renderToStaticMarkup(createElement(MainWindow, { nativePalette: false }));
+
+    expect(markup).toContain('aria-label="Floating Main Toolbar"');
+    expect(markup).toContain('aria-label="Floating Art Toolbar"');
+    expect(markup).toContain('data-palette-title-drag-surface="true"');
+    expect(markup).toContain('data-web-palette-drag-region="true"');
+    expect(markup).toContain("palette-title-label");
+  });
+
   it("keeps every non-canvas panel out of the document window by default", () => {
     const markup = renderToStaticMarkup(
       createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
@@ -458,15 +528,40 @@ describe("ChemDraft desktop shell", () => {
           { x: 70, y: 35 },
           { x: 65, y: 90 }
         ],
-        latestPoint: { x: 20, y: 30 },
-        pageWidth: 816,
-        pageHeight: 1056
+        latestPoint: { x: 22, y: 88 },
+        pageWidth: 792,
+        pageHeight: 612
       })
     );
 
     expect(markup).toContain("selection-lasso-surface");
+    expect(markup).toContain('viewBox="0 0 792 612"');
+    expect(markup).toContain("width:calc(792px * var(--page-scale))");
+    expect(markup).toContain("height:calc(612px * var(--page-scale))");
+    expect(markup).toContain('d="M 20 30 L 70 35 L 65 90 L 22 88 Z"');
+  });
+
+  it("renders the tape measure overlay in ruler units", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TapeMeasureOverlay, {
+        measurement: {
+          startPoint: { x: 96, y: 96 },
+          latestPoint: { x: 288, y: 96 },
+          constrained: true,
+          dragging: false
+        },
+        pageWidth: 816,
+        pageHeight: 1056,
+        rulerUnit: inchRulerUnit
+      })
+    );
+
+    expect(markup).toContain("tape-measure-overlay");
+    expect(markup).toContain('data-tape-measure-constrained="true"');
     expect(markup).toContain('viewBox="0 0 816 1056"');
-    expect(markup).toContain("M 20 30 L 70 35 L 65 90");
+    expect(markup).toContain('x1="96"');
+    expect(markup).toContain('x2="288"');
+    expect(markup).toContain(">2.00 in</div>");
   });
 
   it("selects every whole native molecule inside a marquee instead of keeping only the first one", () => {
@@ -492,6 +587,83 @@ describe("ChemDraft desktop shell", () => {
 
     expect(selection.objectIds).toEqual(molecules.map((molecule) => molecule.id));
     expect(selection.nativeSelection).toBeUndefined();
+  });
+
+  it("selects every whole native molecule inside a lasso polygon", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Multi Lasso"), { x: 220, y: 240 });
+    const second = insertNativeSingleBondMolecule(first, { x: 320, y: 240 });
+    const molecules = second.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const bounds = molecules.reduce(
+      (rect, molecule) => ({
+        left: Math.min(rect.left, molecule.x),
+        top: Math.min(rect.top, molecule.y),
+        right: Math.max(rect.right, molecule.x + molecule.width),
+        bottom: Math.max(rect.bottom, molecule.y + molecule.height)
+      }),
+      { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY, right: 0, bottom: 0 }
+    );
+    const selection = selectionInSelectionLasso(second.pages[0].objects, [
+      { x: bounds.left - 6, y: bounds.top - 8 },
+      { x: bounds.right + 8, y: bounds.top - 4 },
+      { x: bounds.right + 4, y: bounds.bottom + 8 },
+      { x: bounds.left - 8, y: bounds.bottom + 6 }
+    ]);
+
+    expect(selection.objectIds).toEqual(molecules.map((molecule) => molecule.id));
+    expect(selection.nativeSelection).toBeUndefined();
+  });
+
+  it("promotes marquee, lasso, and drag hits on grouped native molecules to the group", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Grouped Molecule Selection"), { x: 220, y: 240 });
+    const second = insertNativeSingleBondMolecule(first, { x: 360, y: 260 });
+    const molecules = second.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const grouped = groupSelectedDocumentObjects(selectDocumentObjects(
+      second,
+      second.pages[0].id,
+      molecules.map((molecule) => molecule.id)
+    ));
+    const groupId = grouped.selection.objectIds[0];
+    const child = grouped.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id === molecules[0].id
+    );
+    const atom = child?.atoms[0];
+    if (!groupId || !child || !atom) {
+      throw new Error("Expected grouped molecule fixture.");
+    }
+
+    const rectSelection = selectionInSelectionRect(grouped.pages[0].objects, {
+      x: atom.x - 3,
+      y: atom.y - 3
+    }, {
+      x: atom.x + 3,
+      y: atom.y + 3
+    });
+    const lassoSelection = selectionInSelectionLasso(grouped.pages[0].objects, [
+      { x: atom.x - 5, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y - 5 },
+      { x: atom.x + 5, y: atom.y + 5 },
+      { x: atom.x - 5, y: atom.y + 5 }
+    ]);
+
+    expect(rectSelection).toEqual({ objectIds: [groupId], nativeSelection: undefined });
+    expect(lassoSelection).toEqual({ objectIds: [groupId], nativeSelection: undefined });
+    expect(nativeMoleculeSelectionDragIntent(
+      grouped,
+      child.id,
+      undefined,
+      { kind: "atom", atomId: atom.id, distanceToPointer: 0 }
+    )).toEqual({ kind: "whole-object" });
+    expect(groupedDragObjectIdsForPointer(grouped, child.id)).toEqual(molecules.map((molecule) => molecule.id));
+
+    const drilledIntoChild = selectDocumentObjectWithinGroup(grouped, child.id);
+    expect(drilledIntoChild.selection.objectIds).toEqual([child.id]);
+    expect(groupedDragObjectIdsForPointer(drilledIntoChild, child.id)).toBeUndefined();
+    expect(nativeMoleculeSelectionDragIntent(
+      drilledIntoChild,
+      child.id,
+      undefined,
+      { kind: "atom", atomId: atom.id, distanceToPointer: 0 }
+    )).toEqual({ kind: "whole-object" });
   });
 
   it("does not pull adjacent text into a molecule marquee unless the text box is enclosed", () => {
@@ -524,6 +696,47 @@ describe("ChemDraft desktop shell", () => {
     expect(fullSelection.objectIds).toEqual([molecule.id, text.id]);
   });
 
+  it("uses touched-object hit rules for eraser marquee deletion", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Eraser Marquee Touch"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const rect = withRect.pages[0].objects.find((object): object is GraphicObject =>
+      object.type === "graphic" && object.id === withRect.selection.objectIds[0]
+    );
+    if (!rect) {
+      throw new Error("Expected rectangle graphic fixture.");
+    }
+    const edgeStart = {
+      x: rect.x + rect.width - 2,
+      y: rect.y + rect.height / 2 - 3
+    };
+    const edgeEnd = {
+      x: rect.x + rect.width + 10,
+      y: rect.y + rect.height / 2 + 3
+    };
+
+    expect(selectionInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd).objectIds).toEqual([]);
+    expect(eraserObjectIdsInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd)).toEqual([rect.id]);
+
+    const withText = insertNativeTextObject(createPhase4Document("Eraser Text Touch"), { x: 260, y: 210 }, "touch");
+    const text = withText.pages[0].objects.find((object): object is DocumentObject =>
+      object.type === "text" && object.text === "touch"
+    );
+    if (!text) {
+      throw new Error("Expected text fixture.");
+    }
+
+    expect(eraserObjectIdsInSelectionRect(withText.pages[0].objects, {
+      x: text.x + text.width - 1,
+      y: text.y + text.height / 2 - 2
+    }, {
+      x: text.x + text.width + 8,
+      y: text.y + text.height / 2 + 2
+    })).toEqual([text.id]);
+  });
+
   it("keeps a tight marquee over one native atom as a partial native selection", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Marquee"), { x: 220, y: 240 });
     const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
@@ -546,6 +759,236 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(selection.nativeSelection?.kind).not.toBe("molecule");
+  });
+
+  it("selects a straight graphic line when the marquee crosses the stroke, not the whole bounds", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Line Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0];
+    const graphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!objectId || !graphic) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const rectCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: rectCenter.x - 5,
+      y: rectCenter.y - 5
+    }, {
+      x: rectCenter.x + 5,
+      y: rectCenter.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a straight graphic line when the lasso crosses the stroke", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Line Lasso"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0];
+    const graphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!objectId || !graphic) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const strokePoint = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const selection = selectionInSelectionLasso(document.pages[0].objects, [
+      { x: strokePoint.x - 9, y: strokePoint.y - 6 },
+      { x: strokePoint.x + 8, y: strokePoint.y - 4 },
+      { x: strokePoint.x + 7, y: strokePoint.y + 8 },
+      { x: strokePoint.x - 8, y: strokePoint.y + 7 }
+    ]);
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a rotated graphic line where its projected stroke crosses the marquee", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotated Line Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const graphic = inserted.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!graphic) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const document = applyPatch(inserted, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 90
+      }
+    });
+    const rotatedGraphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!rotatedGraphic) {
+      throw new Error("Expected rotated line graphic fixture.");
+    }
+    // The visible stroke is rotated about the object center, so the marquee must be placed at the
+    // rotated stroke position — matching how hit testing now projects, translates, and rotates.
+    const projectedBeforeRotation = projectGraphicObjectPoint(
+      rotatedGraphic,
+      { x: rotatedGraphic.x + 3, y: rotatedGraphic.y + 3 },
+      { coordinateSpace: "page" }
+    );
+    const rotationRad = (rotatedGraphic.rotation * Math.PI) / 180;
+    const rotationCenter = {
+      x: rotatedGraphic.x + rotatedGraphic.width / 2,
+      y: rotatedGraphic.y + rotatedGraphic.height / 2
+    };
+    const rotationDx = projectedBeforeRotation.x - rotationCenter.x;
+    const rotationDy = projectedBeforeRotation.y - rotationCenter.y;
+    const projectedStrokePoint = {
+      x: rotationCenter.x + rotationDx * Math.cos(rotationRad) - rotationDy * Math.sin(rotationRad),
+      y: rotationCenter.y + rotationDx * Math.sin(rotationRad) + rotationDy * Math.cos(rotationRad)
+    };
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: projectedStrokePoint.x - 5,
+      y: projectedStrokePoint.y - 5
+    }, {
+      x: projectedStrokePoint.x + 5,
+      y: projectedStrokePoint.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("uses rotated art visual bounds for multi-selection transform frames", () => {
+    const firstInserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotated Art Group Bounds"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const secondInserted = insertNativeArtGraphicObject(firstInserted, { x: 340, y: 180 }, "tool.art.circle");
+    const graphics = secondInserted.pages[0].objects.filter((object): object is GraphicObject =>
+      object.type === "graphic"
+    );
+    if (graphics.length !== 2) {
+      throw new Error("Expected two graphic fixtures.");
+    }
+    const rotated = applyPatch(secondInserted, {
+      op: "updateObject",
+      objectId: graphics[0].id,
+      changes: {
+        width: 120,
+        height: 30,
+        rotation: 45
+      }
+    });
+    const ids = graphics.map((graphic) => graphic.id);
+    const rawBounds = selectionBounds(rotated.pages[0].objects, ids);
+    const visualBounds = visualSelectionBounds(rotated.pages[0].objects, ids);
+
+    expect(rawBounds).toBeDefined();
+    expect(visualBounds).toBeDefined();
+    expect(visualBounds!.y).toBeLessThan(rawBounds!.y);
+    expect(visualBounds!.height).toBeGreaterThan(rawBounds!.height + 20);
+  });
+
+  it("selects a quadratic graphic when the marquee crosses the sampled curve", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Quadratic Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected line graphic fixture.");
+    }
+    const graphic = inserted.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    const points = graphic ? nativeGraphicPathEditPoints(graphic) : undefined;
+    if (!points) {
+      throw new Error("Expected line edit points.");
+    }
+    const middle = { x: points.middle.x + 12, y: points.middle.y - 34 };
+    const document = updateNativeGraphicPathHandle(inserted, objectId, "middle", middle);
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: middle.x - 5,
+      y: middle.y - 5
+    }, {
+      x: middle.x + 5,
+      y: middle.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a semantic arc graphic when the marquee crosses the sampled arc", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arc Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = document.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected arc graphic fixture.");
+    }
+    const object = document.pages[0].objects.find((candidate) => candidate.id === objectId);
+    const points = object?.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
+    const middle = points?.middle;
+    if (!middle) {
+      throw new Error("Expected arc edit points.");
+    }
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: middle.x - 5,
+      y: middle.y - 5
+    }, {
+      x: middle.x + 5,
+      y: middle.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
+  });
+
+  it("selects a wavy graphic line when the marquee crosses its sampled stroke", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Wavy Marquee"),
+      { x: 220, y: 180 },
+      "tool.art.lineWavy"
+    );
+    const objectId = document.selection.objectIds[0];
+    const graphic = document.pages[0].objects.find((object): object is GraphicObject =>
+      object.id === objectId && object.type === "graphic"
+    );
+    if (!objectId || !graphic) {
+      throw new Error("Expected wavy graphic fixture.");
+    }
+    const strokePoint = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const selection = selectionInSelectionRect(document.pages[0].objects, {
+      x: strokePoint.x - 5,
+      y: strokePoint.y - 5
+    }, {
+      x: strokePoint.x + 5,
+      y: strokePoint.y + 5
+    });
+
+    expect(selection.objectIds).toEqual([objectId]);
   });
 
   it("selects every whole native molecule inside a lasso polygon", () => {
@@ -796,12 +1239,84 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "layout.sendBackward")).toBe(true);
     expect(commands.some((command) => command.id === "layout.bringToFront")).toBe(true);
     expect(commands.some((command) => command.id === "layout.sendToBack")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignLeft")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignCenter")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignRight")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignTop")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignMiddle")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.alignBottom")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.distributeHorizontal")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.distributeVertical")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.flipHorizontal")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.flipVertical")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.rotate90")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.duplicate")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.group")).toBe(true);
+    expect(commands.some((command) => command.id === "layout.ungroup")).toBe(true);
     expect(commands.some((command) => command.id === "view.toolset.toggle.core.main")).toBe(true);
     expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
+    expect(commands.some((command) => command.id === "tool.art.circle")).toBe(true);
     expect(commands.some((command) => command.id === "atom.setHoveredElement.O")).toBe(true);
     expect(markup).toContain(".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json");
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
+  });
+
+  it("inserts native art objects with selectable color and projected-plane tilt style", () => {
+    const document = createPhase4Document("Native Art");
+    const created = createNativeArtGraphicObject(document, { x: 140, y: 160 }, "tool.art.rectGloss");
+
+    expect(created).toMatchObject({
+      type: "graphic",
+      graphicKind: "rect",
+      x: 104,
+      y: 140,
+      width: 72,
+      height: 40,
+      data: {
+        artToolId: "rectGloss"
+      },
+      style: {
+        source: "chemdraft-native-art",
+        artToolCommandId: "tool.art.rectGloss",
+        fillMode: "gloss",
+        strokeColor: "#111111",
+        fillColor: "#111111"
+      }
+    });
+
+    const inserted = insertNativeArtGraphicObject(document, { x: 140, y: 160 }, "tool.art.rectGloss");
+    const selectedId = inserted.selection.objectIds[0];
+    const graphic = inserted.pages[0].objects.find((object) => object.id === selectedId);
+    expect(graphic).toMatchObject({ type: "graphic", graphicKind: "rect" });
+
+    const colored = applyObjectColorToDocumentObjects(inserted, "#1d7f68");
+    const coloredGraphic = colored.pages[0].objects.find((object) => object.id === selectedId);
+    expect(coloredGraphic?.style).toMatchObject({
+      color: "#1d7f68",
+      strokeColor: "#1d7f68",
+      fillColor: "#1d7f68"
+    });
+
+    const tilted = applyDocumentObjectProjectedPlaneTilt(colored, selectedId ?? "", 24, -18);
+    const tiltedGraphic = tilted.pages[0].objects.find((object) => object.id === selectedId);
+    expect(tiltedGraphic?.style).toMatchObject({
+      tiltXDegrees: 24,
+      tiltYDegrees: -18
+    });
+
+    const outline = insertNativeArtGraphicObject(document, { x: 220, y: 160 }, "tool.art.circle");
+    const recoloredOutline = applyObjectColorToDocumentObjects(outline, "#b3261e");
+    const outlineId = recoloredOutline.selection.objectIds[0];
+    const outlineGraphic = recoloredOutline.pages[0].objects.find((object) => object.id === outlineId);
+    expect(outlineGraphic?.style).toMatchObject({
+      color: "#b3261e",
+      strokeColor: "#b3261e",
+      fillColor: "none"
+    });
+    expect(mainWindowSource).toContain("const applyNativeArtDocumentAtPoint = useCallback");
+    expect(mainWindowSource).toContain('const selectToolState = createActiveToolState("tool.select");');
+    expect(mainWindowSource).toContain("broadcastToolsetActiveTool(selectToolState.activeCommandId)");
   });
 
   it("routes desktop exports through native save and file-write helpers", () => {
@@ -816,7 +1331,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
     expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentRef.current, dialog)");
-    expect(mainWindowSource).toContain("await pickNativeExportPath(filename, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
     expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
     expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");
@@ -860,10 +1376,176 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "k", metaKey: true, shiftKey: true })).toBe(structureCleanupCommandId);
     expect(registry.resolve({ key: "+" })).toBe("tool.plus");
     expect(registry.resolve({ key: "-" })).toBe("tool.minus");
+    expect(registry.resolve({ key: "g", metaKey: true })).toBeUndefined();
+    expect(registry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBeUndefined();
     expect(registry.resolve({ key: "o" })).toBeUndefined();
     expect(registry.resolve({ key: "Backspace" })).toBe("edit.deleteHoveredNativeTarget");
     expect(registry.resolve({ key: "Delete" })).toBe("edit.forwardDeleteHoveredNativeTarget");
     expect(registry.conflicts()).toEqual([]);
+
+    const detachedPaletteRegistry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), {
+      platform: "macos",
+      includeDisabled: true
+    });
+    expect(detachedPaletteRegistry.resolve({ key: "g", metaKey: true })).toBe("layout.group");
+    expect(detachedPaletteRegistry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBe("layout.ungroup");
+    expect(detachedPaletteRegistry.conflicts()).toEqual([]);
+
+    let layoutDocument = insertNativeArtGraphicObject(createPhase4Document("Layout Shortcuts"), { x: 120, y: 120 }, "tool.art.rect");
+    layoutDocument = insertNativeArtGraphicObject(layoutDocument, { x: 240, y: 160 }, "tool.art.circle");
+    layoutDocument = insertNativeArtGraphicObject(layoutDocument, { x: 360, y: 220 }, "tool.art.ellipse");
+    const layoutPage = layoutDocument.pages[0];
+    const selectedLayoutDocument = selectDocumentObjects(
+      layoutDocument,
+      layoutPage.id,
+      layoutPage.objects.map((object) => object.id)
+    );
+    const layoutRegistry = createDesktopShortcutRegistry(allShellCommands(selectedLayoutDocument), "macos");
+
+    expect(layoutRegistry.resolve({ key: "l", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignLeft");
+    expect(layoutRegistry.resolve({ key: "c", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignCenter");
+    expect(layoutRegistry.resolve({ key: "r", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignRight");
+    expect(layoutRegistry.resolve({ key: "t", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignTop");
+    expect(layoutRegistry.resolve({ key: "m", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignMiddle");
+    expect(layoutRegistry.resolve({ key: "b", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.alignBottom");
+    expect(layoutRegistry.resolve({ key: "h", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.distributeHorizontal");
+    expect(layoutRegistry.resolve({ key: "v", metaKey: true, shiftKey: true, altKey: true })).toBe("layout.distributeVertical");
+    expect(layoutRegistry.resolve({ key: "g", metaKey: true })).toBe("layout.group");
+    expect(layoutRegistry.resolve({ key: "]", metaKey: true, shiftKey: true })).toBe("layout.bringToFront");
+    expect(layoutRegistry.resolve({ key: "]", metaKey: true })).toBe("layout.bringForward");
+    expect(layoutRegistry.resolve({ key: "[", metaKey: true })).toBe("layout.sendBackward");
+    expect(layoutRegistry.resolve({ key: "[", metaKey: true, shiftKey: true })).toBe("layout.sendToBack");
+    expect(layoutRegistry.conflicts()).toEqual([]);
+
+    const groupedLayoutDocument = groupSelectedDocumentObjects(selectedLayoutDocument);
+    const groupedRegistry = createDesktopShortcutRegistry(allShellCommands(groupedLayoutDocument), "macos");
+    expect(groupedRegistry.resolve({ key: "g", metaKey: true, shiftKey: true })).toBe("layout.ungroup");
+    expect(groupedRegistry.conflicts()).toEqual([]);
+  });
+
+  it("lets system clipboard events own copy cut and paste shortcuts", () => {
+    expect(shouldLetSystemClipboardHandleCommand("clipboard.copy")).toBe(true);
+    expect(shouldLetSystemClipboardHandleCommand("clipboard.cut")).toBe(true);
+    expect(shouldLetSystemClipboardHandleCommand("clipboard.paste")).toBe(true);
+    expect(shouldLetSystemClipboardHandleCommand("layout.group")).toBe(false);
+    expect(mainWindowSource).toContain('window.addEventListener("copy", handleCopy)');
+    expect(mainWindowSource).toContain('window.addEventListener("cut", handleCut)');
+    expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
+  });
+
+  it("copies a graphic-only ChemDraft selection with the payload in the private flavor only", () => {
+    let document = insertNativeArtGraphicObject(createPhase4Document("Selection Clipboard"), { x: 120, y: 140 }, "tool.art.rect");
+    document = insertNativeArtGraphicObject(document, { x: 220, y: 140 }, "tool.art.circle");
+    const payload = createSelectionClipboardPayload(document);
+
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const items = selectionClipboardTextItems(payload);
+    // A graphic-only selection has no human-readable text, so only the private flavor is written —
+    // the raw selection JSON is never published as public text/plain.
+    expect(items.map((item) => item.type)).toEqual([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]);
+    expect(JSON.parse(items[0].text)).toMatchObject({
+      kind: "chemdraft-selection",
+      version: 1
+    });
+  });
+
+  it("publishes human-readable text — not selection JSON — as the public text/plain flavor", () => {
+    const document = insertNativeTextObject(createPhase4Document("Text Clipboard"), { x: 120, y: 140 }, "Catalyst A");
+    const payload = createSelectionClipboardPayload(document);
+
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    expect(selectionClipboardPlainText(payload)).toBe("Catalyst A");
+
+    const items = selectionClipboardTextItems(payload);
+    const plain = items.find((item) => item.type === "text/plain");
+    expect(plain?.text).toBe("Catalyst A");
+    expect(plain?.text).not.toContain("chemdraft-selection");
+  });
+
+  it("offsets copied selection pastes and steps repeated pastes", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Offset Selection Clipboard"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const copyState = initialSelectionClipboardPasteState(payload, "copy");
+    const firstPaste = nextSelectionClipboardPastePlacement(payload, copyState, document.pages[0]);
+    const secondPaste = nextSelectionClipboardPastePlacement(payload, firstPaste.state, document.pages[0]);
+
+    expect(firstPaste.point).toMatchObject({
+      x: payload.bounds.centerX + 24,
+      y: payload.bounds.centerY + 24
+    });
+    expect(secondPaste.point).toMatchObject({
+      x: payload.bounds.centerX + 48,
+      y: payload.bounds.centerY + 48
+    });
+  });
+
+  it("keeps the first cut paste at the source point, then offsets repeated pastes", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Cut Selection Clipboard"),
+      { x: 160, y: 180 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const cutState = initialSelectionClipboardPasteState(payload, "cut");
+    const firstPaste = nextSelectionClipboardPastePlacement(payload, cutState, document.pages[0]);
+    const secondPaste = nextSelectionClipboardPastePlacement(payload, firstPaste.state, document.pages[0]);
+
+    expect(firstPaste.point).toMatchObject({
+      x: payload.bounds.centerX,
+      y: payload.bounds.centerY
+    });
+    expect(secondPaste.point).toMatchObject({
+      x: payload.bounds.centerX + 24,
+      y: payload.bounds.centerY + 24
+    });
+  });
+
+  it("flips the selection paste offset when the normal offset would leave the page", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Edge Offset Selection Clipboard"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const page = document.pages[0];
+    const edgePayload = {
+      ...payload,
+      bounds: {
+        ...payload.bounds,
+        centerX: page.width - payload.bounds.width / 2 - 2,
+        centerY: page.height - payload.bounds.height / 2 - 2
+      }
+    };
+    const paste = nextSelectionClipboardPastePlacement(
+      edgePayload,
+      initialSelectionClipboardPasteState(edgePayload, "copy"),
+      page
+    );
+
+    expect(paste.point.x).toBeLessThan(edgePayload.bounds.centerX);
+    expect(paste.point.y).toBeLessThan(edgePayload.bounds.centerY);
   });
 
   it("only exposes undo and redo shortcuts when document history can move", () => {
@@ -1025,6 +1707,49 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("background: var(--swatch-color);");
   });
 
+  it("keeps object color commands explicit and separate from text style patches", () => {
+    expect(objectStyleActions.map((command) => command.id)).toEqual(
+      expect.arrayContaining([
+        "object.color.black",
+        "object.color.green",
+        "object.color.magenta",
+        "object.gradient.addStop",
+        "object.gradient.deleteStop",
+        "object.gradient.reverseStops",
+        "object.gradient.rotateStops"
+      ])
+    );
+    expect(objectColorForCommand("object.color.green")).toBe("#1d7f68");
+    expect(objectColorForCommand(objectCustomColorCommandId("#A0B1C2"))).toBe("#a0b1c2");
+    expect(objectGradientStopColorForCommand(objectGradientStopColorCommandId(2, "#A0B1C2"))).toEqual({
+      stopIndex: 2,
+      color: "#a0b1c2"
+    });
+    expect(objectGradientStopOpacityForCommand(objectGradientStopOpacityCommandId(2, 0.42))).toEqual({
+      stopIndex: 2,
+      opacity: 0.42
+    });
+    expect(objectGradientStopOffsetForCommand(objectGradientStopOffsetCommandId(2, 0.37))).toEqual({
+      stopIndex: 2,
+      offset: 0.37
+    });
+    expect(objectGradientDeleteStopIndexForCommand(objectGradientDeleteStopCommandId(2))).toBe(2);
+    expect(textStylePatchForCommand("object.color.green")).toBeUndefined();
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.color.green")).toBe(true);
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.addStop")).toBe(true);
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.deleteStop")).toBe(true);
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.reverseStops")).toBe(true);
+    expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.rotateStops")).toBe(true);
+    expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
+    expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
+    expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
+    expect(mainWindowSource).toContain("const objectStyleObjectIds = currentDocument.selection.objectIds.filter");
+    expect(mainWindowSource).toContain("findDocumentObject(currentDocument, objectId)?.type !== \"text\"");
+    expect(mainWindowSource).toContain("const objectStyleTarget = toolbarStyleTarget");
+    expect(mainWindowSource).toContain("objectIds: objectStyleObjectIds");
+    expect(mainWindowSource).not.toContain("textRange: activeTextObject?.type === \"text\"");
+  });
+
   it("renders mutually exclusive text toolbar active states from current style", () => {
     const markup = renderToStaticMarkup(
       createElement(ToolPalette, {
@@ -1073,6 +1798,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.benzene",
       "tool.chairCyclohexaneA",
       "tool.chairCyclohexaneB",
+      "tool.lasso",
+      "tool.eraser",
       structureCleanupCommandId,
       structureSpin3dCommandId,
       "tool.plus",
@@ -1080,7 +1807,13 @@ describe("ChemDraft desktop shell", () => {
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
-      "layout.sendToBack"
+      "layout.sendToBack",
+      "layout.flipHorizontal",
+      "layout.flipVertical",
+      "layout.rotate90",
+      "layout.duplicate",
+      "layout.group",
+      "layout.ungroup"
     ]);
     const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 
@@ -1095,6 +1828,7 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
+    expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
     expect(disabledTools.length).toBeGreaterThan(20);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
@@ -1123,6 +1857,36 @@ describe("ChemDraft desktop shell", () => {
     expect(buttonMarkupForCommand(markup, "tool.select")).not.toContain('data-active="true"');
     expect(buttonMarkupForCommand(markup, "tool.select")).not.toContain('aria-pressed="true"');
     expect(buttonMarkupForCommand(markup, "tool.wedgeBond")).not.toContain('data-active="true"');
+  });
+
+  it("merges live layout command state into the main toolbar distribute buttons", () => {
+    const document = createPhase4Document("Main Toolbar Distribute");
+    const pageId = document.pages[0].id;
+    const objects: DocumentObject[] = [
+      { id: "main_toolbar_a", type: "text", x: 120, y: 180, width: 40, height: 24, rotation: 0, style: {}, text: "A", spans: [] },
+      { id: "main_toolbar_b", type: "text", x: 260, y: 210, width: 40, height: 24, rotation: 0, style: {}, text: "B", spans: [] },
+      { id: "main_toolbar_c", type: "text", x: 440, y: 190, width: 40, height: 24, rotation: 0, style: {}, text: "C", spans: [] }
+    ];
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: objects.map((object) => object.id) }
+    ]);
+    const overrides = new Map(createLayerActions(selected).map((command) => [command.id, command] as const));
+    const markup = renderToStaticMarkup(
+      createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.main", desktopToolsetRegistry, overrides),
+        currentDistributeMode: "spacing",
+        orientation: "horizontal",
+        onInvoke: () => undefined
+      })
+    );
+
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).not.toContain("disabled");
+    expect(buttonMarkupForCommand(markup, "layout.distributeVertical")).not.toContain("disabled");
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-distribute-mode="spacing"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain("Distribute Horizontally: equal gaps");
+    expect(toolPaletteSource).toContain("toolbar-distribute-menu");
+    expect(toolPaletteSource).toContain("distributeModeCommandIds.spacing");
   });
 
   it("matches rotate-handle tangential drag speed to projected-plane tilt speed", () => {
@@ -1176,6 +1940,8 @@ describe("ChemDraft desktop shell", () => {
     expect(parseRotationInputDegrees("")).toBeUndefined();
     expect(parseRotationInputDegrees("x")).toBeUndefined();
     expect(rotationInputDraftDegrees(45.1234)).toBe("45.123");
+    expect(rotationInputHomeDraftDegrees("z")).toEqual({ draftZDegrees: "0" });
+    expect(rotationInputHomeDraftDegrees("xy")).toEqual({ draftXDegrees: "0", draftYDegrees: "0" });
     expect(manualRotationDeltaDegrees(350, 10)).toBe(20);
     expect(manualRotationDeltaDegrees(10, 350)).toBe(-20);
     expect(manualRotationDeltaDegrees(0, 360)).toBe(0);
@@ -1204,6 +1970,19 @@ describe("ChemDraft desktop shell", () => {
     expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
   });
 
+  it("maps native art X/Y rotate drags to the same wrapping full-turn tilt range as molecules", () => {
+    const start = { x: 80, y: 100 };
+    const diagonal = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 150, y: 30 });
+    const moleculeDiagonal = projectedPlaneTiltVectorFromDrag(start, { x: 150, y: 30 });
+    const beyondSixty = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 170, y: 10 });
+    const wrapped = documentObjectProjectedPlaneTiltVectorFromDrag(start, { x: 500, y: -300 });
+
+    expect(diagonal).toEqual(moleculeDiagonal);
+    expect(projectedPlaneTiltReadoutLabel(diagonal.xRad, diagonal.yRad)).toBe("X 70° / Y 70°");
+    expect(projectedPlaneTiltReadoutLabel(beyondSixty.xRad, beyondSixty.yRad)).toBe("X 90° / Y 90°");
+    expect(projectedPlaneTiltReadoutLabel(wrapped.xRad, wrapped.yRad)).toBe("X 40° / Y 60°");
+  });
+
   it("keeps projected-plane 3D rotate handle scoped to X/Y tilt", () => {
     expect(projectedPlaneTiltReadoutLabel(0, 0)).toBe("0°");
     expect(projectedPlaneTiltReadoutLabel(Math.PI / 6, -Math.PI / 4)).toBe("X 30° / Y -45°");
@@ -1221,6 +2000,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
     expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
     expect(mainWindowSource).toContain("aria-label=\"Restore rotation home\"");
+    expect(mainWindowSource).toContain('rotationInputHomeDraftDegrees("z")');
     expect(mainWindowSource).toContain('draftXDegrees: "0", draftYDegrees: "0"');
     expect(mainWindowSource).toContain("aria-label=\"Z rotation degrees\"");
     expect(mainWindowSource).toContain("aria-label=\"X rotation degrees\"");
@@ -1228,6 +2008,39 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).not.toContain("ApplyRotationInputIcon");
     expect(mainWindowSource).not.toContain("Apply X Y rotation");
     expect(mainWindowSource).not.toContain("Apply Z rotation");
+  });
+
+  it("gates the browser agent bridge behind explicit QA flags", () => {
+    expect(mainWindowSource).toContain("window[AGENT_BRIDGE_GLOBAL_NAME] = installedBridge");
+    expect(mainWindowSource).toContain('params.get("agentBridge") === "1"');
+    expect(mainWindowSource).toContain('window.localStorage.getItem("chemdraft.agentBridge") === "enabled"');
+    expect(mainWindowSource).toContain("openDocumentContents(payload.contents, payload.displayName, payload.path)");
+    expect(mainWindowSource).toContain("agentBridgeDocumentPayloadFromHash");
+    expect(mainWindowSource).toContain('params.get("openDocumentText")');
+    expect(mainWindowSource).toContain('params.get("openDocumentBase64")');
+    expect(mainWindowSource).toContain("window.atob(encoded)");
+    expect(mainWindowSource).toContain("document: currentDocument");
+    expect(mainWindowSource).toContain("objectTypes: candidate.objects.reduce");
+    expect(mainWindowSource).toContain('window.addEventListener("hashchange", openPayloadFromHash)');
+    expect(mainWindowSource).toContain('window.removeEventListener("hashchange", openPayloadFromHash)');
+  });
+
+  it("gates the art transform QA helper to local browser QA surfaces", () => {
+    expect(mainWindowSource).toContain("ArtTransformQaLayer");
+    expect(mainWindowSource).toContain("shouldEnableArtTransformQaLayer");
+    expect(mainWindowSource).toContain("ArtStyleQaLayer");
+    expect(mainWindowSource).toContain("shouldEnableArtStyleQaLayer");
+    expect(mainWindowSource).toContain("artStyleQaStressDocument");
+    expect(mainWindowSource).toContain('params.get("artQa") === "1"');
+    expect(mainWindowSource).toContain('params.get("artStyleQa") === "1"');
+    expect(mainWindowSource).toContain('params.get("agentBridge") === "1"');
+    expect(mainWindowSource).toContain('data-art-transform-qa-layer="true"');
+    expect(mainWindowSource).toContain('data-art-transform-qa-action="scene"');
+    expect(mainWindowSource).toContain('data-art-style-qa-panel="true"');
+    expect(mainWindowSource).toContain('data-art-style-qa-action="stress"');
+    expect(appCss).toContain(".art-transform-qa-overlay");
+    expect(appCss).toContain(".art-transform-qa-panel");
+    expect(appCss).toContain(".art-style-qa-panel");
   });
 
   it("keeps transform handle double-clicks out of whole-molecule selection promotion", () => {
@@ -1238,7 +2051,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("lastTransformHandlePressRef");
     expect(mainWindowSource).toContain("openObjectRotateInput(objectId);");
     expect(mainWindowSource).toContain("openProjectedPlaneTiltInput(objectId);");
-    expect(mainWindowSource).toContain("openMoleculeResizeInput(objectId, corner);");
+    expect(mainWindowSource).toContain("openObjectResizeInput(objectId, corner);");
     expect(mainWindowSource.match(/const selectedDocument = selectedFragmentTarget/g)?.length).toBe(3);
   });
 
@@ -1251,7 +2064,7 @@ describe("ChemDraft desktop shell", () => {
 
   it("centers the paired Z and X/Y rotation handles over the selection box", () => {
     expect(mainWindowSource).toContain('data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}');
-    expect(appCss).toContain('.native-molecule-transform-frame[data-has-tilt3d="true"] .native-molecule-rotate-handle');
+    expect(appCss).toContain('.object-transform-frame[data-has-tilt3d="true"] .object-rotate-handle');
     expect(appCss).toContain("left: calc(50% - 17px);");
     expect(appCss).toContain("left: calc(50% + 17px);");
     expect(appCss).not.toContain("left: calc(50% + 34px);");
@@ -1261,9 +2074,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-scale-input-popover=\"true\"");
     expect(mainWindowSource).toContain("data-scale-input-corner={input.corner}");
     expect(mainWindowSource).toContain("onDoubleClick={onResizeDoubleClick(corner)}");
-    expect(mainWindowSource).toContain("onMoleculeResizeInputChange={handleMoleculeResizeInputChange}");
-    expect(mainWindowSource).toContain("onMoleculeResizeInputHome={handleMoleculeResizeInputHome}");
-    expect(mainWindowSource).toContain("onMoleculeResizeInputKeep={handleMoleculeResizeInputKeep}");
+    expect(mainWindowSource).toContain("onObjectResizeInputChange={handleObjectResizeInputChange}");
+    expect(mainWindowSource).toContain("onObjectResizeInputHome={handleObjectResizeInputHome}");
+    expect(mainWindowSource).toContain("onObjectResizeInputKeep={handleObjectResizeInputKeep}");
     expect(mainWindowSource).toContain("aria-label=\"Restore stretch home\"");
     expect(mainWindowSource).toContain("aria-label=\"X stretch percent\"");
     expect(mainWindowSource).toContain("aria-label=\"Y stretch percent\"");
@@ -1280,12 +2093,12 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("parses manual stretch percentages", () => {
-    expect(parseMoleculeResizeInputPercent("150")).toBe(150);
-    expect(parseMoleculeResizeInputPercent(" 62.5 ")).toBe(62.5);
-    expect(parseMoleculeResizeInputPercent("0")).toBeUndefined();
-    expect(parseMoleculeResizeInputPercent("-4")).toBeUndefined();
-    expect(parseMoleculeResizeInputPercent("")).toBeUndefined();
-    expect(moleculeResizeInputDraftPercent(1.5)).toBe("150");
+    expect(parseObjectResizeInputPercent("150")).toBe(150);
+    expect(parseObjectResizeInputPercent(" 62.5 ")).toBe(62.5);
+    expect(parseObjectResizeInputPercent("0")).toBeUndefined();
+    expect(parseObjectResizeInputPercent("-4")).toBeUndefined();
+    expect(parseObjectResizeInputPercent("")).toBeUndefined();
+    expect(objectResizeInputDraftPercent(1.5)).toBe("150");
   });
 
   it("commits projected-plane 3D rotate as exactly one history entry", () => {
@@ -1327,16 +2140,16 @@ describe("ChemDraft desktop shell", () => {
     const center = { x: 100, y: 100 };
     const start = { x: 60, y: 60 };
 
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 40, y: 40 }, false)).toEqual({ x: 1.5, y: 1.5 });
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 20, y: 60 }, false)).toEqual({ x: 1.5, y: 1.5 });
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 40, y: 80 }, false)).toEqual({ x: 1, y: 1 });
-    expect(moleculeResizeScaleFromDrag(center, start, { x: 40, y: 80 }, true)).toEqual({ x: 1.5, y: 0.5 });
-    expect(moleculeResizeReadoutPercent(1.254)).toBe(125);
+    expect(objectResizeScaleFromDrag(center, start, { x: 40, y: 40 }, false)).toEqual({ x: 1.5, y: 1.5 });
+    expect(objectResizeScaleFromDrag(center, start, { x: 20, y: 60 }, false)).toEqual({ x: 1.5, y: 1.5 });
+    expect(objectResizeScaleFromDrag(center, start, { x: 40, y: 80 }, false)).toEqual({ x: 1, y: 1 });
+    expect(objectResizeScaleFromDrag(center, start, { x: 40, y: 80 }, true)).toEqual({ x: 1.5, y: 0.5 });
+    expect(objectResizeReadoutPercent(1.254)).toBe(125);
   });
 
   it("multiplies molecule resize readouts by the starting molecule scale", () => {
-    expect(cumulativeMoleculeResizeScale({ x: 2, y: 2 }, { x: 1.5, y: 1.5 })).toEqual({ x: 3, y: 3 });
-    expect(cumulativeMoleculeResizeScale({ x: 2, y: 0.5 }, { x: 1.25, y: 0.8 })).toEqual({ x: 2.5, y: 0.4 });
+    expect(cumulativeObjectResizeScale({ x: 2, y: 2 }, { x: 1.5, y: 1.5 })).toEqual({ x: 3, y: 3 });
+    expect(cumulativeObjectResizeScale({ x: 2, y: 0.5 }, { x: 1.25, y: 0.8 })).toEqual({ x: 2.5, y: 0.4 });
   });
 
   it("renders the text toolbar as a formatting surface", () => {
@@ -1363,9 +2176,377 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-command-id="text.script.superscript"');
     expect(appCss).toContain(".toolbar-color-popover");
     expect(appCss).toContain(".color-picker-tabs");
+    expect(appCss).toContain(".color-picker-color-panel");
     expect(appCss).toContain(".color-wheel-face");
     expect(appCss).toContain(".color-channel-group");
     expect(appCss).toContain(".color-hex-field");
+    expect(appCss).toContain(".color-palette-section");
+    expect(appCss).toContain(".color-palette-swatch");
+    expect(toolPaletteSource).toContain("8 color Crayola box");
+    expect(toolPaletteSource).toContain("Colorblind safe");
+    expect(toolPaletteSource).toContain("Seasonal colors:");
+  });
+
+  it("renders the art toolbar as a command-backed object surface", () => {
+    const markup = renderToStaticMarkup(createElement(PaletteWindow, { toolsetId: "core.art" }));
+    const artGroups = getToolsetCommandGroups("core.art");
+    const rectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Inspector Rect"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const rectArtStyle = createArtInspectorModel({
+      document: rectDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(rectDocument),
+      requestedPaintTarget: "fill"
+    });
+    const lineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Inspector Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const lineArtStyle = createArtInspectorModel({
+      document: lineDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(lineDocument),
+      requestedPaintTarget: "fill"
+    });
+    const freehandDocument = nativeFreehandStrokeDocument(
+      createPhase4Document("Art Inspector Freehand"),
+      [
+        { x: 180, y: 180, pressure: 0.3 },
+        { x: 220, y: 196, pressure: 0.8 }
+      ],
+      "tool.art.pencil"
+    );
+    const freehandArtStyle = createArtInspectorModel({
+      document: freehandDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(freehandDocument),
+      requestedPaintTarget: "fill"
+    });
+    const gradientObjectId = rectDocument.selection.objectIds[0] ?? "";
+    const gradientDocument = applyPatches(rectDocument, [{
+      op: "updateObject",
+      objectId: gradientObjectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#1d7f68" },
+              { offset: 1, color: "#ffffff", opacity: 0.35 }
+            ]
+          },
+          fillColor: "#1d7f68",
+          fillMode: "solid"
+        }
+      }
+    }]);
+    const gradientArtStyle = createArtInspectorModel({
+      document: gradientDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(gradientDocument),
+      requestedPaintTarget: "fill"
+    });
+    const effectObjectId = rectDocument.selection.objectIds[0] ?? "";
+    const effectDocument = applyPatches(rectDocument, [{
+      op: "updateObject",
+      objectId: effectObjectId,
+      changes: {
+        style: {
+          effects: [{ kind: "glow", color: "#1d7f68", opacity: 0.42, blurPx: 7, spreadPx: 1.2 }]
+        }
+      }
+    }]);
+    const effectArtStyle = createArtInspectorModel({
+      document: effectDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(effectDocument),
+      requestedPaintTarget: "fill"
+    });
+    const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: rectArtStyle,
+      onInvoke: () => undefined
+    }));
+    const lineInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: lineArtStyle,
+      onInvoke: () => undefined
+    }));
+    const freehandInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: freehandArtStyle,
+      onInvoke: () => undefined
+    }));
+    const gradientInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: gradientArtStyle,
+      onInvoke: () => undefined
+    }));
+    const effectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "fill",
+      currentArtStyle: effectArtStyle,
+      onInvoke: () => undefined
+    }));
+
+    expect(markup).toContain('aria-label="ChemDraft floating Art Toolbar"');
+    expect(markup).toContain('data-toolset-id="core.art"');
+    expect(markup).toContain('data-command-id="tool.select"');
+    expect(markup).toContain('data-command-id="tool.lasso"');
+    expect(markup).not.toContain('data-command-id="tool.art.directEdit"');
+    expect(markup).toContain('data-command-id="tool.text"');
+    expect(markup).toContain('data-command-id="tool.art.rect"');
+    expect(markup).toContain('data-command-id="tool.art.roundedRect"');
+    expect(markup).toContain('data-command-id="tool.art.circle"');
+    expect(markup).toContain('data-command-id="tool.art.ellipse"');
+    expect(markup).toContain('data-command-id="tool.art.line"');
+    expect(markup).toContain('data-command-id="tool.art.lineWavy"');
+    expect(markup).toContain('data-command-id="tool.art.pen"');
+    expect(markup).toContain('data-command-id="tool.art.polyline"');
+    expect(markup).toContain('data-command-id="tool.art.scissors"');
+    expect(markup).toContain('data-command-id="tool.art.measure"');
+    expect(markup).toContain('data-command-id="tool.eraser"');
+    expect(markup).toContain('data-command-id="tool.art.arrow"');
+    expect(markup).toContain('data-command-id="tool.art.arc270"');
+    expect(markup).toContain('data-command-id="tool.art.arc90"');
+    expect(markup).toContain('data-command-id="tool.art.pencil"');
+    expect(markup).toContain('data-command-id="layout.bringForward"');
+    expect(markup).toContain('data-command-id="layout.sendToBack"');
+    expect(markup).toContain('data-command-id="layout.alignLeft"');
+    expect(markup).toContain('data-command-id="layout.alignCenter"');
+    expect(markup).toContain('data-command-id="layout.alignRight"');
+    expect(markup).toContain('data-command-id="layout.alignTop"');
+    expect(markup).toContain('data-command-id="layout.alignMiddle"');
+    expect(markup).toContain('data-command-id="layout.alignBottom"');
+    expect(markup).toContain('data-command-id="layout.distributeHorizontal"');
+    expect(markup).toContain('data-command-id="layout.distributeVertical"');
+    expect(markup).toContain('data-command-id="layout.flipHorizontal"');
+    expect(markup).toContain('data-command-id="layout.flipVertical"');
+    expect(markup).toContain('data-command-id="layout.rotate90"');
+    expect(markup).toContain('data-command-id="layout.duplicate"');
+    expect(markup).toContain('data-command-id="layout.group"');
+    expect(markup).toContain('data-command-id="layout.ungroup"');
+    expect(markup).toContain('data-art-command-grid="true"');
+    expect(markup.match(/data-art-command-column=/g) ?? []).toHaveLength(4);
+    expect(markup).toContain('data-art-command-column="selection"');
+    expect(markup).toContain('data-art-command-column="drawing"');
+    expect(markup).toContain('data-art-command-column="arrange"');
+    expect(markup).toContain('data-art-command-column="boolean"');
+    expect(markup).toContain('data-art-shape-flyout-column="true"');
+    expect(markup).toContain('data-command-flyout="shapes"');
+    expect(markup).toContain('data-command-flyout-menu="shapes"');
+    expect(markup.match(/data-art-arrange-column="true"/g) ?? []).toHaveLength(1);
+    expect(markup).toContain('data-command-flyout="align"');
+    expect(markup).toContain('data-command-flyout="layer"');
+    expect(markup).toContain('data-command-flyout="transform"');
+    expect(markup).toContain('data-command-flyout-menu="group"');
+    expect(markup).toContain('data-art-command-band="true"');
+    expect(markup).toContain('data-command-id="art.boolean.union"');
+    expect(markup).toContain('data-command-id="art.boolean.subtract"');
+    expect(markup).toContain('data-command-id="art.boolean.intersect"');
+    expect(markup).toContain('data-command-id="art.boolean.split"');
+    expect(markup).not.toContain('data-command-id="tool.art.circleGloss"');
+    expect(markup).not.toContain('data-command-id="tool.art.rectShadow"');
+    expect(markup).not.toContain('data-command-id="tool.art.arc90Dashed"');
+    const booleanCommandIds = new Set(["art.boolean.union", "art.boolean.subtract", "art.boolean.intersect", "art.boolean.split"]);
+    expect(artGroups.flat().filter((command) => !booleanCommandIds.has(command.id)).every((command) => command.assetName)).toBe(true);
+    expect(artGroups.flat().filter((command) => booleanCommandIds.has(command.id)).every((command) => command.assetName === undefined)).toBe(true);
+    expect(markup).not.toContain("data-art-tool-icon=");
+    expect(buttonMarkupForCommand(markup, "tool.art.rect")).toContain('data-command-flyout-button="shapes"');
+    expect(buttonMarkupForCommand(markup, "tool.art.rect")).toContain('data-toolbar-asset="Art_Shapes"');
+    expect(buttonMarkupForCommand(markup, "tool.art.roundedRect")).toContain('data-toolbar-asset="Art_Rounded_Rectangle"');
+    expect(buttonMarkupForCommand(markup, "tool.art.pen")).toContain('data-toolbar-asset="Art_Pen"');
+    expect(buttonMarkupForCommand(markup, "tool.art.polyline")).toContain('data-toolbar-asset="Art_Polyline"');
+    expect(buttonMarkupForCommand(markup, "tool.art.scissors")).toContain('data-toolbar-asset="Art_Scissors"');
+    expect(buttonMarkupForCommand(markup, "tool.art.measure")).toContain('data-toolbar-asset="Art_Tape_Measure"');
+    expect(buttonMarkupForCommand(markup, "tool.eraser")).toContain('data-toolbar-asset="Art_Eraser"');
+    expect(buttonMarkupForCommand(markup, "tool.lasso")).toContain('data-toolbar-asset="Custom_Lasso"');
+    expect(buttonMarkupForCommand(markup, "tool.art.arrow")).toContain('data-toolbar-asset="Art_Arrow"');
+    expect(buttonMarkupForCommand(markup, "tool.art.arc270")).toContain('data-toolbar-asset="Art_Arc_Circular"');
+    expect(buttonMarkupForCommand(markup, "tool.art.arc90")).toContain('data-toolbar-asset="Art_Arc_Quarter"');
+    expect(buttonMarkupForCommand(markup, "tool.art.pencil")).toContain('data-toolbar-asset="Art_Pencil"');
+    expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-toolbar-asset="Custom_Left"');
+    expect(buttonMarkupForCommand(markup, "layout.alignLeft")).toContain('data-shortcut-label="⌥⇧⌘L"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-toolbar-asset="Custom_Horizontal"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-distribute-mode="centers"');
+    expect(buttonMarkupForCommand(markup, "layout.distributeHorizontal")).toContain('data-shortcut-label="⌥⇧⌘H"');
+    expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-toolbar-asset="Art_Send_To_Back"');
+    expect(buttonMarkupForCommand(markup, "layout.sendToBack")).toContain('data-shortcut-label="⇧⌘["');
+    expect(buttonMarkupForCommand(markup, "layout.flipHorizontal")).toContain('data-toolbar-asset="Custom_Flip_Horizontal"');
+    expect(buttonMarkupForCommand(markup, "layout.flipVertical")).toContain('data-toolbar-asset="Custom_Flip_Vertical"');
+    expect(buttonMarkupForCommand(markup, "layout.rotate90")).toContain('data-toolbar-asset="Custom_Rotation"');
+    expect(buttonMarkupForCommand(markup, "layout.duplicate")).toContain('data-toolbar-asset="Art_Bring_Forward"');
+    expect(buttonMarkupForCommand(markup, "layout.group")).toContain('data-toolbar-asset="Custom_Group"');
+    expect(buttonMarkupForCommand(markup, "layout.ungroup")).toContain('data-toolbar-asset="Custom_Ungroup"');
+    expect(rectInspectorMarkup).toContain('data-toolbar-style-controls="art"');
+    expect(rectInspectorMarkup).toContain('aria-label="Fill color"');
+    expect(rectInspectorMarkup).toContain('aria-label="Open object color picker"');
+    expect(rectInspectorMarkup).toContain('data-color-picker="true"');
+    expect(rectInspectorMarkup).toContain('data-command-id="object.style.target.fill"');
+    expect(rectInspectorMarkup).toContain('data-command-id="object.style.swapFillStroke"');
+    expect(rectInspectorMarkup).toContain('aria-label="Art effects"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="none"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="shadow"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="glow"');
+    expect(rectInspectorMarkup).toContain('data-art-effect-button="sketch"');
+    expect(rectInspectorMarkup).not.toContain('data-art-effect-controls=');
+    expect(effectInspectorMarkup).toContain('data-art-effect-button="glow"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-controls="glow"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-present-count="1"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-present-all="true"');
+    expect(effectInspectorMarkup).toContain('data-art-effect-color-trigger="glow"');
+    expect(effectInspectorMarkup).toContain('data-art-inspector-slider="glow-effect-opacity"');
+    expect(effectInspectorMarkup).toContain('data-art-inspector-slider="glow-effect-size"');
+    expect(rectInspectorMarkup).toContain('aria-label="Stroke width"');
+    expect(rectInspectorMarkup).toContain('data-art-inspector-slider="object-opacity"');
+    expect(rectInspectorMarkup).toContain('data-art-inspector-slider="fill-opacity"');
+    expect(rectInspectorMarkup).toContain('data-art-inspector-slider="stroke-opacity"');
+    expect(rectInspectorMarkup).toContain("Obj");
+    expect(rectInspectorMarkup).toContain("Fill");
+    expect(rectInspectorMarkup).toContain("Stroke");
+    expect(rectInspectorMarkup).toContain("Width");
+    expect(rectInspectorMarkup).toContain("Dash");
+    expect(rectInspectorMarkup).not.toContain("Corners");
+    expect(rectInspectorMarkup).not.toContain("Line ends");
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-controls="fill"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-rail="fill"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-type="linear-gradient"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.addStop"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.deleteStop.0"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.reverseStops"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.rotateStops"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-editor="fill"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-active-stop="0"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color="#1d7f68"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-offset="0"');
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-color-trigger="true"');
+    expect(gradientInspectorMarkup).toContain('data-art-inspector-slider="gradient-stop-opacity"');
+    expect(gradientInspectorMarkup).toContain('aria-label="Drag gradient stop 1 at 0%"');
+    expect(gradientInspectorMarkup).toContain('data-command-id="object.gradient.stopOffset.0.0"');
+    expect(gradientInspectorMarkup.match(/data-art-gradient-stop=/g) ?? []).toHaveLength(2);
+    expect(gradientInspectorMarkup).toContain('data-art-gradient-stop-active="true"');
+    expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:0%");
+    expect(gradientInspectorMarkup).toContain("--art-gradient-stop-offset:100%");
+    expect(lineInspectorMarkup).toContain('data-art-fill-supported-count="0"');
+    expect(lineInspectorMarkup).toContain('data-art-line-ends-supported-count="1"');
+    expect(lineInspectorMarkup).toContain('data-art-fill-support-all="false"');
+    expect(lineInspectorMarkup).toContain('data-art-line-ends-support-all="true"');
+    expect(lineInspectorMarkup).not.toContain('data-command-id="object.style.target.fill"');
+    expect(lineInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
+    expect(lineInspectorMarkup).toContain('aria-label="Stroke color"');
+    expect(lineInspectorMarkup).not.toContain("Line ends");
+    expect(lineInspectorMarkup).not.toContain("Corners");
+    expect(freehandInspectorMarkup).toContain('data-art-fill-supported-count="0"');
+    expect(freehandInspectorMarkup).toContain('data-art-stroke-supported-count="1"');
+    expect(freehandInspectorMarkup).not.toContain('data-command-id="object.style.target.fill"');
+    expect(freehandInspectorMarkup).toContain('data-command-id="object.style.target.stroke"');
+    expect(freehandInspectorMarkup).toContain('aria-label="Stroke color"');
+    expect(freehandInspectorMarkup).toContain(">Stroke</span>");
+    expect(freehandInspectorMarkup).not.toContain('aria-label="Stroke width"');
+    expect(freehandInspectorMarkup).not.toContain('data-art-inspector-slider="fill-opacity"');
+    expect(markup).not.toContain('data-command-id="text.color.black"');
+    expect(desktopToolsetsSource).toContain('"commandId": "tool.art.eyedropper"');
+    expect(desktopToolsetsSource).toContain('"assetName": "Art_Eyedropper"');
+    expect(mainWindowSource).toContain("toolBeforeEyedropperRef");
+    expect(mainWindowSource).toContain("restoreToolAfterEyedropper");
+    expect(mainWindowSource).toContain('tool.id === "tool.art.eyedropper" && activeToolState.activeCommandId === "tool.art.eyedropper"');
+    expect(mainWindowSource).toContain('event.key === "Escape" && activeToolCommandIdRef.current === "tool.art.eyedropper"');
+    expect(toolPaletteSource).toContain("function ArtToolIcon");
+    expect(toolPaletteSource).toContain("IroColorWheel");
+    expect(toolPaletteSource).toContain('sliderType: "value"');
+    expect(toolPaletteSource).not.toContain("wheelLightness: false");
+    expect(toolPaletteSource).toContain("ColorPickerPopoverBody");
+    expect(toolPaletteSource).toContain("objectOpacityCommandId");
+    expect(toolPaletteSource).toContain("objectStrokeDashCommands");
+    expect(toolPaletteSource).toContain("supportsFillAny");
+    expect(appCss).toContain('.app-shell[data-active-tool="tool.art.eyedropper"] .page');
+    expect(appCss).toContain("cursor: crosshair;");
+    expect(appCss).toContain(".art-toolbar-style-controls");
+    expect(appCss).toContain("grid-template-rows: 58px auto;");
+    expect(appCss).toContain(".art-toolbar-command-band");
+    expect(appCss).toContain(".art-toolbar-command-grid");
+    expect(appCss).toContain("grid-template-columns: repeat(4, max-content);");
+    expect(appCss).toContain("grid-template-rows: auto;");
+    expect(appCss).toContain("grid-auto-rows: auto;");
+    expect(appCss).toContain("grid-template-columns: minmax(260px, 520px);");
+    expect(appCss).toContain("grid-template-columns: 50px minmax(180px, 1fr) 48px;");
+    expect(appCss).toContain(".art-inspector-slider-value");
+    expect(appCss).toContain(".art-stroke-control-label");
+    expect(appCss).toContain(".iro-color-picker .IroColorPicker");
+    expect(appCss).toContain('.color-channel-group input[type="number"]::-webkit-inner-spin-button');
+    expect(appCss).toContain("appearance: textfield;");
+    expect(readFileSync(join(__dirname, "PaletteWindow.tsx"), "utf8")).toContain("new ResizeObserver");
+  });
+
+  it("keeps the art inspector color picker dependency license acceptable", () => {
+    const iroPackage = JSON.parse(readFileSync(
+      join(dirname(require.resolve("@jaames/iro")), "../package.json"),
+      "utf8"
+    )) as { license: string };
+
+    expect(iroPackage.license).toBe("MPL-2.0");
+  });
+
+  it("keeps art boolean commands disabled for a closed shape plus open line", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Mixed Boolean Selection"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withLine = insertNativeArtGraphicObject(withRect, { x: 320, y: 220 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!rectId || !lineId) {
+      throw new Error("Expected a rectangle and a line.");
+    }
+
+    const selected = selectDocumentObjects(withLine, withLine.pages[0].id, [rectId, lineId]);
+    const booleanCommands = createLayerActions(selected).filter((command) => command.id.startsWith("art.boolean."));
+
+    expect(booleanCommands).toHaveLength(4);
+    expect(booleanCommands.every((command) => command.enabled === false)).toBe(true);
+    expect(booleanCommands.every((command) => command.disabledReason === "Select at least two closed art shapes")).toBe(true);
+  });
+
+  it("preserves the last native export folder while changing export basenames", () => {
+    expect(nativePathDirname("/Users/me/Desktop/figure.svg")).toBe("/Users/me/Desktop");
+    expect(nativePathDirname("figure.svg")).toBeUndefined();
+    expect(nativePathJoin("/Users/me/Desktop", "figure.pdf")).toBe("/Users/me/Desktop/figure.pdf");
+    expect(nativePathJoin(undefined, "figure.pdf")).toBeUndefined();
+    expect(nativePathWithBasename("/Users/me/Desktop/figure.svg", "renamed.pdf")).toBe("/Users/me/Desktop/renamed.pdf");
   });
 
   it("registers built-in and plugin fixture toolsets", () => {
@@ -1378,6 +2559,7 @@ describe("ChemDraft desktop shell", () => {
         "core.structure",
         "core.arrows",
         "core.annotations",
+        "core.art",
         "core.orbitals",
         "core.layout",
         "core.style",
@@ -1386,7 +2568,55 @@ describe("ChemDraft desktop shell", () => {
       ])
     );
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
+    expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
+      width: 420,
+      minWidth: 760
+    });
+    expect(desktopToolsetRegistry.require("core.art").groups.find((group) => group.id === "core.art.freehand")?.items.map((item) => item.commandId)).toEqual([
+      "tool.art.pencil",
+      "tool.art.brush"
+    ]);
     expect(desktopToolsetRegistry.require("plugin.fixture").source).toBe("plugin");
+  });
+
+  it("keeps duplicated toolbar commands on a shared material-style asset", () => {
+    const assetNamesByCommandId = new Map<string, Set<string>>();
+    desktopToolsetRegistry.listToolsets().forEach((toolset) => {
+      toolset.groups.forEach((group) => {
+        group.items.forEach((item) => {
+          if (!item.assetName) {
+            return;
+          }
+          const assetNames = assetNamesByCommandId.get(item.commandId) ?? new Set<string>();
+          assetNames.add(item.assetName);
+          assetNamesByCommandId.set(item.commandId, assetNames);
+        });
+      });
+    });
+
+    assetNamesByCommandId.forEach((assetNames, commandId) => {
+      expect([...assetNames], commandId).toHaveLength(1);
+    });
+    expect([...assetNamesByCommandId.get("tool.select") ?? []]).toEqual(["Art_Select"]);
+    expect([...assetNamesByCommandId.get("tool.text") ?? []]).toEqual(["Art_Text"]);
+    expect([...assetNamesByCommandId.get("tool.eraser") ?? []]).toEqual(["Art_Eraser"]);
+    expect([...assetNamesByCommandId.get("tool.art.rect") ?? []]).toEqual(["Art_Rectangle"]);
+    expect([...assetNamesByCommandId.get("layout.alignLeft") ?? []]).toEqual(["Custom_Left"]);
+    expect([...assetNamesByCommandId.get("layout.alignCenter") ?? []]).toEqual(["Custom_Center"]);
+    expect([...assetNamesByCommandId.get("layout.alignRight") ?? []]).toEqual(["Custom_Right"]);
+    expect([...assetNamesByCommandId.get("layout.alignTop") ?? []]).toEqual(["Custom_Top"]);
+    expect([...assetNamesByCommandId.get("layout.alignMiddle") ?? []]).toEqual(["Custom_Middle"]);
+    expect([...assetNamesByCommandId.get("layout.alignBottom") ?? []]).toEqual(["Custom_Bottom"]);
+    expect([...assetNamesByCommandId.get("layout.distributeHorizontal") ?? []]).toEqual(["Custom_Horizontal"]);
+    expect([...assetNamesByCommandId.get("layout.distributeVertical") ?? []]).toEqual(["Custom_Vertical"]);
+    expect([...assetNamesByCommandId.get("layout.bringToFront") ?? []]).toEqual(["Art_Bring_To_Front"]);
+    expect([...assetNamesByCommandId.get("layout.bringForward") ?? []]).toEqual(["Art_Bring_Forward"]);
+    expect([...assetNamesByCommandId.get("layout.sendBackward") ?? []]).toEqual(["Art_Send_Backward"]);
+    expect([...assetNamesByCommandId.get("layout.sendToBack") ?? []]).toEqual(["Art_Send_To_Back"]);
+    expect([...assetNamesByCommandId.get("layout.rotate90") ?? []]).toEqual(["Custom_Rotation"]);
+    expect([...assetNamesByCommandId.get("layout.duplicate") ?? []]).toEqual(["Art_Bring_Forward"]);
+    expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
+    expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
   });
 
   it("keeps sparse floating toolsets compact", () => {
@@ -1398,7 +2628,7 @@ describe("ChemDraft desktop shell", () => {
       .filter((toolset) => toolset.gridLayout?.orientation !== "horizontal")
       .map((toolset) => toolset.preferredWindowSize?.height ?? 0);
 
-    expect(mainToolset.preferredWindowSize).toMatchObject({ width: 1138, height: 88, minWidth: 860, minHeight: 84 });
+    expect(mainToolset.preferredWindowSize).toMatchObject({ width: 1138, height: 128, minWidth: 860, minHeight: 124 });
     expect(fixtureSize).toMatchObject({ width: 112, height: 58, minWidth: 112, minHeight: 58 });
     expect(textToolset.gridLayout).toMatchObject({ orientation: "horizontal" });
     expect(textToolset.preferredWindowSize).toMatchObject({ width: 590, height: 112, minWidth: 520, minHeight: 104 });
@@ -1442,6 +2672,11 @@ describe("ChemDraft desktop shell", () => {
         expect.objectContaining({
           title: "Text Toolbar",
           commandId: "view.toolset.toggle.core.text",
+          checked: false
+        }),
+        expect.objectContaining({
+          title: "Art Toolbar",
+          commandId: "view.toolset.toggle.core.art",
           checked: false
         }),
         expect.objectContaining({
@@ -1576,20 +2811,22 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps toolbar shortcuts in delayed hover tooltips instead of visible icon badges", () => {
     const bondCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.bond");
+    const wedgeCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.wedgeBond");
     const cleanupCommand = getToolsetCommandSpecs().find((command) => command.id === structureCleanupCommandId);
-    if (!bondCommand || !cleanupCommand) {
+    if (!bondCommand || !wedgeCommand || !cleanupCommand) {
       throw new Error("Expected toolbar commands.");
     }
 
     const markup = renderToStaticMarkup(
       createElement(ToolPalette, {
-        groups: [[bondCommand, cleanupCommand]],
+        groups: [[bondCommand, wedgeCommand, cleanupCommand]],
         mode: "floating",
         orientation: "horizontal",
         onInvoke: () => undefined
       })
     );
     const bondMarkup = buttonMarkupForCommand(markup, "tool.bond");
+    const wedgeMarkup = buttonMarkupForCommand(markup, "tool.wedgeBond");
     const cleanupMarkup = buttonMarkupForCommand(markup, structureCleanupCommandId);
     const verticalMarkup = renderToStaticMarkup(
       createElement(ToolPalette, { groups: [[bondCommand]], onInvoke: () => undefined })
@@ -1601,38 +2838,59 @@ describe("ChemDraft desktop shell", () => {
     expect(bondMarkup).toContain('data-tooltip="Single Bond (M)"');
     expect(bondMarkup).toContain('class="tool-tooltip"');
     expect(bondMarkup).toContain(">Single Bond (M)</span>");
+    expect(wedgeMarkup).toContain('data-shortcut-label="No shortcut"');
+    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond (No shortcut)"');
+    expect(wedgeMarkup).toContain(">Solid Wedge Bond (No shortcut)</span>");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');
     expect(verticalBondMarkup).not.toContain('title="Single Bond (M)"');
     expect(bondMarkup).not.toContain("with-shortcut");
     expect(markup).not.toContain('class="shortcut"');
     expect(markup).toContain('class="icon-button-shell"');
-    expect(markup).toContain('data-tooltip-delay-ms="1000"');
+    expect(markup).toContain('data-tooltip-delay-ms="650"');
     expect(markup).toContain('data-tooltip-owner-id="');
     expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
-    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⌘⇧K)"');
-    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⌘⇧K)</span>");
+    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⇧⌘K)"');
+    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⇧⌘K)</span>");
     expect(appCss).toContain(".tool-tooltip");
     expect(appCss).not.toContain("@keyframes cd-tooltip-auto-hide");
     expect(appCss).not.toContain(".icon-button-shell:hover .tool-tooltip");
     expect(appCss).toContain('.icon-button-shell[data-tooltip-visible="true"] .tool-tooltip');
     expect(appCss).toContain(".tool-palette.horizontal .tool-tooltip");
     expect(appCss).toContain(".tool-palette.vertical .tool-tooltip");
+    expect(appCss).toContain(".tool-palette.floating.horizontal.main-style-palette .tool-tooltip");
+    expect(appCss).toContain("overflow: visible;");
     expect(appCss).not.toContain("animation: cd-tooltip-auto-hide");
     expect(appCss).not.toContain("transition-delay: 450ms;");
     expect(appCss).toContain("white-space: normal;");
     expect(appCss).toContain("overflow-wrap: anywhere;");
     expect(appCss).toContain('.icon-button[data-command-id="structure.cleanup2d"] .tool-icon-image');
-    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 1000");
+    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 650");
+    expect(toolPaletteSource).toContain("pendingTooltipIdRef.current === tooltipId");
+    expect(toolPaletteSource).toContain("onClickCapture={() => onTooltipLeave?.()}");
     expect(toolPaletteSource).not.toContain("setTimeout(clearVisibleTooltip, 3200)");
   });
 
   it("keeps functional metadata on asset-backed palette commands", () => {
     const assetCommands = paletteGroups.flat().filter((command) => command.assetName);
+    const eyedropperCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.eyedropper");
+    const measureCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.measure");
 
-    expect(assetCommands.length).toBeGreaterThanOrEqual(49);
+    expect(assetCommands.length).toBeGreaterThanOrEqual(50);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.every((command) => command.description)).toBe(true);
+    expect(eyedropperCommand).toMatchObject({
+      id: "tool.art.eyedropper",
+      title: "Eyedropper",
+      assetName: "Art_Eyedropper",
+      category: "art"
+    });
+    expect(measureCommand).toMatchObject({
+      id: "tool.art.measure",
+      title: "Tape Measure",
+      assetName: "Art_Tape_Measure",
+      category: "art"
+    });
     expect(assetCommands.find((command) => command.assetName === "Custom_Bond_Wedge")).toMatchObject({
       id: "tool.wedgeBond",
       title: "Solid Wedge Bond",
@@ -1642,7 +2900,7 @@ describe("ChemDraft desktop shell", () => {
       id: structureCleanupCommandId,
       title: "Clean up Structure 2D",
       shortcut: "Shift+Cmd+K",
-      shortcutLabel: "⌘⇧K",
+      shortcutLabel: "⇧⌘K",
       category: "structure"
     });
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
@@ -1782,12 +3040,12 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-selection-tilt3d-handle="true"');
     expect(markup).toContain('data-tilt3d-icon="circular-arrow"');
     expect(markup).not.toContain('data-tilt3d-readout="true"');
-    expect(markup.match(/data-molecule-resize-corner=/g) ?? []).toHaveLength(4);
-    expect(markup).toContain('data-molecule-resize-corner="top-left"');
-    expect(markup).toContain('data-molecule-resize-corner="top-right"');
-    expect(markup).toContain('data-molecule-resize-corner="bottom-left"');
-    expect(markup).toContain('data-molecule-resize-corner="bottom-right"');
-    expect(markup).not.toContain('data-molecule-resize-readout="true"');
+    expect(markup.match(/data-object-resize-corner=/g) ?? []).toHaveLength(4);
+    expect(markup).toContain('data-object-resize-corner="top-left"');
+    expect(markup).toContain('data-object-resize-corner="top-right"');
+    expect(markup).toContain('data-object-resize-corner="bottom-left"');
+    expect(markup).toContain('data-object-resize-corner="bottom-right"');
+    expect(markup).not.toContain('data-object-resize-readout="true"');
     expect(markup).not.toContain("data-text-resize-edge");
     expect(markup).toContain("Rotate selected molecule");
     expect(markup).toContain("3D rotate selected molecule");
@@ -1795,6 +3053,580 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("native-atom-hit-target");
     expect(markup).toContain("Molecule C2H6");
     expect(markup).not.toContain("adapter-backed");
+  });
+
+  it("renders selected native art with generic object transform controls", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Art Render"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRectShadow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain("graphic-object");
+    expect(markup).not.toContain("art-transform-qa-panel");
+    expect(markup).toContain('data-graphic-kind="rect"');
+    expect(markup).not.toContain('data-object-type="graphic"');
+    expect(markup).not.toContain("art-object-content");
+    expect(markup).not.toContain("graphic-object selected");
+    expect(markup).toContain('id="graphic-effects-');
+    expect(markup).toContain('filterUnits="userSpaceOnUse"');
+    expect(markup).not.toContain('x="-40%"');
+    expect(markup).toContain("feOffset");
+    expect(markup).toContain('data-graphic-effect-source="true"');
+    expect(markup).toContain('filter="url(#graphic-effects-');
+    expect(markup).toContain('rx="7"');
+    expect(markup).toContain('data-graphic-corner-radius-handle="true"');
+    expect(markup).toContain('data-graphic-corner-radius-readout="true"');
+    expect(markup).toContain('data-graphic-interaction-mode="corner-radius-edit"');
+    expect(markup).toContain("Radius: 7 px");
+    expect(markup).toContain('data-art-transform-frame="true"');
+    expect(markup).toContain('data-has-tilt3d="true"');
+    expect(markup).not.toContain("art-object-transform-frame");
+    expect(markup).toContain("object-resize-handle");
+    expect(markup).toContain('data-object-resize-corner="top-left"');
+    expect(markup).toContain("object-rotate-handle");
+    expect(markup).toContain("object-tilt3d-handle");
+    expect(markup).not.toContain("art-object-tilt-handle");
+    expect(markup).not.toContain("native-molecule-transform-frame");
+    expect(markup).not.toContain("molecule-resize-handle");
+
+    const glowLineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Glow Line Render"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const glowLineObjectId = glowLineDocument.selection.objectIds[0] ?? "";
+    const glowLineWithEffect = applyPatches(glowLineDocument, [{
+      op: "updateObject",
+      objectId: glowLineObjectId,
+      changes: {
+        style: {
+          effects: [{ kind: "glow", color: "#fdd835", opacity: 0.65, blurPx: 8, spreadPx: 2 }]
+        }
+      }
+    }]);
+    const glowLineMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: glowLineWithEffect,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(glowLineMarkup).toContain('filterUnits="userSpaceOnUse"');
+    expect(glowLineMarkup).toContain('y="-38"');
+    expect(glowLineMarkup).toContain('flood-color="#fdd835"');
+
+    const radiusReadoutRotated = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: { rotation: 37 }
+    }]);
+    const radiusReadoutRotatedMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: radiusReadoutRotated,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(radiusReadoutRotatedMarkup).toContain('data-graphic-corner-radius-readout="true"');
+    expect(radiusReadoutRotatedMarkup).toContain("rotate(-37deg)");
+
+    const noFillRectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("No Fill Rect Hit Render"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const noFillRectMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: noFillRectDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(noFillRectMarkup).toContain('data-graphic-kind="rect"');
+    expect(noFillRectMarkup).toContain("graphic-glyph-hit-target");
+    expect(noFillRectMarkup).toContain('data-graphic-hit-fill="true"');
+    expect(noFillRectMarkup).toContain('fill="transparent"');
+    expect(noFillRectMarkup).toContain('pointer-events="all"');
+
+    const transparentFillRectDocument = applyGraphicObjectOpacityToSelection(
+      applyGraphicObjectColorToSelection(noFillRectDocument, "fill", "#1d7f68"),
+      "fillOpacity",
+      0
+    );
+    const transparentFillRectMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: transparentFillRectDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(transparentFillRectMarkup).toContain('fill="#1d7f68"');
+    expect(transparentFillRectMarkup).toContain('fill-opacity="0"');
+    expect(transparentFillRectMarkup).toContain('data-graphic-hit-fill="true"');
+    expect(transparentFillRectMarkup).toContain('pointer-events="all"');
+
+    const lineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Line Art Render"),
+      { x: 260, y: 220 },
+      "tool.art.line"
+    );
+    const lineMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: lineDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(lineMarkup).toContain('data-graphic-kind="path"');
+    expect(lineMarkup).toContain('data-graphic-interaction-mode="path-edit"');
+    expect(lineMarkup).toContain('data-graphic-path-handle="start"');
+    expect(lineMarkup).toContain('data-graphic-path-handle="middle"');
+    expect(lineMarkup).toContain('data-graphic-path-handle="end"');
+    expect(lineMarkup).toContain("graphic-glyph-hit-target");
+    expect(lineMarkup).toContain('pointer-events="stroke"');
+    expect(lineMarkup).not.toContain('data-graphic-hit-fill="true"');
+    expect(lineMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
+    expect(lineMarkup).not.toContain('data-art-transform-frame="true"');
+    expect(lineMarkup).not.toContain("object-resize-handle");
+
+    const pencilDocument = nativeFreehandStrokeDocument(
+      createPhase4Document("Pencil Hit Render"),
+      [
+        { x: 220, y: 210, pressure: 0.4 },
+        { x: 250, y: 230, pressure: 0.7 },
+        { x: 285, y: 218, pressure: 0.5 }
+      ],
+      "tool.art.pencil"
+    );
+    const pencilMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: pencilDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(pencilMarkup).toContain("graphic-glyph-hit-target");
+    expect(pencilMarkup).toContain('data-graphic-hit-fill="true"');
+
+    const arrowDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Art Render"),
+      { x: 260, y: 220 },
+      "tool.art.arrow"
+    );
+    const arrowObjectId = arrowDocument.selection.objectIds[0] ?? "";
+    const arrowMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: arrowDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(arrowMarkup).toContain(`id="graphic-marker-end-${arrowObjectId}"`);
+    expect(arrowMarkup).toContain('data-graphic-marker="end"');
+    expect(arrowMarkup).not.toContain("data-graphic-marker-connector");
+    expect(arrowMarkup).not.toContain(`marker-end="url(#graphic-marker-end-${arrowObjectId})"`);
+    expect(arrowMarkup).not.toContain('markerUnits="userSpaceOnUse"');
+    const ellipseDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Ellipse Art Render"),
+      { x: 260, y: 220 },
+      "tool.art.circle"
+    );
+    const ellipseMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: ellipseDocument,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
+    expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
+    expect(mainWindowSource).toContain("const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object))");
+    expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
+    expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
+    expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
+    expect(mainWindowSource).toContain('data-graphic-corner-radius-handle="true"');
+    expect(mainWindowSource).toContain('setActiveGraphicTransformObjectId(objectId)');
+    expect(mainWindowSource).not.toContain("setActiveArtPaintTarget(currentArtStyle.activePaintTarget)");
+    expect(mainWindowSource).not.toContain("function graphicPathD(object: GraphicObject");
+    expect(mainWindowSource).not.toContain("function documentObjectProjectedEllipseBounds");
+
+    const rotated = applyPatch(document, {
+      op: "updateObject",
+      objectId: document.selection.objectIds[0] ?? "",
+      changes: { rotation: 45 }
+    });
+    const rotatedMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: rotated,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(rotatedMarkup).toMatch(/class="graphic-visual-shell"[^>]*data-art-z-rotation="45"[^>]*style="transform:rotate\(45deg\)"/);
+    expect(rotatedMarkup).not.toMatch(/class="document-object document-object-overlay graphic-object"[^>]*transform:rotate\(45deg\)/);
+    expect(rotatedMarkup).not.toContain("graphic-glyph-projected-shape");
+    expect(rotatedMarkup).toContain("graphic-glyph-shape");
+    expect(rotatedMarkup).not.toContain('data-object-type="graphic"');
+
+    const sphere = insertNativeArtGraphicObject(
+      createPhase4Document("Sphere Rotation"),
+      { x: 160, y: 160 },
+      "tool.art.circleGloss"
+    );
+    const rotatedSphere = applyPatch(sphere, {
+      op: "updateObject",
+      objectId: sphere.selection.objectIds[0] ?? "",
+      changes: { rotation: 45 }
+    });
+    const rotatedSphereMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: rotatedSphere,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(rotatedSphereMarkup).not.toContain("graphic-glyph-projected-shape");
+    expect(rotatedSphereMarkup).toMatch(/class="graphic-visual-shell"[^>]*data-art-z-rotation="45"[^>]*style="transform:rotate\(45deg\)"/);
+    expect(rotatedSphereMarkup).not.toMatch(/class="document-object document-object-overlay graphic-object"[^>]*transform:rotate\(45deg\)/);
+    expect(rotatedSphereMarkup).toContain(
+      "left:calc(0px * var(--page-scale));top:calc(0px * var(--page-scale));width:calc(48px * var(--page-scale));height:calc(48px * var(--page-scale))"
+    );
+    expect(rotatedSphereMarkup).toContain('gradientUnits="userSpaceOnUse"');
+    expect(rotatedSphereMarkup).not.toContain('gradientTransform="matrix(');
+    expect(rotatedSphereMarkup).not.toContain('cx="34%"');
+    expect(rotatedSphereMarkup).not.toContain('cy="28%"');
+    expect(rotatedSphereMarkup).not.toContain("66.423");
+
+    const tilted = applyDocumentObjectProjectedPlaneTilt(document, document.selection.objectIds[0] ?? "", 35, -20);
+    const tiltedMarkup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: tilted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    expect(tiltedMarkup).toContain("graphic-glyph-projected-shape");
+    expect(tiltedMarkup).not.toContain("graphic-glyph-shape");
+    expect(tiltedMarkup).not.toContain("graphic-glyph-transform");
+    expect(tiltedMarkup).not.toContain("perspective(");
+    expect(appCss).toContain(".graphic-glyph-transform .graphic-glyph-stroke");
+    expect(appCss).toContain("vector-effect: none;");
+  });
+
+  it("keeps graphic path handle edits immediate and rollback-free", () => {
+    expect(mainWindowSource).toContain("const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1");
+    expect(mainWindowSource).toContain("workingDocument: selectedDocument");
+    expect(mainWindowSource).toContain("drag.workingDocument");
+    expect(mainWindowSource).toContain("drag.workingDocument = nextDocument");
+    expect(mainWindowSource).not.toMatch(/clientPointDistance\(graphicPathEditDrag\.startPoint,\s*point\)\s*>=\s*OBJECT_DRAG_THRESHOLD/);
+    expect(mainWindowSource).not.toMatch(/else\s*{\s*replacePresentDocument\(graphicPathEditDrag\.startDocument\);/);
+  });
+
+  it("renders native art paint plans in the editor glyph", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Art Paint Render"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          opacity: 0.75,
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1648ff", opacity: 0.5 }
+            ]
+          },
+          strokePaint: {
+            kind: "solid",
+            color: "#1d7",
+            opacity: 0.65
+          },
+          strokeWidth: 5,
+          strokeLineCap: "square",
+          strokeLineJoin: "bevel",
+          strokeMiterLimit: 7
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain(`id="graphic-fill-${objectId}"`);
+    expect(markup).toContain(`fill="url(#graphic-fill-${objectId})"`);
+    expect(markup).toContain('stroke="#11dd77"');
+    expect(markup).toContain('stroke-opacity="0.65"');
+    expect(markup).toContain('stroke-width="5"');
+    expect(markup).toContain('stroke-linecap="square"');
+    expect(markup).toContain('stroke-linejoin="bevel"');
+    expect(markup).toContain('stroke-miterlimit="7"');
+    expect(markup).toContain('opacity="0.75"');
+    expect(markup).toContain('gradientUnits="userSpaceOnUse"');
+    expect(markup).toContain('stop-color="#1648ff"');
+    expect(markup).toContain('stop-opacity="0.5"');
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-control-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-target="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="start"');
+    expect(markup).toContain('data-graphic-gradient-handle="end"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-art-transform-frame="true"');
+    expect(markup).not.toContain('id="graphic-gloss-');
+  });
+
+  it("renders radial gradient direct-edit handles without art transform chrome", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Radial Gradient Handles"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillColor: "#1d7f68",
+          fillMode: "solid",
+          fillPaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.45,
+            cy: 0.55,
+            r: 0.5,
+            fx: 0.25,
+            fy: 0.3,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-radius-ring="fill"');
+    expect(markup).toContain('data-graphic-gradient-radius-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-focus-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="center"');
+    expect(markup).toContain('data-graphic-gradient-handle="radius"');
+    expect(markup).toContain('data-graphic-gradient-handle="focus"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-art-transform-frame="true"');
+  });
+
+  it("renders molecule fill gradient handles instead of molecule transform chrome", () => {
+    const document = insertNativeTemplateMolecule(
+      createPhase4Document("Molecule Gradient Handles"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillColor: "#1d7f68",
+          fillMode: "solid",
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#1d7f68" },
+              { offset: 1, color: "#ffffff" }
+            ]
+          }
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-control-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-target="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="start"');
+    expect(markup).toContain('data-graphic-gradient-handle="end"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-molecule-transform-frame=');
+  });
+
+  it("renders gradient handles for closed complex path graphics instead of path-node chrome", () => {
+    const document = nativePolylinePathDocument(
+      createPhase4Document("Complex Path Gradient Handles"),
+      [
+        { x: 260, y: 230 },
+        { x: 420, y: 360 },
+        { x: 260, y: 350 },
+        { x: 410, y: 215 },
+        { x: 340, y: 420 }
+      ],
+      "tool.art.polyline",
+      { closed: true }
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#c86d6d" },
+              { offset: 1, color: "#f3d7d7" }
+            ]
+          },
+          strokePaint: { kind: "solid", color: "#111111", opacity: 1 }
+        }
+      }
+    }]);
+
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: painted,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain(`fill="url(#graphic-fill-${objectId})"`);
+    expect(markup).toContain('data-graphic-gradient-control-layer="fill"');
+    expect(markup).toContain('data-graphic-gradient-control-line="fill"');
+    expect(markup).toContain('data-graphic-gradient-handle="start"');
+    expect(markup).toContain('data-graphic-gradient-handle="end"');
+    expect(markup).toContain('data-graphic-interaction-mode="gradient-edit"');
+    expect(markup).not.toContain('data-graphic-interaction-mode="path-edit"');
+    expect(markup).not.toContain('data-graphic-path-node-index=');
+    expect(markup).not.toContain('data-art-transform-frame="true"');
+  });
+
+  it("preserves gradient paints in native art drag preview proxies", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Art Gradient Drag Preview"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRect"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.5,
+            cy: 0.5,
+            r: 0.72,
+            fx: 0.25,
+            fy: 0.2,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          },
+          strokePaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0,
+            stops: [
+              { offset: 0, color: "#1648ff" },
+              { offset: 1, color: "#d12b2b", opacity: 0.5 }
+            ]
+          },
+          strokeWidth: 5
+        }
+      }
+    }]);
+    const object = painted.pages[0].objects.find((candidate): candidate is GraphicObject =>
+      candidate.type === "graphic" && candidate.id === objectId
+    );
+    if (!object) {
+      throw new Error("Expected gradient art object.");
+    }
+
+    const preview = graphicArtTransformPreviewSvgDataUrl(object);
+    expect(preview).toBeDefined();
+    const previewSvg = decodeURIComponent(preview?.imageUrl.split(",", 2)[1] ?? "");
+    expect(previewSvg).toContain(`<radialGradient id="preview-fill-${objectId}"`);
+    expect(previewSvg).toContain(`<linearGradient id="preview-stroke-${objectId}"`);
+    expect(previewSvg).toContain(`fill="url(#preview-fill-${objectId})"`);
+    expect(previewSvg).toContain(`stroke="url(#preview-stroke-${objectId})"`);
+    expect(previewSvg).toContain('stop-color="#1d7f68"');
+    expect(previewSvg).toContain('stop-color="#d12b2b"');
+    expect(previewSvg).toContain('stop-opacity="0.5"');
+
+    const glossDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Art Gloss Drag Preview"),
+      { x: 220, y: 180 },
+      "tool.art.roundedRectGloss"
+    );
+    const glossObject = glossDocument.pages[0].objects.find((candidate): candidate is GraphicObject =>
+      candidate.type === "graphic" && candidate.id === (glossDocument.selection.objectIds[0] ?? "")
+    );
+    if (!glossObject) {
+      throw new Error("Expected gloss art object.");
+    }
+
+    const glossPreview = graphicArtTransformPreviewSvgDataUrl(glossObject);
+    expect(glossPreview).toBeDefined();
+    const glossPreviewSvg = decodeURIComponent(glossPreview?.imageUrl.split(",", 2)[1] ?? "");
+    expect(glossPreviewSvg).toContain(`<radialGradient id="preview-gloss-${glossObject.id}"`);
+    expect(glossPreviewSvg).toContain(`fill="url(#preview-gloss-${glossObject.id})"`);
   });
 
   it("hides molecule transform handles when the bond tool is active", () => {
@@ -1813,10 +3645,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("native-molecule-selection-blob");
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
-    expect(markup).not.toContain("data-molecule-resize-corner");
+    expect(markup).not.toContain("data-object-resize-corner");
   });
 
-  it("keeps lasso selection highlights visible without transform handles intercepting the drag", () => {
+  it("keeps lasso selected objects highlighted with transform chrome as privileged targets", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Lasso Tool Selection Chrome"), { x: 200, y: 220 });
     const markup = renderToStaticMarkup(
       createElement(MainWindow, {
@@ -1831,8 +3663,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-active-tool-kind="selection"');
     expect(markup).toContain("native-molecule-selection-blob");
     expect(markup).toContain('data-whole-molecule-selection="true"');
-    expect(markup).not.toContain('data-selection-rotate-handle="true"');
-    expect(markup).not.toContain("data-molecule-resize-corner");
+    expect(markup).toContain('data-selection-rotate-handle="true"');
+    expect(markup).toContain('data-selection-tilt3d-handle="true"');
+    expect(markup.match(/data-object-resize-corner=/g) ?? []).toHaveLength(4);
   });
 
   it("keeps selected labeled atoms visibly highlighted above label backgrounds", () => {
@@ -1884,7 +3717,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain('data-selection-rotate-handle="true"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).not.toContain("data-molecule-transform-frame");
-    expect(markup).not.toContain("data-molecule-resize-corner");
+    expect(markup).not.toContain("data-object-resize-corner");
   });
 
   it("does not treat stale native molecule fragment targets as visible selections", () => {
@@ -2688,6 +4521,38 @@ describe("ChemDraft desktop shell", () => {
     expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
   });
 
+  it("renders the BactVue visible CDXML subset with text, molecules, and explicit compatibility fallbacks", () => {
+    const opened = openNativeDocument(readFileSync("packages/fixtures/cdxml/bactvue-visible-subset.cdxml", "utf8"));
+    if (!opened.document) {
+      throw new Error(`Expected BactVue visible CDXML import, got warnings: ${opened.warnings.map((item) => item.code).join(", ")}`);
+    }
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: opened.document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(opened.source).toBe("external-cdxml");
+    expect(opened.document.pages[0].objects
+      .filter((object): object is MoleculeObject => object.type === "molecule")
+      .map((object) => object.atoms.length)
+    ).toEqual([5, 2, 2]);
+    expect(opened.document.pages[0].objects
+      .filter((object): object is MoleculeObject => object.type === "molecule")
+      .map((object) => object.bonds.length)
+    ).toEqual([4, 1, 1]);
+    expect(markup).toContain("DIPEA, DMSO");
+    expect(markup).toContain("reaction-arrow-object");
+    expect(markup).toContain('data-arrow-kind="unknown"');
+    expect(markup).toContain("reaction-arrow-line");
+    expect(markup).toContain("graphic-object");
+    expect(markup).toContain('data-graphic-kind="unknown"');
+    expect(markup).toContain("generic-object");
+    expect(markup).toContain('data-atom-count="5"');
+  });
+
   it("renders asymmetric double bonds with overlap clearance strokes", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Double Bond Render"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects[0];
@@ -2785,6 +4650,35 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("z-index:2");
 
     expect(markup).not.toContain("native-bond-knockout");
+  });
+
+  it("renders native molecule visuals in the same object layer stack as art graphics", () => {
+    const withMolecule = insertNativeSingleBondMolecule(createPhase4Document("Mixed Art Molecule Layers"), { x: 220, y: 240 });
+    const moleculeId = withMolecule.selection.objectIds[0] ?? "";
+    const withRect = insertNativeArtGraphicObject(withMolecule, { x: 220, y: 240 }, "tool.art.rect");
+    const rectId = withRect.selection.objectIds[0] ?? "";
+    const sentBack = reorderSelectedDocumentObject(withRect, "back");
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: sentBack,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    const pageSvgStart = markup.indexOf('data-page-svg-surface="true"');
+    const rectOverlayIndex = markup.indexOf(`data-object-id="${rectId}" data-layer-index="0" data-graphic-kind="rect"`);
+    const moleculeOverlayIndex = markup.indexOf(`data-object-id="${moleculeId}" data-layer-index="1" data-structure="CC"`);
+    const moleculeVisualIndex = markup.indexOf('data-native-molecule-overlay-visual="true"', moleculeOverlayIndex);
+    const moleculeBondIndex = markup.indexOf('class="native-bond-line native-bond-single"', moleculeVisualIndex);
+
+    expect(sentBack.pages[0].objects.map((object) => object.id)).toEqual([rectId, moleculeId]);
+    expect(pageSvgStart).toBeGreaterThan(-1);
+    expect(rectOverlayIndex).toBeGreaterThan(-1);
+    expect(moleculeOverlayIndex).toBeGreaterThan(-1);
+    expect(markup.slice(pageSvgStart, rectOverlayIndex)).not.toContain(`data-object-id="${moleculeId}"`);
+    expect(rectOverlayIndex).toBeLessThan(moleculeOverlayIndex);
+    expect(moleculeVisualIndex).toBeGreaterThan(moleculeOverlayIndex);
+    expect(moleculeBondIndex).toBeGreaterThan(moleculeVisualIndex);
   });
 
   it("renders selected atom layer controls in the object context menu", () => {
@@ -3016,6 +4910,14 @@ describe("ChemDraft desktop shell", () => {
       kind: "atom",
       atomId: "atom_001"
     })).toEqual([]);
+
+    const atomDocument = insertNativeSingleBondMolecule(createPhase4Document("Atom Depth Refs"), { x: 200, y: 220 });
+    const atomMolecule = atomDocument.pages[0].objects[0] as MoleculeObject;
+    expect(bondDepthRefsFromNativeSelection({
+      objectId: atomMolecule.id,
+      kind: "atom",
+      atomId: "atom_001"
+    }, atomDocument)).toEqual([{ objectId: atomMolecule.id, bondId: "bond_001" }]);
   });
 
   it("derives relevant crossing context from selected bonds", () => {
@@ -3093,6 +4995,64 @@ describe("ChemDraft desktop shell", () => {
       pageId: "page_001",
       crossing: { bonds: crossingOne.bonds, front: bondA }
     }]);
+  });
+
+  it("routes layer commands on selected molecule parts to bond depth instead of object order", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Part Layer Command"), { x: 180, y: 180 });
+    const document = insertNativeSingleBondMolecule(first, { x: 180, y: 180 });
+    const horizontal = document.pages[0].objects[0] as MoleculeObject;
+    const vertical = document.pages[0].objects[1] as MoleculeObject;
+    const crossingDocument = applyPatch(document, {
+      op: "updateObject",
+      objectId: vertical.id,
+      changes: {
+        x: 158,
+        y: 138,
+        width: 44,
+        height: 84,
+        atoms: [
+          { ...vertical.atoms[0], x: 180, y: 140 },
+          { ...vertical.atoms[1], x: 180, y: 220 }
+        ]
+      }
+    });
+    const originalOrder = crossingDocument.pages[0].objects.map((object) => object.id);
+    const bondSelection = {
+      objectId: vertical.id,
+      kind: "bond" as const,
+      bondId: "bond_001"
+    };
+    const atomSelection = {
+      objectId: vertical.id,
+      kind: "atom" as const,
+      atomId: "atom_001"
+    };
+
+    const bondResult = applyLayerCommandToDocumentSelection(crossingDocument, "layout.sendToBack", {
+      selectedNativeMoleculePart: bondSelection
+    });
+    const atomResult = applyLayerCommandToDocumentSelection(crossingDocument, "layout.sendBackward", {
+      selectedNativeMoleculePart: atomSelection
+    });
+
+    expect(bondResult.bondDepthCommandId).toBe("bondDepth.sendBehind");
+    expect(atomResult.bondDepthCommandId).toBe("bondDepth.sendBehind");
+    expect(bondResult.document.pages[0].objects.map((object) => object.id)).toEqual(originalOrder);
+    expect(atomResult.document.pages[0].objects.map((object) => object.id)).toEqual(originalOrder);
+    expect(bondResult.bondDepthContext?.targetBondRefs).toEqual([
+      { objectId: vertical.id, bondId: "bond_001" }
+    ]);
+    expect(atomResult.bondDepthContext?.targetBondRefs).toEqual([
+      { objectId: vertical.id, bondId: "bond_001" }
+    ]);
+    expect(bondResult.document.pages[0].crossings).toEqual([{
+      bonds: [
+        { objectId: horizontal.id, bondId: "bond_001" },
+        { objectId: vertical.id, bondId: "bond_001" }
+      ],
+      front: { objectId: horizontal.id, bondId: "bond_001" }
+    }]);
+    expect(atomResult.document.pages[0].crossings).toEqual(bondResult.document.pages[0].crossings);
   });
 
   it("skips selected-selected crossings for directional depth and clears defaults", () => {

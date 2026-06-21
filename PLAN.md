@@ -1466,6 +1466,134 @@ Deliverables:
 - Native style preset controls, default style selection, and `.cds`-derived preset application
 - Keyboard shortcut registry
 
+#### Native Art Inspector / Baby Illustrator Controls
+
+Status: planned follow-up after the native art-engine extraction. This is a product-surface and style-model lane, not a replacement for the document canvas.
+
+Design statement:
+
+```text
+ChemDraft should grow a small native vector-art inspector: a baby Illustrator for scientific figures, backed by ChemDraft's own GraphicObject model and art-engine render plans.
+```
+
+Keep the ownership split explicit:
+
+```text
+@chemdraft/art-engine = geometry, canonical path planning, projection, bounds, paint resolution, gloss-gradient planning, and export fragments
+apps/desktop toolbar/inspector = fill/stroke target state, swatches, opacity sliders, gradient editor UI, presets, and toolbar behavior
+```
+
+Rules:
+
+- Keep `GraphicObject` as the persisted document boundary for art primitives.
+- Do not persist dependency-native objects, CSS `url(...)`, raw `rgba(...)` strings, DOM state, React state, canvas objects, Fabric/Konva/Excalidraw/tldraw objects, or editor-only selection state.
+- Store native JSON style data and let `@chemdraft/art-engine` serialize it for editor rendering, SVG export, PDF/raster export, and later compatibility formats.
+- Preserve legacy fields such as `fillColor`, `strokeColor`, `strokeWidth`, `strokeDasharray`, `fillMode`, and `effect`.
+- Resolve paint backward-compatibly: if `fillPaint`/`strokePaint` exists, use it; otherwise synthesize paint from the legacy fields.
+- Browser rendering and SVG export must consume the same art-engine paint plan.
+- In editor mode, `GraphicObject` instances remain filtered out of `PageSvgSurface` and render only through the overlay; do not reintroduce duplicate or frozen graphic rendering.
+- Gradient coordinates, gloss highlights, and gradient transforms must follow object Z rotation and X/Y tilt so exported output and editor output match the visible object.
+- Live style edits may preview continuously, but history should commit one undo entry on change end.
+
+Style schema direction:
+
+- `fillPaint?: GraphicPaint`
+- `strokePaint?: GraphicPaint`
+- `fillOpacity?: number`
+- `strokeOpacity?: number`
+- `opacity?: number`
+- `strokeLineCap?: "butt" | "round" | "square"`
+- `strokeLineJoin?: "miter" | "round" | "bevel"`
+- `strokeMiterLimit?: number`
+- Optional later: `blendMode?: "normal" | "multiply" | "screen" | "overlay"`
+
+`GraphicPaint` should be native JSON:
+
+- `none`
+- solid color plus opacity, using canonical `#RRGGBB`
+- linear gradient with object-local endpoints and stops
+- radial gradient with object-local center, radius, optional focus point, and stops
+
+Inspector controls, first slice:
+
+- Fill/stroke target toggle.
+- Fill swatch and stroke swatch.
+- None button.
+- Swap fill/stroke.
+- Object opacity, fill opacity, and stroke opacity.
+- Stroke width.
+- Dash pattern.
+- Solid fill/stroke only at first.
+
+Direct shape editing, current hardening slice:
+
+- Circular arcs use semantic `GraphicObject.data.arcCenter`, `arcRadiusX`, `arcRadiusY`, `arcStartRadians`, and `arcSweepRadians` once edited. Existing arcs without semantic center/radii synthesize them from bounds for rendering and handles, but do not persist the synthesized values until a user edits the arc.
+- Arc start/end handles change start/sweep only. The arc middle handle changes midpoint angle and radius while preserving sweep, then object bounds are recomputed from sampled arc points plus stroke padding.
+- Rectangle corner radius is edited directly on the selected rectangle with a small projected handle, not through a generic "Corners" dropdown.
+- Corner-radius editing stays native to `GraphicObject.data.cornerRadiusPx`, clamps to `0..min(width,height)/2`, preserves `graphicKind: "rect"`, and uses art-engine projection/unprojection helpers for rotated or tilted shapes.
+- Line-end/corner join commands can remain tested command behavior, but the main art toolbar should hide those controls until an advanced inspector surface makes their applicability clear.
+
+Gradient controls, second slice:
+
+- Fill type: none, solid, linear gradient, radial gradient, gloss preset.
+- Stop list.
+- Draggable stop rail.
+- Selected stop color and opacity.
+- Reverse gradient.
+- Rotate gradient.
+- Duplicate stop.
+- Delete stop.
+
+Dependency policy:
+
+- Use `react-colorful` for color picker UI if a picker dependency is needed.
+- Use `culori` only if real gradient interpolation or color math requires it.
+- Do not add a gradient-picker package initially.
+- Treat Grapick as a spike candidate only; do not add it by default.
+- Do not add Fabric, Konva, Excalidraw, tldraw, or any second drawing app.
+
+Expected interaction behavior:
+
+- Selecting an art object shows existing transform handles and art-inspector controls.
+- Fill swatch changes apply to fill only.
+- Stroke swatch changes apply to stroke only.
+- Multi-select shows mixed state when selected graphics disagree.
+- Applying a style change to a mixed selection updates all selected graphics for that property.
+- Dragging a color or opacity control previews through the current document and commits a single undo step on pointer up or `onChangeEnd`.
+- Escape cancels the live edit and restores the start document.
+- Enter or clicking outside commits the live edit.
+- Selected fill-vs-stroke target is desktop UI state, not document state.
+
+Tests:
+
+- Style schema accepts new opacity and paint fields while preserving legacy fields.
+- Legacy `fillColor`/`strokeColor` still render and export.
+- Fill/stroke target commands only change the selected target.
+- Alpha renders in editor and SVG export.
+- Multi-select mixed state is represented without mutating documents.
+- Gradient stops render identically in editor and export.
+- Gradient transforms follow object Z rotation and X/Y tilt.
+- Undo/redo produces one history entry per completed style edit.
+- No forbidden bundled drawing-app dependency enters the graph.
+
+Suggested product sequence:
+
+1. Art-engine path, bounds, projection, and export parity.
+2. Solid paint inspector: fill/stroke target, color picker, opacity, stroke width, and dash.
+3. Stroke polish: cap, join, miter limit, and presets.
+4. Gradient paint model and export.
+5. Gradient editor UI.
+6. Appearance presets and copy/paste appearance.
+7. Optional advanced features: eyedropper, style library, freehand, arrowheads, and blend modes.
+
+Future arrowhead direction:
+
+- Add native `markerStart` and `markerEnd` metadata under `GraphicObject.data`; do not overload stroke line caps.
+- Marker kinds should start with `none`, `open-arrow`, `filled-arrow`, `bar`, and `dot`, with explicit size and angle/spread fields.
+- Marker endpoints should be editable through overlay handles owned by the native art editing path.
+- SVG export should emit real marker definitions from the art-engine plan.
+- Keep this as a follow-up; do not implement arrowheads as part of the corner-radius/popover hardening slice.
+
 ### Phase 8: Import/export and Office-friendly clipboard MVP
 
 Deliverables:

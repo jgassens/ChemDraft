@@ -6,17 +6,17 @@
       "source": "core",
       "defaultVisible": true,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 1138, "height": 88, "minWidth": 860, "minHeight": 84 },
+      "preferredWindowSize": { "width": 1138, "height": 128, "minWidth": 860, "minHeight": 124 },
       "category": "core",
       "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
       "groups": [
         {
           "id": "core.main.selection",
           "items": [
-            { "commandId": "tool.select", "title": "Selection Tool", "icon": "select", "assetName": "Custom_Select", "shortcutDisplay": "V", "category": "selection" },
+            { "commandId": "tool.select", "title": "Selection Tool", "icon": "select", "assetName": "Art_Select", "shortcutDisplay": "V", "category": "selection" },
             { "commandId": "tool.lasso", "title": "Lasso Selection", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "category": "selection" },
-            { "commandId": "tool.eraser", "title": "Eraser Tool", "icon": "select", "assetName": "Custom_Eraser", "category": "selection" },
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
+            { "commandId": "tool.eraser", "title": "Eraser Tool", "icon": "select", "assetName": "Art_Eraser", "category": "selection" },
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         },
         {
@@ -66,27 +66,30 @@
             { "commandId": "tool.shadedLobe", "title": "Shaded Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe_Shaded", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
             { "commandId": "tool.pOrbital", "title": "p Orbital Tool", "icon": "atom", "assetName": "Custom_p_Orbital", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
             { "commandId": "tool.sOrbital", "title": "s Orbital Tool", "icon": "atom", "assetName": "Custom_s_Orbital", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "layout.rotate", "title": "Rotate Objects", "icon": "align", "assetName": "Custom_Rotation", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
             { "commandId": "style.formulaText", "title": "Formula Text Style", "icon": "style", "assetName": "Custom_FormulaStyle", "disabledReason": "unavailable until style presets are connected", "category": "style" }
           ]
         },
         {
           "id": "core.main.layout",
           "items": [
-            { "commandId": "layout.alignLeft", "title": "Align Left", "icon": "align", "assetName": "Custom_Left", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignCenter", "title": "Align Center", "icon": "align", "assetName": "Custom_Center", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignRight", "title": "Align Right", "icon": "align", "assetName": "Custom_Right", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignTop", "title": "Align Top", "icon": "align", "assetName": "Custom_Top", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignMiddle", "title": "Align Middle", "icon": "align", "assetName": "Custom_Middle", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignBottom", "title": "Align Bottom", "icon": "align", "assetName": "Custom_Bottom", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.distributeHorizontal", "title": "Distribute Horizontally", "icon": "align", "assetName": "Custom_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
-            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
+            { "commandId": "layout.alignLeft", "title": "Align Left", "icon": "align", "assetName": "Custom_Left", "shortcutDisplay": "Option+Shift+Cmd+L", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignCenter", "title": "Align Center", "icon": "align", "assetName": "Custom_Center", "shortcutDisplay": "Option+Shift+Cmd+C", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignRight", "title": "Align Right", "icon": "align", "assetName": "Custom_Right", "shortcutDisplay": "Option+Shift+Cmd+R", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignTop", "title": "Align Top", "icon": "align", "assetName": "Custom_Top", "shortcutDisplay": "Option+Shift+Cmd+T", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignMiddle", "title": "Align Middle", "icon": "align", "assetName": "Custom_Middle", "shortcutDisplay": "Option+Shift+Cmd+M", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignBottom", "title": "Align Bottom", "icon": "align", "assetName": "Custom_Bottom", "shortcutDisplay": "Option+Shift+Cmd+B", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.distributeHorizontal", "title": "Distribute Horizontally", "icon": "align", "assetName": "Custom_Horizontal", "shortcutDisplay": "Option+Shift+Cmd+H", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "shortcutDisplay": "Option+Shift+Cmd+V", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "category": "layout" },
+            { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
+            { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
+            { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
+            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "shortcutDisplay": "Cmd+G", "category": "layout" },
+            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "shortcutDisplay": "Shift+Cmd+G", "category": "layout" },
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "shortcutDisplay": "Shift+Cmd+]", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "shortcutDisplay": "Cmd+]", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "shortcutDisplay": "Cmd+[", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "shortcutDisplay": "Shift+Cmd+[", "category": "layout" }
           ]
         },
         {
@@ -166,7 +169,7 @@
         {
           "id": "core.annotations.tools",
           "items": [
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" },
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" },
             { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
@@ -175,6 +178,93 @@
             { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
             { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core.art",
+      "title": "Art Toolbar",
+      "source": "core",
+      "defaultVisible": true,
+      "defaultMode": "floating",
+      "preferredWindowSize": { "width": 420, "height": 190, "minWidth": 760, "minHeight": 170 },
+      "category": "core",
+      "gridLayout": { "orientation": "horizontal", "rows": 2, "cellWidth": 24, "cellHeight": 24 },
+      "groups": [
+        {
+          "id": "core.art.selection",
+          "items": [
+            { "commandId": "tool.select", "title": "Select", "icon": "select", "assetName": "Art_Select", "shortcutDisplay": "V", "category": "selection" },
+            { "commandId": "tool.eraser", "title": "Eraser", "icon": "select", "assetName": "Art_Eraser", "category": "selection" },
+            { "commandId": "tool.lasso", "title": "Lasso", "icon": "lasso", "assetName": "Custom_Lasso", "shortcutDisplay": "L", "category": "selection" },
+            { "commandId": "tool.text", "title": "Text", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
+          ]
+        },
+        {
+          "id": "core.art.shapes",
+          "items": [
+            { "commandId": "tool.art.rect", "title": "Rectangle", "icon": "bracket", "assetName": "Art_Rectangle", "category": "art" },
+            { "commandId": "tool.art.roundedRect", "title": "Rounded Rectangle", "icon": "bracket", "assetName": "Art_Rounded_Rectangle", "category": "art" },
+            { "commandId": "tool.art.circle", "title": "Circle", "icon": "bracket", "assetName": "Art_Circle", "category": "art" },
+            { "commandId": "tool.art.ellipse", "title": "Ellipse", "icon": "bracket", "assetName": "Art_Ellipse", "category": "art" }
+          ]
+        },
+        {
+          "id": "core.art.paths",
+          "items": [
+            { "commandId": "tool.art.line", "title": "Line", "icon": "bond", "assetName": "Art_Line", "category": "art" },
+            { "commandId": "tool.art.lineWavy", "title": "Wavy Line", "icon": "mechanism", "assetName": "Art_Wavy_Line", "category": "art" },
+            { "commandId": "tool.art.pen", "title": "Pen", "icon": "mechanism", "assetName": "Art_Pen", "category": "art" },
+            { "commandId": "tool.art.polyline", "title": "Polyline", "icon": "bond", "assetName": "Art_Polyline", "category": "art" },
+            { "commandId": "tool.art.scissors", "title": "Scissors", "icon": "select", "assetName": "Art_Scissors", "category": "art" },
+            { "commandId": "tool.art.measure", "title": "Tape Measure", "icon": "align", "assetName": "Art_Tape_Measure", "category": "art" },
+            { "commandId": "tool.art.arrow", "title": "Arrow", "icon": "export", "assetName": "Art_Arrow", "category": "art" },
+            { "commandId": "tool.art.arc270", "title": "Circular Arc", "icon": "export", "assetName": "Art_Arc_Circular", "category": "art" },
+            { "commandId": "tool.art.arc180", "title": "Half Arc", "icon": "export", "assetName": "Art_Arc_Half", "category": "art" },
+            { "commandId": "tool.art.arc90", "title": "Quarter Arc", "icon": "export", "assetName": "Art_Arc_Quarter", "category": "art" },
+            { "commandId": "tool.art.eyedropper", "title": "Eyedropper", "icon": "style", "assetName": "Art_Eyedropper", "category": "art" }
+          ]
+        },
+        {
+          "id": "core.art.freehand",
+          "title": "Freehand",
+          "items": [
+            { "commandId": "tool.art.pencil", "title": "Pencil", "icon": "mechanism", "assetName": "Art_Pencil", "category": "art" },
+            { "commandId": "tool.art.brush", "title": "Brush", "icon": "style", "assetName": "Art_Brush", "category": "art" }
+          ]
+        },
+        {
+          "id": "core.art.arrange",
+          "items": [
+            { "commandId": "layout.alignLeft", "title": "Align Left", "icon": "align", "assetName": "Custom_Left", "shortcutDisplay": "Option+Shift+Cmd+L", "category": "layout" },
+            { "commandId": "layout.alignCenter", "title": "Align Center", "icon": "align", "assetName": "Custom_Center", "shortcutDisplay": "Option+Shift+Cmd+C", "category": "layout" },
+            { "commandId": "layout.alignRight", "title": "Align Right", "icon": "align", "assetName": "Custom_Right", "shortcutDisplay": "Option+Shift+Cmd+R", "category": "layout" },
+            { "commandId": "layout.alignTop", "title": "Align Top", "icon": "align", "assetName": "Custom_Top", "shortcutDisplay": "Option+Shift+Cmd+T", "category": "layout" },
+            { "commandId": "layout.alignMiddle", "title": "Align Middle", "icon": "align", "assetName": "Custom_Middle", "shortcutDisplay": "Option+Shift+Cmd+M", "category": "layout" },
+            { "commandId": "layout.alignBottom", "title": "Align Bottom", "icon": "align", "assetName": "Custom_Bottom", "shortcutDisplay": "Option+Shift+Cmd+B", "category": "layout" },
+            { "commandId": "layout.distributeHorizontal", "title": "Distribute Horizontally", "icon": "align", "assetName": "Custom_Horizontal", "shortcutDisplay": "Option+Shift+Cmd+H", "category": "layout" },
+            { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "shortcutDisplay": "Option+Shift+Cmd+V", "category": "layout" },
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "shortcutDisplay": "Shift+Cmd+]", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "shortcutDisplay": "Cmd+]", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "shortcutDisplay": "Cmd+[", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "shortcutDisplay": "Shift+Cmd+[", "category": "layout" },
+            { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "category": "layout" },
+            { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
+            { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
+            { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
+            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "shortcutDisplay": "Cmd+G", "category": "layout" },
+            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "shortcutDisplay": "Shift+Cmd+G", "category": "layout" }
+          ]
+        },
+        {
+          "id": "core.art.boolean",
+          "title": "Boolean",
+          "items": [
+            { "commandId": "art.boolean.union", "title": "Union", "icon": "group", "category": "art" },
+            { "commandId": "art.boolean.subtract", "title": "Subtract", "icon": "group", "category": "art" },
+            { "commandId": "art.boolean.intersect", "title": "Intersect", "icon": "group", "category": "art" },
+            { "commandId": "art.boolean.split", "title": "Split", "icon": "group", "category": "art" }
           ]
         }
       ]
@@ -211,21 +301,24 @@
         {
           "id": "core.layout.tools",
           "items": [
-            { "commandId": "layout.rotate", "title": "Rotate Objects", "icon": "align", "assetName": "Custom_Rotation", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignLeft", "title": "Align Left", "icon": "align", "assetName": "Custom_Left", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignCenter", "title": "Align Center", "icon": "align", "assetName": "Custom_Center", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignRight", "title": "Align Right", "icon": "align", "assetName": "Custom_Right", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignTop", "title": "Align Top", "icon": "align", "assetName": "Custom_Top", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignMiddle", "title": "Align Middle", "icon": "align", "assetName": "Custom_Middle", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.alignBottom", "title": "Align Bottom", "icon": "align", "assetName": "Custom_Bottom", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.distributeHorizontal", "title": "Distribute Horizontally", "icon": "align", "assetName": "Custom_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
-            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Custom_Front", "category": "layout" },
-            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Custom_Back", "category": "layout" },
-            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Custom_Back", "category": "layout" }
+            { "commandId": "layout.alignLeft", "title": "Align Left", "icon": "align", "assetName": "Custom_Left", "shortcutDisplay": "Option+Shift+Cmd+L", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignCenter", "title": "Align Center", "icon": "align", "assetName": "Custom_Center", "shortcutDisplay": "Option+Shift+Cmd+C", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignRight", "title": "Align Right", "icon": "align", "assetName": "Custom_Right", "shortcutDisplay": "Option+Shift+Cmd+R", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignTop", "title": "Align Top", "icon": "align", "assetName": "Custom_Top", "shortcutDisplay": "Option+Shift+Cmd+T", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignMiddle", "title": "Align Middle", "icon": "align", "assetName": "Custom_Middle", "shortcutDisplay": "Option+Shift+Cmd+M", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.alignBottom", "title": "Align Bottom", "icon": "align", "assetName": "Custom_Bottom", "shortcutDisplay": "Option+Shift+Cmd+B", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.distributeHorizontal", "title": "Distribute Horizontally", "icon": "align", "assetName": "Custom_Horizontal", "shortcutDisplay": "Option+Shift+Cmd+H", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.distributeVertical", "title": "Distribute Vertically", "icon": "align", "assetName": "Custom_Vertical", "shortcutDisplay": "Option+Shift+Cmd+V", "disabledReason": "unavailable until selectable document objects exist", "category": "layout" },
+            { "commandId": "layout.flipHorizontal", "title": "Flip Horizontally", "icon": "align", "assetName": "Custom_Flip_Horizontal", "category": "layout" },
+            { "commandId": "layout.flipVertical", "title": "Flip Vertically", "icon": "align", "assetName": "Custom_Flip_Vertical", "category": "layout" },
+            { "commandId": "layout.rotate90", "title": "Rotate 90 Degrees", "icon": "align", "assetName": "Custom_Rotation", "category": "layout" },
+            { "commandId": "layout.duplicate", "title": "Duplicate", "icon": "group", "assetName": "Art_Bring_Forward", "category": "layout" },
+            { "commandId": "layout.group", "title": "Group", "icon": "group", "assetName": "Custom_Group", "shortcutDisplay": "Cmd+G", "category": "layout" },
+            { "commandId": "layout.ungroup", "title": "Ungroup", "icon": "group", "assetName": "Custom_Ungroup", "shortcutDisplay": "Shift+Cmd+G", "category": "layout" },
+            { "commandId": "layout.bringToFront", "title": "Bring to Front", "icon": "group", "assetName": "Art_Bring_To_Front", "shortcutDisplay": "Shift+Cmd+]", "category": "layout" },
+            { "commandId": "layout.bringForward", "title": "Bring Forward", "icon": "group", "assetName": "Art_Bring_Forward", "shortcutDisplay": "Cmd+]", "category": "layout" },
+            { "commandId": "layout.sendBackward", "title": "Send Backward", "icon": "group", "assetName": "Art_Send_Backward", "shortcutDisplay": "Cmd+[", "category": "layout" },
+            { "commandId": "layout.sendToBack", "title": "Send to Back", "icon": "group", "assetName": "Art_Send_To_Back", "shortcutDisplay": "Shift+Cmd+[", "category": "layout" }
           ]
         }
       ]
@@ -264,7 +357,7 @@
         {
           "id": "core.text.tool",
           "items": [
-            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Custom_Text", "shortcutDisplay": "T", "category": "annotation" }
+            { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" }
           ]
         }
       ]

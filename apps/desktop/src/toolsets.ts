@@ -35,9 +35,12 @@ export function createDefaultVisibleToolsetIds(
 
 export function getToolsetCommandGroups(
   toolsetId: string,
-  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry,
+  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
 ): CommandSpec[][] {
-  return registry.require(toolsetId).groups.map((group) => group.items.map(toolsetItemToCommandSpec));
+  return registry.require(toolsetId).groups.map((group) =>
+    group.items.map((item) => mergeToolsetCommandSpec(toolsetItemToCommandSpec(item), commandOverrides.get(item.commandId)))
+  );
 }
 
 export function getToolsetCommandSpecs(
@@ -91,6 +94,25 @@ function toolsetItemToCommandSpec(item: DesktopToolsetDefinition["groups"][numbe
   };
 }
 
+function mergeToolsetCommandSpec(base: CommandSpec, override: CommandSpec | undefined): CommandSpec {
+  if (!override) {
+    return base;
+  }
+
+  return {
+    ...base,
+    assetName: override.assetName ?? base.assetName,
+    enabled: override.enabled,
+    disabledReason: override.disabledReason,
+    description: override.description ?? base.description,
+    shortcut: override.shortcut ?? base.shortcut,
+    shortcutLabel: override.shortcutLabel ?? base.shortcutLabel,
+    defaultShortcut: override.defaultShortcut ?? base.defaultShortcut,
+    source: override.source,
+    category: override.category ?? base.category
+  };
+}
+
 function compactMacShortcutLabel(shortcut: string | undefined): string | undefined {
   if (!shortcut) {
     return undefined;
@@ -105,9 +127,9 @@ function compactMacShortcutLabel(shortcut: string | undefined): string | undefin
   const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
   const key = parts.find((part) => !["cmd", "command", "ctrl", "control", "shift", "alt", "option", "meta"].includes(part.toLowerCase()));
   const modifierLabel = [
-    lowerParts.has("cmd") || lowerParts.has("command") || lowerParts.has("meta") ? "⌘" : "",
-    lowerParts.has("shift") ? "⇧" : "",
     lowerParts.has("alt") || lowerParts.has("option") ? "⌥" : "",
+    lowerParts.has("shift") ? "⇧" : "",
+    lowerParts.has("cmd") || lowerParts.has("command") || lowerParts.has("meta") ? "⌘" : "",
     lowerParts.has("ctrl") || lowerParts.has("control") ? "⌃" : ""
   ].join("");
 

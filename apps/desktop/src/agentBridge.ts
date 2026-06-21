@@ -1,4 +1,5 @@
-import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import type { GraphicPathEditPoints, NativeArtVisualPlan } from "@chemdraft/art-engine";
+import type { ChemDraftDocument, GraphicObject } from "@chemdraft/chem-core";
 
 export const AGENT_BRIDGE_GLOBAL_NAME = "__CHEMDRAFT_AGENT__";
 export const AGENT_BRIDGE_ENV_VAR = "CHEMDRAFT_AGENT_BRIDGE";
@@ -80,12 +81,30 @@ export interface AgentSnapshot {
     height: number;
     objectCount: number;
   };
+  pages: Array<{
+    id: string;
+    width: number;
+    height: number;
+    objectCount: number;
+    objectTypes?: Partial<Record<string, number>>;
+    crossingCount?: number;
+  }>;
   file: {
     dirty: boolean;
     path?: string;
   };
   objects: readonly AgentObjectSummary[];
 }
+
+export type AgentArtDebugResult =
+  | {
+      ok: true;
+      object: GraphicObject;
+      editPoints?: GraphicPathEditPoints;
+      projectedEditPoints?: GraphicPathEditPoints;
+      plan: Pick<NativeArtVisualPlan, "pathD" | "frameBounds" | "markerHandles" | "projectionTransform" | "width" | "height">;
+    }
+  | { ok: false; error: string };
 
 export interface AgentObjectSummary {
   id: string;
@@ -110,6 +129,7 @@ export interface ChemDraftAgentBridge {
   pointerCancel(target: AgentPointTarget, options?: AgentPointerOptions): AgentPointerDispatchResult;
   click(target: AgentPointTarget, options?: AgentPointerOptions): Promise<AgentSnapshot>;
   drag(request: AgentDragRequest): Promise<AgentSnapshot>;
+  debugArtObject(objectId: string): AgentArtDebugResult;
   waitForIdle(): Promise<AgentSnapshot>;
 }
 
@@ -123,6 +143,7 @@ export interface AgentBridgeHost {
     target: AgentPointTarget,
     options?: AgentPointerOptions
   ): AgentPointerDispatchResult;
+  debugArtObject?(objectId: string): AgentArtDebugResult;
   waitForIdle(): Promise<AgentSnapshot>;
 }
 
@@ -159,6 +180,10 @@ export function createChemDraftAgentBridge(host: AgentBridgeHost): ChemDraftAgen
     pointerMove: (target, options) => pointer("pointermove", target, options),
     pointerUp: (target, options) => pointer("pointerup", target, options),
     pointerCancel: (target, options) => pointer("pointercancel", target, options),
+    debugArtObject: (objectId) => host.debugArtObject?.(objectId) ?? {
+      ok: false,
+      error: `Art debug is unavailable for ${objectId}.`
+    },
     async click(target, options) {
       pointer("pointerdown", target, { ...options, buttons: 1 });
       pointer("pointerup", target, { ...options, buttons: 0 });

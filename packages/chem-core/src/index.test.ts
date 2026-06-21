@@ -28,6 +28,7 @@ import {
   validateDocument,
   type AnnotationObject,
   type CrossingOverride,
+  type GraphicObject,
   type MoleculeObject
 } from "./index";
 
@@ -632,6 +633,378 @@ describe("native document validation and serialization", () => {
         tiltYDegrees: -15
       }
     });
+  });
+
+  it("formalizes native graphic style and data fields", () => {
+    const graphic = {
+      id: "graphic_contract",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 40,
+      rotation: 15,
+      graphicKind: "rect",
+      style: {
+        strokeColor: "#1d7f68",
+        strokePaint: {
+          kind: "solid",
+          color: "#1d7f68",
+          opacity: 0.8
+        },
+        fillColor: "#f8faf9",
+        fillPaint: {
+          kind: "linear-gradient",
+          units: "object",
+          x1: 0,
+          y1: 0,
+          x2: 1,
+          y2: 1,
+          stops: [
+            { offset: 0, color: "#ffffff", opacity: 0.9 },
+            { offset: 1, color: "#1d7f68", opacity: 0.4 }
+          ]
+        },
+        opacity: 0.75,
+        fillOpacity: 0.6,
+        strokeOpacity: 0.8,
+        strokeWidth: 2,
+        strokeDasharray: "3 4",
+        strokeLineCap: "round",
+        strokeLineJoin: "bevel",
+        strokeMiterLimit: 3,
+        fillMode: "gloss",
+        effect: "shadow",
+        effects: [
+          { kind: "shadow", color: "#111111", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 4 },
+          { kind: "glow", color: "#1d7f68", opacity: 0.4, blurPx: 8 },
+          { kind: "sketch", seed: 7319, roughness: 1.2, bowing: 0.8 }
+        ],
+        tiltXDegrees: 12,
+        tiltYDegrees: -8,
+        artToolCommandId: "tool.art.roundedRectGloss"
+      },
+      data: {
+        cornerRadiusPx: 7,
+        artPathKind: "arc",
+        arcCenter: { x: 136, y: 140 },
+        arcRadiusX: 32,
+        arcRadiusY: 24,
+        arcStartRadians: -5 * Math.PI / 4,
+        arcSweepRadians: Math.PI,
+        markerStart: { kind: "open-arrow", sizePx: 9 },
+        markerEnd: { kind: "filled-arrow", sizePx: 11, angleDegrees: 12 },
+        lineStart: { x: 100, y: 160 },
+        pathControlPoint: { x: 136, y: 104 },
+        lineEnd: { x: 172, y: 160 },
+        artToolId: "roundedRectGloss"
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      type: "graphic",
+      style: {
+        strokeColor: "#1d7f68",
+        strokePaint: {
+          kind: "solid",
+          color: "#1d7f68",
+          opacity: 0.8
+        },
+        fillPaint: {
+          kind: "linear-gradient",
+          stops: [
+            { offset: 0, color: "#ffffff", opacity: 0.9 },
+            { offset: 1, color: "#1d7f68", opacity: 0.4 }
+          ]
+        },
+        opacity: 0.75,
+        strokeLineCap: "round",
+        strokeLineJoin: "bevel",
+        fillMode: "gloss",
+        effect: "shadow",
+        effects: [
+          { kind: "shadow", color: "#111111", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 4 },
+          { kind: "glow", color: "#1d7f68", opacity: 0.4, blurPx: 8 },
+          { kind: "sketch", seed: 7319, roughness: 1.2, bowing: 0.8 }
+        ],
+        tiltXDegrees: 12,
+        tiltYDegrees: -8
+      },
+      data: {
+        cornerRadiusPx: 7,
+        arcCenter: { x: 136, y: 140 },
+        arcRadiusX: 32,
+        arcRadiusY: 24,
+        arcStartRadians: -5 * Math.PI / 4,
+        arcSweepRadians: Math.PI,
+        markerStart: { kind: "open-arrow", sizePx: 9 },
+        markerEnd: { kind: "filled-arrow", sizePx: 11, angleDegrees: 12 },
+        pathControlPoint: { x: 136, y: 104 }
+      }
+    });
+  });
+
+  it("round-trips signed semantic arc sweep metadata", () => {
+    const graphic = {
+      id: "graphic_signed_arc",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 72,
+      rotation: 0,
+      graphicKind: "path",
+      style: {},
+      data: {
+        artPathKind: "arc",
+        arcCenter: { x: 136, y: 156 },
+        arcRadiusX: 32,
+        arcRadiusY: 32,
+        arcStartRadians: Math.PI / 2,
+        arcSweepRadians: -Math.PI / 2
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const reopenedGraphic = deserializeDocument(serializeDocument(document)).pages[0].objects[0] as GraphicObject;
+
+    expect(reopenedGraphic.data.artPathKind).toBe("arc");
+    expect(reopenedGraphic.data.arcSweepRadians).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
+  it("round-trips native graphic path nodes for Phase 4 path editing", () => {
+    const graphic = {
+      id: "graphic_path_nodes",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 120,
+      height: 80,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "#1d7f68"
+      },
+      data: {
+        artPathKind: "bezier",
+        pathClosed: true,
+        pathNodes: [
+          {
+            point: { x: 112, y: 180 },
+            outControl: { x: 132, y: 136 }
+          },
+          {
+            point: { x: 176, y: 144 },
+            inControl: { x: 152, y: 120 },
+            outControl: { x: 196, y: 168 }
+          },
+          {
+            point: { x: 208, y: 196 },
+            inControl: { x: 184, y: 212 }
+          }
+        ]
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const reopenedGraphic = deserializeDocument(serializeDocument(document)).pages[0].objects[0] as GraphicObject;
+
+    expect(reopenedGraphic.data).toMatchObject({
+      artPathKind: "bezier",
+      pathClosed: true,
+      pathNodes: [
+        {
+          point: { x: 112, y: 180 },
+          outControl: { x: 132, y: 136 }
+        },
+        {
+          point: { x: 176, y: 144 },
+          inControl: { x: 152, y: 120 },
+          outControl: { x: 196, y: 168 }
+        },
+        {
+          point: { x: 208, y: 196 },
+          inControl: { x: 184, y: 212 }
+        }
+      ]
+    });
+  });
+
+  it("round-trips native freehand graphic points and options", () => {
+    const graphic = {
+      id: "graphic_freehand_points",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 120,
+      height: 80,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "none"
+      },
+      data: {
+        artPathKind: "freehand",
+        freehandOptions: {
+          size: 14,
+          thinning: 0.65,
+          smoothing: 0.5,
+          streamline: 0.35,
+          simulatePressure: false
+        },
+        freehandPoints: [
+          { x: 112, y: 144, pressure: 0.25 },
+          { x: 148, y: 158, pressure: 0.75 },
+          { x: 196, y: 138, pressure: 0.55 }
+        ],
+        cachedFreehandPathD: "M 1 2 L 3 4 Z",
+        cachedFreehandPathRevision: "fixture-revision"
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+
+    const reopenedGraphic = deserializeDocument(serializeDocument(document)).pages[0].objects[0] as GraphicObject;
+
+    expect(reopenedGraphic.data).toMatchObject({
+      artPathKind: "freehand",
+      freehandOptions: {
+        size: 14,
+        thinning: 0.65,
+        smoothing: 0.5,
+        streamline: 0.35,
+        simulatePressure: false
+      },
+      freehandPoints: [
+        { x: 112, y: 144, pressure: 0.25 },
+        { x: 148, y: 158, pressure: 0.75 },
+        { x: 196, y: 138, pressure: 0.55 }
+      ],
+      cachedFreehandPathD: "M 1 2 L 3 4 Z",
+      cachedFreehandPathRevision: "fixture-revision"
+    });
+  });
+
+  it("migrates branch-era graphic arc degree metadata to radians", () => {
+    const graphic = {
+      id: "graphic_legacy_arc",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 40,
+      rotation: 15,
+      graphicKind: "path",
+      style: {},
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: -5 * Math.PI / 4,
+        arcSweepRadians: Math.PI
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const legacy = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ data: Record<string, unknown> }> }>;
+    };
+    const data = legacy.pages[0].objects[0].data;
+    data.arcStartDegrees = -225;
+    data.arcAngleDegrees = 180;
+    delete data.arcStartRadians;
+    delete data.arcSweepRadians;
+
+    const migratedGraphic = deserializeDocument(JSON.stringify(legacy)).pages[0].objects[0] as GraphicObject;
+
+    expect(migratedGraphic.data.arcStartRadians).toBeCloseTo(-5 * Math.PI / 4, 6);
+    expect(migratedGraphic.data.arcSweepRadians).toBeCloseTo(Math.PI, 6);
+    expect(migratedGraphic.data).not.toHaveProperty("arcStartDegrees");
+    expect(migratedGraphic.data).not.toHaveProperty("arcAngleDegrees");
+  });
+
+  it("preserves the sweep direction of legacy clockwise arcs", () => {
+    const graphic = {
+      id: "graphic_legacy_cw_arc",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 40,
+      rotation: 0,
+      graphicKind: "path",
+      style: {},
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: Math.PI / 2,
+        arcSweepRadians: -Math.PI / 2
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const legacy = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ data: Record<string, unknown> }> }>;
+    };
+    const data = legacy.pages[0].objects[0].data;
+    data.arcAngleDegrees = -90;
+    delete data.arcSweepRadians;
+
+    const migratedGraphic = deserializeDocument(JSON.stringify(legacy)).pages[0].objects[0] as GraphicObject;
+
+    expect(migratedGraphic.data.arcSweepRadians).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
+  it("drops unknown legacy graphic style/data metadata instead of failing to open", () => {
+    const graphic = {
+      id: "graphic_legacy_meta",
+      type: "graphic",
+      x: 40,
+      y: 60,
+      width: 50,
+      height: 30,
+      rotation: 0,
+      graphicKind: "rect",
+      style: {},
+      data: {}
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const legacy = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ style: Record<string, unknown>; data: Record<string, unknown> }> }>;
+    };
+    const legacyObject = legacy.pages[0].objects[0];
+    legacyObject.style.legacyOnlyStyleHint = "indigo";
+    legacyObject.data.legacyOnlyDataHint = { nested: true };
+
+    const migratedGraphic = deserializeDocument(JSON.stringify(legacy)).pages[0].objects[0] as GraphicObject;
+
+    expect(migratedGraphic.style).not.toHaveProperty("legacyOnlyStyleHint");
+    expect(migratedGraphic.data).not.toHaveProperty("legacyOnlyDataHint");
   });
 
   it("reports validation issues for unsupported object shapes", () => {

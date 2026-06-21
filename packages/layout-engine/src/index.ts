@@ -6,6 +6,9 @@ import {
   type DocumentObject,
   type DocumentPage,
   type ElectronMarkObject,
+  type ArrowObject,
+  type GraphicPaint,
+  type GraphicObject,
   type MoleculeAtom,
   type MoleculeBond as CoreMoleculeBond,
   type MoleculeObject,
@@ -13,6 +16,38 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+import {
+  planNativeArtVisual as planNativeArtVisualFromArtEngine,
+  visualEffectPlansForStyle,
+  visualEffectsForStyle
+} from "@chemdraft/art-engine";
+import type {
+  NativeArtEffectPlan,
+  NativeArtFillPlan,
+  NativeArtGradientStopPlan,
+  NativeArtGlossGradientPlan,
+  NativeArtMarkerPlan,
+  NativeArtPaintPlan,
+  NativeArtProjectionMatrix,
+  NativeArtStrokePlan,
+  NativeArtStrokeTerminalPlan,
+  NativeArtVisualCoordinateSpace,
+  NativeArtVisualPlan
+} from "@chemdraft/art-engine";
+
+export type {
+  NativeArtEffectPlan,
+  NativeArtFillPlan,
+  NativeArtGradientStopPlan,
+  NativeArtGlossGradientPlan,
+  NativeArtMarkerPlan,
+  NativeArtPaintPlan,
+  NativeArtProjectionMatrix,
+  NativeArtStrokePlan,
+  NativeArtStrokeTerminalPlan,
+  NativeArtVisualCoordinateSpace,
+  NativeArtVisualPlan
+} from "@chemdraft/art-engine";
 
 export type LayoutCommandId =
   | "layout.group"
@@ -790,6 +825,18 @@ interface PageBondLineSegment {
   doubleBondSide?: DoubleBondSide;
 }
 
+type PageMoleculeBondSegment = PageBondLineSegment & { bond: CoreMoleculeBond; key: string };
+
+interface PageMoleculeBondSegmentGroup {
+  bond: CoreMoleculeBond;
+  segments: PageMoleculeBondSegment[];
+}
+
+interface PageMoleculeAtomLabel {
+  atom: MoleculeAtom;
+  label: string;
+}
+
 export interface BondDepthCandidate {
   ref: BondRef;
   objectLayerIndex: number;
@@ -1126,9 +1173,10 @@ export function planPageSvgRender(page: DocumentPage): PageSvgRenderPlan {
   const crossingHitTargets = crossings.map((crossing) => crossingHitTargetFragment(crossing));
 
   return {
-    fragments: page.objects.flatMap((object, layerIndex) =>
-      flattenDocumentObjectSvg(planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey))
-    ).concat(crossingHitTargets),
+    fragments: page.objects.flatMap((object, layerIndex) => {
+      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey);
+      return fragment ? flattenDocumentObjectSvg(fragment) : [];
+    }).concat(crossingHitTargets),
     crossings,
     warnings
   };
@@ -1181,7 +1229,7 @@ function planDocumentObjectSvg(
   layerIndex: number,
   warnings: PageSvgRenderWarning[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
-): PageSvgElementFragment {
+): PageSvgElementFragment | undefined {
   switch (object.type) {
     case "molecule":
       return planMoleculeObjectSvg(object, layerIndex, gapsByBondKey);
@@ -1194,9 +1242,11 @@ function planDocumentObjectSvg(
         ? chargeMarkFragment(object, layerIndex)
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
-      return lineObjectFragment(object, object.arrowKind, layerIndex);
+      return reactionArrowFragment(object, layerIndex);
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
+    case "group":
+      return undefined;
     default:
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
   }
@@ -1261,12 +1311,13 @@ function planNativeMoleculeGraphSvg(
 ): PageSvgElementFragment {
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
-  const atomLabels = object.atoms.flatMap((atom) => {
+  const moleculeStrokeOpacity = nativeMoleculeStrokeOpacity(object);
+  const atomLabels: PageMoleculeAtomLabel[] = object.atoms.flatMap((atom) => {
     const label = atomDisplayLabel(atom, object.bonds);
     return label ? [{ atom, label }] : [];
   });
   const labelByAtomId = new Map(atomLabels.map(({ atom, label }) => [atom.id, label]));
-  const bondSegmentGroups = object.bonds.flatMap((bond) => {
+  const bondSegmentGroups: PageMoleculeBondSegmentGroup[] = object.bonds.flatMap((bond) => {
     const fromAtom = atomById.get(bond.fromAtomId);
     const toAtom = atomById.get(bond.toAtomId);
     if (!fromAtom || !toAtom) {
@@ -1292,6 +1343,101 @@ function planNativeMoleculeGraphSvg(
   const primitive = moleculeDrawingPrimitive(object) === "single-bond"
     ? "single-bond"
     : "connected-carbon-chain";
+  const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
+    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey)
+    : undefined;
+  const effects = visualEffectPlansForStyle({
+    objectId: object.id,
+    style: object.style,
+    sketchBasePathD,
+    sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
+  });
+  const effectFilterId = `molecule-effects-${object.id}`;
+  const fillUnderlayFragments = moleculeFillUnderlayFragments(object, drawingStyle);
+  const bondLayerFragments = bondSegmentGroups.map(({ bond, segments }) =>
+    elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
+      "data-bond-layer-id": bond.id
+    }, [
+      ...segments.map((segment) =>
+        elementFragment("line", `bond-hit-${object.id}-${segment.key}`, {
+          class: "native-bond-hit-target",
+          "data-hit-target": "bond",
+          "data-bond-id": segment.bond.id,
+          x1: segment.x1,
+          y1: segment.y1,
+          x2: segment.x2,
+          y2: segment.y2
+        })
+      ),
+      ...segments.flatMap((segment) =>
+        nativeBondHoverDecoratorFragments(
+          segment,
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
+        )
+      ),
+      ...segments.flatMap((segment) =>
+        nativeBondSegmentFragments(
+          object,
+          segment,
+          drawingStyle,
+          moleculeStrokeOpacity,
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
+        )
+      )
+    ])
+  );
+  const labelBackgroundFragments = atomLabels.map(({ atom, label }) => {
+    const box = atomLabelBox(atom, label, drawingStyle);
+    return elementFragment("rect", `label-background-${object.id}-${atom.id}`, {
+      class: "native-atom-label-background",
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      fill: drawingStyle.atomLabelBackgroundColor
+    });
+  });
+  const labelFragments = atomLabels.map(({ atom, label }) => {
+    const anchor = atomLabelAnchor(atom);
+    return elementFragment("g", `label-${object.id}-${atom.id}`, {
+      class: "native-atom-label",
+      "data-atom-label": label,
+        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
+        fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
+        "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+        "font-family": drawingStyle.atomLabelFontFamily,
+      "font-size": drawingStyle.atomLabelFontSizePx,
+      "font-weight": drawingStyle.atomLabelFontWeight
+    }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
+      elementFragment("text", `label-run-${object.id}-${atom.id}-${index}`, {
+        class: "native-atom-label-run",
+        "data-atom-label-run": run.script === "superscript" ? "charge" : run.script,
+        x: run.x,
+        y: run.y,
+        "dominant-baseline": "central",
+        "text-anchor": run.textAnchor,
+        "font-size": atomLabelRunFontSize(run.script, drawingStyle)
+      }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
+    ));
+  });
+  const atomHitFragments = object.atoms.map((atom) =>
+    elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
+      class: "native-atom-hit-target",
+      "data-hit-target": "atom",
+      "data-atom-id": atom.id,
+      cx: atom.x,
+      cy: atom.y,
+      r: 8
+    })
+  );
+  const effectSource = moleculeEffectSourceFragment(
+    object,
+    effects,
+    effectFilterId,
+    bondSegmentGroups,
+    drawingStyle,
+    gapsByBondKey
+  );
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     "data-chem-primitive": primitive,
@@ -1299,87 +1445,470 @@ function planNativeMoleculeGraphSvg(
     "data-atom-count": object.atoms.length,
     "data-bond-count": object.bonds.length,
     "data-style-preset-id": drawingStyle.stylePresetId,
+    opacity: nativeMoleculeObjectOpacity(object) === 1 ? undefined : nativeMoleculeObjectOpacity(object),
     transform: rotationTransform(object)
   }), [
-    ...bondSegmentGroups.map(({ bond, segments }) =>
-      elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
-        "data-bond-layer-id": bond.id
-      }, [
-        ...segments.map((segment) =>
-          elementFragment("line", `bond-hit-${object.id}-${segment.key}`, {
-            class: "native-bond-hit-target",
-            "data-hit-target": "bond",
-            "data-bond-id": segment.bond.id,
-            x1: segment.x1,
-            y1: segment.y1,
-            x2: segment.x2,
-            y2: segment.y2
-          })
-        ),
-        ...segments.flatMap((segment) =>
-          nativeBondHoverDecoratorFragments(
-            segment,
-            gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
-          )
-        ),
-        ...segments.flatMap((segment) =>
-          nativeBondSegmentFragments(
-            object,
-            segment,
-            drawingStyle,
-            gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
-          )
-        )
-      ])
+    ...svgEffectDefinitionFragmentsForEffects(
+      effects,
+      effectFilterId,
+      svgEffectFilterRegionForBounds(effects, object)
     ),
-    ...atomLabels.map(({ atom, label }) => {
-      const box = atomLabelBox(atom, label, drawingStyle);
-      return elementFragment("rect", `label-background-${object.id}-${atom.id}`, {
-        class: "native-atom-label-background",
-        x: box.x,
-        y: box.y,
-        width: box.width,
-        height: box.height,
-        fill: drawingStyle.atomLabelBackgroundColor
-      });
+    ...fillUnderlayFragments,
+    ...(effectSource ? [effectSource] : []),
+    ...bondLayerFragments,
+    ...labelBackgroundFragments,
+    ...labelFragments,
+    ...svgSketchEffectFragmentsForEffects(effects, object.id, {
+      className: "native-molecule-sketch",
+      dataAttribute: "data-molecule-effect",
+      keyPrefix: "molecule-sketch"
     }),
-    ...atomLabels.map(({ atom, label }) => {
-      const anchor = atomLabelAnchor(atom);
-      return elementFragment("g", `label-${object.id}-${atom.id}`, {
-        class: "native-atom-label",
-        "data-atom-label": label,
-        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
-        fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
-        "font-family": drawingStyle.atomLabelFontFamily,
-        "font-size": drawingStyle.atomLabelFontSizePx,
-        "font-weight": drawingStyle.atomLabelFontWeight
-      }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
-        elementFragment("text", `label-run-${object.id}-${atom.id}-${index}`, {
-          class: "native-atom-label-run",
-          "data-atom-label-run": run.script === "superscript" ? "charge" : run.script,
-          x: run.x,
-          y: run.y,
-          "dominant-baseline": "central",
-          "text-anchor": run.textAnchor,
-          "font-size": atomLabelRunFontSize(run.script, drawingStyle)
-        }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
-      ));
-    }),
-    ...object.atoms.map((atom) =>
-      elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
-        class: "native-atom-hit-target",
-        "data-hit-target": "atom",
-        "data-atom-id": atom.id,
-        cx: atom.x,
-        cy: atom.y,
-        r: 8
-      })
-    )
+    ...atomHitFragments
   ]);
 }
 
+function moleculeFillUnderlayFragments(
+  object: MoleculeObject,
+  drawingStyle: NativeDrawingStyle
+): PageSvgElementFragment[] {
+  const paint = moleculeFillPaintForObject(object);
+  if (paint.kind === "none") {
+    return [];
+  }
+
+  const d = moleculeFillUnderlayPathD(object, drawingStyle);
+  if (!d) {
+    return [];
+  }
+
+  const paintId = `molecule-fill-${object.id}`;
+  return [
+    ...moleculePaintDefinitionFragments(paint, paintId, object),
+    elementFragment("path", `molecule-fill-underlay-${object.id}`, {
+      class: "native-molecule-fill-underlay",
+      "data-molecule-fill": "true",
+      d,
+      ...moleculePaintAttrs("fill", paint, paintId, moleculeFillOpacity(object)),
+      stroke: "none",
+      "pointer-events": "none"
+    })
+  ];
+}
+
+function moleculeFillUnderlayPathD(
+  object: MoleculeObject,
+  _drawingStyle: NativeDrawingStyle
+): string | undefined {
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const ringPaths = moleculeFillRingCycles(object)
+    .map((cycle) => moleculeRingPathD(cycle, atomById))
+    .filter((path): path is string => Boolean(path));
+
+  if (ringPaths.length === 0) {
+    return undefined;
+  }
+
+  return ringPaths.join(" ");
+}
+
+interface MoleculeFillRingCycle {
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+}
+
+interface MoleculeFillAdjacencyEdge {
+  atomId: string;
+  bondId: string;
+}
+
+const maxMoleculeFillCycles = 256;
+
+function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[] {
+  if (object.atoms.length < 3 || object.bonds.length < 3) {
+    return [];
+  }
+
+  const atomIds = object.atoms.map((atom) => atom.id);
+  const atomIdSet = new Set(atomIds);
+  const sortedAtomIds = [...atomIds].sort();
+  const adjacency = new Map<string, MoleculeFillAdjacencyEdge[]>(
+    sortedAtomIds.map((atomId) => [atomId, []])
+  );
+  const bondedPairs = new Map<string, string>();
+
+  object.bonds.forEach((bond) => {
+    if (
+      !atomIdSet.has(bond.fromAtomId) ||
+      !atomIdSet.has(bond.toAtomId) ||
+      bond.fromAtomId === bond.toAtomId
+    ) {
+      return;
+    }
+
+    adjacency.get(bond.fromAtomId)?.push({ atomId: bond.toAtomId, bondId: bond.id });
+    adjacency.get(bond.toAtomId)?.push({ atomId: bond.fromAtomId, bondId: bond.id });
+    bondedPairs.set(moleculeFillBondPairKey(bond.fromAtomId, bond.toAtomId), bond.id);
+  });
+  adjacency.forEach((edges) => edges.sort((left, right) => left.atomId.localeCompare(right.atomId)));
+
+  const cycles = new Map<string, MoleculeFillRingCycle>();
+  for (const bond of object.bonds) {
+    if (cycles.size >= maxMoleculeFillCycles) {
+      break;
+    }
+
+    if (
+      !atomIdSet.has(bond.fromAtomId) ||
+      !atomIdSet.has(bond.toAtomId) ||
+      bond.fromAtomId === bond.toAtomId
+    ) {
+      continue;
+    }
+
+    const path = moleculeFillShortestPath(adjacency, bond.fromAtomId, bond.toAtomId, bond.id);
+    if (!path || path.atomIds.length < 3) {
+      continue;
+    }
+
+    const cycle = {
+      atomIds: path.atomIds,
+      bondIds: [...path.bondIds, bond.id]
+    };
+    const cycleKey = moleculeFillCycleKey(cycle.bondIds);
+    const canonicalCycle = moleculeFillCanonicalCycle(cycle);
+    if (!cycles.has(cycleKey) && moleculeFillCycleIsChordless(canonicalCycle, bondedPairs)) {
+      cycles.set(cycleKey, canonicalCycle);
+    }
+  }
+
+  return [...cycles.values()].sort((left, right) =>
+    moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
+  );
+}
+
+function moleculeFillShortestPath(
+  adjacency: ReadonlyMap<string, readonly MoleculeFillAdjacencyEdge[]>,
+  startAtomId: string,
+  endAtomId: string,
+  excludedBondId: string
+): MoleculeFillRingCycle | undefined {
+  const queue = [startAtomId];
+  const visitedAtomIds = new Set([startAtomId]);
+  const previous = new Map<string, MoleculeFillAdjacencyEdge>();
+
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const currentAtomId = queue[queueIndex]!;
+    for (const edge of adjacency.get(currentAtomId) ?? []) {
+      if (edge.bondId === excludedBondId || visitedAtomIds.has(edge.atomId)) {
+        continue;
+      }
+
+      visitedAtomIds.add(edge.atomId);
+      previous.set(edge.atomId, { atomId: currentAtomId, bondId: edge.bondId });
+      if (edge.atomId === endAtomId) {
+        return moleculeFillReconstructPath(startAtomId, endAtomId, previous);
+      }
+      queue.push(edge.atomId);
+    }
+  }
+
+  return undefined;
+}
+
+function moleculeFillReconstructPath(
+  startAtomId: string,
+  endAtomId: string,
+  previous: ReadonlyMap<string, MoleculeFillAdjacencyEdge>
+): MoleculeFillRingCycle | undefined {
+  const atomIds = [endAtomId];
+  const bondIds: string[] = [];
+  let currentAtomId = endAtomId;
+
+  while (currentAtomId !== startAtomId) {
+    const step = previous.get(currentAtomId);
+    if (!step) {
+      return undefined;
+    }
+    bondIds.push(step.bondId);
+    currentAtomId = step.atomId;
+    atomIds.push(currentAtomId);
+  }
+
+  return {
+    atomIds: atomIds.reverse(),
+    bondIds: bondIds.reverse()
+  };
+}
+
+function moleculeFillCanonicalCycle(cycle: MoleculeFillRingCycle): MoleculeFillRingCycle {
+  const firstAtomId = cycle.atomIds[0];
+  const forwardAtomId = cycle.atomIds[1];
+  const backwardAtomId = cycle.atomIds[cycle.atomIds.length - 1];
+  if (!firstAtomId || !forwardAtomId || !backwardAtomId || forwardAtomId.localeCompare(backwardAtomId) <= 0) {
+    return cycle;
+  }
+
+  return {
+    ...cycle,
+    atomIds: [
+      firstAtomId,
+      ...cycle.atomIds.slice(1).reverse()
+    ]
+  };
+}
+
+function moleculeFillCycleIsChordless(
+  cycle: MoleculeFillRingCycle,
+  bondedPairs: ReadonlyMap<string, string>
+): boolean {
+  const atomCount = cycle.atomIds.length;
+  const cycleBondPairs = new Set<string>();
+  cycle.atomIds.forEach((atomId, index) => {
+    const nextAtomId = cycle.atomIds[(index + 1) % atomCount];
+    if (nextAtomId) {
+      cycleBondPairs.add(moleculeFillBondPairKey(atomId, nextAtomId));
+    }
+  });
+
+  for (let leftIndex = 0; leftIndex < atomCount; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < atomCount; rightIndex += 1) {
+      const isCycleNeighbor = rightIndex === leftIndex + 1 || (leftIndex === 0 && rightIndex === atomCount - 1);
+      if (isCycleNeighbor) {
+        continue;
+      }
+
+      const pairKey = moleculeFillBondPairKey(cycle.atomIds[leftIndex]!, cycle.atomIds[rightIndex]!);
+      if (bondedPairs.has(pairKey) && !cycleBondPairs.has(pairKey)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function moleculeRingPathD(
+  cycle: MoleculeFillRingCycle,
+  atomById: ReadonlyMap<string, MoleculeAtom>
+): string | undefined {
+  const atoms = cycle.atomIds.map((atomId) => atomById.get(atomId));
+  if (atoms.some((atom) => !atom)) {
+    return undefined;
+  }
+  const ringAtoms = atoms as MoleculeAtom[];
+  if (ringAtoms.length < 3) {
+    return undefined;
+  }
+
+  return [
+    `M ${formatNumber(ringAtoms[0]!.x)} ${formatNumber(ringAtoms[0]!.y)}`,
+    ...ringAtoms.slice(1).map((atom) => `L ${formatNumber(atom.x)} ${formatNumber(atom.y)}`),
+    "Z"
+  ].join(" ");
+}
+
+function moleculeFillCycleKey(bondIds: readonly string[]): string {
+  return [...bondIds].sort().join("|");
+}
+
+function moleculeFillCycleSortKey(cycle: MoleculeFillRingCycle): string {
+  return [...cycle.atomIds].sort().join("|");
+}
+
+function moleculeFillBondPairKey(firstAtomId: string, secondAtomId: string): string {
+  return firstAtomId < secondAtomId ? `${firstAtomId}|${secondAtomId}` : `${secondAtomId}|${firstAtomId}`;
+}
+
+function moleculePaintAttrs(
+  attribute: "fill" | "stroke",
+  paint: GraphicPaint,
+  id: string,
+  opacity: number
+): Record<string, PageSvgAttributeValue> {
+  if (paint.kind === "solid") {
+    return {
+      [attribute]: paint.color,
+      [`${attribute}-opacity`]: opacity === 1 ? undefined : opacity
+    };
+  }
+
+  return {
+    [attribute]: moleculePaintValue(paint, id),
+    [`${attribute}-opacity`]: opacity === 1 ? undefined : opacity
+  };
+}
+
+function moleculePaintValue(paint: GraphicPaint, id: string): string {
+  if (paint.kind === "none") {
+    return "none";
+  }
+  if (paint.kind === "solid") {
+    return paint.color;
+  }
+  return `url(#${id})`;
+}
+
+function moleculePaintDefinitionFragments(
+  paint: GraphicPaint,
+  id: string,
+  object: MoleculeObject
+): PageSvgElementFragment[] {
+  if (paint.kind === "linear-gradient") {
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("linearGradient", `${id}-gradient`, {
+          id,
+          x1: object.x + object.width * paint.x1,
+          y1: object.y + object.height * paint.y1,
+          x2: object.x + object.width * paint.x2,
+          y2: object.y + object.height * paint.y2,
+          gradientUnits: "userSpaceOnUse"
+        }, moleculeGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  if (paint.kind === "radial-gradient") {
+    const radius = Math.max(object.width, object.height, 1) * paint.r;
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("radialGradient", `${id}-gradient`, {
+          id,
+          cx: object.x + object.width * paint.cx,
+          cy: object.y + object.height * paint.cy,
+          r: radius,
+          fx: paint.fx === undefined ? undefined : object.x + object.width * paint.fx,
+          fy: paint.fy === undefined ? undefined : object.y + object.height * paint.fy,
+          gradientUnits: "userSpaceOnUse"
+        }, moleculeGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  return [];
+}
+
+function moleculeGradientStopFragments(
+  stops: Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"],
+  id: string
+): PageSvgElementFragment[] {
+  return [...stops]
+    .sort((left, right) => left.offset - right.offset)
+    .map((stop, index) =>
+      elementFragment("stop", `${id}-stop-${index}`, {
+        offset: `${formatNumber(clamp(stop.offset, 0, 1) * 100)}%`,
+        "stop-color": stop.color,
+        "stop-opacity": stop.opacity === undefined || stop.opacity === 1 ? undefined : clamp(stop.opacity, 0, 1)
+      })
+    );
+}
+
+function moleculeEffectSourceFragment(
+  object: MoleculeObject,
+  effects: readonly NativeArtEffectPlan[],
+  effectFilterId: string,
+  bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
+  drawingStyle: NativeDrawingStyle,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+): PageSvgElementFragment | undefined {
+  const hasFilter = effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
+  if (!hasFilter) {
+    return undefined;
+  }
+
+  const children = [
+    ...bondSegmentGroups.flatMap(({ bond, segments }) =>
+      segments.flatMap((segment) =>
+        moleculeBondEffectSourceFragments(
+          object,
+          segment,
+          drawingStyle,
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
+        )
+      )
+    )
+  ];
+  if (children.length === 0) {
+    return undefined;
+  }
+
+  return elementFragment("g", `molecule-effect-source-${object.id}`, {
+    class: "native-molecule-effect-source",
+    "data-molecule-effect-source": "true",
+    filter: `url(#${effectFilterId})`,
+    "pointer-events": "none"
+  }, children);
+}
+
+function moleculeBondEffectSourceFragments(
+  object: MoleculeObject,
+  segment: PageMoleculeBondSegment,
+  drawingStyle: NativeDrawingStyle,
+  crossingGaps: readonly BondCrossingGap[] = []
+): PageSvgElementFragment[] {
+  const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wedge" && segment.segment === "primary") {
+    return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
+      elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle),
+        fill: "#000000",
+        stroke: "none"
+      })
+    );
+  }
+
+  if (bondStyle === "hashed" && segment.segment === "primary") {
+    return nativeHashedWedgeSegments(segment, drawingStyle).flatMap((hash, index) =>
+      splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
+        elementFragment("line", `molecule-effect-source-bond-hash-${object.id}-${segment.key}-${index}-${visibleIndex}`, {
+          x1: visibleHash.x1,
+          y1: visibleHash.y1,
+          x2: visibleHash.x2,
+          y2: visibleHash.y2,
+          stroke: "#000000",
+          "stroke-width": drawingStyle.bondStrokeWidthPx,
+          "stroke-linecap": "butt"
+        })
+      )
+    );
+  }
+
+  return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
+    elementFragment("line", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
+      x1: visibleSegment.x1,
+      y1: visibleSegment.y1,
+      x2: visibleSegment.x2,
+      y2: visibleSegment.y2,
+      stroke: "#000000",
+      "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
+      "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
+      "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
+    })
+  );
+}
+
+function moleculeEffectSketchBasePathD(
+  object: MoleculeObject,
+  bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+): string | undefined {
+  const bondPathParts = bondSegmentGroups.flatMap(({ bond, segments }) =>
+    segments.flatMap((segment) =>
+      splitSegmentByCrossingGaps(
+        segment,
+        gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
+      ).map((visibleSegment) => linePathD(visibleSegment))
+    )
+  );
+  return bondPathParts.join(" ") || undefined;
+}
+
+function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
+  return `M ${formatNumber(segment.x1)} ${formatNumber(segment.y1)} L ${formatNumber(segment.x2)} ${formatNumber(segment.y2)}`;
+}
+
 function nativeBondHoverDecoratorFragments(
-  segment: PageBondLineSegment & { bond: CoreMoleculeBond; key: string },
+  segment: PageMoleculeBondSegment,
   crossingGaps: readonly BondCrossingGap[] = []
 ): PageSvgElementFragment[] {
   return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
@@ -1397,8 +1926,9 @@ function nativeBondHoverDecoratorFragments(
 
 function nativeBondSegmentFragments(
   object: MoleculeObject,
-  segment: PageBondLineSegment & { bond: CoreMoleculeBond; key: string },
+  segment: PageMoleculeBondSegment,
   drawingStyle: NativeDrawingStyle,
+  moleculeStrokeOpacity: number,
   crossingGaps: readonly BondCrossingGap[] = []
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
@@ -1423,6 +1953,7 @@ function nativeBondSegmentFragments(
         ...commonAttrs,
         points: nativeWedgePolygonPoints(visibleSegment, drawingStyle),
         fill: stroke,
+        "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
         stroke: "none"
       })
     );
@@ -1440,6 +1971,7 @@ function nativeBondSegmentFragments(
             x2: visibleHash.x2,
             y2: visibleHash.y2,
             stroke,
+            "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
             "stroke-width": drawingStyle.bondStrokeWidthPx,
             "stroke-linecap": "butt"
           })
@@ -1456,6 +1988,7 @@ function nativeBondSegmentFragments(
       x2: visibleSegment.x2,
       y2: visibleSegment.y2,
       stroke,
+      "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
       "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
       "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
       "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
@@ -1653,21 +2186,163 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 }
 
 function graphicObjectFragment(
-  object: Extract<DocumentObject, { type: "graphic" }>,
+  object: GraphicObject,
   warnings: PageSvgRenderWarning[],
   layerIndex: number
 ): PageSvgElementFragment {
-  if (object.graphicKind === "rect") {
-    return elementFragment("rect", `object-${object.id}`, objectAttributes(object, layerIndex, {
-      x: object.x,
-      y: object.y,
-      width: object.width,
-      height: object.height,
-      fill: "none",
-      stroke: "#2f3b42",
-      "stroke-width": 1.5,
-      transform: rotationTransform(object)
+  warnForGraphicSvgEffects(object, warnings);
+  const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
+  const freehandPath = graphicObjectIsFreehandPath(object);
+  const gradientId = `graphic-gloss-${object.id}`;
+  const fillAttrs = plan.glossGradient
+    ? {
+        fill: `url(#${gradientId})`
+      }
+    : svgPaintAttrs("fill", plan.fill.paint, `graphic-fill-${object.id}`);
+  const strokeAttrs = {
+    class: "graphic-glyph-stroke",
+    ...svgPaintAttrs("stroke", plan.stroke.paint, `graphic-stroke-${object.id}`),
+    "stroke-width": plan.stroke.width,
+    "stroke-dasharray": plan.stroke.dasharray,
+    "stroke-linecap": plan.stroke.lineCap,
+    "stroke-linejoin": plan.stroke.lineJoin,
+    "stroke-miterlimit": plan.stroke.miterLimit
+  };
+  const closedFillEffectSource = plan.capabilities.supportsFill && !plan.capabilities.isOpenStroke;
+  const pathFillEffectSource = freehandPath || closedFillEffectSource || !plan.capabilities.supportsStroke;
+  const hasSketchEffect = plan.effects.some((effect) => effect.kind === "sketch");
+  const cleanStrokeAttrs = hasSketchEffect ? { ...strokeAttrs, stroke: "none" } : strokeAttrs;
+  const sketchEffectSourceFragments = hasSketchEffect ? svgSketchEffectSourceFragments(plan, object.id) : [];
+  const sketchEffectLayerFragments = svgEffectLayerFragmentsForSource(plan.effects, object.id, sketchEffectSourceFragments);
+  const effectLayerFragmentsForSource = (source: PageSvgElementFragment | undefined) =>
+    hasSketchEffect
+      ? sketchEffectLayerFragments
+      : svgEffectLayerFragmentsForSource(plan.effects, object.id, source ? [source] : []);
+  const children: PageSvgFragment[] = [
+    ...svgPaintDefinitionFragments(plan.fill.paint, `graphic-fill-${object.id}`),
+    ...svgPaintDefinitionFragments(plan.stroke.paint, `graphic-stroke-${object.id}`),
+    ...(plan.glossGradient ? [
+      elementFragment("defs", `graphic-gloss-defs-${object.id}`, {}, [
+        elementFragment("radialGradient", `graphic-gloss-gradient-${object.id}`, {
+          id: gradientId,
+          cx: plan.glossGradient.cx,
+          cy: plan.glossGradient.cy,
+          r: plan.glossGradient.r,
+          gradientTransform: plan.glossGradient.gradientTransform,
+          gradientUnits: "userSpaceOnUse"
+        }, svgGradientStopFragments(plan.glossGradient.stops, `graphic-gloss-${object.id}`, plan.fill.opacity))
+      ])
+    ] : [])
+  ];
+  let renderedGraphic = false;
+
+  if (plan.projectedShapePathD) {
+    renderedGraphic = true;
+    const source = !hasSketchEffect
+      ? elementFragment("path", `graphic-effect-source-${object.id}`, {
+          d: plan.projectedShapePathD,
+          ...svgEffectSourceAttrs(plan, closedFillEffectSource)
+        })
+      : undefined;
+    children.push(...effectLayerFragmentsForSource(source));
+    children.push(elementFragment("path", `graphic-projected-${object.id}`, {
+      d: plan.projectedShapePathD,
+      ...cleanStrokeAttrs,
+      class: "graphic-glyph-stroke graphic-glyph-projected-shape",
+      ...fillAttrs
     }));
+  } else if (object.graphicKind === "line" && plan.line) {
+    renderedGraphic = true;
+    const visibleLine = plan.visibleLine ?? plan.line;
+    const source = !hasSketchEffect
+      ? elementFragment("line", `graphic-effect-source-${object.id}`, {
+          x1: visibleLine.x1,
+          y1: visibleLine.y1,
+          x2: visibleLine.x2,
+          y2: visibleLine.y2,
+          ...svgEffectSourceAttrs(plan, false),
+          transform: plan.projectionTransform
+        })
+      : undefined;
+    children.push(...effectLayerFragmentsForSource(source));
+    children.push(elementFragment("line", `graphic-line-${object.id}`, {
+      x1: visibleLine.x1,
+      y1: visibleLine.y1,
+      x2: visibleLine.x2,
+      y2: visibleLine.y2,
+      ...cleanStrokeAttrs,
+      transform: plan.projectionTransform
+    }));
+  } else if (object.graphicKind === "path" && plan.pathD) {
+    renderedGraphic = true;
+    const source = !hasSketchEffect
+      ? elementFragment("path", `graphic-effect-source-${object.id}`, {
+          d: plan.visiblePathD ?? plan.pathD,
+          ...svgEffectSourceAttrs(plan, pathFillEffectSource),
+          transform: plan.projectionTransform
+        })
+      : undefined;
+    children.push(...effectLayerFragmentsForSource(source));
+    children.push(elementFragment("path", `graphic-path-${object.id}`, {
+      d: plan.visiblePathD ?? plan.pathD,
+      ...cleanStrokeAttrs,
+      class: "graphic-glyph-stroke graphic-glyph-path",
+      ...(freehandPath || plan.capabilities.supportsFill ? fillAttrs : { fill: "none" }),
+      transform: plan.projectionTransform
+    }));
+  } else if (object.graphicKind === "rect") {
+    renderedGraphic = true;
+    const source = !hasSketchEffect
+      ? elementFragment("rect", `graphic-effect-source-${object.id}`, {
+          x: object.x + plan.stroke.width / 2,
+          y: object.y + plan.stroke.width / 2,
+          width: Math.max(object.width - plan.stroke.width, 0.5),
+          height: Math.max(object.height - plan.stroke.width, 0.5),
+          rx: plan.cornerRadius,
+          ry: plan.cornerRadius,
+          ...svgEffectSourceAttrs(plan, closedFillEffectSource)
+        })
+      : undefined;
+    children.push(...effectLayerFragmentsForSource(source));
+    children.push(elementFragment("rect", `graphic-rect-${object.id}`, {
+      x: object.x + plan.stroke.width / 2,
+      y: object.y + plan.stroke.width / 2,
+      width: Math.max(object.width - plan.stroke.width, 0.5),
+      height: Math.max(object.height - plan.stroke.width, 0.5),
+      rx: plan.cornerRadius,
+      ry: plan.cornerRadius,
+      ...cleanStrokeAttrs,
+      ...fillAttrs
+    }));
+  } else if (object.graphicKind === "ellipse") {
+    renderedGraphic = true;
+    const source = !hasSketchEffect
+      ? elementFragment("ellipse", `graphic-effect-source-${object.id}`, {
+          cx: object.x + object.width / 2,
+          cy: object.y + object.height / 2,
+          rx: Math.max(object.width / 2 - plan.stroke.width / 2, 0.5),
+          ry: Math.max(object.height / 2 - plan.stroke.width / 2, 0.5),
+          ...svgEffectSourceAttrs(plan, closedFillEffectSource)
+        })
+      : undefined;
+    children.push(...effectLayerFragmentsForSource(source));
+    children.push(elementFragment("ellipse", `graphic-ellipse-${object.id}`, {
+      cx: object.x + object.width / 2,
+      cy: object.y + object.height / 2,
+      rx: Math.max(object.width / 2 - plan.stroke.width / 2, 0.5),
+      ry: Math.max(object.height / 2 - plan.stroke.width / 2, 0.5),
+      ...cleanStrokeAttrs,
+      ...fillAttrs
+    }));
+  }
+
+  if (renderedGraphic) {
+    children.push(...svgSketchEffectFragments(plan, object.id));
+    children.push(...svgFlattenedGraphicMarkerFragments(plan, object.id));
+    return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+      opacity: plan.opacity === 1 ? undefined : plan.opacity,
+      transform: rotationTransform(object)
+    }), children);
   }
 
   warnings.push({
@@ -1678,30 +2353,662 @@ function graphicObjectFragment(
   return fallbackObjectFragment(object, layerIndex);
 }
 
-function lineObjectFragment(object: DocumentObject, label: string, layerIndex: number): PageSvgElementFragment {
-  const startX = object.x;
-  const startY = object.y + object.height / 2;
-  const endX = object.x + object.width;
-  const endY = startY;
+function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
+  return object.graphicKind === "path" && object.data.artPathKind === "freehand";
+}
+
+function svgPaintAttrs(
+  attribute: "fill" | "stroke",
+  paint: NativeArtPaintPlan,
+  id: string
+): Record<string, PageSvgAttributeValue> {
+  const value = svgPaintValue(paint, id);
+  if (paint.kind === "solid") {
+    return {
+      [attribute]: value,
+      [`${attribute}-opacity`]: paint.opacity === 1 ? undefined : paint.opacity
+    };
+  }
+
+  return { [attribute]: value };
+}
+
+function svgPaintValue(paint: NativeArtPaintPlan, id: string): string {
+  if (paint.kind === "none") {
+    return "none";
+  }
+  if (paint.kind === "solid") {
+    return paint.color;
+  }
+  return `url(#${id})`;
+}
+
+function svgPaintDefinitionFragments(paint: NativeArtPaintPlan, id: string): PageSvgFragment[] {
+  if (paint.kind === "linear-gradient") {
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("linearGradient", `${id}-gradient`, {
+          id,
+          x1: paint.x1,
+          y1: paint.y1,
+          x2: paint.x2,
+          y2: paint.y2,
+          gradientTransform: paint.gradientTransform,
+          gradientUnits: "userSpaceOnUse"
+        }, svgGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  if (paint.kind === "radial-gradient") {
+    return [
+      elementFragment("defs", `${id}-defs`, {}, [
+        elementFragment("radialGradient", `${id}-gradient`, {
+          id,
+          cx: paint.cx,
+          cy: paint.cy,
+          r: paint.r,
+          fx: paint.fx,
+          fy: paint.fy,
+          gradientTransform: paint.gradientTransform,
+          gradientUnits: "userSpaceOnUse"
+        }, svgGradientStopFragments(paint.stops, id))
+      ])
+    ];
+  }
+
+  return [];
+}
+
+function svgEffectSourceAttrs(
+  plan: NativeArtVisualPlan,
+  includeFill: boolean
+): Record<string, PageSvgAttributeValue> | undefined {
+  const hasFilter = plan.effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
+  if (!hasFilter) {
+    return undefined;
+  }
+
+  return {
+    class: "graphic-glyph-effect-source",
+    "data-graphic-effect-source": "true",
+    fill: includeFill && plan.fill.paint.kind !== "none" ? "#000000" : "none",
+    stroke: plan.capabilities.supportsStroke && plan.stroke.paint.kind !== "none" ? "#000000" : "none",
+    "stroke-width": plan.stroke.width,
+    "stroke-dasharray": plan.stroke.dasharray,
+    "stroke-linecap": plan.stroke.lineCap,
+    "stroke-linejoin": plan.stroke.lineJoin,
+    "stroke-miterlimit": plan.stroke.miterLimit,
+    "vector-effect": "non-scaling-stroke",
+    "pointer-events": "none"
+  };
+}
+
+function svgEffectLayerFragmentsForSource(
+  effects: readonly NativeArtEffectPlan[],
+  objectId: string,
+  sourceFragments: readonly PageSvgElementFragment[]
+): PageSvgElementFragment[] {
+  if (sourceFragments.length === 0) {
+    return [];
+  }
+
+  return effects.flatMap((effect) => {
+    if (effect.kind === "shadow") {
+      const layers = [
+        { width: effect.blurPx * 2, opacity: effect.opacity * 0.18 },
+        { width: effect.blurPx, opacity: effect.opacity * 0.28 },
+        { width: 0, opacity: effect.opacity * 0.54 }
+      ];
+      return layers.flatMap((layer, layerIndex) =>
+        sourceFragments.map((source, sourceIndex) =>
+          svgEffectLayerFragment(source, {
+            objectId,
+            effectKind: "shadow",
+            color: effect.color,
+            opacity: layer.opacity,
+            strokeExpansion: layer.width,
+            transform: `translate(${formatNumber(effect.offsetX)} ${formatNumber(effect.offsetY)})`,
+            layerIndex,
+            sourceIndex,
+            includeFill: true
+          })
+        )
+      );
+    }
+
+    if (effect.kind === "glow") {
+      const layers = [
+        { width: effect.spreadPx * 2 + effect.blurPx * 2.2, opacity: effect.opacity * 0.1 },
+        { width: effect.spreadPx * 2 + effect.blurPx * 1.35, opacity: effect.opacity * 0.16 },
+        { width: effect.spreadPx * 2 + effect.blurPx * 0.65, opacity: effect.opacity * 0.24 },
+        { width: effect.spreadPx * 2, opacity: effect.opacity * 0.32 }
+      ];
+      return layers.flatMap((layer, layerIndex) =>
+        sourceFragments.map((source, sourceIndex) =>
+          svgEffectLayerFragment(source, {
+            objectId,
+            effectKind: "glow",
+            color: effect.color,
+            opacity: layer.opacity,
+            strokeExpansion: layer.width,
+            layerIndex,
+            sourceIndex,
+            includeFill: false
+          })
+        )
+      );
+    }
+
+    return [];
+  });
+}
+
+function svgEffectLayerFragment(
+  source: PageSvgElementFragment,
+  options: {
+    objectId: string;
+    effectKind: "shadow" | "glow";
+    color: string;
+    opacity: number;
+    strokeExpansion: number;
+    transform?: string;
+    layerIndex: number;
+    sourceIndex: number;
+    includeFill: boolean;
+  }
+): PageSvgElementFragment {
+  const sourceStroke = source.attrs.stroke;
+  const sourceFill = source.attrs.fill;
+  const hasStroke = sourceStroke !== undefined && sourceStroke !== "none";
+  const hasFill = sourceFill !== undefined && sourceFill !== "none";
+  const baseStrokeWidth = svgNumericAttribute(source.attrs["stroke-width"]) ?? 0;
+  const effectStrokeWidth = hasStroke
+    ? Math.max(0.5, baseStrokeWidth + options.strokeExpansion)
+    : undefined;
+  return {
+    ...source,
+    key: `${source.key}-${options.effectKind}-${options.layerIndex}-${options.sourceIndex}`,
+    attrs: {
+      ...source.attrs,
+      class: "graphic-glyph-effect-layer",
+      "data-graphic-effect": options.effectKind,
+      "data-graphic-effect-layer": options.layerIndex + 1,
+      "data-graphic-effect-source": undefined,
+      fill: options.includeFill && hasFill ? options.color : "none",
+      "fill-opacity": options.includeFill && hasFill ? clampSvgOpacity(options.opacity) : undefined,
+      stroke: hasStroke ? options.color : "none",
+      "stroke-width": effectStrokeWidth,
+      "stroke-opacity": hasStroke ? clampSvgOpacity(options.opacity) : undefined,
+      transform: appendSvgTransform(source.attrs.transform, options.transform),
+      "pointer-events": "none"
+    },
+    children: source.children
+  };
+}
+
+function svgNumericAttribute(value: PageSvgAttributeValue): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function clampSvgOpacity(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function appendSvgTransform(
+  existing: PageSvgAttributeValue,
+  next: string | undefined
+): PageSvgAttributeValue {
+  if (!next) {
+    return existing;
+  }
+  return existing ? `${existing} ${next}` : next;
+}
+
+type SvgEffectFilterRegion = { x: number; y: number; width: number; height: number };
+
+function svgEffectPadding(effect: NativeArtEffectPlan): number {
+  if (effect.kind === "shadow") {
+    return Math.max(Math.abs(effect.offsetX), Math.abs(effect.offsetY)) + effect.blurPx * 4 + 2;
+  }
+  if (effect.kind === "glow") {
+    return effect.blurPx * 4 + effect.spreadPx * 2 + 2;
+  }
+  return 0;
+}
+
+function svgEffectFilterRegionForBounds(
+  effects: readonly NativeArtEffectPlan[],
+  bounds: { x: number; y: number; width: number; height: number }
+): SvgEffectFilterRegion {
+  const padding = Math.max(24, ...effects.map(svgEffectPadding));
+  return {
+    x: bounds.x - padding,
+    y: bounds.y - padding,
+    width: Math.max(bounds.width + padding * 2, 1),
+    height: Math.max(bounds.height + padding * 2, 1)
+  };
+}
+
+function svgEffectDefinitionFragments(plan: NativeArtVisualPlan, id: string): PageSvgFragment[] {
+  return svgEffectDefinitionFragmentsForEffects(
+    plan.effects,
+    id,
+    svgEffectFilterRegionForBounds(plan.effects, plan.frameBounds)
+  );
+}
+
+function svgEffectDefinitionFragmentsForEffects(
+  effects: readonly NativeArtEffectPlan[],
+  id: string,
+  region: SvgEffectFilterRegion
+): PageSvgFragment[] {
+  const filterEffects = effects.filter((effect): effect is Extract<NativeArtEffectPlan, { kind: "shadow" | "glow" }> =>
+    effect.kind === "shadow" || effect.kind === "glow"
+  );
+  if (filterEffects.length === 0) {
+    return [];
+  }
+
+  const filterChildren: PageSvgFragment[] = [];
+  const mergeInputs: string[] = [];
+  filterEffects.forEach((effect) => {
+    if (effect.kind === "shadow") {
+      const blurResult = `${id}-shadow-blur`;
+      const offsetResult = `${id}-shadow-offset`;
+      const floodResult = `${id}-shadow-color`;
+      const result = `${id}-shadow`;
+      filterChildren.push(
+        elementFragment("feGaussianBlur", blurResult, {
+          in: "SourceAlpha",
+          stdDeviation: effect.blurPx,
+          result: blurResult
+        }),
+        elementFragment("feOffset", offsetResult, {
+          in: blurResult,
+          dx: effect.offsetX,
+          dy: effect.offsetY,
+          result: offsetResult
+        }),
+        elementFragment("feFlood", floodResult, {
+          "flood-color": effect.color,
+          "flood-opacity": effect.opacity,
+          result: floodResult
+        }),
+        elementFragment("feComposite", result, {
+          in: floodResult,
+          in2: offsetResult,
+          operator: "in",
+          result
+        })
+      );
+      mergeInputs.push(result);
+      return;
+    }
+
+    const spreadResult = `${id}-glow-spread`;
+    const blurInput = effect.spreadPx > 0 ? spreadResult : "SourceAlpha";
+    const blurResult = `${id}-glow-blur`;
+    const floodResult = `${id}-glow-color`;
+    const compositeResult = `${id}-glow`;
+    if (effect.spreadPx > 0) {
+      filterChildren.push(elementFragment("feMorphology", spreadResult, {
+        in: "SourceAlpha",
+        operator: "dilate",
+        radius: effect.spreadPx,
+        result: spreadResult
+      }));
+    }
+    filterChildren.push(
+      elementFragment("feGaussianBlur", blurResult, {
+        in: blurInput,
+        stdDeviation: effect.blurPx,
+        result: blurResult
+      }),
+      elementFragment("feFlood", floodResult, {
+        "flood-color": effect.color,
+        "flood-opacity": effect.opacity,
+        result: floodResult
+      }),
+      elementFragment("feComposite", compositeResult, {
+        in: floodResult,
+        in2: blurResult,
+        operator: "in",
+        result: compositeResult
+      })
+    );
+    mergeInputs.push(compositeResult);
+  });
+
+  filterChildren.push(elementFragment("feMerge", `${id}-merge`, {}, [
+    ...mergeInputs.map((input, index) => elementFragment("feMergeNode", `${id}-merge-${index}`, { in: input }))
+  ]));
+
+  return [
+    elementFragment("defs", `${id}-defs`, {}, [
+      elementFragment("filter", id, {
+        id,
+        filterUnits: "userSpaceOnUse",
+        x: region.x,
+        y: region.y,
+        width: region.width,
+        height: region.height,
+        "color-interpolation-filters": "sRGB"
+      }, filterChildren)
+    ])
+  ];
+}
+
+function svgSketchEffectFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
+  const transform = plan.projectedShapePathD ? undefined : plan.projectionTransform;
+  return svgSketchEffectFragmentsForEffects(plan.effects, objectId, {
+    className: "graphic-glyph-sketch",
+    dataAttribute: "data-graphic-effect",
+    keyPrefix: "graphic-sketch",
+    transform
+  });
+}
+
+function svgSketchEffectSourceFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgElementFragment[] {
+  const sketch = plan.effects.find((effect) => effect.kind === "sketch");
+  if (!sketch) {
+    return [];
+  }
+
+  const transform = plan.projectedShapePathD ? undefined : plan.projectionTransform;
+  return sketch.paths.map((path, index) => elementFragment("path", `graphic-sketch-effect-source-${objectId}-${index}`, {
+    class: "graphic-glyph-effect-source",
+    "data-graphic-effect-source": "true",
+    d: path.d,
+    fill: path.fill && path.fill !== "none" ? "#000000" : "none",
+    stroke: "#000000",
+    "stroke-width": path.strokeWidth,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    transform,
+    "pointer-events": "none"
+  }));
+}
+
+function svgSketchEffectFragmentsForEffects(
+  effects: readonly NativeArtEffectPlan[],
+  objectId: string,
+  options: {
+    className: string;
+    dataAttribute: string;
+    keyPrefix: string;
+    transform?: string;
+  }
+): PageSvgFragment[] {
+  const sketch = effects.find((effect) => effect.kind === "sketch");
+  if (!sketch) {
+    return [];
+  }
+
+  return sketch.paths.map((path, index) => elementFragment("path", `${options.keyPrefix}-${objectId}-${index}`, {
+    class: options.className,
+    [options.dataAttribute]: "sketch",
+    d: path.d,
+    fill: path.fill ?? "none",
+    stroke: path.stroke,
+    "stroke-width": path.strokeWidth,
+    "stroke-opacity": sketch.opacity === 1 ? undefined : sketch.opacity,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    transform: options.transform,
+    "pointer-events": "none"
+  }));
+}
+
+function svgFlattenedGraphicMarkerFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
+  return [
+    ...(plan.markerStart && plan.markerStartTerminal
+      ? svgFlattenedMarkerFragments(
+          plan.markerStart,
+          plan.markerStartTerminal,
+          `graphic-marker-start-${objectId}`,
+          "start",
+          plan.stroke.color,
+          plan.stroke.opacity,
+          plan.projectionTransform
+        )
+      : []),
+    ...(plan.markerEnd && plan.markerEndTerminal
+      ? svgFlattenedMarkerFragments(
+          plan.markerEnd,
+          plan.markerEndTerminal,
+          `graphic-marker-end-${objectId}`,
+          "end",
+          plan.stroke.color,
+          plan.stroke.opacity,
+          plan.projectionTransform
+        )
+      : [])
+  ];
+}
+
+function svgFlattenedMarkerFragments(
+  marker: NativeArtMarkerPlan,
+  terminal: NativeArtStrokeTerminalPlan,
+  id: string,
+  placement: "start" | "end",
+  color: string,
+  opacity: number,
+  transform: string | undefined
+): PageSvgFragment[] {
+  const size = Math.max(2, marker.sizePx);
+  const half = size / 2;
+  const direction = marker.angleDegrees === 0
+    ? markerTerminalDirection(terminal)
+    : { x: Math.cos(degreesToRadians(marker.angleDegrees)), y: Math.sin(degreesToRadians(marker.angleDegrees)) };
+  const normal = { x: -direction.y, y: direction.x };
+  const strokeWidth = Math.max(1.4, size * 0.16);
+  const strokeAttrs = {
+    stroke: color,
+    "stroke-opacity": opacity === 1 ? undefined : opacity,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "stroke-width": strokeWidth
+  };
+  const fillAttrs = {
+    fill: color,
+    "fill-opacity": opacity === 1 ? undefined : opacity
+  };
+
+  const attrs = {
+    id,
+    "data-graphic-marker": placement,
+    transform
+  };
+  const tip = terminal.point;
+  const markerPoint = (back: number, offset: number): LayoutPoint => ({
+    x: tip.x - direction.x * back + normal.x * offset,
+    y: tip.y - direction.y * back + normal.y * offset
+  });
+  const markerPath = (points: readonly LayoutPoint[], closed = true): string => [
+    `M ${formatNumber(points[0]?.x ?? tip.x)} ${formatNumber(points[0]?.y ?? tip.y)}`,
+    ...points.slice(1).map((point) => `L ${formatNumber(point.x)} ${formatNumber(point.y)}`),
+    closed ? "Z" : ""
+  ].filter(Boolean).join(" ");
+
+  if (marker.kind === "filled-arrow") {
+    return [elementFragment("path", id, {
+      ...attrs,
+      d: markerPath([tip, markerPoint(size, -half), markerPoint(size, half)]),
+      ...fillAttrs,
+      stroke: "none"
+    })];
+  }
+
+  if (marker.kind === "open-arrow") {
+    return [elementFragment("path", id, {
+      ...attrs,
+      d: [
+        `M ${formatNumber(tip.x)} ${formatNumber(tip.y)}`,
+        `L ${formatNumber(markerPoint(size, -half).x)} ${formatNumber(markerPoint(size, -half).y)}`,
+        `M ${formatNumber(tip.x)} ${formatNumber(tip.y)}`,
+        `L ${formatNumber(markerPoint(size, half).x)} ${formatNumber(markerPoint(size, half).y)}`
+      ].join(" "),
+      fill: "none",
+      ...strokeAttrs
+    })];
+  }
+
+  if (marker.kind === "chevron") {
+    return [elementFragment("path", id, {
+      ...attrs,
+      d: markerPath([
+        tip,
+        markerPoint(size * 0.82, -half),
+        markerPoint(size * 0.52, 0),
+        markerPoint(size * 0.82, half)
+      ]),
+      ...fillAttrs,
+      stroke: "none"
+    })];
+  }
+
+  if (marker.kind === "diamond") {
+    return [elementFragment("path", id, {
+      ...attrs,
+      d: markerPath([
+        tip,
+        markerPoint(size * 0.5, -half),
+        markerPoint(size, 0),
+        markerPoint(size * 0.5, half)
+      ]),
+      ...fillAttrs,
+      stroke: "none"
+    })];
+  }
+
+  if (marker.kind === "dot") {
+    const center = markerPoint(half, 0);
+    return [elementFragment("circle", id, {
+      ...attrs,
+      cx: center.x,
+      cy: center.y,
+      r: Math.max(1, size * 0.38),
+      ...fillAttrs
+    })];
+  }
+
+  const barStart = markerPoint(0, -half);
+  const barEnd = markerPoint(0, half);
+  return [elementFragment("path", id, {
+    ...attrs,
+    d: `M ${formatNumber(barStart.x)} ${formatNumber(barStart.y)} L ${formatNumber(barEnd.x)} ${formatNumber(barEnd.y)}`,
+    fill: "none",
+    ...strokeAttrs
+  })];
+}
+
+function markerTerminalDirection(terminal: NativeArtStrokeTerminalPlan): LayoutPoint {
+  const length = Math.hypot(terminal.direction.x, terminal.direction.y);
+  if (!Number.isFinite(length) || length <= 0.001) {
+    return { x: 1, y: 0 };
+  }
+
+  return {
+    x: terminal.direction.x / length,
+    y: terminal.direction.y / length
+  };
+}
+
+function svgGradientStopFragments(
+  stops: readonly NativeArtGradientStopPlan[],
+  id: string,
+  opacityMultiplier = 1
+): PageSvgFragment[] {
+  return stops.map((stop, index) => {
+    const opacity = clamp(stop.opacity * opacityMultiplier, 0, 1);
+    return elementFragment("stop", `${id}-stop-${index}`, {
+      offset: `${Number((stop.offset * 100).toFixed(4))}%`,
+      "stop-color": stop.color,
+      "stop-opacity": opacity === 1 ? undefined : opacity
+    });
+  });
+}
+
+function warnForGraphicSvgEffects(object: GraphicObject, warnings: PageSvgRenderWarning[]): void {
+  if (object.style.effect === "reflection") {
+    warnings.push({
+      code: "export.svg.graphic_effect_approximation",
+      message: `SVG export omitted the native ${object.style.effect} graphic effect.`,
+      objectId: object.id
+    });
+  }
+}
+
+export function planNativeArtVisual(
+  object: GraphicObject,
+  options: { coordinateSpace?: NativeArtVisualCoordinateSpace } = {}
+): NativeArtVisualPlan {
+  return planNativeArtVisualFromArtEngine(object, options);
+}
+
+function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
+  const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
+  const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
+  const arrowHead = object.arrowKind === "forward" ? arrowHeadPolygonPoints(start, end) : undefined;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     transform: rotationTransform(object)
   }), [
-    elementFragment("line", `line-${object.id}`, {
-      x1: startX,
-      y1: startY,
-      x2: endX,
-      y2: endY,
+    elementFragment("line", `reaction-arrow-line-${object.id}`, {
+      class: "reaction-arrow-line",
+      "data-arrow-kind": object.arrowKind,
+      x1: start.x,
+      y1: start.y,
+      x2: end.x,
+      y2: end.y,
       stroke: "#172026",
-      "stroke-width": 1.5
+      "stroke-width": 1.5,
+      "stroke-linecap": "round"
     }),
-    elementFragment("text", `line-label-${object.id}`, {
-      x: object.x,
-      y: object.y - 6,
-      "font-family": "Arial, sans-serif",
-      "font-size": 10,
-      fill: "#52616b"
-    }, [textFragment(`line-label-text-${object.id}`, label)])
+    ...(arrowHead ? [
+      elementFragment("polygon", `reaction-arrow-head-${object.id}`, {
+        class: "reaction-arrow-head",
+        "data-arrow-kind": object.arrowKind,
+        points: arrowHead,
+        fill: "#172026",
+        stroke: "none"
+      })
+    ] : [])
   ]);
+}
+
+function arrowAnchorPointForObject(
+  object: ArrowObject,
+  anchor: ArrowObject["start"] | ArrowObject["end"],
+  fallback: LayoutPoint
+): LayoutPoint {
+  if (anchor.kind === "point" && anchor.point) {
+    return anchor.point;
+  }
+  return fallback;
+}
+
+function arrowHeadPolygonPoints(start: LayoutPoint, end: LayoutPoint): string | undefined {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return undefined;
+  }
+
+  const unit = { x: dx / length, y: dy / length };
+  const normal = { x: -unit.y, y: unit.x };
+  const arrowLength = 9;
+  const arrowHalfWidth = 4.5;
+  const base = {
+    x: end.x - unit.x * arrowLength,
+    y: end.y - unit.y * arrowLength
+  };
+  return [
+    `${formatNumber(end.x)},${formatNumber(end.y)}`,
+    `${formatNumber(base.x + normal.x * arrowHalfWidth)},${formatNumber(base.y + normal.y * arrowHalfWidth)}`,
+    `${formatNumber(base.x - normal.x * arrowHalfWidth)},${formatNumber(base.y - normal.y * arrowHalfWidth)}`
+  ].join(" ");
 }
 
 function fallbackObjectFragmentWithWarning(
@@ -2392,6 +3699,123 @@ function nativeMoleculeAtomLabelColor(
   return styleColorMapValue(object.style.atomLabelColors, atomId) ?? drawingStyle.atomLabelColor;
 }
 
+function nativeMoleculeStrokeOpacity(object: MoleculeObject): number {
+  return clamp(metadataNumber(object.style.strokeOpacity) ?? 1, 0, 1);
+}
+
+function nativeMoleculeObjectOpacity(object: MoleculeObject): number {
+  return clamp(metadataNumber(object.style.opacity) ?? 1, 0, 1);
+}
+
+function moleculeFillOpacity(object: MoleculeObject): number {
+  const explicitOpacity = metadataNumber(object.style.fillOpacity);
+  if (explicitOpacity !== undefined) {
+    return clamp(explicitOpacity, 0, 1);
+  }
+  const paint = moleculeFillPaintForObject(object);
+  return paint.kind === "solid"
+    ? clamp(paint.opacity ?? 1, 0, 1)
+    : clamp(metadataNumber(object.style.fillOpacity) ?? 1, 0, 1);
+}
+
+function moleculeFillPaintForObject(object: MoleculeObject): GraphicPaint {
+  const paint = graphicPaintFromMetadata(object.style.fillPaint);
+  if (paint) {
+    return paint;
+  }
+
+  const fillColor = metadataString(object.style.fillColor);
+  return fillColor && fillColor.toLowerCase() !== "none"
+    ? { kind: "solid", color: fillColor, opacity: moleculeFillOpacityFromStyle(object) }
+    : { kind: "none" };
+}
+
+function moleculeFillOpacityFromStyle(object: MoleculeObject): number {
+  return clamp(metadataNumber(object.style.fillOpacity) ?? 1, 0, 1);
+}
+
+function graphicPaintFromMetadata(value: unknown): GraphicPaint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const paint = value as Record<string, unknown>;
+  if (paint.kind === "none") {
+    return { kind: "none" };
+  }
+  if (paint.kind === "solid" && typeof paint.color === "string") {
+    return {
+      kind: "solid",
+      color: paint.color,
+      ...(typeof paint.opacity === "number" ? { opacity: clamp(paint.opacity, 0, 1) } : {})
+    };
+  }
+  if (
+    paint.kind === "linear-gradient" &&
+    paint.units === "object" &&
+    typeof paint.x1 === "number" &&
+    typeof paint.y1 === "number" &&
+    typeof paint.x2 === "number" &&
+    typeof paint.y2 === "number" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "linear-gradient",
+      units: "object",
+      x1: clamp(paint.x1, 0, 1),
+      y1: clamp(paint.y1, 0, 1),
+      x2: clamp(paint.x2, 0, 1),
+      y2: clamp(paint.y2, 0, 1),
+      stops: sanitizeGradientStops(paint.stops)
+    };
+  }
+  if (
+    paint.kind === "radial-gradient" &&
+    paint.units === "object" &&
+    typeof paint.cx === "number" &&
+    typeof paint.cy === "number" &&
+    typeof paint.r === "number" &&
+    Array.isArray(paint.stops)
+  ) {
+    return {
+      kind: "radial-gradient",
+      units: "object",
+      cx: clamp(paint.cx, 0, 1),
+      cy: clamp(paint.cy, 0, 1),
+      r: Math.max(0, paint.r),
+      ...(typeof paint.fx === "number" ? { fx: clamp(paint.fx, 0, 1) } : {}),
+      ...(typeof paint.fy === "number" ? { fy: clamp(paint.fy, 0, 1) } : {}),
+      stops: sanitizeGradientStops(paint.stops)
+    };
+  }
+  return undefined;
+}
+
+function sanitizeGradientStops(
+  stops: unknown[]
+): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
+  const sanitized = stops.flatMap((stop) => {
+    if (!stop || typeof stop !== "object" || Array.isArray(stop)) {
+      return [];
+    }
+    const entry = stop as Record<string, unknown>;
+    return typeof entry.offset === "number" && typeof entry.color === "string"
+      ? [{
+          offset: clamp(entry.offset, 0, 1),
+          color: entry.color,
+          ...(typeof entry.opacity === "number" ? { opacity: clamp(entry.opacity, 0, 1) } : {})
+        }]
+      : [];
+  }).sort((left, right) => left.offset - right.offset);
+
+  return sanitized.length >= 2
+    ? sanitized
+    : [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ];
+}
+
 export function styleColorMapValue(value: unknown, id: string): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -2402,7 +3826,7 @@ export function styleColorMapValue(value: unknown, id: string): string | undefin
 }
 
 function metadataString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function metadataNumber(value: unknown): number | undefined {

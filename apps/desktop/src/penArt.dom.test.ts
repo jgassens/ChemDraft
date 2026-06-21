@@ -1,0 +1,407 @@
+// @vitest-environment jsdom
+
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MainWindow } from "./MainWindow";
+import { createPhase4Document, nativeBezierPathDocument } from "./documentWorkflow";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const pageRect = {
+  x: 0,
+  y: 0,
+  left: 0,
+  top: 0,
+  right: 792,
+  bottom: 612,
+  width: 792,
+  height: 612,
+  toJSON: () => ({})
+} as DOMRect;
+
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+describe("Pen native art interactions", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
+
+  beforeEach(() => {
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
+    HTMLElement.prototype.setPointerCapture = () => {};
+    HTMLElement.prototype.releasePointerCapture = () => {};
+    HTMLElement.prototype.hasPointerCapture = () => false;
+    window.history.replaceState(null, "", "/?agentBridge=1");
+
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    window.history.replaceState(null, "", "/");
+    delete window.__CHEMDRAFT_AGENT__;
+    if (originalResizeObserver) {
+      globalThis.ResizeObserver = originalResizeObserver;
+    } else {
+      Reflect.deleteProperty(globalThis, "ResizeObserver");
+    }
+  });
+
+  async function renderMainWindow(options: {
+    commandId?: string;
+    initialDocument?: ReturnType<typeof createPhase4Document>;
+  } = {}) {
+    await act(async () => {
+      root.render(createElement(MainWindow, {
+        initialActiveToolCommandId: options.commandId ?? "tool.art.pen",
+        initialCrosshairsVisible: false,
+        initialDocument: options.initialDocument ?? createPhase4Document("Pen Draw"),
+        initialPaletteMode: "hidden",
+        initialRulersVisible: false,
+        nativePalette: true
+      }));
+    });
+    pageElement().getBoundingClientRect = () => pageRect;
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  function pageElement(): HTMLElement {
+    const page = container.querySelector<HTMLElement>(".page");
+    if (!page) {
+      throw new Error("Expected rendered page.");
+    }
+    return page;
+  }
+
+  function snapshotObjectCount(): number {
+    const bridge = window.__CHEMDRAFT_AGENT__;
+    if (!bridge) {
+      throw new Error("Expected agent bridge.");
+    }
+    return bridge.snapshot().pages[0]?.objectCount ?? 0;
+  }
+
+  function selectedArtObjectId(): string {
+    const graphic = container.querySelector<HTMLElement>(".graphic-object");
+    const objectId = graphic?.dataset.objectId;
+    if (!objectId) {
+      throw new Error("Expected inserted graphic object.");
+    }
+    return objectId;
+  }
+
+  function debugArtObject(objectId: string) {
+    const debug = window.__CHEMDRAFT_AGENT__?.debugArtObject(objectId);
+    if (!debug?.ok) {
+      throw new Error(`Expected art debug snapshot for ${objectId}.`);
+    }
+    return debug;
+  }
+
+  function dispatchPointer(
+    target: EventTarget,
+    type: "pointerdown" | "pointermove" | "pointerup",
+    point: { x: number; y: number },
+    pointerId: number
+  ) {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      button: 0,
+      buttons: type === "pointerup" ? 0 : 1,
+      cancelable: true,
+      clientX: point.x,
+      clientY: point.y
+    });
+    Object.defineProperties(event, {
+      isPrimary: { value: true },
+      pointerId: { value: pointerId },
+      pointerType: { value: "mouse" },
+      pressure: { value: 0.5 }
+    });
+    target.dispatchEvent(event);
+  }
+
+  function clickPoint(point: { x: number; y: number }, pointerId: number) {
+    dispatchPointer(pageElement(), "pointerdown", point, pointerId);
+    dispatchPointer(pageElement(), "pointerup", point, pointerId);
+  }
+
+  function dragPoint(
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+    pointerId: number
+  ) {
+    dispatchPointer(pageElement(), "pointerdown", start, pointerId);
+    dispatchPointer(pageElement(), "pointermove", end, pointerId);
+    dispatchPointer(pageElement(), "pointerup", end, pointerId);
+  }
+
+  function controlHandle(index: number, kind: "in" | "out"): HTMLButtonElement {
+    const handle = container.querySelector<HTMLButtonElement>(
+      `[data-graphic-path-control="${kind}"][data-graphic-path-control-index="${index}"]`
+    );
+    if (!handle) {
+      throw new Error(`Expected ${kind} control handle ${index}.`);
+    }
+    return handle;
+  }
+
+  function nodeHandle(index: number): HTMLButtonElement {
+    const handle = container.querySelector<HTMLButtonElement>(`[data-graphic-path-node-index="${index}"]`);
+    if (!handle) {
+      throw new Error(`Expected node handle ${index}.`);
+    }
+    return handle;
+  }
+
+  function segmentHandle(index: number): SVGPathElement {
+    const handle = container.querySelector<SVGPathElement>(`[data-graphic-path-segment-index="${index}"]`);
+    if (!handle) {
+      throw new Error(`Expected path segment handle ${index}.`);
+    }
+    return handle;
+  }
+
+  function dispatchKey(key: string, metaKey = false) {
+    window.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key,
+      metaKey
+    }));
+  }
+
+  it("clicks Pen nodes, drags Bezier controls, and commits with Enter", async () => {
+    await renderMainWindow();
+
+    await act(async () => {
+      clickPoint({ x: 160, y: 140 }, 41);
+      dragPoint({ x: 220, y: 168 }, { x: 240, y: 180 }, 42);
+    });
+
+    expect(snapshotObjectCount()).toBe(0);
+    expect(container.querySelector("[data-path-art-kind=\"bezier\"]")).not.toBeNull();
+    expect(container.querySelectorAll("[data-path-art-preview-control]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-path-art-preview-control-line]")).toHaveLength(2);
+    expect(container.querySelector("[data-path-art-preview-path=\"true\"]")?.getAttribute("d")).toBe(
+      "M 160 140 C 160 140 200 156 220 168"
+    );
+
+    await act(async () => {
+      clickPoint({ x: 284, y: 150 }, 43);
+      dispatchKey("Enter");
+    });
+
+    const debug = debugArtObject(selectedArtObjectId());
+    expect(snapshotObjectCount()).toBe(1);
+    expect(container.querySelector("[data-path-art-preview-layer=\"true\"]")).toBeNull();
+    expect(container.querySelector("[data-active-tool=\"tool.select\"]")).not.toBeNull();
+    expect(debug.object.data.artPathKind).toBe("bezier");
+    expect(debug.object.data.pathClosed).toBe(false);
+    expect(debug.object.data.pathNodes).toEqual([
+      { point: { x: 160, y: 140 } },
+      {
+        point: { x: 220, y: 168 },
+        inControl: { x: 200, y: 156 },
+        outControl: { x: 240, y: 180 }
+      },
+      { point: { x: 284, y: 150 } }
+    ]);
+    expect(debug.plan.pathD).toContain(" C ");
+    expect(container.querySelector("[data-can-undo=\"true\"]")).not.toBeNull();
+
+    await act(async () => {
+      dispatchKey("z", true);
+    });
+    expect(snapshotObjectCount()).toBe(0);
+  });
+
+  it("keeps small Pen click jitter from creating accidental Bezier controls", async () => {
+    await renderMainWindow();
+
+    await act(async () => {
+      clickPoint({ x: 140, y: 140 }, 71);
+      dispatchPointer(pageElement(), "pointerdown", { x: 220, y: 140 }, 72);
+      dispatchPointer(pageElement(), "pointermove", { x: 225, y: 142 }, 72);
+      dispatchPointer(pageElement(), "pointerup", { x: 225, y: 142 }, 72);
+    });
+
+    expect(container.querySelectorAll("[data-path-art-preview-control]")).toHaveLength(0);
+    expect(container.querySelector("[data-path-art-preview-path=\"true\"]")?.getAttribute("d")).toBe("M 140 140 L 220 140");
+
+    await act(async () => {
+      dispatchKey("Enter");
+    });
+
+    const debug = debugArtObject(selectedArtObjectId());
+    expect(debug.object.data.pathNodes).toEqual([
+      { point: { x: 140, y: 140 } },
+      { point: { x: 220, y: 140 } }
+    ]);
+  });
+
+  it("closes the Pen path by clicking the first node", async () => {
+    await renderMainWindow();
+
+    await act(async () => {
+      clickPoint({ x: 140, y: 140 }, 51);
+      clickPoint({ x: 220, y: 140 }, 52);
+      clickPoint({ x: 196, y: 210 }, 53);
+      clickPoint({ x: 143, y: 142 }, 54);
+    });
+
+    const debug = debugArtObject(selectedArtObjectId());
+    expect(snapshotObjectCount()).toBe(1);
+    expect(debug.object.data.artPathKind).toBe("bezier");
+    expect(debug.object.data.pathClosed).toBe(true);
+    expect(debug.object.data.pathNodes).toEqual([
+      { point: { x: 140, y: 140 } },
+      { point: { x: 220, y: 140 } },
+      { point: { x: 196, y: 210 } }
+    ]);
+    expect(container.querySelector("[data-path-art-preview-layer=\"true\"]")).toBeNull();
+    expect(container.querySelector("[data-active-tool=\"tool.select\"]")).not.toBeNull();
+  });
+
+  it("shows Bezier control handles only for the selected path node", async () => {
+    await renderMainWindow();
+
+    await act(async () => {
+      clickPoint({ x: 140, y: 140 }, 61);
+      clickPoint({ x: 220, y: 140 }, 62);
+      clickPoint({ x: 260, y: 188 }, 63);
+      dispatchKey("Enter");
+    });
+
+    const objectId = selectedArtObjectId();
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(3);
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(0);
+    expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(0);
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(1), "pointerdown", { x: 220, y: 140 }, 64);
+      dispatchPointer(pageElement(), "pointerup", { x: 220, y: 140 }, 64);
+    });
+
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-graphic-path-control-line]")).toHaveLength(2);
+    expect(container.querySelector("[data-graphic-path-node-selected=\"true\"]")?.getAttribute("data-graphic-path-node-index")).toBe("1");
+    const controlLine = container.querySelector("[data-graphic-path-control-line]");
+    expect(controlLine?.getAttribute("x1") ?? "").not.toContain("calc");
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(0), "pointerdown", { x: 140, y: 140 }, 65);
+      dispatchPointer(pageElement(), "pointerup", { x: 140, y: 140 }, 65);
+    });
+
+    expect(container.querySelectorAll("[data-graphic-path-control]")).toHaveLength(1);
+    expect(container.querySelector("[data-graphic-path-node-selected=\"true\"]")?.getAttribute("data-graphic-path-node-index")).toBe("0");
+    expect(container.querySelector("[data-graphic-path-control-index=\"1\"]")).toBeNull();
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(1), "pointerdown", { x: 220, y: 140 }, 66);
+      dispatchPointer(pageElement(), "pointerup", { x: 220, y: 140 }, 66);
+    });
+
+    await act(async () => {
+      dispatchPointer(controlHandle(1, "out"), "pointerdown", { x: 230, y: 152 }, 67);
+      dispatchPointer(pageElement(), "pointermove", { x: 244, y: 96 }, 67);
+      dispatchPointer(pageElement(), "pointerup", { x: 244, y: 96 }, 67);
+    });
+
+    const debug = debugArtObject(objectId);
+    expect(debug.object.data.pathNodes?.[1]).toEqual({
+      point: { x: 220, y: 140 },
+      outControl: { x: 244, y: 96 }
+    });
+    expect(debug.plan.pathD).toContain(" C ");
+  });
+
+  it("erases selected Bezier path nodes without starting a node drag", async () => {
+    const initialDocument = nativeBezierPathDocument(
+      createPhase4Document("Pen Eraser"),
+      [
+        { point: { x: 160, y: 140 }, outControl: { x: 185, y: 150 } },
+        { point: { x: 220, y: 180 }, inControl: { x: 195, y: 155 }, outControl: { x: 245, y: 205 } },
+        { point: { x: 280, y: 150 }, inControl: { x: 255, y: 170 } }
+      ],
+      "tool.art.pen"
+    );
+    await renderMainWindow({ commandId: "tool.eraser", initialDocument });
+
+    const objectId = selectedArtObjectId();
+    expect(container.querySelector("[data-active-tool=\"tool.eraser\"]")).not.toBeNull();
+    expect(debugArtObject(objectId).object.data.pathNodes).toHaveLength(3);
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(1), "pointerdown", { x: 220, y: 180 }, 81);
+    });
+
+    const afterNodeErase = debugArtObject(objectId).object.data.pathNodes;
+    expect(snapshotObjectCount()).toBe(1);
+    expect(afterNodeErase).toHaveLength(2);
+    expect(afterNodeErase?.map((node) => node.point)).toEqual([
+      { x: 160, y: 140 },
+      { x: 280, y: 150 }
+    ]);
+
+    await act(async () => {
+      dispatchPointer(nodeHandle(0), "pointerdown", { x: 160, y: 140 }, 82);
+    });
+
+    expect(snapshotObjectCount()).toBe(0);
+    expect(container.querySelector(`[data-object-id="${objectId}"]`)).toBeNull();
+  });
+
+  it("erases a selected closed Bezier path segment and keeps the updated edit chrome visible", async () => {
+    const initialDocument = nativeBezierPathDocument(
+      createPhase4Document("Pen Segment Eraser"),
+      [
+        { point: { x: 160, y: 140 }, outControl: { x: 190, y: 110 } },
+        { point: { x: 240, y: 140 }, inControl: { x: 210, y: 110 }, outControl: { x: 270, y: 170 } },
+        { point: { x: 240, y: 220 }, inControl: { x: 270, y: 190 }, outControl: { x: 210, y: 250 } },
+        { point: { x: 160, y: 220 }, inControl: { x: 190, y: 250 }, outControl: { x: 130, y: 190 } }
+      ],
+      "tool.art.pen",
+      { closed: true }
+    );
+    await renderMainWindow({ commandId: "tool.eraser", initialDocument });
+
+    const objectId = selectedArtObjectId();
+    expect(container.querySelectorAll("[data-graphic-path-segment-index]")).toHaveLength(4);
+    expect(debugArtObject(objectId).object.data.pathClosed).toBe(true);
+
+    await act(async () => {
+      dispatchPointer(segmentHandle(1), "pointerdown", { x: 240, y: 180 }, 83);
+    });
+
+    const after = debugArtObject(objectId).object;
+    expect(after.data.pathClosed).toBe(false);
+    expect(after.data.pathNodes).toHaveLength(4);
+    expect(after.data.pathNodes?.map((node) => node.point)).toEqual([
+      { x: 240, y: 220 },
+      { x: 160, y: 220 },
+      { x: 160, y: 140 },
+      { x: 240, y: 140 }
+    ]);
+    expect(container.querySelectorAll("[data-graphic-path-segment-index]")).toHaveLength(3);
+    expect(container.querySelectorAll("[data-graphic-path-node-index]")).toHaveLength(4);
+    expect(container.querySelector("[role=\"status\"]")?.textContent).toBe(
+      "Eraser: segment deleted; click node or segment; Esc exits"
+    );
+    expect(container.querySelector("[data-active-tool=\"tool.eraser\"]")).not.toBeNull();
+  });
+});

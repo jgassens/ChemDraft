@@ -18,6 +18,8 @@ import {
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   startPaletteWindowDrag,
+  type ToolsetArtPaintTarget,
+  type ToolsetArtStylePayload,
   type ToolsetWindowPosition
 } from "./window-manager";
 
@@ -33,17 +35,21 @@ type PaletteWindowDrag = {
 
 export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
   const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
   const animationFrameRef = useRef<number | undefined>(undefined);
+  const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const [toolsetRegistry, setToolsetRegistry] = useState(() => desktopToolsetRegistry);
   const [activeTool, setActiveTool] = useState("tool.select");
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
+  const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
+  const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document())),
+    () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }),
     []
   );
 
@@ -55,6 +61,9 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       document.body.classList.remove("palette-window-body");
       if (animationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (sizeAnimationFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(sizeAnimationFrameRef.current);
       }
     };
   }, []);
@@ -80,10 +89,40 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       return;
     }
 
-    void setCurrentWindowLogicalSize({
-      width: preferredSize.width,
-      height: colorPickerOpen ? Math.max(preferredSize.height, 292) : preferredSize.height
-    }).catch(() => undefined);
+    const shell = shellRef.current;
+    const applySize = () => {
+      const contentHeight = shell ? Math.ceil(shell.getBoundingClientRect().height) : 0;
+      void setCurrentWindowLogicalSize({
+        width: preferredSize.width,
+        height: Math.max(preferredSize.height, colorPickerOpen ? 292 : 0, contentHeight)
+      }).catch(() => undefined);
+    };
+
+    applySize();
+
+    if (!shell || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (sizeAnimationFrameRef.current !== undefined) {
+        return;
+      }
+
+      sizeAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        sizeAnimationFrameRef.current = undefined;
+        applySize();
+      });
+    });
+    observer.observe(shell);
+
+    return () => {
+      observer.disconnect();
+      if (sizeAnimationFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(sizeAnimationFrameRef.current);
+        sizeAnimationFrameRef.current = undefined;
+      }
+    };
   }, [colorPickerOpen, toolset.preferredWindowSize]);
 
   useEffect(() => {
@@ -107,6 +146,8 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
     void listenForToolsetTextStyle((payload) => {
       setCurrentTextStyle(payload.currentTextStyle);
       setCurrentTextScript(payload.currentTextScript);
+      setCurrentArtStyle(payload.currentArtStyle);
+      setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -316,6 +357,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
 
   return (
     <main
+      ref={shellRef}
       className="palette-window-shell"
       aria-label={`ChemDraft floating ${toolset.title}`}
       data-toolset-id={toolset.id}
@@ -360,6 +402,10 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         title={toolset.title}
         showMainStyleControls={toolset.id === "core.main"}
         showTextStyleControls={toolset.id === "core.text"}
+        showArtStyleControls={toolset.id === "core.art"}
+        currentObjectColor={currentTextStyle.color}
+        currentArtStyle={currentArtStyle}
+        currentArtStyleTarget={currentArtStyleTarget}
         currentTextStyle={currentTextStyle}
         currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}

@@ -35,6 +35,14 @@ function snapshot(): AgentSnapshot {
       height: page.height,
       objectCount: page.objects.length
     },
+    pages: [
+      {
+        id: page.id,
+        width: page.width,
+        height: page.height,
+        objectCount: page.objects.length
+      }
+    ],
     file: { dirty: false },
     objects: []
   };
@@ -175,7 +183,7 @@ describe("createChemDraftAgentBridge", () => {
 });
 
 describe("MainWindow agent bridge integration", () => {
-  it("drives a lasso over one atom into a native fragment selection and hands off to the select tool", async () => {
+  it("drives a lasso over one atom into a native fragment selection while keeping lasso active", async () => {
     installPointerCaptureMocks();
     window.history.replaceState({}, "", "/?agentBridge=1");
     const container = document.createElement("div");
@@ -243,9 +251,10 @@ describe("MainWindow agent bridge integration", () => {
       });
       const afterLasso = bridge.snapshot();
 
-      // A completed non-empty lasso hands off to the select tool so the
-      // resize/rotate transform box is available on the captured fragment.
-      expect(afterLasso.activeToolCommandId).toBe("tool.select");
+      // A completed non-empty lasso keeps the lasso tool active; selected
+      // object chrome remains a privileged interaction surface while the
+      // next empty-canvas drag can start another lasso.
+      expect(afterLasso.activeToolCommandId).toBe("tool.lasso");
       expect(afterLasso.selection.objectIds).toEqual([]);
       expect(afterLasso.selectedNativeMoleculePart).toEqual({
         objectId: molecule.id,

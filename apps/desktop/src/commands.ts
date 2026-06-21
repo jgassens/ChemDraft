@@ -2,13 +2,19 @@ import {
   MinimalPageSizePresetIds,
   findPageSizePreset,
   type ChemDraftDocument,
+  type GraphicEffect,
   type MoleculeObject,
   type NativeTextStyle,
   type TextSpan
 } from "@chemdraft/chem-core";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
-import { nativeSingleLetterElements, type NativeSingleLetterElement } from "./documentWorkflow";
+import {
+  nativeSingleLetterElements,
+  selectedGroupObjectIds,
+  selectedArtBooleanEligibleObjectIds,
+  type NativeSingleLetterElement
+} from "./documentWorkflow";
 import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
@@ -40,7 +46,8 @@ export function createQuickActions(
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },
-    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: false },
+    { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: document.selection.objectIds.length > 0 },
+    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: document.selection.objectIds.length > 0 },
     { id: "clipboard.paste", title: "Paste", icon: "paste", shortcut: "Cmd+V", source: "core" },
     { id: "view.zoomOut", title: "Zoom Out", icon: "zoomOut", shortcut: "Cmd+-", source: "core" },
     { id: "view.zoomIn", title: "Zoom In", icon: "zoomIn", shortcut: "Cmd++", source: "core" },
@@ -67,6 +74,12 @@ export const structureCleanupCommandId = "structure.cleanup2d";
 export const structureSpin3dCommandId = "structure.spin3d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
+export const artBooleanOperationCommandIds = {
+  union: "art.boolean.union",
+  subtract: "art.boolean.subtract",
+  intersect: "art.boolean.intersect",
+  split: "art.boolean.split"
+} as const;
 
 export const editActions: CommandSpec[] = [
   {
@@ -276,10 +289,292 @@ export const textColorCommands = [
   { id: "text.color.purple", title: "Color: Purple", color: "#6046a8" }
 ] as const;
 
+export const objectColorCommands = [
+  { id: "object.color.black", title: "Object Color: Black", color: "#111111" },
+  { id: "object.color.white", title: "Object Color: White", color: "#ffffff" },
+  { id: "object.color.blue", title: "Object Color: Blue", color: "#1f5fbf" },
+  { id: "object.color.red", title: "Object Color: Red", color: "#b3261e" },
+  { id: "object.color.green", title: "Object Color: Green", color: "#1d7f68" },
+  { id: "object.color.gray", title: "Object Color: Gray", color: "#52616b" },
+  { id: "object.color.cyan", title: "Object Color: Cyan", color: "#087ea4" },
+  { id: "object.color.magenta", title: "Object Color: Magenta", color: "#9b287b" },
+  { id: "object.color.yellow", title: "Object Color: Yellow", color: "#d9a400" },
+  { id: "object.color.orange", title: "Object Color: Orange", color: "#c75c12" },
+  { id: "object.color.purple", title: "Object Color: Purple", color: "#6046a8" }
+] as const satisfies readonly {
+  id: `object.color.${string}`;
+  title: string;
+  color: string;
+}[];
+
+export const objectStyleTargetCommands = [
+  { id: "object.style.target.fill", title: "Target Fill", target: "fill" },
+  { id: "object.style.target.stroke", title: "Target Stroke", target: "stroke" }
+] as const satisfies readonly { id: string; title: string; target: "fill" | "stroke" }[];
+
+export const objectStyleNoneCommands = [
+  { id: "object.style.fill.none", title: "No Fill", target: "fill" },
+  { id: "object.style.stroke.none", title: "No Stroke", target: "stroke" }
+] as const satisfies readonly { id: string; title: string; target: "fill" | "stroke" }[];
+
+export const objectStyleSwapCommand = {
+  id: "object.style.swapFillStroke",
+  title: "Swap Fill and Stroke"
+} as const;
+
+export const objectGradientReverseCommand = {
+  id: "object.gradient.reverseStops",
+  title: "Reverse Gradient Stops"
+} as const;
+
+export const objectGradientRotateCommand = {
+  id: "object.gradient.rotateStops",
+  title: "Rotate Gradient Stops"
+} as const;
+
+export const objectGradientAddStopCommand = {
+  id: "object.gradient.addStop",
+  title: "Add Gradient Stop"
+} as const;
+
+export const objectGradientDeleteStopCommand = {
+  id: "object.gradient.deleteStop",
+  title: "Delete Gradient Stop"
+} as const;
+
+export const distributeModeCommandIds = {
+  centers: "layout.distribute.mode.centers",
+  spacing: "layout.distribute.mode.spacing"
+} as const;
+
+export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
+
+export const objectPaintTypeCommands = [
+  { id: "object.paint.type.none", title: "Paint Type: None", paintType: "none", label: "None" },
+  { id: "object.paint.type.solid", title: "Paint Type: Solid", paintType: "solid", label: "Solid" },
+  { id: "object.paint.type.linearGradient", title: "Paint Type: Linear Gradient", paintType: "linear-gradient", label: "Linear" },
+  { id: "object.paint.type.radialGradient", title: "Paint Type: Radial Gradient", paintType: "radial-gradient", label: "Radial" },
+  { id: "object.paint.type.gloss", title: "Paint Type: Gloss", paintType: "gloss", label: "Gloss" }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  paintType: ObjectPaintType;
+  label: string;
+}[];
+
+export type ObjectEffectKind = GraphicEffect["kind"] | "none";
+export type ObjectAdjustableEffectKind = Exclude<ObjectEffectKind, "none">;
+
+export const objectEffectCommands = [
+  { id: "object.effect.none", title: "Clear Art Effects", effectKind: "none", label: "Clear" },
+  { id: "object.effect.shadow", title: "Art Effect: Shadow", effectKind: "shadow", label: "Shadow" },
+  { id: "object.effect.glow", title: "Art Effect: Glow", effectKind: "glow", label: "Glow" },
+  { id: "object.effect.sketch", title: "Art Effect: Sketch", effectKind: "sketch", label: "Sketch" }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  effectKind: ObjectEffectKind;
+  label: string;
+}[];
+
+export const objectStrokeWidthCommands = [
+  { id: "object.stroke.width.1", title: "Stroke Width: 1 px", strokeWidth: 1 },
+  { id: "object.stroke.width.1_5", title: "Stroke Width: 1.5 px", strokeWidth: 1.5 },
+  { id: "object.stroke.width.2", title: "Stroke Width: 2 px", strokeWidth: 2 },
+  { id: "object.stroke.width.3", title: "Stroke Width: 3 px", strokeWidth: 3 },
+  { id: "object.stroke.width.5", title: "Stroke Width: 5 px", strokeWidth: 5 }
+] as const satisfies readonly { id: string; title: string; strokeWidth: number }[];
+
+export const objectStrokeDashCommands = [
+  { id: "object.stroke.dash.solid", title: "Solid Stroke", strokeDasharray: undefined },
+  { id: "object.stroke.dash.dashed", title: "Dashed Stroke", strokeDasharray: "8 6" },
+  { id: "object.stroke.dash.long", title: "Long Dash Stroke", strokeDasharray: "14 7" },
+  { id: "object.stroke.dash.dotted", title: "Dotted Stroke", strokeDasharray: "0 6", strokeLineCap: "round" },
+  { id: "object.stroke.dash.dashDot", title: "Dash-Dot Stroke", strokeDasharray: "8 5 0 5", strokeLineCap: "round" }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  strokeDasharray?: string;
+  strokeLineCap?: "round";
+}[];
+
+export const objectStrokeLineCapCommands = [
+  { id: "object.stroke.cap.butt", title: "Line Ends: Flat", strokeLineCap: "butt" },
+  { id: "object.stroke.cap.round", title: "Line Ends: Round", strokeLineCap: "round" },
+  { id: "object.stroke.cap.square", title: "Line Ends: Square", strokeLineCap: "square" }
+] as const satisfies readonly { id: string; title: string; strokeLineCap: "butt" | "round" | "square" }[];
+
+export const objectStrokeLineJoinCommands = [
+  { id: "object.stroke.join.miter", title: "Corners: Sharp", strokeLineJoin: "miter" },
+  { id: "object.stroke.join.round", title: "Corners: Round", strokeLineJoin: "round" },
+  { id: "object.stroke.join.bevel", title: "Corners: Bevel", strokeLineJoin: "bevel" }
+] as const satisfies readonly { id: string; title: string; strokeLineJoin: "miter" | "round" | "bevel" }[];
+
 export const customTextColorCommandPrefix = "text.color.custom.";
+export const customObjectColorCommandPrefix = "object.color.custom.";
+export const customObjectOpacityCommandPrefix = "object.opacity.custom.";
+export const customObjectFillOpacityCommandPrefix = "object.fillOpacity.custom.";
+export const customObjectStrokeOpacityCommandPrefix = "object.strokeOpacity.custom.";
+export const customObjectGradientStopColorCommandPrefix = "object.gradient.stopColor.";
+export const customObjectGradientStopOpacityCommandPrefix = "object.gradient.stopOpacity.";
+export const customObjectGradientStopOffsetCommandPrefix = "object.gradient.stopOffset.";
+export const customObjectGradientDeleteStopCommandPrefix = "object.gradient.deleteStop.";
+export const customObjectEffectColorCommandPrefix = "object.effect.color.";
+export const customObjectEffectOpacityCommandPrefix = "object.effect.opacity.";
+export const customObjectEffectSizeCommandPrefix = "object.effect.size.";
+export const customObjectEffectDisableCommandPrefix = "object.effect.disable.";
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
+}
+
+export function objectCustomColorCommandId(color: string): string {
+  return `${customObjectColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
+}
+
+export function objectOpacityCommandId(opacity: number): string {
+  return `${customObjectOpacityCommandPrefix}${opacityPercent(opacity)}`;
+}
+
+export function objectFillOpacityCommandId(opacity: number): string {
+  return `${customObjectFillOpacityCommandPrefix}${opacityPercent(opacity)}`;
+}
+
+export function objectStrokeOpacityCommandId(opacity: number): string {
+  return `${customObjectStrokeOpacityCommandPrefix}${opacityPercent(opacity)}`;
+}
+
+export function objectGradientStopColorCommandId(stopIndex: number, color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customObjectGradientStopColorCommandPrefix}${normalizeStopIndex(stopIndex)}.${normalized.slice(1)}`;
+}
+
+export function objectGradientStopOpacityCommandId(stopIndex: number, opacity: number): string {
+  return `${customObjectGradientStopOpacityCommandPrefix}${normalizeStopIndex(stopIndex)}.${opacityPercent(opacity)}`;
+}
+
+export function objectGradientStopOffsetCommandId(stopIndex: number, offset: number): string {
+  return `${customObjectGradientStopOffsetCommandPrefix}${normalizeStopIndex(stopIndex)}.${unitPercent(offset)}`;
+}
+
+export function objectGradientDeleteStopCommandId(stopIndex: number): string {
+  return `${customObjectGradientDeleteStopCommandPrefix}${normalizeStopIndex(stopIndex)}`;
+}
+
+export function objectEffectColorCommandId(effectKind: ObjectAdjustableEffectKind, color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customObjectEffectColorCommandPrefix}${effectKind}.${normalized.slice(1)}`;
+}
+
+export function objectEffectOpacityCommandId(effectKind: ObjectAdjustableEffectKind, opacity: number): string {
+  return `${customObjectEffectOpacityCommandPrefix}${effectKind}.${opacityPercent(opacity)}`;
+}
+
+export function objectEffectSizeCommandId(effectKind: ObjectAdjustableEffectKind, size: number): string {
+  return `${customObjectEffectSizeCommandPrefix}${effectKind}.${unitPercent(size)}`;
+}
+
+export function objectEffectDisableCommandId(effectKind: ObjectAdjustableEffectKind): string {
+  return `${customObjectEffectDisableCommandPrefix}${effectKind}`;
+}
+
+export function objectOpacityForCommand(commandId: string): { key: "opacity" | "fillOpacity" | "strokeOpacity"; value: number } | undefined {
+  if (commandId.startsWith(customObjectOpacityCommandPrefix)) {
+    return { key: "opacity", value: opacityFromCommandSuffix(commandId.slice(customObjectOpacityCommandPrefix.length)) };
+  }
+  if (commandId.startsWith(customObjectFillOpacityCommandPrefix)) {
+    return { key: "fillOpacity", value: opacityFromCommandSuffix(commandId.slice(customObjectFillOpacityCommandPrefix.length)) };
+  }
+  if (commandId.startsWith(customObjectStrokeOpacityCommandPrefix)) {
+    return { key: "strokeOpacity", value: opacityFromCommandSuffix(commandId.slice(customObjectStrokeOpacityCommandPrefix.length)) };
+  }
+  return undefined;
+}
+
+export function objectGradientStopColorForCommand(commandId: string): { stopIndex: number; color: string } | undefined {
+  if (!commandId.startsWith(customObjectGradientStopColorCommandPrefix)) {
+    return undefined;
+  }
+
+  const [stopIndexText, colorText] = commandId.slice(customObjectGradientStopColorCommandPrefix.length).split(".");
+  const stopIndex = normalizeStopIndex(Number(stopIndexText));
+  const color = normalizeHexColor(colorText ? `#${colorText}` : undefined);
+  return color ? { stopIndex, color } : undefined;
+}
+
+export function objectGradientStopOpacityForCommand(commandId: string): { stopIndex: number; opacity: number } | undefined {
+  if (!commandId.startsWith(customObjectGradientStopOpacityCommandPrefix)) {
+    return undefined;
+  }
+
+  const [stopIndexText, opacityText] = commandId.slice(customObjectGradientStopOpacityCommandPrefix.length).split(".");
+  return {
+    stopIndex: normalizeStopIndex(Number(stopIndexText)),
+    opacity: opacityFromCommandSuffix(opacityText ?? "100")
+  };
+}
+
+export function objectGradientStopOffsetForCommand(commandId: string): { stopIndex: number; offset: number } | undefined {
+  if (!commandId.startsWith(customObjectGradientStopOffsetCommandPrefix)) {
+    return undefined;
+  }
+
+  const [stopIndexText, offsetText] = commandId.slice(customObjectGradientStopOffsetCommandPrefix.length).split(".");
+  return {
+    stopIndex: normalizeStopIndex(Number(stopIndexText)),
+    offset: unitFromCommandSuffix(offsetText ?? "0", 0)
+  };
+}
+
+export function objectGradientDeleteStopIndexForCommand(commandId: string): number | undefined {
+  if (!commandId.startsWith(customObjectGradientDeleteStopCommandPrefix)) {
+    return undefined;
+  }
+
+  return normalizeStopIndex(Number(commandId.slice(customObjectGradientDeleteStopCommandPrefix.length)));
+}
+
+export function objectEffectColorForCommand(commandId: string): { effectKind: ObjectAdjustableEffectKind; color: string } | undefined {
+  if (!commandId.startsWith(customObjectEffectColorCommandPrefix)) {
+    return undefined;
+  }
+
+  const [effectKindText, colorText] = commandId.slice(customObjectEffectColorCommandPrefix.length).split(".");
+  const effectKind = objectAdjustableEffectKind(effectKindText);
+  const color = normalizeHexColor(colorText ? `#${colorText}` : undefined);
+  return effectKind && color ? { effectKind, color } : undefined;
+}
+
+export function objectEffectOpacityForCommand(commandId: string): { effectKind: ObjectAdjustableEffectKind; opacity: number } | undefined {
+  if (!commandId.startsWith(customObjectEffectOpacityCommandPrefix)) {
+    return undefined;
+  }
+
+  const [effectKindText, opacityText] = commandId.slice(customObjectEffectOpacityCommandPrefix.length).split(".");
+  const effectKind = objectAdjustableEffectKind(effectKindText);
+  return effectKind
+    ? { effectKind, opacity: opacityFromCommandSuffix(opacityText ?? "100") }
+    : undefined;
+}
+
+export function objectEffectSizeForCommand(commandId: string): { effectKind: ObjectAdjustableEffectKind; size: number } | undefined {
+  if (!commandId.startsWith(customObjectEffectSizeCommandPrefix)) {
+    return undefined;
+  }
+
+  const [effectKindText, sizeText] = commandId.slice(customObjectEffectSizeCommandPrefix.length).split(".");
+  const effectKind = objectAdjustableEffectKind(effectKindText);
+  return effectKind
+    ? { effectKind, size: unitFromCommandSuffix(sizeText ?? "0", 0) }
+    : undefined;
+}
+
+export function objectEffectDisableForCommand(commandId: string): ObjectAdjustableEffectKind | undefined {
+  if (!commandId.startsWith(customObjectEffectDisableCommandPrefix)) {
+    return undefined;
+  }
+
+  return objectAdjustableEffectKind(commandId.slice(customObjectEffectDisableCommandPrefix.length));
 }
 
 export function textColorForCommand(commandId: string): string | undefined {
@@ -295,6 +590,36 @@ export function textColorForCommand(commandId: string): string | undefined {
   return normalizeHexColor(customColor);
 }
 
+export function objectColorForCommand(commandId: string): string | undefined {
+  const color = objectColorCommands.find((command) => command.id === commandId);
+  if (color) {
+    return color.color;
+  }
+
+  const customColor = commandId.startsWith(customObjectColorCommandPrefix)
+    ? `#${commandId.slice(customObjectColorCommandPrefix.length)}`
+    : undefined;
+
+  return normalizeHexColor(customColor);
+}
+
+export function objectPaintTypeForCommand(commandId: string): ObjectPaintType | undefined {
+  return objectPaintTypeCommands.find((command) => command.id === commandId)?.paintType;
+}
+
+export function objectEffectForCommand(commandId: string): ObjectEffectKind | undefined {
+  return objectEffectCommands.find((command) => command.id === commandId)?.effectKind;
+}
+
+function objectAdjustableEffectKind(value: string | undefined): ObjectAdjustableEffectKind | undefined {
+  return value === "shadow" || value === "glow" || value === "sketch" ? value : undefined;
+}
+
+export function objectPaintTypeCommandId(paintType: ObjectPaintType): string {
+  return objectPaintTypeCommands.find((command) => command.paintType === paintType)?.id ??
+    objectPaintTypeCommands[1].id;
+}
+
 export function normalizeHexColor(color: string | undefined): string | undefined {
   const normalized = color?.trim().replace(/^#/, "").toLowerCase();
   if (!normalized) {
@@ -306,6 +631,27 @@ export function normalizeHexColor(color: string | undefined): string | undefined
   }
 
   return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
+}
+
+function opacityPercent(opacity: number): number {
+  return unitPercent(opacity);
+}
+
+function unitPercent(value: number, fallback = 1): number {
+  return Math.round(Math.max(0, Math.min(1, Number.isFinite(value) ? value : fallback)) * 100);
+}
+
+function opacityFromCommandSuffix(value: string): number {
+  return unitFromCommandSuffix(value, 1);
+}
+
+function unitFromCommandSuffix(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed / 100 : fallback));
+}
+
+function normalizeStopIndex(stopIndex: number): number {
+  return Math.max(0, Math.round(Number.isFinite(stopIndex) ? stopIndex : 0));
 }
 
 export const textLetterSpacingCommands = [
@@ -351,6 +697,107 @@ export const textToolbarActions: CommandSpec[] = [
   { id: "text.italic", title: "Italic Text", icon: "text", source: "core", category: "text" },
   { id: "text.underline", title: "Underline Text", icon: "text", source: "core", category: "text" },
   ...textScriptCommands.map(({ id, title }) => ({ id, title, icon: "text", source: "core", category: "text" } satisfies CommandSpec))
+];
+
+export const objectStyleActions: CommandSpec[] = [
+  ...objectStyleTargetCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStyleNoneCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  {
+    id: objectStyleSwapCommand.id,
+    title: objectStyleSwapCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientReverseCommand.id,
+    title: objectGradientReverseCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientRotateCommand.id,
+    title: objectGradientRotateCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientAddStopCommand.id,
+    title: objectGradientAddStopCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  {
+    id: objectGradientDeleteStopCommand.id,
+    title: objectGradientDeleteStopCommand.title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  },
+  ...objectPaintTypeCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectEffectCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectColorCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeWidthCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeDashCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeLineCapCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec)),
+  ...objectStrokeLineJoinCommands.map(({ id, title }) => ({
+    id,
+    title,
+    icon: "style",
+    source: "core",
+    category: "object-style"
+  } satisfies CommandSpec))
 ];
 
 export function textScriptForCommand(commandId: string): TextSpan["script"] | undefined {
@@ -413,12 +860,164 @@ export function textStylePatchForCommand(
 
 export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
+  const hasMultiSelection = document.selection.objectIds.length >= 2;
+  const hasDistributableSelection = document.selection.objectIds.length >= 3;
+  const hasSelectedGroup = selectedGroupObjectIds(document).length > 0;
+  const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    {
+      id: "layout.alignLeft",
+      title: "Align Left",
+      icon: "align",
+      assetName: "Custom_Left",
+      shortcut: "Option+Shift+Cmd+L",
+      shortcutLabel: "⌥⇧⌘L",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the left edge of the selection"
+    },
+    {
+      id: "layout.alignCenter",
+      title: "Align Center",
+      icon: "align",
+      assetName: "Custom_Center",
+      shortcut: "Option+Shift+Cmd+C",
+      shortcutLabel: "⌥⇧⌘C",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the horizontal center of the selection"
+    },
+    {
+      id: "layout.alignRight",
+      title: "Align Right",
+      icon: "align",
+      assetName: "Custom_Right",
+      shortcut: "Option+Shift+Cmd+R",
+      shortcutLabel: "⌥⇧⌘R",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the right edge of the selection"
+    },
+    {
+      id: "layout.alignTop",
+      title: "Align Top",
+      icon: "align",
+      assetName: "Custom_Top",
+      shortcut: "Option+Shift+Cmd+T",
+      shortcutLabel: "⌥⇧⌘T",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the top edge of the selection"
+    },
+    {
+      id: "layout.alignMiddle",
+      title: "Align Middle",
+      icon: "align",
+      assetName: "Custom_Middle",
+      shortcut: "Option+Shift+Cmd+M",
+      shortcutLabel: "⌥⇧⌘M",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the vertical middle of the selection"
+    },
+    {
+      id: "layout.alignBottom",
+      title: "Align Bottom",
+      icon: "align",
+      assetName: "Custom_Bottom",
+      shortcut: "Option+Shift+Cmd+B",
+      shortcutLabel: "⌥⇧⌘B",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Align selected document objects to the bottom edge of the selection"
+    },
+    {
+      id: "layout.distributeHorizontal",
+      title: "Distribute Horizontally",
+      icon: "align",
+      assetName: "Custom_Horizontal",
+      shortcut: "Option+Shift+Cmd+H",
+      shortcutLabel: "⌥⇧⌘H",
+      source: "core",
+      category: "layout",
+      enabled: hasDistributableSelection,
+      disabledReason: "Select at least three objects",
+      description: "Distribute selected document objects evenly from left to right"
+    },
+    {
+      id: "layout.distributeVertical",
+      title: "Distribute Vertically",
+      icon: "align",
+      assetName: "Custom_Vertical",
+      shortcut: "Option+Shift+Cmd+V",
+      shortcutLabel: "⌥⇧⌘V",
+      source: "core",
+      category: "layout",
+      enabled: hasDistributableSelection,
+      disabledReason: "Select at least three objects",
+      description: "Distribute selected document objects evenly from top to bottom"
+    },
+    {
+      id: distributeModeCommandIds.centers,
+      title: "Distribute by Centers",
+      icon: "align",
+      source: "core",
+      category: "layout",
+      description: "Use center-to-center spacing for distribute buttons"
+    },
+    {
+      id: distributeModeCommandIds.spacing,
+      title: "Distribute Equal Gaps",
+      icon: "align",
+      source: "core",
+      category: "layout",
+      description: "Use equal empty space between object bounds for distribute buttons"
+    },
+    {
+      id: "layout.group",
+      title: "Group",
+      icon: "group",
+      assetName: "Custom_Group",
+      shortcut: "Cmd+G",
+      shortcutLabel: "⌘G",
+      source: "core",
+      category: "layout",
+      enabled: hasMultiSelection,
+      disabledReason: "Select at least two objects",
+      description: "Treat selected document objects as one grouped selection"
+    },
+    {
+      id: "layout.ungroup",
+      title: "Ungroup",
+      icon: "group",
+      assetName: "Custom_Ungroup",
+      shortcut: "Shift+Cmd+G",
+      shortcutLabel: "⇧⌘G",
+      source: "core",
+      category: "layout",
+      enabled: hasSelectedGroup,
+      disabledReason: "Select a group",
+      description: "Restore a grouped selection to its child objects"
+    },
     {
       id: "layout.bringToFront",
       title: "Bring to Front",
       icon: "group",
       assetName: "Custom_Front",
+      shortcut: "Shift+Cmd+]",
+      shortcutLabel: "⇧⌘]",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -429,6 +1028,8 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       title: "Bring Forward",
       icon: "group",
       assetName: "Custom_Front",
+      shortcut: "Cmd+]",
+      shortcutLabel: "⌘]",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -439,6 +1040,8 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       title: "Send Backward",
       icon: "group",
       assetName: "Custom_Back",
+      shortcut: "Cmd+[",
+      shortcutLabel: "⌘[",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -449,10 +1052,92 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       title: "Send to Back",
       icon: "group",
       assetName: "Custom_Back",
+      shortcut: "Shift+Cmd+[",
+      shortcutLabel: "⇧⌘[",
       source: "core",
       category: "layout",
       enabled: hasSelection,
       description: "Move the selected document object to the back layer"
+    },
+    {
+      id: "layout.flipHorizontal",
+      title: "Flip Horizontally",
+      icon: "align",
+      assetName: "Custom_Flip_Horizontal",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Mirror the selected document objects left to right"
+    },
+    {
+      id: "layout.flipVertical",
+      title: "Flip Vertically",
+      icon: "align",
+      assetName: "Custom_Flip_Vertical",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Mirror the selected document objects top to bottom"
+    },
+    {
+      id: "layout.rotate90",
+      title: "Rotate 90 Degrees",
+      icon: "align",
+      assetName: "Custom_Rotation",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Rotate the selected document objects 90 degrees around the selection center"
+    },
+    {
+      id: "layout.duplicate",
+      title: "Duplicate",
+      icon: "group",
+      assetName: "Art_Bring_Forward",
+      source: "core",
+      category: "layout",
+      enabled: hasSelection,
+      description: "Duplicate the selected document objects and select the copies"
+    },
+    {
+      id: artBooleanOperationCommandIds.union,
+      title: "Union",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Merge selected closed art shapes into one path"
+    },
+    {
+      id: artBooleanOperationCommandIds.subtract,
+      title: "Subtract",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Subtract later selected closed art shapes from the first"
+    },
+    {
+      id: artBooleanOperationCommandIds.intersect,
+      title: "Intersect",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Keep only the overlap of selected closed art shapes"
+    },
+    {
+      id: artBooleanOperationCommandIds.split,
+      title: "Split",
+      icon: "group",
+      source: "core",
+      category: "art",
+      enabled: hasBooleanSelection,
+      disabledReason: "Select at least two closed art shapes",
+      description: "Split selected closed art shapes into non-overlapping pieces"
     }
   ];
 }
@@ -543,6 +1228,7 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     pageCustomSizeAction,
     ...pageOrientationActions,
     ...textToolbarActions,
+    ...objectStyleActions,
     ...toolbarCustomizationActions,
     ...getToolsetToggleActions(),
     ...styleActions

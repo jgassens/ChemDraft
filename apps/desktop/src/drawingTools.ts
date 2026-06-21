@@ -1,6 +1,6 @@
 import type { CommandSpec } from "./commands";
 
-export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge";
+export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
 
 export interface DrawingToolDefinition {
@@ -10,7 +10,14 @@ export interface DrawingToolDefinition {
   category: string;
   icon: CommandSpec["icon"];
   defaultShortcut?: string;
+  usageHint?: DrawingToolUsageHint;
   disabledReason?: string;
+}
+
+export interface DrawingToolUsageHint {
+  action: string;
+  optionalActions: string;
+  endActions: string;
 }
 
 export interface ActiveToolState {
@@ -28,6 +35,8 @@ export interface ToolActivationResult {
 }
 
 const EDITOR_ADAPTER_UNAVAILABLE = "unavailable until an EditorAdapter is connected";
+const artShapeUsageHint = usageHint("click canvas", "select object to edit", "Esc exits");
+const artPathUsageHint = usageHint("click canvas", "drag handles after selecting", "Esc exits");
 
 export const coreDrawingToolDefinitions = [
   {
@@ -36,7 +45,8 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "select",
-    defaultShortcut: "V"
+    defaultShortcut: "V",
+    usageHint: usageHint("click object or canvas", "drag moves or selects", "choose another tool")
   },
   {
     commandId: "tool.lasso",
@@ -44,14 +54,24 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "lasso",
-    defaultShortcut: "L"
+    defaultShortcut: "L",
+    usageHint: usageHint("drag around objects", "Option subtracts", "Esc exits")
+  },
+  {
+    commandId: "tool.art.directEdit",
+    title: "Direct Edit",
+    kind: "selection",
+    category: "art",
+    icon: "select",
+    usageHint: usageHint("drag art handles", "double-click object for transform", "Esc exits")
   },
   {
     commandId: "tool.eraser",
     title: "Eraser Tool",
     kind: "selection",
     category: "selection",
-    icon: "select"
+    icon: "select",
+    usageHint: usageHint("click or drag over objects", "drag marquee deletes touched", "Esc exits")
   },
   {
     commandId: "tool.bond",
@@ -59,35 +79,40 @@ export const coreDrawingToolDefinitions = [
     kind: "bond",
     category: "structure",
     icon: "bond",
-    defaultShortcut: "M"
+    defaultShortcut: "M",
+    usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
     commandId: "tool.wedgeBond",
     title: "Solid Wedge Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
     commandId: "tool.hashedBond",
     title: "Hashed Wedge Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
     commandId: "tool.dashedBond",
     title: "Dashed Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
     commandId: "tool.boldBond",
     title: "Bold Bond",
     kind: "bond",
     category: "structure",
-    icon: "bond"
+    icon: "bond",
+    usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
     commandId: "tool.chain",
@@ -112,35 +137,40 @@ export const coreDrawingToolDefinitions = [
     kind: "ring",
     category: "structure",
     icon: "ring",
-    defaultShortcut: "R"
+    defaultShortcut: "R",
+    usageHint: usageHint("click canvas or atom", "click atom to attach", "Esc exits")
   },
   {
     commandId: "tool.cyclohexane",
     title: "Cyclohexane Template",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: usageHint("click canvas or atom", "click atom to attach", "Esc exits")
   },
   {
     commandId: "tool.benzene",
     title: "Benzene Template",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: usageHint("click canvas or atom", "click atom to attach", "Esc exits")
   },
   {
     commandId: "tool.chairCyclohexaneA",
     title: "Chair Cyclohexane Template A",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: usageHint("click canvas or atom", "click atom to attach", "Esc exits")
   },
   {
     commandId: "tool.chairCyclohexaneB",
     title: "Chair Cyclohexane Template B",
     kind: "ring",
     category: "structure",
-    icon: "ring"
+    icon: "ring",
+    usageHint: usageHint("click canvas or atom", "click atom to attach", "Esc exits")
   },
   {
     commandId: "tool.text",
@@ -148,7 +178,8 @@ export const coreDrawingToolDefinitions = [
     kind: "text",
     category: "annotation",
     icon: "text",
-    defaultShortcut: "T"
+    defaultShortcut: "T",
+    usageHint: usageHint("click canvas to type", "edit selected text", "Esc exits")
   },
   {
     commandId: "tool.plus",
@@ -156,7 +187,8 @@ export const coreDrawingToolDefinitions = [
     kind: "charge",
     category: "annotation",
     icon: "charge",
-    defaultShortcut: "+"
+    defaultShortcut: "+",
+    usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
   },
   {
     commandId: "tool.minus",
@@ -164,7 +196,8 @@ export const coreDrawingToolDefinitions = [
     kind: "charge",
     category: "annotation",
     icon: "charge",
-    defaultShortcut: "-"
+    defaultShortcut: "-",
+    usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
   },
   {
     commandId: "tool.reactionArrow",
@@ -213,7 +246,8 @@ export const coreDrawingToolDefinitions = [
     category: "arrows",
     icon: "export",
     disabledReason: EDITOR_ADAPTER_UNAVAILABLE
-  }
+  },
+  ...artDrawingToolDefinitions()
 ] as const satisfies readonly DrawingToolDefinition[];
 
 const drawingToolDefinitionByCommandId: ReadonlyMap<string, DrawingToolDefinition> = new Map(
@@ -242,6 +276,18 @@ export function isDrawingToolCommand(commandId: string): boolean {
 
 export function getDrawingToolDefinition(commandId: string): DrawingToolDefinition | undefined {
   return drawingToolDefinitionByCommandId.get(commandId);
+}
+
+export function drawingToolStatusLabel(commandId: string, title?: string): string {
+  const definition = getDrawingToolDefinition(commandId);
+  const statusTitle = compactToolStatusTitle(title ?? definition?.title ?? "Tool");
+  return definition?.usageHint
+    ? `${statusTitle}: ${formatDrawingToolUsageHint(definition.usageHint)}`
+    : `${title ?? definition?.title ?? commandId} active`;
+}
+
+export function formatDrawingToolUsageHint(hint: DrawingToolUsageHint): string {
+  return `${hint.action}; ${hint.optionalActions}; ${hint.endActions}`;
 }
 
 export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec[]): CommandSpec[] {
@@ -301,7 +347,7 @@ export function activateDrawingToolCommand(
       lastCommandId: normalizedCommand.id
     },
     outcome: "activated",
-    status: `${normalizedCommand.title} active`
+    status: drawingToolStatusLabel(normalizedCommand.id, normalizedCommand.title)
   };
 }
 
@@ -344,6 +390,17 @@ function mergeDrawingToolCommandSpec(command: CommandSpec): CommandSpec {
   };
 }
 
+function compactToolStatusTitle(title: string): string {
+  return title
+    .replace(/ Tool$/, "")
+    .replace(/ Selection$/, "")
+    .replace(/ Template$/, "");
+}
+
+function usageHint(action: string, optionalActions: string, endActions: string): DrawingToolUsageHint {
+  return { action, optionalActions, endActions };
+}
+
 function dedupeCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   const byId = new Map<string, CommandSpec>();
   commands.forEach((command) => {
@@ -353,4 +410,58 @@ function dedupeCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   });
 
   return [...byId.values()];
+}
+
+function artDrawingToolDefinitions(): DrawingToolDefinition[] {
+  const tools = [
+    ["tool.art.circle", "Circle", "bracket", artShapeUsageHint],
+    ["tool.art.circleDashed", "Dashed Circle", "bracket", artShapeUsageHint],
+    ["tool.art.circleGloss", "Gloss Circle", "style", artShapeUsageHint],
+    ["tool.art.circleFilled", "Filled Circle", "style", artShapeUsageHint],
+    ["tool.art.circleShadow", "Shadow Circle", "bracket", artShapeUsageHint],
+    ["tool.art.ellipse", "Ellipse", "bracket", artShapeUsageHint],
+    ["tool.art.ellipseDashed", "Dashed Ellipse", "bracket", artShapeUsageHint],
+    ["tool.art.ellipseGloss", "Gloss Ellipse", "style", artShapeUsageHint],
+    ["tool.art.ellipseFilled", "Filled Ellipse", "style", artShapeUsageHint],
+    ["tool.art.ellipseShadow", "Shadow Ellipse", "bracket", artShapeUsageHint],
+    ["tool.art.roundedRect", "Rounded Rectangle", "bracket", artShapeUsageHint],
+    ["tool.art.roundedRectDashed", "Dashed Rounded Rectangle", "bracket", artShapeUsageHint],
+    ["tool.art.roundedRectGloss", "Gloss Rounded Rectangle", "style", artShapeUsageHint],
+    ["tool.art.roundedRectFilled", "Filled Rounded Rectangle", "style", artShapeUsageHint],
+    ["tool.art.roundedRectShadow", "Shadow Rounded Rectangle", "bracket", artShapeUsageHint],
+    ["tool.art.rect", "Rectangle", "bracket", artShapeUsageHint],
+    ["tool.art.rectDashed", "Dashed Rectangle", "bracket", artShapeUsageHint],
+    ["tool.art.rectGloss", "Gloss Rectangle", "style", artShapeUsageHint],
+    ["tool.art.rectFilled", "Filled Rectangle", "style", artShapeUsageHint],
+    ["tool.art.rectShadow", "Shadow Rectangle", "bracket", artShapeUsageHint],
+    ["tool.art.line", "Line", "bond", artPathUsageHint],
+    ["tool.art.lineDashed", "Dashed Line", "bond", artPathUsageHint],
+    ["tool.art.lineWavy", "Wavy Line", "mechanism", artPathUsageHint],
+    ["tool.art.lineBold", "Bold Line", "bond", artPathUsageHint],
+    ["tool.art.pen", "Pen", "mechanism", usageHint("click points", "drag handles", "Enter ends, Esc cancels")],
+    ["tool.art.polyline", "Polyline", "bond", usageHint("click points", "Backspace removes point", "Enter/double-click ends, Esc cancels")],
+    ["tool.art.scissors", "Scissors", "select", usageHint("click path to split", "click path for more", "Esc exits")],
+    ["tool.art.measure", "Tape Measure", "align", usageHint("drag between points", "Shift constrains angle", "Esc exits")],
+    ["tool.art.pencil", "Pencil", "mechanism", usageHint("drag to draw", "keep dragging to continue", "release ends, Esc cancels")],
+    ["tool.art.brush", "Brush", "style", usageHint("drag to paint", "keep dragging to continue", "release ends, Esc cancels")],
+    ["tool.art.eyedropper", "Eyedropper", "style", usageHint("click source art", "⌥ copies full appearance", "Esc exits")],
+    ["tool.art.arrow", "Arrow", "export", artPathUsageHint],
+    ["tool.art.arc270", "Three-quarter Arc", "export", artPathUsageHint],
+    ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export", artPathUsageHint],
+    ["tool.art.arc180", "Half Arc", "export", artPathUsageHint],
+    ["tool.art.arc180Dashed", "Dashed Half Arc", "export", artPathUsageHint],
+    ["tool.art.arc120", "One-third Arc", "export", artPathUsageHint],
+    ["tool.art.arc120Dashed", "Dashed One-third Arc", "export", artPathUsageHint],
+    ["tool.art.arc90", "Quarter Arc", "export", artPathUsageHint],
+    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", artPathUsageHint]
+  ] as const;
+
+  return tools.map(([commandId, title, icon, usageHint]) => ({
+    commandId,
+    title,
+    kind: "art",
+    category: "art",
+    icon,
+    usageHint
+  } satisfies DrawingToolDefinition));
 }

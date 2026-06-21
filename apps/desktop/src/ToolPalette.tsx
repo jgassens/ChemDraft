@@ -5,14 +5,40 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
+import iro from "@jaames/iro";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 import {
   normalizeHexColor,
+  distributeModeCommandIds,
+  objectFillOpacityCommandId,
+  objectOpacityCommandId,
+  objectColorCommands,
+  objectCustomColorCommandId,
+  objectGradientAddStopCommand,
+  objectGradientDeleteStopCommandId,
+  objectGradientReverseCommand,
+  objectGradientRotateCommand,
+  objectGradientStopColorCommandId,
+  objectGradientStopOffsetCommandId,
+  objectGradientStopOpacityCommandId,
+  objectEffectCommands,
+  objectEffectColorCommandId,
+  objectEffectDisableCommandId,
+  objectEffectOpacityCommandId,
+  objectEffectSizeCommandId,
+  objectPaintTypeCommandId,
+  objectPaintTypeCommands,
+  objectStrokeDashCommands,
+  objectStrokeLineCapCommands,
+  objectStrokeLineJoinCommands,
+  objectStrokeOpacityCommandId,
+  objectStrokeWidthCommands,
   textCustomColorCommandId,
   textAlignmentCommands,
   textColorCommands,
@@ -24,10 +50,13 @@ import {
   textSizeCommands
 } from "./commands";
 import { Icon } from "./icons";
-import { toolbarAsset } from "./toolbarAssets";
+import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
+import type { ArtInspectorEffectKind } from "./artInspectorModel";
+import type { ToolsetArtPaintTarget, ToolsetArtStylePayload } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
+export type ToolPaletteDistributeMode = "centers" | "spacing";
 
 const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   command.id === "text.color.black"
@@ -37,7 +66,109 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   || command.id === "text.color.green"
   || command.id === "text.color.gray"
 ));
-const TOOLTIP_DELAY_MS = 1000;
+const TOOLTIP_DELAY_MS = 650;
+const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
+const DISTRIBUTE_MENU_HOLD_MS = 420;
+const COMMAND_FLYOUT_HOLD_MS = 420;
+
+const ART_ARRANGE_FLYOUTS = [
+  {
+    id: "align",
+    title: "Align",
+    commandIds: [
+      "layout.alignLeft",
+      "layout.alignCenter",
+      "layout.alignRight",
+      "layout.alignTop",
+      "layout.alignMiddle",
+      "layout.alignBottom"
+    ]
+  },
+  {
+    id: "layer",
+    title: "Layer",
+    commandIds: [
+      "layout.bringToFront",
+      "layout.bringForward",
+      "layout.sendBackward",
+      "layout.sendToBack"
+    ]
+  },
+  {
+    id: "transform",
+    title: "Flip",
+    commandIds: [
+      "layout.flipHorizontal",
+      "layout.flipVertical",
+      "layout.rotate90",
+      "layout.duplicate"
+    ]
+  },
+  {
+    id: "group",
+    title: "Group",
+    commandIds: [
+      "layout.group",
+      "layout.ungroup"
+    ]
+  }
+] as const;
+
+const ART_ARRANGE_STANDALONE_COMMAND_IDS = [
+  "layout.distributeHorizontal",
+  "layout.distributeVertical"
+] as const;
+
+const ART_ARRANGE_COMMAND_IDS: ReadonlySet<string> = new Set<string>(
+  [
+    ...ART_ARRANGE_FLYOUTS.flatMap((flyout) => flyout.commandIds),
+    ...ART_ARRANGE_STANDALONE_COMMAND_IDS
+  ]
+);
+
+const ART_SHAPE_COMMAND_IDS = [
+  "tool.art.rect",
+  "tool.art.roundedRect",
+  "tool.art.circle",
+  "tool.art.ellipse"
+] as const;
+
+const ART_SELECTION_COLUMN_COMMAND_IDS = [
+  "tool.select",
+  "tool.eraser",
+  "tool.lasso",
+  "tool.text"
+] as const;
+
+const ART_PATH_COMMAND_IDS = [
+  "tool.art.line",
+  "tool.art.lineWavy",
+  "tool.art.pen",
+  "tool.art.polyline",
+  "tool.art.scissors",
+  "tool.art.measure",
+  "tool.art.arrow",
+  "tool.art.arc270",
+  "tool.art.arc90",
+  "tool.art.pencil",
+  "tool.art.eyedropper"
+] as const;
+
+const ART_BOOLEAN_COMMAND_IDS = [
+  "art.boolean.union",
+  "art.boolean.subtract",
+  "art.boolean.intersect",
+  "art.boolean.split"
+] as const;
+
+const ART_ARRANGE_COLUMN_ITEM_IDS = [
+  "align",
+  "layout.distributeHorizontal",
+  "layout.distributeVertical",
+  "layer",
+  "transform",
+  "group"
+] as const;
 
 export function ToolPalette({
   groups,
@@ -47,9 +178,17 @@ export function ToolPalette({
   title = "Drawing tools",
   showMainStyleControls = false,
   showTextStyleControls = false,
+  showArtStyleControls = false,
+  currentDistributeMode = "centers",
+  currentObjectColor,
+  currentArtStyle,
+  currentArtStyleTarget = "fill",
   currentTextStyle,
   currentTextScript,
   onColorPickerOpenChange,
+  onArtStylePreview,
+  onArtStyleCommit,
+  onArtStyleCancel,
   onInvoke
 }: {
   groups: CommandSpec[][];
@@ -59,9 +198,17 @@ export function ToolPalette({
   title?: string;
   showMainStyleControls?: boolean;
   showTextStyleControls?: boolean;
+  showArtStyleControls?: boolean;
+  currentDistributeMode?: ToolPaletteDistributeMode;
+  currentObjectColor?: string;
+  currentArtStyle?: ToolsetArtStylePayload;
+  currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
+  onArtStylePreview?: (commandId: string) => void;
+  onArtStyleCommit?: (commandId: string) => void;
+  onArtStyleCancel?: () => void;
   onInvoke: (commandId: string) => void;
 }) {
   const {
@@ -70,6 +217,96 @@ export function ToolPalette({
     clearTooltip
   } = usePaletteTooltipState();
 
+  const renderCommandButton = (
+    command: CommandSpec,
+    tooltipId: string,
+    key: string | number
+  ) => (
+    <CommandIconButton
+      key={key}
+      command={command}
+      active={command.enabled !== false && activeTool === command.id}
+      tooltipId={tooltipId}
+      tooltipVisible={visibleTooltipId === tooltipId}
+      distributeMode={currentDistributeMode}
+      onTooltipEnter={() => requestTooltip(tooltipId)}
+      onTooltipLeave={() => clearTooltip(tooltipId)}
+      onInvoke={onInvoke}
+    />
+  );
+
+  const renderCommandFlyout = ({
+    commands,
+    flyoutId,
+    key,
+    primaryAssetName,
+    title,
+    tooltipId
+  }: {
+    commands: CommandSpec[];
+    flyoutId: string;
+    key: string | number;
+    primaryAssetName?: ToolbarAssetName;
+    title: string;
+    tooltipId: string;
+  }) => (
+    <CommandFlyoutButton
+      key={key}
+      commands={commands}
+      distributeMode={currentDistributeMode}
+      flyoutId={flyoutId}
+      title={title}
+      primaryAssetName={primaryAssetName}
+      activeCommandId={activeTool}
+      tooltipId={tooltipId}
+      tooltipVisible={visibleTooltipId === tooltipId}
+      onInvoke={onInvoke}
+      onTooltipEnter={() => requestTooltip(tooltipId)}
+      onTooltipLeave={() => clearTooltip(tooltipId)}
+    />
+  );
+
+  const toolGroupElements = groups.map((group, groupIndex) => (
+    <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
+      {group.map((tool, toolIndex) => {
+        const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+        return renderCommandButton(tool, tooltipId, tool.id);
+      })}
+    </div>
+  ));
+
+  const artCommandColumnElements = showArtStyleControls
+    ? artToolbarCommandColumns(groups).map((column, columnIndex) => {
+        const elements = column.items.map((item, itemIndex) => {
+          const tooltipId = `art-column-${columnIndex}-${itemIndex}-${item.id}`;
+          if (item.kind === "command") {
+            return renderCommandButton(item.command, tooltipId, item.id);
+          }
+
+          return renderCommandFlyout({
+            commands: item.flyout.commands,
+            flyoutId: item.flyout.id,
+            key: item.id,
+            primaryAssetName: item.primaryAssetName,
+            title: item.flyout.title,
+            tooltipId
+          });
+        });
+
+        return (
+          <div
+            className="art-toolbar-command-column"
+            data-art-command-column={column.id}
+            data-art-arrange-column={column.containsArrangeItems ? "true" : undefined}
+            data-art-shape-flyout-column={column.containsShapeFlyout ? "true" : undefined}
+            key={column.id}
+          >
+            {elements}
+          </div>
+        );
+      })
+    : [];
+
   return (
     <aside
       className={[
@@ -77,7 +314,8 @@ export function ToolPalette({
         mode,
         orientation,
         showMainStyleControls ? "main-style-palette" : "",
-        showTextStyleControls ? "text-style-palette" : ""
+        showTextStyleControls ? "text-style-palette" : "",
+        showArtStyleControls ? "art-style-palette" : ""
       ].filter(Boolean).join(" ")}
       aria-label={title}
       data-tool-palette-orientation={orientation}
@@ -91,25 +329,13 @@ export function ToolPalette({
           data-tauri-drag-region="true"
         />
       ) : null}
-      {groups.map((group, groupIndex) => (
-        <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
-          {group.map((tool, toolIndex) => {
-            const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
-            return (
-              <CommandIconButton
-                key={tool.id}
-                command={tool}
-                active={tool.enabled !== false && activeTool === tool.id}
-                tooltipId={tooltipId}
-                tooltipVisible={visibleTooltipId === tooltipId}
-                onTooltipEnter={() => requestTooltip(tooltipId)}
-                onTooltipLeave={() => clearTooltip(tooltipId)}
-                onInvoke={onInvoke}
-              />
-            );
-          })}
+      {showArtStyleControls ? (
+        <div className="art-toolbar-command-band" data-art-command-band="true">
+          <div className="art-toolbar-command-grid" data-art-command-grid="true">
+            {artCommandColumnElements}
+          </div>
         </div>
-      ))}
+      ) : toolGroupElements}
       {showMainStyleControls ? (
         <MainToolbarStyleControls
           currentTextStyle={currentTextStyle}
@@ -125,26 +351,48 @@ export function ToolPalette({
           onInvoke={onInvoke}
         />
       ) : null}
+      {showArtStyleControls ? (
+        <ArtToolbarStyleControls
+          currentObjectColor={currentObjectColor}
+          currentArtStyle={currentArtStyle}
+          currentArtStyleTarget={currentArtStyleTarget}
+          onColorPickerOpenChange={onColorPickerOpenChange}
+          onPreview={onArtStylePreview}
+          onCommit={onArtStyleCommit}
+          onCancel={onArtStyleCancel}
+          onInvoke={onInvoke}
+        />
+      ) : null}
     </aside>
   );
 }
 
 function usePaletteTooltipState() {
   const [visibleTooltipId, setVisibleTooltipId] = useState<string | undefined>();
+  const visibleTooltipIdRef = useRef<string | undefined>(undefined);
   const pendingTooltipRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingTooltipIdRef = useRef<string | undefined>(undefined);
+  visibleTooltipIdRef.current = visibleTooltipId;
 
   const clearPendingTooltip = useCallback(() => {
     if (pendingTooltipRef.current !== undefined) {
       clearTimeout(pendingTooltipRef.current);
       pendingTooltipRef.current = undefined;
     }
+    pendingTooltipIdRef.current = undefined;
   }, []);
 
   const requestTooltip = useCallback((tooltipId: string) => {
+    if (visibleTooltipIdRef.current === tooltipId || pendingTooltipIdRef.current === tooltipId) {
+      return;
+    }
+
     clearPendingTooltip();
     setVisibleTooltipId(undefined);
+    pendingTooltipIdRef.current = tooltipId;
     pendingTooltipRef.current = setTimeout(() => {
       pendingTooltipRef.current = undefined;
+      pendingTooltipIdRef.current = undefined;
       setVisibleTooltipId(tooltipId);
     }, TOOLTIP_DELAY_MS);
   }, [clearPendingTooltip]);
@@ -480,7 +728,1112 @@ function TextToolbarStyleControls({
   );
 }
 
-type ColorPickerTab = "palette" | "mixer";
+function closestObjectStrokeWidthCommandId(strokeWidth: number | undefined): string {
+  if (strokeWidth === undefined) {
+    return objectStrokeWidthCommands[1]?.id ?? objectStrokeWidthCommands[0].id;
+  }
+
+  return objectStrokeWidthCommands.reduce((best, command) => (
+    Math.abs(command.strokeWidth - strokeWidth) < Math.abs(best.strokeWidth - strokeWidth) ? command : best
+  ), objectStrokeWidthCommands[0]).id;
+}
+
+function objectStrokeDashCommandId(strokeDasharray: string | undefined): string {
+  const normalized = strokeDasharray === undefined || strokeDasharray === "solid" ? undefined : strokeDasharray;
+  return objectStrokeDashCommands.find((command) => command.strokeDasharray === normalized)?.id ??
+    objectStrokeDashCommands[0].id;
+}
+
+function ArtToolbarStyleControls({
+  currentObjectColor,
+  currentArtStyle,
+  currentArtStyleTarget,
+  onColorPickerOpenChange,
+  onPreview,
+  onCommit,
+  onCancel,
+  onInvoke
+}: {
+  currentObjectColor?: string;
+  currentArtStyle?: ToolsetArtStylePayload;
+  currentArtStyleTarget: ToolsetArtPaintTarget;
+  onColorPickerOpenChange?: (open: boolean) => void;
+  onPreview?: (commandId: string) => void;
+  onCommit?: (commandId: string) => void;
+  onCancel?: () => void;
+  onInvoke: (commandId: string) => void;
+}) {
+  const selectedCount = currentArtStyle?.selectedCount ?? 0;
+  const selected = selectedCount > 0;
+  const fillSupportedCount = currentArtStyle?.fillSupportedCount ?? 0;
+  const strokeSupportedCount = currentArtStyle?.strokeSupportedCount ?? 0;
+  const dashSupportedCount = currentArtStyle?.dashSupportedCount ?? 0;
+  const lineEndsSupportedCount = currentArtStyle?.lineEndsSupportedCount ?? 0;
+  const cornersSupportedCount = currentArtStyle?.cornersSupportedCount ?? 0;
+  const supportsFill = currentArtStyle?.supportsFillAny ?? false;
+  const supportsStroke = currentArtStyle?.supportsStrokeAny ?? false;
+  const supportsDash = currentArtStyle?.supportsDashAny ?? false;
+  const supportsLineEnds = currentArtStyle?.supportsLineEndsAny ?? false;
+  const supportsCorners = currentArtStyle?.supportsCornersAny ?? false;
+  const supportsFillAll = currentArtStyle?.supportsFillAll ?? false;
+  const supportsStrokeAll = currentArtStyle?.supportsStrokeAll ?? false;
+  const supportsDashAll = currentArtStyle?.supportsDashAll ?? false;
+  const supportsLineEndsAll = currentArtStyle?.supportsLineEndsAll ?? false;
+  const supportsCornersAll = currentArtStyle?.supportsCornersAll ?? false;
+  const effectiveArtStyleTarget: ToolsetArtPaintTarget = currentArtStyle?.activePaintTarget ?? currentArtStyleTarget;
+  const activeTargetSupported = effectiveArtStyleTarget === "fill" ? supportsFill : supportsStroke;
+  const supportsStrokeWidth = supportsStroke && supportsDash;
+  const activeColor = effectiveArtStyleTarget === "fill"
+    ? currentArtStyle?.values.fillColor.value
+    : currentArtStyle?.values.strokeColor.value;
+  const currentColor = normalizeHexColor(activeColor ?? currentObjectColor) ?? objectColorCommands[0]?.color ?? "#111111";
+  const activePaintTypeValue = effectiveArtStyleTarget === "fill"
+    ? currentArtStyle?.values.fillPaintType.value
+    : currentArtStyle?.values.strokePaintType.value;
+  const activePaintTypeMixed = effectiveArtStyleTarget === "fill"
+    ? currentArtStyle?.values.fillPaintType.mixed ?? false
+    : currentArtStyle?.values.strokePaintType.mixed ?? false;
+  const activePaintTypeCommandId = activePaintTypeMixed
+    ? "object.paint.type.mixed"
+    : objectPaintTypeCommandId(activePaintTypeValue ?? "solid");
+  const activePaintTypeCommands = objectPaintTypeCommands.filter((command) =>
+    effectiveArtStyleTarget === "fill" || command.paintType !== "gloss"
+  );
+  const colorPickerRef = useRef<HTMLDivElement | null>(null);
+  const effectColorPickerRef = useRef<HTMLDivElement | null>(null);
+  const gradientRailRef = useRef<HTMLDivElement | null>(null);
+  const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
+  const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
+  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number } | null>(null);
+  const [colorOpen, setColorOpen] = useState(false);
+  const [effectColorOpen, setEffectColorOpen] = useState(false);
+  const [draftColor, setDraftColor] = useState(currentColor);
+  const [draftEffectColor, setDraftEffectColor] = useState("#52616b");
+  const [focusedEffectKind, setFocusedEffectKind] = useState<ArtInspectorEffectKind | undefined>();
+  const [selectedGradientStopIndex, setSelectedGradientStopIndex] = useState(0);
+  const [gradientStopColorOpen, setGradientStopColorOpen] = useState(false);
+  const [draftGradientStopColor, setDraftGradientStopColor] = useState("#111111");
+  const selectedStyleObjectIdsKey = currentArtStyle?.selectedObjectIds.join("\u0000") ?? "";
+  const objectOpacity = currentArtStyle?.values.objectOpacity.value ?? 1;
+  const fillOpacity = currentArtStyle?.values.fillOpacity.value ?? 1;
+  const strokeOpacity = currentArtStyle?.values.strokeOpacity.value ?? 1;
+  const activeEffectValue = currentArtStyle?.values.effect.value ?? "none";
+  const activeEffectKinds = currentArtStyle?.effectKinds ?? [];
+  const activeEffectKindsKey = activeEffectKinds.join("|");
+  const visibleEffectKind = focusedEffectKind && (activeEffectKinds.includes(focusedEffectKind) || selected)
+    ? focusedEffectKind
+    : activeEffectValue === "shadow" || activeEffectValue === "glow" || activeEffectValue === "sketch"
+      ? activeEffectValue
+      : activeEffectKinds[0];
+  const visibleEffectModel = visibleEffectKind ? currentArtStyle?.effectControls[visibleEffectKind] : undefined;
+  const currentEffectColor = visibleEffectModel?.color.value ?? "#52616b";
+  const effectOpacity = visibleEffectModel?.opacity.value ?? 1;
+  const effectSize = visibleEffectModel?.size.value ?? 0.25;
+  const showEffectControls = selected && visibleEffectKind !== undefined && (visibleEffectModel?.presentCount ?? 0) > 0;
+  const strokeWidthCommandId = closestObjectStrokeWidthCommandId(currentArtStyle?.values.strokeWidth.value ?? undefined);
+  const strokeDashCommandId = objectStrokeDashCommandId(currentArtStyle?.values.dash.value ?? undefined);
+  const strokeCap = currentArtStyle?.values.lineEnds.value ?? "butt";
+  const strokeJoin = currentArtStyle?.values.corners.value ?? "miter";
+  const activeGradient = currentArtStyle?.activeGradient;
+  const showGradientControls = selected && activeTargetSupported && Boolean(activeGradient?.editable || activeGradient?.mixed);
+  const activeGradientStops = activeGradient?.stops ?? [];
+  const activeGradientStopsKey = activeGradientStops
+    .map((stop) => `${stop.offset}:${stop.color}:${stop.opacity}`)
+    .join("|");
+  const activeGradientStopIndex = activeGradientStops.length > 0
+    ? Math.min(selectedGradientStopIndex, activeGradientStops.length - 1)
+    : 0;
+  const activeGradientStop = activeGradientStops[activeGradientStopIndex];
+  const currentGradientStopColor = activeGradientStop?.color ?? currentColor;
+  const currentGradientStopOpacity = activeGradientStop?.opacity ?? 1;
+  const currentGradientStopOffset = activeGradientStop?.offset ?? 0;
+  const showGradientStopEditor = showGradientControls && activeGradient?.editable === true && activeGradientStop !== undefined;
+  const gradientRailStyle = {
+    "--art-gradient-rail": activeGradientStops.length > 0
+      ? artGradientRailCss(activeGradientStops)
+      : "repeating-linear-gradient(135deg, var(--cd-bg-control) 0 5px, var(--cd-border-subtle) 5px 10px)"
+  } as CSSProperties;
+  const showAdvancedStrokeControls = false;
+
+  useEffect(() => {
+    onColorPickerOpenChange?.(colorOpen || effectColorOpen || gradientStopColorOpen);
+  }, [colorOpen, effectColorOpen, gradientStopColorOpen, onColorPickerOpenChange]);
+
+  useEffect(() => {
+    if (!colorOpen) {
+      setDraftColor(currentColor);
+    }
+  }, [colorOpen, currentColor]);
+
+  useEffect(() => {
+    if (!gradientStopColorOpen) {
+      setDraftGradientStopColor(currentGradientStopColor);
+    }
+  }, [currentGradientStopColor, gradientStopColorOpen]);
+
+  useEffect(() => {
+    if (!effectColorOpen) {
+      setDraftEffectColor(currentEffectColor);
+    }
+  }, [currentEffectColor, effectColorOpen]);
+
+  useEffect(() => {
+    const maxIndex = activeGradientStops.length - 1;
+    setSelectedGradientStopIndex((current) => maxIndex < 0 ? 0 : Math.max(0, Math.min(maxIndex, current)));
+  }, [activeGradientStops.length, activeGradientStopsKey]);
+
+  useEffect(() => {
+    if (!colorOpen && !effectColorOpen && !gradientStopColorOpen) {
+      return undefined;
+    }
+
+    const closeForOutsidePointer = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && colorPickerRef.current?.contains(target)) {
+        return;
+      }
+      if (target instanceof Node && effectColorPickerRef.current?.contains(target)) {
+        return;
+      }
+      if (target instanceof Node && gradientStopColorPickerRef.current?.contains(target)) {
+        return;
+      }
+      setColorOpen(false);
+      setEffectColorOpen(false);
+      setGradientStopColorOpen(false);
+    };
+    const closeForEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setColorOpen(false);
+      setEffectColorOpen(false);
+      setGradientStopColorOpen(false);
+      onCancel?.();
+    };
+    const closeForWindowBlur = () => {
+      setColorOpen(false);
+      setEffectColorOpen(false);
+      setGradientStopColorOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeForOutsidePointer, true);
+    document.addEventListener("keydown", closeForEscape, true);
+    window.addEventListener("blur", closeForWindowBlur);
+    return () => {
+      document.removeEventListener("pointerdown", closeForOutsidePointer, true);
+      document.removeEventListener("keydown", closeForEscape, true);
+      window.removeEventListener("blur", closeForWindowBlur);
+    };
+  }, [colorOpen, effectColorOpen, gradientStopColorOpen, onCancel]);
+
+  useEffect(() => {
+    setColorOpen(false);
+    setEffectColorOpen(false);
+    setGradientStopColorOpen(false);
+  }, [selectedStyleObjectIdsKey]);
+
+  useEffect(() => {
+    setFocusedEffectKind((current) => {
+      if (current && activeEffectKinds.includes(current)) {
+        return current;
+      }
+      return activeEffectValue === "shadow" || activeEffectValue === "glow" || activeEffectValue === "sketch"
+        ? activeEffectValue
+        : activeEffectKinds[0];
+    });
+  }, [activeEffectKindsKey, activeEffectValue]);
+
+  const invokeOrCommit = (commandId: string) => {
+    if (onCommit) {
+      onCommit(commandId);
+      return;
+    }
+    onInvoke(commandId);
+  };
+
+  const previewCommand = (commandId: string) => {
+    onPreview?.(commandId);
+  };
+
+  const supportTitle = (label: string, supportedCount: number, supportsAll = supportedCount === selectedCount) =>
+    selected && supportedCount > 0 && !supportsAll
+      ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
+      : label;
+
+  const updateColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+    setDraftColor(normalized);
+    previewCommand(objectCustomColorCommandId(normalized));
+  };
+
+  const commitColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+    setDraftColor(normalized);
+    invokeOrCommit(objectCustomColorCommandId(normalized));
+  };
+
+  const updateEffectColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !visibleEffectKind) {
+      return;
+    }
+    setDraftEffectColor(normalized);
+    previewCommand(objectEffectColorCommandId(visibleEffectKind, normalized));
+  };
+
+  const commitEffectColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !visibleEffectKind) {
+      return;
+    }
+    setDraftEffectColor(normalized);
+    invokeOrCommit(objectEffectColorCommandId(visibleEffectKind, normalized));
+  };
+
+  const updateGradientStopColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !activeGradientStop) {
+      return;
+    }
+    setDraftGradientStopColor(normalized);
+    previewCommand(objectGradientStopColorCommandId(activeGradientStopIndex, normalized));
+  };
+
+  const commitGradientStopColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !activeGradientStop) {
+      return;
+    }
+    setDraftGradientStopColor(normalized);
+    invokeOrCommit(objectGradientStopColorCommandId(activeGradientStopIndex, normalized));
+  };
+
+  const gradientStopOffsetForClientX = (stopIndex: number, clientX: number): number | undefined => {
+    const railRect = gradientRailRef.current?.getBoundingClientRect();
+    if (!railRect || railRect.width <= 0) {
+      return undefined;
+    }
+    const rawOffset = Math.max(0, Math.min(1, (clientX - railRect.left) / railRect.width));
+    const previousStop = activeGradientStops[stopIndex - 1];
+    const nextStop = activeGradientStops[stopIndex + 1];
+    const minimumOffset = previousStop
+      ? Math.min(1, previousStop.offset + GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 0;
+    const maximumOffset = nextStop
+      ? Math.max(0, nextStop.offset - GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 1;
+    if (minimumOffset > maximumOffset) {
+      return rawOffset;
+    }
+    return Math.max(minimumOffset, Math.min(maximumOffset, rawOffset));
+  };
+
+  const previewGradientStopOffset = (stopIndex: number, clientX: number): boolean => {
+    const offset = gradientStopOffsetForClientX(stopIndex, clientX);
+    if (offset === undefined) {
+      return false;
+    }
+    previewCommand(objectGradientStopOffsetCommandId(stopIndex, offset));
+    return true;
+  };
+
+  const commitGradientStopOffset = (stopIndex: number, clientX: number): boolean => {
+    const offset = gradientStopOffsetForClientX(stopIndex, clientX);
+    if (offset === undefined) {
+      return false;
+    }
+    invokeOrCommit(objectGradientStopOffsetCommandId(stopIndex, offset));
+    return true;
+  };
+
+  const applyGradientStopOffsetKey = (
+    stopIndex: number,
+    currentOffset: number,
+    event: ReactKeyboardEvent<HTMLButtonElement>
+  ) => {
+    let nextOffset = currentOffset;
+    if (event.key === "Home") {
+      nextOffset = 0;
+    } else if (event.key === "End") {
+      nextOffset = 1;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+      nextOffset = currentOffset - (event.shiftKey ? 0.1 : 0.01);
+    } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+      nextOffset = currentOffset + (event.shiftKey ? 0.1 : 0.01);
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const previousStop = activeGradientStops[stopIndex - 1];
+    const nextStop = activeGradientStops[stopIndex + 1];
+    const minimumOffset = previousStop
+      ? Math.min(1, previousStop.offset + GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 0;
+    const maximumOffset = nextStop
+      ? Math.max(0, nextStop.offset - GRADIENT_STOP_DIRECT_DRAG_GAP)
+      : 1;
+    const clampedOffset = minimumOffset <= maximumOffset
+      ? Math.max(minimumOffset, Math.min(maximumOffset, nextOffset))
+      : Math.max(0, Math.min(1, nextOffset));
+    invokeOrCommit(objectGradientStopOffsetCommandId(stopIndex, clampedOffset));
+  };
+
+  const opacitySlider = (
+    label: string,
+    shortLabel: string,
+    value: number,
+    commandId: (opacity: number) => string,
+    supportedCount = selectedCount
+  ) => {
+    const percent = Math.round(value * 100);
+    const sliderKey = label.toLowerCase().replace(/\s+/g, "-");
+    const applySliderPercent = (nextPercent: number, commit: boolean) => {
+      const normalizedPercent = Math.max(0, Math.min(100, Math.round(nextPercent)));
+      const command = commandId(normalizedPercent / 100);
+      if (commit) {
+        invokeOrCommit(command);
+      } else {
+        previewCommand(command);
+      }
+    };
+    const sliderOwnsPointer = (event: ReactPointerEvent<HTMLInputElement>) =>
+      sliderDragRef.current?.sliderKey === sliderKey && sliderDragRef.current.pointerId === event.pointerId;
+    const applySliderPointer = (event: ReactPointerEvent<HTMLInputElement>, commit: boolean) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const nextPercent = rect.width > 0 ? (event.clientX - rect.left) / rect.width * 100 : percent;
+      event.currentTarget.value = `${Math.max(0, Math.min(100, Math.round(nextPercent)))}`;
+      applySliderPercent(nextPercent, commit);
+    };
+    const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      const currentPercent = Number(event.currentTarget.value);
+      const basePercent = Number.isFinite(currentPercent) ? currentPercent : percent;
+      let nextPercent = basePercent;
+      if (event.key === "Home") {
+        nextPercent = 0;
+      } else if (event.key === "End") {
+        nextPercent = 100;
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+        nextPercent = basePercent - (event.shiftKey ? 10 : 1);
+      } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+        nextPercent = basePercent + (event.shiftKey ? 10 : 1);
+      } else {
+        return;
+      }
+      event.preventDefault();
+      event.currentTarget.value = `${Math.max(0, Math.min(100, Math.round(nextPercent)))}`;
+      applySliderPercent(nextPercent, true);
+    };
+    return (
+      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}>
+        <span className="art-inspector-slider-header">
+          <span className="art-inspector-slider-label">{shortLabel}</span>
+          <span className="art-inspector-slider-value">{percent}%</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={percent}
+          disabled={!selected || supportedCount === 0}
+          aria-label={label}
+          title={`${supportTitle(label, supportedCount)}: ${percent}%`}
+          data-palette-control="true"
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
+            if (typeof event.currentTarget.setPointerCapture === "function") {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }
+            applySliderPointer(event, false);
+          }}
+          onPointerMove={(event) => {
+            if (event.buttons === 1 && sliderOwnsPointer(event)) {
+              applySliderPointer(event, false);
+            }
+          }}
+          onPointerUp={(event) => {
+            event.stopPropagation();
+            if (!sliderOwnsPointer(event)) {
+              return;
+            }
+            if (
+              typeof event.currentTarget.hasPointerCapture === "function" &&
+              event.currentTarget.hasPointerCapture(event.pointerId) &&
+              typeof event.currentTarget.releasePointerCapture === "function"
+            ) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            sliderDragRef.current = null;
+            applySliderPointer(event, true);
+          }}
+          onPointerCancel={(event) => {
+            if (sliderOwnsPointer(event)) {
+              if (
+                typeof event.currentTarget.hasPointerCapture === "function" &&
+                event.currentTarget.hasPointerCapture(event.pointerId) &&
+                typeof event.currentTarget.releasePointerCapture === "function"
+              ) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              sliderDragRef.current = null;
+            }
+          }}
+          onChange={(event) => {
+            if (sliderDragRef.current?.sliderKey === sliderKey) {
+              previewCommand(commandId(Number(event.currentTarget.value) / 100));
+            }
+          }}
+          onKeyDown={applySliderKey}
+          onBlur={() => {
+            if (sliderDragRef.current?.sliderKey === sliderKey) {
+              sliderDragRef.current = null;
+            }
+          }}
+        />
+      </label>
+    );
+  };
+
+  return (
+    <div
+      className="art-toolbar-style-controls"
+      data-toolbar-style-controls="art"
+      data-art-selection-count={currentArtStyle?.selectedCount ?? 0}
+      data-art-fill-supported-count={fillSupportedCount}
+      data-art-stroke-supported-count={strokeSupportedCount}
+      data-art-dash-supported-count={dashSupportedCount}
+      data-art-line-ends-supported-count={lineEndsSupportedCount}
+      data-art-corners-supported-count={cornersSupportedCount}
+      data-art-fill-support-all={currentArtStyle?.supportsFillAll ?? false}
+      data-art-stroke-support-all={currentArtStyle?.supportsStrokeAll ?? false}
+      data-art-dash-support-all={currentArtStyle?.supportsDashAll ?? false}
+      data-art-line-ends-support-all={currentArtStyle?.supportsLineEndsAll ?? false}
+      data-art-corners-support-all={currentArtStyle?.supportsCornersAll ?? false}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          onCancel?.();
+          setColorOpen(false);
+        }
+      }}
+    >
+      <div className="art-inspector-row art-inspector-main-row">
+        <div className="art-target-toggle" role="group" aria-label="Art paint target">
+          {supportsFill ? (
+            <button
+              type="button"
+              className={effectiveArtStyleTarget === "fill" ? "active" : ""}
+              aria-label="Target fill"
+              title={supportTitle("Target fill color", fillSupportedCount, supportsFillAll)}
+              disabled={!selected}
+              data-command-id="object.style.target.fill"
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke("object.style.target.fill")}
+            >
+              <span className="art-target-fill-glyph" aria-hidden="true" />
+            </button>
+          ) : null}
+          {supportsStroke ? (
+            <button
+              type="button"
+              className={effectiveArtStyleTarget === "stroke" ? "active" : ""}
+              aria-label="Target stroke"
+              title={supportTitle("Target stroke color", strokeSupportedCount, supportsStrokeAll)}
+              disabled={!selected}
+              data-command-id="object.style.target.stroke"
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke("object.style.target.stroke")}
+            >
+              <span className="art-target-stroke-glyph" aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+        <label
+          className="toolbar-control-label art-paint-type-control"
+          title={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
+        >
+          <select
+            className="toolbar-select"
+            value={activePaintTypeCommandId}
+            aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
+            disabled={!selected || !activeTargetSupported}
+            data-art-paint-type-select={effectiveArtStyleTarget}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {activePaintTypeMixed ? (
+              <option value="object.paint.type.mixed">Mixed</option>
+            ) : null}
+            {activePaintTypeCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div
+          className="art-color-picker"
+          role="group"
+          aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} color`}
+          ref={colorPickerRef}
+          data-color-picker="true"
+          data-palette-control="true"
+        >
+          <button
+            type="button"
+            className="toolbar-color-trigger"
+            aria-label="Open object color picker"
+            aria-expanded={colorOpen}
+            disabled={!selected || !activeTargetSupported}
+            title={`Pick ${supportTitle(
+              effectiveArtStyleTarget,
+              effectiveArtStyleTarget === "fill" ? fillSupportedCount : strokeSupportedCount,
+              effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
+            )} color`}
+            style={{ "--picker-color": currentColor } as CSSProperties}
+            onClick={() => {
+              setEffectColorOpen(false);
+              setGradientStopColorOpen(false);
+              setColorOpen((open) => !open);
+            }}
+          >
+            <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+            <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
+          </button>
+          {colorOpen ? (
+            <div className="art-color-popover" role="dialog" aria-label="Art color picker">
+              <ColorPickerPopoverBody
+                activeColor={currentColor}
+                value={draftColor}
+                onCommitColor={commitColor}
+                onPreviewColor={updateColor}
+              />
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="art-inspector-symbol-button"
+          aria-label={effectiveArtStyleTarget === "fill" ? "No fill" : "No stroke"}
+          title={effectiveArtStyleTarget === "fill"
+            ? supportTitle("No fill", fillSupportedCount, supportsFillAll)
+            : supportTitle("No stroke", strokeSupportedCount, supportsStrokeAll)}
+          disabled={!selected || !activeTargetSupported}
+          data-command-id={effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onInvoke(effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none")}
+        >
+          ∅
+        </button>
+        <button
+          type="button"
+          className="art-inspector-symbol-button"
+          aria-label="Swap fill and stroke"
+          title="Swap fill and stroke"
+          disabled={!selected || !supportsFill || !supportsStroke}
+          data-command-id="object.style.swapFillStroke"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onInvoke("object.style.swapFillStroke")}
+        >
+          ⇄
+        </button>
+        <div className="art-effect-button-group" role="group" aria-label="Art effects">
+          {objectEffectCommands.map((command) => {
+            const effectKind = command.effectKind;
+            const active = effectKind !== "none" && activeEffectKinds.includes(effectKind);
+            return (
+              <button
+                type="button"
+                key={command.id}
+                className={active ? "active" : ""}
+                aria-pressed={active}
+                aria-label={command.title}
+                title={command.title}
+                disabled={!selected}
+                data-command-id={command.id}
+                data-art-effect-button={effectKind}
+                data-palette-control="true"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  if (effectKind !== "none") {
+                    setFocusedEffectKind(effectKind);
+                    if (!active) {
+                      onInvoke(command.id);
+                    }
+                    return;
+                  }
+
+                  setFocusedEffectKind(undefined);
+                  setEffectColorOpen(false);
+                  onInvoke(command.id);
+                }}
+                onDoubleClick={() => {
+                  if (effectKind === "none" || !active) {
+                    return;
+                  }
+
+                  setFocusedEffectKind(undefined);
+                  setEffectColorOpen(false);
+                  onInvoke(objectEffectDisableCommandId(effectKind));
+                }}
+              >
+                {command.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="art-inspector-row art-inspector-opacity-row">
+        {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}
+        {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
+        {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
+      </div>
+      {showEffectControls && visibleEffectKind ? (
+        <div
+          className="art-inspector-row art-effect-row"
+          data-art-effect-controls={visibleEffectKind}
+          data-art-effect-present-count={visibleEffectModel?.presentCount ?? 0}
+          data-art-effect-present-all={visibleEffectModel?.presentAll ?? false}
+        >
+          <div
+            className="art-color-picker art-effect-color-picker"
+            role="group"
+            aria-label={`${effectLabel(visibleEffectKind)} effect color`}
+            ref={effectColorPickerRef}
+            data-color-picker="true"
+            data-palette-control="true"
+          >
+            <button
+              type="button"
+              className="toolbar-color-trigger art-effect-color-trigger"
+              aria-label={`Open ${effectLabel(visibleEffectKind)} effect color picker`}
+              aria-expanded={effectColorOpen}
+              title={`${effectLabel(visibleEffectKind)} effect color`}
+              data-art-effect-color-trigger={visibleEffectKind}
+              data-palette-control="true"
+              style={{ "--picker-color": currentEffectColor } as CSSProperties}
+              onClick={() => {
+                setColorOpen(false);
+                setGradientStopColorOpen(false);
+                setEffectColorOpen((open) => !open);
+              }}
+            >
+              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+              <span className="toolbar-color-trigger-label">Effect</span>
+            </button>
+            {effectColorOpen ? (
+              <div
+                className="art-color-popover art-effect-color-popover"
+                role="dialog"
+                aria-label={`${effectLabel(visibleEffectKind)} effect color picker`}
+              >
+                <ColorPickerPopoverBody
+                  activeColor={currentEffectColor}
+                  value={draftEffectColor}
+                  onCommitColor={commitEffectColor}
+                  onPreviewColor={updateEffectColor}
+                />
+              </div>
+            ) : null}
+          </div>
+          {opacitySlider(
+            `${effectLabel(visibleEffectKind)} effect opacity`,
+            "Eff",
+            effectOpacity,
+            (opacity) => objectEffectOpacityCommandId(visibleEffectKind, opacity),
+            visibleEffectModel?.presentCount ?? 0
+          )}
+          {opacitySlider(
+            `${effectLabel(visibleEffectKind)} effect size`,
+            "Size",
+            effectSize,
+            (size) => objectEffectSizeCommandId(visibleEffectKind, size),
+            visibleEffectModel?.presentCount ?? 0
+          )}
+        </div>
+      ) : null}
+      {showGradientControls ? (
+        <div className="art-inspector-row art-gradient-row" data-art-gradient-controls={effectiveArtStyleTarget}>
+          <div
+            ref={gradientRailRef}
+            className="art-gradient-rail"
+            data-art-gradient-rail={effectiveArtStyleTarget}
+            data-art-gradient-type={activeGradient?.paintType ?? undefined}
+            data-art-gradient-mixed={activeGradient?.mixed ? "true" : undefined}
+            style={gradientRailStyle}
+          >
+            {activeGradientStops.map((stop, index) => (
+              <button
+                type="button"
+                key={`gradient-stop-${index}`}
+                className={[
+                  "art-gradient-stop-marker",
+                  index === activeGradientStopIndex ? "active" : ""
+                ].filter(Boolean).join(" ")}
+                aria-label={`Drag gradient stop ${index + 1} at ${Math.round(stop.offset * 100)}%`}
+                title="Drag to move gradient stop; use arrow keys for 1% nudges"
+                data-command-id={objectGradientStopOffsetCommandId(index, stop.offset)}
+                data-art-gradient-stop={index}
+                data-art-gradient-stop-active={index === activeGradientStopIndex ? "true" : undefined}
+                data-palette-control="true"
+                style={{
+                  "--art-gradient-stop-color": stop.color,
+                  "--art-gradient-stop-offset": `${Math.round(stop.offset * 100)}%`,
+                  opacity: stop.opacity
+                } as CSSProperties}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.preventDefault();
+                  setSelectedGradientStopIndex(index);
+                  setGradientStopColorOpen(false);
+                  gradientStopDragRef.current = { stopIndex: index, moved: false };
+                  if (typeof event.currentTarget.setPointerCapture === "function") {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }
+                }}
+                onPointerMove={(event) => {
+                  const drag = gradientStopDragRef.current;
+                  if (drag?.stopIndex !== index || event.buttons !== 1) {
+                    return;
+                  }
+                  event.stopPropagation();
+                  event.preventDefault();
+                  if (previewGradientStopOffset(index, event.clientX)) {
+                    drag.moved = true;
+                  }
+                }}
+                onPointerUp={(event) => {
+                  const drag = gradientStopDragRef.current;
+                  event.stopPropagation();
+                  if (typeof event.currentTarget.hasPointerCapture === "function" &&
+                    event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  if (drag?.stopIndex === index && drag.moved) {
+                    commitGradientStopOffset(index, event.clientX);
+                  }
+                  gradientStopDragRef.current = null;
+                }}
+                onPointerCancel={(event) => {
+                  const drag = gradientStopDragRef.current;
+                  if (typeof event.currentTarget.hasPointerCapture === "function" &&
+                    event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  gradientStopDragRef.current = null;
+                  if (drag?.moved) {
+                    onCancel?.();
+                  }
+                }}
+                onKeyDown={(event) => applyGradientStopOffsetKey(index, stop.offset, event)}
+                onClick={() => setSelectedGradientStopIndex(index)}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Add gradient stop"
+            title="Add gradient stop"
+            disabled={!activeGradient?.canAddStop}
+            data-command-id={objectGradientAddStopCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              setSelectedGradientStopIndex(nextInsertedGradientStopIndex(activeGradientStops));
+              onInvoke(objectGradientAddStopCommand.id);
+            }}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Delete selected gradient stop"
+            title="Delete selected gradient stop"
+            disabled={!activeGradient?.canDeleteStop}
+            data-command-id={objectGradientDeleteStopCommandId(activeGradientStopIndex)}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              setSelectedGradientStopIndex((current) => Math.max(0, current - 1));
+              onInvoke(objectGradientDeleteStopCommandId(activeGradientStopIndex));
+            }}
+          >
+            −
+          </button>
+            <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Reverse gradient stops"
+            title="Reverse gradient stops"
+            disabled={!activeGradient?.editable}
+            data-command-id={objectGradientReverseCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke(objectGradientReverseCommand.id)}
+          >
+            ⇆
+          </button>
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Rotate gradient stops"
+            title="Rotate gradient stops"
+            disabled={!activeGradient?.editable}
+            data-command-id={objectGradientRotateCommand.id}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke(objectGradientRotateCommand.id)}
+          >
+            ↻
+          </button>
+        </div>
+      ) : null}
+      {showGradientStopEditor ? (
+        <div
+          className="art-inspector-row art-gradient-stop-editor"
+          data-art-gradient-stop-editor={effectiveArtStyleTarget}
+          data-art-gradient-active-stop={activeGradientStopIndex}
+          data-art-gradient-stop-color={currentGradientStopColor}
+          data-art-gradient-stop-offset={currentGradientStopOffset}
+        >
+          <span className="art-gradient-stop-readout">
+            {`Stop ${activeGradientStopIndex + 1} · ${Math.round(currentGradientStopOffset * 100)}%`}
+          </span>
+          <div
+            className="art-color-picker art-gradient-stop-color-picker"
+            role="group"
+            aria-label="Gradient stop color"
+            ref={gradientStopColorPickerRef}
+            data-color-picker="true"
+            data-palette-control="true"
+          >
+            <button
+              type="button"
+              className="toolbar-color-trigger art-gradient-stop-color-trigger"
+              aria-label="Open gradient stop color picker"
+              aria-expanded={gradientStopColorOpen}
+              title="Pick gradient stop color"
+              data-art-gradient-stop-color-trigger="true"
+              data-palette-control="true"
+              style={{ "--picker-color": currentGradientStopColor } as CSSProperties}
+              onClick={() => {
+                setColorOpen(false);
+                setEffectColorOpen(false);
+                setGradientStopColorOpen((open) => !open);
+              }}
+            >
+              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+              <span className="toolbar-color-trigger-label">Stop</span>
+            </button>
+            {gradientStopColorOpen ? (
+              <div className="art-color-popover" role="dialog" aria-label="Gradient stop color picker">
+                <ColorPickerPopoverBody
+                  activeColor={currentGradientStopColor}
+                  value={draftGradientStopColor}
+                  onCommitColor={commitGradientStopColor}
+                  onPreviewColor={updateGradientStopColor}
+                />
+              </div>
+            ) : null}
+          </div>
+          {opacitySlider(
+            "Gradient stop opacity",
+            "Stop",
+            currentGradientStopOpacity,
+            (opacity) => objectGradientStopOpacityCommandId(activeGradientStopIndex, opacity)
+          )}
+        </div>
+      ) : null}
+      {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
+      <div className="art-inspector-row art-inspector-stroke-row">
+        {supportsStrokeWidth ? (
+        <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
+          <span className="art-stroke-control-label">Width</span>
+          <select
+            className="toolbar-select"
+            value={strokeWidthCommandId}
+            aria-label="Stroke width"
+            disabled={!selected}
+            title={supportTitle("Stroke width", dashSupportedCount, supportsDashAll)}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeWidthCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.strokeWidth}px
+              </option>
+            ))}
+          </select>
+        </label>
+        ) : null}
+        {supportsDash ? (
+        <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
+          <span className="art-stroke-control-label">Dash</span>
+          <select
+            className="toolbar-select"
+            value={strokeDashCommandId}
+            aria-label="Dash pattern"
+            disabled={!selected}
+            title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeDashCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {command.title.replace(" Stroke", "")}
+              </option>
+            ))}
+          </select>
+        </label>
+        ) : null}
+        {showAdvancedStrokeControls && supportsLineEnds ? (
+        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
+          <span className="art-stroke-control-label">Line ends</span>
+          <select
+            className="toolbar-select"
+            value={`object.stroke.cap.${strokeCap}`}
+            aria-label="Line ends"
+            disabled={!selected}
+            title={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeLineCapCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {lineCapLabel(command.strokeLineCap)}
+              </option>
+            ))}
+          </select>
+        </label>
+        ) : null}
+        {showAdvancedStrokeControls && supportsCorners ? (
+        <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
+          <span className="art-stroke-control-label">Corners</span>
+          <select
+            className="toolbar-select"
+            value={`object.stroke.join.${strokeJoin}`}
+            aria-label="Corners"
+            disabled={!selected}
+            title={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onInvoke(event.currentTarget.value)}
+          >
+            {objectStrokeLineJoinCommands.map((command) => (
+              <option key={command.id} value={command.id}>
+                {lineJoinLabel(command.strokeLineJoin)}
+              </option>
+            ))}
+          </select>
+        </label>
+        ) : null}
+      </div>
+      ) : null}
+    </div>
+  );
+}
+
+function lineCapLabel(value: "butt" | "round" | "square"): string {
+  if (value === "butt") {
+    return "Flat";
+  }
+  if (value === "round") {
+    return "Round";
+  }
+  return "Square";
+}
+
+function effectLabel(value: ArtInspectorEffectKind): string {
+  if (value === "shadow") {
+    return "Shadow";
+  }
+  if (value === "glow") {
+    return "Glow";
+  }
+  return "Sketch";
+}
+
+function lineJoinLabel(value: "miter" | "round" | "bevel"): string {
+  if (value === "miter") {
+    return "Sharp";
+  }
+  if (value === "round") {
+    return "Round";
+  }
+  return "Bevel";
+}
+
+function artGradientRailCss(stops: readonly { offset: number; color: string; opacity: number }[]): string {
+  const stopCss = stops
+    .map((stop) => `${hexToRgbaCss(stop.color, stop.opacity)} ${Math.round(stop.offset * 100)}%`)
+    .join(", ");
+  return `linear-gradient(90deg, ${stopCss})`;
+}
+
+function nextInsertedGradientStopIndex(stops: readonly { offset: number }[]): number {
+  if (stops.length <= 1) {
+    return stops.length;
+  }
+
+  let leftIndex = 0;
+  let widestGap = -1;
+  for (let index = 0; index < stops.length - 1; index += 1) {
+    const gap = stops[index + 1]!.offset - stops[index]!.offset;
+    if (gap > widestGap) {
+      widestGap = gap;
+      leftIndex = index;
+    }
+  }
+
+  return leftIndex + 1;
+}
+
+function hexToRgbaCss(color: string, opacity: number): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  const red = Number.parseInt(normalized.slice(1, 3), 16);
+  const green = Number.parseInt(normalized.slice(3, 5), 16);
+  const blue = Number.parseInt(normalized.slice(5, 7), 16);
+  return `rgb(${red} ${green} ${blue} / ${Math.max(0, Math.min(1, opacity))})`;
+}
+
+type ColorPickerTab = "color" | "palettes";
+type IroColorPickerInstance = ReturnType<typeof iro.ColorPicker>;
+type IroColorLike = {
+  hexString: string;
+};
+type ColorCommand = {
+  id: string;
+  title: string;
+  color: string;
+};
+type ColorPaletteSet = {
+  id: string;
+  title: string;
+  colors: ColorPaletteEntry[];
+};
+type ColorPaletteEntry = {
+  title: string;
+  color: string;
+};
 
 export interface RgbColor {
   r: number;
@@ -495,23 +1848,110 @@ export interface CmykColor {
   k: number;
 }
 
+const CRAYOLA_EIGHT_COLORS: ColorPaletteEntry[] = [
+  { title: "Crayola red", color: "#ed0a3f" },
+  { title: "Crayola orange", color: "#ff8833" },
+  { title: "Crayola yellow", color: "#fbe870" },
+  { title: "Crayola green", color: "#01a368" },
+  { title: "Crayola blue", color: "#0066ff" },
+  { title: "Crayola violet", color: "#8359a3" },
+  { title: "Crayola brown", color: "#af593e" },
+  { title: "Crayola black", color: "#000000" }
+];
+
+const COLORBLIND_SAFE_COLORS: ColorPaletteEntry[] = [
+  { title: "Colorblind safe black", color: "#000000" },
+  { title: "Colorblind safe orange", color: "#e69f00" },
+  { title: "Colorblind safe sky blue", color: "#56b4e9" },
+  { title: "Colorblind safe bluish green", color: "#009e73" },
+  { title: "Colorblind safe yellow", color: "#f0e442" },
+  { title: "Colorblind safe blue", color: "#0072b2" },
+  { title: "Colorblind safe vermillion", color: "#d55e00" },
+  { title: "Colorblind safe purple", color: "#cc79a7" }
+];
+
+const SEASONAL_COLORS_BY_SEASON: Record<string, ColorPaletteEntry[]> = {
+  spring: [
+    { title: "Spring leaf", color: "#78a85a" },
+    { title: "Spring moss", color: "#a6c76c" },
+    { title: "Spring sky", color: "#8cc7d9" },
+    { title: "Spring rain", color: "#5f9eb7" },
+    { title: "Spring blossom", color: "#f2a7b5" },
+    { title: "Spring lilac", color: "#b89bd8" },
+    { title: "Spring cream", color: "#f7e8a4" },
+    { title: "Spring soil", color: "#8a6848" }
+  ],
+  summer: [
+    { title: "Summer sun", color: "#f5c542" },
+    { title: "Summer marigold", color: "#f28c28" },
+    { title: "Summer coral", color: "#ef6f61" },
+    { title: "Summer berry", color: "#b8336a" },
+    { title: "Summer sea", color: "#1ca7a8" },
+    { title: "Summer pool", color: "#3e8ed0" },
+    { title: "Summer grass", color: "#55a630" },
+    { title: "Summer night", color: "#294c60" }
+  ],
+  autumn: [
+    { title: "Autumn maple", color: "#c0392b" },
+    { title: "Autumn pumpkin", color: "#d97706" },
+    { title: "Autumn gold", color: "#c49a2c" },
+    { title: "Autumn olive", color: "#6f7d35" },
+    { title: "Autumn bark", color: "#6b4f3f" },
+    { title: "Autumn plum", color: "#7b3f61" },
+    { title: "Autumn fog", color: "#9a8f80" },
+    { title: "Autumn ink", color: "#2f3e46" }
+  ],
+  winter: [
+    { title: "Winter ice", color: "#d8eef2" },
+    { title: "Winter frost", color: "#9bc6d9" },
+    { title: "Winter blue", color: "#3b6ea8" },
+    { title: "Winter pine", color: "#1f5f4b" },
+    { title: "Winter berry", color: "#a41623" },
+    { title: "Winter mauve", color: "#8d6a9f" },
+    { title: "Winter stone", color: "#7b8794" },
+    { title: "Winter charcoal", color: "#263238" }
+  ]
+};
+
+function colorPickerPaletteSets(now = new Date()): ColorPaletteSet[] {
+  const month = now.getMonth();
+  const season = month >= 2 && month <= 4
+    ? "spring"
+    : month >= 5 && month <= 7
+      ? "summer"
+      : month >= 8 && month <= 10
+        ? "autumn"
+        : "winter";
+
+  return [
+    { id: "crayola", title: "8 color Crayola box", colors: CRAYOLA_EIGHT_COLORS },
+    { id: "colorblind", title: "Colorblind safe", colors: COLORBLIND_SAFE_COLORS },
+    { id: "seasonal", title: `Seasonal colors: ${season}`, colors: SEASONAL_COLORS_BY_SEASON[season] }
+  ];
+}
+
 function ColorPickerControl({
   compact = false,
   currentColor,
+  customColorCommandId = textCustomColorCommandId,
+  label = "Text color",
+  triggerLabel = "Open text color picker",
+  dialogLabel = "Text color picker",
   onOpenChange,
   onInvoke
 }: {
   compact?: boolean;
   currentColor: string;
+  customColorCommandId?: (color: string) => string;
+  label?: string;
+  triggerLabel?: string;
+  dialogLabel?: string;
   onOpenChange?: (open: boolean) => void;
   onInvoke: (commandId: string) => void;
 }) {
   const normalizedCurrentColor = normalizeHexColor(currentColor) ?? textColorCommands[0].color;
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<ColorPickerTab>("palette");
   const [draftHex, setDraftHex] = useState(normalizedCurrentColor);
-  const draftRgb = useMemo(() => hexToRgbColor(draftHex) ?? { r: 17, g: 17, b: 17 }, [draftHex]);
-  const draftCmyk = useMemo(() => rgbToCmykColor(draftRgb), [draftRgb]);
 
   useEffect(() => {
     onOpenChange?.(open);
@@ -537,43 +1977,14 @@ function ColorPickerControl({
     }
 
     setDraftHex(normalized);
-    onInvoke(textCustomColorCommandId(normalized));
-  };
-
-  const applyPresetColor = (command: typeof textColorCommands[number]) => {
-    setDraftHex(command.color);
-    onInvoke(command.id);
-  };
-
-  const updateRgbChannel = (channel: keyof RgbColor, value: string) => {
-    applyColor(rgbToHexColor({
-      ...draftRgb,
-      [channel]: clampColorChannel(value)
-    }));
-  };
-
-  const updateCmykChannel = (channel: keyof CmykColor, value: string) => {
-    applyColor(rgbToHexColor(cmykToRgbColor({
-      ...draftCmyk,
-      [channel]: clampPercentChannel(value)
-    })));
-  };
-
-  const updateHexInput = (value: string) => {
-    const normalized = normalizeHexColor(value);
-    if (normalized) {
-      applyColor(normalized);
-      return;
-    }
-
-    setDraftHex(`#${value.replace(/[^0-9a-f]/gi, "").slice(0, 6).toLowerCase()}`.padEnd(7, "0"));
+    onInvoke(customColorCommandId(normalized));
   };
 
   return (
     <div
       className={["toolbar-color-picker", compact ? "compact" : ""].filter(Boolean).join(" ")}
       role="group"
-      aria-label="Text color"
+      aria-label={label}
       data-color-picker="true"
       data-palette-control="true"
       onPointerDown={(event) => event.stopPropagation()}
@@ -582,7 +1993,7 @@ function ColorPickerControl({
       <button
         type="button"
         className="toolbar-color-trigger"
-        aria-label="Open text color picker"
+        aria-label={triggerLabel}
         aria-expanded={open}
         data-color-picker-trigger="true"
         data-palette-control="true"
@@ -593,99 +2004,300 @@ function ColorPickerControl({
         <span className="toolbar-color-trigger-label">Color</span>
       </button>
       {open ? (
-        <div className="toolbar-color-popover" role="dialog" aria-label="Text color picker">
-          <div className="color-picker-tabs" role="tablist" aria-label="Color picker mode">
-            <button
-              type="button"
-              className={tab === "palette" ? "active" : ""}
-              role="tab"
-              aria-selected={tab === "palette"}
-              onClick={() => setTab("palette")}
-            >
-              Palette
-            </button>
-            <button
-              type="button"
-              className={tab === "mixer" ? "active" : ""}
-              role="tab"
-              aria-selected={tab === "mixer"}
-              onClick={() => setTab("mixer")}
-            >
-              Mixer
-            </button>
-          </div>
-          {tab === "palette" ? (
-            <div className="color-preset-panel" role="tabpanel" aria-label="Preset colors">
-              <div className="color-preset-grid">
-                {textColorCommands.map((command) => (
-                  <ColorPresetSwatchButton
-                    active={normalizeHexColor(command.color) === normalizedCurrentColor}
-                    command={command}
-                    key={command.id}
-                    onApply={applyPresetColor}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="color-mixer-panel" role="tabpanel" aria-label="Custom color mixer">
-              <label className="color-wheel-control">
-                <span className="visually-hidden">Color wheel</span>
-                <input
-                  className="color-wheel-input"
-                  type="color"
-                  value={draftHex}
-                  aria-label="Color wheel"
-                  onChange={(event) => applyColor(event.currentTarget.value)}
-                />
-                <span className="color-wheel-face" aria-hidden="true">
-                  <span className="color-wheel-current" style={{ "--picker-color": draftHex } as CSSProperties} />
-                </span>
-              </label>
-              <div className="color-channel-groups">
-                <div className="color-channel-group" aria-label="RGB color">
-                  {(["r", "g", "b"] as const).map((channel) => (
-                    <label key={channel}>
-                      <span>{channel.toUpperCase()}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={255}
-                        value={draftRgb[channel]}
-                        onChange={(event) => updateRgbChannel(channel, event.currentTarget.value)}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <div className="color-channel-group" aria-label="CMYK color">
-                  {(["c", "m", "y", "k"] as const).map((channel) => (
-                    <label key={channel}>
-                      <span>{channel.toUpperCase()}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={draftCmyk[channel]}
-                        onChange={(event) => updateCmykChannel(channel, event.currentTarget.value)}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <label className="color-hex-field">
-                  <span>HEX</span>
-                  <input
-                    type="text"
-                    value={draftHex.toUpperCase()}
-                    spellCheck={false}
-                    onChange={(event) => updateHexInput(event.currentTarget.value)}
-                  />
-                </label>
-              </div>
-            </div>
-          )}
+        <div className="toolbar-color-popover" role="dialog" aria-label={dialogLabel}>
+          <ColorPickerPopoverBody
+            activeColor={normalizedCurrentColor}
+            value={draftHex}
+            onCommitColor={applyColor}
+            onPreviewColor={applyColor}
+          />
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ColorPickerPopoverBody({
+  activeColor,
+  value,
+  onCommitColor,
+  onPreviewColor
+}: {
+  activeColor?: string;
+  value: string;
+  onCommitColor: (color: string) => void;
+  onPreviewColor: (color: string) => void;
+}) {
+  const normalizedValue = normalizeHexColor(value) ?? "#111111";
+  const normalizedActiveColor = normalizeHexColor(activeColor ?? value) ?? normalizedValue;
+  const [tab, setTab] = useState<ColorPickerTab>("color");
+  const [hexInput, setHexInput] = useState(normalizedValue.toUpperCase());
+  const draftRgb = useMemo(() => hexToRgbColor(normalizedValue) ?? { r: 17, g: 17, b: 17 }, [normalizedValue]);
+  const draftCmyk = useMemo(() => rgbToCmykColor(draftRgb), [draftRgb]);
+  const palettes = useMemo(() => colorPickerPaletteSets(), []);
+
+  useEffect(() => {
+    setHexInput(normalizedValue.toUpperCase());
+  }, [normalizedValue]);
+
+  const previewColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+
+    setHexInput(normalized.toUpperCase());
+    onPreviewColor(normalized);
+  };
+
+  const commitColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+
+    setHexInput(normalized.toUpperCase());
+    onCommitColor(normalized);
+  };
+
+  const applyAndCommitColor = (color: string) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+
+    setHexInput(normalized.toUpperCase());
+    onPreviewColor(normalized);
+    onCommitColor(normalized);
+  };
+
+  const updateRgbChannel = (channel: keyof RgbColor, channelValue: string) => {
+    applyAndCommitColor(rgbToHexColor({
+      ...draftRgb,
+      [channel]: clampColorChannel(channelValue)
+    }));
+  };
+
+  const updateCmykChannel = (channel: keyof CmykColor, channelValue: string) => {
+    applyAndCommitColor(rgbToHexColor(cmykToRgbColor({
+      ...draftCmyk,
+      [channel]: clampPercentChannel(channelValue)
+    })));
+  };
+
+  const updateHexInput = (nextValue: string) => {
+    const cleaned = nextValue.replace(/[^0-9a-f]/gi, "").slice(0, 6);
+    const displayValue = `#${cleaned}`.toUpperCase();
+    setHexInput(displayValue);
+    const normalized = normalizeHexColor(displayValue);
+    if (normalized) {
+      applyAndCommitColor(normalized);
+    }
+  };
+
+  return (
+    <>
+      <div className="color-picker-tabs" role="tablist" aria-label="Color picker mode">
+        <button
+          type="button"
+          className={tab === "color" ? "active" : ""}
+          role="tab"
+          aria-selected={tab === "color"}
+          onClick={() => setTab("color")}
+        >
+          Color
+        </button>
+        <button
+          type="button"
+          className={tab === "palettes" ? "active" : ""}
+          role="tab"
+          aria-selected={tab === "palettes"}
+          onClick={() => setTab("palettes")}
+        >
+          Palettes
+        </button>
+      </div>
+      {tab === "color" ? (
+        <div className="color-picker-color-panel" role="tabpanel" aria-label="Color wheel and channel values">
+          <div className="color-picker-wheel-stack">
+            <IroColorWheel
+              color={normalizedValue}
+              onCommitColor={commitColor}
+              onPreviewColor={previewColor}
+            />
+            <label className="color-wheel-control">
+              <span className="visually-hidden">System color wheel</span>
+              <input
+                className="color-wheel-input"
+                type="color"
+                value={normalizedValue}
+                aria-label="System color wheel"
+                onChange={(event) => applyAndCommitColor(event.currentTarget.value)}
+              />
+              <span className="color-wheel-face" aria-hidden="true">
+                <span className="color-wheel-current" style={{ "--picker-color": normalizedValue } as CSSProperties} />
+              </span>
+            </label>
+          </div>
+          <div className="color-channel-groups">
+            <div className="color-channel-group" aria-label="RGB color">
+              {(["r", "g", "b"] as const).map((channel) => (
+                <label key={channel}>
+                  <span>{channel.toUpperCase()}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    value={draftRgb[channel]}
+                    onChange={(event) => updateRgbChannel(channel, event.currentTarget.value)}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="color-channel-group" aria-label="CMYK color">
+              {(["c", "m", "y", "k"] as const).map((channel) => (
+                <label key={channel}>
+                  <span>{channel.toUpperCase()}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={draftCmyk[channel]}
+                    onChange={(event) => updateCmykChannel(channel, event.currentTarget.value)}
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="color-hex-field">
+              <span>HEX</span>
+              <input
+                type="text"
+                value={hexInput}
+                spellCheck={false}
+                onChange={(event) => updateHexInput(event.currentTarget.value)}
+              />
+            </label>
+          </div>
+        </div>
+      ) : (
+        <div className="color-palette-panel" role="tabpanel" aria-label="Color palettes">
+          {palettes.map((palette) => (
+            <section className="color-palette-section" data-color-palette={palette.id} key={palette.id}>
+              <h3>{palette.title}</h3>
+              <div className="color-palette-grid">
+                {palette.colors.map((entry) => (
+                  <ColorPaletteSwatchButton
+                    active={normalizeHexColor(entry.color) === normalizedActiveColor}
+                    color={entry.color}
+                    key={`${palette.id}-${entry.color}`}
+                    paletteId={palette.id}
+                    title={entry.title}
+                    onApply={applyAndCommitColor}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function IroColorWheel({
+  color,
+  onCommitColor,
+  onPreviewColor
+}: {
+  color: string;
+  onCommitColor: (color: string) => void;
+  onPreviewColor: (color: string) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const pickerRef = useRef<IroColorPickerInstance | null>(null);
+  const onCommitRef = useRef(onCommitColor);
+  const onPreviewRef = useRef(onPreviewColor);
+
+  useEffect(() => {
+    onCommitRef.current = onCommitColor;
+  }, [onCommitColor]);
+
+  useEffect(() => {
+    onPreviewRef.current = onPreviewColor;
+  }, [onPreviewColor]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
+
+    const picker = iro.ColorPicker(host, {
+      borderColor: "#9eb2ba",
+      borderWidth: 1,
+      color,
+      handleRadius: 6,
+      layout: [
+        {
+          component: iro.ui.Wheel
+        },
+        {
+          component: iro.ui.Slider,
+          options: {
+            sliderType: "value"
+          }
+        }
+      ],
+      margin: 8,
+      padding: 3,
+      sliderSize: 13,
+      width: 112
+    });
+    pickerRef.current = picker;
+
+    const previewColor = (iroColor: IroColorLike) => {
+      const normalized = normalizeHexColor(iroColor.hexString);
+      if (normalized) {
+        onPreviewRef.current(normalized);
+      }
+    };
+    const commitColor = (iroColor: IroColorLike) => {
+      const normalized = normalizeHexColor(iroColor.hexString);
+      if (normalized) {
+        onCommitRef.current(normalized);
+      }
+    };
+
+    picker.on("input:change", previewColor);
+    picker.on("input:end", commitColor);
+
+    return () => {
+      picker.off("input:change", previewColor);
+      picker.off("input:end", commitColor);
+      pickerRef.current = null;
+      host.replaceChildren();
+    };
+  }, []);
+
+  useEffect(() => {
+    const normalized = normalizeHexColor(color);
+    const picker = pickerRef.current;
+    if (!normalized || !picker) {
+      return;
+    }
+
+    if (normalizeHexColor(picker.color.hexString) !== normalized) {
+      picker.color.hexString = normalized;
+    }
+  }, [color]);
+
+  return (
+    <div
+      ref={hostRef}
+      className="iro-color-picker"
+      aria-label="Iro color wheel"
+      data-palette-control="true"
+    />
   );
 }
 
@@ -726,7 +2338,7 @@ function ToolbarColorSwatchButton({
   onInvoke
 }: {
   active: boolean;
-  command: typeof textColorCommands[number];
+  command: ColorCommand;
   onInvoke: (commandId: string) => void;
 }) {
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
@@ -746,27 +2358,34 @@ function ToolbarColorSwatchButton({
   );
 }
 
-function ColorPresetSwatchButton({
+function ColorPaletteSwatchButton({
   active,
-  command,
+  color,
+  paletteId,
+  title,
   onApply
 }: {
   active: boolean;
-  command: typeof textColorCommands[number];
-  onApply: (command: typeof textColorCommands[number]) => void;
+  color: string;
+  paletteId: string;
+  title: string;
+  onApply: (color: string) => void;
 }) {
-  const invokeHandlers = usePaletteButtonInvoke(command.id, () => onApply(command));
+  const normalizedColor = normalizeHexColor(color) ?? "#111111";
 
   return (
     <button
       type="button"
-      className={["color-preset-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
-      aria-label={command.title}
+      className={["color-palette-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
+      title={title}
+      aria-label={title}
       aria-pressed={active}
-      data-command-id={command.id}
-      style={{ "--swatch-color": command.color } as CSSProperties}
-      {...invokeHandlers}
+      data-color-palette-swatch={paletteId}
+      data-palette-control="true"
+      style={{ "--swatch-color": normalizedColor } as CSSProperties}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={() => onApply(normalizedColor)}
     />
   );
 }
@@ -971,6 +2590,7 @@ export function CommandIconButton({
   active = false,
   tooltipId,
   tooltipVisible,
+  distributeMode = "centers",
   onTooltipEnter,
   onTooltipLeave,
   separated = false,
@@ -980,16 +2600,35 @@ export function CommandIconButton({
   active?: boolean;
   tooltipId?: string;
   tooltipVisible?: boolean;
+  distributeMode?: ToolPaletteDistributeMode;
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
   separated?: boolean;
   onInvoke: (commandId: string) => void;
 }) {
   const disabled = command.enabled === false;
+  if (isDistributeCommandId(command.id)) {
+    return (
+      <DistributeCommandIconButton
+        active={active}
+        command={command}
+        disabled={disabled}
+        distributeMode={distributeMode}
+        separated={separated}
+        tooltipId={tooltipId}
+        tooltipVisible={tooltipVisible}
+        onInvoke={onInvoke}
+        onTooltipEnter={onTooltipEnter}
+        onTooltipLeave={onTooltipLeave}
+      />
+    );
+  }
+
   const activeState = active && !disabled;
   const shortcut = command.shortcut ?? command.defaultShortcut;
   const shortcutLabel = command.shortcutLabel ?? shortcut;
-  const shortcutText = shortcutLabel ? ` (${shortcutLabel})` : "";
+  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const shortcutText = ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}${shortcutText}${stateText}`;
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
@@ -1001,6 +2640,7 @@ export function CommandIconButton({
       data-tooltip-owner-id={tooltipId}
       data-tooltip-visible={tooltipVisible ? "true" : undefined}
       onBlur={() => onTooltipLeave?.()}
+      onClickCapture={() => onTooltipLeave?.()}
       onPointerCancel={() => onTooltipLeave?.()}
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
@@ -1020,13 +2660,15 @@ export function CommandIconButton({
         disabled={disabled}
         data-active={activeState ? "true" : undefined}
         data-command-id={command.id}
-        data-shortcut-label={shortcutLabel}
+        data-shortcut-label={visibleShortcutLabel}
         data-toolbar-asset={command.assetName}
         data-tooltip={tooltipText}
         {...invokeHandlers}
       >
         {command.assetName ? (
           <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        ) : command.id.startsWith("tool.art.") ? (
+          <ArtToolIcon commandId={command.id} />
         ) : (
           <Icon name={command.icon} />
         )}
@@ -1034,4 +2676,748 @@ export function CommandIconButton({
       </button>
     </span>
   );
+}
+
+type ArtArrangeFlyout = {
+  id: string;
+  title: string;
+  commands: CommandSpec[];
+};
+
+type ArtArrangeToolbarItem =
+  | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout }
+  | { kind: "command"; id: string; command: CommandSpec };
+
+type ArtToolbarCommandItem =
+  | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout; primaryAssetName?: ToolbarAssetName }
+  | { kind: "command"; id: string; command: CommandSpec };
+
+type ArtToolbarCommandColumn = {
+  id: string;
+  containsArrangeItems?: boolean;
+  containsShapeFlyout?: boolean;
+  items: ArtToolbarCommandItem[];
+};
+
+function artToolbarCommandColumns(groups: CommandSpec[][]): ArtToolbarCommandColumn[] {
+  const commands = groups.flat();
+  const commandById = new Map(commands.map((command) => [command.id, command] as const));
+  const shapeFlyout = artShapeFlyoutForGroup(commands);
+  const arrangeItemById = new Map(artArrangeToolbarItemsForGroup(commands).map((item) => [item.id, item] as const));
+  const commandItems = (commandIds: readonly string[]): ArtToolbarCommandItem[] =>
+    commandIds.flatMap((commandId) => {
+      const command = commandById.get(commandId);
+      return command ? [{ kind: "command" as const, id: command.id, command }] : [];
+    });
+  const arrangeItems = (itemIds: readonly string[]): ArtToolbarCommandItem[] => {
+    const items: ArtToolbarCommandItem[] = [];
+    itemIds.forEach((itemId) => {
+      const item = arrangeItemById.get(itemId);
+      if (!item) {
+        return;
+      }
+
+      items.push(
+        item.kind === "command"
+          ? { kind: "command", id: item.command.id, command: item.command }
+          : { kind: "flyout", id: item.flyout.id, flyout: item.flyout }
+      );
+    });
+    return items;
+  };
+
+  const drawingItems: ArtToolbarCommandItem[] = commandItems(ART_PATH_COMMAND_IDS);
+  if (shapeFlyout) {
+    drawingItems.push({
+      kind: "flyout",
+      id: `art-shape-${shapeFlyout.id}`,
+      flyout: shapeFlyout,
+      primaryAssetName: "Art_Shapes"
+    });
+  }
+
+  return [
+    {
+      id: "selection",
+      items: commandItems(ART_SELECTION_COLUMN_COMMAND_IDS)
+    },
+    {
+      id: "drawing",
+      containsShapeFlyout: Boolean(shapeFlyout),
+      items: drawingItems
+    },
+    {
+      id: "arrange",
+      containsArrangeItems: true,
+      items: arrangeItems(ART_ARRANGE_COLUMN_ITEM_IDS)
+    },
+    {
+      id: "boolean",
+      items: commandItems(ART_BOOLEAN_COMMAND_IDS)
+    }
+  ];
+}
+
+function artArrangeToolbarItemsForGroup(group: CommandSpec[]): ArtArrangeToolbarItem[] {
+  if (!group.some((command) => ART_ARRANGE_COMMAND_IDS.has(command.id))) {
+    return [];
+  }
+
+  const commandById = new Map(group.map((command) => [command.id, command] as const));
+  const flyoutById = new Map<string, ArtArrangeFlyout>(ART_ARRANGE_FLYOUTS.map((flyout) => [flyout.id, {
+    id: flyout.id,
+    title: flyout.title,
+    commands: flyout.commandIds.flatMap((commandId) => {
+      const command = commandById.get(commandId);
+      return command ? [command] : [];
+    })
+  }] as const).filter(([, flyout]) => flyout.commands.length > 0));
+  const items: ArtArrangeToolbarItem[] = [];
+  const pushFlyout = (id: string) => {
+    const flyout = flyoutById.get(id);
+    if (flyout) {
+      items.push({ kind: "flyout", id, flyout });
+    }
+  };
+
+  pushFlyout("align");
+  ART_ARRANGE_STANDALONE_COMMAND_IDS.forEach((commandId) => {
+    const command = commandById.get(commandId);
+    if (command) {
+      items.push({ kind: "command", id: command.id, command });
+    }
+  });
+  pushFlyout("layer");
+  pushFlyout("transform");
+  pushFlyout("group");
+
+  return items;
+}
+
+function artShapeFlyoutForGroup(group: CommandSpec[]): ArtArrangeFlyout | undefined {
+  if (!group.some((command) => ART_SHAPE_COMMAND_IDS.includes(command.id as typeof ART_SHAPE_COMMAND_IDS[number]))) {
+    return undefined;
+  }
+
+  const commandById = new Map(group.map((command) => [command.id, command] as const));
+  const commands = ART_SHAPE_COMMAND_IDS.flatMap((commandId) => {
+    const command = commandById.get(commandId);
+    return command ? [command] : [];
+  });
+
+  return commands.length > 0 ? { id: "shapes", title: "Shapes", commands } : undefined;
+}
+
+function CommandFlyoutButton({
+  commands,
+  distributeMode,
+  flyoutId,
+  title,
+  primaryAssetName,
+  activeCommandId,
+  tooltipId,
+  tooltipVisible,
+  onTooltipEnter,
+  onTooltipLeave,
+  onInvoke
+}: {
+  commands: CommandSpec[];
+  distributeMode: ToolPaletteDistributeMode;
+  flyoutId: string;
+  title: string;
+  primaryAssetName?: ToolbarAssetName;
+  activeCommandId?: string;
+  tooltipId?: string;
+  tooltipVisible?: boolean;
+  onTooltipEnter?: () => void;
+  onTooltipLeave?: () => void;
+  onInvoke: (commandId: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const shellRef = useRef<HTMLSpanElement | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdOpenedRef = useRef(false);
+  const primaryCommand = commands.find((command) => command.enabled !== false) ?? commands[0];
+  const primaryDisabled = primaryCommand.enabled === false;
+  const flyoutAssetName = primaryAssetName ?? primaryCommand.assetName;
+  const activeState = commands.some((command) => command.enabled !== false && command.id === activeCommandId);
+  const shortcut = primaryCommand.shortcut ?? primaryCommand.defaultShortcut;
+  const shortcutLabel = primaryCommand.shortcutLabel ?? shortcut;
+  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const shortcutText = ` (${visibleShortcutLabel})`;
+  const stateText = primaryDisabled ? `: ${primaryCommand.disabledReason ?? "unavailable"}` : "";
+  const distributeText = commands.some((command) => isDistributeCommandId(command.id))
+    ? `: ${distributeMode === "spacing" ? "equal gaps" : "centers"}`
+    : "";
+  const tooltipText = `${title}${distributeText}: ${primaryCommand.title}; hold for choices${shortcutText}${stateText}`;
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current !== undefined) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = undefined;
+    }
+  }, []);
+
+  const openMenu = useCallback(() => {
+    holdOpenedRef.current = true;
+    setMenuOpen(true);
+    onTooltipLeave?.();
+  }, [onTooltipLeave]);
+
+  const chooseCommand = useCallback((command: CommandSpec) => {
+    if (command.enabled === false) {
+      return;
+    }
+    onInvoke(command.id);
+    setMenuOpen(false);
+    onTooltipLeave?.();
+  }, [onInvoke, onTooltipLeave]);
+
+  useEffect(() => () => {
+    clearHoldTimer();
+  }, [clearHoldTimer]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && shellRef.current?.contains(target)) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [menuOpen]);
+
+  return (
+    <span
+      className="icon-button-shell command-flyout-shell"
+      data-command-flyout={flyoutId}
+      data-command-tooltip-owner={primaryCommand.id}
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
+      ref={shellRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget) && !menuOpen) {
+          onTooltipLeave?.();
+        }
+      }}
+      onClickCapture={() => onTooltipLeave?.()}
+      onPointerCancel={() => onTooltipLeave?.()}
+      onPointerDownCapture={() => onTooltipLeave?.()}
+      onPointerEnter={() => onTooltipEnter?.()}
+      onPointerLeave={() => onTooltipLeave?.()}
+      onMouseEnter={() => onTooltipEnter?.()}
+      onMouseLeave={() => onTooltipLeave?.()}
+    >
+      <button
+        type="button"
+        className={[
+          "icon-button",
+          "command-flyout-button",
+          activeState ? "active" : ""
+        ].filter(Boolean).join(" ")}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={tooltipText}
+        aria-pressed={activeState || undefined}
+        data-command-id={primaryCommand.id}
+        data-active={activeState ? "true" : undefined}
+        data-command-flyout-button={flyoutId}
+        data-command-flyout-ids={commands.map((command) => command.id).join(" ")}
+        data-disabled={primaryDisabled ? "true" : undefined}
+        data-shortcut-label={visibleShortcutLabel}
+        data-toolbar-asset={flyoutAssetName}
+        data-tooltip={tooltipText}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0) {
+            return;
+          }
+          holdOpenedRef.current = false;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          clearHoldTimer();
+          holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+          if (primaryDisabled || holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          onInvoke(primaryCommand.id);
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            openMenu();
+            return;
+          }
+          if ((event.key === "Enter" || event.key === " ") && !primaryDisabled) {
+            event.preventDefault();
+            onInvoke(primaryCommand.id);
+          }
+        }}
+      >
+        {flyoutAssetName ? (
+          <img className="tool-icon-image" src={toolbarAsset(flyoutAssetName)} alt="" aria-hidden="true" />
+        ) : (
+          <Icon name={primaryCommand.icon} />
+        )}
+        <span className="command-flyout-indicator" aria-hidden="true" />
+        <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
+      </button>
+      <div
+        className="toolbar-command-flyout-menu"
+        role="menu"
+        aria-label={`${title} commands`}
+        data-command-flyout-menu={flyoutId}
+        hidden={!menuOpen}
+      >
+        {commands.map((command) => {
+          const disabled = command.enabled === false;
+          const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
+          const itemText = disabled
+            ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
+            : command.title;
+          return (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={disabled}
+              data-command-id={command.id}
+              data-shortcut-label={itemShortcut ?? "No shortcut"}
+              data-toolbar-asset={command.assetName}
+              data-tooltip={itemText}
+              key={command.id}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseCommand(command);
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseCommand(command);
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseCommand(command);
+              }}
+            >
+              {command.assetName ? (
+                <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+              ) : (
+                <Icon name={command.icon} />
+              )}
+              <span>{command.title}</span>
+            </button>
+          );
+        })}
+      </div>
+    </span>
+  );
+}
+
+function DistributeCommandIconButton({
+  command,
+  active,
+  disabled,
+  distributeMode,
+  tooltipId,
+  tooltipVisible,
+  onTooltipEnter,
+  onTooltipLeave,
+  separated,
+  onInvoke
+}: {
+  command: CommandSpec;
+  active: boolean;
+  disabled: boolean;
+  distributeMode: ToolPaletteDistributeMode;
+  tooltipId?: string;
+  tooltipVisible?: boolean;
+  onTooltipEnter?: () => void;
+  onTooltipLeave?: () => void;
+  separated?: boolean;
+  onInvoke: (commandId: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const shellRef = useRef<HTMLSpanElement | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdOpenedRef = useRef(false);
+  const activeState = active && !disabled;
+  const shortcut = command.shortcut ?? command.defaultShortcut;
+  const shortcutLabel = command.shortcutLabel ?? shortcut;
+  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const modeLabel = distributeMode === "spacing" ? "equal gaps" : "centers";
+  const shortcutText = ` (${visibleShortcutLabel})`;
+  const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
+  const tooltipText = `${command.title}: ${modeLabel}${shortcutText}${stateText}`;
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current !== undefined) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = undefined;
+    }
+  }, []);
+
+  const openMenu = useCallback(() => {
+    holdOpenedRef.current = true;
+    setMenuOpen(true);
+    onTooltipLeave?.();
+  }, [onTooltipLeave]);
+
+  const chooseMode = useCallback((commandId: string) => {
+    onInvoke(commandId);
+    setMenuOpen(false);
+    onTooltipLeave?.();
+  }, [onInvoke, onTooltipLeave]);
+
+  useEffect(() => () => {
+    clearHoldTimer();
+  }, [clearHoldTimer]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && shellRef.current?.contains(target)) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [menuOpen]);
+
+  return (
+    <span
+      className={["icon-button-shell", "distribute-button-shell", separated ? "separated" : ""].filter(Boolean).join(" ")}
+      data-command-tooltip-owner={command.id}
+      data-distribute-menu-open={menuOpen ? "true" : undefined}
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
+      ref={shellRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget) && !menuOpen) {
+          onTooltipLeave?.();
+        }
+      }}
+      onClickCapture={() => onTooltipLeave?.()}
+      onPointerCancel={() => onTooltipLeave?.()}
+      onPointerDownCapture={() => onTooltipLeave?.()}
+      onPointerEnter={() => onTooltipEnter?.()}
+      onPointerLeave={() => onTooltipLeave?.()}
+      onMouseEnter={() => onTooltipEnter?.()}
+      onMouseLeave={() => onTooltipLeave?.()}
+    >
+      <button
+        type="button"
+        className={["icon-button", "distribute-mode-button", activeState ? "active" : ""].filter(Boolean).join(" ")}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={tooltipText}
+        aria-pressed={activeState || undefined}
+        data-active={activeState ? "true" : undefined}
+        data-command-id={command.id}
+        data-disabled={disabled ? "true" : undefined}
+        data-distribute-mode={distributeMode}
+        data-shortcut-label={visibleShortcutLabel}
+        data-toolbar-asset={command.assetName}
+        data-tooltip={tooltipText}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0) {
+            return;
+          }
+          holdOpenedRef.current = false;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          clearHoldTimer();
+          holdTimerRef.current = setTimeout(openMenu, DISTRIBUTE_MENU_HOLD_MS);
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+          if (disabled || holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          onInvoke(command.id);
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            openMenu();
+            return;
+          }
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onInvoke(command.id);
+          }
+        }}
+      >
+        {command.assetName ? (
+          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        ) : (
+          <Icon name={command.icon} />
+        )}
+        <span className="distribute-mode-indicator" data-distribute-mode={distributeMode} aria-hidden="true">
+          <span />
+          <span />
+        </span>
+        <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
+      </button>
+      {menuOpen ? (
+        <div className="toolbar-distribute-menu" role="menu" aria-label="Distribute mode">
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={distributeMode === "centers"}
+            data-command-id={distributeModeCommandIds.centers}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.centers);
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.centers);
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.centers);
+            }}
+          >
+            Centers
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={distributeMode === "spacing"}
+            data-command-id={distributeModeCommandIds.spacing}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.spacing);
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.spacing);
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseMode(distributeModeCommandIds.spacing);
+            }}
+          >
+            Equal gaps
+          </button>
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+function isDistributeCommandId(commandId: string): boolean {
+  return commandId === "layout.distributeHorizontal" || commandId === "layout.distributeVertical";
+}
+
+function ArtToolIcon({ commandId }: { commandId: string }) {
+  const toolId = commandId.replace(/^tool\.art\./, "");
+  const dashed = toolId.includes("Dashed");
+  const filled = toolId.includes("Filled") || toolId.includes("Gloss");
+  const gloss = toolId.includes("Gloss");
+  const shadow = toolId.includes("Shadow");
+  const strokeClass = ["art-tool-stroke", dashed ? "dashed" : "", filled ? "filled" : ""].filter(Boolean).join(" ");
+  const shadowElement = shadow ? <path className="art-tool-shadow" d={artToolShapePath(toolId)} aria-hidden="true" /> : null;
+
+  if (toolId === "pencil") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <g data-art-freehand-glyph="pencil">
+          <path className="art-tool-stroke" d="M3 14 L4.2 10.4 L11.2 3.4 C11.9 2.7 12.9 2.7 13.6 3.4 C14.3 4.1 14.3 5.1 13.6 5.8 L6.6 12.8 Z" />
+          <path className="art-tool-stroke filled" d="M3 14 L4.2 10.4 L6.6 12.8 Z" />
+          <path className="art-tool-stroke" d="M10.4 4.2 L12.8 6.6" />
+        </g>
+      </svg>
+    );
+  }
+
+  if (toolId === "brush") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <g data-art-freehand-glyph="brush">
+          <path className="art-tool-stroke" d="M10.3 8.3 L13.9 4.7 C14.4 4.2 14.4 3.5 13.9 3 C13.4 2.5 12.7 2.5 12.2 3 L8.6 6.6" />
+          <path className="art-tool-stroke filled" d="M5.1 13.9 C5.8 12.1 4.3 11.1 6.5 8.7 C7.7 7.4 9.2 6.6 10.7 7 L10 10.8 C8.4 12.5 6.9 13.3 5.1 13.9 Z" />
+          <path className="art-tool-stroke bold" d="M2.6 13.4 C4.2 11.1 6.4 14.5 8.9 11.7" />
+        </g>
+      </svg>
+    );
+  }
+
+  if (toolId === "eyedropper") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M11.5 2.4 L14.6 5.5 L6.7 13.4 L3.6 14.3 L4.5 11.2 Z" />
+        <path className="art-tool-stroke filled" d="M4.5 11.2 L6.7 13.4 L3.6 14.3 Z" />
+        <path className="art-tool-stroke" d="M9.8 4.1 L12.9 7.2" />
+      </svg>
+    );
+  }
+
+  if (toolId.startsWith("line")) {
+    const path = toolId === "lineWavy"
+      ? "M2 9 C4 4, 6 14, 8.5 9 S13 4, 15 9"
+      : "M3 3 L14 14";
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path
+          className={["art-tool-stroke", dashed ? "dashed" : "", toolId === "lineBold" ? "bold" : ""].filter(Boolean).join(" ")}
+          d={path}
+        />
+      </svg>
+    );
+  }
+
+  if (toolId === "polyline") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M2.5 12.5 L7 4.5 L14.5 9.5" />
+      </svg>
+    );
+  }
+
+  if (toolId === "pen") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M2.6 12.4 C5.4 4.2 10.8 3.4 14.4 8.4" />
+        <path className="art-tool-stroke filled" d="M2.3 12.7 L4.5 11.9 L3.1 10.5 Z" />
+        <circle className="art-tool-stroke" cx="8.3" cy="5.7" r="1" />
+      </svg>
+    );
+  }
+
+  if (toolId === "arrow") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M3 11 L13 5" />
+        <path className="art-tool-stroke filled" d="M13 5 L10.2 5.2 L11.7 7.6 Z" />
+      </svg>
+    );
+  }
+
+  if (toolId.startsWith("arc")) {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className={["art-tool-stroke", dashed ? "dashed" : ""].filter(Boolean).join(" ")} d={artToolArcPath(toolId)} />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+      {shadowElement}
+      <path className={strokeClass} d={artToolShapePath(toolId)} />
+      {gloss ? <path className="art-tool-gloss" d={artToolGlossPath(toolId)} /> : null}
+    </svg>
+  );
+}
+
+function artToolShapePath(toolId: string): string {
+  if (toolId.startsWith("circle")) {
+    return "M8.5 2.2 A6.3 6.3 0 1 1 8.45 2.2 Z";
+  }
+
+  if (toolId.startsWith("ellipse")) {
+    return "M2 8.5 A6.5 3.7 0 1 1 15 8.5 A6.5 3.7 0 1 1 2 8.5 Z";
+  }
+
+  if (toolId.startsWith("roundedRect")) {
+    return "M4.1 3 H12.9 Q14 3 14 4.1 V12.9 Q14 14 12.9 14 H4.1 Q3 14 3 12.9 V4.1 Q3 3 4.1 3 Z";
+  }
+
+  return "M3 4 H14 V13 H3 Z";
+}
+
+function artToolGlossPath(toolId: string): string {
+  if (toolId.startsWith("circle")) {
+    return "M5.2 5.2 C6.1 4.2, 7.6 3.7, 9.2 4";
+  }
+
+  if (toolId.startsWith("ellipse")) {
+    return "M4.5 7.1 C6.5 5.8, 10.3 5.8, 12.5 7.1";
+  }
+
+  return "M5 5.2 H12";
+}
+
+function artToolArcPath(toolId: string): string {
+  if (toolId.startsWith("arc270")) {
+    return "M8.5 2.2 A6.3 6.3 0 1 1 2.2 8.5";
+  }
+
+  if (toolId.startsWith("arc180")) {
+    return "M2.4 8.5 A6.1 6.1 0 0 1 14.6 8.5";
+  }
+
+  if (toolId.startsWith("arc120")) {
+    return "M4 10.6 A5.9 5.9 0 0 1 13 5.6";
+  }
+
+  return "M5.2 11.8 A6 6 0 0 1 11.8 5.2";
 }

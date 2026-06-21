@@ -37,6 +37,83 @@ export const PointSchema = z
   })
   .strict();
 
+const OpacitySchema = z.number().finite().min(0).max(1);
+const NormalizedCoordinateSchema = z.number().finite().min(0).max(1);
+
+export const GraphicGradientStopSchema = z
+  .object({
+    offset: NormalizedCoordinateSchema,
+    color: z.string(),
+    opacity: OpacitySchema.optional()
+  })
+  .strict();
+
+export const GraphicPaintSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("none")
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("solid"),
+      color: z.string(),
+      opacity: OpacitySchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("linear-gradient"),
+      stops: z.array(GraphicGradientStopSchema).min(2),
+      x1: NormalizedCoordinateSchema,
+      y1: NormalizedCoordinateSchema,
+      x2: NormalizedCoordinateSchema,
+      y2: NormalizedCoordinateSchema,
+      units: z.literal("object")
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("radial-gradient"),
+      stops: z.array(GraphicGradientStopSchema).min(2),
+      cx: NormalizedCoordinateSchema,
+      cy: NormalizedCoordinateSchema,
+      r: z.number().finite().nonnegative(),
+      fx: NormalizedCoordinateSchema.optional(),
+      fy: NormalizedCoordinateSchema.optional(),
+      units: z.literal("object")
+    })
+    .strict()
+]);
+
+export const VisualEffectSchema = z
+  .object({
+    kind: z.enum(["shadow", "glow", "sketch"]),
+    color: z.string().optional(),
+    opacity: OpacitySchema.optional(),
+    offsetX: z.number().finite().optional(),
+    offsetY: z.number().finite().optional(),
+    blurPx: z.number().finite().nonnegative().optional(),
+    spreadPx: z.number().finite().optional(),
+    roughness: z.number().finite().nonnegative().optional(),
+    bowing: z.number().finite().nonnegative().optional(),
+    strokeWidth: z.number().finite().positive().optional(),
+    seed: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const GraphicEffectSchema = VisualEffectSchema;
+
+export const VisualEffectStyleSchema = z
+  .object({
+    effect: z.enum(["shadow", "reflection"]).optional(),
+    visualEffects: z.array(VisualEffectSchema).optional(),
+    inactiveVisualEffects: z.array(VisualEffectSchema).optional(),
+    effects: z.array(VisualEffectSchema).optional(),
+    inactiveEffects: z.array(VisualEffectSchema).optional()
+  })
+  .strict();
+
 export const AnchorSchema = z
   .object({
     kind: z.enum(["point", "object", "atom", "bond"]),
@@ -57,6 +134,96 @@ const BaseObjectSchema = z
     rotation: z.number().finite().default(0),
     style: MetadataSchema.default({}),
     compatibility: CompatibilityMetadataSchema.optional()
+  })
+  .strict();
+
+export const GraphicObjectStyleSchema = z
+  .object({
+    source: z.string().optional(),
+    color: z.string().optional(),
+    strokeColor: z.string().optional(),
+    fillColor: z.string().optional(),
+    strokePaint: GraphicPaintSchema.optional(),
+    fillPaint: GraphicPaintSchema.optional(),
+    opacity: OpacitySchema.optional(),
+    strokeOpacity: OpacitySchema.optional(),
+    fillOpacity: OpacitySchema.optional(),
+    strokeWidth: z.number().finite().positive().optional(),
+    strokeDasharray: z.string().optional(),
+    strokeLineCap: z.enum(["butt", "round", "square"]).optional(),
+    strokeLineJoin: z.enum(["miter", "round", "bevel"]).optional(),
+    strokeMiterLimit: z.number().finite().positive().optional(),
+    fillMode: z.enum(["solid", "gloss"]).optional(),
+    effect: z.enum(["shadow", "reflection"]).optional(),
+    visualEffects: z.array(VisualEffectSchema).optional(),
+    inactiveVisualEffects: z.array(VisualEffectSchema).optional(),
+    effects: z.array(GraphicEffectSchema).optional(),
+    inactiveEffects: z.array(GraphicEffectSchema).optional(),
+    tiltXDegrees: z.number().finite().optional(),
+    tiltYDegrees: z.number().finite().optional(),
+    artToolId: z.string().optional(),
+    artToolCommandId: z.string().optional()
+  })
+  .strict();
+
+export const GraphicMarkerSchema = z
+  .object({
+    kind: z.enum(["none", "open-arrow", "filled-arrow", "bar", "dot", "diamond", "chevron"]),
+    sizePx: z.number().finite().positive().optional(),
+    angleDegrees: z.number().finite().optional()
+  })
+  .strict();
+
+export const GraphicPathNodeSchema = z
+  .object({
+    point: PointSchema,
+    inControl: PointSchema.optional(),
+    outControl: PointSchema.optional()
+  })
+  .strict();
+
+export const GraphicFreehandPointSchema = z
+  .object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    pressure: z.number().finite().min(0).max(1).optional()
+  })
+  .strict();
+
+export const GraphicFreehandOptionsSchema = z
+  .object({
+    size: z.number().finite().positive().optional(),
+    thinning: z.number().finite().optional(),
+    smoothing: NormalizedCoordinateSchema.optional(),
+    streamline: NormalizedCoordinateSchema.optional(),
+    simulatePressure: z.boolean().optional()
+  })
+  .strict();
+
+export const GraphicObjectDataSchema = z
+  .object({
+    lineStart: PointSchema.optional(),
+    lineEnd: PointSchema.optional(),
+    pathControlPoint: PointSchema.optional(),
+    pathD: z.string().optional(),
+    artPathKind: z.enum(["line", "wavy", "arc", "quadratic", "polyline", "bezier", "freehand"]).optional(),
+    pathNodes: z.array(GraphicPathNodeSchema).min(1).optional(),
+    pathClosed: z.boolean().optional(),
+    freehandPoints: z.array(GraphicFreehandPointSchema).min(1).optional(),
+    freehandOptions: GraphicFreehandOptionsSchema.optional(),
+    cachedFreehandPathD: z.string().optional(),
+    cachedFreehandPathRevision: z.string().optional(),
+    arcCenter: PointSchema.optional(),
+    arcRadiusX: z.number().finite().positive().optional(),
+    arcRadiusY: z.number().finite().positive().optional(),
+    arcStartRadians: z.number().finite().optional(),
+    arcSweepRadians: z.number().finite().optional(),
+    markerStart: GraphicMarkerSchema.optional(),
+    markerEnd: GraphicMarkerSchema.optional(),
+    cornerRadiusPx: z.number().finite().nonnegative().optional(),
+    imageHref: z.string().optional(),
+    imageMimeType: z.string().optional(),
+    artToolId: z.string().optional()
   })
   .strict();
 
@@ -249,7 +416,8 @@ export const BracketObjectSchema = BaseObjectSchema.extend({
 export const GraphicObjectSchema = BaseObjectSchema.extend({
   type: z.literal("graphic"),
   graphicKind: z.enum(["line", "rect", "ellipse", "path", "image", "unknown"]),
-  data: MetadataSchema.default({})
+  style: GraphicObjectStyleSchema.default({}),
+  data: GraphicObjectDataSchema.default({})
 }).strict();
 
 export const PlusObjectSchema = BaseObjectSchema.extend({
@@ -410,6 +578,17 @@ export type ElectronMarkObject = z.infer<typeof ElectronMarkObjectSchema>;
 export type TextSpan = z.infer<typeof TextSpanSchema>;
 export type TextObject = z.infer<typeof TextObjectSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
+export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
+export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
+export type VisualEffect = z.infer<typeof VisualEffectSchema>;
+export type VisualEffectStyle = z.infer<typeof VisualEffectStyleSchema>;
+export type GraphicEffect = VisualEffect;
+export type GraphicMarker = z.infer<typeof GraphicMarkerSchema>;
+export type GraphicPathNode = z.infer<typeof GraphicPathNodeSchema>;
+export type GraphicFreehandPoint = z.infer<typeof GraphicFreehandPointSchema>;
+export type GraphicFreehandOptions = z.infer<typeof GraphicFreehandOptionsSchema>;
+export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
+export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;
 export type PlusObject = z.infer<typeof PlusObjectSchema>;
 export type GroupObject = z.infer<typeof GroupObjectSchema>;

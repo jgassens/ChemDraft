@@ -5,6 +5,7 @@ import {
   stylePresetToObjectStyle,
   type DocumentObject,
   type DocumentPage,
+  type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import {
@@ -13,6 +14,7 @@ import {
   findNearestBondHit,
   findNearestAtomHit,
   planBondExtension,
+  planNativeArtVisual,
   planPageSvgRender,
   planFreeformBondExtension,
   type BondExtensionPlanningInput,
@@ -803,6 +805,43 @@ describe("layout-engine page SVG planner", () => {
       "graphic_001"
     ]);
     expect(plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001")).toHaveLength(2);
+    const arrowFragments = plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001");
+    expect(arrowFragments.map((fragment) => fragment.tag)).toEqual(["line", "polygon"]);
+    expect(arrowFragments.flatMap((fragment) => fragment.children)).toEqual([]);
+  });
+
+  it("skips group metadata while exporting grouped children", () => {
+    const page = pageWithObjects([
+      {
+        id: "text_group_child",
+        type: "text",
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 40,
+        rotation: 0,
+        style: {},
+        text: "grouped",
+        spans: []
+      },
+      {
+        id: "group_001",
+        type: "group",
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 40,
+        rotation: 0,
+        style: {},
+        childObjectIds: ["text_group_child"]
+      }
+    ]);
+
+    const plan = planPageSvgRender(page);
+
+    expect(plan.fragments.some((fragment) => fragment.attrs["data-object-id"] === "group_001")).toBe(false);
+    expect(plan.fragments.some((fragment) => fragment.attrs["data-object-id"] === "text_group_child")).toBe(true);
+    expect(plan.warnings.some((warning) => warning.objectId === "group_001")).toBe(false);
   });
 
   it("keeps the visible primitive stream stable while flattening object wrappers", () => {
@@ -881,6 +920,704 @@ describe("layout-engine page SVG planner", () => {
       .map((fragment) => fragment.attrs.stroke);
 
     expect(lineStrokes).toEqual(["#ff0000", "#0000ff"]);
+  });
+
+  it("renders explicit line graphics without fallback labels", () => {
+    const page = pageWithObjects([
+      {
+        id: "graphic_line",
+        type: "graphic",
+        x: 20,
+        y: 30,
+        width: 80,
+        height: 1,
+        rotation: 0,
+        style: {},
+        graphicKind: "line",
+        data: {
+          lineStart: { x: 20, y: 30 },
+          lineEnd: { x: 100, y: 30 }
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    expect(fragments.map((fragment) => fragment.tag)).toEqual(["line"]);
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-object-id": "graphic_line",
+      class: "graphic-glyph-stroke",
+      x1: 20,
+      y1: 30,
+      x2: 100,
+      y2: 30
+    });
+  });
+
+  it("renders shared visual effect fragments for native molecule graphs", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_effects",
+        structure: "CO",
+        atoms: [
+          { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "O", x: 220, y: 180, formalCharge: 0 }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          source: "chemdraft-native-drawing",
+          visualEffects: [
+            { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 },
+            { kind: "glow", color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 },
+            { kind: "sketch", color: "#111111", seed: 713, roughness: 1.25, bowing: 0.8, strokeWidth: 1.5 }
+          ]
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const effectFilter = fragments.find((fragment) =>
+      fragment.tag === "filter" && fragment.attrs.id === "molecule-effects-mol_effects"
+    );
+    expect(effectFilter?.attrs).toMatchObject({
+      filterUnits: "userSpaceOnUse"
+    });
+    expect(Number(effectFilter?.attrs.x)).toBeLessThan(120);
+    expect(Number(effectFilter?.attrs.y)).toBeLessThan(120);
+    expect(fragments.some((fragment) =>
+      fragment.tag === "feFlood" && fragment.attrs["flood-color"] === "#fdd835"
+    )).toBe(true);
+    expect(fragments.find((fragment) =>
+      fragment.attrs["data-molecule-effect-source"] === "true"
+    )?.attrs.filter).toBe("url(#molecule-effects-mol_effects)");
+    expect(fragments.some((fragment) => fragment.key.startsWith("molecule-effect-source-label-"))).toBe(false);
+    expect(fragments.some((fragment) =>
+      fragment.attrs.class === "native-molecule-sketch" &&
+      fragment.attrs["data-molecule-effect"] === "sketch"
+    )).toBe(true);
+    expect(fragments.some((fragment) => String(fragment.attrs.class).includes("native-bond-line"))).toBe(true);
+    expect(fragments.some((fragment) => fragment.attrs.class === "native-atom-label")).toBe(true);
+  });
+
+  it("renders molecule fill underlays and stroke opacity from art style metadata", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_fill",
+        structure: "C1CCCCC1",
+        atoms: [
+          { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 180, y: 140, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 240, y: 140, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 280, y: 180, formalCharge: 0 },
+          { id: "atom_005", element: "C", x: 240, y: 220, formalCharge: 0 },
+          { id: "atom_006", element: "C", x: 180, y: 220, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+          { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+          { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+          { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+          { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+          { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            stops: [
+              { offset: 0, color: "#1d7f68" },
+              { offset: 1, color: "#ffffff" }
+            ]
+          },
+          fillOpacity: 0.44,
+          strokeOpacity: 0.58
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    expect(fill?.tag).toBe("path");
+    expect(fill?.attrs.fill).toBe("url(#molecule-fill-mol_fill)");
+    expect(fill?.attrs["fill-opacity"]).toBe(0.44);
+    expect(fill?.attrs.d).toBe("M 140 180 L 180 140 L 240 140 L 280 180 L 240 220 L 180 220 Z");
+    expect(fragments.some((fragment) =>
+      fragment.tag === "linearGradient" && fragment.attrs.id === "molecule-fill-mol_fill"
+    )).toBe(true);
+    expect(fragments.find((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line")
+    )?.attrs["stroke-opacity"]).toBe(0.58);
+  });
+
+  it("fills fused molecule rings as separate ring interiors instead of an expanded outer hull", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_fused_fill",
+        structure: "C1CCC2CCCCC2C1",
+        atoms: [
+          { id: "atom_001", element: "C", x: 100, y: 180, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 140, y: 110, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 220, y: 110, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 260, y: 180, formalCharge: 0 },
+          { id: "atom_005", element: "C", x: 220, y: 250, formalCharge: 0 },
+          { id: "atom_006", element: "C", x: 140, y: 250, formalCharge: 0 },
+          { id: "atom_007", element: "C", x: 300, y: 80, formalCharge: 0 },
+          { id: "atom_008", element: "C", x: 360, y: 140, formalCharge: 0 },
+          { id: "atom_009", element: "C", x: 360, y: 220, formalCharge: 0 },
+          { id: "atom_010", element: "C", x: 300, y: 280, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+          { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+          { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+          { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+          { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+          { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" },
+          { id: "bond_007", fromAtomId: "atom_003", toAtomId: "atom_007", order: "single" },
+          { id: "bond_008", fromAtomId: "atom_007", toAtomId: "atom_008", order: "single" },
+          { id: "bond_009", fromAtomId: "atom_008", toAtomId: "atom_009", order: "single" },
+          { id: "bond_010", fromAtomId: "atom_009", toAtomId: "atom_010", order: "single" },
+          { id: "bond_011", fromAtomId: "atom_010", toAtomId: "atom_004", order: "single" }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: { kind: "solid", color: "#d02626" }
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    const pathD = String(fill?.attrs.d ?? "");
+    const pathNumbers = [...pathD.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
+
+    expect((pathD.match(/M /g) ?? [])).toHaveLength(2);
+    expect(pathD).toContain("M 100 180 L 140 110 L 220 110 L 260 180 L 220 250 L 140 250 Z");
+    expect(pathD).toContain("M 220 110");
+    expect(pathD).toContain("L 300 80");
+    expect(pathNumbers.every((value) => value >= 80 && value <= 360)).toBe(true);
+  });
+
+  it("fills macrocycle interiors even when the ring is larger than small aromatic scaffolds", () => {
+    const atomCount = 16;
+    const center = { x: 240, y: 220 };
+    const radius = 90;
+    const atoms = Array.from({ length: atomCount }, (_, index) => {
+      const angle = (Math.PI * 2 * index) / atomCount;
+      return {
+        id: `atom_${String(index + 1).padStart(3, "0")}`,
+        element: "C",
+        x: Number((center.x + Math.cos(angle) * radius).toFixed(3)),
+        y: Number((center.y + Math.sin(angle) * radius).toFixed(3)),
+        formalCharge: 0
+      };
+    });
+    const bonds = atoms.map((atom, index) => ({
+      id: `bond_${String(index + 1).padStart(3, "0")}`,
+      fromAtomId: atom.id,
+      toAtomId: atoms[(index + 1) % atomCount]!.id,
+      order: "single" as const
+    }));
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_macro_fill",
+        x: 140,
+        y: 120,
+        width: 200,
+        height: 200,
+        structure: "macrocycle-sp3",
+        atoms,
+        bonds,
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: { kind: "solid", color: "#d02626" }
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    const pathD = String(fill?.attrs.d ?? "");
+
+    expect(fill?.tag).toBe("path");
+    expect((pathD.match(/M /g) ?? [])).toHaveLength(1);
+    expect((pathD.match(/ L /g) ?? [])).toHaveLength(atomCount - 1);
+    expect(pathD).toContain("330 220");
+    expect(pathD).toContain("150 220");
+  });
+
+  it("does not invent molecule fills for acyclic chains", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_chain_fill",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          fillPaint: { kind: "solid", color: "#d02626" }
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+
+    expect(fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true")).toBeUndefined();
+  });
+
+  it("renders styled native art graphics as exportable shape primitives", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_arc",
+        type: "graphic",
+        x: 40,
+        y: 60,
+        width: 58,
+        height: 58,
+        rotation: 0,
+        style: {
+          strokeColor: "#1d7f68",
+          strokeWidth: 2,
+          strokeDasharray: "3 4"
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "arc",
+          arcSweepRadians: Math.PI * 1.5,
+          artToolId: "arc270Dashed"
+        }
+      },
+      {
+        id: "art_ellipse",
+        type: "graphic",
+        x: 120,
+        y: 60,
+        width: 72,
+        height: 34,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          fillColor: "#b3261e",
+          strokeWidth: 1.5,
+          fillMode: "gloss",
+          fillOpacity: 0.48,
+          tiltXDegrees: 18,
+          tiltYDegrees: -12
+        },
+        graphicKind: "ellipse",
+        data: {
+          artToolId: "ellipseGloss"
+        }
+      },
+      {
+        id: "art_rect",
+        type: "graphic",
+        x: 210,
+        y: 60,
+        width: 72,
+        height: 40,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          fillColor: "#f8faf9",
+          strokeWidth: 2,
+          effect: "shadow"
+        },
+        graphicKind: "rect",
+        data: {
+          cornerRadiusPx: 7,
+          artToolId: "roundedRectShadow"
+        }
+      }
+    ]);
+
+    const plan = planPageSvgRender(page);
+    const fragments = plan.fragments.flatMap(elementFragments);
+
+    const svgDefinitionTags = new Set([
+      "defs",
+      "radialGradient",
+      "stop",
+      "filter",
+      "feMorphology",
+      "feGaussianBlur",
+      "feOffset",
+      "feFlood",
+      "feComposite",
+      "feMerge",
+      "feMergeNode"
+    ]);
+    const visibleFragments = fragments.filter((fragment) =>
+      !svgDefinitionTags.has(fragment.tag) &&
+      fragment.attrs.class !== "graphic-glyph-effect-source" &&
+      fragment.attrs["data-graphic-effect"] === undefined
+    );
+    const ellipsePath = visibleFragments.find((fragment) => fragment.attrs["data-object-id"] === "art_ellipse");
+    const glossGradient = fragments.find((fragment) => fragment.tag === "radialGradient");
+    const glossStops = fragments.filter((fragment) => fragment.tag === "stop");
+    const shadowLayers = fragments.filter((fragment) => fragment.attrs["data-graphic-effect"] === "shadow");
+
+    expect(visibleFragments.map((fragment) => fragment.tag)).toEqual(["path", "path", "rect"]);
+    expect(visibleFragments[0]?.attrs).toMatchObject({
+      "data-object-id": "art_arc",
+      class: "graphic-glyph-stroke graphic-glyph-path",
+      stroke: "#1d7f68",
+      "stroke-dasharray": "3 4",
+      "stroke-linejoin": "round"
+    });
+    expect(String(visibleFragments[0]?.attrs.d)).toContain("A 25 25 0 1 1");
+    expect(ellipsePath?.attrs).toMatchObject({
+      "data-object-id": "art_ellipse",
+      class: "graphic-glyph-stroke graphic-glyph-projected-shape",
+      fill: "url(#graphic-gloss-art_ellipse)",
+      stroke: "#111111"
+    });
+    expect(ellipsePath?.attrs["fill-opacity"]).toBeUndefined();
+    expect(glossGradient?.attrs).toMatchObject({
+      id: "graphic-gloss-art_ellipse",
+      gradientUnits: "userSpaceOnUse"
+    });
+    expect(String(glossGradient?.attrs.gradientTransform)).toContain("matrix(");
+    expect(glossStops.map((fragment) => fragment.attrs["stop-color"])).toEqual([
+      "#f6e5e4",
+      "#dfa4a1",
+      "#b3261e",
+      "#4f110d"
+    ]);
+    expect(glossStops.every((fragment) => fragment.attrs["stop-opacity"] === 0.48)).toBe(true);
+    expect(visibleFragments[2]?.attrs).toMatchObject({
+      "data-object-id": "art_rect",
+      fill: "#f8faf9",
+      rx: 7,
+      ry: 7
+    });
+    expect(shadowLayers).toHaveLength(3);
+    expect(shadowLayers[0]?.attrs).toMatchObject({
+      "data-graphic-effect": "shadow",
+      fill: "#52616b",
+      stroke: "#52616b",
+      transform: "translate(6 6)"
+    });
+    expect(plan.warnings.map((warning) => warning.code)).toEqual([]);
+  });
+
+  it("exports native graphic paint plans as SVG gradients and stroke metadata", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_gradient_rect",
+        type: "graphic",
+        x: 50,
+        y: 70,
+        width: 120,
+        height: 80,
+        rotation: 0,
+        style: {
+          opacity: 0.82,
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0.5,
+            stops: [
+              { offset: 1, color: "#1648ff", opacity: 0.35 },
+              { offset: 0, color: "#ffffff" }
+            ]
+          },
+          strokePaint: {
+            kind: "solid",
+            color: "#1d7",
+            opacity: 0.6
+          },
+          strokeWidth: 4,
+          strokeLineCap: "square",
+          strokeLineJoin: "bevel",
+          strokeMiterLimit: 8
+        },
+        graphicKind: "rect",
+        data: {
+          cornerRadiusPx: 10
+        }
+      },
+      {
+        id: "art_gradient_line",
+        type: "graphic",
+        x: 200,
+        y: 90,
+        width: 80,
+        height: 1,
+        rotation: 0,
+        style: {
+          strokePaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 0,
+            stops: [
+              { offset: 0, color: "#111111" },
+              { offset: 1, color: "#b3261e", opacity: 0.7 }
+            ]
+          },
+          strokeWidth: 3,
+          strokeLineCap: "round",
+          fillPaint: { kind: "none" }
+        },
+        graphicKind: "line",
+        data: {
+          lineStart: { x: 200, y: 90 },
+          lineEnd: { x: 280, y: 90 }
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const rect = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_gradient_rect" && fragment.tag === "rect");
+    const line = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_gradient_line" && fragment.tag === "line");
+    const rectFillGradient = fragments.find((fragment) => fragment.attrs.id === "graphic-fill-art_gradient_rect");
+    const lineStrokeGradient = fragments.find((fragment) => fragment.attrs.id === "graphic-stroke-art_gradient_line");
+    const rectFillStops = fragments.filter((fragment) => String(fragment.key).startsWith("graphic-fill-art_gradient_rect-stop-"));
+    const lineStrokeStops = fragments.filter((fragment) => String(fragment.key).startsWith("graphic-stroke-art_gradient_line-stop-"));
+
+    expect(rect?.attrs).toMatchObject({
+      "data-object-id": "art_gradient_rect",
+      fill: "url(#graphic-fill-art_gradient_rect)",
+      stroke: "#11dd77",
+      "stroke-opacity": 0.6,
+      "stroke-linecap": "square",
+      "stroke-linejoin": "bevel",
+      "stroke-miterlimit": 8,
+      rx: 10,
+      ry: 10
+    });
+    expect(fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_gradient_rect")?.attrs.opacity).toBe(0.82);
+    expect(rectFillGradient?.attrs).toMatchObject({
+      id: "graphic-fill-art_gradient_rect",
+      x1: 50,
+      y1: 70,
+      x2: 170,
+      y2: 110,
+      gradientUnits: "userSpaceOnUse"
+    });
+    expect(rectFillStops.map((stop) => stop.attrs)).toEqual([
+      { offset: "0%", "stop-color": "#ffffff", "stop-opacity": undefined },
+      { offset: "100%", "stop-color": "#1648ff", "stop-opacity": 0.35 }
+    ]);
+
+    expect(line?.attrs).toMatchObject({
+      "data-object-id": "art_gradient_line",
+      stroke: "url(#graphic-stroke-art_gradient_line)",
+      "stroke-linecap": "round"
+    });
+    expect(lineStrokeGradient?.attrs).toMatchObject({
+      id: "graphic-stroke-art_gradient_line",
+      x1: 200,
+      y1: 90,
+      x2: 280,
+      y2: 90,
+      gradientUnits: "userSpaceOnUse"
+    });
+    expect(lineStrokeStops.map((stop) => stop.attrs)).toEqual([
+      { offset: "0%", "stop-color": "#111111", "stop-opacity": undefined },
+      { offset: "100%", "stop-color": "#b3261e", "stop-opacity": 0.7 }
+    ]);
+  });
+
+  it("renders circular arc graphics from radian start and sweep metadata", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_open_arc",
+        type: "graphic",
+        x: 40,
+        y: 60,
+        width: 58,
+        height: 58,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          strokeWidth: 2,
+          fillColor: "#ff0000",
+          fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.4 },
+          fillOpacity: 0.5
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "arc",
+          arcStartRadians: 0,
+          arcSweepRadians: Math.PI * 1.5
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+
+    expect(fragments[0]?.attrs.d).toBe("M 94 89 A 25 25 0 1 1 69 64");
+    expect(fragments[0]?.attrs.fill).toBe("none");
+  });
+
+  it("exports open-stroke native graphics without stale fill paint", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_line",
+        type: "graphic",
+        x: 40,
+        y: 60,
+        width: 82,
+        height: 46,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          strokeWidth: 6,
+          strokeDasharray: "0 6",
+          strokeLineCap: "round",
+          fillColor: "#ff0000",
+          fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.5 },
+          fillOpacity: 0.4
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "line"
+        }
+      },
+      {
+        id: "art_wavy",
+        type: "graphic",
+        x: 140,
+        y: 60,
+        width: 82,
+        height: 46,
+        rotation: 0,
+        style: {
+          strokeColor: "#1648ff",
+          strokeWidth: 2,
+          fillColor: "#ff0000",
+          fillPaint: { kind: "solid", color: "#ff0000", opacity: 0.5 }
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "wavy"
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const line = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_line");
+    const wavy = fragments.find((fragment) => fragment.attrs["data-object-id"] === "art_wavy");
+
+    expect(line?.attrs).toMatchObject({
+      fill: "none",
+      stroke: "#111111",
+      "stroke-width": 6,
+      "stroke-dasharray": "0 6",
+      "stroke-linecap": "round"
+    });
+    expect(line?.attrs["fill-opacity"]).toBeUndefined();
+    expect(wavy?.attrs).toMatchObject({
+      fill: "none",
+      stroke: "#1648ff"
+    });
+    expect(wavy?.attrs["fill-opacity"]).toBeUndefined();
+  });
+
+  it("plans native art projection bounds and gloss gradients from the same object transform", () => {
+    const sphere = {
+      id: "gloss_sphere",
+      type: "graphic",
+      x: 120,
+      y: 160,
+      width: 48,
+      height: 48,
+      rotation: 0,
+      style: {
+        fillColor: "#1648ff",
+        fillMode: "gloss",
+        strokeColor: "#1648ff"
+      },
+      graphicKind: "ellipse",
+      data: {}
+    } satisfies GraphicObject;
+
+    const unrotated = planNativeArtVisual(sphere, { coordinateSpace: "local" });
+    const rotated = planNativeArtVisual({ ...sphere, rotation: 90 }, { coordinateSpace: "local" });
+    const tilted = planNativeArtVisual({
+      ...sphere,
+      style: {
+        ...sphere.style,
+        tiltXDegrees: 24
+      }
+    }, { coordinateSpace: "local" });
+
+    expect(unrotated.frameBounds).toEqual({ x: 0, y: 0, width: 48, height: 48 });
+    expect(rotated.frameBounds).toEqual({ x: 0, y: 0, width: 48, height: 48 });
+    expect(unrotated.glossGradient?.gradientTransform).toBeUndefined();
+    expect(rotated.glossGradient?.gradientTransform).toBeUndefined();
+    expect(rotated.projectedShapePathD).toBeUndefined();
+    expect(tilted.glossGradient?.gradientTransform).toContain("matrix(");
+    expect(tilted.projectedShapePathD).toContain("M ");
+  });
+
+  it("plans projected path frames from the visible generated path geometry", () => {
+    const line = {
+      id: "path_line_bounds",
+      type: "graphic",
+      x: 120,
+      y: 160,
+      width: 82,
+      height: 46,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 2,
+        tiltYDegrees: 35
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line"
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(line, { coordinateSpace: "local" });
+
+    expect(plan.frameBounds).not.toEqual({ x: 0, y: 0, width: 82, height: 46 });
+    expect(plan.projectionTransform).toContain("matrix(");
+  });
+
+  it("exports native bent graphic paths through the explicit middle handle", () => {
+    const page = pageWithObjects([
+      {
+        id: "art_bent_line",
+        type: "graphic",
+        x: 94,
+        y: 84,
+        width: 132,
+        height: 92,
+        rotation: 0,
+        style: {
+          strokeColor: "#111111",
+          strokeWidth: 2
+        },
+        graphicKind: "path",
+        data: {
+          artPathKind: "quadratic",
+          lineStart: { x: 100, y: 170 },
+          pathControlPoint: { x: 160, y: 90 },
+          lineEnd: { x: 220, y: 170 }
+        }
+      }
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-object-id": "art_bent_line",
+      class: "graphic-glyph-stroke graphic-glyph-path",
+      d: "M 100 170 Q 160 10 220 170"
+    });
+
+    const midpointY = 0.25 * 170 + 0.5 * 10 + 0.25 * 170;
+    expect(midpointY).toBe(90);
   });
 
   it("renders flattened depth cues as a grey-to-black bond color ramp", () => {

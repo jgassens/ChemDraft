@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@chemdraft/art-engine": "workspace:*",
     "@chemdraft/cdx-compat": "workspace:*",
     "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/chemistry-adapter": "workspace:*",
@@ -26,6 +27,7 @@
     "@chemdraft/shortcut-engine": "workspace:*",
     "@chemdraft/toolset-registry": "workspace:*",
     "@chemdraft/viewport-engine": "workspace:*",
+    "@jaames/iro": "^5.5.2",
     "@scena/react-ruler": "^0.19.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",

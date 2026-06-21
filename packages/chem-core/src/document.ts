@@ -2,6 +2,8 @@ import {
   ChemDraftDocumentSchema,
   DocumentObjectSchema,
   DocumentSchemaVersion,
+  GraphicObjectDataSchema,
+  GraphicObjectStyleSchema,
   type ChemDraftDocument,
   type DocumentObject
 } from "./schemas";
@@ -100,7 +102,7 @@ export function migrateDocument(candidate: unknown): ChemDraftDocument {
     return result.document;
   }
 
-  const migrated = migrateLegacyPageLayouts(candidate);
+  const migrated = migrateLegacyGraphicObjects(migrateLegacyPageLayouts(candidate));
   if (migrated !== candidate) {
     const migratedResult = validateDocument(migrated);
     if (migratedResult.ok) {
@@ -150,8 +152,121 @@ function migrateLegacyPageLayouts(candidate: unknown): unknown {
   return changed ? { ...candidate, pages } : candidate;
 }
 
+const GRAPHIC_STYLE_KEYS: ReadonlySet<string> = new Set(Object.keys(GraphicObjectStyleSchema.shape));
+const GRAPHIC_DATA_KEYS: ReadonlySet<string> = new Set(Object.keys(GraphicObjectDataSchema.shape));
+
+// Older `chemdraft.document.v1` graphic objects stored free-form metadata in `style`/`data` and
+// encoded arcs as `arcStartDegrees`/`arcAngleDegrees`. The current schema narrows both to strict
+// allowlists, so legacy documents are migrated here: arcs are converted to signed radians and any
+// remaining unknown keys are dropped so the document validates instead of failing to open.
+function migrateLegacyGraphicObjects(candidate: unknown): unknown {
+  if (!isRecord(candidate) || !Array.isArray(candidate.pages)) {
+    return candidate;
+  }
+
+  let changed = false;
+  const pages = candidate.pages.map((page) => {
+    if (!isRecord(page) || !Array.isArray(page.objects)) {
+      return page;
+    }
+
+    const objects = page.objects.map((object) => {
+      if (!isRecord(object) || object.type !== "graphic") {
+        return object;
+      }
+
+      const nextObject: Record<string, unknown> = { ...object };
+      let objectChanged = false;
+
+      if (isRecord(object.data)) {
+        const nextData = migrateLegacyGraphicData(object.data);
+        if (nextData !== object.data) {
+          nextObject.data = nextData;
+          objectChanged = true;
+        }
+      }
+
+      if (isRecord(object.style)) {
+        const nextStyle = stripUnknownKeys(object.style, GRAPHIC_STYLE_KEYS);
+        if (nextStyle !== object.style) {
+          nextObject.style = nextStyle;
+          objectChanged = true;
+        }
+      }
+
+      if (!objectChanged) {
+        return object;
+      }
+
+      changed = true;
+      return nextObject;
+    });
+
+    return {
+      ...page,
+      objects
+    };
+  });
+
+  return changed ? { ...candidate, pages } : candidate;
+}
+
+function migrateLegacyGraphicData(data: Record<string, unknown>): Record<string, unknown> {
+  const nextData: Record<string, unknown> = { ...data };
+  let changed = false;
+
+  const legacyStartDegrees = finiteNumber(data.arcStartDegrees);
+  const legacySweepDegrees = finiteNumber(data.arcAngleDegrees);
+  if (legacyStartDegrees !== undefined && finiteNumber(nextData.arcStartRadians) === undefined) {
+    nextData.arcStartRadians = degreesToRadians(legacyStartDegrees);
+    changed = true;
+  }
+  if (legacySweepDegrees !== undefined && finiteNumber(nextData.arcSweepRadians) === undefined) {
+    // Preserve the legacy sweep direction; a negative legacy sweep encodes a clockwise arc and the
+    // current model carries that sign through to rendering.
+    nextData.arcSweepRadians = degreesToRadians(legacySweepDegrees);
+    changed = true;
+  }
+
+  // Drop the now-consumed legacy degree fields plus any other free-form keys the strict
+  // graphic-data schema no longer accepts.
+  for (const key of Object.keys(nextData)) {
+    if (!GRAPHIC_DATA_KEYS.has(key)) {
+      delete nextData[key];
+      changed = true;
+    }
+  }
+
+  return changed ? nextData : data;
+}
+
+function stripUnknownKeys(
+  record: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>
+): Record<string, unknown> {
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (allowedKeys.has(key)) {
+      next[key] = value;
+    } else {
+      changed = true;
+    }
+  }
+
+  return changed ? next : record;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function degreesToRadians(degrees: number): number {
+  return degrees * Math.PI / 180;
 }
 
 function isMargin(value: unknown): value is { top: number; right: number; bottom: number; left: number } {

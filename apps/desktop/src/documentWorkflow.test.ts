@@ -1,14 +1,63 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, deserializeDocument, serializeDocument, inchesToCssPx, mmToCssPx, type ChemDraftDocument, type ElectronMarkObject, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
+import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
+import {
+  applyPatch,
+  applyPatchWithHistory,
+  applyPatches,
+  createDocumentHistory,
+  deserializeDocument,
+  inchesToCssPx,
+  mmToCssPx,
+  redo,
+  serializeDocument,
+  undo,
+  type ChemDraftDocument,
+  type DocumentObject,
+  type ElectronMarkObject,
+  type GraphicObject,
+  type GraphicPaint,
+  type GroupObject,
+  type MoleculeObject,
+  type PlusObject,
+  type TextObject,
+  type VisualEffect
+} from "@chemdraft/chem-core";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
-  applyColorToDocumentObjects,
+  applyObjectColorToDocumentObjects,
+  applyGraphicObjectColorToSelection,
+  applyGraphicObjectEyedropperToSelection,
+  applyGraphicObjectEffectColorToSelection,
+  applyGraphicObjectEffectOpacityToSelection,
+  applyGraphicObjectEffectSizeToSelection,
+  applyGraphicObjectEffectToSelection,
+  applyVisualEffectColorToSelection,
+  applyVisualEffectOpacityToSelection,
+  applyVisualEffectSizeToSelection,
+  applyVisualEffectToSelection,
+  deactivateGraphicObjectEffectForSelection,
+  deactivateVisualEffectForSelection,
+  addGraphicObjectGradientStopForSelection,
+  applyGraphicObjectGradientStopColorForSelection,
+  applyGraphicObjectGradientStopOffsetForSelection,
+  applyGraphicObjectGradientStopOpacityForSelection,
+  deleteGraphicObjectGradientStopForSelection,
+  deleteGraphicObjectGradientStopAtIndexForSelection,
+  applyGraphicObjectNoneToSelection,
+  applyGraphicObjectOpacityToSelection,
+  applyGraphicObjectPaintTypeToSelection,
+  applyGraphicObjectStrokeStyleToSelection,
+  applyMoleculeObjectColorToSelection,
+  applyMoleculeObjectOpacityToSelection,
+  applyMoleculeObjectPaintTypeToSelection,
   applyColorToNativeMoleculePart,
+  applyNativeArtBooleanOperationToSelection,
   applyToolbarColorToSelection,
+  alignSelectedDocumentObjects,
   applyAnalysisToSelectedMolecule,
   applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultToSelectedObject,
@@ -25,20 +74,30 @@ import {
   applyNativeTemplatePlacementPlan,
   applyNativeTemplateToolAtPoint,
   applyNativeTemplateToolAtTarget,
+  applyDocumentObjectProjectedPlaneTilt,
   planNativeTemplatePlacement,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   cleanUpNativeMolecules2d,
   cleanUpSelectedNativeMolecule2d,
+  createNativeArtGraphicObject,
+  createNativeFreehandGraphicObject,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
   createPhase4Document,
+  createSelectionClipboardPayload,
   deleteSelectedDocumentObjects,
+  documentObjectVisualBounds,
+  distributeSelectedDocumentObjects,
+  duplicateSelectedDocumentObjects,
   exportPhase4Cdxml,
   exportPhase4Svg,
   findNativeMoleculeDeleteHit,
   findNativeMoleculeAtomHit,
+  flipDocumentObjectsAroundPoint,
+  groupSelectedDocumentObjects,
   getSelectedMolecule,
+  insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
   insertNativeTextObject,
   insertNativeMolfileMolecule,
@@ -63,7 +122,14 @@ import {
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
+  nativeGraphicCornerRadiusEditPoint,
+  nativeGraphicPathEditPoints,
+  nativeArtToolIsFreehand,
+  nativeFreehandStrokeDocument,
+  nativeBezierPathDocument,
+  nativePolylinePathDocument,
   openNativeDocument,
+  prepareGraphicPathForDirectEdit,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
   recommendImportedPageFit,
@@ -74,12 +140,15 @@ import {
   nativeTextObjectSizeForText,
   reorderNativeMoleculeParts,
   reorderSelectedDocumentObject,
+  resolveGroupedDocumentObjectIds,
   resolveToolbarColorSelection,
   resizeNativeMoleculeParts,
   rotateDocumentObject,
   rotateDocumentObjectsAroundPoint,
+  rotateSelectedDocumentObjects90,
   rotateNativeMoleculeObjectAroundPoint,
   rotateNativeMoleculeParts,
+  selectedGroupObjectIds,
   tiltNativeMoleculeProjectedPlane,
   tiltNativeMoleculeObjectsProjectedPlane,
   tiltNativeMoleculePartsProjectedPlane,
@@ -87,14 +156,34 @@ import {
   resizeNativeMoleculeObject,
   resizeNativeTextObjectBox,
   moveDocumentObjects,
+  reverseGraphicObjectGradientStopsForSelection,
+  rotateGraphicObjectGradientStopsForSelection,
   scaleDocumentObjectsAroundPoint,
   selectionBounds,
   selectAllDocumentObjects,
+  selectedGraphicObjectIds,
+  selectedLayerObjectIds,
+  selectedVisualEffectObjectIds,
+  selectedArtBooleanEligibleObjectIds,
+  selectDocumentObject,
+  selectDocumentObjectWithinGroup,
+  parseSelectionClipboardPayload,
+  pasteSelectionClipboardPayload,
+  serializeSelectionClipboardPayload,
+  swapGraphicObjectFillAndStroke,
+  selectDocumentObjects,
+  toggleDocumentObjectSelection,
+  ungroupSelectedDocumentObjects,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
-  updateNativeTextObjectText
+  updateNativeTextObjectText,
+  updateNativeGraphicCornerRadius,
+  updateNativeGraphicLinearGradientHandle,
+  updateNativeGraphicMarkerHandle,
+  updateNativeGraphicPathHandle,
+  updateNativeGraphicRadialGradientHandle
 } from "./documentWorkflow";
 
 function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
@@ -113,6 +202,61 @@ function moleculeById(document: ChemDraftDocument, objectId: string): MoleculeOb
     throw new Error(`Expected molecule "${objectId}".`);
   }
   return molecule;
+}
+
+function moleculeVisualEffects(document: ChemDraftDocument, objectId: string): VisualEffect[] | undefined {
+  return moleculeById(document, objectId).style.visualEffects as VisualEffect[] | undefined;
+}
+
+function moleculeInactiveVisualEffects(document: ChemDraftDocument, objectId: string): VisualEffect[] | undefined {
+  return moleculeById(document, objectId).style.inactiveVisualEffects as VisualEffect[] | undefined;
+}
+
+function graphicById(document: ChemDraftDocument, objectId: string): GraphicObject {
+  const graphic = document.pages
+    .flatMap((page) => page.objects)
+    .find((object): object is GraphicObject => object.id === objectId && object.type === "graphic");
+  if (!graphic) {
+    throw new Error(`Expected graphic "${objectId}".`);
+  }
+  return graphic;
+}
+
+function objectStyleById(document: ChemDraftDocument, objectId: string): Record<string, unknown> {
+  const object = document.pages
+    .flatMap((page) => page.objects)
+    .find((candidate) => candidate.id === objectId);
+  if (!object) {
+    throw new Error(`Expected object "${objectId}".`);
+  }
+  return object.style;
+}
+
+function exportedObjectTag(svg: string, objectId: string): string {
+  const escapedObjectId = objectId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = svg.match(new RegExp(`<[^>]+data-object-id="${escapedObjectId}"[^>]*>`));
+  if (!match) {
+    throw new Error(`Expected exported SVG element for "${objectId}".`);
+  }
+  return match[0];
+}
+
+function exportedAttribute(tag: string, attributeName: string): string {
+  const escapedAttributeName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tag.match(new RegExp(`\\s${escapedAttributeName}="([^"]+)"`));
+  if (!match) {
+    throw new Error(`Expected exported SVG attribute "${attributeName}".`);
+  }
+  return match[1];
+}
+
+function svgPathCoordinatePairs(pathD: string): { x: number; y: number }[] {
+  const values = pathD.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  const pairs: { x: number; y: number }[] = [];
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    pairs.push({ x: values[index], y: values[index + 1] });
+  }
+  return pairs;
 }
 
 function growFromAtom(document: ChemDraftDocument, atomId: string, angleDegrees: number): ChemDraftDocument {
@@ -195,8 +339,78 @@ function pointDistance(left: { x: number; y: number }, right: { x: number; y: nu
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
+function translatedPoint(point: { x: number; y: number }, dx: number, dy: number): { x: number; y: number } {
+  return {
+    x: point.x + dx,
+    y: point.y + dy
+  };
+}
+
+function scaledPoint(
+  point: { x: number; y: number },
+  oldCenter: { x: number; y: number },
+  newCenter: { x: number; y: number },
+  scaleX: number,
+  scaleY: number
+): { x: number; y: number } {
+  return {
+    x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+    y: newCenter.y + (point.y - oldCenter.y) * scaleY
+  };
+}
+
+function rotatedPointAround(
+  point: { x: number; y: number },
+  center: { x: number; y: number },
+  degrees: number
+): { x: number; y: number } {
+  const radians = degToRad(degrees);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos
+  };
+}
+
+function projectGraphicVisualPoint(
+  graphic: GraphicObject,
+  point: { x: number; y: number }
+): { x: number; y: number } {
+  return rotatedPointAround(
+    projectGraphicObjectPoint(graphic, point),
+    {
+      x: graphic.x + Math.max(graphic.width, 1) / 2,
+      y: graphic.y + Math.max(graphic.height, 1) / 2
+    },
+    graphic.rotation
+  );
+}
+
+function expectPointToBeClose(
+  actual: { x: number; y: number } | undefined,
+  expected: { x: number; y: number },
+  precision = 6
+): void {
+  expect(actual?.x).toBeCloseTo(expected.x, precision);
+  expect(actual?.y).toBeCloseTo(expected.y, precision);
+}
+
 function degToRad(degrees: number): number {
   return degrees * Math.PI / 180;
+}
+
+function pointOnGraphicEllipse(graphic: GraphicObject, radians: number): { x: number; y: number } {
+  const center = graphic.data.arcCenter ?? {
+    x: graphic.x + graphic.width / 2,
+    y: graphic.y + graphic.height / 2
+  };
+  return {
+    x: center.x + Math.cos(radians) * Math.max(graphic.data.arcRadiusX ?? graphic.width / 2 - 4, 1),
+    y: center.y + Math.sin(radians) * Math.max(graphic.data.arcRadiusY ?? graphic.height / 2 - 4, 1)
+  };
 }
 
 function boundsCenter(bounds: { x: number; y: number; width: number; height: number }): { x: number; y: number; z: number } {
@@ -3290,7 +3504,7 @@ describe("Phase 4 document workflow", () => {
       pageId: withText.pages[0].id,
       objectIds: [molecule.id, textObject.id]
     }]);
-    const colored = applyColorToDocumentObjects(selected, "#1f5fbf");
+    const colored = applyObjectColorToDocumentObjects(selected, "#1f5fbf");
     const coloredMolecule = moleculeById(colored, molecule.id);
     const coloredText = colored.pages[0].objects.find((object): object is TextObject => object.id === textObject.id && object.type === "text");
 
@@ -3300,6 +3514,2581 @@ describe("Phase 4 document workflow", () => {
     });
     expect(coloredText?.style).toMatchObject({ color: "#1f5fbf" });
     expect(colored.selection.objectIds).toEqual([molecule.id, textObject.id]);
+  });
+
+  it("keeps native art graphics editable, persistent, undoable, and warning-backed", () => {
+    const document = createPhase4Document("Native Graphic Workflow");
+    const inserted = insertNativeArtGraphicObject(document, { x: 220, y: 180 }, "tool.art.roundedRectGloss");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+
+    const insertedGraphic = graphicById(inserted, objectId);
+    expect(insertedGraphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "rect",
+      data: {
+        artToolId: "roundedRectGloss",
+        cornerRadiusPx: 7
+      },
+      style: {
+        source: "chemdraft-native-art",
+        artToolCommandId: "tool.art.roundedRectGloss",
+        fillMode: "gloss",
+        strokeColor: "#111111",
+        fillColor: "#111111"
+      }
+    });
+
+    const insertionCandidate = createNativeArtGraphicObject(document, { x: 360, y: 200 }, "tool.art.lineWavy");
+    if (!insertionCandidate) {
+      throw new Error("Expected native art tool to create a graphic object.");
+    }
+    const insertedHistory = applyPatchWithHistory(
+      createDocumentHistory(document),
+      { op: "addObject", pageId: document.pages[0].id, object: insertionCandidate }
+    );
+    expect(undo(insertedHistory).present.pages[0].objects).toHaveLength(0);
+    expect(redo(undo(insertedHistory)).present.pages[0].objects[0]).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "wavy"
+      }
+    });
+
+    const colored = applyObjectColorToDocumentObjects(inserted, "#1d7f68");
+    const coloredGraphic = graphicById(colored, objectId);
+    expect(coloredGraphic.style).toMatchObject({
+      color: "#1d7f68",
+      strokeColor: "#1d7f68",
+      fillColor: "#1d7f68"
+    });
+    const colorHistory = {
+      past: [inserted],
+      present: colored,
+      future: []
+    };
+    expect(graphicById(undo(colorHistory).present, objectId).style.strokeColor).toBe("#111111");
+    expect(graphicById(redo(undo(colorHistory)).present, objectId).style.strokeColor).toBe("#1d7f68");
+
+    const center = {
+      x: coloredGraphic.x + coloredGraphic.width / 2,
+      y: coloredGraphic.y + coloredGraphic.height / 2
+    };
+    const stretched = scaleDocumentObjectsAroundPoint(colored, [objectId], center, 1.5, 0.5);
+    const stretchedGraphic = graphicById(stretched, objectId);
+    expect(stretchedGraphic.width).toBeCloseTo(108, 3);
+    expect(stretchedGraphic.height).toBeCloseTo(20, 3);
+
+    const rotated = rotateDocumentObject(stretched, objectId, 37);
+    expect(graphicById(rotated, objectId).rotation).toBeCloseTo(37, 3);
+
+    const tilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 21, -13);
+    const tiltedGraphic = graphicById(tilted, objectId);
+    expect(tiltedGraphic.style).toMatchObject({
+      tiltXDegrees: 21,
+      tiltYDegrees: -13
+    });
+    const beyondSixtyTilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 180, -180);
+    expect(graphicById(beyondSixtyTilted, objectId).style).toMatchObject({
+      tiltXDegrees: 180,
+      tiltYDegrees: -180
+    });
+    const wrappedTilted = applyDocumentObjectProjectedPlaneTilt(rotated, objectId, 420, -370);
+    expect(graphicById(wrappedTilted, objectId).style).toMatchObject({
+      tiltXDegrees: 60,
+      tiltYDegrees: -10
+    });
+    const transformHistory = {
+      past: [colored],
+      present: tilted,
+      future: []
+    };
+    expect(graphicById(undo(transformHistory).present, objectId).width).toBeCloseTo(72, 3);
+    expect(graphicById(redo(undo(transformHistory)).present, objectId).style.tiltYDegrees).toBe(-13);
+
+    const payload = createNativeSavePayload(tilted);
+    const reopened = openNativeDocument(payload.contents);
+    expect(reopened.source).toBe("native-payload");
+    expect(graphicById(reopened.document ?? document, objectId)).toEqual(tiltedGraphic);
+
+    const svg = exportPhase4Svg(tilted, { includeWarnings: true });
+    expect(svg.contents).toContain('data-object-id="' + objectId + '"');
+    expect(svg.contents).toContain('id="graphic-gloss-' + objectId + '"');
+    expect(svg.contents).toContain('gradientUnits="userSpaceOnUse"');
+    expect(svg.contents).toContain('gradientTransform="matrix(');
+    expect(svg.contents).toContain('fill="url(#graphic-gloss-' + objectId + ')"');
+    expect(svg.warnings).toEqual([]);
+
+    const cdxml = exportPhase4Cdxml(tilted);
+    const graphicCdxmlWarnings = cdxml.warnings.filter((warning) => warning.code.startsWith("cdxml.graphic_"));
+    expect(cdxml.contents).toContain('GraphicType="Rectangle"');
+    expect(cdxml.contents).toContain('RectangleType="RoundEdge"');
+    expect(cdxml.contents).toContain('CornerRadius="525"');
+    expect(graphicCdxmlWarnings.map((warning) => warning.code)).toEqual([
+      "cdxml.graphic_color_approximation",
+      "cdxml.graphic_gloss_payload_only",
+      "cdxml.graphic_tilt_payload_only"
+    ]);
+    expect(graphicCdxmlWarnings.every((warning) => warning.objectId === objectId)).toBe(true);
+  });
+
+  it("inserts native art arrows as path graphics with an end marker", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Arrow"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arrow to be selected.");
+    }
+
+    expect(graphicById(inserted, objectId)).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "arrow",
+        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+      },
+      style: {
+        artToolCommandId: "tool.art.arrow",
+        strokeLineCap: "butt"
+      }
+    });
+  });
+
+  it("inserts native art polylines as path-node graphics", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Polyline"),
+      { x: 220, y: 180 },
+      "tool.art.polyline"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted polyline to be selected.");
+    }
+
+    expect(graphicById(inserted, objectId)).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      x: 172,
+      y: 144,
+      width: 96,
+      height: 72,
+      data: {
+        artPathKind: "polyline",
+        artToolId: "polyline",
+        pathNodes: [
+          { point: { x: 180, y: 202 } },
+          { point: { x: 216, y: 158 } },
+          { point: { x: 260, y: 190 } }
+        ]
+      },
+      style: {
+        artToolCommandId: "tool.art.polyline",
+        strokeColor: "#111111",
+        fillColor: "none"
+      }
+    });
+  });
+
+  it("creates native art polylines from clicked path points", () => {
+    const inserted = nativePolylinePathDocument(
+      createPhase4Document("Native Polyline Path"),
+      [
+        { x: 160, y: 140 },
+        { x: 220, y: 168 },
+        { x: 204, y: 224 }
+      ],
+      "tool.art.polyline"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected clicked polyline to be selected.");
+    }
+
+    const graphic = graphicById(inserted, objectId);
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "polyline",
+        artToolId: "polyline",
+        pathClosed: false,
+        pathNodes: [
+          { point: { x: 160, y: 140 } },
+          { point: { x: 220, y: 168 } },
+          { point: { x: 204, y: 224 } }
+        ]
+      },
+      style: {
+        artToolCommandId: "tool.art.polyline",
+        strokeColor: "#111111",
+        fillColor: "none"
+      }
+    });
+    expect(graphic.x).toBeLessThanOrEqual(160);
+    expect(graphic.y).toBeLessThanOrEqual(140);
+    expect(graphic.x + graphic.width).toBeGreaterThanOrEqual(220);
+    expect(graphic.y + graphic.height).toBeGreaterThanOrEqual(224);
+  });
+
+  it("creates native Bezier paths from Pen nodes and controls", () => {
+    const inserted = nativeBezierPathDocument(
+      createPhase4Document("Native Pen Path"),
+      [
+        {
+          point: { x: 160, y: 140 },
+          outControl: { x: 188, y: 116 }
+        },
+        {
+          point: { x: 240, y: 188 },
+          inControl: { x: 212, y: 164 },
+          outControl: { x: 268, y: 212 }
+        },
+        {
+          point: { x: 292, y: 148 },
+          inControl: { x: 272, y: 172 }
+        }
+      ],
+      "tool.art.pen"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected Pen path to be selected.");
+    }
+
+    const graphic = graphicById(inserted, objectId);
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "bezier",
+        artToolId: "pen",
+        pathClosed: false,
+        pathNodes: [
+          {
+            point: { x: 160, y: 140 },
+            outControl: { x: 188, y: 116 }
+          },
+          {
+            point: { x: 240, y: 188 },
+            inControl: { x: 212, y: 164 },
+            outControl: { x: 268, y: 212 }
+          },
+          {
+            point: { x: 292, y: 148 },
+            inControl: { x: 272, y: 172 }
+          }
+        ]
+      },
+      style: {
+        artToolCommandId: "tool.art.pen",
+        strokeColor: "#111111",
+        fillColor: "none"
+      }
+    });
+    expect(graphic.x).toBeLessThanOrEqual(160);
+    expect(graphic.y).toBeLessThanOrEqual(116);
+    expect(graphic.x + graphic.width).toBeGreaterThanOrEqual(292);
+    expect(graphic.y + graphic.height).toBeGreaterThanOrEqual(212);
+  });
+
+  it("creates native freehand pencil and brush strokes from raw pressure points", () => {
+    const document = createPhase4Document("Native Freehand Stroke");
+    const points = [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ];
+
+    const pencil = nativeFreehandStrokeDocument(document, points, "tool.art.pencil");
+    const objectId = pencil.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+    const pencilGraphic = graphicById(pencil, objectId);
+    const brushGraphic = createNativeFreehandGraphicObject(document, points, "tool.art.brush");
+
+    expect(nativeArtToolIsFreehand("tool.art.pencil")).toBe(true);
+    expect(nativeArtToolIsFreehand("tool.art.brush")).toBe(true);
+    expect(pencilGraphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      data: {
+        artPathKind: "freehand",
+        artToolId: "pencil",
+        freehandOptions: {
+          size: 5,
+          simulatePressure: false
+        },
+        freehandPoints: points,
+        cachedFreehandPathD: expect.stringMatching(/^M /),
+        cachedFreehandPathRevision: expect.any(String)
+      },
+      style: {
+        artToolCommandId: "tool.art.pencil",
+        strokeColor: "#111111"
+      }
+    });
+    expect(brushGraphic?.data.freehandOptions?.size).toBeGreaterThan(pencilGraphic.data.freehandOptions?.size ?? 0);
+    expect(brushGraphic?.width).toBeGreaterThan(pencilGraphic.width);
+    expect(brushGraphic?.height).toBeGreaterThan(pencilGraphic.height);
+    expect(nativeFreehandStrokeDocument(document, points.slice(0, 1), "tool.art.pencil")).toBe(document);
+  });
+
+  it("moves and scales native freehand point geometry with the object frame", () => {
+    const document = createPhase4Document("Native Freehand Transform");
+    const points = [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ];
+    const inserted = nativeFreehandStrokeDocument(document, points, "tool.art.pencil");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const dx = 36;
+    const dy = -18;
+
+    const moved = moveDocumentObject(inserted, objectId, { x: graphic.x + dx, y: graphic.y + dy });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(movedGraphic.data.freehandPoints).toHaveLength(points.length);
+    movedGraphic.data.freehandPoints?.forEach((point, index) => {
+      const expected = translatedPoint(points[index]!, dx, dy);
+      expectPointToBeClose(point, expected);
+      expect(point.pressure).toBe(points[index]!.pressure);
+    });
+    expect(movedGraphic.data.cachedFreehandPathD).toBeUndefined();
+    expect(movedGraphic.data.cachedFreehandPathRevision).toBeUndefined();
+
+    const oldCenter = {
+      x: movedGraphic.x + movedGraphic.width / 2,
+      y: movedGraphic.y + movedGraphic.height / 2
+    };
+    const scaleX = 1.4;
+    const scaleY = 0.6;
+    const scaled = scaleDocumentObjectsAroundPoint(moved, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.freehandPoints).toHaveLength(points.length);
+    scaledGraphic.data.freehandPoints?.forEach((point, index) => {
+      const expected = scaledPoint(movedGraphic.data.freehandPoints![index]!, oldCenter, newCenter, scaleX, scaleY);
+      expectPointToBeClose(point, expected);
+      expect(point.pressure).toBe(points[index]!.pressure);
+    });
+    expect(scaledGraphic.data.cachedFreehandPathD).toBeUndefined();
+    expect(scaledGraphic.data.cachedFreehandPathRevision).toBeUndefined();
+  });
+
+  it("flips native freehand point geometry on the requested axis only", () => {
+    const document = createPhase4Document("Native Freehand Flip");
+    const points = [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ];
+    const inserted = nativeFreehandStrokeDocument(document, points, "tool.art.pencil");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const center = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+
+    const horizontal = flipDocumentObjectsAroundPoint(inserted, [objectId], center, "horizontal");
+    const vertical = flipDocumentObjectsAroundPoint(inserted, [objectId], center, "vertical");
+    const horizontalGraphic = graphicById(horizontal, objectId);
+    const verticalGraphic = graphicById(vertical, objectId);
+
+    horizontalGraphic.data.freehandPoints?.forEach((point, index) => {
+      const source = graphic.data.freehandPoints![index]!;
+      expectPointToBeClose(point, { x: center.x - (source.x - center.x), y: source.y });
+      expect(point.pressure).toBe(source.pressure);
+    });
+    verticalGraphic.data.freehandPoints?.forEach((point, index) => {
+      const source = graphic.data.freehandPoints![index]!;
+      expectPointToBeClose(point, { x: source.x, y: center.y - (source.y - center.y) });
+      expect(point.pressure).toBe(source.pressure);
+    });
+    expect(horizontalGraphic.data.freehandPoints?.map((point) => point.x)).not.toEqual(
+      verticalGraphic.data.freehandPoints?.map((point) => point.x)
+    );
+    expect(horizontalGraphic.data.freehandPoints?.map((point) => point.y)).not.toEqual(
+      verticalGraphic.data.freehandPoints?.map((point) => point.y)
+    );
+    expect(horizontalGraphic.rotation).toBe(graphic.rotation);
+    expect(verticalGraphic.rotation).toBe(graphic.rotation);
+    expect(horizontalGraphic.data.cachedFreehandPathD).toBeUndefined();
+    expect(verticalGraphic.data.cachedFreehandPathD).toBeUndefined();
+  });
+
+  it("applies freehand color through stroke style instead of the filled-outline implementation detail", () => {
+    const document = createPhase4Document("Native Freehand Stroke Color");
+    const inserted = nativeFreehandStrokeDocument(document, [
+      { x: 180, y: 180, pressure: 0.2 },
+      { x: 210, y: 194, pressure: 0.85 },
+      { x: 244, y: 178, pressure: 0.5 }
+    ], "tool.art.pencil");
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted freehand stroke to be selected.");
+    }
+
+    const fillAttempt = applyGraphicObjectColorToSelection(inserted, "fill", "#b3261e");
+    const stroked = applyGraphicObjectColorToSelection(fillAttempt, "stroke", "#1d7f68");
+    const graphic = graphicById(stroked, objectId);
+
+    expect(graphic.style.fillColor).toBe("none");
+    expect(graphic.style.strokeColor).toBe("#1d7f68");
+    expect(graphic.style.strokePaint).toEqual({ kind: "solid", color: "#1d7f68", opacity: 1 });
+    expect(graphic.style.fillPaint).toBeUndefined();
+  });
+
+  it("edits native art arrowhead marker size through workflow helpers", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Arrow Marker Edit"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arrow to be selected.");
+    }
+    const arrow = graphicById(inserted, objectId);
+    const end = { x: arrow.x + arrow.width - 3, y: arrow.y + arrow.height - 3 };
+    const edited = updateNativeGraphicMarkerHandle(inserted, objectId, "markerEnd", {
+      x: end.x - 26,
+      y: end.y - 26
+    });
+
+    const marker = graphicById(edited, objectId).data.markerEnd;
+    expect(marker?.kind).toBe("filled-arrow");
+    expect(marker?.sizePx).toBeCloseTo(36.77, 3);
+    expect(edited.selection.objectIds).toEqual([objectId]);
+  });
+
+  it("applies object-style commands to selected graphics without mutating text or molecules", () => {
+    const withGraphic = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Style Selection"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = withGraphic.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+    const withMolecule = insertNativeSingleBondMolecule(withGraphic, { x: 300, y: 260 });
+    const molecule = selectedMolecule(withMolecule);
+    const withText = insertNativeTextObject(withMolecule, { x: 120, y: 140 }, "label");
+    const textObject = getSelectedTextObject(withText);
+    if (!textObject) {
+      throw new Error("Expected text object.");
+    }
+    const selected = applyPatches(withText, [{
+      op: "setSelection",
+      pageId: withText.pages[0].id,
+      objectIds: [objectId, molecule.id, textObject.id]
+    }]);
+
+    expect(selectedGraphicObjectIds(selected)).toEqual([objectId]);
+
+    const filled = applyGraphicObjectColorToSelection(selected, "fill", "#1D7F68");
+    expect(graphicById(filled, objectId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 1 },
+      strokeColor: "#111111"
+    });
+    expect(moleculeById(filled, molecule.id).style).not.toMatchObject({ fillColor: "#1d7f68" });
+    expect(filled.pages[0].objects.find((object): object is TextObject => object.id === textObject.id && object.type === "text")?.style.color).toBe(textObject.style.color);
+
+    const noStroke = applyGraphicObjectNoneToSelection(filled, "stroke");
+    expect(graphicById(noStroke, objectId).style).toMatchObject({
+      strokeColor: "none",
+      strokePaint: { kind: "none" }
+    });
+
+    const stroked = applyGraphicObjectColorToSelection(noStroke, "stroke", "#abc");
+    const styled = applyGraphicObjectStrokeStyleToSelection(stroked, {
+      strokeWidth: 5,
+      strokeDasharray: "8 6",
+      strokeLineCap: "square",
+      strokeLineJoin: "bevel",
+      strokeMiterLimit: 6
+    });
+    expect(graphicById(styled, objectId).style).toMatchObject({
+      strokeColor: "#aabbcc",
+      strokePaint: { kind: "solid", color: "#aabbcc", opacity: 1 },
+      strokeWidth: 5,
+      strokeDasharray: "8 6",
+      strokeLineCap: "square"
+    });
+    expect(graphicById(styled, objectId).style.strokeLineJoin).toBeUndefined();
+    expect(graphicById(styled, objectId).style.strokeMiterLimit).toBeUndefined();
+
+    const transparent = applyGraphicObjectOpacityToSelection(styled, "fillOpacity", 0.35);
+    expect(graphicById(transparent, objectId).style.fillOpacity).toBe(0.35);
+
+    const swapped = swapGraphicObjectFillAndStroke(transparent);
+    expect(graphicById(swapped, objectId).style).toMatchObject({
+      fillColor: "#aabbcc",
+      strokeColor: "#1d7f68"
+    });
+
+    const history = { past: [selected], present: swapped, future: [] };
+    expect(graphicById(undo(history).present, objectId).style.fillColor).not.toBe("#aabbcc");
+    expect(graphicById(redo(undo(history)).present, objectId).style.fillColor).toBe("#aabbcc");
+  });
+
+  it("applies Art-toolbar molecule fill, stroke, and opacity without using the main color route", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Molecule Art Fill"),
+      { x: 260, y: 220 }
+    );
+    const molecule = selectedMolecule(document);
+
+    const filled = applyMoleculeObjectColorToSelection(document, "fill", "#1D7F68");
+    expect(moleculeById(filled, molecule.id).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 1 }
+    });
+
+    const linear = applyMoleculeObjectPaintTypeToSelection(filled, "fill", "linear-gradient");
+    expect(moleculeById(linear, molecule.id).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      units: "object",
+      stops: [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+
+    const movedLinearEnd = updateNativeGraphicLinearGradientHandle(linear, molecule.id, "fill", "end", {
+      x: molecule.width * 0.2,
+      y: molecule.height * 0.8
+    });
+    const movedLinearPaint = moleculeById(movedLinearEnd, molecule.id).style.fillPaint as GraphicPaint | undefined;
+    expect(movedLinearPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0,
+      y1: 0,
+      y2: 0.8
+    });
+    expect(movedLinearPaint?.kind === "linear-gradient" ? movedLinearPaint.x2 : undefined).toBeCloseTo(0.2, 6);
+
+    const addedStop = addGraphicObjectGradientStopForSelection(movedLinearEnd, "fill", [molecule.id]);
+    const movedMiddleStop = applyGraphicObjectGradientStopOffsetForSelection(addedStop, "fill", 1, 0.37, [molecule.id]);
+    expect(moleculeById(movedMiddleStop, molecule.id).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 0.37 },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+
+    const radial = applyMoleculeObjectPaintTypeToSelection(filled, "fill", "radial-gradient");
+    const radialMolecule = moleculeById(radial, molecule.id);
+    const movedRadialRadius = updateNativeGraphicRadialGradientHandle(radial, molecule.id, "fill", "radius", {
+      x: radialMolecule.width * 0.38 + Math.max(radialMolecule.width, radialMolecule.height, 1) * 0.25,
+      y: radialMolecule.height * 0.32
+    });
+    const movedRadialPaint = moleculeById(movedRadialRadius, molecule.id).style.fillPaint as GraphicPaint | undefined;
+    expect(movedRadialPaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.38,
+      cy: 0.32
+    });
+    expect(movedRadialPaint?.kind === "radial-gradient" ? movedRadialPaint.r : undefined).toBeCloseTo(0.25, 6);
+
+    const translucent = applyMoleculeObjectOpacityToSelection(movedMiddleStop, "fillOpacity", 0.42);
+    expect(moleculeById(translucent, molecule.id).style.fillOpacity).toBe(0.42);
+
+    const stroked = applyMoleculeObjectColorToSelection(translucent, "stroke", "#B3261E");
+    expect(moleculeById(stroked, molecule.id).style).toMatchObject({
+      bondColor: "#b3261e",
+      atomLabelColor: "#b3261e",
+      strokeColor: "#b3261e"
+    });
+
+    const fadedStroke = applyMoleculeObjectOpacityToSelection(stroked, "strokeOpacity", 0.55);
+    expect(moleculeById(fadedStroke, molecule.id).style.strokeOpacity).toBe(0.55);
+
+    const mainToolbarColored = applyObjectColorToDocumentObjects(fadedStroke, "#1648FF", [molecule.id]);
+    expect(moleculeById(mainToolbarColored, molecule.id).style).toMatchObject({
+      bondColor: "#1648FF",
+      atomLabelColor: "#1648FF",
+      fillOpacity: 0.42,
+      fillPaint: { kind: "linear-gradient" }
+    });
+    expect(moleculeById(mainToolbarColored, molecule.id).style.fillColor).not.toBe("#1648FF");
+  });
+
+  it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", () => {
+    const withGraphic = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Gradient Paint Selection"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = withGraphic.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+
+    const linearFilled = applyGraphicObjectPaintTypeToSelection(withGraphic, "fill", "linear-gradient");
+    expect(graphicById(linearFilled, objectId).style).toMatchObject({
+      fillColor: "#111111",
+      fillMode: "solid",
+      fillPaint: {
+        kind: "linear-gradient",
+        units: "object",
+        x1: 0,
+        y1: 0,
+        x2: 1,
+        y2: 1,
+        stops: [
+          { offset: 0, color: "#111111" },
+          { offset: 1, color: "#ffffff" }
+        ]
+      }
+    });
+
+    const recoloredLinear = applyGraphicObjectColorToSelection(linearFilled, "fill", "#b3261e");
+    expect(graphicById(recoloredLinear, objectId).style).toMatchObject({
+      fillColor: "#b3261e",
+      fillMode: "solid",
+      fillPaint: {
+        kind: "linear-gradient",
+        stops: [
+          { offset: 0, color: "#b3261e" },
+          { offset: 1, color: "#ffffff" }
+        ]
+      }
+    });
+    const reversedLinear = reverseGraphicObjectGradientStopsForSelection(recoloredLinear, "fill");
+    expect(graphicById(reversedLinear, objectId).style).toMatchObject({
+      fillColor: "#b3261e",
+      fillMode: "solid",
+      fillPaint: {
+        kind: "linear-gradient",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#b3261e" }
+        ]
+      }
+    });
+    const addedLinearStop = addGraphicObjectGradientStopForSelection(recoloredLinear, "fill");
+    expect(graphicById(addedLinearStop, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.5, color: "#d9938f" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const editedLinearStopColor = applyGraphicObjectGradientStopColorForSelection(addedLinearStop, "fill", 1, "#1d7f68");
+    expect(graphicById(editedLinearStopColor, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.5, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const editedLinearStopOpacity = applyGraphicObjectGradientStopOpacityForSelection(editedLinearStopColor, "fill", 1, 0.42);
+    expect(graphicById(editedLinearStopOpacity, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.5, color: "#1d7f68", opacity: 0.42 },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const editedLinearStopOffset = applyGraphicObjectGradientStopOffsetForSelection(editedLinearStopOpacity, "fill", 1, 0.37);
+    expect(graphicById(editedLinearStopOffset, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 0.37, color: "#1d7f68", opacity: 0.42 },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const rotatedLinearStops = rotateGraphicObjectGradientStopsForSelection(editedLinearStopOffset, "fill");
+    expect(graphicById(rotatedLinearStops, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 0.37, color: "#b3261e" },
+        { offset: 1, color: "#1d7f68", opacity: 0.42 }
+      ]
+    });
+    const linearGradientGraphic = graphicById(rotatedLinearStops, objectId);
+    const movedLinearGradientStart = updateNativeGraphicLinearGradientHandle(
+      rotatedLinearStops,
+      objectId,
+      "fill",
+      "start",
+      { x: linearGradientGraphic.width * 0.25, y: linearGradientGraphic.height * 0.75 }
+    );
+    expect(graphicById(movedLinearGradientStart, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.25,
+      y1: 0.75,
+      x2: 1,
+      y2: 1,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 0.37, color: "#b3261e" },
+        { offset: 1, color: "#1d7f68", opacity: 0.42 }
+      ]
+    });
+    const movedLinearGradientEnd = updateNativeGraphicLinearGradientHandle(
+      movedLinearGradientStart,
+      objectId,
+      "fill",
+      "end",
+      { x: linearGradientGraphic.width * 1.5, y: -12 }
+    );
+    expect(graphicById(movedLinearGradientEnd, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.25,
+      y1: 0.75,
+      x2: 1,
+      y2: 0
+    });
+    const deletedSelectedLinearStop = deleteGraphicObjectGradientStopAtIndexForSelection(editedLinearStopOpacity, "fill", 1);
+    expect(graphicById(deletedSelectedLinearStop, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    const deletedLinearStop = deleteGraphicObjectGradientStopForSelection(addedLinearStop, "fill");
+    expect(graphicById(deletedLinearStop, objectId).style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+
+    const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);
+    const transparentGraphic = graphicById(transparentFill, objectId);
+    const linearSvg = exportPhase4Svg(transparentFill, { includeWarnings: true });
+    expect(linearSvg.contents).toContain(`<linearGradient id="graphic-fill-${objectId}"`);
+    expect(linearSvg.contents).toContain(`x1="${transparentGraphic.x}"`);
+    expect(linearSvg.contents).toContain(`y1="${transparentGraphic.y}"`);
+    expect(linearSvg.contents).toContain(`x2="${transparentGraphic.x + transparentGraphic.width}"`);
+    expect(linearSvg.contents).toContain(`y2="${transparentGraphic.y + transparentGraphic.height}"`);
+    expect(linearSvg.contents).toContain('stop-opacity="0.35"');
+    expect(linearSvg.contents).toContain(`fill="url(#graphic-fill-${objectId})"`);
+    expect(linearSvg.warnings).toEqual([]);
+
+    const radialStroked = applyGraphicObjectPaintTypeToSelection(transparentFill, "stroke", "radial-gradient");
+    expect(graphicById(radialStroked, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      units: "object",
+      cx: 0.5,
+      cy: 0.5,
+      r: 0.72,
+      fx: 0.32,
+      fy: 0.28,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#111111" }
+      ]
+    });
+
+    const greenRadialStroke = applyGraphicObjectColorToSelection(radialStroked, "stroke", "#1d7f68");
+    expect(graphicById(greenRadialStroke, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#1d7f68" }
+      ]
+    });
+    const reversedRadialStroke = reverseGraphicObjectGradientStopsForSelection(greenRadialStroke, "stroke");
+    expect(graphicById(reversedRadialStroke, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      stops: [
+        { offset: 0, color: "#1d7f68" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+
+    const radialGradientGraphic = graphicById(greenRadialStroke, objectId);
+    const movedRadialCenter = updateNativeGraphicRadialGradientHandle(
+      greenRadialStroke,
+      objectId,
+      "stroke",
+      "center",
+      { x: radialGradientGraphic.width * 0.25, y: radialGradientGraphic.height * 0.7 }
+    );
+    expect(graphicById(movedRadialCenter, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.25,
+      cy: 0.7,
+      r: 0.72,
+      fx: 0.32,
+      fy: 0.28,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#1d7f68" }
+      ]
+    });
+    const movedRadialFocus = updateNativeGraphicRadialGradientHandle(
+      movedRadialCenter,
+      objectId,
+      "stroke",
+      "focus",
+      { x: radialGradientGraphic.width * 0.65, y: radialGradientGraphic.height * 0.2 }
+    );
+    expect(graphicById(movedRadialFocus, objectId).style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.25,
+      cy: 0.7,
+      fx: 0.65,
+      fy: 0.2
+    });
+    const resizedRadial = updateNativeGraphicRadialGradientHandle(
+      movedRadialFocus,
+      objectId,
+      "stroke",
+      "radius",
+      {
+        x: radialGradientGraphic.width * 0.25 + Math.max(radialGradientGraphic.width, radialGradientGraphic.height, 1) * 0.4,
+        y: radialGradientGraphic.height * 0.7
+      }
+    );
+    const resizedRadialPaint = graphicById(resizedRadial, objectId).style.strokePaint;
+    expect(resizedRadialPaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.25,
+      cy: 0.7,
+      fx: 0.65,
+      fy: 0.2
+    });
+    expect(resizedRadialPaint?.kind === "radial-gradient" ? resizedRadialPaint.r : undefined).toBeCloseTo(0.4, 6);
+
+    const radialSvg = exportPhase4Svg(radialStroked, { includeWarnings: true });
+    const radialGraphic = graphicById(radialStroked, objectId);
+    expect(radialSvg.contents).toContain(`<radialGradient id="graphic-stroke-${objectId}"`);
+    expect(radialSvg.contents).toContain(`cx="${radialGraphic.x + radialGraphic.width * 0.5}"`);
+    expect(radialSvg.contents).toContain(`cy="${radialGraphic.y + radialGraphic.height * 0.5}"`);
+    expect(radialSvg.contents).toContain(`r="${Number((Math.max(radialGraphic.width, radialGraphic.height, 1) * 0.72).toFixed(4))}"`);
+    expect(radialSvg.contents).toContain(`stroke="url(#graphic-stroke-${objectId})"`);
+    expect(radialSvg.warnings).toEqual([]);
+
+    const glossed = applyGraphicObjectPaintTypeToSelection(radialStroked, "fill", "gloss");
+    expect(graphicById(glossed, objectId).style.fillMode).toBe("gloss");
+
+    const recoloredGloss = applyGraphicObjectColorToSelection(glossed, "fill", "#1d7f68");
+    expect(graphicById(recoloredGloss, objectId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillMode: "gloss",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 0.35 }
+    });
+
+    const noFill = applyGraphicObjectPaintTypeToSelection(recoloredGloss, "fill", "none");
+    expect(graphicById(noFill, objectId).style).toMatchObject({
+      fillColor: "none",
+      fillPaint: { kind: "none" }
+    });
+    expect(graphicById(noFill, objectId).style.fillMode).toBeUndefined();
+  });
+
+  it("moves linear gradient endpoint handles when endpoint stop offsets move", () => {
+    const withGraphic = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Gradient Endpoint Stop Handles"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = withGraphic.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+
+    const linearFilled = applyGraphicObjectPaintTypeToSelection(withGraphic, "fill", "linear-gradient");
+    const threeStopGradient = addGraphicObjectGradientStopForSelection(linearFilled, "fill");
+    const movedStart = applyGraphicObjectGradientStopOffsetForSelection(threeStopGradient, "fill", 0, 0.25);
+    const movedStartPaint = graphicById(movedStart, objectId).style.fillPaint;
+    expect(movedStartPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.25,
+      y1: 0.25,
+      x2: 1,
+      y2: 1
+    });
+    if (movedStartPaint?.kind !== "linear-gradient") {
+      throw new Error("Expected moved start linear gradient paint.");
+    }
+    expect(movedStartPaint.stops[0]?.offset).toBe(0);
+    expect(movedStartPaint.stops[1]?.offset).toBeCloseTo(1 / 3, 6);
+    expect(movedStartPaint.stops[2]?.offset).toBe(1);
+
+    const movedEnd = applyGraphicObjectGradientStopOffsetForSelection(threeStopGradient, "fill", 2, 0.75);
+    const movedEndPaint = graphicById(movedEnd, objectId).style.fillPaint;
+    expect(movedEndPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0,
+      y1: 0,
+      x2: 0.75,
+      y2: 0.75
+    });
+    if (movedEndPaint?.kind !== "linear-gradient") {
+      throw new Error("Expected moved end linear gradient paint.");
+    }
+    expect(movedEndPaint.stops[0]?.offset).toBe(0);
+    expect(movedEndPaint.stops[1]?.offset).toBeCloseTo(2 / 3, 6);
+    expect(movedEndPaint.stops[2]?.offset).toBe(1);
+  });
+
+  it("flips native graphic gradient coordinates with the art object", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Gradient Flip"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = document.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+    const painted = applyPatches(document, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        style: {
+          fillPaint: {
+            kind: "linear-gradient",
+            units: "object",
+            x1: 0.15,
+            y1: 0.2,
+            x2: 0.85,
+            y2: 0.7,
+            stops: [
+              { offset: 0, color: "#b3261e" },
+              { offset: 1, color: "#ffffff" }
+            ]
+          },
+          strokePaint: {
+            kind: "radial-gradient",
+            units: "object",
+            cx: 0.3,
+            cy: 0.4,
+            r: 0.55,
+            fx: 0.2,
+            fy: 0.8,
+            stops: [
+              { offset: 0, color: "#ffffff" },
+              { offset: 1, color: "#1d7f68" }
+            ]
+          }
+        }
+      }
+    }]);
+    const graphic = graphicById(painted, objectId);
+    const center = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+
+    const horizontal = flipDocumentObjectsAroundPoint(painted, [objectId], center, "horizontal");
+    const horizontalGraphic = graphicById(horizontal, objectId);
+    expect(horizontalGraphic.style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.85,
+      y1: 0.2,
+      x2: 0.15,
+      y2: 0.7,
+      stops: [
+        { offset: 0, color: "#b3261e" },
+        { offset: 1, color: "#ffffff" }
+      ]
+    });
+    expect(horizontalGraphic.style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.7,
+      cy: 0.4,
+      r: 0.55,
+      fx: 0.8,
+      fy: 0.8,
+      stops: [
+        { offset: 0, color: "#ffffff" },
+        { offset: 1, color: "#1d7f68" }
+      ]
+    });
+
+    const vertical = flipDocumentObjectsAroundPoint(painted, [objectId], center, "vertical");
+    const verticalGraphic = graphicById(vertical, objectId);
+    expect(verticalGraphic.style.fillPaint).toMatchObject({
+      kind: "linear-gradient",
+      x1: 0.15,
+      y1: 0.8,
+      x2: 0.85,
+      y2: 0.3
+    });
+    expect(verticalGraphic.style.strokePaint).toMatchObject({
+      kind: "radial-gradient",
+      cx: 0.3,
+      cy: 0.6,
+      r: 0.55,
+      fx: 0.2,
+      fy: 0.2
+    });
+  });
+
+  it("skips fill and corner-only style fields for open-stroke graphics", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Open Stroke Style"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = withLine.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line graphic to be selected.");
+    }
+
+    const fillAttempt = applyGraphicObjectColorToSelection(withLine, "fill", "#1d7f68");
+    expect(graphicById(fillAttempt, objectId).style.fillColor).toBe("none");
+    expect(graphicById(fillAttempt, objectId).style.fillPaint).toBeUndefined();
+
+    const stroked = applyGraphicObjectColorToSelection(fillAttempt, "stroke", "#a94324");
+    expect(graphicById(stroked, objectId).style).toMatchObject({
+      strokeColor: "#a94324",
+      strokePaint: { kind: "solid", color: "#a94324", opacity: 1 }
+    });
+
+    const fillOpacityAttempt = applyGraphicObjectOpacityToSelection(stroked, "fillOpacity", 0.25);
+    expect(graphicById(fillOpacityAttempt, objectId).style.fillOpacity).toBeUndefined();
+
+    const lineEnded = applyGraphicObjectStrokeStyleToSelection(fillOpacityAttempt, {
+      strokeLineCap: "square"
+    });
+    expect(graphicById(lineEnded, objectId).style.strokeLineCap).toBe("square");
+
+    const cornerAttempt = applyGraphicObjectStrokeStyleToSelection(lineEnded, {
+      strokeLineJoin: "bevel",
+      strokeMiterLimit: 6
+    });
+    expect(graphicById(cornerAttempt, objectId).style.strokeLineJoin).toBeUndefined();
+    expect(graphicById(cornerAttempt, objectId).style.strokeMiterLimit).toBeUndefined();
+  });
+
+  it("uses distinct dashed and dotted stroke presets and round dots", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Dash Presets"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = withLine.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line graphic to be selected.");
+    }
+
+    const dashed = applyGraphicObjectStrokeStyleToSelection(withLine, {
+      strokeDasharray: "8 6"
+    });
+    const dotted = applyGraphicObjectStrokeStyleToSelection(dashed, {
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+
+    expect(graphicById(dashed, objectId).style.strokeDasharray).toBe("8 6");
+    expect(graphicById(dotted, objectId).style.strokeDasharray).toBe("0 6");
+    expect(graphicById(dotted, objectId).style.strokeDasharray).not.toBe(graphicById(dashed, objectId).style.strokeDasharray);
+    expect(graphicById(dotted, objectId).style.strokeLineCap).toBe("round");
+  });
+
+  it("applies mixed graphic style commands only to supported objects", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Mixed Graphic Styles"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const lineId = withLine.selection.objectIds[0];
+    const withCircle = insertNativeArtGraphicObject(withLine, { x: 320, y: 180 }, "tool.art.circle");
+    const circleId = withCircle.selection.objectIds[0];
+    if (!lineId || !circleId) {
+      throw new Error("Expected line and circle graphics.");
+    }
+    const selected = applyPatches(withCircle, [{
+      op: "setSelection",
+      pageId: withCircle.pages[0].id,
+      objectIds: [lineId, circleId]
+    }]);
+
+    const filled = applyGraphicObjectColorToSelection(selected, "fill", "#1d7f68");
+    expect(graphicById(filled, lineId).style.fillColor).toBe("none");
+    expect(graphicById(filled, lineId).style.fillPaint).toBeUndefined();
+    expect(graphicById(filled, circleId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillPaint: { kind: "solid", color: "#1d7f68", opacity: 1 }
+    });
+
+    const stroked = applyGraphicObjectColorToSelection(filled, "stroke", "#b3261e");
+    expect(graphicById(stroked, lineId).style.strokeColor).toBe("#b3261e");
+    expect(graphicById(stroked, circleId).style.strokeColor).toBe("#b3261e");
+
+    const lineEnded = applyGraphicObjectStrokeStyleToSelection(stroked, {
+      strokeLineCap: "square"
+    });
+    expect(graphicById(lineEnded, lineId).style.strokeLineCap).toBe("square");
+    expect(graphicById(lineEnded, circleId).style.strokeLineCap).toBeUndefined();
+
+    const dotted = applyGraphicObjectStrokeStyleToSelection(lineEnded, {
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+    expect(graphicById(dotted, lineId).style).toMatchObject({
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+    expect(graphicById(dotted, circleId).style).toMatchObject({
+      strokeDasharray: "0 6",
+      strokeLineCap: "round"
+    });
+  });
+
+  it("toggles object selection while preserving explicit order", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Selection Toggle Order"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withLine = insertNativeArtGraphicObject(withRect, { x: 320, y: 220 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!rectId || !lineId) {
+      throw new Error("Expected a rectangle and line.");
+    }
+    const pageId = withLine.pages[0].id;
+    const rectSelected = applyPatches(withLine, [{
+      op: "setSelection",
+      pageId,
+      objectIds: [rectId]
+    }]);
+
+    const bothSelected = toggleDocumentObjectSelection(rectSelected, pageId, lineId);
+    const lineOnly = toggleDocumentObjectSelection(bothSelected, pageId, rectId);
+
+    expect(bothSelected.selection.objectIds).toEqual([rectId, lineId]);
+    expect(lineOnly.selection.objectIds).toEqual([lineId]);
+  });
+
+  it("applies native art boolean union and exports the result as SVG", () => {
+    const withFirst = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Union"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const firstId = withFirst.selection.objectIds[0];
+    const withSecond = insertNativeArtGraphicObject(withFirst, { x: 260, y: 196 }, "tool.art.rectFilled");
+    const secondId = withSecond.selection.objectIds[0];
+    if (!firstId || !secondId) {
+      throw new Error("Expected two art rectangles.");
+    }
+    const selected = applyPatches(withSecond, [{
+      op: "setSelection",
+      pageId: withSecond.pages[0].id,
+      objectIds: [firstId, secondId]
+    }]);
+
+    expect(selectedArtBooleanEligibleObjectIds(selected)).toEqual([firstId, secondId]);
+    const result = applyNativeArtBooleanOperationToSelection(selected, "union");
+    const resultId = result.resultObjectIds[0];
+    if (!resultId) {
+      throw new Error("Expected boolean union result.");
+    }
+    const graphic = graphicById(result.document, resultId);
+    const svg = exportPhase4Svg(result.document, { includeWarnings: true });
+    const exportedTag = exportedObjectTag(svg.contents, resultId);
+    const exportedPathD = exportedAttribute(exportedTag, "d");
+    const exportedPoints = svgPathCoordinatePairs(exportedPathD);
+    const exportedXs = exportedPoints.map((point) => point.x);
+    const exportedYs = exportedPoints.map((point) => point.y);
+
+    expect(result.changed).toBe(true);
+    expect(result.status).toBe("Unioned 2 closed art shapes");
+    expect(result.document.selection.objectIds).toEqual([resultId]);
+    expect(result.document.pages[0].objects.some((object) => object.id === firstId || object.id === secondId)).toBe(false);
+    expect(graphic).toMatchObject({
+      type: "graphic",
+      graphicKind: "path",
+      style: {
+        fillColor: "#111111",
+        artToolCommandId: "art.boolean.union"
+      },
+      data: {
+        artToolId: "boolean-union"
+      }
+    });
+    expect(graphic.data.pathD).toMatch(/^M /);
+    expect(svg.contents).toContain(`data-object-id="${resultId}"`);
+    expect(exportedPathD).not.toBe(graphic.data.pathD);
+    expect(Math.min(...exportedXs)).toBeCloseTo(graphic.x, 3);
+    expect(Math.min(...exportedYs)).toBeCloseTo(graphic.y, 3);
+    expect(svg.contents).toContain("<path");
+    expect(svg.warnings).toEqual([]);
+
+    const rotated = rotateDocumentObject(result.document, resultId, 12);
+    const rotatedSvg = exportPhase4Svg(rotated, { includeWarnings: true });
+    const rotatedTag = exportedObjectTag(rotatedSvg.contents, resultId);
+    expect(exportedAttribute(rotatedTag, "transform")).toContain("rotate(12");
+  });
+
+  it("applies native art boolean subtract, intersect, split, and open-shape skips", () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Operations"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const rectId = withRect.selection.objectIds[0];
+    const withCircle = insertNativeArtGraphicObject(withRect, { x: 220, y: 180 }, "tool.art.circleFilled");
+    const circleId = withCircle.selection.objectIds[0];
+    if (!rectId || !circleId) {
+      throw new Error("Expected a rectangle and circle.");
+    }
+    const selectedForSubtract = applyPatches(withCircle, [{
+      op: "setSelection",
+      pageId: withCircle.pages[0].id,
+      objectIds: [rectId, circleId]
+    }]);
+
+    const subtracted = applyNativeArtBooleanOperationToSelection(selectedForSubtract, "subtract");
+    const subtractGraphic = graphicById(subtracted.document, subtracted.resultObjectIds[0] ?? "");
+    expect(subtracted.changed).toBe(true);
+    expect(subtracted.status).toBe("Subtracted 1 closed art shape from first selected shape");
+    expect((subtractGraphic.data.pathD?.match(/M /g) ?? [])).toHaveLength(2);
+    expect(subtractGraphic.data.pathD).toContain("Z");
+
+    const withFirstEllipse = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Intersect Ellipses"),
+      { x: 220, y: 180 },
+      "tool.art.ellipseFilled"
+    );
+    const firstEllipseId = withFirstEllipse.selection.objectIds[0];
+    const withSecondEllipse = insertNativeArtGraphicObject(withFirstEllipse, { x: 250, y: 180 }, "tool.art.ellipseFilled");
+    const secondEllipseId = withSecondEllipse.selection.objectIds[0];
+    if (!firstEllipseId || !secondEllipseId) {
+      throw new Error("Expected intersect ellipses.");
+    }
+    const selectedForIntersect = applyPatches(withSecondEllipse, [{
+      op: "setSelection",
+      pageId: withSecondEllipse.pages[0].id,
+      objectIds: [firstEllipseId, secondEllipseId]
+    }]);
+    const intersected = applyNativeArtBooleanOperationToSelection(selectedForIntersect, "intersect");
+    const intersectGraphic = graphicById(intersected.document, intersected.resultObjectIds[0] ?? "");
+    expect(intersected.changed).toBe(true);
+    expect(intersectGraphic.width).toBeGreaterThan(0);
+    expect(intersectGraphic.height).toBeGreaterThan(0);
+    expect(intersectGraphic.data.pathD).toContain("Z");
+
+    const withFirstSplitRect = insertNativeArtGraphicObject(
+      createPhase4Document("Boolean Art Split"),
+      { x: 220, y: 180 },
+      "tool.art.rectFilled"
+    );
+    const firstSplitId = withFirstSplitRect.selection.objectIds[0];
+    const withSecondSplitRect = insertNativeArtGraphicObject(withFirstSplitRect, { x: 252, y: 180 }, "tool.art.rectFilled");
+    const secondSplitId = withSecondSplitRect.selection.objectIds[0];
+    if (!firstSplitId || !secondSplitId) {
+      throw new Error("Expected split rectangles.");
+    }
+    const selectedForSplit = applyPatches(withSecondSplitRect, [{
+      op: "setSelection",
+      pageId: withSecondSplitRect.pages[0].id,
+      objectIds: [firstSplitId, secondSplitId]
+    }]);
+    const split = applyNativeArtBooleanOperationToSelection(selectedForSplit, "split");
+    expect(split.changed).toBe(true);
+    expect(split.resultObjectIds.length).toBeGreaterThanOrEqual(2);
+    expect(split.document.selection.objectIds).toEqual(split.resultObjectIds);
+
+    const withOpenLine = insertNativeArtGraphicObject(withRect, { x: 320, y: 220 }, "tool.art.line");
+    const lineId = withOpenLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected an open art line.");
+    }
+    const selectedWithLine = applyPatches(withOpenLine, [{
+      op: "setSelection",
+      pageId: withOpenLine.pages[0].id,
+      objectIds: [rectId, lineId]
+    }]);
+    const skipped = applyNativeArtBooleanOperationToSelection(selectedWithLine, "union");
+    expect(skipped.changed).toBe(false);
+    expect(skipped.document).toBe(selectedWithLine);
+    expect(skipped.skippedInputs).toEqual([{ objectId: lineId, reason: "open-shape" }]);
+    expect(skipped.status).toBe("Boolean union needs at least two closed art shapes; skipped 1 open art object");
+  });
+
+  it("copies graphic fill, stroke, markers, and full appearance with the eyedropper helper", () => {
+    const withTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Eyedropper"),
+      { x: 220, y: 180 },
+      "tool.art.circle"
+    );
+    const targetId = withTarget.selection.objectIds[0];
+    const withSource = insertNativeArtGraphicObject(withTarget, { x: 340, y: 180 }, "tool.art.rect");
+    const sourceId = withSource.selection.objectIds[0];
+    if (!targetId || !sourceId) {
+      throw new Error("Expected eyedropper target and source graphics.");
+    }
+    const paintedSource = applyPatches(withSource, [
+      {
+        op: "updateObject",
+        objectId: sourceId,
+        changes: {
+          style: {
+            ...graphicById(withSource, sourceId).style,
+            fillColor: "#1d7f68",
+            fillOpacity: 0.42,
+            fillMode: "solid",
+            fillPaint: {
+              kind: "linear-gradient",
+              units: "object",
+              x1: 0,
+              y1: 0,
+              x2: 1,
+              y2: 1,
+              stops: [
+                { offset: 0, color: "#ffffff" },
+                { offset: 1, color: "#1d7f68", opacity: 0.42 }
+              ]
+            },
+            strokeColor: "#b3261e",
+            strokeWidth: 5
+          }
+        }
+      },
+      { op: "setSelection", pageId: withSource.pages[0].id, objectIds: [targetId] }
+    ]);
+
+    const copiedFill = applyGraphicObjectEyedropperToSelection(paintedSource, sourceId, "fill");
+    expect(graphicById(copiedFill, targetId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      fillOpacity: 0.42,
+      fillPaint: {
+        kind: "linear-gradient",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#1d7f68", opacity: 0.42 }
+        ]
+      }
+    });
+    expect(graphicById(copiedFill, targetId).style.strokeWidth).not.toBe(5);
+
+    const withLineTarget = insertNativeArtGraphicObject(
+      createPhase4Document("Graphic Eyedropper Stroke"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const lineTargetId = withLineTarget.selection.objectIds[0];
+    const withArrowSource = insertNativeArtGraphicObject(withLineTarget, { x: 360, y: 180 }, "tool.art.arrow");
+    const arrowSourceId = withArrowSource.selection.objectIds[0];
+    if (!lineTargetId || !arrowSourceId) {
+      throw new Error("Expected eyedropper line target and arrow source.");
+    }
+    const styledArrowSource = applyPatches(withArrowSource, [
+      {
+        op: "updateObject",
+        objectId: arrowSourceId,
+        changes: {
+          style: {
+            ...graphicById(withArrowSource, arrowSourceId).style,
+            strokeColor: "#6046a8",
+            strokeOpacity: 0.6,
+            strokeWidth: 7,
+            strokeDasharray: "8 6",
+            strokeLineCap: "square"
+          }
+        }
+      },
+      { op: "setSelection", pageId: withArrowSource.pages[0].id, objectIds: [lineTargetId] }
+    ]);
+    const copiedStroke = applyGraphicObjectEyedropperToSelection(styledArrowSource, arrowSourceId, "stroke");
+    expect(graphicById(copiedStroke, lineTargetId).style).toMatchObject({
+      strokeColor: "#6046a8",
+      strokeOpacity: 0.6,
+      strokeWidth: 7,
+      strokeDasharray: "8 6",
+      strokeLineCap: "square"
+    });
+    expect(graphicById(copiedStroke, lineTargetId).data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 10 });
+    expect(graphicById(copiedStroke, lineTargetId).style.fillColor).toBe("none");
+
+    const fullAppearanceTarget = applyPatches(paintedSource, [
+      {
+        op: "updateObject",
+        objectId: sourceId,
+        changes: {
+          style: {
+            ...graphicById(paintedSource, sourceId).style,
+            opacity: 0.7,
+            effect: "shadow",
+            effects: [{ kind: "sketch", seed: 3919 }],
+            tiltXDegrees: 35
+          }
+        }
+      },
+      { op: "setSelection", pageId: paintedSource.pages[0].id, objectIds: [targetId] }
+    ]);
+    const copiedFull = applyGraphicObjectEyedropperToSelection(
+      fullAppearanceTarget,
+      sourceId,
+      "fill",
+      { fullAppearance: true }
+    );
+    expect(graphicById(copiedFull, targetId).style).toMatchObject({
+      fillColor: "#1d7f68",
+      strokeColor: "#b3261e",
+      strokeWidth: 5,
+      opacity: 0.7,
+      effect: "shadow",
+      effects: [
+        { kind: "sketch", seed: 3919 }
+      ]
+    });
+    expect(graphicById(copiedFull, targetId).style.tiltXDegrees).toBeUndefined();
+  });
+
+  it("applies and clears native art effect metadata through workflow helpers", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Art Effects"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted rectangle art object to be selected.");
+    }
+
+    const shadowed = applyGraphicObjectEffectToSelection(inserted, "shadow");
+    expect(graphicById(shadowed, objectId).style.effects).toEqual([
+      { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 }
+    ]);
+
+    const sketched = applyGraphicObjectEffectToSelection(shadowed, "sketch");
+    expect(graphicById(sketched, objectId).style.effects?.map((effect) => effect.kind)).toEqual(["shadow", "sketch"]);
+    expect(graphicById(sketched, objectId).style.effects?.find((effect) => effect.kind === "sketch")).toMatchObject({
+      seed: expect.any(Number),
+      roughness: 1.25,
+      bowing: 0.8,
+      strokeWidth: 1.5
+    });
+
+    const recolored = applyGraphicObjectEffectColorToSelection(sketched, "shadow", "#123456");
+    expect(graphicById(recolored, objectId).style.fillColor).toBe("none");
+    expect(graphicById(recolored, objectId).style.strokeColor).toBe("#111111");
+    expect(graphicById(recolored, objectId).style.effects?.find((effect) => effect.kind === "shadow")).toMatchObject({
+      color: "#123456",
+      opacity: 0.28,
+      offsetX: 6,
+      offsetY: 6,
+      blurPx: 3
+    });
+
+    const resized = applyGraphicObjectEffectSizeToSelection(recolored, "glow", 0.5);
+    expect(graphicById(resized, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      kind: "glow",
+      color: "#fdd835",
+      opacity: 0.42,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const faded = applyGraphicObjectEffectOpacityToSelection(resized, "glow", 0.72);
+    expect(graphicById(faded, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      opacity: 0.72,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const disabledGlow = deactivateGraphicObjectEffectForSelection(faded, "glow");
+    expect(graphicById(disabledGlow, objectId).style.effects?.map((effect) => effect.kind)).toEqual(["shadow", "sketch"]);
+    expect(graphicById(disabledGlow, objectId).style.inactiveEffects).toEqual([
+      { kind: "glow", color: "#fdd835", opacity: 0.72, blurPx: 9, spreadPx: 2 }
+    ]);
+
+    const restoredGlow = applyGraphicObjectEffectToSelection(disabledGlow, "glow");
+    expect(graphicById(restoredGlow, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      color: "#fdd835",
+      opacity: 0.72,
+      blurPx: 9,
+      spreadPx: 2
+    });
+    expect(graphicById(restoredGlow, objectId).style.inactiveEffects).toBeUndefined();
+
+    const activeClickAgain = applyGraphicObjectEffectToSelection(restoredGlow, "glow");
+    expect(graphicById(activeClickAgain, objectId).style.effects?.find((effect) => effect.kind === "glow")).toMatchObject({
+      color: "#fdd835",
+      opacity: 0.72,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const cleared = applyGraphicObjectEffectToSelection(activeClickAgain, "none");
+    expect(graphicById(cleared, objectId).style.effect).toBeUndefined();
+    expect(graphicById(cleared, objectId).style.effects).toBeUndefined();
+    expect(graphicById(cleared, objectId).style.inactiveEffects?.map((effect) => effect.kind)).toEqual(["shadow", "sketch", "glow"]);
+
+    const restoredAfterClear = applyGraphicObjectEffectToSelection(cleared, "shadow");
+    expect(graphicById(restoredAfterClear, objectId).style.effects).toEqual([
+      { kind: "shadow", color: "#123456", opacity: 0.28, offsetX: 6, offsetY: 6, blurPx: 3 }
+    ]);
+    expect(graphicById(restoredAfterClear, objectId).style.inactiveEffects?.map((effect) => effect.kind)).toEqual(["sketch", "glow"]);
+  });
+
+  it("applies shared visual effects to selected molecules without changing chemistry", () => {
+    const inserted = insertNativeSingleBondMolecule(
+      createPhase4Document("Native Molecule Visual Effects"),
+      { x: 260, y: 220 }
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted native molecule to be selected.");
+    }
+    const originalMolecule = moleculeById(inserted, objectId);
+
+    expect(selectedVisualEffectObjectIds(inserted)).toEqual([objectId]);
+
+    const glowing = applyVisualEffectToSelection(inserted, "glow");
+    expect(moleculeVisualEffects(glowing, objectId)).toEqual([
+      { kind: "glow", color: "#fdd835", opacity: 0.42, blurPx: 7, spreadPx: 1.2 }
+    ]);
+
+    const recolored = applyVisualEffectColorToSelection(glowing, "glow", "#ffee66");
+    const resized = applyVisualEffectSizeToSelection(recolored, "glow", 0.5);
+    const faded = applyVisualEffectOpacityToSelection(resized, "glow", 0.7);
+    expect(moleculeVisualEffects(faded, objectId)?.[0]).toMatchObject({
+      kind: "glow",
+      color: "#ffee66",
+      opacity: 0.7,
+      blurPx: 9,
+      spreadPx: 2
+    });
+
+    const disabled = deactivateVisualEffectForSelection(faded, "glow");
+    expect(moleculeVisualEffects(disabled, objectId)).toBeUndefined();
+    expect(moleculeInactiveVisualEffects(disabled, objectId)).toEqual([
+      { kind: "glow", color: "#ffee66", opacity: 0.7, blurPx: 9, spreadPx: 2 }
+    ]);
+
+    const restored = applyVisualEffectToSelection(disabled, "glow");
+    expect(moleculeVisualEffects(restored, objectId)).toEqual([
+      { kind: "glow", color: "#ffee66", opacity: 0.7, blurPx: 9, spreadPx: 2 }
+    ]);
+    const restoredMolecule = moleculeById(restored, objectId);
+    expect(restoredMolecule.atoms).toEqual(originalMolecule.atoms);
+    expect(restoredMolecule.bonds).toEqual(originalMolecule.bonds);
+    expect(restoredMolecule.structure).toBe(originalMolecule.structure);
+    expect(restoredMolecule.chemistry).toEqual(originalMolecule.chemistry);
+  });
+
+  it("does not apply visual effect metadata to selected text, plus signs, or charge symbols", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Visual Effects Ignore Symbols"),
+      { x: 260, y: 220 }
+    );
+    const moleculeId = withMolecule.selection.objectIds[0];
+    if (!moleculeId) {
+      throw new Error("Expected inserted native molecule to be selected.");
+    }
+
+    const pageId = withMolecule.pages[0].id;
+    const textObject: TextObject = {
+      id: "text_visual_effect_guard",
+      type: "text",
+      x: 120,
+      y: 140,
+      width: 80,
+      height: 28,
+      rotation: 0,
+      style: { color: "#111111" },
+      text: "N",
+      spans: []
+    };
+    const plusObject: PlusObject = {
+      id: "plus_visual_effect_guard",
+      type: "plus",
+      x: 180,
+      y: 140,
+      width: 24,
+      height: 24,
+      rotation: 0,
+      style: {}
+    };
+    const chargeObject: ElectronMarkObject = {
+      id: "charge_visual_effect_guard",
+      type: "electron-mark",
+      x: 220,
+      y: 140,
+      width: 18,
+      height: 18,
+      rotation: 0,
+      style: {},
+      markKind: "charge",
+      anchor: { kind: "point", point: { x: 229, y: 149 } },
+      charge: 1
+    };
+    const mixedSelection = selectAllDocumentObjects(
+      applyPatches(withMolecule, [
+        { op: "addObject", pageId, object: textObject },
+        { op: "addObject", pageId, object: plusObject },
+        { op: "addObject", pageId, object: chargeObject }
+      ]),
+      pageId
+    );
+
+    expect(selectedVisualEffectObjectIds(mixedSelection)).toEqual([moleculeId]);
+
+    const sketched = applyVisualEffectToSelection(mixedSelection, "sketch");
+    expect(moleculeVisualEffects(sketched, moleculeId)?.map((effect) => effect.kind)).toEqual(["sketch"]);
+    for (const objectId of [textObject.id, plusObject.id, chargeObject.id]) {
+      expect(objectStyleById(sketched, objectId).visualEffects).toBeUndefined();
+      expect(objectStyleById(sketched, objectId).effects).toBeUndefined();
+    }
+  });
+
+  it("edits rectangle corner radius through native graphic workflow helpers", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Corner Radius Edit"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted rectangle art object to be selected.");
+    }
+    const rect = graphicById(inserted, objectId);
+
+    expect(nativeGraphicCornerRadiusEditPoint(rect)).toEqual({ x: 0, y: 0 });
+
+    const maxed = updateNativeGraphicCornerRadius(inserted, objectId, { x: 200, y: 0 });
+    const maxedRect = graphicById(maxed, objectId);
+    expect(maxedRect.data.cornerRadiusPx).toBeCloseTo(Math.min(rect.width, rect.height) / 2, 3);
+    expect(maxedRect.graphicKind).toBe("rect");
+    expect(maxedRect.x).toBe(rect.x);
+    expect(maxedRect.y).toBe(rect.y);
+    expect(maxedRect.width).toBe(rect.width);
+    expect(maxedRect.height).toBe(rect.height);
+
+    const reset = updateNativeGraphicCornerRadius(maxed, objectId, { x: -20, y: 0 });
+    expect(graphicById(reset, objectId).data.cornerRadiusPx).toBe(0);
+
+    const ellipseInserted = insertNativeArtGraphicObject(reset, { x: 320, y: 180 }, "tool.art.circle");
+    const ellipseId = ellipseInserted.selection.objectIds[0];
+    if (!ellipseId) {
+      throw new Error("Expected inserted ellipse art object.");
+    }
+    expect(nativeGraphicCornerRadiusEditPoint(graphicById(ellipseInserted, ellipseId))).toBeUndefined();
+    expect(updateNativeGraphicCornerRadius(ellipseInserted, ellipseId, { x: 12, y: 0 })).toBe(ellipseInserted);
+
+    const radiusHistory = {
+      past: [inserted],
+      present: maxed,
+      future: []
+    };
+    expect(graphicById(undo(radiusHistory).present, objectId).data.cornerRadiusPx).toBeUndefined();
+    expect(graphicById(redo(undo(radiusHistory)).present, objectId).data.cornerRadiusPx).toBe(maxedRect.data.cornerRadiusPx);
+
+    const reopened = openNativeDocument(createNativeSavePayload(maxed).contents);
+    expect(graphicById(reopened.document ?? inserted, objectId).data.cornerRadiusPx).toBe(maxedRect.data.cornerRadiusPx);
+  });
+
+  it("edits native graphic path endpoints and bends straight lines into freeform curves", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Path Edit"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const originalPoints = nativeGraphicPathEditPoints(originalGraphic);
+    if (!originalPoints) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+
+    const extendedEnd = {
+      x: originalPoints.end.x + 64,
+      y: originalPoints.end.y + 12
+    };
+    const endpointEdited = updateNativeGraphicPathHandle(inserted, objectId, "end", extendedEnd);
+    const endpointGraphic = graphicById(endpointEdited, objectId);
+    expect(endpointGraphic.data).toMatchObject({
+      artPathKind: "line",
+      lineStart: originalPoints.start,
+      lineEnd: extendedEnd
+    });
+    expect(endpointGraphic.width).toBeGreaterThan(originalGraphic.width);
+    expect(endpointGraphic.height).toBeGreaterThan(originalGraphic.height);
+    expect(endpointEdited.selection.objectIds).toEqual([objectId]);
+
+    const bentControl = {
+      x: (originalPoints.start.x + extendedEnd.x) / 2,
+      y: originalPoints.start.y - 48
+    };
+    const bent = updateNativeGraphicPathHandle(endpointEdited, objectId, "middle", bentControl);
+    const bentGraphic = graphicById(bent, objectId);
+    const bentPoints = nativeGraphicPathEditPoints(bentGraphic);
+    expect(bentGraphic.data.artPathKind).toBe("quadratic");
+    expect(bentGraphic.data.arcCenter).toBeUndefined();
+    expect(bentGraphic.data.arcRadiusX).toBeUndefined();
+    expect(bentGraphic.data.arcRadiusY).toBeUndefined();
+    expect(bentGraphic.data.arcStartRadians).toBeUndefined();
+    expect(bentGraphic.data.arcSweepRadians).toBeUndefined();
+    expect(bentGraphic.data.lineStart).toEqual(originalPoints.start);
+    expect(bentGraphic.data.lineEnd).toEqual(extendedEnd);
+    expect(bentGraphic.data.pathControlPoint).toEqual(bentControl);
+    expect(bentPoints?.middle.x).toBeCloseTo(bentControl.x, 3);
+    expect(bentPoints?.middle.y).toBeCloseTo(bentControl.y, 3);
+    expect(bentGraphic.y).toBeLessThan(endpointGraphic.y);
+
+    const pathEditHistory = {
+      past: [endpointEdited],
+      present: bent,
+      future: []
+    };
+    expect(graphicById(undo(pathEditHistory).present, objectId).data.artPathKind).toBe("line");
+    expect(nativeGraphicPathEditPoints(graphicById(redo(undo(pathEditHistory)).present, objectId))?.middle.x).toBeCloseTo(bentControl.x, 3);
+  });
+
+  it("moves edited line graphic endpoints with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const endpointEdited = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      { x: points.end.x + 42, y: points.end.y + 12 }
+    );
+    const editedGraphic = graphicById(endpointEdited, objectId);
+    const dx = 36;
+    const dy = 22;
+
+    const moved = moveDocumentObject(endpointEdited, objectId, {
+      x: editedGraphic.x + dx,
+      y: editedGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(movedGraphic.x).toBeCloseTo(editedGraphic.x + dx, 6);
+    expect(movedGraphic.y).toBeCloseTo(editedGraphic.y + dy, 6);
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(editedGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(editedGraphic.data.lineEnd!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("moves quadratic graphic explicit points with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Quadratic Graphic"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 44 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const dx = 28;
+    const dy = -18;
+
+    const moved = moveDocumentObject(bent, objectId, {
+      x: bentGraphic.x + dx,
+      y: bentGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+    const movedPoints = nativeGraphicPathEditPoints(movedGraphic);
+
+    expect(movedGraphic.data.artPathKind).toBe("quadratic");
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(bentGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(bentGraphic.data.lineEnd!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toEqual(translatedPoint(bentGraphic.data.pathControlPoint!, dx, dy));
+    expect(movedPoints?.start).toEqual(translatedPoint(beforePoints!.start, dx, dy));
+    expect(movedPoints?.middle).toEqual(translatedPoint(beforePoints!.middle, dx, dy));
+    expect(movedPoints?.end).toEqual(translatedPoint(beforePoints!.end, dx, dy));
+  });
+
+  it("moves legacy quadratic arc explicit points with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Legacy Quadratic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 10, y: points.middle.y - 36 }
+    );
+    const legacy = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        data: {
+          ...graphicById(bent, objectId).data,
+          artPathKind: "arc"
+        }
+      }
+    });
+    const legacyGraphic = graphicById(legacy, objectId);
+    const dx = 18;
+    const dy = 24;
+
+    const moved = moveDocumentObject(legacy, objectId, {
+      x: legacyGraphic.x + dx,
+      y: legacyGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(movedGraphic.data.artPathKind).toBe("arc");
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(legacyGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(legacyGraphic.data.lineEnd!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toEqual(translatedPoint(legacyGraphic.data.pathControlPoint!, dx, dy));
+  });
+
+  it("moves semantic arc center with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const editedGraphic = graphicById(edited, objectId);
+    const dx = 31;
+    const dy = 17;
+
+    const moved = moveDocumentObject(edited, objectId, {
+      x: editedGraphic.x + dx,
+      y: editedGraphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(movedGraphic.data.artPathKind).toBe("arc");
+    expect(movedGraphic.data.arcCenter).toEqual(translatedPoint(editedGraphic.data.arcCenter!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("moves unedited line graphics through object bounds fallback", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Move Unedited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(graphic);
+    if (!beforePoints) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const dx = 40;
+    const dy = -12;
+
+    const moved = moveDocumentObject(inserted, objectId, {
+      x: graphic.x + dx,
+      y: graphic.y + dy
+    });
+    const movedGraphic = graphicById(moved, objectId);
+    const movedPoints = nativeGraphicPathEditPoints(movedGraphic);
+
+    expect(movedGraphic.data.lineStart).toBeUndefined();
+    expect(movedGraphic.data.lineEnd).toBeUndefined();
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+    expect(movedPoints?.start).toEqual(translatedPoint(beforePoints.start, dx, dy));
+    expect(movedPoints?.middle).toEqual(translatedPoint(beforePoints.middle, dx, dy));
+    expect(movedPoints?.end).toEqual(translatedPoint(beforePoints.end, dx, dy));
+  });
+
+  it("scales edited line graphic endpoints with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const endpointEdited = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      { x: points.end.x + 42, y: points.end.y + 12 }
+    );
+    const editedGraphic = graphicById(endpointEdited, objectId);
+    const oldCenter = {
+      x: editedGraphic.x + editedGraphic.width / 2,
+      y: editedGraphic.y + editedGraphic.height / 2
+    };
+    const scaleX = 1.5;
+    const scaleY = 0.5;
+
+    const scaled = scaleDocumentObjectsAroundPoint(endpointEdited, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.width).toBeCloseTo(editedGraphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(editedGraphic.height * scaleY, 6);
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(editedGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(editedGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expect(scaledGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("scales quadratic graphic explicit points with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Quadratic Graphic"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 44 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+    const scaleX = 1.35;
+    const scaleY = 0.6;
+
+    const scaled = scaleDocumentObjectsAroundPoint(bent, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const scaledPoints = nativeGraphicPathEditPoints(scaledGraphic);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.artPathKind).toBe("quadratic");
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.start, scaledPoint(beforePoints!.start, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.middle, scaledPoint(beforePoints!.middle, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.end, scaledPoint(beforePoints!.end, oldCenter, newCenter, scaleX, scaleY));
+  });
+
+  it("scales legacy quadratic arc explicit points with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Legacy Quadratic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 10, y: points.middle.y - 36 }
+    );
+    const legacy = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        data: {
+          ...graphicById(bent, objectId).data,
+          artPathKind: "arc"
+        }
+      }
+    });
+    const legacyGraphic = graphicById(legacy, objectId);
+    const oldCenter = {
+      x: legacyGraphic.x + legacyGraphic.width / 2,
+      y: legacyGraphic.y + legacyGraphic.height / 2
+    };
+    const scaleX = 0.8;
+    const scaleY = 1.4;
+
+    const scaled = scaleDocumentObjectsAroundPoint(legacy, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.artPathKind).toBe("arc");
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(legacyGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(legacyGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.pathControlPoint, scaledPoint(legacyGraphic.data.pathControlPoint!, oldCenter, newCenter, scaleX, scaleY));
+  });
+
+  it("scales semantic arc center and radii with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const editedGraphic = graphicById(edited, objectId);
+    const oldCenter = {
+      x: editedGraphic.x + editedGraphic.width / 2,
+      y: editedGraphic.y + editedGraphic.height / 2
+    };
+    const scaleX = 1.25;
+    const scaleY = 0.75;
+
+    const scaled = scaleDocumentObjectsAroundPoint(edited, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(scaledGraphic.data.artPathKind).toBe("arc");
+    expectPointToBeClose(scaledGraphic.data.arcCenter, scaledPoint(editedGraphic.data.arcCenter!, oldCenter, newCenter, scaleX, scaleY));
+    expect(scaledGraphic.data.arcRadiusX).toBeCloseTo((editedGraphic.data.arcRadiusX ?? 0) * scaleX, 6);
+    expect(scaledGraphic.data.arcRadiusY).toBeCloseTo((editedGraphic.data.arcRadiusY ?? 0) * scaleY, 6);
+    expect(scaledGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("scales unedited line graphics through object bounds fallback", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Unedited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(graphic);
+    if (!beforePoints) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const oldCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const scaleX = 1.4;
+    const scaleY = 0.7;
+
+    const scaled = scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const scaledPoints = nativeGraphicPathEditPoints(scaledGraphic);
+
+    expect(scaledGraphic.data.lineStart).toBeUndefined();
+    expect(scaledGraphic.data.lineEnd).toBeUndefined();
+    expect(scaledGraphic.data.pathControlPoint).toBeUndefined();
+    expect(scaledGraphic.width).toBeCloseTo(graphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(graphic.height * scaleY, 6);
+    for (const point of [scaledPoints?.start, scaledPoints?.middle, scaledPoints?.end]) {
+      expect(point?.x).toBeGreaterThanOrEqual(scaledGraphic.x);
+      expect(point?.x).toBeLessThanOrEqual(scaledGraphic.x + scaledGraphic.width);
+      expect(point?.y).toBeGreaterThanOrEqual(scaledGraphic.y);
+      expect(point?.y).toBeLessThanOrEqual(scaledGraphic.y + scaledGraphic.height);
+    }
+    expect(pointDistance(scaledPoints!.start, beforePoints.start)).toBeGreaterThan(0.5);
+    expect(pointDistance(scaledPoints!.end, beforePoints.end)).toBeGreaterThan(0.5);
+  });
+
+  it("scales native polyline path nodes with the frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Native Polyline"),
+      { x: 220, y: 180 },
+      "tool.art.polyline"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted polyline art object to be selected.");
+    }
+    const graphic = graphicById(inserted, objectId);
+    const beforeNodes = graphic.data.pathNodes;
+    if (!beforeNodes) {
+      throw new Error("Expected inserted polyline art object to store path nodes.");
+    }
+    const oldCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+    const scaleX = 1.5;
+    const scaleY = 0.45;
+
+    const scaled = scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const afterNodes = scaledGraphic.data.pathNodes;
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.data.artPathKind).toBe("polyline");
+    expect(scaledGraphic.width).toBeCloseTo(graphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(graphic.height * scaleY, 6);
+    expect(afterNodes).toHaveLength(beforeNodes.length);
+    beforeNodes.forEach((node, index) => {
+      expectPointToBeClose(afterNodes?.[index]?.point, scaledPoint(node.point, oldCenter, newCenter, scaleX, scaleY));
+    });
+  });
+
+  it("does not rewrite local pathD data while scaling graphic frames", () => {
+    const baseDocument = createPhase4Document("Scale Local Path D");
+    const page = baseDocument.pages[0];
+    if (!page) {
+      throw new Error("Expected a page.");
+    }
+    const graphic: GraphicObject = {
+      type: "graphic",
+      id: "local_path_d",
+      x: 180,
+      y: 160,
+      width: 96,
+      height: 54,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "none",
+        strokeWidth: 3
+      },
+      data: {
+        pathD: "M 0 0 C 12 24 48 24 96 54"
+      }
+    };
+    const document = applyPatches(baseDocument, [
+      { op: "addObject", pageId: page.id, object: graphic },
+      { op: "setSelection", pageId: page.id, objectIds: [graphic.id] }
+    ]);
+    const oldCenter = {
+      x: graphic.x + graphic.width / 2,
+      y: graphic.y + graphic.height / 2
+    };
+
+    const scaled = scaleDocumentObjectsAroundPoint(document, [graphic.id], oldCenter, 1.5, 0.5);
+    const scaledGraphic = graphicById(scaled, graphic.id);
+
+    expect(scaledGraphic.width).toBeCloseTo(graphic.width * 1.5, 6);
+    expect(scaledGraphic.height).toBeCloseTo(graphic.height * 0.5, 6);
+    expect(scaledGraphic.data.pathD).toBe(graphic.data.pathD);
+  });
+
+  it("rotates a single edited graphic line around its object box center without rewriting explicit geometry", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Single Graphic Rotation Pivot"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 12, y: points.middle.y - 36 }
+    );
+    const bentGraphic = graphicById(bent, objectId);
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+
+    const rotated = rotateDocumentObject(bent, objectId, 47);
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const newCenter = {
+      x: rotatedGraphic.x + rotatedGraphic.width / 2,
+      y: rotatedGraphic.y + rotatedGraphic.height / 2
+    };
+
+    expectPointToBeClose(newCenter, oldCenter);
+    expect(rotatedGraphic.rotation).toBeCloseTo(47, 6);
+    expect(rotatedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
+    expect(rotatedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
+    expectPointToBeClose(rotatedGraphic.data.lineStart, bentGraphic.data.lineStart!);
+    expectPointToBeClose(rotatedGraphic.data.lineEnd, bentGraphic.data.lineEnd!);
+    expectPointToBeClose(rotatedGraphic.data.pathControlPoint, bentGraphic.data.pathControlPoint!);
+  });
+
+  it("prepares a rotated straight graphic line for direct editing without moving visible endpoints", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Prepare Rotated Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const rotated = rotateDocumentObject(inserted, objectId, 42);
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    if (!rotatedPoints) {
+      throw new Error("Expected rotated line edit points.");
+    }
+    const projectedStart = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.start);
+    const projectedEnd = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.end);
+
+    const prepared = prepareGraphicPathForDirectEdit(rotated, objectId);
+    const preparedGraphic = graphicById(prepared, objectId);
+    const preparedPoints = nativeGraphicPathEditPoints(preparedGraphic);
+
+    expect(preparedGraphic.rotation).toBe(0);
+    expect(preparedGraphic.data.artPathKind).toBe("line");
+    expectPointToBeClose(preparedGraphic.data.lineStart, projectedStart);
+    expectPointToBeClose(preparedGraphic.data.lineEnd, projectedEnd);
+    expect(preparedGraphic.data.pathControlPoint).toBeUndefined();
+    expectPointToBeClose(preparedPoints?.start, projectedStart);
+    expectPointToBeClose(preparedPoints?.end, projectedEnd);
+  });
+
+  it("prepares rotated quadratic and legacy quadratic graphics as unrotated explicit curves", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Prepare Rotated Quadratic"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 10, y: points.middle.y - 34 }
+    );
+    const legacy = applyPatch(bent, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        rotation: 32,
+        data: {
+          ...graphicById(bent, objectId).data,
+          artPathKind: "arc"
+        }
+      }
+    });
+    const rotatedGraphic = graphicById(legacy, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    if (!rotatedPoints) {
+      throw new Error("Expected rotated quadratic edit points.");
+    }
+    const projectedStart = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.start);
+    const projectedMiddle = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.middle);
+    const projectedEnd = projectGraphicVisualPoint(rotatedGraphic, rotatedPoints.end);
+
+    const prepared = prepareGraphicPathForDirectEdit(legacy, objectId);
+    const preparedGraphic = graphicById(prepared, objectId);
+    const preparedPoints = nativeGraphicPathEditPoints(preparedGraphic);
+
+    expect(preparedGraphic.rotation).toBe(0);
+    expect(preparedGraphic.data.artPathKind).toBe("quadratic");
+    expectPointToBeClose(preparedGraphic.data.lineStart, projectedStart);
+    expectPointToBeClose(preparedGraphic.data.pathControlPoint, projectedMiddle);
+    expectPointToBeClose(preparedGraphic.data.lineEnd, projectedEnd);
+    expect(preparedGraphic.data.arcCenter).toBeUndefined();
+    expectPointToBeClose(preparedPoints?.start, projectedStart);
+    expectPointToBeClose(preparedPoints?.middle, projectedMiddle);
+    expectPointToBeClose(preparedPoints?.end, projectedEnd);
+  });
+
+  it("edits circular art arcs by changing radian sweep around the same ellipse", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Circular Arc Edit"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const originalPoints = nativeGraphicPathEditPoints(originalGraphic);
+    if (!originalPoints) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+
+    const completed = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      originalPoints.start
+    );
+    const completedGraphic = graphicById(completed, objectId);
+    const originalCenter = {
+      x: originalGraphic.x + originalGraphic.width / 2,
+      y: originalGraphic.y + originalGraphic.height / 2
+    };
+
+    expect(completedGraphic.data.artPathKind).toBe("arc");
+    expect(completedGraphic.data.arcCenter).toEqual(originalCenter);
+    expect(completedGraphic.data.arcRadiusX).toBeCloseTo(originalGraphic.width / 2 - 4, 6);
+    expect(completedGraphic.data.arcRadiusY).toBeCloseTo(originalGraphic.height / 2 - 4, 6);
+    expect(completedGraphic.data.arcStartRadians).toBeCloseTo(degToRad(-225), 6);
+    expect(completedGraphic.data.arcSweepRadians).toBeGreaterThan(degToRad(358));
+    expect(completedGraphic.data.lineStart).toBeUndefined();
+    expect(completedGraphic.data.lineEnd).toBeUndefined();
+    expect(completedGraphic.data.pathControlPoint).toBeUndefined();
+    expect(completed.selection.objectIds).toEqual([objectId]);
+  });
+
+  it("rotates circular art arcs with the middle path handle instead of bending them", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Circular Arc Rotate"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const rotated = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      pointOnGraphicEllipse(originalGraphic, 0)
+    );
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    if (!rotatedPoints) {
+      throw new Error("Expected rotated arc art object to expose path edit points.");
+    }
+
+    expect(rotatedGraphic.data.artPathKind).toBe("arc");
+    expect(rotatedGraphic.data.arcStartRadians).toBeCloseTo(degToRad(-135), 6);
+    expect(rotatedGraphic.data.arcSweepRadians).toBeCloseTo(degToRad(270), 6);
+    expect(rotatedGraphic.data.pathControlPoint).toBeUndefined();
+    expect(rotatedPoints.middle.x).toBeCloseTo(pointOnGraphicEllipse(originalGraphic, 0).x, 3);
+    expect(rotatedPoints.middle.y).toBeCloseTo(pointOnGraphicEllipse(originalGraphic, 0).y, 3);
+  });
+
+  it("keeps a rectangular circular arc middle handle attached through document workflow edits", () => {
+    const baseDocument = createPhase4Document("Native Rectangular Circular Arc Attachment");
+    const page = baseDocument.pages[0];
+    if (!page) {
+      throw new Error("Expected a page.");
+    }
+    const arcSweepRadians = Math.PI * 1.36;
+    const graphic: GraphicObject = {
+      type: "graphic",
+      id: "rectangular_arc",
+      x: 180,
+      y: 160,
+      width: 96,
+      height: 54,
+      rotation: 0,
+      graphicKind: "path",
+      style: {
+        strokeColor: "#111111",
+        fillColor: "none",
+        strokeWidth: 3
+      },
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: Math.PI * 0.18,
+        arcSweepRadians
+      }
+    };
+    const document = applyPatches(baseDocument, [
+      { op: "addObject", pageId: page.id, object: graphic },
+      { op: "setSelection", pageId: page.id, objectIds: [graphic.id] }
+    ]);
+    const originalPoints = nativeGraphicPathEditPoints(graphic);
+    if (!originalPoints) {
+      throw new Error("Expected rectangular arc edit points.");
+    }
+    const target = {
+      x: originalPoints.middle.x + 31,
+      y: originalPoints.middle.y - 17
+    };
+
+    const edited = updateNativeGraphicPathHandle(document, graphic.id, "middle", target);
+    const editedPoints = nativeGraphicPathEditPoints(graphicById(edited, graphic.id));
+
+    expect(editedPoints?.middle.x).toBeCloseTo(target.x, 3);
+    expect(editedPoints?.middle.y).toBeCloseTo(target.y, 3);
+    expect(graphicById(edited, graphic.id).data.arcSweepRadians).toBeCloseTo(arcSweepRadians, 6);
+  });
+
+  it("expands circular art arc radius from the middle handle and preserves edits through history and reopen", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Native Circular Arc Radius"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+
+    const originalGraphic = graphicById(inserted, objectId);
+    const originalPoints = nativeGraphicPathEditPoints(originalGraphic);
+    if (!originalPoints) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const center = {
+      x: originalGraphic.x + originalGraphic.width / 2,
+      y: originalGraphic.y + originalGraphic.height / 2
+    };
+    const dx = originalPoints.middle.x - center.x;
+    const dy = originalPoints.middle.y - center.y;
+    const length = Math.max(Math.hypot(dx, dy), 1);
+    const outwardMiddle = {
+      x: center.x + dx / length * (length + 26),
+      y: center.y + dy / length * (length + 26)
+    };
+
+    const expanded = updateNativeGraphicPathHandle(inserted, objectId, "middle", outwardMiddle);
+    const expandedGraphic = graphicById(expanded, objectId);
+
+    expect(expandedGraphic.width).toBeGreaterThan(originalGraphic.width);
+    expect(expandedGraphic.height).toBeGreaterThan(originalGraphic.height);
+    expect(expandedGraphic.data.arcCenter).toEqual(center);
+    expect(expandedGraphic.data.arcRadiusX).toBeCloseTo(length + 26, 3);
+    expect(expandedGraphic.data.arcRadiusY).toBeCloseTo(length + 26, 3);
+    expect(expandedGraphic.data.arcSweepRadians).toBeCloseTo(degToRad(270), 6);
+    expect(expandedGraphic.data.pathControlPoint).toBeUndefined();
+
+    const radiusHistory = {
+      past: [inserted],
+      present: expanded,
+      future: []
+    };
+    expect(graphicById(undo(radiusHistory).present, objectId).width).toBeCloseTo(originalGraphic.width, 3);
+    expect(graphicById(redo(undo(radiusHistory)).present, objectId).width).toBeCloseTo(expandedGraphic.width, 3);
+
+    const reopened = openNativeDocument(createNativeSavePayload(expanded).contents);
+    expect(graphicById(reopened.document ?? inserted, objectId)).toEqual(expandedGraphic);
+
+    const transformed = applyDocumentObjectProjectedPlaneTilt(
+      rotateDocumentObject(expanded, objectId, 24),
+      objectId,
+      18,
+      -12
+    );
+    const transformedGraphic = graphicById(transformed, objectId);
+    const transformedPoints = nativeGraphicPathEditPoints(transformedGraphic);
+    if (!transformedPoints) {
+      throw new Error("Expected transformed arc art object to remain editable.");
+    }
+    const transformedCenter = transformedGraphic.data.arcCenter ?? {
+      x: transformedGraphic.x + transformedGraphic.width / 2,
+      y: transformedGraphic.y + transformedGraphic.height / 2
+    };
+    const transformedDx = transformedPoints.middle.x - transformedCenter.x;
+    const transformedDy = transformedPoints.middle.y - transformedCenter.y;
+    const transformedLength = Math.max(Math.hypot(transformedDx, transformedDy), 1);
+    const transformedOutwardMiddle = {
+      x: transformedCenter.x + transformedDx / transformedLength * (transformedLength + 16),
+      y: transformedCenter.y + transformedDy / transformedLength * (transformedLength + 16)
+    };
+    const editedAfterTransform = updateNativeGraphicPathHandle(
+      transformed,
+      objectId,
+      "middle",
+      transformedOutwardMiddle
+    );
+
+    expect(graphicById(editedAfterTransform, objectId).width).toBeGreaterThan(transformedGraphic.width);
+    expect(nativeGraphicPathEditPoints(graphicById(editedAfterTransform, objectId))).toBeDefined();
   });
 
   it("applies selected colors to native molecule atom labels and bonds without recoloring the whole molecule", () => {
@@ -3452,6 +6241,52 @@ describe("Phase 4 document workflow", () => {
     });
     expect(molecule?.atoms).toHaveLength(2);
     expect(molecule?.bonds).toHaveLength(1);
+  });
+
+  it("serializes and pastes ChemDraft selections with fresh object and group ids", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("ChemDraft Selection Clipboard"),
+      { x: 240, y: 220 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withGraphic = insertNativeArtGraphicObject(withMolecule, { x: 360, y: 240 }, "tool.art.rect");
+    const graphicId = withGraphic.selection.objectIds[0];
+    if (!graphicId) {
+      throw new Error("Expected inserted art object to be selected.");
+    }
+    const selected = applyPatch(withGraphic, {
+      op: "setSelection",
+      pageId: withGraphic.pages[0].id,
+      objectIds: [molecule.id, graphicId]
+    });
+    const grouped = groupSelectedDocumentObjects(selected);
+    const group = grouped.pages[0].objects.find((object): object is GroupObject =>
+      object.type === "group" && grouped.selection.objectIds.includes(object.id)
+    );
+    if (!group) {
+      throw new Error("Expected copied selection to be grouped.");
+    }
+
+    const payload = createSelectionClipboardPayload(grouped);
+    if (!payload) {
+      throw new Error("Expected selection clipboard payload.");
+    }
+    const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload));
+    if (!parsed) {
+      throw new Error("Expected serialized selection payload to parse.");
+    }
+
+    const pasted = pasteSelectionClipboardPayload(grouped, parsed, { x: 560, y: 520 });
+    const pastedGroupId = pasted.selection.objectIds[0];
+    const pastedGroup = pasted.pages[0].objects.find((object): object is GroupObject =>
+      object.type === "group" && object.id === pastedGroupId
+    );
+    expect(pastedGroup).toBeDefined();
+    expect(pastedGroup?.id).not.toBe(group.id);
+    expect(pastedGroup?.childObjectIds).toHaveLength(2);
+    expect(pastedGroup?.childObjectIds).not.toEqual(group.childObjectIds);
+    expect(pasted.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+    expect(pasted.pages[0].objects.filter((object) => object.type === "graphic")).toHaveLength(2);
   });
 
   it("sizes pasted text boxes to the text block instead of a fixed placeholder frame", () => {
@@ -5326,6 +8161,837 @@ describe("group transforms (multi-object selection)", () => {
     expect(moleculeAtomTotal(moved)).toBe(atomsBefore);
   });
 
+  it("creates invisible group metadata and resolves it to child objects", () => {
+    const { document, ids } = twoMolecules();
+    const selected = applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]);
+    const beforeBounds = selectionBounds(selected.pages[0].objects, ids);
+    if (!beforeBounds) {
+      throw new Error("Expected selected group bounds.");
+    }
+
+    const grouped = groupSelectedDocumentObjects(selected);
+    const group = grouped.pages[0].objects.find((object): object is GroupObject => object.type === "group");
+
+    expect(group).toBeDefined();
+    expect(group?.childObjectIds).toEqual(ids);
+    expect(grouped.selection.objectIds).toEqual([group?.id]);
+    expect(selectedGroupObjectIds(grouped)).toEqual([group?.id]);
+    expect(resolveGroupedDocumentObjectIds(grouped.pages[0].objects, grouped.selection.objectIds)).toEqual(ids);
+    expect(selectionBounds(grouped.pages[0].objects, grouped.selection.objectIds)).toEqual(beforeBounds);
+  });
+
+  it("promotes grouped child selection gestures back to the group id", () => {
+    const { document, ids } = twoMolecules();
+    const pageId = document.pages[0].id;
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId, objectIds: ids }
+    ]));
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    expect(selectDocumentObject(grouped, ids[0]).selection.objectIds).toEqual([groupId]);
+    expect(selectDocumentObjects(grouped, pageId, ids).selection.objectIds).toEqual([groupId]);
+
+    const emptySelection = selectDocumentObjects(grouped, pageId, []);
+    expect(toggleDocumentObjectSelection(emptySelection, pageId, ids[0]).selection.objectIds).toEqual([groupId]);
+    expect(toggleDocumentObjectSelection(grouped, pageId, ids[0]).selection.objectIds).toEqual([]);
+
+    const directChildSelection = selectDocumentObjectWithinGroup(grouped, ids[0]);
+    expect(directChildSelection.selection.objectIds).toEqual([ids[0]]);
+
+    const movedChild = moveDocumentObjects(directChildSelection, directChildSelection.selection.objectIds, 30, 0);
+    const movedFirst = movedChild.pages[0].objects.find((object) => object.id === ids[0]);
+    const movedSecond = movedChild.pages[0].objects.find((object) => object.id === ids[1]);
+    const originalFirst = grouped.pages[0].objects.find((object) => object.id === ids[0]);
+    const originalSecond = grouped.pages[0].objects.find((object) => object.id === ids[1]);
+    if (!movedFirst || !movedSecond || !originalFirst || !originalSecond) {
+      throw new Error("Expected grouped child fixtures.");
+    }
+    expect(movedFirst.x - originalFirst.x).toBeCloseTo(30);
+    expect(movedSecond.x).toBeCloseTo(originalSecond.x);
+    expect(selectedGroupObjectIds(movedChild)).toEqual([]);
+    expect(movedChild.pages[0].objects.find((object) => object.id === groupId)).toBeDefined();
+
+    const cleared = selectDocumentObjects(movedChild, pageId, []);
+    expect(selectDocumentObject(cleared, ids[0]).selection.objectIds).toEqual([groupId]);
+  });
+
+  it("moves and rotates selected group children through the group id", () => {
+    const { document, ids, m1, m2 } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    const moved = moveDocumentObjects(grouped, grouped.selection.objectIds, 40, -25);
+    const movedFirst = moved.pages[0].objects.find((object) => object.id === m1.id)!;
+    const movedSecond = moved.pages[0].objects.find((object) => object.id === m2.id)!;
+    expect(moved.selection.objectIds).toEqual([groupId]);
+    expect(movedFirst.x - m1.x).toBeCloseTo(40);
+    expect(movedSecond.y - m2.y).toBeCloseTo(-25);
+
+    const beforeRotateBounds = selectionBounds(grouped.pages[0].objects, grouped.selection.objectIds);
+    if (!beforeRotateBounds) {
+      throw new Error("Expected grouped selection bounds.");
+    }
+    const expectedRotated = rotateDocumentObjectsAroundPoint(
+      grouped,
+      ids,
+      { x: beforeRotateBounds.centerX, y: beforeRotateBounds.centerY },
+      90
+    );
+    const rotated = rotateSelectedDocumentObjects90(grouped);
+    const expectedFirst = expectedRotated.pages[0].objects.find((object) => object.id === m1.id)!;
+    const expectedSecond = expectedRotated.pages[0].objects.find((object) => object.id === m2.id)!;
+    const rotatedFirst = rotated.pages[0].objects.find((object) => object.id === m1.id)!;
+    const rotatedSecond = rotated.pages[0].objects.find((object) => object.id === m2.id)!;
+    expect(rotated.selection.objectIds).toEqual([groupId]);
+    expect(rotatedFirst).toEqual(expectedFirst);
+    expect(rotatedSecond).toEqual(expectedSecond);
+  });
+
+  it("ungroups selected group metadata back to its children", () => {
+    const { document, ids } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    const ungrouped = ungroupSelectedDocumentObjects(grouped);
+
+    expect(ungrouped.pages[0].objects.some((object) => object.id === groupId)).toBe(false);
+    expect(ungrouped.selection.objectIds).toEqual(ids);
+  });
+
+  it("duplicates a selected group as a new grouped copy", () => {
+    const { document, ids } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+
+    const duplicated = duplicateSelectedDocumentObjects(grouped);
+    const duplicateGroupId = selectedGroupObjectIds(duplicated)[0];
+    const duplicateChildIds = resolveGroupedDocumentObjectIds(duplicated.pages[0].objects, duplicated.selection.objectIds);
+
+    expect(duplicateGroupId).toBeDefined();
+    expect(duplicated.selection.objectIds).toEqual([duplicateGroupId]);
+    expect(duplicateChildIds).toHaveLength(ids.length);
+    expect(duplicateChildIds.some((objectId) => ids.includes(objectId))).toBe(false);
+  });
+
+  it("moves selected group children through layer order as a visible block", () => {
+    const document = createPhase4Document("Group Layer Order");
+    const pageId = document.pages[0].id;
+    const text = (id: string, x: number): TextObject => ({
+      id,
+      type: "text",
+      x,
+      y: 180,
+      width: 60,
+      height: 30,
+      rotation: 0,
+      style: {},
+      text: id,
+      spans: []
+    });
+    const objects = [
+      text("behind", 100),
+      text("child_a", 180),
+      text("child_b", 260),
+      text("blocker", 340)
+    ];
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["child_a", "child_b"] }
+    ]);
+    const grouped = groupSelectedDocumentObjects(selected);
+    const groupId = selectedGroupObjectIds(grouped)[0];
+    if (!groupId) {
+      throw new Error("Expected selected group.");
+    }
+
+    expect(selectedLayerObjectIds(grouped)).toEqual(["child_a", "child_b", groupId]);
+
+    const forward = reorderSelectedDocumentObject(grouped, "forward");
+    expect(forward.pages[0].objects.map((object) => object.id)).toEqual([
+      "behind",
+      "blocker",
+      "child_a",
+      "child_b",
+      groupId
+    ]);
+    expect(forward.selection.objectIds).toEqual([groupId]);
+
+    const back = reorderSelectedDocumentObject(forward, "back");
+    expect(back.pages[0].objects.map((object) => object.id)).toEqual([
+      "child_a",
+      "child_b",
+      groupId,
+      "behind",
+      "blocker"
+    ]);
+    expect(back.selection.objectIds).toEqual([groupId]);
+  });
+
+  it("moves multi-selected objects through layer order together while preserving their order", () => {
+    const document = createPhase4Document("Multi Layer Order");
+    const pageId = document.pages[0].id;
+    const objects: TextObject[] = ["back", "left", "right", "front"].map((id, index) => ({
+      id,
+      type: "text",
+      x: 120 + index * 72,
+      y: 220,
+      width: 48,
+      height: 24,
+      rotation: 0,
+      style: {},
+      text: id,
+      spans: []
+    }));
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["left", "right"] }
+    ]);
+
+    const forward = reorderSelectedDocumentObject(selected, "forward");
+    expect(forward.pages[0].objects.map((object) => object.id)).toEqual([
+      "back",
+      "front",
+      "left",
+      "right"
+    ]);
+    expect(forward.selection.objectIds).toEqual(["left", "right"]);
+
+    const toBack = reorderSelectedDocumentObject(forward, "back");
+    expect(toBack.pages[0].objects.map((object) => object.id)).toEqual([
+      "left",
+      "right",
+      "back",
+      "front"
+    ]);
+    expect(toBack.selection.objectIds).toEqual(["left", "right"]);
+  });
+
+  it("deletes a selected group and its child objects", () => {
+    const { document, ids } = twoMolecules();
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [
+      { op: "setSelection", pageId: document.pages[0].id, objectIds: ids }
+    ]));
+
+    const deleted = deleteSelectedDocumentObjects(grouped);
+
+    expect(deleted.pages[0].objects.filter((object) => ids.includes(object.id))).toHaveLength(0);
+    expect(selectedGroupObjectIds(deleted)).toEqual([]);
+  });
+
+  it("aligns mixed selected objects to the shared selection bounds", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Align Selection"),
+      { x: 220, y: 180 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withLine = insertNativeArtGraphicObject(withMolecule, { x: 420, y: 260 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected inserted line object to be selected.");
+    }
+    const withText = insertNativeTextObject(withLine, { x: 560, y: 340 }, "Align");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const ids = [molecule.id, lineId, textId];
+    const selected = applyPatches(withText, [
+      { op: "setSelection", pageId: withText.pages[0].id, objectIds: ids }
+    ]);
+    const bounds = selectionBounds(selected.pages[0].objects, ids);
+    if (!bounds) {
+      throw new Error("Expected selected object bounds.");
+    }
+    const selectedObjectsIn = (document: ChemDraftDocument) =>
+      ids.map((id) => {
+        const object = document.pages[0].objects.find((candidate) => candidate.id === id);
+        if (!object) {
+          throw new Error(`Expected selected object ${id}.`);
+        }
+        return object;
+      });
+
+    const leftAligned = alignSelectedDocumentObjects(selected, "left");
+    selectedObjectsIn(leftAligned).forEach((object) => {
+      expect(object.x).toBeCloseTo(bounds.x, 6);
+    });
+
+    const centerAligned = alignSelectedDocumentObjects(selected, "center");
+    selectedObjectsIn(centerAligned).forEach((object) => {
+      expect(object.x + object.width / 2).toBeCloseTo(bounds.centerX, 6);
+    });
+
+    const bottomAligned = alignSelectedDocumentObjects(selected, "bottom");
+    selectedObjectsIn(bottomAligned).forEach((object) => {
+      expect(object.y + object.height).toBeCloseTo(bounds.y + bounds.height, 6);
+    });
+  });
+
+  it("distributes selected objects by centers or equal gaps while preserving the outer anchors", () => {
+    const document = createPhase4Document("Distribute Selection");
+    const pageId = document.pages[0].id;
+    const objects: TextObject[] = [
+      { id: "text_left", type: "text", x: 100, y: 180, width: 40, height: 24, rotation: 0, style: {}, text: "A", spans: [] },
+      { id: "text_middle", type: "text", x: 260, y: 500, width: 20, height: 24, rotation: 0, style: {}, text: "B", spans: [] },
+      { id: "text_right", type: "text", x: 520, y: 260, width: 60, height: 24, rotation: 0, style: {}, text: "C", spans: [] }
+    ];
+    const ids = objects.map((object) => object.id);
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ids }
+    ]);
+    const objectById = (current: ChemDraftDocument, id: string): TextObject => {
+      const object = current.pages[0].objects.find((candidate): candidate is TextObject =>
+        candidate.id === id && candidate.type === "text"
+      );
+      if (!object) {
+        throw new Error(`Expected text object ${id}.`);
+      }
+      return object;
+    };
+    const centerX = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.x + object.width / 2;
+    };
+    const centerY = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.y + object.height / 2;
+    };
+    const rightEdge = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.x + object.width;
+    };
+    const bottomEdge = (current: ChemDraftDocument, id: string) => {
+      const object = objectById(current, id);
+      return object.y + object.height;
+    };
+
+    const horizontal = distributeSelectedDocumentObjects(selected, "horizontal");
+    expect(centerX(horizontal, "text_left")).toBeCloseTo(centerX(selected, "text_left"), 6);
+    expect(centerX(horizontal, "text_right")).toBeCloseTo(centerX(selected, "text_right"), 6);
+    expect(centerX(horizontal, "text_middle")).toBeCloseTo(
+      (centerX(selected, "text_left") + centerX(selected, "text_right")) / 2,
+      6
+    );
+
+    const vertical = distributeSelectedDocumentObjects(selected, "vertical");
+    expect(centerY(vertical, "text_left")).toBeCloseTo(centerY(selected, "text_left"), 6);
+    expect(centerY(vertical, "text_middle")).toBeCloseTo(centerY(selected, "text_middle"), 6);
+    expect(centerY(vertical, "text_right")).toBeCloseTo(
+      (centerY(selected, "text_left") + centerY(selected, "text_middle")) / 2,
+      6
+    );
+
+    const horizontalGaps = distributeSelectedDocumentObjects(selected, "horizontal", "spacing");
+    expect(objectById(horizontalGaps, "text_left").x).toBeCloseTo(objectById(selected, "text_left").x, 6);
+    expect(rightEdge(horizontalGaps, "text_right")).toBeCloseTo(rightEdge(selected, "text_right"), 6);
+    const leftToMiddleGap = objectById(horizontalGaps, "text_middle").x - rightEdge(horizontalGaps, "text_left");
+    const middleToRightGap = objectById(horizontalGaps, "text_right").x - rightEdge(horizontalGaps, "text_middle");
+    expect(leftToMiddleGap).toBeCloseTo(middleToRightGap, 6);
+
+    const verticalGaps = distributeSelectedDocumentObjects(selected, "vertical", "spacing");
+    expect(objectById(verticalGaps, "text_left").y).toBeCloseTo(objectById(selected, "text_left").y, 6);
+    expect(bottomEdge(verticalGaps, "text_middle")).toBeCloseTo(bottomEdge(selected, "text_middle"), 6);
+    const topToMiddleGap = objectById(verticalGaps, "text_right").y - bottomEdge(verticalGaps, "text_left");
+    const middleToBottomGap = objectById(verticalGaps, "text_middle").y - bottomEdge(verticalGaps, "text_right");
+    expect(topToMiddleGap).toBeCloseTo(middleToBottomGap, 6);
+  });
+
+  it("distributes rotated art by visible bounds instead of hidden object boxes", () => {
+    const document = createPhase4Document("Visual Bounds Distribute");
+    const pageId = document.pages[0].id;
+    const objects: GraphicObject[] = [
+      {
+        id: "visual_top",
+        type: "graphic",
+        graphicKind: "rect",
+        x: 180,
+        y: 100,
+        width: 76,
+        height: 185,
+        rotation: -6,
+        style: { strokeColor: "#111111", strokeWidth: 2, fillPaint: { kind: "none" } },
+        data: {}
+      },
+      {
+        id: "visual_middle",
+        type: "graphic",
+        graphicKind: "ellipse",
+        x: 190,
+        y: 360,
+        width: 72,
+        height: 72,
+        rotation: 0,
+        style: { strokeColor: "#111111", strokeWidth: 2, fillPaint: { kind: "none" } },
+        data: {}
+      },
+      {
+        id: "visual_bottom",
+        type: "graphic",
+        graphicKind: "rect",
+        x: 170,
+        y: 650,
+        width: 108,
+        height: 88,
+        rotation: 0,
+        style: { strokeColor: "#111111", strokeWidth: 2, fillPaint: { kind: "none" } },
+        data: {}
+      }
+    ];
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: objects.map((object) => object.id) }
+    ]);
+    const objectById = (current: ChemDraftDocument, id: string): GraphicObject => {
+      const object = current.pages[0].objects.find((candidate): candidate is GraphicObject =>
+        candidate.id === id && candidate.type === "graphic"
+      );
+      if (!object) {
+        throw new Error(`Expected graphic object ${id}.`);
+      }
+      return object;
+    };
+    const visualCenterY = (current: ChemDraftDocument, id: string) => {
+      const bounds = documentObjectVisualBounds(objectById(current, id));
+      return bounds.y + bounds.height / 2;
+    };
+    const visualGap = (current: ChemDraftDocument, upperId: string, lowerId: string) => {
+      const upper = documentObjectVisualBounds(objectById(current, upperId));
+      const lower = documentObjectVisualBounds(objectById(current, lowerId));
+      return lower.y - (upper.y + upper.height);
+    };
+
+    const centers = distributeSelectedDocumentObjects(selected, "vertical", "centers");
+    const equalGaps = distributeSelectedDocumentObjects(selected, "vertical", "spacing");
+
+    expect(objectById(centers, "visual_middle").y).not.toBeCloseTo(objectById(equalGaps, "visual_middle").y, 3);
+    expect(visualCenterY(centers, "visual_middle")).toBeCloseTo(
+      (visualCenterY(selected, "visual_top") + visualCenterY(selected, "visual_bottom")) / 2,
+      3
+    );
+    expect(visualGap(equalGaps, "visual_top", "visual_middle")).toBeCloseTo(
+      visualGap(equalGaps, "visual_middle", "visual_bottom"),
+      3
+    );
+  });
+
+  it("duplicates selected objects as offset copies and selects the duplicates", () => {
+    const withMolecule = insertNativeSingleBondMolecule(
+      createPhase4Document("Duplicate Selection"),
+      { x: 220, y: 180 }
+    );
+    const molecule = selectedMolecule(withMolecule);
+    const withLine = insertNativeArtGraphicObject(withMolecule, { x: 420, y: 260 }, "tool.art.line");
+    const lineId = withLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected inserted line object to be selected.");
+    }
+    const linePoints = nativeGraphicPathEditPoints(graphicById(withLine, lineId));
+    if (!linePoints) {
+      throw new Error("Expected line object to expose edit points.");
+    }
+    const editedLine = updateNativeGraphicPathHandle(
+      withLine,
+      lineId,
+      "end",
+      { x: linePoints.end.x + 18, y: linePoints.end.y + 12 }
+    );
+    const selected = applyPatches(editedLine, [
+      { op: "setSelection", pageId: editedLine.pages[0].id, objectIds: [molecule.id, lineId] }
+    ]);
+    const beforeLine = graphicById(selected, lineId);
+    const beforeBounds = selectionBounds(selected.pages[0].objects, selected.selection.objectIds);
+    if (!beforeBounds) {
+      throw new Error("Expected selected object bounds.");
+    }
+
+    const duplicated = duplicateSelectedDocumentObjects(selected);
+    const duplicateIds = duplicated.selection.objectIds;
+    const duplicateObjects = duplicated.pages[0].objects.filter((object) => duplicateIds.includes(object.id));
+    const duplicateMolecule = duplicateObjects.find((object): object is MoleculeObject => object.type === "molecule");
+    const duplicateLine = duplicateObjects.find((object): object is GraphicObject => object.type === "graphic");
+    const duplicateBounds = selectionBounds(duplicated.pages[0].objects, duplicateIds);
+
+    expect(duplicated.pages[0].objects).toHaveLength(selected.pages[0].objects.length + 2);
+    expect(duplicateIds).toHaveLength(2);
+    expect(duplicateIds).not.toContain(molecule.id);
+    expect(duplicateIds).not.toContain(lineId);
+    expect(duplicateMolecule).toBeDefined();
+    expect(duplicateLine).toBeDefined();
+    expect(duplicateBounds?.centerX).toBeCloseTo(beforeBounds.centerX + 24, 6);
+    expect(duplicateBounds?.centerY).toBeCloseTo(beforeBounds.centerY + 24, 6);
+    expect(duplicateMolecule?.atoms[0]?.x).toBeCloseTo(molecule.atoms[0].x + 24, 6);
+    expect(duplicateMolecule?.atoms[0]?.y).toBeCloseTo(molecule.atoms[0].y + 24, 6);
+    expectPointToBeClose(duplicateLine?.data.lineStart, translatedPoint(beforeLine.data.lineStart!, 24, 24));
+    expectPointToBeClose(duplicateLine?.data.lineEnd, translatedPoint(beforeLine.data.lineEnd!, 24, 24));
+  });
+
+  it("rotates the selected objects 90 degrees around the shared selection center", () => {
+    const withLine = insertNativeArtGraphicObject(
+      createPhase4Document("Rotate 90 Selection"),
+      { x: 260, y: 190 },
+      "tool.art.line"
+    );
+    const lineId = withLine.selection.objectIds[0];
+    if (!lineId) {
+      throw new Error("Expected inserted line object to be selected.");
+    }
+    const withText = insertNativeTextObject(withLine, { x: 480, y: 280 }, "90");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const selected = applyPatches(withText, [
+      { op: "setSelection", pageId: withText.pages[0].id, objectIds: [lineId, textId] }
+    ]);
+    const beforeLine = graphicById(selected, lineId);
+    const beforeText = selected.pages[0].objects.find((object): object is TextObject => object.id === textId && object.type === "text");
+    const bounds = selectionBounds(selected.pages[0].objects, selected.selection.objectIds);
+    if (!beforeText || !bounds) {
+      throw new Error("Expected text object and selection bounds.");
+    }
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const beforeLineCenter = { x: beforeLine.x + beforeLine.width / 2, y: beforeLine.y + beforeLine.height / 2 };
+    const beforeTextCenter = { x: beforeText.x + beforeText.width / 2, y: beforeText.y + beforeText.height / 2 };
+
+    const rotated = rotateSelectedDocumentObjects90(selected);
+    const rotatedLine = graphicById(rotated, lineId);
+    const rotatedText = rotated.pages[0].objects.find((object): object is TextObject => object.id === textId && object.type === "text");
+
+    expect(rotated.selection.objectIds).toEqual([lineId, textId]);
+    expect(rotatedLine.rotation).toBeCloseTo(90, 6);
+    expect(rotatedText?.rotation).toBeCloseTo(90, 6);
+    expectPointToBeClose(
+      { x: rotatedLine.x + rotatedLine.width / 2, y: rotatedLine.y + rotatedLine.height / 2 },
+      rotatedPointAround(beforeLineCenter, groupCenter, 90)
+    );
+    expectPointToBeClose(
+      rotatedText ? { x: rotatedText.x + rotatedText.width / 2, y: rotatedText.y + rotatedText.height / 2 } : undefined,
+      rotatedPointAround(beforeTextCenter, groupCenter, 90)
+    );
+  });
+
+  it("group-moves edited line graphic path geometry with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Move Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "end",
+      { x: points.end.x + 44, y: points.end.y + 18 }
+    );
+    const withText = insertNativeTextObject(edited, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const editedGraphic = graphicById(withText, objectId);
+    const text = withText.pages[0].objects.find((object) => object.id === textId);
+    if (!text) {
+      throw new Error("Expected text object.");
+    }
+    const dx = 34;
+    const dy = -21;
+
+    const moved = moveDocumentObjects(withText, [objectId, textId], dx, dy);
+    const movedGraphic = graphicById(moved, objectId);
+    const movedText = moved.pages[0].objects.find((object) => object.id === textId);
+
+    expect(movedGraphic.x).toBeCloseTo(editedGraphic.x + dx, 6);
+    expect(movedGraphic.y).toBeCloseTo(editedGraphic.y + dy, 6);
+    expect(movedGraphic.data.lineStart).toEqual(translatedPoint(editedGraphic.data.lineStart!, dx, dy));
+    expect(movedGraphic.data.lineEnd).toEqual(translatedPoint(editedGraphic.data.lineEnd!, dx, dy));
+    expect(movedText?.x).toBeCloseTo(text.x + dx, 6);
+    expect(movedText?.y).toBeCloseTo(text.y + dy, 6);
+  });
+
+  it("group-moves semantic arc center with the object", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Move Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const withText = insertNativeTextObject(edited, { x: 420, y: 260 }, "Arc group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const editedGraphic = graphicById(withText, objectId);
+    const dx = -26;
+    const dy = 33;
+
+    const moved = moveDocumentObjects(withText, [objectId, textId], dx, dy);
+    const movedGraphic = graphicById(moved, objectId);
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(movedGraphic.data.arcCenter).toEqual(translatedPoint(editedGraphic.data.arcCenter!, dx, dy));
+    expect(movedGraphic.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("group-resizes edited graphic path geometry with the selection frame", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Resize Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 38 }
+    );
+    const withText = insertNativeTextObject(bent, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const bentGraphic = graphicById(withText, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const bounds = selectionBounds(withText.pages[0].objects, [objectId, textId]);
+    if (!bounds || !beforePoints) {
+      throw new Error("Expected group bounds and quadratic edit points.");
+    }
+    const scaleX = 1.3;
+    const scaleY = 0.65;
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+
+    const scaled = scaleDocumentObjectsAroundPoint(withText, [objectId, textId], groupCenter, scaleX, scaleY);
+    const scaledGraphic = graphicById(scaled, objectId);
+    const scaledPoints = nativeGraphicPathEditPoints(scaledGraphic);
+    const newCenter = {
+      x: scaledGraphic.x + scaledGraphic.width / 2,
+      y: scaledGraphic.y + scaledGraphic.height / 2
+    };
+
+    expect(scaledGraphic.width).toBeCloseTo(bentGraphic.width * scaleX, 6);
+    expect(scaledGraphic.height).toBeCloseTo(bentGraphic.height * scaleY, 6);
+    expectPointToBeClose(scaledGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.start, scaledPoint(beforePoints.start, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.middle, scaledPoint(beforePoints.middle, oldCenter, newCenter, scaleX, scaleY));
+    expectPointToBeClose(scaledPoints?.end, scaledPoint(beforePoints.end, oldCenter, newCenter, scaleX, scaleY));
+  });
+
+  it("group-flips edited graphic path geometry with positive frame dimensions", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Flip Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 8, y: points.middle.y - 38 }
+    );
+    const withText = insertNativeTextObject(bent, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const bentGraphic = graphicById(withText, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const bounds = selectionBounds(withText.pages[0].objects, [objectId, textId]);
+    if (!bounds || !beforePoints) {
+      throw new Error("Expected group bounds and quadratic edit points.");
+    }
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+
+    const flipped = flipDocumentObjectsAroundPoint(withText, [objectId, textId], groupCenter, "horizontal");
+    const flippedGraphic = graphicById(flipped, objectId);
+    const flippedPoints = nativeGraphicPathEditPoints(flippedGraphic);
+    const newCenter = {
+      x: flippedGraphic.x + flippedGraphic.width / 2,
+      y: flippedGraphic.y + flippedGraphic.height / 2
+    };
+
+    expectPointToBeClose(newCenter, { x: groupCenter.x - (oldCenter.x - groupCenter.x), y: oldCenter.y });
+    expect(flippedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
+    expect(flippedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
+    expect(flippedGraphic.rotation).toBeCloseTo(bentGraphic.rotation, 6);
+    expectPointToBeClose(flippedGraphic.data.lineStart, scaledPoint(bentGraphic.data.lineStart!, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedGraphic.data.lineEnd, scaledPoint(bentGraphic.data.lineEnd!, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedGraphic.data.pathControlPoint, scaledPoint(bentGraphic.data.pathControlPoint!, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedPoints?.start, scaledPoint(beforePoints.start, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedPoints?.middle, scaledPoint(beforePoints.middle, oldCenter, newCenter, -1, 1));
+    expectPointToBeClose(flippedPoints?.end, scaledPoint(beforePoints.end, oldCenter, newCenter, -1, 1));
+  });
+
+  it("flips semantic arc radii without negative values", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Flip Semantic Arc"),
+      { x: 220, y: 180 },
+      "tool.art.arc270"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted arc art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected arc art object to expose path edit points.");
+    }
+    const edited = updateNativeGraphicPathHandle(inserted, objectId, "end", points.start);
+    const editedGraphic = graphicById(edited, objectId);
+    const oldCenter = {
+      x: editedGraphic.x + editedGraphic.width / 2,
+      y: editedGraphic.y + editedGraphic.height / 2
+    };
+
+    const flipped = flipDocumentObjectsAroundPoint(edited, [objectId], oldCenter, "horizontal");
+    const flippedGraphic = graphicById(flipped, objectId);
+    const newCenter = {
+      x: flippedGraphic.x + flippedGraphic.width / 2,
+      y: flippedGraphic.y + flippedGraphic.height / 2
+    };
+
+    expect(editedGraphic.data.arcCenter).toBeDefined();
+    expect(flippedGraphic.data.artPathKind).toBe("arc");
+    expect(flippedGraphic.data.arcRadiusX).toBeCloseTo(editedGraphic.data.arcRadiusX ?? 0, 6);
+    expect(flippedGraphic.data.arcRadiusY).toBeCloseTo(editedGraphic.data.arcRadiusY ?? 0, 6);
+    expect(flippedGraphic.data.arcRadiusX).toBeGreaterThan(0);
+    expect(flippedGraphic.data.arcRadiusY).toBeGreaterThan(0);
+    expectPointToBeClose(flippedGraphic.data.arcCenter, scaledPoint(editedGraphic.data.arcCenter!, oldCenter, newCenter, -1, 1));
+  });
+
+  it("group-rotates edited graphic path geometry by moving explicit data with the object center only", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Group Rotate Edited Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = inserted.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected inserted line art object to be selected.");
+    }
+    const points = nativeGraphicPathEditPoints(graphicById(inserted, objectId));
+    if (!points) {
+      throw new Error("Expected line art object to expose path edit points.");
+    }
+    const bent = updateNativeGraphicPathHandle(
+      inserted,
+      objectId,
+      "middle",
+      { x: points.middle.x + 12, y: points.middle.y - 36 }
+    );
+    const withText = insertNativeTextObject(bent, { x: 420, y: 260 }, "Group");
+    const textId = withText.selection.objectIds[0];
+    if (!textId) {
+      throw new Error("Expected inserted text object to be selected.");
+    }
+    const bentGraphic = graphicById(withText, objectId);
+    const beforePoints = nativeGraphicPathEditPoints(bentGraphic);
+    const bounds = selectionBounds(withText.pages[0].objects, [objectId, textId]);
+    if (!bounds || !beforePoints) {
+      throw new Error("Expected group bounds and quadratic edit points.");
+    }
+    const groupCenter = { x: bounds.centerX, y: bounds.centerY };
+    const oldCenter = {
+      x: bentGraphic.x + bentGraphic.width / 2,
+      y: bentGraphic.y + bentGraphic.height / 2
+    };
+    const oldStartVector = {
+      x: bentGraphic.data.lineStart!.x - oldCenter.x,
+      y: bentGraphic.data.lineStart!.y - oldCenter.y
+    };
+    const oldControlVector = {
+      x: bentGraphic.data.pathControlPoint!.x - oldCenter.x,
+      y: bentGraphic.data.pathControlPoint!.y - oldCenter.y
+    };
+
+    const rotated = rotateDocumentObjectsAroundPoint(withText, [objectId, textId], groupCenter, 90);
+    const rotatedGraphic = graphicById(rotated, objectId);
+    const rotatedPoints = nativeGraphicPathEditPoints(rotatedGraphic);
+    const newCenter = {
+      x: rotatedGraphic.x + rotatedGraphic.width / 2,
+      y: rotatedGraphic.y + rotatedGraphic.height / 2
+    };
+    const expectedCenter = rotatedPointAround(oldCenter, groupCenter, 90);
+    const expectedStart = translatedPoint(bentGraphic.data.lineStart!, newCenter.x - oldCenter.x, newCenter.y - oldCenter.y);
+    const expectedEnd = translatedPoint(bentGraphic.data.lineEnd!, newCenter.x - oldCenter.x, newCenter.y - oldCenter.y);
+    const expectedControl = translatedPoint(
+      bentGraphic.data.pathControlPoint!,
+      newCenter.x - oldCenter.x,
+      newCenter.y - oldCenter.y
+    );
+
+    expectPointToBeClose(newCenter, expectedCenter);
+    expect(rotatedGraphic.rotation).toBeCloseTo(90, 6);
+    expect(rotatedGraphic.width).toBeCloseTo(bentGraphic.width, 6);
+    expect(rotatedGraphic.height).toBeCloseTo(bentGraphic.height, 6);
+    expectPointToBeClose(rotatedGraphic.data.lineStart, expectedStart);
+    expectPointToBeClose(rotatedGraphic.data.lineEnd, expectedEnd);
+    expectPointToBeClose(rotatedGraphic.data.pathControlPoint, expectedControl);
+    expectPointToBeClose(rotatedPoints?.start, expectedStart);
+    expectPointToBeClose(rotatedPoints?.middle, expectedControl);
+    expectPointToBeClose(rotatedPoints?.end, expectedEnd);
+    expect((rotatedGraphic.data.lineStart?.x ?? 0) - newCenter.x).toBeCloseTo(oldStartVector.x, 6);
+    expect((rotatedGraphic.data.lineStart?.y ?? 0) - newCenter.y).toBeCloseTo(oldStartVector.y, 6);
+    expect((rotatedGraphic.data.pathControlPoint?.x ?? 0) - newCenter.x).toBeCloseTo(oldControlVector.x, 6);
+    expect((rotatedGraphic.data.pathControlPoint?.y ?? 0) - newCenter.y).toBeCloseTo(oldControlVector.y, 6);
+  });
+
   it("rotates the selection 180° about the group center: members reverse and move, identity preserved", () => {
     const { document, ids, m1 } = twoMolecules();
     const mol1 = m1 as MoleculeObject;
@@ -5394,5 +9060,157 @@ describe("group transforms (multi-object selection)", () => {
     expect(after.width).toBeGreaterThan(before.width * 1.5);
     expect(after.height).toBeGreaterThan(before.height * 1.5);
     expect(moleculeAtomTotal(scaled)).toBe(atomsBefore);
+  });
+
+  it("flips selected molecules about the group center while preserving identity", () => {
+    const { document, ids, m1 } = twoMolecules();
+    const mol1 = m1 as MoleculeObject;
+    const [a0, a1] = mol1.atoms;
+    const beforeVector = { x: a1.x - a0.x, y: a1.y - a0.y };
+    const bounds = selectionBounds(document.pages[0].objects, ids)!;
+    const atomsBefore = moleculeAtomTotal(document);
+
+    const flipped = flipDocumentObjectsAroundPoint(document, ids, { x: bounds.centerX, y: bounds.centerY }, "horizontal");
+    const obj1 = flipped.pages[0].objects.find((object) => object.id === m1.id) as MoleculeObject;
+    const f0 = obj1.atoms.find((atom) => atom.id === a0.id)!;
+    const f1 = obj1.atoms.find((atom) => atom.id === a1.id)!;
+
+    expectPointToBeClose(f0, { x: bounds.centerX - (a0.x - bounds.centerX), y: a0.y }, 1);
+    expectPointToBeClose(f1, { x: bounds.centerX - (a1.x - bounds.centerX), y: a1.y }, 1);
+    expect(f1.x - f0.x).toBeCloseTo(-beforeVector.x, 1);
+    expect(f1.y - f0.y).toBeCloseTo(beforeVector.y, 1);
+    expect(moleculeAtomTotal(flipped)).toBe(atomsBefore);
+  });
+});
+
+describe("PR #7 review regression fixes", () => {
+  it("rejects a clipboard selection payload whose object is missing type-specific fields (#4)", () => {
+    const malformed = JSON.stringify({
+      kind: "chemdraft-selection",
+      version: 1,
+      // base fields present, but a reaction-arrow without the required start/end anchors
+      objects: [{ id: "arrow_bad", type: "reaction-arrow", x: 10, y: 10, width: 40, height: 10, rotation: 0, style: {} }],
+      selectionIds: ["arrow_bad"],
+      bounds: { x: 10, y: 10, width: 40, height: 10, centerX: 30, centerY: 15 }
+    });
+    expect(parseSelectionClipboardPayload(malformed)).toBeUndefined();
+  });
+
+  it("offsets reaction-arrow point anchors when pasting so the arrow keeps its shape (#5)", () => {
+    const base = createPhase4Document("Arrow Paste");
+    const pageId = base.pages[0].id;
+    const arrow = {
+      id: "arrow_1",
+      type: "reaction-arrow" as const,
+      arrowKind: "forward" as const,
+      x: 100,
+      y: 100,
+      width: 80,
+      height: 20,
+      rotation: 0,
+      style: {},
+      start: { kind: "point" as const, point: { x: 100, y: 110 } },
+      end: { kind: "point" as const, point: { x: 180, y: 110 } },
+      labels: []
+    };
+    const withArrow = applyPatches(base, [
+      { op: "addObject", pageId, object: arrow },
+      { op: "setSelection", pageId, objectIds: ["arrow_1"] }
+    ]);
+    const payload = createSelectionClipboardPayload(withArrow);
+    if (!payload) {
+      throw new Error("Expected arrow clipboard payload.");
+    }
+
+    const pasted = pasteSelectionClipboardPayload(withArrow, payload, {
+      x: payload.bounds.centerX + 100,
+      y: payload.bounds.centerY + 100
+    });
+    const pastedArrow = pasted.pages[0].objects.find(
+      (object): object is Extract<DocumentObject, { type: "reaction-arrow" }> =>
+        object.type === "reaction-arrow" && object.id !== "arrow_1"
+    );
+    if (!pastedArrow) {
+      throw new Error("Expected a pasted reaction arrow.");
+    }
+    // The frame and both point anchors shift by the same delta, so each anchor keeps its original
+    // offset from the frame (the renderer positions anchors relative to x/y).
+    expect(pastedArrow.start.point?.x).toBeCloseTo(arrow.start.point.x + (pastedArrow.x - arrow.x), 6);
+    expect(pastedArrow.start.point?.y).toBeCloseTo(arrow.start.point.y + (pastedArrow.y - arrow.y), 6);
+    expect((pastedArrow.start.point?.x ?? 0) - pastedArrow.x).toBeCloseTo(arrow.start.point.x - arrow.x, 6);
+    expect((pastedArrow.end.point?.x ?? 0) - pastedArrow.x).toBeCloseTo(arrow.end.point.x - arrow.x, 6);
+  });
+
+  it("deletes selected objects that live on a later page (#7)", () => {
+    const base = createPhase4Document("Multi Page Delete");
+    const firstPage = base.pages[0];
+    const graphic = {
+      id: "rect_p2",
+      type: "graphic" as const,
+      graphicKind: "rect" as const,
+      x: 50,
+      y: 50,
+      width: 40,
+      height: 30,
+      rotation: 0,
+      style: {},
+      data: {}
+    };
+    const twoPage = {
+      ...base,
+      pages: [firstPage, { ...firstPage, id: "page_002", objects: [graphic] }],
+      selection: { ...base.selection, pageId: "page_002", objectIds: ["rect_p2"] }
+    };
+
+    const deleted = deleteSelectedDocumentObjects(twoPage);
+    expect(deleted.pages[1].objects.find((object) => object.id === "rect_p2")).toBeUndefined();
+  });
+
+  it("aligns a selected group as one unit, preserving its internal layout (#15)", () => {
+    let document = insertNativeArtGraphicObject(createPhase4Document("Group Align"), { x: 120, y: 120 }, "tool.art.rect");
+    document = insertNativeArtGraphicObject(document, { x: 180, y: 160 }, "tool.art.circle");
+    const pageId = document.pages[0].id;
+    const artIds = document.pages[0].objects.filter((object) => object.type === "graphic").map((object) => object.id);
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [{ op: "setSelection", pageId, objectIds: artIds }]));
+    const groupId = grouped.selection.objectIds[0];
+    const childXById = (current: ChemDraftDocument) =>
+      new Map(artIds.map((id) => [id, current.pages[0].objects.find((object) => object.id === id)?.x ?? 0]));
+    const relativeBefore = (() => {
+      const positions = childXById(grouped);
+      return (positions.get(artIds[1]) ?? 0) - (positions.get(artIds[0]) ?? 0);
+    })();
+
+    const withFar = insertNativeArtGraphicObject(grouped, { x: 520, y: 320 }, "tool.art.line");
+    const farId = withFar.selection.objectIds[0];
+    const selected = applyPatches(withFar, [{ op: "setSelection", pageId, objectIds: [groupId, farId] }]);
+
+    const aligned = alignSelectedDocumentObjects(selected, "left");
+    const positionsAfter = childXById(aligned);
+    const relativeAfter = (positionsAfter.get(artIds[1]) ?? 0) - (positionsAfter.get(artIds[0]) ?? 0);
+    // The group moved as a whole: its children kept their relative spacing instead of collapsing to
+    // a single x (which is what aligning the expanded children individually would do).
+    expect(relativeAfter).toBeCloseTo(relativeBefore, 6);
+  });
+
+  it("applies toolbar color to a group's children, not the invisible group wrapper (#16)", () => {
+    let document = insertNativeArtGraphicObject(createPhase4Document("Group Color"), { x: 120, y: 120 }, "tool.art.rect");
+    document = insertNativeArtGraphicObject(document, { x: 200, y: 120 }, "tool.art.circle");
+    const pageId = document.pages[0].id;
+    const artIds = document.pages[0].objects.filter((object) => object.type === "graphic").map((object) => object.id);
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [{ op: "setSelection", pageId, objectIds: artIds }]));
+    const groupId = grouped.selection.objectIds[0];
+
+    const result = applyToolbarColorToSelection(grouped, "#1f5fbf", { objectIds: [groupId] });
+
+    expect(result.changed).toBe(true);
+    const children = result.document.pages[0].objects.filter(
+      (object): object is GraphicObject => object.type === "graphic"
+    );
+    expect(children).toHaveLength(2);
+    for (const child of children) {
+      expect(child.style.strokeColor?.toLowerCase()).toBe("#1f5fbf");
+    }
+    const group = result.document.pages[0].objects.find((object) => object.id === groupId);
+    expect((group?.style as Record<string, unknown> | undefined)?.strokeColor).toBeUndefined();
   });
 });

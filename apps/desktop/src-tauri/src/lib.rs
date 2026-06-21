@@ -11,9 +11,11 @@ use tauri::{
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSFloatingWindowLevel, NSPasteboard, NSWindow, NSWindowAnimationBehavior,
-    NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
+    NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
+    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
 };
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
@@ -33,12 +35,15 @@ const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+// Native (separate-window) toolset palettes are parked while the in-document toolbar chrome is the
+// shipping UI. The restore/sync plumbing is kept compiled and tested behind this flag so the feature
+// can be re-enabled without resurrecting deleted code; flip to `true` to bring the windows back.
+const RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP: bool = false;
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
     "document.save",
     "document.saveAs",
-    "clipboard.paste",
     "export.open",
     "page.setSize.letter",
     "page.setSize.legal",
@@ -53,6 +58,8 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setOrientation.landscape",
     "view.toggleRulers",
     "view.toggleCrosshairs",
+    "layout.group",
+    "layout.ungroup",
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
     PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
@@ -131,6 +138,13 @@ struct ClipboardTextItem {
 struct ClipboardReadPayload {
     types: Vec<String>,
     text_items: Vec<ClipboardTextItem>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardWriteTextItem {
+    r#type: String,
+    text: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -216,8 +230,11 @@ pub fn run() {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
                     WindowEvent::Focused(true) => {
-                        if let Err(error) = restore_visible_toolset_windows(window.app_handle()) {
-                            eprintln!("Could not restore ChemDraft toolbar windows: {error}");
+                        if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
+                            if let Err(error) = restore_visible_toolset_windows(window.app_handle())
+                            {
+                                eprintln!("Could not restore ChemDraft toolbar windows: {error}");
+                            }
                         }
                     }
                     WindowEvent::CloseRequested { api, .. } => {
@@ -292,13 +309,15 @@ pub fn run() {
                 eprintln!("Could not show ChemDraft main window: {error}");
             }
 
-            for toolset in startup_manifest.toolsets {
-                let visible = toolset_visible(&toolset, &layout_state);
-                if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
-                    eprintln!(
-                        "Could not initialize ChemDraft toolbar state {}: {error}",
-                        toolset.id
-                    );
+            if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
+                for toolset in startup_manifest.toolsets {
+                    let visible = toolset_visible(&toolset, &layout_state);
+                    if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
+                        eprintln!(
+                            "Could not initialize ChemDraft toolbar state {}: {error}",
+                            toolset.id
+                        );
+                    }
                 }
             }
 
@@ -318,6 +337,7 @@ pub fn run() {
             focus_main_document_window,
             route_toolset_command,
             read_clipboard_payload,
+            write_clipboard_text_items,
             open_tool_palette,
             close_tool_palette,
             focus_tool_palette,
@@ -561,6 +581,37 @@ fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
     read_clipboard_payload_impl()
 }
 
+#[tauri::command]
+fn write_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    write_clipboard_text_items_impl(normalize_clipboard_write_text_items(items)?)
+}
+
+fn normalize_clipboard_write_text_items(
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<Vec<ClipboardWriteTextItem>, String> {
+    let mut seen_types = Vec::<String>::new();
+    let mut normalized_items = Vec::<ClipboardWriteTextItem>::new();
+
+    for item in items {
+        let item_type = item.r#type.trim().to_string();
+        if item_type.is_empty() || item.text.is_empty() || seen_types.contains(&item_type) {
+            continue;
+        }
+
+        seen_types.push(item_type.clone());
+        normalized_items.push(ClipboardWriteTextItem {
+            r#type: item_type,
+            text: item.text,
+        });
+    }
+
+    if normalized_items.is_empty() {
+        return Err("Clipboard write requires at least one text item.".to_string());
+    }
+
+    Ok(normalized_items)
+}
+
 #[cfg(target_os = "macos")]
 fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     let pasteboard = NSPasteboard::generalPasteboard();
@@ -593,6 +644,43 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         .unwrap_or_default();
 
     Ok(ClipboardReadPayload { types, text_items })
+}
+
+#[cfg(target_os = "macos")]
+fn write_clipboard_text_items_impl(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+
+    let failed_types = items
+        .iter()
+        .filter_map(|item| {
+            if set_clipboard_text_item(&pasteboard, item) {
+                None
+            } else {
+                Some(item.r#type.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if failed_types.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not write clipboard text for type(s): {}",
+            failed_types.join(", ")
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextItem) -> bool {
+    let text = NSString::from_str(&item.text);
+    if item.r#type == "text/plain" {
+        return pasteboard.setString_forType(&text, unsafe { NSPasteboardTypeString });
+    }
+
+    let pasteboard_type = NSString::from_str(&item.r#type);
+    pasteboard.setString_forType(&text, &pasteboard_type)
 }
 
 #[cfg(target_os = "macos")]
@@ -691,6 +779,11 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         types: Vec::new(),
         text_items: Vec::new(),
     })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    Err("Native clipboard writes are only implemented for macOS.".to_string())
 }
 
 #[tauri::command]
@@ -1014,7 +1107,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
-                    &MenuItem::with_id(app, "clipboard.paste", "Paste", true, Some("CmdOrCtrl+V"))?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "layout.ungroup",
+                        "Ungroup",
+                        true,
+                        Some("CmdOrCtrl+Shift+G"),
+                    )?,
                 ],
             )?,
             &view_menu,
@@ -1872,6 +1974,11 @@ mod tests {
     }
 
     #[test]
+    fn native_toolset_windows_do_not_restore_on_startup_by_default() {
+        expect_false(RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP);
+    }
+
+    #[test]
     fn customization_state_adds_and_orders_user_toolsets() {
         let toolsets = vec![toolset("core.main", true), toolset("plugin.fixture", false)];
         let customization = ToolsetCustomizationState {
@@ -1962,6 +2069,13 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_edit_menu_commands_are_system_owned() {
+        expect_false(is_routed_menu_command("clipboard.cut"));
+        expect_false(is_routed_menu_command("clipboard.copy"));
+        expect_false(is_routed_menu_command("clipboard.paste"));
+    }
+
+    #[test]
     fn default_capability_allows_native_export_file_writes() {
         let capability = include_str!("../capabilities/default.json");
         let parsed: serde_json::Value =
@@ -1991,6 +2105,33 @@ mod tests {
                 .as_str()
                 .is_some_and(|permission| permission == "allow-rasterize-svg")
         }));
+    }
+
+    #[test]
+    fn default_capability_allows_toolset_startup_commands() {
+        let capability = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("default capability should parse");
+        let permissions = parsed
+            .pointer("/permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("default capability should declare permissions");
+
+        for expected_permission in [
+            "allow-load-toolset-customization-state",
+            "allow-list-toolset-window-states",
+            "allow-route-toolset-command",
+            "allow-read-clipboard-payload",
+            "allow-write-clipboard-text-items",
+            "allow-open-toolset-window",
+            "allow-toggle-toolset-window",
+        ] {
+            expect_true(permissions.iter().any(|permission| {
+                permission
+                    .as_str()
+                    .is_some_and(|permission| permission == expected_permission)
+            }));
+        }
     }
 
     #[test]
@@ -2055,6 +2196,12 @@ mod tests {
     }
 
     #[test]
+    fn layout_menu_commands_are_routed() {
+        expect_true(is_routed_menu_command("layout.group"));
+        expect_true(is_routed_menu_command("layout.ungroup"));
+    }
+
+    #[test]
     fn spin3d_debugger_menu_command_is_routed() {
         expect_true(is_routed_menu_command(SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID));
     }
@@ -2113,6 +2260,40 @@ mod tests {
             .collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_write_items_are_normalized_before_native_write() {
+        let items = normalize_clipboard_write_text_items(vec![
+            ClipboardWriteTextItem {
+                r#type: " application/vnd.chemdraft.selection+json ".to_string(),
+                text: "{}".to_string(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "text/plain".to_string(),
+                text: "{}".to_string(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "text/plain".to_string(),
+                text: "duplicate".to_string(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "".to_string(),
+                text: "missing type".to_string(),
+            },
+        ])
+        .expect("valid clipboard write items should normalize");
+
+        expect_eq(
+            vec![
+                "application/vnd.chemdraft.selection+json".to_string(),
+                "text/plain".to_string(),
+            ],
+            items
+                .iter()
+                .map(|item| item.r#type.clone())
+                .collect::<Vec<_>>(),
+        );
     }
 
     fn expect_true(value: bool) {
