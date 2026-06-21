@@ -720,7 +720,7 @@ function exportGraphicAsCdxmlGraphic(
   const type = cdxmlGraphicTypeForNativeGraphic(graphic);
   const attrs = [
     `id="${graphicId}"`,
-    ...cdxmlGraphicColorAttribute(graphic),
+    ...cdxmlGraphicColorAttribute(graphic, warnings),
     `GraphicType="${type}"`,
     `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, objectCornerPoints(graphic)))}"`,
     ...(type === "Line" || type === "Arc" ? cdxmlLineTypeAttributes(graphic) : []),
@@ -745,7 +745,7 @@ function exportGraphicAsCdxmlArrow(
   const attrs = [
     `id="${graphicId}"`,
     `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, [line.start, line.end]))}"`,
-    ...cdxmlGraphicColorAttribute(graphic),
+    ...cdxmlGraphicColorAttribute(graphic, warnings),
     ...cdxmlLineTypeAttributes(graphic),
     'FillType="None"',
     'ArrowheadType="Solid"',
@@ -854,8 +854,32 @@ function cdxmlLineTypeForGraphic(graphic: GraphicObject): string | undefined {
   return strokeWidth >= defaultCdxmlBoldWidthPx ? "Bold" : undefined;
 }
 
-function cdxmlGraphicColorAttribute(graphic: GraphicObject): string[] {
-  const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
+function cdxmlGraphicColorAttribute(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): string[] {
+  // CDXML graphics carry a single color attribute. On import it becomes the stroke color, and only
+  // for "Filled"/"Shaded" subtypes does it also become the fill. So those shapes must export their
+  // fill color (not stroke) to round-trip the visible fill; every other subtype keeps the stroke.
+  const subtype = cdxmlShapeSubtypeForColor(graphic);
+  const fillDerivedFromColor = subtype.includes("filled") || subtype.includes("shaded");
+  const strokeColor = graphic.style.strokeColor ?? graphic.style.color;
+  const fillColor = graphic.style.fillColor;
+  const color = fillDerivedFromColor
+    ? fillColor ?? graphic.style.color ?? strokeColor
+    : strokeColor ?? fillColor;
+  if (
+    fillDerivedFromColor &&
+    strokeColor &&
+    fillColor &&
+    normalizeHexColor(strokeColor) !== normalizeHexColor(fillColor)
+  ) {
+    warnings.push({
+      code: "cdxml.graphic_single_color",
+      message: "CDXML graphics store a single color; the visible fill was preserved and the distinct stroke color was dropped.",
+      sourceObjectId: graphic.id
+    });
+  }
   if (!color || color.toLowerCase() === "none") {
     return [];
   }
@@ -864,6 +888,15 @@ function cdxmlGraphicColorAttribute(graphic: GraphicObject): string[] {
     return [];
   }
   return [`color="${index}"`];
+}
+
+function cdxmlShapeSubtypeForColor(graphic: GraphicObject): string {
+  const subtype = graphic.graphicKind === "ellipse"
+    ? cdxmlOvalTypeForGraphic(graphic)
+    : graphic.graphicKind === "rect"
+      ? cdxmlRectangleTypeForGraphic(graphic)
+      : undefined;
+  return (subtype ?? "").toLowerCase();
 }
 
 function cdxmlBoundingBoxForGraphic(graphic: GraphicObject, fallbackPoints: readonly Point[]): string {
@@ -1032,7 +1065,10 @@ function radiansToDegrees(radians: number): number {
 }
 
 function clampArcSweepRadians(radians: number): number {
-  return Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(radians)));
+  // Clamp the sweep magnitude but keep its direction; a negative sweep encodes a clockwise arc and
+  // both the exported endpoints and the AngularSize must preserve that sign to stay faithful.
+  const magnitude = Math.max(Math.PI / 180, Math.min(Math.PI * 2 - Math.PI / 1800, Math.abs(radians)));
+  return radians < 0 ? -magnitude : magnitude;
 }
 
 function objectCornerPoints(object: { x: number; y: number; width: number; height: number }): Point[] {
@@ -1905,8 +1941,10 @@ function graphicTypeForCdxmlArrow(element: XmlElementView): string {
 }
 
 function cdxmlLinePointsForShape(element: XmlElementView): { start: Point; end: Point } | undefined {
-  const tail = parseCdxmlXyPoint(element.attributes.Tail3D ?? element.attributes.Start);
-  const head = parseCdxmlXyPoint(element.attributes.Head3D ?? element.attributes.End);
+  // Tail3D/Head3D are 3D "x y z" attributes; Start/End are 2D "y x" position attributes (see
+  // formatPoint). They must be parsed with matching coordinate order or the endpoints transpose.
+  const tail = parseCdxmlXyPoint(element.attributes.Tail3D) ?? parseCdxmlYxPoint(element.attributes.Start);
+  const head = parseCdxmlXyPoint(element.attributes.Head3D) ?? parseCdxmlYxPoint(element.attributes.End);
   return tail && head ? { start: tail, end: head } : undefined;
 }
 
@@ -2010,7 +2048,7 @@ function graphicDataFromCdxmlShape(
   }
   if (type === "Arc") {
     data.artPathKind = "arc";
-    data.arcSweepRadians = degreesToRadians(Math.abs(parseNumber(element.attributes.AngularSize) ?? 180));
+    data.arcSweepRadians = clampArcSweepRadians(degreesToRadians(parseNumber(element.attributes.AngularSize) ?? 180));
     if (linePoints) {
       const center = objectCenter(box);
       const rx = Math.max(box.width / 2 - 4, 1);
@@ -2551,6 +2589,22 @@ function parseCdxmlPoint(point: string | undefined): Point {
   return {
     x: cdxmlToCssPx(Number.isFinite(horizontal) ? horizontal : 0),
     y: cdxmlToCssPx(Number.isFinite(vertical) ? vertical : 0)
+  };
+}
+
+// Parse a 2D CDXML position attribute written in "vertical horizontal" (y x) order, returning
+// undefined when absent or malformed so callers can fall back to other attributes.
+function parseCdxmlYxPoint(point: string | undefined): Point | undefined {
+  if (!point) {
+    return undefined;
+  }
+  const [vertical, horizontal] = point.trim().split(/\s+/).map(Number);
+  if (!Number.isFinite(horizontal) || !Number.isFinite(vertical)) {
+    return undefined;
+  }
+  return {
+    x: cdxmlToCssPx(horizontal),
+    y: cdxmlToCssPx(vertical)
   };
 }
 

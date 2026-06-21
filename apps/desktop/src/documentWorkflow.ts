@@ -33,6 +33,7 @@ import {
   applyPatches,
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
+  DocumentObjectSchema,
   createPageLayout,
   createCustomPageLayout,
   cssPxToPageSize,
@@ -44,6 +45,7 @@ import {
   nativeTextStyleFromObjectStyle,
   stylePresetToObjectStyle,
   textStyleToObjectStyle,
+  type Anchor,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -3813,7 +3815,10 @@ export function applyObjectColorToDocumentObjects(
   color: string,
   objectIds: readonly string[] = document.selection.objectIds
 ): ChemDraftDocument {
-  const selectedIds = new Set(objectIds);
+  // Expand groups to their renderable children: a GroupObject is skipped by render/export, so
+  // writing color to the group wrapper changes nothing visible while reporting success.
+  const allObjects = document.pages.flatMap((page) => page.objects);
+  const selectedIds = new Set(resolveGroupedDocumentObjectIds(allObjects, objectIds));
   if (selectedIds.size === 0) {
     return document;
   }
@@ -4784,7 +4789,7 @@ function validateNativeMoleculeColorTarget(
 }
 
 export function deleteSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {
-  const page = firstPage(document);
+  const page = selectionPage(document);
   const selectedIds = new Set(document.selection.objectIds);
   const selectedChildIds = new Set(resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds));
   const affectedGroupIds = page.objects
@@ -8433,6 +8438,41 @@ function translateDocumentObjectBy(
     );
   }
 
+  if (object.type === "reaction-arrow") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          start: offsetAnchorPoint(object.start, dx, dy),
+          end: offsetAnchorPoint(object.end, dx, dy)
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
+  if (object.type === "mechanism-arrow") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          source: offsetAnchorPoint(object.source, dx, dy),
+          target: offsetAnchorPoint(object.target, dx, dy),
+          controlPoints: object.controlPoints.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }))
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
   return applyPatch(
     document,
     { op: "moveObject", objectId, x: nextX, y: nextY },
@@ -8474,42 +8514,84 @@ export type DocumentAlignMode = "left" | "center" | "right" | "top" | "middle" |
 export type DocumentDistributeAxis = "horizontal" | "vertical";
 export type DocumentDistributeMode = "centers" | "spacing";
 
+// The top-level objects participating in the current selection — a selected group appears once as
+// its group object, not as its expanded children, so layout operations treat it as a single item.
+function selectionLayoutObjects(document: ChemDraftDocument): DocumentObject[] {
+  const page = selectionPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  return page.objects.filter((object) => selectedIds.has(object.id));
+}
+
+// Move a top-level layout item by a delta. For a group this moves every descendant together (the
+// same primitive group dragging uses), so the group keeps its internal arrangement. Unlike
+// moveDocumentObjects it neither clamps to the page nor assumes the first page.
+function translateSelectionLayoutItemBy(
+  document: ChemDraftDocument,
+  pageObjects: readonly DocumentObject[],
+  itemId: string,
+  dx: number,
+  dy: number
+): ChemDraftDocument {
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
+    return document;
+  }
+  let next = document;
+  for (const memberId of resolveGroupedDocumentObjectIds(pageObjects, [itemId])) {
+    next = translateDocumentObjectBy(next, memberId, dx, dy);
+  }
+  return next;
+}
+
 export function alignSelectedDocumentObjects(
   document: ChemDraftDocument,
   mode: DocumentAlignMode
 ): ChemDraftDocument {
-  const page = firstPage(document);
-  const objectIds = selectedTransformObjectIds(document);
-  const bounds = selectionBounds(page.objects, objectIds);
-  if (!bounds || objectIds.length < 2) {
+  const page = selectionPage(document);
+  const layoutItems = selectionLayoutObjects(document)
+    .map((object) => ({ id: object.id, bounds: selectionBounds(page.objects, [object.id]) }))
+    .filter((item): item is { id: string; bounds: SelectionBounds } => item.bounds !== undefined);
+  if (layoutItems.length < 2) {
+    return document;
+  }
+  const bounds = selectionBounds(page.objects, layoutItems.map((item) => item.id));
+  if (!bounds) {
     return document;
   }
 
-  const selectedIds = new Set(objectIds);
   let next = document;
-  for (const object of page.objects) {
-    if (!selectedIds.has(object.id)) {
-      continue;
-    }
-    const objectCenterX = object.x + object.width / 2;
-    const objectCenterY = object.y + object.height / 2;
+  for (const { id, bounds: itemBounds } of layoutItems) {
     const dx = mode === "left"
-      ? bounds.x - object.x
+      ? bounds.x - itemBounds.x
       : mode === "center"
-        ? bounds.centerX - objectCenterX
+        ? bounds.centerX - itemBounds.centerX
         : mode === "right"
-          ? bounds.x + bounds.width - (object.x + object.width)
+          ? bounds.x + bounds.width - (itemBounds.x + itemBounds.width)
           : 0;
     const dy = mode === "top"
-      ? bounds.y - object.y
+      ? bounds.y - itemBounds.y
       : mode === "middle"
-        ? bounds.centerY - objectCenterY
+        ? bounds.centerY - itemBounds.centerY
         : mode === "bottom"
-          ? bounds.y + bounds.height - (object.y + object.height)
+          ? bounds.y + bounds.height - (itemBounds.y + itemBounds.height)
           : 0;
-    next = translateDocumentObjectBy(next, object.id, dx, dy);
+    next = translateSelectionLayoutItemBy(next, page.objects, id, dx, dy);
   }
   return next;
+}
+
+// Visual bounds of a top-level layout item, treating a group as a single box (the union of its
+// descendants) rather than its stale wrapper geometry.
+function layoutItemVisualBounds(
+  pageObjects: readonly DocumentObject[],
+  object: DocumentObject
+): ObjectBounds {
+  if (object.type === "group") {
+    const bounds = selectionBounds(pageObjects, [object.id]);
+    if (bounds) {
+      return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    }
+  }
+  return documentObjectVisualBounds(object);
 }
 
 export function distributeSelectedDocumentObjects(
@@ -8517,19 +8599,18 @@ export function distributeSelectedDocumentObjects(
   axis: DocumentDistributeAxis,
   mode: DocumentDistributeMode = "centers"
 ): ChemDraftDocument {
-  const page = firstPage(document);
-  const selectedIds = new Set(selectedTransformObjectIds(document));
-  const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id));
+  const page = selectionPage(document);
+  const selectedObjects = selectionLayoutObjects(document);
   if (selectedObjects.length < 3) {
     return document;
   }
 
   if (mode === "spacing") {
-    return distributeSelectedDocumentObjectsBySpacing(document, selectedObjects, axis);
+    return distributeSelectedDocumentObjectsBySpacing(document, page.objects, selectedObjects, axis);
   }
 
   const centerForAxis = (object: DocumentObject) => {
-    const bounds = documentObjectVisualBounds(object);
+    const bounds = layoutItemVisualBounds(page.objects, object);
     return axis === "horizontal"
       ? bounds.x + bounds.width / 2
       : bounds.y + bounds.height / 2;
@@ -8547,18 +8628,19 @@ export function distributeSelectedDocumentObjects(
     const targetCenter = firstCenter + spacing * index;
     const delta = targetCenter - centerForAxis(object);
     next = axis === "horizontal"
-      ? translateDocumentObjectBy(next, object.id, delta, 0)
-      : translateDocumentObjectBy(next, object.id, 0, delta);
+      ? translateSelectionLayoutItemBy(next, page.objects, object.id, delta, 0)
+      : translateSelectionLayoutItemBy(next, page.objects, object.id, 0, delta);
   });
   return next;
 }
 
 function distributeSelectedDocumentObjectsBySpacing(
   document: ChemDraftDocument,
+  pageObjects: readonly DocumentObject[],
   selectedObjects: readonly DocumentObject[],
   axis: DocumentDistributeAxis
 ): ChemDraftDocument {
-  const visualBoundsById = new Map(selectedObjects.map((object) => [object.id, documentObjectVisualBounds(object)] as const));
+  const visualBoundsById = new Map(selectedObjects.map((object) => [object.id, layoutItemVisualBounds(pageObjects, object)] as const));
   const visualBoundsForObject = (object: DocumentObject): ObjectBounds => {
     const bounds = visualBoundsById.get(object.id);
     if (!bounds) {
@@ -8590,8 +8672,8 @@ function distributeSelectedDocumentObjectsBySpacing(
     }
     const delta = targetStart - startForAxis(object);
     next = axis === "horizontal"
-      ? translateDocumentObjectBy(next, object.id, delta, 0)
-      : translateDocumentObjectBy(next, object.id, 0, delta);
+      ? translateSelectionLayoutItemBy(next, pageObjects, object.id, delta, 0)
+      : translateSelectionLayoutItemBy(next, pageObjects, object.id, 0, delta);
     targetStart += sizeForAxis(object) + gap;
   });
   return next;
@@ -8709,6 +8791,24 @@ export function serializeSelectionClipboardPayload(
   return JSON.stringify(payload);
 }
 
+// Human-readable representation for the public `text/plain` clipboard flavor. External apps (Word,
+// Mail, etc.) receive this, so it must never be the raw selection JSON — that lives only in the
+// private CHEMDRAFT_SELECTION_CLIPBOARD_TYPE flavor. Returns "" when the selection has no readable
+// text, in which case no public text flavor is published.
+export function selectionClipboardPlainText(
+  payload: ChemDraftSelectionClipboardPayload
+): string {
+  const lines: string[] = [];
+  for (const object of payload.objects) {
+    if (object.type === "text" && object.text.trim().length > 0) {
+      lines.push(object.text);
+    } else if (object.type === "annotation" && object.message.trim().length > 0) {
+      lines.push(object.message);
+    }
+  }
+  return lines.join("\n");
+}
+
 export function parseSelectionClipboardPayload(
   text: string
 ): ChemDraftSelectionClipboardPayload | undefined {
@@ -8728,8 +8828,10 @@ export function parseSelectionClipboardPayload(
       return undefined;
     }
 
-    const objects = payload.objects.filter(isClipboardDocumentObject);
-    if (objects.length === 0) {
+    const objects = payload.objects
+      .map(parseClipboardDocumentObject)
+      .filter((object): object is DocumentObject => object !== undefined);
+    if (objects.length === 0 || objects.length !== payload.objects.length) {
       return undefined;
     }
 
@@ -8892,6 +8994,27 @@ function translatedClipboardObject(
     };
   }
 
+  if (object.type === "reaction-arrow") {
+    return {
+      ...object,
+      x: nextX,
+      y: nextY,
+      start: offsetAnchorPoint(object.start, dx, dy),
+      end: offsetAnchorPoint(object.end, dx, dy)
+    };
+  }
+
+  if (object.type === "mechanism-arrow") {
+    return {
+      ...object,
+      x: nextX,
+      y: nextY,
+      source: offsetAnchorPoint(object.source, dx, dy),
+      target: offsetAnchorPoint(object.target, dx, dy),
+      controlPoints: object.controlPoints.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }))
+    };
+  }
+
   return {
     ...object,
     x: nextX,
@@ -8899,20 +9022,21 @@ function translatedClipboardObject(
   };
 }
 
-function isClipboardDocumentObject(value: unknown): value is DocumentObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const object = value as Partial<DocumentObject>;
-  return typeof object.id === "string" &&
-    typeof object.type === "string" &&
-    typeof object.x === "number" &&
-    typeof object.y === "number" &&
-    typeof object.width === "number" &&
-    typeof object.height === "number" &&
-    typeof object.rotation === "number" &&
-    typeof object.style === "object" &&
-    object.style !== null;
+// Absolute point anchors must shift with the object frame; the renderer positions arrows by
+// subtracting the object x/y from each anchor, so moving only x/y would warp the arrow. Object/atom
+// anchors reference other ids and are left untouched.
+function offsetAnchorPoint(anchor: Anchor, dx: number, dy: number): Anchor {
+  return anchor.kind === "point" && anchor.point
+    ? { ...anchor, point: { x: anchor.point.x + dx, y: anchor.point.y + dy } }
+    : anchor;
+}
+
+// Fully validate (and normalize) a clipboard object against the document schema. Shallow base-field
+// checks let objects with missing type-specific fields through, which then throw later at applyPatch
+// instead of being rejected so paste can fall back safely.
+function parseClipboardDocumentObject(value: unknown): DocumentObject | undefined {
+  const result = DocumentObjectSchema.safeParse(value);
+  return result.success ? result.data : undefined;
 }
 
 function duplicateObjectIdPrefix(object: DocumentObject): string {
@@ -10766,6 +10890,13 @@ function firstPage(document: ChemDraftDocument): ChemDraftDocument["pages"][numb
   }
 
   return page;
+}
+
+// The page that owns the current selection. Operations on the selection (delete, align, distribute,
+// etc.) must resolve objects from this page, not always the first page, or they silently no-op when
+// the selection lives on a later page of a multi-page document.
+function selectionPage(document: ChemDraftDocument): ChemDraftDocument["pages"][number] {
+  return document.pages.find((candidate) => candidate.id === document.selection.pageId) ?? firstPage(document);
 }
 
 function createClipboardTextStructureMolecule(

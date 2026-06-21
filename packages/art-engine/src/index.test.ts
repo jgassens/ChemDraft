@@ -10,6 +10,7 @@ import {
   editGraphicMarkerSize,
   editGraphicPathGeometry,
   graphicCornerRadiusEditPoint,
+  graphicObjectIntersectsPolygon,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
   graphicObjectSupportsBooleanOperation,
@@ -1622,6 +1623,50 @@ describe("art-engine native art planning", () => {
     expect(preparedPoints?.middle.y).toBeCloseTo(projectedMiddle.y, 3);
     expect(preparedPoints?.end.x).toBeCloseTo(projectedEnd.x, 3);
     expect(preparedPoints?.end.y).toBeCloseTo(projectedEnd.y, 3);
+  });
+
+  it("hit-tests a rotated open stroke along its visible rotated position", () => {
+    const line = {
+      ...baseGraphic,
+      id: "graphic_rotated_line",
+      graphicKind: "line",
+      x: 100,
+      y: 100,
+      width: 80,
+      height: 0,
+      rotation: 90
+    } satisfies GraphicObject;
+    // After a 90° rotation about the center (140,100) the stroke is vertical at x=140, y∈[60,140];
+    // the un-rotated stroke would sit horizontally at y=100.
+    const lassoOverRotatedStroke = [
+      { x: 134, y: 64 },
+      { x: 146, y: 64 },
+      { x: 146, y: 78 },
+      { x: 134, y: 78 }
+    ];
+    expect(graphicObjectIntersectsPolygon(line, lassoOverRotatedStroke)).toBe(true);
+  });
+
+  it("selects a closed shape that only the lasso closing edge crosses", () => {
+    const rect = {
+      ...baseGraphic,
+      id: "graphic_closing_edge_rect",
+      graphicKind: "rect",
+      x: 195,
+      y: 95,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      style: { ...baseGraphic.style, fillColor: "#3366cc" }
+    } satisfies GraphicObject;
+    // Triangle whose two open edges miss the 10×10 rect; only the closing edge (last→first) passes
+    // through the rect at (200,100).
+    const lasso = [
+      { x: 300, y: 120 },
+      { x: 300, y: 40 },
+      { x: 100, y: 80 }
+    ];
+    expect(graphicObjectIntersectsPolygon(rect, lasso)).toBe(true);
   });
 });
 

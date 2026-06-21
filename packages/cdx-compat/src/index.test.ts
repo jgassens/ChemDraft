@@ -336,7 +336,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
 <CDXML CreationProgram="Arc Import Test">
   <page id="20" BoundingBox="0 0 540 720">
-    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="70.5 66.75 0" End="51.75 48 0"/>
+    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="66.75 70.5" End="48 51.75"/>
   </page>
 </CDXML>`);
     const graphic = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
@@ -353,6 +353,67 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(graphic?.data.arcSweepRadians).toBeCloseTo(Math.PI * 1.5, 6);
     expect(graphic?.data.lineStart).toBeUndefined();
     expect(graphic?.data.lineEnd).toBeUndefined();
+  });
+
+  it("round-trips a clockwise (negative sweep) graphic arc without flipping direction", () => {
+    const graphic = {
+      id: "art_cdxml_cw_arc",
+      type: "graphic",
+      x: 40,
+      y: 60,
+      width: 58,
+      height: 58,
+      rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: 0,
+        arcSweepRadians: -Math.PI / 2
+      }
+    } satisfies GraphicObject;
+    const result = exportDocumentToCdxml(documentWithObjects([graphic]), {
+      creationProgram: "Clockwise Arc Round Trip"
+    });
+
+    expect(result.contents).toContain('AngularSize="-90"');
+
+    const reopened = openChemDraftPayload(result.contents).document?.pages[0].objects[0] as
+      | GraphicObject
+      | undefined;
+    expect(reopened?.data.arcSweepRadians).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
+  it("exports the fill color (not stroke) for filled graphic shapes", () => {
+    const graphic = {
+      id: "art_cdxml_filled_rect",
+      type: "graphic",
+      x: 40,
+      y: 60,
+      width: 80,
+      height: 50,
+      rotation: 0,
+      style: {
+        strokeColor: "#000000",
+        fillColor: "#00ff00",
+        strokeWidth: 2
+      },
+      graphicKind: "rect",
+      data: {}
+    } satisfies GraphicObject;
+    const result = exportDocumentToCdxml(documentWithObjects([graphic]), {
+      creationProgram: "Filled Shape Color Export"
+    });
+
+    expect(result.contents).toContain('RectangleType="Filled"');
+    // Pure green resolves to CDXML color index 6 (table slot 4, offset by the reserved black/white).
+    expect(result.contents).toContain('color="6"');
+    expect(result.warnings.map((item) => item.code)).toContain("cdxml.graphic_single_color");
+
+    const reopened = openChemDraftPayload(result.contents).document?.pages[0].objects[0] as
+      | GraphicObject
+      | undefined;
+    expect(reopened?.style.fillColor?.toLowerCase()).toBe("#00ff00");
   });
 
   it("imports and exports ChemDraw shape graphics as native graphic objects", () => {

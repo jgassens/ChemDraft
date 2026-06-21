@@ -1,6 +1,11 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as OCL from "openchemlib";
 import { ensureOclResources, generate3DConformerProgressive } from "./index";
+
+// 3D conformer generation/minimisation is CPU-heavy; under a fully parallel `vitest run` these
+// cases run ~2-3s each but can tip past the 5s default when the machine is loaded. Give them headroom
+// so a slow CI host does not flake.
+vi.setConfig({ testTimeout: 20000 });
 
 beforeAll(async () => { await ensureOclResources(); });
 

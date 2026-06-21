@@ -12,6 +12,7 @@ import {
   serializeDocument,
   undo,
   type ChemDraftDocument,
+  type DocumentObject,
   type ElectronMarkObject,
   type GraphicObject,
   type GraphicPaint,
@@ -9079,5 +9080,137 @@ describe("group transforms (multi-object selection)", () => {
     expect(f1.x - f0.x).toBeCloseTo(-beforeVector.x, 1);
     expect(f1.y - f0.y).toBeCloseTo(beforeVector.y, 1);
     expect(moleculeAtomTotal(flipped)).toBe(atomsBefore);
+  });
+});
+
+describe("PR #7 review regression fixes", () => {
+  it("rejects a clipboard selection payload whose object is missing type-specific fields (#4)", () => {
+    const malformed = JSON.stringify({
+      kind: "chemdraft-selection",
+      version: 1,
+      // base fields present, but a reaction-arrow without the required start/end anchors
+      objects: [{ id: "arrow_bad", type: "reaction-arrow", x: 10, y: 10, width: 40, height: 10, rotation: 0, style: {} }],
+      selectionIds: ["arrow_bad"],
+      bounds: { x: 10, y: 10, width: 40, height: 10, centerX: 30, centerY: 15 }
+    });
+    expect(parseSelectionClipboardPayload(malformed)).toBeUndefined();
+  });
+
+  it("offsets reaction-arrow point anchors when pasting so the arrow keeps its shape (#5)", () => {
+    const base = createPhase4Document("Arrow Paste");
+    const pageId = base.pages[0].id;
+    const arrow = {
+      id: "arrow_1",
+      type: "reaction-arrow" as const,
+      arrowKind: "forward" as const,
+      x: 100,
+      y: 100,
+      width: 80,
+      height: 20,
+      rotation: 0,
+      style: {},
+      start: { kind: "point" as const, point: { x: 100, y: 110 } },
+      end: { kind: "point" as const, point: { x: 180, y: 110 } },
+      labels: []
+    };
+    const withArrow = applyPatches(base, [
+      { op: "addObject", pageId, object: arrow },
+      { op: "setSelection", pageId, objectIds: ["arrow_1"] }
+    ]);
+    const payload = createSelectionClipboardPayload(withArrow);
+    if (!payload) {
+      throw new Error("Expected arrow clipboard payload.");
+    }
+
+    const pasted = pasteSelectionClipboardPayload(withArrow, payload, {
+      x: payload.bounds.centerX + 100,
+      y: payload.bounds.centerY + 100
+    });
+    const pastedArrow = pasted.pages[0].objects.find(
+      (object): object is Extract<DocumentObject, { type: "reaction-arrow" }> =>
+        object.type === "reaction-arrow" && object.id !== "arrow_1"
+    );
+    if (!pastedArrow) {
+      throw new Error("Expected a pasted reaction arrow.");
+    }
+    // The frame and both point anchors shift by the same delta, so each anchor keeps its original
+    // offset from the frame (the renderer positions anchors relative to x/y).
+    expect(pastedArrow.start.point?.x).toBeCloseTo(arrow.start.point.x + (pastedArrow.x - arrow.x), 6);
+    expect(pastedArrow.start.point?.y).toBeCloseTo(arrow.start.point.y + (pastedArrow.y - arrow.y), 6);
+    expect((pastedArrow.start.point?.x ?? 0) - pastedArrow.x).toBeCloseTo(arrow.start.point.x - arrow.x, 6);
+    expect((pastedArrow.end.point?.x ?? 0) - pastedArrow.x).toBeCloseTo(arrow.end.point.x - arrow.x, 6);
+  });
+
+  it("deletes selected objects that live on a later page (#7)", () => {
+    const base = createPhase4Document("Multi Page Delete");
+    const firstPage = base.pages[0];
+    const graphic = {
+      id: "rect_p2",
+      type: "graphic" as const,
+      graphicKind: "rect" as const,
+      x: 50,
+      y: 50,
+      width: 40,
+      height: 30,
+      rotation: 0,
+      style: {},
+      data: {}
+    };
+    const twoPage = {
+      ...base,
+      pages: [firstPage, { ...firstPage, id: "page_002", objects: [graphic] }],
+      selection: { ...base.selection, pageId: "page_002", objectIds: ["rect_p2"] }
+    };
+
+    const deleted = deleteSelectedDocumentObjects(twoPage);
+    expect(deleted.pages[1].objects.find((object) => object.id === "rect_p2")).toBeUndefined();
+  });
+
+  it("aligns a selected group as one unit, preserving its internal layout (#15)", () => {
+    let document = insertNativeArtGraphicObject(createPhase4Document("Group Align"), { x: 120, y: 120 }, "tool.art.rect");
+    document = insertNativeArtGraphicObject(document, { x: 180, y: 160 }, "tool.art.circle");
+    const pageId = document.pages[0].id;
+    const artIds = document.pages[0].objects.filter((object) => object.type === "graphic").map((object) => object.id);
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [{ op: "setSelection", pageId, objectIds: artIds }]));
+    const groupId = grouped.selection.objectIds[0];
+    const childXById = (current: ChemDraftDocument) =>
+      new Map(artIds.map((id) => [id, current.pages[0].objects.find((object) => object.id === id)?.x ?? 0]));
+    const relativeBefore = (() => {
+      const positions = childXById(grouped);
+      return (positions.get(artIds[1]) ?? 0) - (positions.get(artIds[0]) ?? 0);
+    })();
+
+    const withFar = insertNativeArtGraphicObject(grouped, { x: 520, y: 320 }, "tool.art.line");
+    const farId = withFar.selection.objectIds[0];
+    const selected = applyPatches(withFar, [{ op: "setSelection", pageId, objectIds: [groupId, farId] }]);
+
+    const aligned = alignSelectedDocumentObjects(selected, "left");
+    const positionsAfter = childXById(aligned);
+    const relativeAfter = (positionsAfter.get(artIds[1]) ?? 0) - (positionsAfter.get(artIds[0]) ?? 0);
+    // The group moved as a whole: its children kept their relative spacing instead of collapsing to
+    // a single x (which is what aligning the expanded children individually would do).
+    expect(relativeAfter).toBeCloseTo(relativeBefore, 6);
+  });
+
+  it("applies toolbar color to a group's children, not the invisible group wrapper (#16)", () => {
+    let document = insertNativeArtGraphicObject(createPhase4Document("Group Color"), { x: 120, y: 120 }, "tool.art.rect");
+    document = insertNativeArtGraphicObject(document, { x: 200, y: 120 }, "tool.art.circle");
+    const pageId = document.pages[0].id;
+    const artIds = document.pages[0].objects.filter((object) => object.type === "graphic").map((object) => object.id);
+    const grouped = groupSelectedDocumentObjects(applyPatches(document, [{ op: "setSelection", pageId, objectIds: artIds }]));
+    const groupId = grouped.selection.objectIds[0];
+
+    const result = applyToolbarColorToSelection(grouped, "#1f5fbf", { objectIds: [groupId] });
+
+    expect(result.changed).toBe(true);
+    const children = result.document.pages[0].objects.filter(
+      (object): object is GraphicObject => object.type === "graphic"
+    );
+    expect(children).toHaveLength(2);
+    for (const child of children) {
+      expect(child.style.strokeColor?.toLowerCase()).toBe("#1f5fbf");
+    }
+    const group = result.document.pages[0].objects.find((object) => object.id === groupId);
+    expect((group?.style as Record<string, unknown> | undefined)?.strokeColor).toBeUndefined();
   });
 });

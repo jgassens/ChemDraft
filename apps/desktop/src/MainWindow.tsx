@@ -323,6 +323,7 @@ import {
   deleteGraphicObjectGradientStopAtIndexForSelection,
   reverseGraphicObjectGradientStopsForSelection,
   rotateGraphicObjectGradientStopsForSelection,
+  selectionClipboardPlainText,
   serializeSelectionClipboardPayload,
   swapGraphicObjectFillAndStroke,
   type GraphicStylePaintTarget,
@@ -958,7 +959,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.20.12.49-codex";
+const CURRENT_BUILD_STAMP = "6.20.17.30-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3386,14 +3387,23 @@ export function MainWindow({
     const rawPayload = await readClipboardPayload();
     const selectionPayload = rawPayload.textItems
       .map((item) => parseSelectionClipboardPayload(item.text))
-      .find((payload) => payload !== undefined) ??
-      selectionClipboardPayloadRef.current;
+      .find((payload) => payload !== undefined);
     if (selectionPayload) {
       applySelectionClipboardPayload(selectionPayload);
       return;
     }
 
-    applyDetectedClipboardPayload(inspectClipboardPayload(rawPayload));
+    const detectedPayload = inspectClipboardPayload(rawPayload);
+    if (detectedPayload.kind !== "empty") {
+      applyDetectedClipboardPayload(detectedPayload);
+      return;
+    }
+
+    // Only reuse the last in-app ChemDraft selection when the clipboard has nothing usable;
+    // otherwise the actual clipboard content above (e.g. external text/SMILES) wins.
+    if (selectionClipboardPayloadRef.current) {
+      applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+    }
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
@@ -4802,14 +4812,23 @@ export function MainWindow({
     };
 
     const handlePaste = (event: ClipboardEvent) => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target) || !event.clipboardData) {
+      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target)) {
+        return;
+      }
+
+      if (!event.clipboardData) {
+        // Some desktop WebView paste events arrive without populated clipboardData; read natively
+        // so keyboard paste of CDXML/SMILES/ChemDraft payloads still works.
+        if (isDesktopRuntime()) {
+          event.preventDefault();
+          void pasteClipboard();
+        }
         return;
       }
 
       const selectionPayload =
         parseSelectionClipboardPayload(event.clipboardData.getData(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)) ??
-        parseSelectionClipboardPayload(event.clipboardData.getData("text/plain")) ??
-        selectionClipboardPayloadRef.current;
+        parseSelectionClipboardPayload(event.clipboardData.getData("text/plain"));
       if (selectionPayload) {
         event.preventDefault();
         applySelectionClipboardPayload(selectionPayload);
@@ -4817,12 +4836,24 @@ export function MainWindow({
       }
 
       const detectedPayload = inspectClipboardPayload(clipboardPayloadFromDataTransfer(event.clipboardData));
-      if (detectedPayload.kind === "empty") {
+      if (detectedPayload.kind !== "empty") {
+        event.preventDefault();
+        applyDetectedClipboardPayload(detectedPayload);
         return;
       }
 
-      event.preventDefault();
-      applyDetectedClipboardPayload(detectedPayload);
+      // The clipboard event carried nothing usable. On desktop, read the native clipboard (the
+      // private ChemDraft flavor survives there); otherwise reuse the last in-app selection so an
+      // in-session copy still pastes, without overriding real external clipboard content above.
+      if (isDesktopRuntime()) {
+        event.preventDefault();
+        void pasteClipboard();
+        return;
+      }
+      if (selectionClipboardPayloadRef.current) {
+        event.preventDefault();
+        applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+      }
     };
 
     window.addEventListener("copy", handleCopy);
@@ -4833,7 +4864,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, deleteSelectionAfterClipboardCut]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, deleteSelectionAfterClipboardCut, pasteClipboard]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -5296,18 +5327,10 @@ export function MainWindow({
       if (!commandId) {
         return;
       }
+      // Copy/cut/paste fall through to the native clipboard events (handleCopy/handleCut/handlePaste),
+      // which read and write event.clipboardData synchronously. On desktop, handlePaste additionally
+      // falls back to the native Tauri clipboard read when the WebView paste event has no data.
       if (shouldLetSystemClipboardHandleCommand(commandId)) {
-        return;
-      }
-
-      // In the browser, let Cmd/Ctrl+V fall through to the native `paste` event
-      // (handlePaste reads event.clipboardData synchronously — the reliable,
-      // permission-free path). Intercepting it here and reading the async
-      // navigator.clipboard.readText() instead is fragile: it needs document
-      // focus + a clipboard-read permission and is blocked outright in Safari.
-      // The desktop (Tauri) runtime has no browser paste event, so it keeps
-      // routing Cmd+V through the command (→ Tauri clipboard invoke).
-      if (commandId === "clipboard.paste" && !isDesktopRuntime()) {
         return;
       }
 
@@ -13077,10 +13100,16 @@ export function selectionClipboardTextItems(
   payload: ChemDraftSelectionClipboardPayload
 ): ClipboardWriteTextItem[] {
   const text = serializeSelectionClipboardPayload(payload);
-  return [
-    { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text },
-    { type: "text/plain", text }
+  const items: ClipboardWriteTextItem[] = [
+    { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text }
   ];
+  // Publish a human-readable public flavor only when the selection has real text; never leak the
+  // selection JSON as text/plain to external apps.
+  const plainText = selectionClipboardPlainText(payload);
+  if (plainText.length > 0) {
+    items.push({ type: "text/plain", text: plainText });
+  }
+  return items;
 }
 
 export function selectionClipboardPayloadKey(payload: ChemDraftSelectionClipboardPayload): string {
@@ -15974,16 +16003,9 @@ function DocumentObjectView({
       return;
     }
 
-    if (commandKeyPressed && key === "v") {
-      event.preventDefault();
-      const editor = event.currentTarget;
-      void readClipboardPayload().then((payload) => {
-        const detectedPayload = inspectClipboardPayload(payload);
-        if (detectedPayload.kind === "plain-text") {
-          insertTextAtEditorSelection(editor, detectedPayload.text);
-        }
-      });
-    }
+    // Cmd/Ctrl+V is intentionally not intercepted here: preventing the default action would also
+    // cancel the native `paste` event that handleTextPaste relies on. Let it through so the editor's
+    // onPaste handler inserts clipboard text synchronously, without needing async-read permission.
   };
   const handleTextDoubleClick = (event: ObjectMouseEvent) => {
     if (object.type !== "text") {

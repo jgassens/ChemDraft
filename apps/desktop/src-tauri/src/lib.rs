@@ -35,6 +35,9 @@ const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+// Native (separate-window) toolset palettes are parked while the in-document toolbar chrome is the
+// shipping UI. The restore/sync plumbing is kept compiled and tested behind this flag so the feature
+// can be re-enabled without resurrecting deleted code; flip to `true` to bring the windows back.
 const RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP: bool = false;
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",

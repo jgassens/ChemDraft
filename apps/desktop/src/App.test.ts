@@ -81,6 +81,7 @@ import {
   selectDocumentObjectWithinGroup,
   selectDocumentObjects,
   selectionBounds,
+  selectionClipboardPlainText,
   setDocumentPageOrientation,
   setDocumentPageSize,
   tiltNativeMoleculeProjectedPlane,
@@ -844,11 +845,24 @@ describe("ChemDraft desktop shell", () => {
     if (!rotatedGraphic) {
       throw new Error("Expected rotated line graphic fixture.");
     }
-    const projectedStrokePoint = projectGraphicObjectPoint(
+    // The visible stroke is rotated about the object center, so the marquee must be placed at the
+    // rotated stroke position — matching how hit testing now projects, translates, and rotates.
+    const projectedBeforeRotation = projectGraphicObjectPoint(
       rotatedGraphic,
       { x: rotatedGraphic.x + 3, y: rotatedGraphic.y + 3 },
       { coordinateSpace: "page" }
     );
+    const rotationRad = (rotatedGraphic.rotation * Math.PI) / 180;
+    const rotationCenter = {
+      x: rotatedGraphic.x + rotatedGraphic.width / 2,
+      y: rotatedGraphic.y + rotatedGraphic.height / 2
+    };
+    const rotationDx = projectedBeforeRotation.x - rotationCenter.x;
+    const rotationDy = projectedBeforeRotation.y - rotationCenter.y;
+    const projectedStrokePoint = {
+      x: rotationCenter.x + rotationDx * Math.cos(rotationRad) - rotationDy * Math.sin(rotationRad),
+      y: rotationCenter.y + rotationDx * Math.sin(rotationRad) + rotationDy * Math.cos(rotationRad)
+    };
     const selection = selectionInSelectionRect(document.pages[0].objects, {
       x: projectedStrokePoint.x - 5,
       y: projectedStrokePoint.y - 5
@@ -1419,7 +1433,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
   });
 
-  it("copies ChemDraft selections as private and plain text clipboard flavors", () => {
+  it("copies a graphic-only ChemDraft selection with the payload in the private flavor only", () => {
     let document = insertNativeArtGraphicObject(createPhase4Document("Selection Clipboard"), { x: 120, y: 140 }, "tool.art.rect");
     document = insertNativeArtGraphicObject(document, { x: 220, y: 140 }, "tool.art.circle");
     const payload = createSelectionClipboardPayload(document);
@@ -1429,15 +1443,29 @@ describe("ChemDraft desktop shell", () => {
     }
 
     const items = selectionClipboardTextItems(payload);
-    expect(items.map((item) => item.type)).toEqual([
-      CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
-      "text/plain"
-    ]);
-    expect(items[0].text).toBe(items[1].text);
+    // A graphic-only selection has no human-readable text, so only the private flavor is written —
+    // the raw selection JSON is never published as public text/plain.
+    expect(items.map((item) => item.type)).toEqual([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]);
     expect(JSON.parse(items[0].text)).toMatchObject({
       kind: "chemdraft-selection",
       version: 1
     });
+  });
+
+  it("publishes human-readable text — not selection JSON — as the public text/plain flavor", () => {
+    const document = insertNativeTextObject(createPhase4Document("Text Clipboard"), { x: 120, y: 140 }, "Catalyst A");
+    const payload = createSelectionClipboardPayload(document);
+
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    expect(selectionClipboardPlainText(payload)).toBe("Catalyst A");
+
+    const items = selectionClipboardTextItems(payload);
+    const plain = items.find((item) => item.type === "text/plain");
+    expect(plain?.text).toBe("Catalyst A");
+    expect(plain?.text).not.toContain("chemdraft-selection");
   });
 
   it("offsets copied selection pastes and steps repeated pastes", () => {

@@ -942,6 +942,71 @@ describe("native document validation and serialization", () => {
     expect(migratedGraphic.data).not.toHaveProperty("arcAngleDegrees");
   });
 
+  it("preserves the sweep direction of legacy clockwise arcs", () => {
+    const graphic = {
+      id: "graphic_legacy_cw_arc",
+      type: "graphic",
+      x: 100,
+      y: 120,
+      width: 72,
+      height: 40,
+      rotation: 0,
+      graphicKind: "path",
+      style: {},
+      data: {
+        artPathKind: "arc",
+        arcStartRadians: Math.PI / 2,
+        arcSweepRadians: -Math.PI / 2
+      }
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const legacy = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ data: Record<string, unknown> }> }>;
+    };
+    const data = legacy.pages[0].objects[0].data;
+    data.arcAngleDegrees = -90;
+    delete data.arcSweepRadians;
+
+    const migratedGraphic = deserializeDocument(JSON.stringify(legacy)).pages[0].objects[0] as GraphicObject;
+
+    expect(migratedGraphic.data.arcSweepRadians).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
+  it("drops unknown legacy graphic style/data metadata instead of failing to open", () => {
+    const graphic = {
+      id: "graphic_legacy_meta",
+      type: "graphic",
+      x: 40,
+      y: 60,
+      width: 50,
+      height: 30,
+      rotation: 0,
+      graphicKind: "rect",
+      style: {},
+      data: {}
+    } satisfies GraphicObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: graphic },
+      { now: timestamp }
+    );
+    const legacy = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ style: Record<string, unknown>; data: Record<string, unknown> }> }>;
+    };
+    const legacyObject = legacy.pages[0].objects[0];
+    legacyObject.style.legacyOnlyStyleHint = "indigo";
+    legacyObject.data.legacyOnlyDataHint = { nested: true };
+
+    const migratedGraphic = deserializeDocument(JSON.stringify(legacy)).pages[0].objects[0] as GraphicObject;
+
+    expect(migratedGraphic.style).not.toHaveProperty("legacyOnlyStyleHint");
+    expect(migratedGraphic.data).not.toHaveProperty("legacyOnlyDataHint");
+  });
+
   it("reports validation issues for unsupported object shapes", () => {
     const document = createEmptyDocument({ now: timestamp });
     const result = validateDocument({

@@ -2964,13 +2964,9 @@ function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoin
   const localPoints = object.graphicKind === "line"
     ? graphicLineLocalPoints(object)
     : object.graphicKind === "path" ? graphicPathLocalSamplePoints(object) : [];
-  return localPoints.map((point) => {
-    const projected = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
-    return {
-      x: object.x + projected.x,
-      y: object.y + projected.y
-    };
-  });
+  // Project (tilt), translate to the page, and apply the object rotation so hit testing matches the
+  // visible rotated stroke instead of its pre-rotation position.
+  return localPoints.map((point) => graphicObjectLocalPointToPage(object, point));
 }
 
 function graphicPathSamplePoints(
@@ -3151,7 +3147,7 @@ function graphicObjectBooleanPagePoints(object: GraphicObject): {
     return { reason: localPoints.reason };
   }
 
-  const pagePoints = localPoints.points.map((point) => graphicObjectBooleanLocalPointToPage(object, point));
+  const pagePoints = localPoints.points.map((point) => graphicObjectLocalPointToPage(object, point));
   const cleanPoints = cleanNativeArtBooleanRingPoints(pagePoints);
   return cleanPoints.length >= 3 ? { points: cleanPoints } : { reason: "invalid-geometry" };
 }
@@ -3212,7 +3208,7 @@ function graphicObjectBooleanLocalPoints(object: GraphicObject): {
   return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
 }
 
-function graphicObjectBooleanLocalPointToPage(object: GraphicObject, point: NativeArtPoint): NativeArtPoint {
+function graphicObjectLocalPointToPage(object: GraphicObject, point: NativeArtPoint): NativeArtPoint {
   const projected = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
   const pagePoint = { x: object.x + projected.x, y: object.y + projected.y };
   const rotation = metadataNumber(object.rotation) ?? 0;
@@ -3930,7 +3926,7 @@ function nativeArtPolygonIntersectsRect(polygon: readonly NativeArtPoint[], rect
   return (
     corners.some((corner) => nativeArtPointInPolygon(corner, polygon)) ||
     polygon.some((point) => nativeArtPointInRect(point, rect)) ||
-    nativeArtPolygonVisibleEdges(polygon).some(([start, end]) => nativeArtLineIntersectsRect(start, end, rect))
+    nativeArtPolygonEdges(polygon).some(([start, end]) => nativeArtLineIntersectsRect(start, end, rect))
   );
 }
 
@@ -3959,7 +3955,7 @@ function nativeArtLineIntersectsPolygon(
   return (
     nativeArtPointInPolygon(start, polygon) ||
     nativeArtPointInPolygon(end, polygon) ||
-    nativeArtPolygonVisibleEdges(polygon).some(([edgeStart, edgeEnd]) =>
+    nativeArtPolygonEdges(polygon).some(([edgeStart, edgeEnd]) =>
       nativeArtSegmentsIntersect(start, end, edgeStart, edgeEnd)
     )
   );
@@ -3978,8 +3974,18 @@ function nativeArtRectCorners(rect: NativeArtBounds): NativeArtPoint[] {
   ];
 }
 
-function nativeArtPolygonVisibleEdges(polygon: readonly NativeArtPoint[]): Array<[NativeArtPoint, NativeArtPoint]> {
-  return polygon.slice(0, -1).map((point, index) => [point, polygon[index + 1]]);
+function nativeArtPolygonEdges(polygon: readonly NativeArtPoint[]): Array<[NativeArtPoint, NativeArtPoint]> {
+  const edges: Array<[NativeArtPoint, NativeArtPoint]> = polygon
+    .slice(0, -1)
+    .map((point, index) => [point, polygon[index + 1]]);
+  // Lasso/selection polygons render as a closed shape, so include the closing edge from the last
+  // sampled point back to the first; otherwise an object only crossing that edge is never selected.
+  const first = polygon[0];
+  const last = polygon[polygon.length - 1];
+  if (polygon.length >= 3 && first && last && (first.x !== last.x || first.y !== last.y)) {
+    edges.push([last, first]);
+  }
+  return edges;
 }
 
 function nativeArtSegmentsIntersect(
