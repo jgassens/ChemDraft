@@ -34,7 +34,7 @@ export interface ToolActivationResult {
   status: string;
 }
 
-const EDITOR_ADAPTER_UNAVAILABLE = "unavailable until an EditorAdapter is connected";
+const EDITOR_ADAPTER_UNAVAILABLE = "Requires an active structure editor";
 const artShapeUsageHint = usageHint("click canvas", "select object to edit", "Esc exits");
 const artPathUsageHint = usageHint("click canvas", "drag handles after selecting", "Esc exits");
 

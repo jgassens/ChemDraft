@@ -267,6 +267,26 @@ describe("graphic path direct editing interactions", () => {
     target.dispatchEvent(event);
   }
 
+  async function holdShiftForRotationHandles() {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "Shift",
+        shiftKey: true
+      }));
+    });
+  }
+
+  async function releaseShiftForRotationHandles() {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keyup", {
+        bubbles: true,
+        key: "Shift",
+        shiftKey: false
+      }));
+    });
+  }
+
   it("previews a line middle-handle drag below the object drag threshold", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Immediate Path Preview"),
@@ -873,8 +893,14 @@ describe("graphic path direct editing interactions", () => {
     await renderMainWindow(roundedRectDocument);
 
     expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
+    expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).toBeNull();
+    await holdShiftForRotationHandles();
     expect(container.querySelector('[data-selection-rotate-handle="true"]')).not.toBeNull();
     expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).not.toBeNull();
+    await releaseShiftForRotationHandles();
+    expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
+    expect(container.querySelector('[data-selection-tilt3d-handle="true"]')).toBeNull();
     expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).not.toBeNull();
 
     await act(async () => {
@@ -915,6 +941,8 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)?.dataset.graphicInteractionMode)
       .toBe("object-transform");
     expect(container.querySelector('[data-art-transform-frame="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-selection-rotate-handle="true"]')).toBeNull();
+    await holdShiftForRotationHandles();
     expect(container.querySelector('[data-selection-rotate-handle="true"]')).not.toBeNull();
     expect(container.querySelector("[data-graphic-corner-radius-handle=\"true\"]")).toBeNull();
   });

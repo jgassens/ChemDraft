@@ -7420,6 +7420,102 @@ describe("Phase 4 document workflow", () => {
     expectNoDuplicateAtomPositions(tetracene);
   });
 
+  it("fuses benzene onto an exposed terminal worm bond instead of closing inward as a no-op", () => {
+    let document = insertNativeTemplateMolecule(createPhase4Document("Benzene Worm"), { x: 400, y: 360 }, "benzene");
+    const first = selectedMolecule(document);
+    document = applyNativeTemplateToolAtTarget(
+      document,
+      moleculeBondTarget(first, "bond_001"),
+      moleculeBondMidpoint(first, "bond_001"),
+      "benzene"
+    );
+    for (let index = 0; index < 3; index += 1) {
+      const molecule = selectedMolecule(document);
+      const bondId = rightmostSixMemberRingPerimeterBondId(molecule);
+      document = applyNativeTemplateToolAtTarget(document, moleculeBondTarget(molecule, bondId), moleculeBondMidpoint(molecule, bondId), "benzene");
+    }
+
+    const molecule = selectedMolecule(document);
+    const targetBondId = "bond_022";
+    const targetBond = moleculeBond(molecule, targetBondId);
+    expect(atomDegree(molecule, targetBond.fromAtomId)).toBe(3);
+    expect(atomDegree(molecule, targetBond.toAtomId)).toBe(2);
+
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: moleculeBondMidpoint(molecule, targetBondId), target: moleculeBondTarget(molecule, targetBondId) },
+      "benzene"
+    );
+    expect(plan?.kind).toBe("fused-closure");
+    expect(plan?.addedAtomIds).toHaveLength(3);
+    expect(plan?.addedBondIds.length).toBeGreaterThan(0);
+    expect(nativeMoleculeInvalidAtomStates(plan!.molecule)).toEqual([]);
+
+    const extended = selectedMolecule(applyNativeTemplatePlacementPlan(document, plan!));
+    expect(extended.atoms.length).toBe(molecule.atoms.length + 3);
+    expect(extended.bonds.length).toBeGreaterThan(molecule.bonds.length);
+    expectNoDuplicateAtomPositions(extended);
+  });
+
+  it("grows benzene from a legal bay bond even when the first side candidate is degenerate", () => {
+    const bondLength = nativeBondLengthPx;
+    const origin = { x: 360, y: 320 };
+    const targetFrom = { id: "atom_001", element: "C", x: origin.x, y: origin.y, formalCharge: 0 };
+    const targetTo = { id: "atom_002", element: "C", x: origin.x + bondLength, y: origin.y, formalCharge: 0 };
+    const degenerateClosure = {
+      id: "atom_003",
+      element: "C",
+      x: origin.x + bondLength * 1.5,
+      y: origin.y - bondLength * Math.sqrt(3) / 2,
+      formalCharge: 0
+    };
+    const crowdedScaffold = [
+      { id: "atom_004", element: "C", x: origin.x + bondLength * 1.5, y: origin.y + bondLength * 4, formalCharge: 0 },
+      { id: "atom_005", element: "C", x: origin.x + bondLength * 2.5, y: origin.y + bondLength * 4.25, formalCharge: 0 },
+      { id: "atom_006", element: "C", x: origin.x + bondLength * 0.5, y: origin.y + bondLength * 4.5, formalCharge: 0 }
+    ];
+    const molecule = {
+      id: "mol_bay",
+      type: "molecule",
+      x: origin.x,
+      y: origin.y,
+      width: bondLength * 3,
+      height: bondLength * 5,
+      rotation: 0,
+      style: {},
+      structureFormat: "smiles",
+      structure: "C",
+      atoms: [targetFrom, targetTo, degenerateClosure, ...crowdedScaffold],
+      bonds: [
+        { id: "bond_target", fromAtomId: targetFrom.id, toAtomId: targetTo.id, order: "single" },
+        { id: "bond_scaffold_1", fromAtomId: degenerateClosure.id, toAtomId: "atom_004", order: "single" },
+        { id: "bond_scaffold_2", fromAtomId: degenerateClosure.id, toAtomId: "atom_005", order: "single" },
+        { id: "bond_scaffold_3", fromAtomId: degenerateClosure.id, toAtomId: "atom_006", order: "single" }
+      ],
+      superatoms: [],
+      rGroups: []
+    } satisfies MoleculeObject;
+    const base = createPhase4Document("Bay Bond Benzene Growth");
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: moleculeBondMidpoint(molecule, "bond_target"), target: moleculeBondTarget(molecule, "bond_target") },
+      "benzene"
+    );
+
+    expect(plan?.kind).toBe("fuse-bond");
+    expect(plan?.addedAtomIds).toHaveLength(4);
+    expect(plan?.addedBondIds.length).toBeGreaterThan(0);
+    expect(nativeMoleculeInvalidAtomStates(plan!.molecule)).toEqual([]);
+    const addedAtoms = plan!.molecule.atoms.filter((atom) => plan!.addedAtomIds.includes(atom.id));
+    const addedCentroidY = addedAtoms.reduce((sum, atom) => sum + atom.y, 0) / addedAtoms.length;
+    expect(addedCentroidY).toBeGreaterThan(origin.y);
+  });
+
   it("plans a standalone ring (no target) and applies it identically to direct insertion", () => {
     const document = createPhase4Document("Plan Standalone");
     const point = { x: 260, y: 260 };

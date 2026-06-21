@@ -1999,7 +1999,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("onRotationInputChange={handleRotationInputChange}");
     expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
     expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
-    expect(mainWindowSource).toContain("aria-label=\"Restore rotation home\"");
+    expect(mainWindowSource).toContain("aria-label={input.kind === \"z\" ? \"Set Z rotation to 0 degrees\" : \"Set X/Y rotation to 0 degrees\"}");
+    expect(mainWindowSource).toContain("title={input.kind === \"z\" ? \"Set Z rotation to 0 degrees\" : \"Set X/Y rotation to 0 degrees\"}");
     expect(mainWindowSource).toContain('rotationInputHomeDraftDegrees("z")');
     expect(mainWindowSource).toContain('draftXDegrees: "0", draftYDegrees: "0"');
     expect(mainWindowSource).toContain("aria-label=\"Z rotation degrees\"");
@@ -2200,6 +2201,11 @@ describe("ChemDraft desktop shell", () => {
       selectedGraphicObjects: selectedGraphicObjectsForArtInspector(rectDocument),
       requestedPaintTarget: "fill"
     });
+    const rectStrokeArtStyle = createArtInspectorModel({
+      document: rectDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(rectDocument),
+      requestedPaintTarget: "stroke"
+    });
     const lineDocument = insertNativeArtGraphicObject(
       createPhase4Document("Art Inspector Line"),
       { x: 220, y: 180 },
@@ -2275,6 +2281,17 @@ describe("ChemDraft desktop shell", () => {
       currentObjectColor: "#111111",
       currentArtStyleTarget: "fill",
       currentArtStyle: rectArtStyle,
+      onInvoke: () => undefined
+    }));
+    const rectStrokeInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
+      groups: artGroups,
+      activeTool: "tool.select",
+      orientation: "horizontal",
+      title: "ChemDraft floating Art Toolbar",
+      showArtStyleControls: true,
+      currentObjectColor: "#111111",
+      currentArtStyleTarget: "stroke",
+      currentArtStyle: rectStrokeArtStyle,
       onInvoke: () => undefined
     }));
     const lineInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
@@ -2422,6 +2439,8 @@ describe("ChemDraft desktop shell", () => {
     expect(rectInspectorMarkup).toContain('data-art-effect-button="shadow"');
     expect(rectInspectorMarkup).toContain('data-art-effect-button="glow"');
     expect(rectInspectorMarkup).toContain('data-art-effect-button="sketch"');
+    expect(rectInspectorMarkup).toMatch(/class="art-inspector-row art-inspector-main-row"[\s\S]*data-art-effect-button="sketch"[\s\S]*aria-label="Stroke width"/);
+    expect(rectInspectorMarkup).not.toMatch(/class="art-inspector-row art-inspector-stroke-row"[\s\S]*aria-label="Stroke width"/);
     expect(rectInspectorMarkup).not.toContain('data-art-effect-controls=');
     expect(effectInspectorMarkup).toContain('data-art-effect-button="glow"');
     expect(effectInspectorMarkup).toContain('data-art-effect-controls="glow"');
@@ -2437,8 +2456,11 @@ describe("ChemDraft desktop shell", () => {
     expect(rectInspectorMarkup).toContain("Obj");
     expect(rectInspectorMarkup).toContain("Fill");
     expect(rectInspectorMarkup).toContain("Stroke");
-    expect(rectInspectorMarkup).toContain("Width");
-    expect(rectInspectorMarkup).toContain("Dash");
+    expect(rectInspectorMarkup).not.toContain('class="art-stroke-control-label">Width</span>');
+    expect(rectInspectorMarkup).not.toContain('aria-label="Dash pattern"');
+    expect(rectStrokeInspectorMarkup).toMatch(/class="art-inspector-row art-inspector-main-row"[\s\S]*class="toolbar-color-trigger-label">Stroke<\/span>[\s\S]*aria-label="Dash pattern"[\s\S]*aria-label="No stroke"/);
+    expect(rectStrokeInspectorMarkup).not.toContain('class="art-stroke-control-label">Dash</span>');
+    expect(rectStrokeInspectorMarkup).not.toMatch(/class="art-inspector-row art-inspector-stroke-row"[\s\S]*aria-label="Dash pattern"/);
     expect(rectInspectorMarkup).not.toContain("Corners");
     expect(rectInspectorMarkup).not.toContain("Line ends");
     expect(gradientInspectorMarkup).toContain('data-art-gradient-controls="fill"');
@@ -2617,6 +2639,7 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("layout.duplicate") ?? []]).toEqual(["Art_Bring_Forward"]);
     expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
     expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
+    expect([...assetNamesByCommandId.get(structureSpin3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
   });
 
   it("keeps sparse floating toolsets compact", () => {
@@ -2806,6 +2829,8 @@ describe("ChemDraft desktop shell", () => {
     expect(toolCommands.some((command) => command.assetName === "Custom_Arrow_Equilibrium")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Flip_Horizontal")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Structure_Cleanup")).toBe(true);
+    expect(toolCommands.some((command) => command.assetName === "Custom_Spin_3D")).toBe(true);
+    expect(toolCommands.some((command) => command.assetName === "Custom_Structure_Cleanup_3D")).toBe(true);
     expect(toolCommands.some((command) => command.id === structureCleanup3dCommandId)).toBe(true);
   });
 
@@ -2813,13 +2838,14 @@ describe("ChemDraft desktop shell", () => {
     const bondCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.bond");
     const wedgeCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.wedgeBond");
     const cleanupCommand = getToolsetCommandSpecs().find((command) => command.id === structureCleanupCommandId);
-    if (!bondCommand || !wedgeCommand || !cleanupCommand) {
+    const pOrbitalCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.pOrbital");
+    if (!bondCommand || !wedgeCommand || !cleanupCommand || !pOrbitalCommand) {
       throw new Error("Expected toolbar commands.");
     }
 
     const markup = renderToStaticMarkup(
       createElement(ToolPalette, {
-        groups: [[bondCommand, wedgeCommand, cleanupCommand]],
+        groups: [[bondCommand, wedgeCommand, cleanupCommand, pOrbitalCommand]],
         mode: "floating",
         orientation: "horizontal",
         onInvoke: () => undefined
@@ -2828,6 +2854,7 @@ describe("ChemDraft desktop shell", () => {
     const bondMarkup = buttonMarkupForCommand(markup, "tool.bond");
     const wedgeMarkup = buttonMarkupForCommand(markup, "tool.wedgeBond");
     const cleanupMarkup = buttonMarkupForCommand(markup, structureCleanupCommandId);
+    const pOrbitalMarkup = buttonMarkupForCommand(markup, "tool.pOrbital");
     const verticalMarkup = renderToStaticMarkup(
       createElement(ToolPalette, { groups: [[bondCommand]], onInvoke: () => undefined })
     );
@@ -2841,12 +2868,17 @@ describe("ChemDraft desktop shell", () => {
     expect(wedgeMarkup).toContain('data-shortcut-label="No shortcut"');
     expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond (No shortcut)"');
     expect(wedgeMarkup).toContain(">Solid Wedge Bond (No shortcut)</span>");
+    expect(pOrbitalMarkup).toContain('data-shortcut-label="No shortcut"');
+    expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool: Requires an active structure editor"');
+    expect(pOrbitalMarkup).toContain(">p Orbital Tool: Requires an active structure editor</span>");
+    expect(pOrbitalMarkup).not.toContain("EditorAdapter");
+    expect(pOrbitalMarkup).not.toContain("p Orbital Tool (No shortcut)");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');
     expect(verticalBondMarkup).not.toContain('title="Single Bond (M)"');
     expect(bondMarkup).not.toContain("with-shortcut");
     expect(markup).not.toContain('class="shortcut"');
     expect(markup).toContain('class="icon-button-shell"');
-    expect(markup).toContain('data-tooltip-delay-ms="650"');
+    expect(markup).toContain('data-tooltip-delay-ms="500"');
     expect(markup).toContain('data-tooltip-owner-id="');
     expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
@@ -2859,15 +2891,21 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain(".tool-palette.horizontal .tool-tooltip");
     expect(appCss).toContain(".tool-palette.vertical .tool-tooltip");
     expect(appCss).toContain(".tool-palette.floating.horizontal.main-style-palette .tool-tooltip");
+    expect(appCss).toMatch(/\.web-floating-palette \{[\s\S]*overflow: visible;/);
+    expect(appCss).toMatch(/\.tool-palette\.horizontal \.tool-tooltip,[\s\S]*top: calc\(100% \+ 7px\);[\s\S]*bottom: auto;/);
+    expect(appCss).not.toMatch(/\.tool-palette\.horizontal \.tool-tooltip,[\s\S]*bottom: calc\(100% \+ 6px\);/);
+    expect(appCss).toContain("top: calc(200% + 8px);");
     expect(appCss).toContain("overflow: visible;");
     expect(appCss).not.toContain("animation: cd-tooltip-auto-hide");
     expect(appCss).not.toContain("transition-delay: 450ms;");
     expect(appCss).toContain("white-space: normal;");
     expect(appCss).toContain("overflow-wrap: anywhere;");
     expect(appCss).toContain('.icon-button[data-command-id="structure.cleanup2d"] .tool-icon-image');
-    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 650");
+    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 500");
     expect(toolPaletteSource).toContain("pendingTooltipIdRef.current === tooltipId");
     expect(toolPaletteSource).toContain("onClickCapture={() => onTooltipLeave?.()}");
+    expect(toolPaletteSource).not.toContain("onMouseEnter={() => onTooltipEnter?.()}");
+    expect(toolPaletteSource).not.toContain("onMouseLeave={() => onTooltipLeave?.()}");
     expect(toolPaletteSource).not.toContain("setTimeout(clearVisibleTooltip, 3200)");
   });
 
@@ -2903,9 +2941,16 @@ describe("ChemDraft desktop shell", () => {
       shortcutLabel: "⇧⌘K",
       category: "structure"
     });
+    expect(assetCommands.find((command) => command.id === structureSpin3dCommandId)).toMatchObject({
+      id: structureSpin3dCommandId,
+      title: "Spin 3D",
+      assetName: "Custom_Spin_3D",
+      category: "structure"
+    });
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
       id: structureCleanup3dCommandId,
       title: "3D Cleanup",
+      assetName: "Custom_Structure_Cleanup_3D",
       category: "structure"
     });
     expect(assetCommands.find((command) => command.id === structureRotate3dCommandId)).toBeUndefined();
@@ -3034,11 +3079,11 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-bond-selection-connectors="true"');
     expect(markup).toContain("native-whole-selection-atom");
     expect(markup).toContain('data-whole-molecule-selection="true"');
-    expect(markup).toContain('data-selection-rotate-handle="true"');
-    expect(markup).toContain('data-rotate-icon="double-headed"');
+    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain('data-rotate-icon="double-headed"');
     expect(markup).not.toContain('data-rotate-readout="true"');
-    expect(markup).toContain('data-selection-tilt3d-handle="true"');
-    expect(markup).toContain('data-tilt3d-icon="circular-arrow"');
+    expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
+    expect(markup).not.toContain('data-tilt3d-icon="circular-arrow"');
     expect(markup).not.toContain('data-tilt3d-readout="true"');
     expect(markup.match(/data-object-resize-corner=/g) ?? []).toHaveLength(4);
     expect(markup).toContain('data-object-resize-corner="top-left"');
@@ -3047,8 +3092,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-object-resize-corner="bottom-right"');
     expect(markup).not.toContain('data-object-resize-readout="true"');
     expect(markup).not.toContain("data-text-resize-edge");
-    expect(markup).toContain("Rotate selected molecule");
-    expect(markup).toContain("3D rotate selected molecule");
+    expect(markup).not.toContain("Rotate selected molecule");
+    expect(markup).not.toContain("3D rotate selected molecule");
     expect(markup).toContain("native-bond-hit-target");
     expect(markup).toContain("native-atom-hit-target");
     expect(markup).toContain("Molecule C2H6");
@@ -3092,8 +3137,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("art-object-transform-frame");
     expect(markup).toContain("object-resize-handle");
     expect(markup).toContain('data-object-resize-corner="top-left"');
-    expect(markup).toContain("object-rotate-handle");
-    expect(markup).toContain("object-tilt3d-handle");
+    expect(markup).not.toContain("object-rotate-handle");
+    expect(markup).not.toContain("object-tilt3d-handle");
     expect(markup).not.toContain("art-object-tilt-handle");
     expect(markup).not.toContain("native-molecule-transform-frame");
     expect(markup).not.toContain("molecule-resize-handle");
@@ -3648,7 +3693,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("data-object-resize-corner");
   });
 
-  it("keeps lasso selected objects highlighted with transform chrome as privileged targets", () => {
+  it("keeps lasso selected objects highlighted with resize chrome as privileged targets", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Lasso Tool Selection Chrome"), { x: 200, y: 220 });
     const markup = renderToStaticMarkup(
       createElement(MainWindow, {
@@ -3663,8 +3708,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-active-tool-kind="selection"');
     expect(markup).toContain("native-molecule-selection-blob");
     expect(markup).toContain('data-whole-molecule-selection="true"');
-    expect(markup).toContain('data-selection-rotate-handle="true"');
-    expect(markup).toContain('data-selection-tilt3d-handle="true"');
+    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup.match(/data-object-resize-corner=/g) ?? []).toHaveLength(4);
   });
 
@@ -3739,7 +3784,7 @@ describe("ChemDraft desktop shell", () => {
     })).toBe(true);
   });
 
-  it("renders selected text objects with resize and rotate handles", () => {
+  it("renders selected text objects with resize handles while rotate is Shift-gated", () => {
     const document = insertNativeTextObject(
       createPhase4Document("Text Box Render"),
       { x: 160, y: 180 },
@@ -3759,9 +3804,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-text-resize-edge="right"');
     expect(markup).toContain('data-text-resize-edge="top"');
     expect(markup).toContain('data-text-resize-edge="bottom"');
-    expect(markup).toContain('aria-label="Rotate selected text box"');
-    expect(markup).toContain('data-selection-rotate-handle="true"');
-    expect(markup).toContain('data-rotate-icon="double-headed"');
+    expect(markup).not.toContain('aria-label="Rotate selected text box"');
+    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).not.toContain('data-rotate-icon="double-headed"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).toContain("reaction note");
   });

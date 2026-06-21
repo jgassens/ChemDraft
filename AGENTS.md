@@ -1,6 +1,6 @@
 # Agent Instructions for ChemDraft
 
-**Current Build**: 6.20.17.30-codex
+**Current Build**: 6.21.7.49-codex
 
 > [!IMPORTANT]
 > **Agent Instruction:** Every time you finish a slice of work or make significant changes, you MUST update the `**Current Build**` stamp above AND the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx` (in the viewport's bottom right corner).

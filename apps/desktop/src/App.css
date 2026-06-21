@@ -713,7 +713,7 @@ textarea:focus-visible,
 
 .tool-palette.horizontal.main-style-palette .tool-tooltip,
 .tool-palette.floating.horizontal.main-style-palette .tool-tooltip {
-  top: calc(100% + 7px);
+  top: calc(200% + 8px);
   bottom: auto;
   transform: translate(-50%, -2px);
 }
@@ -1183,10 +1183,14 @@ textarea:focus-visible,
 }
 
 .art-stroke-width-control {
+  grid-template-rows: 28px;
+  align-self: center;
   width: 70px;
 }
 
 .art-stroke-dash-control {
+  grid-template-rows: 28px;
+  align-self: center;
   width: 96px;
 }
 
@@ -2039,9 +2043,9 @@ textarea:focus-visible,
 
 .tool-palette.horizontal .tool-tooltip,
 .tool-palette.floating.horizontal .tool-tooltip {
-  top: auto;
-  bottom: calc(100% + 6px);
-  transform: translate(-50%, 2px);
+  top: calc(100% + 7px);
+  bottom: auto;
+  transform: translate(-50%, -2px);
 }
 
 .tool-palette.horizontal .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip,
@@ -2052,7 +2056,7 @@ textarea:focus-visible,
 .tool-palette.horizontal .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip,
 .tool-palette.floating.horizontal .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip {
   left: 0;
-  transform: translate(0, 2px);
+  transform: translate(0, -2px);
 }
 
 .tool-palette.horizontal.main-style-palette .tool-group:first-of-type .icon-button-shell:first-child .tool-tooltip,
@@ -2069,7 +2073,7 @@ textarea:focus-visible,
 .tool-palette.floating.horizontal .tool-group:last-of-type .icon-button-shell:last-child .tool-tooltip {
   right: 0;
   left: auto;
-  transform: translate(0, 2px);
+  transform: translate(0, -2px);
 }
 
 .tool-palette.horizontal.main-style-palette .tool-group:last-of-type .icon-button-shell:last-child .tool-tooltip,

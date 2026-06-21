@@ -959,7 +959,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.20.17.30-codex";
+const CURRENT_BUILD_STAMP = "6.21.7.49-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1234,6 +1234,7 @@ export function MainWindow({
   const [objectRotateReadout, setObjectRotateReadout] = useState<ObjectRotateReadoutState | undefined>();
   const [projectedPlaneTiltReadout, setProjectedPlaneTiltReadout] = useState<ProjectedPlaneTiltReadoutState | undefined>();
   const [rotationInput, setRotationInput] = useState<RotationInputState | undefined>();
+  const [transformRotationHandlesVisible, setTransformRotationHandlesVisible] = useState(false);
   const [objectResizeInput, setObjectResizeInput] = useState<ObjectResizeInputState | undefined>();
   const [objectResizeReadout, setObjectResizeReadout] = useState<ObjectResizeReadoutState | undefined>();
   const [artTransformQaDraft, setArtTransformQaDraft] = useState<ArtTransformQaDraft>({
@@ -2337,11 +2338,42 @@ export function MainWindow({
     }
   }, []);
 
-  const endSpin3d = useCallback((message?: string) => {
-    if (!spin3dStateRef.current) return;
-    applySpin(undefined);
-    if (message) setStatus(message);
+  const cancelSpin3dSession = useCallback((
+    message?: string,
+    options: { clearModelCache?: boolean } = {}
+  ): boolean => {
+    const hadActiveSpin = spin3dStateRef.current !== undefined;
+    const pendingSpin = spin3dPendingRef.current;
+
+    if (pendingSpin) {
+      pendingSpin.cancel();
+      spin3dPendingRef.current = undefined;
+      spin3dRequestRef.current += 1;
+    }
+
+    if (hadActiveSpin) {
+      applySpin(undefined);
+    }
+
+    if (options.clearModelCache) {
+      spin3dModelCacheRef.current.clear();
+    }
+
+    const cancelled = hadActiveSpin || pendingSpin !== undefined;
+    if (cancelled) {
+      lastSpinPrefetchRef.current = undefined;
+      if (message) setStatus(message);
+    }
+    return cancelled;
   }, [applySpin]);
+
+  useEffect(() => {
+    if (!spin3dState) return;
+    const spinObject = findDocumentObject(document, spin3dState.objectId);
+    if (spinObject?.type !== "molecule") {
+      applySpin(undefined);
+    }
+  }, [applySpin, document, spin3dState]);
 
   // Flatten the current spin orientation into the document as ONE undo step. On
   // refusal the document is untouched and the overlay stays so the user can re-spin.
@@ -3927,6 +3959,10 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
+    if (cancelSpin3dSession("Spin cancelled")) {
+      return;
+    }
+
     const currentHistory = documentHistoryRef.current;
     const nextHistory = direction === "undo"
       ? undoDocumentHistory(currentHistory)
@@ -3955,9 +3991,10 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setLastAnalysis(null);
     setStatus(direction === "undo" ? "Undid last document change" : "Redid document change");
-  }, [assignHoveredNativeDeleteTarget, installDocumentHistory]);
+  }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession, installDocumentHistory]);
 
-  const clearDocumentInteractionState = useCallback(() => {
+  const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
+    cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveTextSelection(undefined);
@@ -3970,7 +4007,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     setLastAnalysis(null);
-  }, [assignHoveredNativeDeleteTarget]);
+  }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession]);
 
   const openDocumentContents = useCallback((
     contents: string,
@@ -3990,7 +4027,7 @@ export function MainWindow({
       dirty: false,
       lastSavedPayloadHash: sha256Utf8Hex(contents)
     });
-    clearDocumentInteractionState();
+    clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
     const openStatus = formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
     setStatus(fitRecommendation
@@ -4293,14 +4330,8 @@ export function MainWindow({
       register(action, async () => {
         if (action.id === "document.new") {
           resetDocumentHistory(createPhase4Document());
-          setActiveEditorObjectId(undefined);
-          setActiveTextEditObjectId(undefined);
-          setActiveAtomLabelEdit(undefined);
-          setHoveredNativeAtom(undefined);
-          assignHoveredNativeDeleteTarget(undefined);
-          setFreeformNativeBond(undefined);
+          clearDocumentInteractionState({ clearSpin3dModelCache: true });
           setPageFitPrompt(undefined);
-          setLastAnalysis(null);
           setStatus("Blank native document");
         }
         if (action.id === "edit.undo") {
@@ -4672,6 +4703,7 @@ export function MainWindow({
     applyTextStyleCommand,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
+    clearDocumentInteractionState,
     cleanUpSelectedStructure3d,
     cleanUpSelectedStructure,
     startSpin3d,
@@ -5356,30 +5388,58 @@ export function MainWindow({
     syncPathArtPreview
   ]);
 
+  useEffect(() => {
+    const showRotationHandles = () => setTransformRotationHandlesVisible(true);
+    const hideRotationHandles = () => setTransformRotationHandlesVisible(false);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Shift" || event.shiftKey) {
+        showRotationHandles();
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Shift" || !event.shiftKey) {
+        hideRotationHandles();
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (window.document.visibilityState !== "visible") {
+        hideRotationHandles();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", hideRotationHandles);
+    window.document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", hideRotationHandles);
+      window.document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
   // Esc cancels an active 3D spin (transient; never touched the document) — or,
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (spin3dStateRef.current) {
-        event.preventDefault();
-        event.stopPropagation();
-        endSpin3d("Spin cancelled");
-        return;
-      }
-      const pendingSpin = spin3dPendingRef.current;
-      if (pendingSpin) {
-        event.preventDefault();
-        event.stopPropagation();
-        pendingSpin.cancel();
-        spin3dPendingRef.current = undefined;
-        spin3dRequestRef.current += 1; // invalidate late results from the dropped job
-        setStatus("3D generation cancelled");
-      }
-    };
-    window.addEventListener("keydown", handleSpinEscape, { capture: true });
-    return () => window.removeEventListener("keydown", handleSpinEscape, { capture: true });
-  }, [endSpin3d]);
+    if (spin3dStateRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelSpin3dSession("Spin cancelled");
+      return;
+    }
+    const pendingSpin = spin3dPendingRef.current;
+    if (pendingSpin) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelSpin3dSession("3D generation cancelled");
+    }
+  };
+  window.addEventListener("keydown", handleSpinEscape, { capture: true });
+  return () => window.removeEventListener("keydown", handleSpinEscape, { capture: true });
+  }, [cancelSpin3dSession]);
 
   useEffect(() => {
     if (!effectiveNativePalette) {
@@ -9053,7 +9113,7 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
-    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, "rotate-z", event)) {
+    if (object && isTransformHandleSecondPress(objectId, "rotate-z", event)) {
       openObjectRotateInput(objectId);
       return;
     }
@@ -9211,7 +9271,7 @@ export function MainWindow({
       setStatus("X/Y rotate is disabled for freehand art while transform previews are optimized");
       return;
     }
-    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, "rotate-xy", event)) {
+    if (object && isTransformHandleSecondPress(objectId, "rotate-xy", event)) {
       openProjectedPlaneTiltInput(objectId);
       return;
     }
@@ -10670,6 +10730,10 @@ export function MainWindow({
     waitForAgentIdle
   ]);
 
+  const activeSpin3dState = spin3dState && findDocumentObject(document, spin3dState.objectId)?.type === "molecule"
+    ? spin3dState
+    : undefined;
+
   return (
     <main
       className={["app-shell", effectiveNativePalette ? "native-shell" : "web-shell"].join(" ")}
@@ -10789,7 +10853,7 @@ export function MainWindow({
                   pageHeight={activePage.height}
                   pageWidth={activePage.width}
                   plan={pageSvgRenderPlan}
-                  spinningObjectId={spin3dState?.objectId}
+                  spinningObjectId={activeSpin3dState?.objectId}
                   onContextMenu={handleObjectContextMenu}
                   onPointerCancel={handleObjectPointerCancel}
                   onPointerDown={handleObjectPointerDown}
@@ -10930,7 +10994,7 @@ export function MainWindow({
                   // While this molecule is being spun in 3D, its real 2D drawing is faded
                   // to a faint ghost (the live overlay paints on top). The selection box
                   // and rotate handle are separate chrome and stay fully visible.
-                  const spinning = spin3dState?.objectId === object.id;
+                  const spinning = activeSpin3dState?.objectId === object.id;
                   const objectRenderKey = object.type === "molecule"
                     ? `${object.id}:${selected ? "selected" : "idle"}:${inGroupSelection ? "grouped" : "solo"}:${nativeSelectionRenderKey(selectedPart)}:${spinning ? "spinning" : "static"}`
                     : object.id;
@@ -10981,6 +11045,7 @@ export function MainWindow({
                         projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
                       }
                       rotationInput={rotationInput?.objectId === object.id ? rotationInput : undefined}
+                      rotationHandlesVisible={transformRotationHandlesVisible}
                       resizeReadout={objectResizeReadout?.objectId === object.id ? objectResizeReadout : undefined}
                       resizeInput={objectResizeInput?.objectId === object.id ? objectResizeInput : undefined}
                       objectTransformPreview={
@@ -11029,13 +11094,14 @@ export function MainWindow({
                   <GroupSelectionOverlay
                     bounds={groupSelectionBounds}
                     canProjectedPlaneTilt={groupProjectedPlaneTiltObjectIds.length > 1}
+                    rotationHandlesVisible={transformRotationHandlesVisible}
                     onProjectedPlaneTiltStart={handleGroupProjectedPlaneTiltPointerDown}
                     onRotateStart={handleGroupRotatePointerDown}
                     onResizeStart={handleGroupResizePointerDown}
                   />
                 ) : null}
-                {spin3dState ? (() => {
-                  const spinObject = activePage.objects.find((object) => object.id === spin3dState.objectId);
+                {activeSpin3dState ? (() => {
+                  const spinObject = activePage.objects.find((object) => object.id === activeSpin3dState.objectId);
                   // The overlay renders with the molecule's OWN drawing style so the
                   // spinning structure is visually the same structure as the drawing.
                   const spinStyle = nativeDrawingStyleFromObjectStyle(
@@ -11043,7 +11109,7 @@ export function MainWindow({
                   );
                   return (
                     <SpinOverlay
-                      state={spin3dState}
+                      state={activeSpin3dState}
                       pageWidth={activePage.width}
                       pageHeight={activePage.height}
                       drawingStyle={spinStyle}
@@ -13656,6 +13722,7 @@ function SpinOverlay({
   return (
     <svg
       aria-hidden="true"
+      data-spin3d-overlay="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}
       style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, cursor: "grab", touchAction: "none" }}
       onPointerDown={onPointerDown}
@@ -13903,12 +13970,14 @@ export function SelectionLassoOverlay({
 function GroupSelectionOverlay({
   bounds,
   canProjectedPlaneTilt,
+  rotationHandlesVisible,
   onProjectedPlaneTiltStart,
   onRotateStart,
   onResizeStart
 }: {
   bounds: SelectionBounds;
   canProjectedPlaneTilt: boolean;
+  rotationHandlesVisible: boolean;
   onProjectedPlaneTiltStart(event: PointerEvent<HTMLButtonElement>): void;
   onRotateStart(event: PointerEvent<HTMLButtonElement>): void;
   onResizeStart(corner: ObjectResizeCorner): (event: PointerEvent<HTMLButtonElement>) => void;
@@ -13933,18 +14002,20 @@ function GroupSelectionOverlay({
         }}
         onResizeStart={onResizeStart}
       />
-      <button
-        type="button"
-        className="object-rotate-handle"
-        aria-label="Rotate selected group"
-        data-selection-rotate-handle="true"
-        data-group-rotate-handle="true"
-        title="Rotate selected group"
-        onPointerDown={onRotateStart}
-      >
-        <RotateSelectionIcon />
-      </button>
-      {canProjectedPlaneTilt ? (
+      {rotationHandlesVisible ? (
+        <button
+          type="button"
+          className="object-rotate-handle"
+          aria-label="Rotate selected group"
+          data-selection-rotate-handle="true"
+          data-group-rotate-handle="true"
+          title="Rotate selected group"
+          onPointerDown={onRotateStart}
+        >
+          <RotateSelectionIcon />
+        </button>
+      ) : null}
+      {canProjectedPlaneTilt && rotationHandlesVisible ? (
         <button
           type="button"
           className="object-tilt3d-handle"
@@ -15768,6 +15839,7 @@ function DocumentObjectView({
   rotateReadout,
   projectedPlaneTiltReadout,
   rotationInput,
+  rotationHandlesVisible,
   resizeReadout,
   resizeInput,
   objectTransformPreview,
@@ -15834,6 +15906,7 @@ function DocumentObjectView({
   rotateReadout?: ObjectRotateReadoutState;
   projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
   rotationInput?: RotationInputState;
+  rotationHandlesVisible: boolean;
   resizeReadout?: ObjectResizeReadoutState;
   resizeInput?: ObjectResizeInputState;
   objectTransformPreview?: ObjectTransformPreviewState;
@@ -16097,11 +16170,14 @@ function DocumentObjectView({
     !inGroupSelection &&
     documentObjectSupportsArtTransform(object) &&
     !graphicDirectEditChromeActive;
+  const zRotationHandleVisible = rotationHandlesVisible || rotateReadout !== undefined;
+  const projectedPlaneTiltHandleVisible = rotationHandlesVisible || projectedPlaneTiltReadout !== undefined;
   const artObjectTransformFrame = showArtObjectTransformFrame ? (
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
       targetLabel="selected art object"
       canProjectedPlaneTilt={object.type !== "graphic" || !graphicObjectIsFreehandPath(object)}
+      rotationHandlesVisible={rotationHandlesVisible}
       rotateReadout={rotateReadout}
       projectedPlaneTiltReadout={projectedPlaneTiltReadout}
       rotationInput={rotationInput}
@@ -16394,21 +16470,23 @@ function DocumentObjectView({
                   scaleYPercent={resizeReadout.scaleYPercent}
                 />
               ) : null}
-              <button
-                type="button"
-                className="object-rotate-handle"
-                aria-label={`Rotate ${transformTargetLabel}`}
-                data-selection-rotate-handle="true"
-                title={`Rotate ${transformTargetLabel}`}
-                onPointerDown={handleRotatePointerDown}
-                onDoubleClick={handleRotateDoubleClick}
-              >
-                <RotateSelectionIcon />
-                {rotateReadout ? (
-                  <RotateSelectionReadout degrees={rotateReadout.degrees} />
-                ) : null}
-              </button>
-              {canProjectedPlaneTilt ? (
+              {zRotationHandleVisible ? (
+                <button
+                  type="button"
+                  className="object-rotate-handle"
+                  aria-label={`Rotate ${transformTargetLabel}`}
+                  data-selection-rotate-handle="true"
+                  title={`Rotate ${transformTargetLabel}`}
+                  onPointerDown={handleRotatePointerDown}
+                  onDoubleClick={handleRotateDoubleClick}
+                >
+                  <RotateSelectionIcon />
+                  {rotateReadout ? (
+                    <RotateSelectionReadout degrees={rotateReadout.degrees} />
+                  ) : null}
+                </button>
+              ) : null}
+              {canProjectedPlaneTilt && projectedPlaneTiltHandleVisible ? (
                 <button
                   type="button"
                   className="object-tilt3d-handle"
@@ -16590,7 +16668,7 @@ function DocumentObjectView({
             />
           </>
         ) : null}
-        {selected && !inGroupSelection && !editingText ? (
+        {selected && !inGroupSelection && !editingText && zRotationHandleVisible ? (
           <button
             type="button"
             className="object-rotate-handle text-rotate-handle"
@@ -16960,6 +17038,7 @@ function ArtObjectTransformFrame({
   frameStyle,
   targetLabel,
   canProjectedPlaneTilt,
+  rotationHandlesVisible,
   rotateReadout,
   projectedPlaneTiltReadout,
   rotationInput,
@@ -16983,6 +17062,7 @@ function ArtObjectTransformFrame({
   frameStyle?: CSSProperties;
   targetLabel: string;
   canProjectedPlaneTilt: boolean;
+  rotationHandlesVisible: boolean;
   rotateReadout?: ObjectRotateReadoutState;
   projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
   rotationInput?: RotationInputState;
@@ -17003,6 +17083,8 @@ function ArtObjectTransformFrame({
   onResizeInputHome(input: ObjectResizeInputState): void;
   onResizeInputCancel(input: ObjectResizeInputState): void;
 }) {
+  const zRotationHandleVisible = rotationHandlesVisible || rotateReadout !== undefined;
+  const projectedPlaneTiltHandleVisible = rotationHandlesVisible || projectedPlaneTiltReadout !== undefined;
   return (
     <div
       className="object-transform-frame"
@@ -17021,21 +17103,23 @@ function ArtObjectTransformFrame({
           scaleYPercent={resizeReadout.scaleYPercent}
         />
       ) : null}
-      <button
-        type="button"
-        className="object-rotate-handle"
-        aria-label={`Rotate ${targetLabel}`}
-        data-selection-rotate-handle="true"
-        title={`Rotate ${targetLabel}`}
-        onPointerDown={onRotatePointerDown}
-        onDoubleClick={onRotateDoubleClick}
-      >
-        <RotateSelectionIcon />
-        {rotateReadout ? (
-          <RotateSelectionReadout degrees={rotateReadout.degrees} />
-        ) : null}
-      </button>
-      {canProjectedPlaneTilt ? (
+      {zRotationHandleVisible ? (
+        <button
+          type="button"
+          className="object-rotate-handle"
+          aria-label={`Rotate ${targetLabel}`}
+          data-selection-rotate-handle="true"
+          title={`Rotate ${targetLabel}`}
+          onPointerDown={onRotatePointerDown}
+          onDoubleClick={onRotateDoubleClick}
+        >
+          <RotateSelectionIcon />
+          {rotateReadout ? (
+            <RotateSelectionReadout degrees={rotateReadout.degrees} />
+          ) : null}
+        </button>
+      ) : null}
+      {canProjectedPlaneTilt && projectedPlaneTiltHandleVisible ? (
         <button
           type="button"
           className="object-tilt3d-handle"
@@ -19518,8 +19602,9 @@ function RotationInputPopover({
       )}
       <span aria-hidden="true" className="object-rotation-input-unit">°</span>
       <button
-        aria-label="Restore rotation home"
+        aria-label={input.kind === "z" ? "Set Z rotation to 0 degrees" : "Set X/Y rotation to 0 degrees"}
         className="object-rotation-input-action"
+        title={input.kind === "z" ? "Set Z rotation to 0 degrees" : "Set X/Y rotation to 0 degrees"}
         type="button"
         onClick={(event) => {
           event.stopPropagation();

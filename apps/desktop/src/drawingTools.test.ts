@@ -186,7 +186,7 @@ describe("Phase 7 drawing tool activation", () => {
     const result = activateDrawingToolCommand(current, command);
 
     expect(result.outcome).toBe("unavailable");
-    expect(result.status).toContain("unavailable until an EditorAdapter is connected");
+    expect(result.status).toContain("Requires an active structure editor");
     expect(result.state.activeCommandId).toBe("tool.select");
     expect(result.state.activeKind).toBe("selection");
     expect(result.state.lastCommandId).toBe("tool.chain");
@@ -215,7 +215,7 @@ describe("Phase 7 drawing tool activation", () => {
       id: "tool.atom",
       title: "Atom Label Tool",
       enabled: false,
-      disabledReason: "unavailable until an EditorAdapter is connected"
+      disabledReason: "Requires an active structure editor"
     });
   });
 

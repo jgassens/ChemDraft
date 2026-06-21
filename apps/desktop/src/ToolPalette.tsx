@@ -66,7 +66,7 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   || command.id === "text.color.green"
   || command.id === "text.color.gray"
 ));
-const TOOLTIP_DELAY_MS = 650;
+const TOOLTIP_DELAY_MS = 500;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
 const DISTRIBUTE_MENU_HOLD_MS = 420;
 const COMMAND_FLYOUT_HOLD_MS = 420;
@@ -848,6 +848,50 @@ function ArtToolbarStyleControls({
   const currentGradientStopOpacity = activeGradientStop?.opacity ?? 1;
   const currentGradientStopOffset = activeGradientStop?.offset ?? 0;
   const showGradientStopEditor = showGradientControls && activeGradient?.editable === true && activeGradientStop !== undefined;
+  const supportTitle = (label: string, supportedCount: number, supportsAll = supportedCount === selectedCount) =>
+    selected && supportedCount > 0 && !supportsAll
+      ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
+      : label;
+  const strokeWidthControl = supportsStrokeWidth ? (
+    <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
+      <select
+        className="toolbar-select"
+        value={strokeWidthCommandId}
+        aria-label="Stroke width"
+        disabled={!selected}
+        title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}
+        data-palette-control="true"
+        onPointerDown={(event) => event.stopPropagation()}
+        onChange={(event) => onInvoke(event.currentTarget.value)}
+      >
+        {objectStrokeWidthCommands.map((command) => (
+          <option key={command.id} value={command.id}>
+            {command.strokeWidth}px
+          </option>
+        ))}
+      </select>
+    </label>
+  ) : null;
+  const strokeDashControl = supportsDash && effectiveArtStyleTarget === "stroke" ? (
+    <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
+      <select
+        className="toolbar-select"
+        value={strokeDashCommandId}
+        aria-label="Dash pattern"
+        disabled={!selected}
+        title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}
+        data-palette-control="true"
+        onPointerDown={(event) => event.stopPropagation()}
+        onChange={(event) => onInvoke(event.currentTarget.value)}
+      >
+        {objectStrokeDashCommands.map((command) => (
+          <option key={command.id} value={command.id}>
+            {command.title.replace(" Stroke", "")}
+          </option>
+        ))}
+      </select>
+    </label>
+  ) : null;
   const gradientRailStyle = {
     "--art-gradient-rail": activeGradientStops.length > 0
       ? artGradientRailCss(activeGradientStops)
@@ -956,11 +1000,6 @@ function ArtToolbarStyleControls({
   const previewCommand = (commandId: string) => {
     onPreview?.(commandId);
   };
-
-  const supportTitle = (label: string, supportedCount: number, supportsAll = supportedCount === selectedCount) =>
-    selected && supportedCount > 0 && !supportsAll
-      ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
-      : label;
 
   const updateColor = (color: string) => {
     const normalized = normalizeHexColor(color);
@@ -1323,6 +1362,7 @@ function ArtToolbarStyleControls({
             </div>
           ) : null}
         </div>
+        {strokeDashControl}
         <button
           type="button"
           className="art-inspector-symbol-button"
@@ -1396,6 +1436,7 @@ function ArtToolbarStyleControls({
             );
           })}
         </div>
+        {strokeWidthControl}
       </div>
       <div className="art-inspector-row art-inspector-opacity-row">
         {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}
@@ -1660,50 +1701,8 @@ function ArtToolbarStyleControls({
           )}
         </div>
       ) : null}
-      {supportsStrokeWidth || supportsDash || (showAdvancedStrokeControls && (supportsLineEnds || supportsCorners)) ? (
+      {showAdvancedStrokeControls && (supportsLineEnds || supportsCorners) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
-        {supportsStrokeWidth ? (
-        <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
-          <span className="art-stroke-control-label">Width</span>
-          <select
-            className="toolbar-select"
-            value={strokeWidthCommandId}
-            aria-label="Stroke width"
-            disabled={!selected}
-            title={supportTitle("Stroke width", dashSupportedCount, supportsDashAll)}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {objectStrokeWidthCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {command.strokeWidth}px
-              </option>
-            ))}
-          </select>
-        </label>
-        ) : null}
-        {supportsDash ? (
-        <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
-          <span className="art-stroke-control-label">Dash</span>
-          <select
-            className="toolbar-select"
-            value={strokeDashCommandId}
-            aria-label="Dash pattern"
-            disabled={!selected}
-            title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {objectStrokeDashCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {command.title.replace(" Stroke", "")}
-              </option>
-            ))}
-          </select>
-        </label>
-        ) : null}
         {showAdvancedStrokeControls && supportsLineEnds ? (
         <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
           <span className="art-stroke-control-label">Line ends</span>
@@ -2628,7 +2627,7 @@ export function CommandIconButton({
   const shortcut = command.shortcut ?? command.defaultShortcut;
   const shortcutLabel = command.shortcutLabel ?? shortcut;
   const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
-  const shortcutText = ` (${visibleShortcutLabel})`;
+  const shortcutText = disabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}${shortcutText}${stateText}`;
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
@@ -2645,8 +2644,6 @@ export function CommandIconButton({
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
       onPointerLeave={() => onTooltipLeave?.()}
-      onMouseEnter={() => onTooltipEnter?.()}
-      onMouseLeave={() => onTooltipLeave?.()}
     >
       <button
         type="button"
@@ -2844,7 +2841,7 @@ function CommandFlyoutButton({
   const shortcut = primaryCommand.shortcut ?? primaryCommand.defaultShortcut;
   const shortcutLabel = primaryCommand.shortcutLabel ?? shortcut;
   const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
-  const shortcutText = ` (${visibleShortcutLabel})`;
+  const shortcutText = primaryDisabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = primaryDisabled ? `: ${primaryCommand.disabledReason ?? "unavailable"}` : "";
   const distributeText = commands.some((command) => isDistributeCommandId(command.id))
     ? `: ${distributeMode === "spacing" ? "equal gaps" : "centers"}`
@@ -2922,8 +2919,6 @@ function CommandFlyoutButton({
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
       onPointerLeave={() => onTooltipLeave?.()}
-      onMouseEnter={() => onTooltipEnter?.()}
-      onMouseLeave={() => onTooltipLeave?.()}
     >
       <button
         type="button"
@@ -3078,7 +3073,7 @@ function DistributeCommandIconButton({
   const shortcutLabel = command.shortcutLabel ?? shortcut;
   const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
   const modeLabel = distributeMode === "spacing" ? "equal gaps" : "centers";
-  const shortcutText = ` (${visibleShortcutLabel})`;
+  const shortcutText = disabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}: ${modeLabel}${shortcutText}${stateText}`;
 
@@ -3150,8 +3145,6 @@ function DistributeCommandIconButton({
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
       onPointerLeave={() => onTooltipLeave?.()}
-      onMouseEnter={() => onTooltipEnter?.()}
-      onMouseLeave={() => onTooltipLeave?.()}
     >
       <button
         type="button"

@@ -142,6 +142,26 @@ describe("freehand native art interactions", () => {
     target.dispatchEvent(event);
   }
 
+  async function holdShiftForRotationHandles() {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "Shift",
+        shiftKey: true
+      }));
+    });
+  }
+
+  async function releaseShiftForRotationHandles() {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keyup", {
+        bubbles: true,
+        key: "Shift",
+        shiftKey: false
+      }));
+    });
+  }
+
   async function waitForPreviewFrame() {
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -349,8 +369,13 @@ describe("freehand native art interactions", () => {
     }
 
     const before = debugArtObject(objectId).object;
+    expect(container.querySelector(".object-rotate-handle")).toBeNull();
+    expect(container.querySelector("[data-selection-tilt3d-handle='true']")).toBeNull();
+    await holdShiftForRotationHandles();
     expect(container.querySelector(".object-rotate-handle")).not.toBeNull();
     expect(container.querySelector("[data-selection-tilt3d-handle='true']")).toBeNull();
+    await releaseShiftForRotationHandles();
+    expect(container.querySelector(".object-rotate-handle")).toBeNull();
     const dragPoint = {
       x: before.x + before.width / 2,
       y: before.y + before.height / 2
@@ -433,6 +458,8 @@ describe("freehand native art interactions", () => {
     await renderMainWindow("tool.art.pencil");
     const objectId = await drawPencilStroke(81);
     const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    expect(container.querySelector<HTMLButtonElement>(".object-rotate-handle")).toBeNull();
+    await holdShiftForRotationHandles();
     const rotateHandle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
     if (!graphic || !rotateHandle) {
       throw new Error("Expected selected freehand graphic with rotate handle.");

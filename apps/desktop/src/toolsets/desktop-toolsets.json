@@ -27,7 +27,7 @@
             { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "category": "structure" },
             { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "category": "structure" },
             { "commandId": "tool.boldBond", "title": "Bold Bond", "icon": "bond", "assetName": "Custom_Bond_Bold", "category": "structure" },
-            { "commandId": "tool.chain", "title": "Chain Tool", "icon": "chain", "assetName": "Custom_Draw_Line", "shortcutDisplay": "C", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
+            { "commandId": "tool.chain", "title": "Chain Tool", "icon": "chain", "assetName": "Custom_Draw_Line", "shortcutDisplay": "C", "disabledReason": "Requires an active structure editor", "category": "structure" },
             { "commandId": "tool.cyclopentane", "title": "Cyclopentane Template", "icon": "ring", "assetName": "Custom_Cyclopentane", "shortcutDisplay": "R", "category": "structure" },
             { "commandId": "tool.cyclohexane", "title": "Cyclohexane Template", "icon": "ring", "assetName": "Custom_Cyclohexane", "category": "structure" },
             { "commandId": "tool.benzene", "title": "Benzene Template", "icon": "ring", "assetName": "Custom_Benzene", "category": "structure" },
@@ -38,34 +38,34 @@
         {
           "id": "core.main.arrows",
           "items": [
-            { "commandId": "tool.reactionArrow", "title": "Reaction Arrow", "icon": "export", "assetName": "Custom_Arrow", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.resonanceArrow", "title": "Resonance Arrow", "icon": "export", "assetName": "Custom_Arrow_Resonance", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.equilibriumArrow", "title": "Equilibrium Arrow", "icon": "export", "assetName": "Custom_Arrow_Equilibrium", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.retroArrow", "title": "Retrosynthesis Arrow", "icon": "export", "assetName": "Custom_Arrow_Retro", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.mechanismArrow", "title": "Curved Mechanism Arrow", "icon": "mechanism", "assetName": "Custom_Curved_Arrow", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.arrows", "title": "Arrow Tool Group", "icon": "export", "assetName": "Custom_Arrows", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" }
+            { "commandId": "tool.reactionArrow", "title": "Reaction Arrow", "icon": "export", "assetName": "Custom_Arrow", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.resonanceArrow", "title": "Resonance Arrow", "icon": "export", "assetName": "Custom_Arrow_Resonance", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.equilibriumArrow", "title": "Equilibrium Arrow", "icon": "export", "assetName": "Custom_Arrow_Equilibrium", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.retroArrow", "title": "Retrosynthesis Arrow", "icon": "export", "assetName": "Custom_Arrow_Retro", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.mechanismArrow", "title": "Curved Mechanism Arrow", "icon": "mechanism", "assetName": "Custom_Curved_Arrow", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.arrows", "title": "Arrow Tool Group", "icon": "export", "assetName": "Custom_Arrows", "disabledReason": "Requires an active structure editor", "category": "arrows" }
           ]
         },
         {
           "id": "core.main.annotations",
           "items": [
-            { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
+            { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "Requires an active structure editor", "category": "annotation" },
             { "commandId": "tool.plus", "title": "Positive Charge Tool", "icon": "charge", "assetName": "Custom_Plus", "shortcutDisplay": "+", "category": "annotation" },
             { "commandId": "tool.minus", "title": "Negative Charge Tool", "icon": "charge", "assetName": "Custom_Minus", "shortcutDisplay": "-", "category": "annotation" },
-            { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" }
+            { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "Requires an active structure editor", "category": "annotation" }
           ]
         },
         {
           "id": "core.main.orbitals-style",
           "items": [
-            { "commandId": "tool.lobe", "title": "Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "tool.shadedLobe", "title": "Shaded Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe_Shaded", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "tool.pOrbital", "title": "p Orbital Tool", "icon": "atom", "assetName": "Custom_p_Orbital", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "tool.sOrbital", "title": "s Orbital Tool", "icon": "atom", "assetName": "Custom_s_Orbital", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
+            { "commandId": "tool.lobe", "title": "Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
+            { "commandId": "tool.shadedLobe", "title": "Shaded Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe_Shaded", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
+            { "commandId": "tool.pOrbital", "title": "p Orbital Tool", "icon": "atom", "assetName": "Custom_p_Orbital", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
+            { "commandId": "tool.sOrbital", "title": "s Orbital Tool", "icon": "atom", "assetName": "Custom_s_Orbital", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
             { "commandId": "style.formulaText", "title": "Formula Text Style", "icon": "style", "assetName": "Custom_FormulaStyle", "disabledReason": "unavailable until style presets are connected", "category": "style" }
           ]
         },
@@ -98,9 +98,9 @@
             { "commandId": "style.color", "title": "Color Controls", "icon": "style", "assetName": "Custom_Colors", "disabledReason": "unavailable until style presets are connected", "category": "style" },
             { "commandId": "tool.settings", "title": "Object Settings", "icon": "inspector", "assetName": "Custom_Settings", "disabledReason": "unavailable until selectable document objects exist", "category": "selection" },
             { "commandId": "structure.cleanup2d", "title": "Clean up Structure 2D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "shortcutDisplay": "Shift+Cmd+K", "category": "structure" },
-            { "commandId": "structure.spin3d", "title": "Spin 3D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "category": "structure" },
-            { "commandId": "structure.cleanup3d", "title": "3D Cleanup", "icon": "style", "assetName": "Custom_Structure_Cleanup", "disabledReason": "requires conformer-backed 3D cleanup engine", "category": "structure" },
-            { "commandId": "tool.templateGrid", "title": "Template Grid", "icon": "grid", "assetName": "Custom_Tools", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "template" }
+            { "commandId": "structure.spin3d", "title": "Spin 3D", "icon": "style", "assetName": "Custom_Spin_3D", "category": "structure" },
+            { "commandId": "structure.cleanup3d", "title": "3D Cleanup", "icon": "style", "assetName": "Custom_Structure_Cleanup_3D", "disabledReason": "requires conformer-backed 3D cleanup engine", "category": "structure" },
+            { "commandId": "tool.templateGrid", "title": "Template Grid", "icon": "grid", "assetName": "Custom_Tools", "disabledReason": "Requires an active structure editor", "category": "template" }
           ]
         }
       ]
@@ -119,13 +119,13 @@
           "items": [
             { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "M", "category": "structure" },
             { "commandId": "structure.cleanup2d", "title": "Clean up Structure 2D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "shortcutDisplay": "Shift+Cmd+K", "category": "structure" },
-            { "commandId": "structure.spin3d", "title": "Spin 3D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "category": "structure" },
-            { "commandId": "structure.cleanup3d", "title": "3D Cleanup", "icon": "style", "assetName": "Custom_Structure_Cleanup", "disabledReason": "requires conformer-backed 3D cleanup engine", "category": "structure" },
+            { "commandId": "structure.spin3d", "title": "Spin 3D", "icon": "style", "assetName": "Custom_Spin_3D", "category": "structure" },
+            { "commandId": "structure.cleanup3d", "title": "3D Cleanup", "icon": "style", "assetName": "Custom_Structure_Cleanup_3D", "disabledReason": "requires conformer-backed 3D cleanup engine", "category": "structure" },
             { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "category": "structure" },
             { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "category": "structure" },
             { "commandId": "tool.dashedBond", "title": "Dashed Bond", "icon": "bond", "assetName": "Custom_Bond_Dashed", "category": "structure" },
             { "commandId": "tool.boldBond", "title": "Bold Bond", "icon": "bond", "assetName": "Custom_Bond_Bold", "category": "structure" },
-            { "commandId": "tool.chain", "title": "Chain Tool", "icon": "chain", "assetName": "Custom_Draw_Line", "shortcutDisplay": "C", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "structure" },
+            { "commandId": "tool.chain", "title": "Chain Tool", "icon": "chain", "assetName": "Custom_Draw_Line", "shortcutDisplay": "C", "disabledReason": "Requires an active structure editor", "category": "structure" },
             { "commandId": "tool.cyclopentane", "title": "Cyclopentane Template", "icon": "ring", "assetName": "Custom_Cyclopentane", "shortcutDisplay": "R", "category": "structure" },
             { "commandId": "tool.cyclohexane", "title": "Cyclohexane Template", "icon": "ring", "assetName": "Custom_Cyclohexane", "category": "structure" },
             { "commandId": "tool.benzene", "title": "Benzene Template", "icon": "ring", "assetName": "Custom_Benzene", "category": "structure" },
@@ -147,12 +147,12 @@
         {
           "id": "core.arrows.tools",
           "items": [
-            { "commandId": "tool.reactionArrow", "title": "Reaction Arrow", "icon": "export", "assetName": "Custom_Arrow", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.resonanceArrow", "title": "Resonance Arrow", "icon": "export", "assetName": "Custom_Arrow_Resonance", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.equilibriumArrow", "title": "Equilibrium Arrow", "icon": "export", "assetName": "Custom_Arrow_Equilibrium", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.retroArrow", "title": "Retrosynthesis Arrow", "icon": "export", "assetName": "Custom_Arrow_Retro", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.mechanismArrow", "title": "Curved Mechanism Arrow", "icon": "mechanism", "assetName": "Custom_Curved_Arrow", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" },
-            { "commandId": "tool.arrows", "title": "Arrow Tool Group", "icon": "export", "assetName": "Custom_Arrows", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "arrows" }
+            { "commandId": "tool.reactionArrow", "title": "Reaction Arrow", "icon": "export", "assetName": "Custom_Arrow", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.resonanceArrow", "title": "Resonance Arrow", "icon": "export", "assetName": "Custom_Arrow_Resonance", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.equilibriumArrow", "title": "Equilibrium Arrow", "icon": "export", "assetName": "Custom_Arrow_Equilibrium", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.retroArrow", "title": "Retrosynthesis Arrow", "icon": "export", "assetName": "Custom_Arrow_Retro", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.mechanismArrow", "title": "Curved Mechanism Arrow", "icon": "mechanism", "assetName": "Custom_Curved_Arrow", "disabledReason": "Requires an active structure editor", "category": "arrows" },
+            { "commandId": "tool.arrows", "title": "Arrow Tool Group", "icon": "export", "assetName": "Custom_Arrows", "disabledReason": "Requires an active structure editor", "category": "arrows" }
           ]
         }
       ]
@@ -170,14 +170,14 @@
           "id": "core.annotations.tools",
           "items": [
             { "commandId": "tool.text", "title": "Text Tool", "icon": "text", "assetName": "Art_Text", "shortcutDisplay": "T", "category": "annotation" },
-            { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
+            { "commandId": "tool.bracket", "title": "Curly Bracket Tool", "icon": "bracket", "assetName": "Custom_Bracket", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.squareBracket", "title": "Square Bracket Tool", "icon": "bracket", "assetName": "Custom_Square_Bracket", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.dagger", "title": "Dagger Symbol Tool", "icon": "charge", "assetName": "Custom_Dagger", "disabledReason": "Requires an active structure editor", "category": "annotation" },
             { "commandId": "tool.plus", "title": "Positive Charge Tool", "icon": "charge", "assetName": "Custom_Plus", "shortcutDisplay": "+", "category": "annotation" },
             { "commandId": "tool.minus", "title": "Negative Charge Tool", "icon": "charge", "assetName": "Custom_Minus", "shortcutDisplay": "-", "category": "annotation" },
-            { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" },
-            { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "annotation" }
+            { "commandId": "tool.symbol", "title": "Symbol Tool Group", "icon": "charge", "assetName": "Custom_Symbol", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.shape", "title": "Shape Tool", "icon": "bracket", "assetName": "Custom_Shape", "disabledReason": "Requires an active structure editor", "category": "annotation" },
+            { "commandId": "tool.shapeShadow", "title": "Shadow Shape Tool", "icon": "bracket", "assetName": "Custom_Shape2", "disabledReason": "Requires an active structure editor", "category": "annotation" }
           ]
         }
       ]
@@ -281,10 +281,10 @@
         {
           "id": "core.orbitals.tools",
           "items": [
-            { "commandId": "tool.lobe", "title": "Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "tool.shadedLobe", "title": "Shaded Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe_Shaded", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "tool.pOrbital", "title": "p Orbital Tool", "icon": "atom", "assetName": "Custom_p_Orbital", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" },
-            { "commandId": "tool.sOrbital", "title": "s Orbital Tool", "icon": "atom", "assetName": "Custom_s_Orbital", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "orbitals" }
+            { "commandId": "tool.lobe", "title": "Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
+            { "commandId": "tool.shadedLobe", "title": "Shaded Orbital Lobe Tool", "icon": "atom", "assetName": "Custom_Lobe_Shaded", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
+            { "commandId": "tool.pOrbital", "title": "p Orbital Tool", "icon": "atom", "assetName": "Custom_p_Orbital", "disabledReason": "Requires an active structure editor", "category": "orbitals" },
+            { "commandId": "tool.sOrbital", "title": "s Orbital Tool", "icon": "atom", "assetName": "Custom_s_Orbital", "disabledReason": "Requires an active structure editor", "category": "orbitals" }
           ]
         }
       ]
@@ -338,8 +338,8 @@
             { "commandId": "style.formulaText", "title": "Formula Text Style", "icon": "style", "assetName": "Custom_FormulaStyle", "disabledReason": "unavailable until style presets are connected", "category": "style" },
             { "commandId": "style.color", "title": "Color Controls", "icon": "style", "assetName": "Custom_Colors", "disabledReason": "unavailable until style presets are connected", "category": "style" },
             { "commandId": "tool.settings", "title": "Object Settings", "icon": "inspector", "assetName": "Custom_Settings", "disabledReason": "unavailable until selectable document objects exist", "category": "selection" },
-            { "commandId": "tool.toolOptions", "title": "Tool Options", "icon": "palette", "assetName": "Custom_Tools", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "selection" },
-            { "commandId": "tool.templateGrid", "title": "Template Grid", "icon": "grid", "assetName": "Custom_Tools", "disabledReason": "unavailable until an EditorAdapter is connected", "category": "template" }
+            { "commandId": "tool.toolOptions", "title": "Tool Options", "icon": "palette", "assetName": "Custom_Tools", "disabledReason": "Requires an active structure editor", "category": "selection" },
+            { "commandId": "tool.templateGrid", "title": "Template Grid", "icon": "grid", "assetName": "Custom_Tools", "disabledReason": "Requires an active structure editor", "category": "template" }
           ]
         }
       ]

@@ -2201,10 +2201,30 @@ function fuseNativeTemplateRingToBond(
     );
   }
 
-  const vertices = nativeRingVerticesForSharedBond(molecule, fromAtom, toAtom, point, size);
-  if (!vertices) {
+  const vertexCandidates = nativeRingVertexCandidatesForSharedBond(molecule, fromAtom, toAtom, point, size);
+  if (vertexCandidates.length === 0) {
     return undefined;
   }
+
+  for (const vertices of vertexCandidates) {
+    const fused = fuseNativeTemplateRingVerticesToBond(molecule, targetBond, fromAtom, toAtom, vertices, templateId);
+    if (fused) {
+      return fused;
+    }
+  }
+
+  return undefined;
+}
+
+function fuseNativeTemplateRingVerticesToBond(
+  molecule: MoleculeObject,
+  targetBond: MoleculeBond,
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  vertices: readonly PagePoint[],
+  templateId: NativeMoleculeTemplateId
+): MoleculeObject | undefined {
+  const size = nativeTemplateRingSize(templateId);
 
   // Closure-aware vertex resolution: a proposed ring vertex that lands on an existing atom
   // (a neighbouring ring's rim atom, when closing a fused polycycle like coronene) is REUSED
@@ -2288,6 +2308,10 @@ function fuseNativeTemplateRingToBond(
     bond.id = newBondIds[index]
       ?? nextIndexedId("bond", [...molecule.bonds, ...newBonds.slice(0, index)].map((candidate) => candidate.id));
   });
+
+  if (newAtoms.length === 0 && newBonds.length === 0) {
+    return undefined;
+  }
 
   // Guard the closure (only when a vertex actually snapped, so plain fusion is untouched): on the
   // single-bond skeleton — BEFORE aromatic normalization, which can otherwise make a fused
@@ -3033,47 +3057,81 @@ function centroidOfPoints(points: readonly PagePoint[]): PagePoint {
   );
 }
 
-function nativeRingVerticesForSharedBond(
+function nativeRingVertexCandidatesForSharedBond(
   molecule: MoleculeObject,
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
   point: PagePoint,
   size: number
-): PagePoint[] | undefined {
+): PagePoint[][] {
   const dx = toAtom.x - fromAtom.x;
   const dy = toAtom.y - fromAtom.y;
   const length = Math.hypot(dx, dy);
   if (length === 0) {
-    return undefined;
+    return [];
   }
 
   const unit = { x: dx / length, y: dy / length };
   const normal = { x: -unit.y, y: unit.x };
   const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
-  const side = nativeTemplateSideForBond(molecule, fromAtom, toAtom, point, normal);
   const apothem = length / (2 * Math.tan(Math.PI / size));
-  const center = {
-    x: midpoint.x + normal.x * side * apothem,
-    y: midpoint.y + normal.y * side * apothem
-  };
   const radius = length / (2 * Math.sin(Math.PI / size));
-  const angleFrom = Math.atan2(fromAtom.y - center.y, fromAtom.x - center.x);
-  const angleTo = Math.atan2(toAtom.y - center.y, toAtom.x - center.x);
   const step = Math.PI * 2 / size;
-  const signedDelta = normalizeSignedAngle(angleTo - angleFrom);
-  const direction = signedDelta >= 0 ? 1 : -1;
+  const clickScore = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
+  const clickSide: 1 | -1 = clickScore >= 0 ? 1 : -1;
+  const excludedAtomIds = new Set([fromAtom.id, toAtom.id]);
+  const candidates = ([1, -1] as const).map((side) => {
+    const center = {
+      x: midpoint.x + normal.x * side * apothem,
+      y: midpoint.y + normal.y * side * apothem
+    };
+    const angleFrom = Math.atan2(fromAtom.y - center.y, fromAtom.x - center.x);
+    const angleTo = Math.atan2(toAtom.y - center.y, toAtom.x - center.x);
+    const signedDelta = normalizeSignedAngle(angleTo - angleFrom);
+    const direction = signedDelta >= 0 ? 1 : -1;
+    const vertices = [
+      { x: fromAtom.x, y: fromAtom.y },
+      { x: toAtom.x, y: toAtom.y },
+      ...Array.from({ length: size - 2 }, (_, index) => {
+        const angle = angleTo + direction * step * (index + 1);
+        return {
+          x: roundGeometryCoordinate(center.x + Math.cos(angle) * radius),
+          y: roundGeometryCoordinate(center.y + Math.sin(angle) * radius)
+        };
+      })
+    ];
+    return {
+      side,
+      vertices,
+      crowding: nativeTemplateRingCrowding(molecule, vertices.slice(2), excludedAtomIds)
+    };
+  }).sort((left, right) => left.crowding - right.crowding);
+  const best = candidates[0];
+  const alternate = candidates[1];
+  if (!best) {
+    return [];
+  }
+  if (alternate && Math.abs(best.crowding - alternate.crowding) <= nativeTemplateRingCrowdingTieEpsilon) {
+    const clicked = candidates.find((candidate) => candidate.side === clickSide);
+    const other = candidates.find((candidate) => candidate.side !== clickSide);
+    return [clicked?.vertices, other?.vertices].filter((vertices): vertices is PagePoint[] => vertices !== undefined);
+  }
+  return candidates.map((candidate) => candidate.vertices);
+}
 
-  return [
-    { x: fromAtom.x, y: fromAtom.y },
-    { x: toAtom.x, y: toAtom.y },
-    ...Array.from({ length: size - 2 }, (_, index) => {
-      const angle = angleTo + direction * step * (index + 1);
-      return {
-        x: roundGeometryCoordinate(center.x + Math.cos(angle) * radius),
-        y: roundGeometryCoordinate(center.y + Math.sin(angle) * radius)
-      };
-    })
-  ];
+const nativeTemplateRingCrowdingTieEpsilon = 0.000001;
+
+function nativeTemplateRingCrowding(
+  molecule: MoleculeObject,
+  points: readonly PagePoint[],
+  excludedAtomIds: ReadonlySet<string>
+): number {
+  return molecule.atoms
+    .filter((atom) => !excludedAtomIds.has(atom.id))
+    .reduce((score, atom) => score + points.reduce((sum, point) => {
+      const normalizedDistance = distance(atom, point) / nativeBondLength;
+      return sum + 1 / Math.max(0.05, normalizedDistance) ** 2;
+    }, 0), 0);
 }
 
 function nativeRingVerticesForSharedAtom(
