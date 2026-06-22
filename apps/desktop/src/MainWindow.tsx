@@ -1010,7 +1010,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.22.10.06-claude";
+const CURRENT_BUILD_STAMP = "6.22.13.36-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -9113,26 +9113,51 @@ export function MainWindow({
         gesture: "click",
         shiftFallback: shiftKeyPressedRef.current
       });
-      // A double-press only drills in / selects the whole molecule for a plain (replace) click on
-      // the SAME part as the previous press; additive presses (Shift toggle, Alt subtract) and a
-      // press that landed on a different part (e.g. ring A then ring B) are never hijacked by it.
-      const samePartAsPreviousPress = lastSelectionPressRef.current?.partKey === pressPartKey;
-      const rawDoublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
-      const doublePress = selectionMode === "replace" && samePartAsPreviousPress && rawDoublePress;
+      // A double-press selects the WHOLE molecule (or drills into a grouped child). A plain
+      // (replace) double-press requires the SAME part as the previous press, so rapid ring A → ring
+      // B picks ring B instead of drilling. A Shift double-press JOINS the whole molecule to the
+      // current selection; it additionally accepts a spatially-tight pair so part jitter between
+      // the two presses can't drop it onto the toggle path (which would cancel itself out).
+      const previousPress = lastSelectionPressRef.current;
+      const samePartAsPreviousPress = previousPress?.partKey === pressPartKey;
+      const rawDoublePress = event.detail >= 2 || isSelectionDoublePress(previousPress, press);
+      const tightDoublePress = previousPress !== undefined
+        && Math.hypot(press.x - previousPress.x, press.y - previousPress.y) <= DOUBLE_PRESS_SCREEN_PX;
+      const doublePress = rawDoublePress && selectionMode !== "subtract" && (
+        selectionMode === "replace" ? samePartAsPreviousPress : (samePartAsPreviousPress || tightDoublePress)
+      );
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
         const drillIntoGroupedChild = selectableObjectId !== objectId;
-        replacePresentDocument((current) => drillIntoGroupedChild
-          ? selectDocumentObjectWithinGroup(current, objectId)
-          : selectDocumentObject(current, selectableObjectId));
+        // Shift keeps the existing selection and unions this molecule in; a plain double-press
+        // replaces. The union runs inside the updater so it survives the re-render between the two
+        // presses (reading current committed state, not a possibly-stale ref).
+        const joinSelection = selectionMode === "toggle";
+        replacePresentDocument((current) => {
+          if (drillIntoGroupedChild) {
+            return selectDocumentObjectWithinGroup(current, objectId);
+          }
+          if (joinSelection) {
+            return selectDocumentObjects(current, current.pages[0].id, [
+              ...new Set([...current.selection.objectIds, selectableObjectId])
+            ]);
+          }
+          return selectDocumentObject(current, selectableObjectId);
+        });
         clearTransientInteractionChrome();
         setActiveGraphicTransformObjectId(undefined);
         hoveredNativeAtomPointRef.current = undefined;
-        setSelectedNativeMoleculePart(undefined);
+        // The double-clicked molecule is now selected whole, so drop any native part(s) it held
+        // (e.g. the bond the first press toggled on) while leaving other molecules' parts intact.
+        setSelectedNativeMoleculeParts((current) =>
+          current.filter((part) => part.objectId !== selectableObjectId && part.objectId !== objectId)
+        );
         setStatus(drillIntoGroupedChild
           ? "Selected grouped molecule"
-          : selectableObjectId === objectId ? "Selected molecule" : "Selected group");
+          : joinSelection
+            ? "Added molecule to selection"
+            : selectableObjectId === objectId ? "Selected molecule" : "Selected group");
         return;
       }
 
@@ -9162,17 +9187,11 @@ export function MainWindow({
                       bondIds: nativeMoleculeRingHit.bondIds
                     }
                   : { kind: "object", objectId: selectableObjectId };
-        // A Shift double-click should ADD the molecule (join it to the selection), not toggle it
-        // back off on the second press: the first press toggles it on, so promote the second press
-        // of a same-target double-click to an idempotent add. Alt (subtract) is left untouched.
-        const effectiveMode = selectionMode === "toggle" && rawDoublePress && samePartAsPreviousPress
-          ? "add"
-          : selectionMode;
         const nextSelection = fromSelectionItems(
           applySelection(
             toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
             additiveItem,
-            effectiveMode
+            selectionMode
           ),
           { scope: "multi" }
         );

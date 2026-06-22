@@ -481,13 +481,19 @@ describe("toolset bridge interactions", () => {
     if (molA?.type !== "molecule" || molB?.type !== "molecule") {
       throw new Error("Expected two benzene molecules.");
     }
-    // With the inspector closed a ring center is empty space, so a press there resolves to the whole
-    // molecule (no atom/bond/ring hit).
-    const bodyA = nativeMoleculeRings(molA)[0]?.center;
-    const bodyB = nativeMoleculeRings(molB)[0]?.center;
-    if (!bodyA || !bodyB) {
-      throw new Error("Expected benzene ring centers.");
-    }
+    // Click the drawn structure (a bond), the way a user selects a molecule — a ring center is
+    // empty space and (with the inspector closed) is correctly inert.
+    const midpointOf = (molecule: typeof molA, bondId: string) => {
+      const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+      const from = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
+      const to = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
+      if (!from || !to) {
+        throw new Error(`Expected ${bondId} endpoints.`);
+      }
+      return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    };
+    const aMid = midpointOf(molA, "bond_001");
+    const bMid = midpointOf(molB, "bond_001");
 
     const wrapperFor = (objectId: string): HTMLElement => {
       const element = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
@@ -499,25 +505,81 @@ describe("toolset bridge interactions", () => {
 
     await renderMainWindow(initialDocument);
 
-    // Seed the selection with molecule A (shift-click adds the whole object).
+    // Select molecule A by Shift double-clicking one of its bonds (whole molecule).
     await act(async () => {
       const target = wrapperFor(molA.id);
-      dispatchPointer(target, "pointerdown", bodyA, 61, { shiftKey: true });
-      dispatchPointer(target, "pointerup", bodyA, 61, { shiftKey: true });
+      dispatchPointer(target, "pointerdown", aMid, 61, { shiftKey: true });
+      dispatchPointer(target, "pointerup", aMid, 61, { shiftKey: true });
+    });
+    await act(async () => {
+      const target = wrapperFor(molA.id);
+      dispatchPointer(target, "pointerdown", aMid, 62, { shiftKey: true });
+      dispatchPointer(target, "pointerup", aMid, 62, { shiftKey: true });
     });
     expect(wrapperFor(molA.id).classList.contains("native-molecule-selected")).toBe(true);
 
-    // Shift double-click molecule B: the second press must NOT toggle B back off — it joins A.
+    // Shift double-click molecule B's bond as two separate presses (re-querying the wrapper between
+    // them, since selecting B on the first press remounts its wrapper — the real-browser sequence).
+    // The second press must NOT toggle B back off; it joins A.
     await act(async () => {
       const target = wrapperFor(molB.id);
-      dispatchPointer(target, "pointerdown", bodyB, 62, { shiftKey: true });
-      dispatchPointer(target, "pointerup", bodyB, 62, { shiftKey: true });
-      dispatchPointer(target, "pointerdown", bodyB, 62, { shiftKey: true });
-      dispatchPointer(target, "pointerup", bodyB, 62, { shiftKey: true });
+      dispatchPointer(target, "pointerdown", bMid, 71, { shiftKey: true });
+      dispatchPointer(target, "pointerup", bMid, 71, { shiftKey: true });
+    });
+    await act(async () => {
+      const target = wrapperFor(molB.id);
+      dispatchPointer(target, "pointerdown", bMid, 72, { shiftKey: true });
+      dispatchPointer(target, "pointerup", bMid, 72, { shiftKey: true });
     });
 
     expect(wrapperFor(molA.id).classList.contains("native-molecule-selected")).toBe(true);
     expect(wrapperFor(molB.id).classList.contains("native-molecule-selected")).toBe(true);
+  });
+
+  it("shift double-clicking a molecule bond selects the whole molecule, not just the bond", async () => {
+    const initialDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Shift double-click whole molecule"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const molecule = initialDocument.pages[0]?.objects[0];
+    if (molecule?.type !== "molecule") {
+      throw new Error("Expected benzene molecule.");
+    }
+    const bond = molecule.bonds.find((candidate) => candidate.id === "bond_001");
+    const from = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
+    const to = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
+    if (!bond || !from || !to) {
+      throw new Error("Expected benzene bond endpoints.");
+    }
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+
+    const wrapperFor = (objectId: string): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+      if (!element) {
+        throw new Error(`Expected wrapper for ${objectId}.`);
+      }
+      return element;
+    };
+
+    await renderMainWindow(initialDocument);
+
+    // Shift double-click on a bond as two separate presses (re-querying the wrapper between them,
+    // since the first press selects the bond and remounts the wrapper). The first press selects the
+    // bond; the second promotes to the whole molecule rather than toggling the bond back off.
+    await act(async () => {
+      const target = wrapperFor(molecule.id);
+      dispatchPointer(target, "pointerdown", midpoint, 71, { shiftKey: true });
+      dispatchPointer(target, "pointerup", midpoint, 71, { shiftKey: true });
+    });
+    await act(async () => {
+      const target = wrapperFor(molecule.id);
+      dispatchPointer(target, "pointerdown", midpoint, 72, { shiftKey: true });
+      dispatchPointer(target, "pointerup", midpoint, 72, { shiftKey: true });
+    });
+
+    expect(wrapperFor(molecule.id).classList.contains("native-molecule-selected")).toBe(true);
+    expect(wrapperFor(molecule.id).getAttribute("data-selected-native-bond-id")).toBeNull();
   });
 
   it("adds a second ring after a normal first-ring click with Shift held", async () => {
