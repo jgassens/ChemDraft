@@ -2437,9 +2437,17 @@ export function MainWindow({
     commitDocumentChange(committedDocument);
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
+    // A dense polycyclic structure can emit the SAME benign warning (e.g. degenerate-drawn-parity)
+    // for many centers at once; listing the code 23× reads like 23 distinct problems. Collapse to
+    // one entry per code with a count so the status conveys "one kind of caveat, N centers".
+    const codeCounts = new Map<string, number>();
+    for (const warning of meaningful) codeCounts.set(warning.code, (codeCounts.get(warning.code) ?? 0) + 1);
+    const codeSummary = [...codeCounts.entries()]
+      .map(([code, count]) => (count > 1 ? `${code} ×${count}` : code))
+      .join(", ");
     setStatus(
       meaningful.length > 0
-        ? `Flattened perspective with ${meaningful.length} warning(s): ${meaningful.map((w) => w.code).join(", ")}`
+        ? `Flattened perspective with ${meaningful.length} warning(s): ${codeSummary}`
         : "Flattened to a 2D perspective"
     );
   }, [applySpin, commitDocumentChange]);
@@ -13883,6 +13891,13 @@ function SpinOverlay({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
     >
+      {/* Full-page transparent hit-catcher. An SVG root only hit-tests where it is PAINTED,
+          so without this a pointer-down on empty page area (away from a bond/atom) misses the
+          overlay entirely and falls through to the tool underneath — e.g. the active benzene
+          tool drops a new ring instead of the click flattening. A transparent-filled rect
+          counts as painted (fill is rgba 0, not `none`), so every in-page click reaches
+          handleSpinOverlayPointerDown, which routes inside-box → rotate, outside → flatten. */}
+      <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="transparent" />
       {projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
