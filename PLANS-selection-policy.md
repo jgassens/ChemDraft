@@ -210,13 +210,26 @@ Each phase ships green and is independently revertible.
 - Acceptance: `App.test.ts` ordering (`:3915-3918`) still holds; export excludes the catcher;
   geometric resolver still selects rings (the catcher is now only a router/tiebreak).
 
-### Phase 7 — (Follow-up slice, not slice 1) Single-set storage / cross-molecule
-- Replace the single-slot `selectedNativeMoleculePart` with `SelectionItem[]` as React state;
-  switch `fromSelectionItems` callers to `nativeMoleculeScope: "multi"`.
-- Update the renderer (`~80` reads of `selectedNativeMoleculePart`) to map over items; derive
-  the inspector model from the item set.
-- Unlocks shift-selecting atoms/bonds/rings across different molecules.
-- Gate behind explicit user sign-off; larger renderer churn.
+### Phase 7 — Single-set storage / cross-molecule  ✅ LANDED
+- Storage is now one legacy slot **per molecule**: `selectedNativeMoleculeParts:
+  NativeMoleculeSelectionPart[]` (recency-ordered). `selectedNativeMoleculePart` is derived as the
+  last entry (the "primary"); `setSelectedNativeMoleculePart` is a back-compat wrapper that
+  replaces/clears the whole set with one part — so the ~97 single-molecule reads and ~80 setter
+  sites were left untouched. Only the additive handlers call `setSelectedNativeMoleculeParts`.
+- Policy: `fromSelectionItems(..., { scope: "multi" })` returns `nativeMoleculeParts[]` (recency
+  ordered, last = primary); `toSelectionItemsMulti(objectIds, parts[])` is the inverse. The click /
+  marquee / lasso handlers read/write the full set, so the cross-molecule downgrade guard is gone.
+- Renderer maps the array — every selected molecule lights up its own part (not just the primary).
+- Cross-molecule ring **fill** works (`selectedMoleculeRingTargets` gathers from all molecules;
+  `applyObjectStyleCommandToMoleculeRings` already reduces per-target). Status counts across
+  molecules.
+- **Known boundary (primary-scoped):** the Molecule Inspector panel, atom/bond toolbar *color*
+  (not ring fill), native-part *delete*, drag-transform and 3D spin still act on the primary
+  molecule only. These are either inherently single-molecule (inspector/spin/drag) or a narrow
+  follow-up (atom/bond color + multi-part delete would need `moleculeParts[]` threaded through the
+  documentWorkflow color/delete paths).
+- Tests: `selectionPolicy.test.ts` multi-encoding; `toolsetBridge.dom.test.ts` cross-molecule bond
+  add (part grain) + cross-molecule ring fill + aggregate status.
 
 ## Files touched
 

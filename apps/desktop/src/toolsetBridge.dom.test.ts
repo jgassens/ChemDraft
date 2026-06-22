@@ -365,6 +365,77 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated 2 selected ring fills");
   });
 
+  it("shift-selects rings across two molecules and one fill swatch colors both (Phase 7)", async () => {
+    let initialDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Cross-molecule ring fill"),
+      { x: 220, y: 220 },
+      "benzene"
+    );
+    initialDocument = insertNativeTemplateMolecule(initialDocument, { x: 560, y: 220 }, "benzene");
+    const molA = initialDocument.pages[0]?.objects[0];
+    const molB = initialDocument.pages[0]?.objects[1];
+    if (molA?.type !== "molecule" || molB?.type !== "molecule") {
+      throw new Error("Expected two benzene molecules.");
+    }
+    const ringA = nativeMoleculeRings(molA)[0];
+    const ringB = nativeMoleculeRings(molB)[0];
+    if (!ringA || !ringB) {
+      throw new Error("Expected one ring per benzene.");
+    }
+
+    // Two separate benzenes reuse the same bond ids, so ring keys collide across molecules; scope
+    // every lookup to the owning molecule's wrapper to disambiguate.
+    const wrapperFor = (objectId: string): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+      if (!element) {
+        throw new Error(`Expected wrapper for ${objectId}.`);
+      }
+      return element;
+    };
+    const ringCatcherIn = (objectId: string): SVGPathElement => {
+      const target = wrapperFor(objectId).querySelector<SVGPathElement>(".native-molecule-ring-hit-target");
+      if (!target) {
+        throw new Error(`Expected a ring catcher inside ${objectId}.`);
+      }
+      return target;
+    };
+
+    await renderMainWindow(initialDocument);
+    routeCommand("view.toggleMoleculeInspector");
+
+    await act(async () => {
+      const target = ringCatcherIn(molA.id);
+      dispatchPointer(target, "pointerdown", ringA.center, 51, { shiftKey: true });
+      dispatchPointer(target, "pointerup", ringA.center, 51, { shiftKey: true });
+    });
+    await act(async () => {
+      const target = ringCatcherIn(molB.id);
+      dispatchPointer(target, "pointerdown", ringB.center, 52, { shiftKey: true });
+      dispatchPointer(target, "pointerup", ringB.center, 52, { shiftKey: true });
+    });
+
+    // Both molecules render their ring as selected (the headline cross-molecule win).
+    expect(wrapperFor(molA.id).querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    expect(wrapperFor(molB.id).querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    // The status counts rings across both molecules, not just the primary.
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected 2 rings");
+
+    const blueSwatch = container.querySelector<HTMLButtonElement>('[aria-label="Ring Color: Blue"]');
+    expect(blueSwatch?.disabled).toBe(false);
+    await act(async () => {
+      blueSwatch?.click();
+    });
+
+    // One swatch click fills the selected ring in BOTH molecules.
+    expect(
+      wrapperFor(molA.id).querySelector<SVGPathElement>('[data-molecule-fill-ring="true"]')?.getAttribute("fill")
+    ).toBe("#1f5fbf");
+    expect(
+      wrapperFor(molB.id).querySelector<SVGPathElement>('[data-molecule-fill-ring="true"]')?.getAttribute("fill")
+    ).toBe("#1f5fbf");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated 2 selected ring fills");
+  });
+
   it("adds a second ring after a normal first-ring click with Shift held", async () => {
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Additive Selection"),
@@ -691,7 +762,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected fill; cleared ring overrides");
   });
 
-  it("shift-clicking a bond on a second molecule adds it without replacing the first selection", async () => {
+  it("shift-clicking a bond on a second molecule adds it at part grain, keeping both molecules' bonds selected", async () => {
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Cross-molecule shift add"),
       { x: 220, y: 220 },
@@ -731,7 +802,8 @@ describe("toolset bridge interactions", () => {
     });
     expect(wrapperFor(molA.id).getAttribute("data-selected-native-bond-id")).toBe("bond_001");
 
-    // Shift-clicking a bond on molecule B must ADD it (at object grain), preserving A's selection.
+    // Shift-clicking a bond on molecule B adds it at PART grain (Phase 7 stores a part per
+    // molecule), preserving A's selection.
     await act(async () => {
       const target = wrapperFor(molB.id);
       dispatchPointer(target, "pointerdown", midpointOf(molB, "bond_001"), 42, { shiftKey: true });
@@ -740,8 +812,9 @@ describe("toolset bridge interactions", () => {
 
     // A's bond selection survives (regression: this used to be replaced)...
     expect(wrapperFor(molA.id).getAttribute("data-selected-native-bond-id")).toBe("bond_001");
-    // ...and molecule B is added to the selection as a whole object (object-grain cross-molecule
-    // add, since the legacy single slot can't hold a native part for two molecules at once).
-    expect(wrapperFor(molB.id).classList.contains("native-molecule-selected")).toBe(true);
+    // ...and molecule B's bond is selected at part grain too — not downgraded to a whole-object
+    // selection (Phase 7 cross-molecule part-level multi-select).
+    expect(wrapperFor(molB.id).getAttribute("data-selected-native-bond-id")).toBe("bond_001");
+    expect(wrapperFor(molB.id).classList.contains("native-molecule-selected")).toBe(false);
   });
 });

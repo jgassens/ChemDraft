@@ -195,6 +195,18 @@ export function toSelectionItems(
   return [...objectItems, ...nativePartToItems(part)];
 }
 
+/** Flatten the Phase 7 multi-slot encoding (one part per molecule) into a flat item set. */
+export function toSelectionItemsMulti(
+  objectIds: readonly string[],
+  parts: readonly NativeMoleculePartSelection[]
+): SelectionItem[] {
+  const partHosts = new Set(parts.map((part) => part.objectId));
+  const objectItems: SelectionItem[] = objectIds
+    .filter((objectId) => !partHosts.has(objectId))
+    .map((objectId) => ({ kind: "object", objectId }));
+  return [...objectItems, ...parts.flatMap((part) => nativePartToItems(part))];
+}
+
 type NativeRingItem = Extract<SelectionItem, { kind: "ring" }>;
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -244,19 +256,17 @@ function nativeRingPartFromItems(
   };
 }
 
-function encodeNativePart(
-  partItems: readonly Exclude<SelectionItem, { kind: "object" }>[]
+/** Encode one molecule's part items into a single legacy slot (atom/bond/ring/rings/parts). */
+function encodeOneMolecule(
+  objectId: string,
+  mine: readonly Exclude<SelectionItem, { kind: "object" }>[]
 ): NativeMoleculePartSelection | undefined {
-  if (partItems.length === 0) {
+  if (mine.length === 0) {
     return undefined;
   }
-  // Single-slot legacy encoding: keep the parts of one molecule — the most-recently-added item's
-  // molecule — and, within it, the most-recently-added kind class (rings vs atom/bond). This
-  // matches today's behaviour where selecting in a new molecule replaces the prior native part.
-  const last = partItems[partItems.length - 1]!;
-  const objectId = last.objectId;
-  const mine = partItems.filter((item) => item.objectId === objectId);
-
+  // Within a molecule, the most-recently-added kind class wins (rings vs atom/bond), matching the
+  // existing single-slot behaviour.
+  const last = mine[mine.length - 1]!;
   if (last.kind === "ring") {
     return nativeRingPartFromItems(objectId, mine.filter((item): item is NativeRingItem => item.kind === "ring"));
   }
@@ -270,6 +280,48 @@ function encodeNativePart(
   return nativePartFromIds(objectId, atomIds, bondIds);
 }
 
+function encodeNativePart(
+  partItems: readonly Exclude<SelectionItem, { kind: "object" }>[]
+): NativeMoleculePartSelection | undefined {
+  if (partItems.length === 0) {
+    return undefined;
+  }
+  // Single-slot legacy encoding: keep the parts of one molecule — the most-recently-added item's
+  // molecule. This matches today's behaviour where selecting in a new molecule replaces the prior
+  // native part.
+  const objectId = partItems[partItems.length - 1]!.objectId;
+  return encodeOneMolecule(objectId, partItems.filter((item) => item.objectId === objectId));
+}
+
+/**
+ * Multi-molecule encoding (Phase 7): one legacy slot per molecule, ordered by recency of the
+ * molecule's most-recent item so the last entry is the "primary" (matches `encodeNativePart`).
+ */
+export function encodeNativeParts(
+  partItems: readonly Exclude<SelectionItem, { kind: "object" }>[]
+): NativeMoleculePartSelection[] {
+  const byObject = new Map<string, Exclude<SelectionItem, { kind: "object" }>[]>();
+  const lastIndex = new Map<string, number>();
+  partItems.forEach((item, index) => {
+    const list = byObject.get(item.objectId);
+    if (list) {
+      list.push(item);
+    } else {
+      byObject.set(item.objectId, [item]);
+    }
+    lastIndex.set(item.objectId, index);
+  });
+  const ordered = [...byObject.keys()].sort((a, b) => (lastIndex.get(a)! - lastIndex.get(b)!));
+  const result: NativeMoleculePartSelection[] = [];
+  for (const objectId of ordered) {
+    const encoded = encodeOneMolecule(objectId, byObject.get(objectId)!);
+    if (encoded) {
+      result.push(encoded);
+    }
+  }
+  return result;
+}
+
 /**
  * Re-encode a flat item set back into the legacy two-store shape (single-molecule native part).
  *
@@ -280,9 +332,16 @@ function encodeNativePart(
  */
 export function fromSelectionItems(
   items: readonly SelectionItem[],
-  options: { includeNativePartHost?: boolean } = {}
-): { objectIds: string[]; nativeMoleculePart?: NativeMoleculePartSelection } {
+  options: { includeNativePartHost?: boolean; scope?: "single" | "multi" } = {}
+): {
+  objectIds: string[];
+  /** Most-recent molecule's parts (single-slot back-compat / "primary"). */
+  nativeMoleculePart?: NativeMoleculePartSelection;
+  /** All molecules' parts, recency-ordered (Phase 7 multi storage). */
+  nativeMoleculeParts: NativeMoleculePartSelection[];
+} {
   const includeNativePartHost = options.includeNativePartHost ?? true;
+  const scope = options.scope ?? "single";
   const objectIds: string[] = [];
   const seen = new Set<string>();
   const pushObject = (objectId: string) => {
@@ -301,10 +360,17 @@ export function fromSelectionItems(
   const partItems = items.filter(
     (item): item is Exclude<SelectionItem, { kind: "object" }> => item.kind !== "object"
   );
-  const nativeMoleculePart = encodeNativePart(partItems);
-  if (nativeMoleculePart && includeNativePartHost) {
-    pushObject(nativeMoleculePart.objectId);
+  const nativeMoleculeParts = encodeNativeParts(partItems);
+  // Primary slot is the most-recent molecule's parts (= last entry of the recency-ordered array).
+  const nativeMoleculePart = nativeMoleculeParts[nativeMoleculeParts.length - 1];
+
+  if (includeNativePartHost) {
+    if (scope === "multi") {
+      nativeMoleculeParts.forEach((part) => pushObject(part.objectId));
+    } else if (nativeMoleculePart) {
+      pushObject(nativeMoleculePart.objectId);
+    }
   }
 
-  return { objectIds, nativeMoleculePart };
+  return { objectIds, nativeMoleculePart, nativeMoleculeParts };
 }

@@ -169,6 +169,44 @@ describe("single-molecule encoding (slice-1 scope)", () => {
   });
 });
 
+describe("multi-molecule encoding (Phase 7)", () => {
+  it("keeps one slot per molecule, recency-ordered, with the most-recent molecule last", () => {
+    const items = applySelection([ring("molA", "rA")], ring("molB", "rB"), "add");
+    const encoded = fromSelectionItems(items, { scope: "multi" });
+    expect(encoded.nativeMoleculeParts).toEqual([
+      { objectId: "molA", kind: "ring", ringKey: "rA", atomIds: [], bondIds: [] },
+      { objectId: "molB", kind: "ring", ringKey: "rB", atomIds: [], bondIds: [] }
+    ]);
+    // The primary slot stays the most-recent molecule, matching single-scope back-compat.
+    expect(encoded.nativeMoleculePart).toEqual(encoded.nativeMoleculeParts[1]);
+    // Every part-host molecule is listed under multi scope.
+    expect([...encoded.objectIds].sort()).toEqual(["molA", "molB"]);
+  });
+
+  it("re-touching a molecule moves it to the primary slot without dropping the other", () => {
+    let items = applySelection([], atom("molA", "a1"), "add");
+    items = applySelection(items, atom("molB", "b1"), "add");
+    items = applySelection(items, atom("molA", "a2"), "add");
+    const encoded = fromSelectionItems(items, { scope: "multi" });
+    // molA was touched last, so it is primary; both molecules survive.
+    expect(encoded.nativeMoleculeParts.map((part) => part.objectId)).toEqual(["molB", "molA"]);
+    expect(encoded.nativeMoleculePart?.objectId).toBe("molA");
+    expect(encoded.nativeMoleculeParts[1]).toEqual({
+      objectId: "molA",
+      kind: "parts",
+      atomIds: ["a1", "a2"],
+      bondIds: []
+    });
+  });
+
+  it("omits all part hosts from objectIds for the multi region path", () => {
+    const items = applySelection([], [atom("molA", "a1"), bond("molB", "b1")], "add");
+    const region = fromSelectionItems(items, { includeNativePartHost: false, scope: "multi" });
+    expect(region.objectIds).toEqual([]);
+    expect(region.nativeMoleculeParts.map((part) => part.objectId)).toEqual(["molA", "molB"]);
+  });
+});
+
 describe("selectionItemFromHit", () => {
   it("maps resolved hits (with extra fields) to items", () => {
     expect(selectionItemFromHit({ objectId: "m", kind: "atom", atomId: "a1", distanceToPointer: 3 } as never)).toEqual(

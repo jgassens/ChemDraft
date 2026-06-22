@@ -448,6 +448,7 @@ import {
   fromSelectionItems,
   selectionModeFromEvent,
   toSelectionItems,
+  toSelectionItemsMulti,
   type SelectionItem
 } from "./selection/selectionPolicy";
 import {
@@ -1009,7 +1010,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.21.17.11-codex";
+const CURRENT_BUILD_STAMP = "6.22.08.41-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1280,7 +1281,35 @@ export function MainWindow({
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
-  const [selectedNativeMoleculePart, setSelectedNativeMoleculePart] = useState<NativeMoleculeSelectionPart | undefined>();
+  // Phase 7: native-part selection is stored as one legacy slot per molecule (recency-ordered, so
+  // the last entry is the "primary"). This lets shift/marquee/lasso accumulate atoms/bonds/rings
+  // across *different* molecules. `selectedNativeMoleculePart` (the primary) still drives every
+  // single-molecule operation — drag, spin, delete, the inspector, dependency arrays — unchanged.
+  const [selectedNativeMoleculeParts, setSelectedNativeMoleculeParts] = useState<NativeMoleculeSelectionPart[]>([]);
+  const selectedNativeMoleculePart = selectedNativeMoleculeParts.length > 0
+    ? selectedNativeMoleculeParts[selectedNativeMoleculeParts.length - 1]
+    : undefined;
+  // Back-compat single-slot setter: most call sites replace the whole native-part selection with a
+  // single part or clear it (drag start, plain click, tool change, delete). Those keep working
+  // verbatim; only the additive handlers call `setSelectedNativeMoleculeParts` to retain the parts
+  // of other molecules.
+  const setSelectedNativeMoleculePart = useCallback(
+    (
+      next:
+        | NativeMoleculeSelectionPart
+        | undefined
+        | ((current: NativeMoleculeSelectionPart | undefined) => NativeMoleculeSelectionPart | undefined)
+    ) => {
+      setSelectedNativeMoleculeParts((currentParts) => {
+        const currentPrimary = currentParts.length > 0 ? currentParts[currentParts.length - 1] : undefined;
+        const resolved = typeof next === "function"
+          ? (next as (current: NativeMoleculeSelectionPart | undefined) => NativeMoleculeSelectionPart | undefined)(currentPrimary)
+          : next;
+        return resolved ? [resolved] : [];
+      });
+    },
+    []
+  );
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
   const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
   const [tapeMeasure, setTapeMeasure] = useState<TapeMeasureOverlayState | undefined>();
@@ -1333,6 +1362,7 @@ export function MainWindow({
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
+  const selectedNativeMoleculePartsRef = useRef<NativeMoleculeSelectionPart[]>([]);
   const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
@@ -1362,6 +1392,7 @@ export function MainWindow({
   nativePaletteRef.current = nativePalette;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
   selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
+  selectedNativeMoleculePartsRef.current = selectedNativeMoleculeParts;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -1873,51 +1904,18 @@ export function MainWindow({
   }, [bondToolActive]);
 
   useEffect(() => {
-    setSelectedNativeMoleculePart((current) => {
-      if (!current) {
+    setSelectedNativeMoleculeParts((current) => {
+      if (current.length === 0) {
         return current;
       }
-
-      const object = findDocumentObject(document, current.objectId);
-      if (object?.type !== "molecule") {
-        return undefined;
-      }
-
-      if (current.kind === "atom") {
-        return object.atoms.some((atom) => atom.id === current.atomId) ? current : undefined;
-      }
-
-      if (current.kind === "bond") {
-        return object.bonds.some((bond) => bond.id === current.bondId) ? current : undefined;
-      }
-
-      if (!moleculeInspectorOpen && (current.kind === "ring" || current.kind === "rings")) {
-        return undefined;
-      }
-
-      if (current.kind === "ring") {
-        const ring = nativeMoleculeRings(object).find((candidate) => candidate.ringKey === current.ringKey);
-        return ring
-          ? { ...current, atomIds: ring.atomIds, bondIds: ring.bondIds }
-          : undefined;
-      }
-
-      if (current.kind === "rings") {
-        const objectRings = nativeMoleculeRings(object);
-        const rings = current.rings.flatMap((selectedRing) => {
-          const ring = objectRings.find((candidate) => candidate.ringKey === selectedRing.ringKey);
-          return ring
-            ? [{ ringKey: ring.ringKey, atomIds: ring.atomIds, bondIds: ring.bondIds }]
-            : [];
-        });
-        return nativeRingSelectionFromItems(object.id, rings);
-      }
-
-      const atomIds = current.atomIds.filter((atomId) => object.atoms.some((atom) => atom.id === atomId));
-      const bondIds = current.bondIds.filter((bondId) => object.bonds.some((bond) => bond.id === bondId));
-      return atomIds.length > 0 || bondIds.length > 0
-        ? { ...current, atomIds, bondIds }
-        : undefined;
+      const pruned = current.flatMap((part) => {
+        const next = pruneNativeMoleculePart(document, part, moleculeInspectorOpen);
+        return next ? [next] : [];
+      });
+      // Preserve the identity when nothing dropped and each entry is unchanged, so an unrelated
+      // document mutation doesn't churn the selection (atom/bond entries return the same ref).
+      const unchanged = pruned.length === current.length && pruned.every((part, index) => part === current[index]);
+      return unchanged ? current : pruned;
     });
   }, [document, moleculeInspectorOpen]);
 
@@ -3671,17 +3669,19 @@ export function MainWindow({
   }, [activeTextEditObjectId, commitDocumentChange, selectedNativeMoleculePart, textStyleDefaults]);
 
   const selectedMoleculeRingTargets = useCallback((): NativeMoleculeRingTarget[] => {
-    const selectedPart = selectedNativeMoleculePart;
-    if (!selectedPart || (selectedPart.kind !== "ring" && selectedPart.kind !== "rings")) {
-      return [];
-    }
-
-    return nativeRingSelectionItems(selectedPart).map((ring) => ({
-      objectId: selectedPart.objectId,
-      kind: "ring" as const,
-      ringKey: ring.ringKey
-    }));
-  }, [selectedNativeMoleculePart]);
+    // Phase 7: gather ring targets from every selected molecule so a single fill swatch colors
+    // rings selected across different molecules (applyObjectStyleCommandToMoleculeRings reduces over
+    // targets, each carrying its own objectId).
+    return selectedNativeMoleculeParts.flatMap((part) =>
+      part.kind === "ring" || part.kind === "rings"
+        ? nativeRingSelectionItems(part).map((ring) => ({
+            objectId: part.objectId,
+            kind: "ring" as const,
+            ringKey: ring.ringKey
+          }))
+        : []
+    );
+  }, [selectedNativeMoleculeParts]);
 
   const applyObjectStyleCommandToDocument = useCallback((
     currentDocument: ChemDraftDocument,
@@ -8507,16 +8507,16 @@ export function MainWindow({
         : selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
       const next = fromSelectionItems(
         applySelection(
-          toSelectionItems(documentRef.current.selection.objectIds, selectedNativeMoleculePartRef.current),
+          toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
           toSelectionItems(region.objectIds, region.nativeSelection),
           mode
         ),
-        { includeNativePartHost: false }
+        { includeNativePartHost: false, scope: "multi" }
       );
       replacePresentDocument((current) =>
         selectDocumentObjects(current, current.pages[0].id, next.objectIds)
       );
-      setSelectedNativeMoleculePart(next.nativeMoleculePart);
+      setSelectedNativeMoleculeParts(next.nativeMoleculeParts);
       setActiveGraphicTransformObjectId(undefined);
       clearTransientInteractionChrome();
       if (next.objectIds.length === 0 && !next.nativeMoleculePart) {
@@ -8527,7 +8527,7 @@ export function MainWindow({
       lassoMachineRef.current = initialInteractionState();
       setStatus(mode === "subtract"
         ? selectionSubtractStatusLabel(region)
-        : selectionStatusLabel({ objectIds: next.objectIds, nativeSelection: next.nativeMoleculePart }));
+        : selectionStatusLabel({ objectIds: next.objectIds, nativeSelection: next.nativeMoleculePart, nativeSelections: next.nativeMoleculeParts }));
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -8576,14 +8576,14 @@ export function MainWindow({
     const mode = selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
     const next = fromSelectionItems(
       applySelection(
-        toSelectionItems(documentRef.current.selection.objectIds, selectedNativeMoleculePartRef.current),
+        toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
         toSelectionItems(region.objectIds, region.nativeSelection),
         mode
       ),
-      { includeNativePartHost: false }
+      { includeNativePartHost: false, scope: "multi" }
     );
     replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, next.objectIds));
-    setSelectedNativeMoleculePart(next.nativeMoleculePart);
+    setSelectedNativeMoleculeParts(next.nativeMoleculeParts);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
     if (next.objectIds.length === 0 && !next.nativeMoleculePart) {
@@ -8593,7 +8593,7 @@ export function MainWindow({
     selectionMarqueeRef.current = null;
     setStatus(mode === "subtract"
       ? selectionSubtractStatusLabel(region)
-      : selectionStatusLabel({ objectIds: next.objectIds, nativeSelection: next.nativeMoleculePart }));
+      : selectionStatusLabel({ objectIds: next.objectIds, nativeSelection: next.nativeMoleculePart, nativeSelections: next.nativeMoleculeParts }));
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -9143,21 +9143,18 @@ export function MainWindow({
         // otherwise the whole molecule — and the shared policy decides toggle/add/subtract. Ring
         // interiors only resolve when the Molecule Inspector is open (see nativeMoleculeRingHit).
         event.stopPropagation();
-        // Native-part (atom/bond/ring) selection is single-molecule in the legacy storage, so a
-        // part on a molecule other than the current part-host can't be added. In that case fall
-        // back to adding the clicked molecule as a whole object — matching marquee/lasso, which add
-        // a second molecule at object granularity and preserve the first selection (cross-molecule
-        // part-level multi-select is the P7 follow-up that needs list storage).
-        const currentNativePart = selectedNativeMoleculePartRef.current;
-        const partGranularityAllowed = !currentNativePart || currentNativePart.objectId === objectId;
+        // Phase 7: native parts are stored per molecule, so a part on a *different* molecule is
+        // added as a part (not downgraded to a whole object). A grouped child still resolves to its
+        // group object; otherwise the atom/bond/ring hit; otherwise the whole molecule. The shared
+        // policy decides toggle/add/subtract over the full cross-molecule item set.
         const additiveItem: SelectionItem =
           selectableObjectId !== objectId
             ? { kind: "object", objectId: selectableObjectId }
-            : partGranularityAllowed && nativeMoleculeHit?.kind === "atom"
+            : nativeMoleculeHit?.kind === "atom"
               ? { kind: "atom", objectId, atomId: nativeMoleculeHit.atomId }
-              : partGranularityAllowed && nativeMoleculeHit?.kind === "bond"
+              : nativeMoleculeHit?.kind === "bond"
                 ? { kind: "bond", objectId, bondId: nativeMoleculeHit.bondId }
-                : partGranularityAllowed && nativeMoleculeRingHit
+                : nativeMoleculeRingHit
                   ? {
                       kind: "ring",
                       objectId,
@@ -9166,11 +9163,14 @@ export function MainWindow({
                       bondIds: nativeMoleculeRingHit.bondIds
                     }
                   : { kind: "object", objectId: selectableObjectId };
-        const nextSelection = fromSelectionItems(applySelection(
-          toSelectionItems(documentRef.current.selection.objectIds, selectedNativeMoleculePartRef.current),
-          additiveItem,
-          selectionMode
-        ));
+        const nextSelection = fromSelectionItems(
+          applySelection(
+            toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+            additiveItem,
+            selectionMode
+          ),
+          { scope: "multi" }
+        );
         replacePresentDocument((current) =>
           selectDocumentObjects(current, current.pages[0].id, nextSelection.objectIds)
         );
@@ -9181,10 +9181,11 @@ export function MainWindow({
         } else {
           hoveredNativeAtomPointRef.current = undefined;
         }
-        setSelectedNativeMoleculePart(nextSelection.nativeMoleculePart);
+        setSelectedNativeMoleculeParts(nextSelection.nativeMoleculeParts);
         setStatus(selectionStatusLabel({
           objectIds: nextSelection.objectIds,
-          nativeSelection: nextSelection.nativeMoleculePart
+          nativeSelection: nextSelection.nativeMoleculePart,
+          nativeSelections: nextSelection.nativeMoleculeParts
         }));
         return;
       }
@@ -11446,8 +11447,10 @@ export function MainWindow({
                   <>
                 {document.pages[0].objects.map((object, layerIndex) => {
                   const selectionChromeActive = activeToolState.activeKind === "selection";
-                  const selectedPart = selectionChromeActive && selectedNativeMoleculePart?.objectId === object.id
-                    ? selectedNativeMoleculePart
+                  // Phase 7: each selected molecule renders its own part highlight, so shift/marquee
+                  // selections that span several molecules all light up (not just the primary).
+                  const selectedPart = selectionChromeActive
+                    ? selectedNativeMoleculeParts.find((part) => part.objectId === object.id)
                     : undefined;
                   const selected = selectionChromeActive &&
                     document.selection.objectIds.includes(object.id) &&
@@ -15792,6 +15795,53 @@ function nativeRingSelectionFromItems(
   return { objectId, kind: "rings", rings: unique };
 }
 
+/**
+ * Validate one molecule's selected part against the current document (atoms/bonds/rings may have
+ * been deleted, or the inspector closed) and return the still-valid part, or undefined to drop it.
+ * Shared by the post-mutation prune effect so every selected molecule stays consistent (Phase 7
+ * keeps a part per molecule, so this runs once per entry instead of once for a single slot).
+ */
+function pruneNativeMoleculePart(
+  document: ChemDraftDocument,
+  part: NativeMoleculeSelectionPart,
+  moleculeInspectorOpen: boolean
+): NativeMoleculeSelectionPart | undefined {
+  const object = findDocumentObject(document, part.objectId);
+  if (object?.type !== "molecule") {
+    return undefined;
+  }
+
+  if (part.kind === "atom") {
+    return object.atoms.some((atom) => atom.id === part.atomId) ? part : undefined;
+  }
+
+  if (part.kind === "bond") {
+    return object.bonds.some((bond) => bond.id === part.bondId) ? part : undefined;
+  }
+
+  if (!moleculeInspectorOpen && (part.kind === "ring" || part.kind === "rings")) {
+    return undefined;
+  }
+
+  if (part.kind === "ring") {
+    const ring = nativeMoleculeRings(object).find((candidate) => candidate.ringKey === part.ringKey);
+    return ring ? { ...part, atomIds: ring.atomIds, bondIds: ring.bondIds } : undefined;
+  }
+
+  if (part.kind === "rings") {
+    const objectRings = nativeMoleculeRings(object);
+    const rings = part.rings.flatMap((selectedRing) => {
+      const ring = objectRings.find((candidate) => candidate.ringKey === selectedRing.ringKey);
+      return ring ? [{ ringKey: ring.ringKey, atomIds: ring.atomIds, bondIds: ring.bondIds }] : [];
+    });
+    return nativeRingSelectionFromItems(part.objectId, rings);
+  }
+
+  const atomIds = part.atomIds.filter((atomId) => object.atoms.some((atom) => atom.id === atomId));
+  const bondIds = part.bondIds.filter((bondId) => object.bonds.some((bond) => bond.id === bondId));
+  return atomIds.length > 0 || bondIds.length > 0 ? { ...part, atomIds, bondIds } : undefined;
+}
+
 function lineIntersectsPolygon(
   start: ClientPoint,
   end: ClientPoint,
@@ -16477,7 +16527,36 @@ function isWholeNativeMoleculeSelected(
 function selectionStatusLabel(selection: {
   objectIds: readonly string[];
   nativeSelection?: NativeMoleculeSelectionPart;
+  /** Phase 7: when a selection spans several molecules, the aggregate drives the label. */
+  nativeSelections?: readonly NativeMoleculeSelectionPart[];
 }): string {
+  if (selection.nativeSelections && selection.nativeSelections.length > 1) {
+    let atoms = 0;
+    let bonds = 0;
+    let rings = 0;
+    for (const part of selection.nativeSelections) {
+      if (part.kind === "atom") {
+        atoms += 1;
+      } else if (part.kind === "bond") {
+        bonds += 1;
+      } else if (part.kind === "ring") {
+        rings += 1;
+      } else if (part.kind === "rings") {
+        rings += part.rings.length;
+      } else {
+        atoms += part.atomIds.length;
+        bonds += part.bondIds.length;
+      }
+    }
+    if (rings > 0 && atoms === 0 && bonds === 0) {
+      return `Selected ${rings} rings`;
+    }
+    if (rings === 0) {
+      return `Selected ${atoms + bonds} molecule parts`;
+    }
+    return `Selected ${atoms + bonds + rings} molecule parts`;
+  }
+
   if (selection.nativeSelection?.kind === "atom") {
     return "Selected atom";
   }
