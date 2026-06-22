@@ -39,6 +39,14 @@ import {
   objectStrokeLineJoinCommands,
   objectStrokeOpacityCommandId,
   objectStrokeWidthCommands,
+  moleculeRingEffectColorCommandId,
+  moleculeRingEffectCommandId,
+  moleculeRingEffectDisableCommandId,
+  moleculeRingEffectOpacityCommandId,
+  moleculeRingEffectSizeCommandId,
+  moleculeRingFillColorCommandId,
+  moleculeRingFillNoneCommandId,
+  moleculeRingFillOpacityCommandId,
   textCustomColorCommandId,
   textAlignmentCommands,
   textColorCommands,
@@ -52,7 +60,7 @@ import {
 import { Icon } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
-import type { ToolsetArtPaintTarget, ToolsetArtStylePayload } from "./window-manager";
+import type { ToolsetArtPaintTarget, ToolsetArtStylePayload, ToolsetMoleculeInspectorPayload } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -179,16 +187,21 @@ export function ToolPalette({
   showMainStyleControls = false,
   showTextStyleControls = false,
   showArtStyleControls = false,
+  showMoleculeInspectorControls = false,
   currentDistributeMode = "centers",
   currentObjectColor,
   currentArtStyle,
   currentArtStyleTarget = "fill",
+  currentMoleculeInspector,
   currentTextStyle,
   currentTextScript,
   onColorPickerOpenChange,
   onArtStylePreview,
   onArtStyleCommit,
   onArtStyleCancel,
+  onMoleculeInspectorPreview,
+  onMoleculeInspectorCommit,
+  onMoleculeInspectorCancel,
   onInvoke
 }: {
   groups: CommandSpec[][];
@@ -199,16 +212,21 @@ export function ToolPalette({
   showMainStyleControls?: boolean;
   showTextStyleControls?: boolean;
   showArtStyleControls?: boolean;
+  showMoleculeInspectorControls?: boolean;
   currentDistributeMode?: ToolPaletteDistributeMode;
   currentObjectColor?: string;
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
   onArtStylePreview?: (commandId: string) => void;
   onArtStyleCommit?: (commandId: string) => void;
   onArtStyleCancel?: () => void;
+  onMoleculeInspectorPreview?: (commandId: string) => void;
+  onMoleculeInspectorCommit?: (commandId: string) => void;
+  onMoleculeInspectorCancel?: () => void;
   onInvoke: (commandId: string) => void;
 }) {
   const {
@@ -315,7 +333,8 @@ export function ToolPalette({
         orientation,
         showMainStyleControls ? "main-style-palette" : "",
         showTextStyleControls ? "text-style-palette" : "",
-        showArtStyleControls ? "art-style-palette" : ""
+        showArtStyleControls ? "art-style-palette" : "",
+        showMoleculeInspectorControls ? "molecule-inspector-palette" : ""
       ].filter(Boolean).join(" ")}
       aria-label={title}
       data-tool-palette-orientation={orientation}
@@ -329,7 +348,7 @@ export function ToolPalette({
           data-tauri-drag-region="true"
         />
       ) : null}
-      {showArtStyleControls ? (
+      {showMoleculeInspectorControls ? null : showArtStyleControls ? (
         <div className="art-toolbar-command-band" data-art-command-band="true">
           <div className="art-toolbar-command-grid" data-art-command-grid="true">
             {artCommandColumnElements}
@@ -360,6 +379,15 @@ export function ToolPalette({
           onPreview={onArtStylePreview}
           onCommit={onArtStyleCommit}
           onCancel={onArtStyleCancel}
+          onInvoke={onInvoke}
+        />
+      ) : null}
+      {showMoleculeInspectorControls ? (
+        <MoleculeInspectorControls
+          currentMoleculeInspector={currentMoleculeInspector}
+          onPreview={onMoleculeInspectorPreview}
+          onCommit={onMoleculeInspectorCommit}
+          onCancel={onMoleculeInspectorCancel}
           onInvoke={onInvoke}
         />
       ) : null}
@@ -744,6 +772,246 @@ function objectStrokeDashCommandId(strokeDasharray: string | undefined): string 
     objectStrokeDashCommands[0].id;
 }
 
+function MoleculeInspectorControls({
+  currentMoleculeInspector,
+  onPreview,
+  onCommit,
+  onCancel,
+  onInvoke
+}: {
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+  onPreview?: (commandId: string) => void;
+  onCommit?: (commandId: string) => void;
+  onCancel?: () => void;
+  onInvoke: (commandId: string) => void;
+}) {
+  const selectedRing = currentMoleculeInspector?.selectedRing;
+  const selectedRingKeys = currentMoleculeInspector?.selectedRings.map((ring) => ring.ringKey) ?? [];
+  const selectedCount = currentMoleculeInspector?.selectedCount ?? 0;
+  const selected = selectedRing !== undefined;
+  const ringKey = selectedRing?.ringKey ?? "";
+  const fillColorMixed = currentMoleculeInspector?.values.fillColor.mixed === true;
+  const currentColor = normalizeHexColor(currentMoleculeInspector?.values.fillColor.value ?? "#111111") ?? "#111111";
+  const fillOpacity = currentMoleculeInspector?.values.fillOpacity.value ?? 1;
+  const activeEffectValue = currentMoleculeInspector?.values.effect.mixed
+    ? "multiple"
+    : currentMoleculeInspector?.values.effect.value ?? "none";
+  const activeEffectKinds = currentMoleculeInspector?.effectKinds ?? [];
+  const visibleEffectKind = activeEffectValue === "shadow" || activeEffectValue === "glow" || activeEffectValue === "sketch"
+    ? activeEffectValue
+    : activeEffectKinds[0];
+  const visibleEffectModel = visibleEffectKind ? currentMoleculeInspector?.effectControls[visibleEffectKind] : undefined;
+  const currentEffectColor = normalizeHexColor(visibleEffectModel?.color.value ?? "#52616b") ?? "#52616b";
+  const effectOpacity = visibleEffectModel?.opacity.value ?? 1;
+  const effectSize = visibleEffectModel?.size.value ?? 0.25;
+  const showEffectControls = selected && visibleEffectKind !== undefined && (visibleEffectModel?.presentCount ?? 0) > 0;
+
+  const invokeOrCommit = (commandId: string) => {
+    if (onCommit) {
+      onCommit(commandId);
+      return;
+    }
+    onInvoke(commandId);
+  };
+  const previewCommand = (commandId: string) => {
+    onPreview?.(commandId);
+  };
+  const commitRingCommand = (commandId: string) => {
+    if (!selected) {
+      return;
+    }
+    invokeOrCommit(commandId);
+  };
+  const previewRingCommand = (commandId: string) => {
+    if (!selected) {
+      return;
+    }
+    previewCommand(commandId);
+  };
+  const applyColor = (color: string, commit: boolean) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+    const commandId = moleculeRingFillColorCommandId(ringKey, normalized);
+    if (commit) {
+      commitRingCommand(commandId);
+    } else {
+      previewRingCommand(commandId);
+    }
+  };
+  const applyEffectColor = (color: string, commit: boolean) => {
+    const normalized = normalizeHexColor(color);
+    if (!normalized || !visibleEffectKind) {
+      return;
+    }
+    const commandId = moleculeRingEffectColorCommandId(ringKey, visibleEffectKind, normalized);
+    if (commit) {
+      commitRingCommand(commandId);
+    } else {
+      previewRingCommand(commandId);
+    }
+  };
+  const slider = (
+    label: string,
+    value: number,
+    commandId: (value: number) => string,
+    disabled = !selected
+  ) => {
+    const percent = Math.round(Math.max(0, Math.min(1, value)) * 100);
+    return (
+      <label className="molecule-inspector-slider" data-molecule-inspector-slider={label.toLowerCase()}>
+        <span className="art-inspector-slider-header">
+          <span className="art-inspector-slider-label">{label}</span>
+          <span className="art-inspector-slider-value">{percent}%</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={percent}
+          disabled={disabled}
+          aria-label={`Ring ${label.toLowerCase()}`}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => previewRingCommand(commandId(Number(event.currentTarget.value) / 100))}
+          onPointerUp={(event) => {
+            event.stopPropagation();
+            commitRingCommand(commandId(Number(event.currentTarget.value) / 100));
+          }}
+          onKeyUp={(event) => {
+            commitRingCommand(commandId(Number(event.currentTarget.value) / 100));
+          }}
+          onBlur={(event) => {
+            commitRingCommand(commandId(Number(event.currentTarget.value) / 100));
+          }}
+        />
+      </label>
+    );
+  };
+
+  return (
+    <div
+      className="molecule-inspector-controls"
+      data-toolbar-style-controls="molecule-inspector"
+      data-molecule-inspector-selection-count={selectedCount}
+      data-selected-ring-key={selectedRing?.ringKey}
+      data-selected-ring-keys={selectedRingKeys.length > 0 ? selectedRingKeys.join(",") : undefined}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          onCancel?.();
+        }
+      }}
+    >
+      <div className="molecule-inspector-target-row">
+        <span className="molecule-inspector-target-label">{selected ? selectedCount === 1 ? "Ring" : "Rings" : "No ring"}</span>
+        <span className="molecule-inspector-target-key">{selectedCount > 1 ? `${selectedCount} selected` : selectedRing?.ringKey ?? ""}</span>
+      </div>
+      <div className="molecule-inspector-section" data-molecule-inspector-section="fill">
+        <div className="molecule-inspector-swatch-grid" role="group" aria-label="Ring fill color">
+          {objectColorCommands.slice(0, 8).map((command) => {
+            const commandId = moleculeRingFillColorCommandId(ringKey, command.color);
+            const active = !fillColorMixed && normalizeHexColor(command.color) === currentColor;
+            return (
+              <button
+                type="button"
+                className={["toolbar-color-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
+                title={command.title.replace("Object", "Ring")}
+                aria-label={command.title.replace("Object", "Ring")}
+                aria-pressed={active}
+                disabled={!selected}
+                data-command-id={commandId}
+                data-palette-control="true"
+                key={command.id}
+                style={{ "--swatch-color": command.color } as CSSProperties}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => commitRingCommand(commandId)}
+              />
+            );
+          })}
+          <button
+            type="button"
+            className="toolbar-text-button molecule-inspector-none-button"
+            title="Ring fill none"
+            aria-label="Ring fill none"
+            disabled={!selected}
+            data-command-id={moleculeRingFillNoneCommandId(ringKey)}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => commitRingCommand(moleculeRingFillNoneCommandId(ringKey))}
+          >
+            None
+          </button>
+          <label className="molecule-inspector-color-input" title="Custom ring fill color">
+            <span className="toolbar-color-trigger-swatch" style={{ "--current-color": currentColor } as CSSProperties} />
+            <input
+              type="color"
+              value={currentColor}
+              disabled={!selected}
+              aria-label="Custom ring fill color"
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => applyColor(event.currentTarget.value, false)}
+              onBlur={(event) => applyColor(event.currentTarget.value, true)}
+            />
+          </label>
+        </div>
+        {slider("Fill", fillOpacity, (value) => moleculeRingFillOpacityCommandId(ringKey, value))}
+      </div>
+      <div className="molecule-inspector-section" data-molecule-inspector-section="effects">
+        <div className="molecule-inspector-effect-row" role="group" aria-label="Ring effect">
+          {objectEffectCommands.map((command) => {
+            const commandId = moleculeRingEffectCommandId(ringKey, command.effectKind);
+            const active = activeEffectValue === command.effectKind || activeEffectKinds.includes(command.effectKind as ArtInspectorEffectKind);
+            return (
+              <button
+                type="button"
+                className={["toolbar-text-button", active ? "active" : ""].filter(Boolean).join(" ")}
+                title={command.title.replace("Art", "Ring")}
+                aria-label={command.title.replace("Art", "Ring")}
+                aria-pressed={active}
+                disabled={!selected}
+                data-command-id={commandId}
+                data-palette-control="true"
+                key={command.id}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  if (active && command.effectKind !== "none") {
+                    commitRingCommand(moleculeRingEffectDisableCommandId(ringKey, command.effectKind));
+                    return;
+                  }
+                  commitRingCommand(commandId);
+                }}
+              >
+                {command.label}
+              </button>
+            );
+          })}
+        </div>
+        {showEffectControls && visibleEffectKind ? (
+          <div className="molecule-inspector-effect-controls" data-visible-effect-kind={visibleEffectKind}>
+            <label className="molecule-inspector-color-input" title="Ring effect color">
+              <span className="toolbar-color-trigger-swatch" style={{ "--current-color": currentEffectColor } as CSSProperties} />
+              <input
+                type="color"
+                value={currentEffectColor}
+                disabled={!selected}
+                aria-label="Ring effect color"
+                data-palette-control="true"
+                onPointerDown={(event) => event.stopPropagation()}
+                onChange={(event) => applyEffectColor(event.currentTarget.value, false)}
+                onBlur={(event) => applyEffectColor(event.currentTarget.value, true)}
+              />
+            </label>
+            {slider("Effect", effectOpacity, (value) => moleculeRingEffectOpacityCommandId(ringKey, visibleEffectKind, value))}
+            {slider("Size", effectSize, (value) => moleculeRingEffectSizeCommandId(ringKey, visibleEffectKind, value))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function ArtToolbarStyleControls({
   currentObjectColor,
   currentArtStyle,
@@ -780,6 +1048,7 @@ function ArtToolbarStyleControls({
   const supportsDashAll = currentArtStyle?.supportsDashAll ?? false;
   const supportsLineEndsAll = currentArtStyle?.supportsLineEndsAll ?? false;
   const supportsCornersAll = currentArtStyle?.supportsCornersAll ?? false;
+  const isMoleculeRingArtTarget = currentArtStyle?.appearanceTarget.kind === "molecule-rings";
   const effectiveArtStyleTarget: ToolsetArtPaintTarget = currentArtStyle?.activePaintTarget ?? currentArtStyleTarget;
   const activeTargetSupported = effectiveArtStyleTarget === "fill" ? supportsFill : supportsStroke;
   const supportsStrokeWidth = supportsStroke && supportsDash;
@@ -796,9 +1065,12 @@ function ArtToolbarStyleControls({
   const activePaintTypeCommandId = activePaintTypeMixed
     ? "object.paint.type.mixed"
     : objectPaintTypeCommandId(activePaintTypeValue ?? "solid");
-  const activePaintTypeCommands = objectPaintTypeCommands.filter((command) =>
-    effectiveArtStyleTarget === "fill" || command.paintType !== "gloss"
-  );
+  const activePaintTypeCommands = objectPaintTypeCommands.filter((command) => {
+    if (isMoleculeRingArtTarget) {
+      return command.paintType === "none" || command.paintType === "solid";
+    }
+    return effectiveArtStyleTarget === "fill" || command.paintType !== "gloss";
+  });
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const effectColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
@@ -1253,6 +1525,7 @@ function ArtToolbarStyleControls({
       data-art-dash-supported-count={dashSupportedCount}
       data-art-line-ends-supported-count={lineEndsSupportedCount}
       data-art-corners-supported-count={cornersSupportedCount}
+      data-art-appearance-target={currentArtStyle?.appearanceTarget.kind ?? "none"}
       data-art-fill-support-all={currentArtStyle?.supportsFillAll ?? false}
       data-art-stroke-support-all={currentArtStyle?.supportsStrokeAll ?? false}
       data-art-dash-support-all={currentArtStyle?.supportsDashAll ?? false}
@@ -1378,19 +1651,21 @@ function ArtToolbarStyleControls({
         >
           ∅
         </button>
-        <button
-          type="button"
-          className="art-inspector-symbol-button"
-          aria-label="Swap fill and stroke"
-          title="Swap fill and stroke"
-          disabled={!selected || !supportsFill || !supportsStroke}
-          data-command-id="object.style.swapFillStroke"
-          data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onInvoke("object.style.swapFillStroke")}
-        >
-          ⇄
-        </button>
+        {!isMoleculeRingArtTarget ? (
+          <button
+            type="button"
+            className="art-inspector-symbol-button"
+            aria-label="Swap fill and stroke"
+            title="Swap fill and stroke"
+            disabled={!selected || !supportsFill || !supportsStroke}
+            data-command-id="object.style.swapFillStroke"
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => onInvoke("object.style.swapFillStroke")}
+          >
+            ⇄
+          </button>
+        ) : null}
         <div className="art-effect-button-group" role="group" aria-label="Art effects">
           {objectEffectCommands.map((command) => {
             const effectKind = command.effectKind;
@@ -1439,7 +1714,7 @@ function ArtToolbarStyleControls({
         {strokeWidthControl}
       </div>
       <div className="art-inspector-row art-inspector-opacity-row">
-        {opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId)}
+        {!isMoleculeRingArtTarget ? opacitySlider("Object opacity", "Obj", objectOpacity, objectOpacityCommandId) : null}
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>

@@ -1,6 +1,7 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
-const workspacePackage = (path: string) => new URL(path, import.meta.url).pathname;
+const workspacePackage = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
 export default defineConfig({
   define: {

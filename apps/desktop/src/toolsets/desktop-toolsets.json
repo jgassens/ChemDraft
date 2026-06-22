@@ -363,6 +363,24 @@
       ]
     },
     {
+      "id": "core.moleculeInspector",
+      "title": "Molecule Inspector",
+      "source": "core",
+      "defaultVisible": false,
+      "defaultMode": "floating",
+      "preferredWindowSize": { "width": 312, "height": 224, "minWidth": 288, "minHeight": 196 },
+      "category": "core",
+      "gridLayout": { "orientation": "horizontal", "rows": 1, "cellWidth": 24, "cellHeight": 24 },
+      "groups": [
+        {
+          "id": "core.moleculeInspector.toggle",
+          "items": [
+            { "commandId": "view.toggleMoleculeInspector", "title": "Molecule Inspector", "icon": "inspector", "category": "view" }
+          ]
+        }
+      ]
+    },
+    {
       "id": "plugin.fixture",
       "title": "Fixture Plugin Toolbar",
       "source": "plugin",

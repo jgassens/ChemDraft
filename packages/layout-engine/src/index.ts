@@ -797,6 +797,16 @@ export interface PageSvgRenderWarning {
   objectId?: string;
 }
 
+export interface NativeMoleculeRing {
+  ringKey: string;
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+  center: LayoutPoint;
+  points: readonly LayoutPoint[];
+  area: number;
+  pathD: string;
+}
+
 export interface ResolvedBondCrossing {
   key: string;
   bonds: [BondRef, BondRef];
@@ -1455,6 +1465,7 @@ function planNativeMoleculeGraphSvg(
     ),
     ...fillUnderlayFragments,
     ...(effectSource ? [effectSource] : []),
+    ...moleculeRingHitTargetFragments(object),
     ...bondLayerFragments,
     ...labelBackgroundFragments,
     ...labelFragments,
@@ -1469,46 +1480,72 @@ function planNativeMoleculeGraphSvg(
 
 function moleculeFillUnderlayFragments(
   object: MoleculeObject,
-  drawingStyle: NativeDrawingStyle
-): PageSvgElementFragment[] {
-  const paint = moleculeFillPaintForObject(object);
-  if (paint.kind === "none") {
+  _drawingStyle: NativeDrawingStyle
+): PageSvgFragment[] {
+  const rings = nativeMoleculeRings(object);
+  if (rings.length === 0) {
     return [];
   }
 
-  const d = moleculeFillUnderlayPathD(object, drawingStyle);
-  if (!d) {
-    return [];
-  }
+  return rings.flatMap((ring) => {
+    const paint = moleculeRingFillPaint(object, ring.ringKey);
+    if (paint.kind === "none") {
+      return [];
+    }
 
-  const paintId = `molecule-fill-${object.id}`;
-  return [
-    ...moleculePaintDefinitionFragments(paint, paintId, object),
-    elementFragment("path", `molecule-fill-underlay-${object.id}`, {
-      class: "native-molecule-fill-underlay",
-      "data-molecule-fill": "true",
-      d,
-      ...moleculePaintAttrs("fill", paint, paintId, moleculeFillOpacity(object)),
-      stroke: "none",
-      "pointer-events": "none"
-    })
-  ];
+    const opacity = moleculeRingFillOpacity(object, ring.ringKey, paint);
+    const effects = visualEffectPlansForStyle({
+      objectId: `${object.id}-${stableSvgIdPart(ring.ringKey)}`,
+      style: moleculeRingStyle(object, ring.ringKey),
+      sketchBasePathD: ring.pathD,
+      sketchStrokeWidthPx: 1.5
+    });
+    const effectFilterId = `molecule-ring-effects-${object.id}-${stableSvgIdPart(ring.ringKey)}`;
+    const paintId = `molecule-fill-${object.id}-${stableSvgIdPart(ring.ringKey)}`;
+    const filter = effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow")
+      ? `url(#${effectFilterId})`
+      : undefined;
+
+    return [
+      ...moleculePaintDefinitionFragments(paint, paintId, object),
+      ...svgEffectDefinitionFragmentsForEffects(
+        effects,
+        effectFilterId,
+        svgEffectFilterRegionForBounds(effects, object)
+      ),
+      elementFragment("path", `molecule-fill-underlay-${object.id}-${ring.ringKey}`, {
+        class: "native-molecule-fill-underlay",
+        "data-molecule-fill": "true",
+        "data-molecule-fill-ring": "true",
+        "data-ring-key": ring.ringKey,
+        d: ring.pathD,
+        ...moleculePaintAttrs("fill", paint, paintId, opacity),
+        filter,
+        stroke: "none",
+        "pointer-events": "none"
+      }),
+      ...svgSketchEffectFragmentsForEffects(effects, `${object.id}-${stableSvgIdPart(ring.ringKey)}`, {
+        className: "native-molecule-ring-sketch",
+        dataAttribute: "data-molecule-ring-effect",
+        keyPrefix: "molecule-ring-sketch"
+      })
+    ];
+  });
 }
 
-function moleculeFillUnderlayPathD(
-  object: MoleculeObject,
-  _drawingStyle: NativeDrawingStyle
-): string | undefined {
-  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
-  const ringPaths = moleculeFillRingCycles(object)
-    .map((cycle) => moleculeRingPathD(cycle, atomById))
-    .filter((path): path is string => Boolean(path));
-
-  if (ringPaths.length === 0) {
-    return undefined;
-  }
-
-  return ringPaths.join(" ");
+// Transparent interior catchers, one per ring, that route a pointer press on an empty ring
+// interior to the owning molecule. They live in the render plan next to the atom/bond catchers
+// (one stacking layer, one source of truth) and are emitted below the bond/atom catchers so an
+// atom or bond hit always wins. Identity is resolved geometrically (nativeMoleculeRingAtPoint);
+// the `data-ring-hit-key` is only a DOM hint. Excluded from export via the hit-target filter.
+function moleculeRingHitTargetFragments(object: MoleculeObject): PageSvgFragment[] {
+  return nativeMoleculeRings(object).map((ring) =>
+    elementFragment("path", `ring-hit-${object.id}-${ring.ringKey}`, {
+      class: "native-molecule-ring-hit-target",
+      "data-ring-hit-key": ring.ringKey,
+      d: ring.pathD
+    })
+  );
 }
 
 interface MoleculeFillRingCycle {
@@ -1584,6 +1621,77 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   return [...cycles.values()].sort((left, right) =>
     moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
   );
+}
+
+export function nativeMoleculeRings(object: MoleculeObject): NativeMoleculeRing[] {
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  return moleculeFillRingCycles(object)
+    .flatMap((cycle): NativeMoleculeRing[] => {
+      const points = cycle.atomIds.flatMap((atomId) => {
+        const atom = atomById.get(atomId);
+        return atom ? [{ x: atom.x, y: atom.y }] : [];
+      });
+      if (points.length !== cycle.atomIds.length || points.length < 3) {
+        return [];
+      }
+
+      const pathD = moleculeRingPathD(cycle, atomById);
+      if (!pathD) {
+        return [];
+      }
+
+      return [{
+        ringKey: moleculeFillCycleKey(cycle.bondIds),
+        atomIds: [...cycle.atomIds],
+        bondIds: [...cycle.bondIds].sort(),
+        center: polygonCentroid(points),
+        points,
+        area: Math.abs(polygonSignedArea(points)),
+        pathD
+      }];
+    })
+    .sort((left, right) =>
+      moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right)) ||
+      left.ringKey.localeCompare(right.ringKey)
+    );
+}
+
+/**
+ * The ring whose interior polygon contains `point`, or undefined. When a point lies in more than
+ * one ring (fused systems overlap near a shared bond), the smallest-area ring wins, then a stable
+ * `ringKey`. Geometry-only and owned by the layout engine, so ring selection picks the same ring
+ * whether the press arrives via the canvas, a DOM hint, or a test — it never depends on which SVG
+ * node the browser delivered the pointer event to. Ring keys stay topology-derived via
+ * `nativeMoleculeRings`.
+ */
+export function nativeMoleculeRingAtPoint(
+  object: MoleculeObject,
+  point: LayoutPoint
+): NativeMoleculeRing | undefined {
+  return nativeMoleculeRings(object)
+    .filter((ring) => pointInPolygon(point, ring.points))
+    .sort((left, right) => left.area - right.area || left.ringKey.localeCompare(right.ringKey))[0];
+}
+
+function pointInPolygon(point: LayoutPoint, polygon: readonly LayoutPoint[]): boolean {
+  if (polygon.length < 3) {
+    return false;
+  }
+
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const current = polygon[index]!;
+    const prior = polygon[previous]!;
+    const crossesY = (current.y > point.y) !== (prior.y > point.y);
+    if (!crossesY) {
+      continue;
+    }
+    const xAtY = ((prior.x - current.x) * (point.y - current.y)) / (prior.y - current.y) + current.x;
+    if (point.x <= xAtY) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 function moleculeFillShortestPath(
@@ -1713,6 +1821,44 @@ function moleculeFillCycleKey(bondIds: readonly string[]): string {
 
 function moleculeFillCycleSortKey(cycle: MoleculeFillRingCycle): string {
   return [...cycle.atomIds].sort().join("|");
+}
+
+function polygonSignedArea(points: readonly LayoutPoint[]): number {
+  if (points.length < 3) {
+    return 0;
+  }
+
+  let area = 0;
+  points.forEach((point, index) => {
+    const next = points[(index + 1) % points.length]!;
+    area += point.x * next.y - next.x * point.y;
+  });
+  return area / 2;
+}
+
+function polygonCentroid(points: readonly LayoutPoint[]): LayoutPoint {
+  const signedArea = polygonSignedArea(points);
+  if (Math.abs(signedArea) < 0.000001) {
+    return {
+      x: points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length),
+      y: points.reduce((sum, point) => sum + point.y, 0) / Math.max(1, points.length)
+    };
+  }
+
+  let x = 0;
+  let y = 0;
+  points.forEach((point, index) => {
+    const next = points[(index + 1) % points.length]!;
+    const cross = point.x * next.y - next.x * point.y;
+    x += (point.x + next.x) * cross;
+    y += (point.y + next.y) * cross;
+  });
+
+  const factor = 1 / (6 * signedArea);
+  return {
+    x: x * factor,
+    y: y * factor
+  };
 }
 
 function moleculeFillBondPairKey(firstAtomId: string, secondAtomId: string): string {
@@ -3734,6 +3880,53 @@ function moleculeFillOpacityFromStyle(object: MoleculeObject): number {
   return clamp(metadataNumber(object.style.fillOpacity) ?? 1, 0, 1);
 }
 
+function moleculeRingStyle(object: MoleculeObject, ringKey: string): Record<string, unknown> {
+  const styles = object.style.ringStyles;
+  if (!styles || typeof styles !== "object" || Array.isArray(styles)) {
+    return {};
+  }
+
+  const style = (styles as Record<string, unknown>)[ringKey];
+  return style && typeof style === "object" && !Array.isArray(style)
+    ? style as Record<string, unknown>
+    : {};
+}
+
+function moleculeRingFillPaint(object: MoleculeObject, ringKey: string): GraphicPaint {
+  const style = moleculeRingStyle(object, ringKey);
+  const ringPaint = graphicPaintFromMetadata(style.fillPaint);
+  if (ringPaint) {
+    return ringPaint;
+  }
+
+  const fillColor = metadataString(style.fillColor);
+  if (fillColor) {
+    return fillColor.toLowerCase() === "none"
+      ? { kind: "none" }
+      : { kind: "solid", color: fillColor, opacity: metadataNumber(style.fillOpacity) };
+  }
+
+  return moleculeFillPaintForObject(object);
+}
+
+function moleculeRingFillOpacity(
+  object: MoleculeObject,
+  ringKey: string,
+  paint: GraphicPaint
+): number {
+  const style = moleculeRingStyle(object, ringKey);
+  const explicitOpacity = metadataNumber(style.fillOpacity);
+  if (explicitOpacity !== undefined) {
+    return clamp(explicitOpacity, 0, 1);
+  }
+
+  if (paint.kind === "solid" && paint.opacity !== undefined) {
+    return clamp(paint.opacity, 0, 1);
+  }
+
+  return moleculeFillOpacity(object);
+}
+
 function graphicPaintFromMetadata(value: unknown): GraphicPaint | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -3827,6 +4020,10 @@ export function styleColorMapValue(value: unknown, id: string): string | undefin
 
 function metadataString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stableSvgIdPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]+/g, "_");
 }
 
 function metadataNumber(value: unknown): number | undefined {

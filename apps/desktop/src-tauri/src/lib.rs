@@ -25,6 +25,8 @@ const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
+const MOLECULE_INSPECTOR_TOOLSET_ID: &str = "core.moleculeInspector";
+const MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID: &str = "view.toggleMoleculeInspector";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
@@ -215,6 +217,12 @@ pub fn run() {
         .on_menu_event(|app, event| {
             let command_id = event.id().as_ref();
             if let Some(toolset_id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
+                if toolset_id == MOLECULE_INSPECTOR_TOOLSET_ID {
+                    if let Err(error) = emit_command_to_main(app, MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID) {
+                        eprintln!("Could not route ChemDraft Molecule Inspector command: {error}");
+                    }
+                    return;
+                }
                 if let Err(error) = toggle_toolset_window(app.clone(), toolset_id.to_string()) {
                     eprintln!("Could not toggle ChemDraft toolbar {toolset_id}: {error}");
                 }

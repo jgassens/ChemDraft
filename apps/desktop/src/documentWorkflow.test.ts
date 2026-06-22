@@ -54,7 +54,11 @@ import {
   applyMoleculeObjectColorToSelection,
   applyMoleculeObjectOpacityToSelection,
   applyMoleculeObjectPaintTypeToSelection,
+  applyMoleculeRingEffect,
+  applyMoleculeRingFillColor,
+  applyMoleculeRingFillOpacity,
   applyColorToNativeMoleculePart,
+  clearMoleculeRingStyles,
   applyNativeArtBooleanOperationToSelection,
   applyToolbarColorToSelection,
   alignSelectedDocumentObjects,
@@ -202,6 +206,40 @@ function moleculeById(document: ChemDraftDocument, objectId: string): MoleculeOb
     throw new Error(`Expected molecule "${objectId}".`);
   }
   return molecule;
+}
+
+function benzeneRingMolecule(overrides: Partial<MoleculeObject> = {}): MoleculeObject {
+  return {
+    id: "mol_ring",
+    type: "molecule",
+    x: 150,
+    y: 120,
+    width: 120,
+    height: 104,
+    rotation: 0,
+    style: { fillColor: "none" },
+    structureFormat: "smiles",
+    structure: "c1ccccc1",
+    atoms: [
+      { id: "atom_001", element: "C", x: 210, y: 120, formalCharge: 0 },
+      { id: "atom_002", element: "C", x: 262, y: 150, formalCharge: 0 },
+      { id: "atom_003", element: "C", x: 262, y: 210, formalCharge: 0 },
+      { id: "atom_004", element: "C", x: 210, y: 240, formalCharge: 0 },
+      { id: "atom_005", element: "C", x: 158, y: 210, formalCharge: 0 },
+      { id: "atom_006", element: "C", x: 158, y: 150, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+      { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+      { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+      { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+      { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+      { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" }
+    ],
+    superatoms: [],
+    rGroups: [],
+    ...overrides
+  } satisfies MoleculeObject;
 }
 
 function moleculeVisualEffects(document: ChemDraftDocument, objectId: string): VisualEffect[] | undefined {
@@ -918,6 +956,38 @@ describe("Phase 4 document workflow", () => {
     expect(reopened.source).toBe("native-payload");
     expect(reopened.warnings).toEqual([]);
     expect(reopened.document).toEqual(document);
+  });
+
+  it("saves and opens per-ring molecule styles", () => {
+    const base = createPhase4Document("Ring Style Round Trip");
+    const molecule = benzeneRingMolecule();
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+    const target = { objectId: molecule.id, kind: "ring" as const, ringKey };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+    const styled = applyMoleculeRingEffect(
+      applyMoleculeRingFillOpacity(
+        applyMoleculeRingFillColor(document, target, "#1f5fbf"),
+        target,
+        0.54
+      ),
+      target,
+      "shadow"
+    );
+
+    const reopened = openNativeDocument(createNativeSavePayload(styled).contents);
+
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.warnings).toEqual([]);
+    const reopenedMolecule = moleculeById(reopened.document!, molecule.id);
+    const ringStyle = (reopenedMolecule.style.ringStyles as Record<string, Record<string, unknown>>)[ringKey];
+    expect(reopenedMolecule.atoms).toEqual(molecule.atoms);
+    expect(reopenedMolecule.bonds).toEqual(molecule.bonds);
+    expect(ringStyle.fillColor).toBe("#1f5fbf");
+    expect(ringStyle.fillOpacity).toBe(0.54);
+    expect((ringStyle.visualEffects as VisualEffect[])[0]).toMatchObject({ kind: "shadow" });
   });
 
   it("recommends a custom page sized exactly to oversized imported content", () => {
@@ -9308,5 +9378,77 @@ describe("PR #7 review regression fixes", () => {
     }
     const group = result.document.pages[0].objects.find((object) => object.id === groupId);
     expect((group?.style as Record<string, unknown> | undefined)?.strokeColor).toBeUndefined();
+  });
+
+  it("styles native molecule rings without mutating chemical identity", () => {
+    const base = createPhase4Document("Ring Style");
+    const molecule = benzeneRingMolecule();
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+    const target = { objectId: molecule.id, kind: "ring" as const, ringKey };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+
+    const colored = applyMoleculeRingFillColor(document, target, "#d02626");
+    const translucent = applyMoleculeRingFillOpacity(colored, target, 0.42);
+    const effected = applyMoleculeRingEffect(translucent, target, "glow");
+    const next = moleculeById(effected, molecule.id);
+    const ringStyle = (next.style.ringStyles as Record<string, Record<string, unknown>>)[ringKey];
+
+    expect(next.atoms).toEqual(molecule.atoms);
+    expect(next.bonds).toEqual(molecule.bonds);
+    expect(next.structure).toBe(molecule.structure);
+    expect(ringStyle.fillColor).toBe("#d02626");
+    expect(ringStyle.fillOpacity).toBe(0.42);
+    expect((ringStyle.visualEffects as VisualEffect[])[0]).toMatchObject({ kind: "glow" });
+    expect(applyMoleculeRingFillColor(document, { ...target, ringKey: "missing" }, "#111111")).toBe(document);
+  });
+
+  it("clears molecule ring styles without changing base molecule style or chemistry", () => {
+    const base = createPhase4Document("Ring Style Clear");
+    const molecule = benzeneRingMolecule();
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+    const target = { objectId: molecule.id, kind: "ring" as const, ringKey };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+    const styled = applyMoleculeRingFillOpacity(
+      applyMoleculeRingFillColor(document, target, "#d02626"),
+      target,
+      0.42
+    );
+
+    const cleared = clearMoleculeRingStyles(styled, [molecule.id]);
+    const next = moleculeById(cleared, molecule.id);
+
+    expect(next.style.ringStyles).toBeUndefined();
+    expect(next.atoms).toEqual(molecule.atoms);
+    expect(next.bonds).toEqual(molecule.bonds);
+    expect(next.structure).toBe(molecule.structure);
+    expect(clearMoleculeRingStyles(cleared, [molecule.id])).toBe(cleared);
+  });
+
+  it("prunes ring styles when a topology edit removes that ring", () => {
+    const base = createPhase4Document("Ring Prune");
+    const molecule = benzeneRingMolecule();
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+    const target = { objectId: molecule.id, kind: "ring" as const, ringKey };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+    const styled = applyMoleculeRingFillColor(document, target, "#2c7a3f");
+
+    const broken = applyNativeMoleculeDeleteTarget(styled, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    });
+
+    expect(moleculeById(broken, molecule.id).style.ringStyles).toBeUndefined();
   });
 });

@@ -1,8 +1,9 @@
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-const workspacePackage = (path: string) => new URL(path, import.meta.url).pathname;
+const workspacePackage = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
 // Computed once per `vite build` / `vite dev` start, so the on-screen stamp always reflects
 // the actual source that was bundled. Format: "YYYY-MM-DD HH:MM:SS <shortSha>[+dirty]".

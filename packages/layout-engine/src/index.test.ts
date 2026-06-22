@@ -13,6 +13,8 @@ import {
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
+  nativeMoleculeRings,
+  nativeMoleculeRingAtPoint,
   planBondExtension,
   planNativeArtVisual,
   planPageSvgRender,
@@ -488,6 +490,87 @@ function moleculeObject(overrides: Partial<MoleculeObject> = {}): MoleculeObject
   };
 }
 
+function benzeneMolecule(overrides: Partial<MoleculeObject> = {}): MoleculeObject {
+  return moleculeObject({
+    id: "mol_benzene",
+    structure: "c1ccccc1",
+    x: 120,
+    y: 120,
+    width: 180,
+    height: 120,
+    atoms: [
+      { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+      { id: "atom_002", element: "C", x: 180, y: 140, formalCharge: 0 },
+      { id: "atom_003", element: "C", x: 240, y: 140, formalCharge: 0 },
+      { id: "atom_004", element: "C", x: 280, y: 180, formalCharge: 0 },
+      { id: "atom_005", element: "C", x: 240, y: 220, formalCharge: 0 },
+      { id: "atom_006", element: "C", x: 180, y: 220, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+      { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "double" },
+      { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+      { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "double" },
+      { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+      { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "double" }
+    ],
+    ...overrides
+  });
+}
+
+function fusedAceneMolecule(ringCount: 2 | 3, overrides: Partial<MoleculeObject> = {}): MoleculeObject {
+  const atoms = [
+    { id: "atom_001", element: "C", x: 100, y: 180, formalCharge: 0 },
+    { id: "atom_002", element: "C", x: 140, y: 110, formalCharge: 0 },
+    { id: "atom_003", element: "C", x: 220, y: 110, formalCharge: 0 },
+    { id: "atom_004", element: "C", x: 260, y: 180, formalCharge: 0 },
+    { id: "atom_005", element: "C", x: 220, y: 250, formalCharge: 0 },
+    { id: "atom_006", element: "C", x: 140, y: 250, formalCharge: 0 },
+    { id: "atom_007", element: "C", x: 300, y: 80, formalCharge: 0 },
+    { id: "atom_008", element: "C", x: 360, y: 140, formalCharge: 0 },
+    { id: "atom_009", element: "C", x: 360, y: 220, formalCharge: 0 },
+    { id: "atom_010", element: "C", x: 300, y: 280, formalCharge: 0 },
+    ...(ringCount === 3 ? [
+      { id: "atom_011", element: "C", x: 420, y: 80, formalCharge: 0 },
+      { id: "atom_012", element: "C", x: 480, y: 140, formalCharge: 0 },
+      { id: "atom_013", element: "C", x: 480, y: 220, formalCharge: 0 },
+      { id: "atom_014", element: "C", x: 420, y: 280, formalCharge: 0 }
+    ] : [])
+  ];
+  const bonds: MoleculeObject["bonds"] = [
+    { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+    { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+    { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+    { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+    { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+    { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" },
+    { id: "bond_007", fromAtomId: "atom_003", toAtomId: "atom_007", order: "single" },
+    { id: "bond_008", fromAtomId: "atom_007", toAtomId: "atom_008", order: "single" },
+    { id: "bond_009", fromAtomId: "atom_008", toAtomId: "atom_009", order: "single" },
+    { id: "bond_010", fromAtomId: "atom_009", toAtomId: "atom_010", order: "single" },
+    { id: "bond_011", fromAtomId: "atom_010", toAtomId: "atom_004", order: "single" },
+    ...(ringCount === 3 ? [
+      { id: "bond_012", fromAtomId: "atom_008", toAtomId: "atom_011", order: "single" as const },
+      { id: "bond_013", fromAtomId: "atom_011", toAtomId: "atom_012", order: "single" as const },
+      { id: "bond_014", fromAtomId: "atom_012", toAtomId: "atom_013", order: "single" as const },
+      { id: "bond_015", fromAtomId: "atom_013", toAtomId: "atom_014", order: "single" as const },
+      { id: "bond_016", fromAtomId: "atom_014", toAtomId: "atom_009", order: "single" as const }
+    ] : [])
+  ];
+
+  return moleculeObject({
+    id: ringCount === 3 ? "mol_anthracene" : "mol_naphthalene",
+    structure: ringCount === 3 ? "anthracene-fixture" : "naphthalene-fixture",
+    x: 80,
+    y: 60,
+    width: ringCount === 3 ? 420 : 300,
+    height: 240,
+    atoms,
+    bonds,
+    ...overrides
+  });
+}
+
 function elementFragments(fragment: PageSvgFragment): PageSvgElementFragment[] {
   if (fragment.kind === "text") {
     return [];
@@ -547,6 +630,64 @@ function visiblePrimitiveSignature(
 }
 
 describe("layout-engine page SVG planner", () => {
+  it("reports stable native molecule ring keys for benzene, naphthalene, and anthracene", () => {
+    const benzeneRings = nativeMoleculeRings(benzeneMolecule());
+    expect(benzeneRings).toHaveLength(1);
+    expect(benzeneRings[0]).toMatchObject({
+      ringKey: "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006",
+      bondIds: ["bond_001", "bond_002", "bond_003", "bond_004", "bond_005", "bond_006"]
+    });
+    expect(benzeneRings[0]?.area).toBeGreaterThan(0);
+    expect(benzeneRings[0]?.center).toMatchObject({ x: 210, y: 180 });
+
+    const naphthaleneRings = nativeMoleculeRings(fusedAceneMolecule(2));
+    expect(naphthaleneRings).toHaveLength(2);
+    expect(new Set(naphthaleneRings.map((ring) => ring.ringKey)).size).toBe(2);
+
+    const anthraceneRings = nativeMoleculeRings(fusedAceneMolecule(3));
+    expect(anthraceneRings).toHaveLength(3);
+    expect(new Set(anthraceneRings.map((ring) => ring.ringKey)).size).toBe(3);
+  });
+
+  it("resolves the ring whose interior contains a point", () => {
+    const molecule = benzeneMolecule();
+    const ring = nativeMoleculeRings(molecule)[0]!;
+    expect(nativeMoleculeRingAtPoint(molecule, ring.center)?.ringKey).toBe(ring.ringKey);
+  });
+
+  it("returns no ring when the point is outside every interior", () => {
+    expect(nativeMoleculeRingAtPoint(benzeneMolecule(), { x: -1000, y: -1000 })).toBeUndefined();
+  });
+
+  it("picks the containing ring per interior in a fused system", () => {
+    const molecule = fusedAceneMolecule(3);
+    nativeMoleculeRings(molecule).forEach((ring) => {
+      expect(nativeMoleculeRingAtPoint(molecule, ring.center)?.ringKey).toBe(ring.ringKey);
+    });
+  });
+
+  it("keeps native molecule ring keys stable after moving, rotating, and scaling the object", () => {
+    const molecule = fusedAceneMolecule(3);
+    const before = nativeMoleculeRings(molecule).map((ring) => ring.ringKey);
+    const transformed = {
+      ...molecule,
+      x: molecule.x + 34,
+      y: molecule.y - 18,
+      width: molecule.width * 1.8,
+      height: molecule.height * 0.75,
+      rotation: 37,
+      transform: {
+        rotationDegrees: 37,
+        scaleX: 1.8,
+        scaleY: 0.75,
+        tiltXDegrees: 12,
+        tiltYDegrees: -8
+      }
+    } satisfies MoleculeObject;
+
+    expect(nativeMoleculeRings(transformed).map((ring) => ring.ringKey)).toEqual(before);
+  });
+
   it("produces one globally ordered fragment stream for multiple molecules", () => {
     const page = pageWithObjects([
       moleculeObject({ id: "mol_back" }),
@@ -1041,12 +1182,15 @@ describe("layout-engine page SVG planner", () => {
 
     const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
     const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
     expect(fill?.tag).toBe("path");
-    expect(fill?.attrs.fill).toBe("url(#molecule-fill-mol_fill)");
+    expect(fill?.attrs["data-molecule-fill-ring"]).toBe("true");
+    expect(fill?.attrs["data-ring-key"]).toBe(ringKey);
+    expect(fill?.attrs.fill).toBe(`url(#molecule-fill-mol_fill-${ringKey.replaceAll("|", "_")})`);
     expect(fill?.attrs["fill-opacity"]).toBe(0.44);
     expect(fill?.attrs.d).toBe("M 140 180 L 180 140 L 240 140 L 280 180 L 240 220 L 180 220 Z");
     expect(fragments.some((fragment) =>
-      fragment.tag === "linearGradient" && fragment.attrs.id === "molecule-fill-mol_fill"
+      fragment.tag === "linearGradient" && fragment.attrs.id === `molecule-fill-mol_fill-${ringKey.replaceAll("|", "_")}`
     )).toBe(true);
     expect(fragments.find((fragment) =>
       String(fragment.attrs.class).includes("native-bond-line")
@@ -1055,34 +1199,8 @@ describe("layout-engine page SVG planner", () => {
 
   it("fills fused molecule rings as separate ring interiors instead of an expanded outer hull", () => {
     const page = pageWithObjects([
-      moleculeObject({
+      fusedAceneMolecule(2, {
         id: "mol_fused_fill",
-        structure: "C1CCC2CCCCC2C1",
-        atoms: [
-          { id: "atom_001", element: "C", x: 100, y: 180, formalCharge: 0 },
-          { id: "atom_002", element: "C", x: 140, y: 110, formalCharge: 0 },
-          { id: "atom_003", element: "C", x: 220, y: 110, formalCharge: 0 },
-          { id: "atom_004", element: "C", x: 260, y: 180, formalCharge: 0 },
-          { id: "atom_005", element: "C", x: 220, y: 250, formalCharge: 0 },
-          { id: "atom_006", element: "C", x: 140, y: 250, formalCharge: 0 },
-          { id: "atom_007", element: "C", x: 300, y: 80, formalCharge: 0 },
-          { id: "atom_008", element: "C", x: 360, y: 140, formalCharge: 0 },
-          { id: "atom_009", element: "C", x: 360, y: 220, formalCharge: 0 },
-          { id: "atom_010", element: "C", x: 300, y: 280, formalCharge: 0 }
-        ],
-        bonds: [
-          { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
-          { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
-          { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
-          { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
-          { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
-          { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" },
-          { id: "bond_007", fromAtomId: "atom_003", toAtomId: "atom_007", order: "single" },
-          { id: "bond_008", fromAtomId: "atom_007", toAtomId: "atom_008", order: "single" },
-          { id: "bond_009", fromAtomId: "atom_008", toAtomId: "atom_009", order: "single" },
-          { id: "bond_010", fromAtomId: "atom_009", toAtomId: "atom_010", order: "single" },
-          { id: "bond_011", fromAtomId: "atom_010", toAtomId: "atom_004", order: "single" }
-        ],
         style: {
           ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
           fillPaint: { kind: "solid", color: "#d02626" }
@@ -1091,15 +1209,45 @@ describe("layout-engine page SVG planner", () => {
     ]);
 
     const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
-    const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill"] === "true");
-    const pathD = String(fill?.attrs.d ?? "");
-    const pathNumbers = [...pathD.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
+    const fills = fragments.filter((fragment) => fragment.attrs["data-molecule-fill-ring"] === "true");
+    const pathD = fills.map((fill) => String(fill.attrs.d ?? ""));
+    const pathNumbers = pathD.flatMap((path) => [...path.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0])));
 
-    expect((pathD.match(/M /g) ?? [])).toHaveLength(2);
+    expect(fills).toHaveLength(2);
+    expect(new Set(fills.map((fill) => fill.attrs["data-ring-key"])).size).toBe(2);
     expect(pathD).toContain("M 100 180 L 140 110 L 220 110 L 260 180 L 220 250 L 140 250 Z");
-    expect(pathD).toContain("M 220 110");
-    expect(pathD).toContain("L 300 80");
+    expect(pathD.some((path) => path.startsWith("M 220 110") && path.includes("L 300 80"))).toBe(true);
+    expect(fills.every((fill) => fill.attrs.fill === "#d02626")).toBe(true);
     expect(pathNumbers.every((value) => value >= 80 && value <= 360)).toBe(true);
+  });
+
+  it("renders anthracene ring fills as independently styleable paths", () => {
+    const base = fusedAceneMolecule(3);
+    const ringKeys = nativeMoleculeRings(base).map((ring) => ring.ringKey);
+    const page = pageWithObjects([
+      {
+        ...base,
+        id: "mol_ring_styles",
+        style: {
+          ...base.style,
+          fillPaint: { kind: "solid", color: "#f8faf9" },
+          ringStyles: {
+            [ringKeys[0]!]: { fillColor: "#ff0000", fillOpacity: 0.25 },
+            [ringKeys[1]!]: { fillColor: "#00ff00", fillOpacity: 0.5 },
+            [ringKeys[2]!]: { fillColor: "#0000ff", fillOpacity: 0.75 }
+          }
+        }
+      }
+    ]);
+
+    const fills = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs["data-molecule-fill-ring"] === "true");
+
+    expect(fills).toHaveLength(3);
+    expect(fills.map((fill) => fill.attrs["data-ring-key"])).toEqual(ringKeys);
+    expect(fills.map((fill) => fill.attrs.fill)).toEqual(["#ff0000", "#00ff00", "#0000ff"]);
+    expect(fills.map((fill) => fill.attrs["fill-opacity"])).toEqual([0.25, 0.5, 0.75]);
   });
 
   it("fills macrocycle interiors even when the ring is larger than small aromatic scaffolds", () => {

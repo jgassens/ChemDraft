@@ -1,5 +1,6 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
+import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
@@ -42,10 +43,12 @@ export interface ToolsetTextStylePayload {
   currentTextScript: TextSpan["script"];
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
 }
 
 export type ToolsetArtPaintTarget = ArtInspectorPaintTarget;
 export type ToolsetArtStylePayload = ArtInspectorModel;
+export type ToolsetMoleculeInspectorPayload = MoleculeInspectorModel;
 
 type Unlisten = () => void;
 
@@ -74,11 +77,15 @@ export function createToolsetTextStylePayload(
   currentTextStyle: NativeTextStyle,
   currentTextScript: TextSpan["script"] = "normal",
   currentArtStyle?: ToolsetArtStylePayload,
-  currentArtStyleTarget: ToolsetArtPaintTarget = "fill"
+  currentArtStyleTarget: ToolsetArtPaintTarget = "fill",
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload
 ): ToolsetTextStylePayload {
-  return currentArtStyle
-    ? { currentTextStyle, currentTextScript, currentArtStyle, currentArtStyleTarget }
-    : { currentTextStyle, currentTextScript };
+  return {
+    currentTextStyle,
+    currentTextScript,
+    ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
+    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {})
+  };
 }
 
 export function createToolsetWindowStatePayload(

@@ -1,5 +1,6 @@
 import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
 import type { ChemDraftDocument, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
+import type { MoleculeInspectorModel } from "./moleculeInspectorModel";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
 export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
@@ -55,11 +56,24 @@ export interface ArtInspectorEffectModel {
   size: ArtInspectorMixedValue<number>;
 }
 
+export type ArtInspectorAppearanceTarget =
+  | {
+      kind: "objects";
+      objectIds: string[];
+      moleculeObjectIds: string[];
+      hasMoleculeRingOverrides: boolean;
+    }
+  | {
+      kind: "molecule-rings";
+      rings: { objectId: string; ringKey: string }[];
+    };
+
 export interface ArtInspectorModel {
   selectedCount: number;
   selectedObjectIds: string[];
   selectedGraphicIds: string[];
   selectedGraphicKinds: GraphicObject["graphicKind"][];
+  appearanceTarget: ArtInspectorAppearanceTarget;
   effectKinds: ArtInspectorEffectKind[];
   requestedPaintTarget: ArtInspectorPaintTarget;
   activePaintTarget: ArtInspectorPaintTarget;
@@ -126,6 +140,9 @@ export function createArtInspectorModel({
 
   const styleObjects = selectedVisualObjects ? [...selectedVisualObjects] : [...selectedGraphicObjects];
   const graphics = styleObjects.filter((object): object is GraphicObject => object.type === "graphic");
+  const moleculeObjectIds = styleObjects
+    .filter((object): object is MoleculeObject => object.type === "molecule")
+    .map((object) => object.id);
   const selectedCount = styleObjects.length;
   const planned = styleObjects.map((object): ArtInspectorPlannedEntry => {
     if (object.type === "graphic") {
@@ -174,6 +191,12 @@ export function createArtInspectorModel({
     selectedObjectIds: styleObjects.map((object) => object.id),
     selectedGraphicIds: graphics.map((object) => object.id),
     selectedGraphicKinds: uniqueGraphicKinds(graphics),
+    appearanceTarget: {
+      kind: "objects",
+      objectIds: styleObjects.map((object) => object.id),
+      moleculeObjectIds,
+      hasMoleculeRingOverrides: styleObjects.some((object) => object.type === "molecule" && moleculeHasRingStyles(object))
+    },
     effectKinds: (["shadow", "glow", "sketch"] as const).filter((kind) => effectControls[kind].presentCount > 0),
     requestedPaintTarget,
     activePaintTarget,
@@ -206,6 +229,79 @@ export function createArtInspectorModel({
     ),
     effectControls,
     skippedObjectIdsByControl: skippedObjectIdsByControl(planned)
+  };
+}
+
+export function createMoleculeRingArtInspectorModel(
+  moleculeInspector: MoleculeInspectorModel,
+  requestedPaintTarget: ArtInspectorPaintTarget = "fill"
+): ArtInspectorModel | undefined {
+  const selectedCount = moleculeInspector.selectedCount;
+  if (selectedCount === 0) {
+    return undefined;
+  }
+
+  const selectedObjectIds = moleculeInspector.selectedRings.map((ring) => `${ring.objectId}:${ring.ringKey}`);
+  return {
+    selectedCount,
+    selectedObjectIds,
+    selectedGraphicIds: [],
+    selectedGraphicKinds: [],
+    appearanceTarget: {
+      kind: "molecule-rings",
+      rings: moleculeInspector.selectedRings.map((ring) => ({
+        objectId: ring.objectId,
+        ringKey: ring.ringKey
+      }))
+    },
+    effectKinds: moleculeInspector.effectKinds,
+    requestedPaintTarget,
+    activePaintTarget: "fill",
+    supportsFillAny: true,
+    supportsFillAll: true,
+    supportsStrokeAny: false,
+    supportsStrokeAll: false,
+    supportsDashAny: false,
+    supportsDashAll: false,
+    supportsLineEndsAny: false,
+    supportsLineEndsAll: false,
+    supportsCornersAny: false,
+    supportsCornersAll: false,
+    supportsFillOpacityAny: true,
+    supportsFillOpacityAll: true,
+    supportsStrokeOpacityAny: false,
+    supportsStrokeOpacityAll: false,
+    fillSupportedCount: selectedCount,
+    strokeSupportedCount: 0,
+    dashSupportedCount: 0,
+    lineEndsSupportedCount: 0,
+    cornersSupportedCount: 0,
+    fillOpacitySupportedCount: selectedCount,
+    strokeOpacitySupportedCount: 0,
+    values: {
+      fillPaintType: moleculeInspector.values.fillPaintType,
+      strokePaintType: { value: null, mixed: false },
+      fillColor: moleculeInspector.values.fillColor,
+      strokeColor: { value: null, mixed: false },
+      objectOpacity: { value: 1, mixed: false },
+      fillOpacity: moleculeInspector.values.fillOpacity,
+      strokeOpacity: { value: null, mixed: false },
+      effect: moleculeInspector.values.effect,
+      strokeWidth: { value: null, mixed: false },
+      dash: { value: null, mixed: false },
+      lineEnds: { value: null, mixed: false },
+      corners: { value: null, mixed: false }
+    },
+    activeGradient: {
+      paintType: null,
+      stops: [],
+      mixed: false,
+      editable: false,
+      canAddStop: false,
+      canDeleteStop: false
+    },
+    effectControls: moleculeInspector.effectControls,
+    skippedObjectIdsByControl: {}
   };
 }
 
@@ -242,6 +338,16 @@ export function selectedVisualObjectsForArtInspector(
 
 function countSupported(values: readonly boolean[]): number {
   return values.filter(Boolean).length;
+}
+
+function moleculeHasRingStyles(object: MoleculeObject): boolean {
+  const ringStyles = object.style.ringStyles;
+  return Boolean(
+    ringStyles &&
+    typeof ringStyles === "object" &&
+    !Array.isArray(ringStyles) &&
+    Object.keys(ringStyles).length > 0
+  );
 }
 
 function uniqueGraphicKinds(objects: readonly GraphicObject[]): GraphicObject["graphicKind"][] {

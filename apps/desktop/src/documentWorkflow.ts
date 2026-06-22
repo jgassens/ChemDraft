@@ -98,6 +98,7 @@ import {
 import {
   findNearestAtomAtPoint,
   findNearestBondHit,
+  nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
   type LayoutPoint
@@ -177,6 +178,7 @@ export type NativeMoleculeColorTarget =
   | { objectId: string; kind: "atom"; atomId: string }
   | { objectId: string; kind: "bond"; bondId: string }
   | { objectId: string; kind: "parts"; atomIds: readonly string[]; bondIds: readonly string[] };
+export type NativeMoleculeRingTarget = { objectId: string; kind: "ring"; ringKey: string };
 
 export interface ToolbarColorSelection {
   objectIds: readonly string[];
@@ -4541,6 +4543,164 @@ export function applyMoleculeObjectOpacityToSelection(
   }));
 }
 
+export function clearMoleculeRingStyles(
+  document: ChemDraftDocument,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateMoleculeObjects(document, objectIds, (object) => moleculeStyleWithRingStyles(object.style, {}));
+}
+
+export function applyMoleculeRingFillColor(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  color: string
+): ChemDraftDocument {
+  const normalized = normalizeWorkflowHexColor(color);
+  if (!normalized) {
+    return document;
+  }
+
+  return updateMoleculeRingStyle(document, target, (style) => ({
+    ...style,
+    fillColor: normalized,
+    fillPaint: { kind: "solid", color: normalized }
+  }));
+}
+
+export function applyMoleculeRingFillNone(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget
+): ChemDraftDocument {
+  return updateMoleculeRingStyle(document, target, (style) => ({
+    ...style,
+    fillColor: "none",
+    fillPaint: { kind: "none" }
+  }));
+}
+
+export function applyMoleculeRingFillOpacity(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  opacity: number
+): ChemDraftDocument {
+  return updateMoleculeRingStyle(document, target, (style) => ({
+    ...style,
+    fillOpacity: clampWorkflowUnit(opacity)
+  }));
+}
+
+export function applyMoleculeRingEffect(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  effectKind: GraphicStyleEffectKind
+): ChemDraftDocument {
+  return updateMoleculeRingStyle(document, target, (style, object) => {
+    const baseStyle = visualEffectBaseStyle(style);
+    const existingEffects = visualEffectsForStyle(style);
+    const inactiveEffects = inactiveVisualEffectsForStyle(style);
+    if (effectKind === "none") {
+      return visualStyleWithEffects(baseStyle, [], mergeVisualEffectsByKind(inactiveEffects, existingEffects));
+    }
+
+    if (existingEffects.some((effect) => effect.kind === effectKind)) {
+      return visualStyleWithEffects(baseStyle, existingEffects, inactiveEffects);
+    }
+
+    const restoredEffect = inactiveEffects.find((effect) => effect.kind === effectKind) ??
+      defaultVisualEffectForKind(`${object.id}-${target.ringKey}`, effectKind);
+    return visualStyleWithEffects(
+      baseStyle,
+      [...existingEffects, restoredEffect],
+      inactiveEffects.filter((effect) => effect.kind !== effectKind)
+    );
+  });
+}
+
+export function deactivateMoleculeRingEffect(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  effectKind: GraphicStyleAdjustableEffectKind
+): ChemDraftDocument {
+  return updateMoleculeRingStyle(document, target, (style) => {
+    const existingEffects = visualEffectsForStyle(style);
+    const removedEffect = existingEffects.find((effect) => effect.kind === effectKind);
+    if (!removedEffect) {
+      return style;
+    }
+
+    const baseStyle = visualEffectBaseStyle(style);
+    return visualStyleWithEffects(
+      baseStyle,
+      existingEffects.filter((effect) => effect.kind !== effectKind),
+      mergeVisualEffectsByKind(inactiveVisualEffectsForStyle(style), [removedEffect])
+    );
+  });
+}
+
+export function applyMoleculeRingEffectColor(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  color: string
+): ChemDraftDocument {
+  const normalized = normalizeWorkflowHexColor(color);
+  if (!normalized) {
+    return document;
+  }
+
+  return updateMoleculeRingEffect(document, target, effectKind, (effect) => ({
+    ...effect,
+    color: normalized
+  }));
+}
+
+export function applyMoleculeRingEffectOpacity(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  opacity: number
+): ChemDraftDocument {
+  return updateMoleculeRingEffect(document, target, effectKind, (effect) => ({
+    ...effect,
+    opacity: clampWorkflowUnit(opacity)
+  }));
+}
+
+export function applyMoleculeRingEffectSize(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  size: number
+): ChemDraftDocument {
+  const value = clampWorkflowUnit(size);
+  return updateMoleculeRingEffect(document, target, effectKind, (effect) => {
+    if (effectKind === "shadow") {
+      const sizePx = value * 24;
+      return {
+        ...effect,
+        offsetX: sizePx,
+        offsetY: sizePx,
+        blurPx: sizePx * 0.5
+      };
+    }
+
+    if (effectKind === "glow") {
+      return {
+        ...effect,
+        blurPx: value * 18,
+        spreadPx: value * 4
+      };
+    }
+
+    return {
+      ...effect,
+      roughness: value * 3,
+      bowing: value * 2,
+      strokeWidth: Math.max(0.5, value * 4)
+    };
+  });
+}
+
 export function applyGraphicObjectEffectToSelection(
   document: ChemDraftDocument,
   effectKind: GraphicStyleEffectKind,
@@ -5440,8 +5600,9 @@ export function applyNativeMoleculeDeleteTarget(
   if (!nextMolecule) {
     return document;
   }
+  const prunedNextMolecule = moleculeWithPrunedRingStyles(nextMolecule);
 
-  if (nextMolecule.atoms.length === 0) {
+  if (prunedNextMolecule.atoms.length === 0) {
     return applyPatch(
       document,
       { op: "removeObject", objectId: molecule.id },
@@ -5451,7 +5612,7 @@ export function applyNativeMoleculeDeleteTarget(
 
   return applyPatch(
     document,
-    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { op: "updateObject", objectId: molecule.id, changes: prunedNextMolecule },
     { now: phase4Timestamp }
   );
 }
@@ -5501,7 +5662,11 @@ export function applyNativeMoleculePartsDelete(
 
   return applyPatch(
     document,
-    { op: "updateObject", objectId: molecule.id, changes: refreshNativeSingleBondGraph(molecule, atoms, bonds) },
+    {
+      op: "updateObject",
+      objectId: molecule.id,
+      changes: moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds))
+    },
     { now: phase4Timestamp }
   );
 }
@@ -5522,8 +5687,9 @@ export function applyNativeMoleculePartDeleteTarget(
   if (!nextMolecule) {
     return document;
   }
+  const prunedNextMolecule = moleculeWithPrunedRingStyles(nextMolecule);
 
-  if (nextMolecule.atoms.length === 0) {
+  if (prunedNextMolecule.atoms.length === 0) {
     return applyPatch(
       document,
       { op: "removeObject", objectId: molecule.id },
@@ -5533,7 +5699,7 @@ export function applyNativeMoleculePartDeleteTarget(
 
   return applyPatch(
     document,
-    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { op: "updateObject", objectId: molecule.id, changes: prunedNextMolecule },
     { now: phase4Timestamp }
   );
 }
@@ -6361,6 +6527,103 @@ function updateMoleculeObjects(
   );
 
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+type MoleculeRingStyleRecord = Record<string, unknown>;
+
+function updateMoleculeRingStyle(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  updateStyle: (style: MoleculeRingStyleRecord, object: MoleculeObject) => MoleculeRingStyleRecord
+): ChemDraftDocument {
+  return updateMoleculeObjects(document, [target.objectId], (object) => {
+    if (!nativeMoleculeRings(object).some((ring) => ring.ringKey === target.ringKey)) {
+      return object.style;
+    }
+
+    const ringStyles = moleculeRingStyleMap(object.style.ringStyles);
+    const currentStyle = ringStyles[target.ringKey] ?? {};
+    const nextStyle = compactMoleculeRingStyle(updateStyle(currentStyle, object));
+    const nextRingStyles = { ...ringStyles };
+    if (Object.keys(nextStyle).length > 0) {
+      nextRingStyles[target.ringKey] = nextStyle;
+    } else {
+      delete nextRingStyles[target.ringKey];
+    }
+    return moleculeStyleWithRingStyles(object.style, nextRingStyles);
+  });
+}
+
+function updateMoleculeRingEffect(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget,
+  effectKind: GraphicStyleAdjustableEffectKind,
+  updateEffect: (effect: VisualEffect, object: MoleculeObject) => VisualEffect
+): ChemDraftDocument {
+  return updateMoleculeRingStyle(document, target, (style, object) => {
+    const baseStyle = visualEffectBaseStyle(style);
+    const existingEffects = visualEffectsForStyle(style);
+    const inactiveEffects = inactiveVisualEffectsForStyle(style);
+    const nextEffects = existingEffects.some((effect) => effect.kind === effectKind)
+      ? existingEffects.map((effect) => effect.kind === effectKind ? updateEffect(effect, object) : effect)
+      : [...existingEffects, updateEffect(defaultVisualEffectForKind(`${object.id}-${target.ringKey}`, effectKind), object)];
+    return visualStyleWithEffects(
+      baseStyle,
+      nextEffects,
+      inactiveEffects.filter((effect) => effect.kind !== effectKind)
+    );
+  });
+}
+
+export function pruneMoleculeRingStyles(
+  document: ChemDraftDocument,
+  objectId: string
+): ChemDraftDocument {
+  return updateMoleculeObjects(document, [objectId], (object) => moleculeWithPrunedRingStyles(object).style);
+}
+
+function moleculeWithPrunedRingStyles(molecule: MoleculeObject): MoleculeObject {
+  const ringStyles = moleculeRingStyleMap(molecule.style.ringStyles);
+  if (Object.keys(ringStyles).length === 0) {
+    return molecule;
+  }
+
+  const validRingKeys = new Set(nativeMoleculeRings(molecule).map((ring) => ring.ringKey));
+  const nextRingStyles = Object.fromEntries(
+    Object.entries(ringStyles).filter(([ringKey]) => validRingKeys.has(ringKey))
+  );
+  const nextStyle = moleculeStyleWithRingStyles(molecule.style, nextRingStyles);
+  return JSON.stringify(molecule.style) === JSON.stringify(nextStyle)
+    ? molecule
+    : { ...molecule, style: nextStyle };
+}
+
+function moleculeStyleWithRingStyles(
+  style: Record<string, unknown>,
+  ringStyles: Record<string, MoleculeRingStyleRecord>
+): Record<string, unknown> {
+  const { ringStyles: _ringStyles, ...baseStyle } = style;
+  return Object.keys(ringStyles).length > 0
+    ? { ...baseStyle, ringStyles }
+    : baseStyle;
+}
+
+function moleculeRingStyleMap(value: unknown): Record<string, MoleculeRingStyleRecord> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, style]) => style && typeof style === "object" && !Array.isArray(style))
+      .map(([ringKey, style]) => [ringKey, { ...(style as MoleculeRingStyleRecord) }])
+  );
+}
+
+function compactMoleculeRingStyle(style: MoleculeRingStyleRecord): MoleculeRingStyleRecord {
+  return Object.fromEntries(
+    Object.entries(style).filter(([, value]) => value !== undefined)
+  );
 }
 
 function graphicFillPaintForObject(object: GraphicObject): GraphicPaint {

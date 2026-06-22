@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 
 import {
   createPhase4Document,
   findNativeMoleculeDeleteHit,
   findNativeMoleculeTemplateHit,
   insertNativeSingleBondMolecule,
+  insertNativeTemplateMolecule,
   type NativeMoleculeDeleteTarget
 } from "../documentWorkflow";
 import {
@@ -16,6 +18,7 @@ import {
   hitTestDocument,
   maxModelBondScreenTolerancePx,
   nativeMoleculeTemplateHoverTarget,
+  resolveSelectionHit,
   type TemplateHoverSample
 } from "./hitTest";
 
@@ -452,5 +455,41 @@ describe("hit provenance (invariant #5)", () => {
         }
       }
     }
+  });
+});
+
+describe("resolveSelectionHit", () => {
+  function benzene() {
+    const document = insertNativeTemplateMolecule(createPhase4Document("ring-hit"), { x: 240, y: 240 }, "benzene");
+    const molecule = document.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("expected a benzene fixture");
+    }
+    const ring = nativeMoleculeRings(molecule)[0];
+    if (!ring) {
+      throw new Error("expected a benzene ring");
+    }
+    return { document, molecule, ring };
+  }
+
+  it("resolves a ring interior only when rings are included", () => {
+    const { document, ring } = benzene();
+    expect(resolveSelectionHit(document, ring.center, { includeRings: false })).toBeUndefined();
+    const hit = resolveSelectionHit(document, ring.center, { includeRings: true });
+    expect(hit?.kind).toBe("ring");
+    expect(hit?.kind === "ring" ? hit.ringKey : undefined).toBe(ring.ringKey);
+  });
+
+  it("resolves rings geometrically with no DOM event target", () => {
+    const { document, ring } = benzene();
+    const hit = resolveSelectionHit(document, ring.center, { includeRings: true, eventTarget: null });
+    expect(hit?.kind === "ring" ? hit.ringKey : undefined).toBe(ring.ringKey);
+  });
+
+  it("lets an atom hit win over the ring interior", () => {
+    const { document, molecule } = benzene();
+    const atom = molecule.atoms[0];
+    const hit = resolveSelectionHit(document, { x: atom.x, y: atom.y }, { includeRings: true });
+    expect(hit?.kind).toBe("atom");
   });
 });

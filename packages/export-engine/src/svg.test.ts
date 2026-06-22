@@ -43,6 +43,48 @@ function nativeBondMolecule(): MoleculeObject {
   };
 }
 
+function nativeRingMolecule(): MoleculeObject {
+  const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+  return {
+    id: "mol_svg_ring",
+    type: "molecule",
+    x: 150,
+    y: 120,
+    width: 120,
+    height: 120,
+    rotation: 0,
+    style: {
+      source: "chemdraft-native-drawing",
+      ringStyles: {
+        [ringKey]: {
+          fillColor: "#d02626",
+          fillOpacity: 0.36
+        }
+      }
+    },
+    structureFormat: "smiles",
+    structure: "c1ccccc1",
+    atoms: [
+      { id: "atom_001", element: "C", x: 210, y: 120, formalCharge: 0 },
+      { id: "atom_002", element: "C", x: 262, y: 150, formalCharge: 0 },
+      { id: "atom_003", element: "C", x: 262, y: 210, formalCharge: 0 },
+      { id: "atom_004", element: "C", x: 210, y: 240, formalCharge: 0 },
+      { id: "atom_005", element: "C", x: 158, y: 210, formalCharge: 0 },
+      { id: "atom_006", element: "C", x: 158, y: 150, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+      { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+      { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" },
+      { id: "bond_004", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+      { id: "bond_005", fromAtomId: "atom_005", toAtomId: "atom_006", order: "single" },
+      { id: "bond_006", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" }
+    ],
+    superatoms: [],
+    rGroups: []
+  };
+}
+
 describe("SVG export serialization", () => {
   it("exports a blank page as a stable white page without workspace guides", () => {
     const document = createEmptyDocument({ title: "Blank SVG", now: timestamp });
@@ -124,6 +166,25 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("native-bond-hover-decorator");
     expect(result.contents).not.toContain("native-atom-hit-target");
     expect(result.contents).not.toContain("native-crossing-hit-target");
+  });
+
+  it("exports styled native molecule rings as per-ring fill paths", () => {
+    const document = applyPatch(
+      createEmptyDocument({ title: "Ring Fill SVG", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: nativeRingMolecule() },
+      { now: timestamp }
+    );
+    const result = exportDocumentToSvg(document);
+
+    expect(result.contents).toContain('data-object-id="mol_svg_ring"');
+    expect(result.contents).toContain('data-molecule-fill-ring="true"');
+    expect(result.contents).toContain('data-ring-key="bond_001|bond_002|bond_003|bond_004|bond_005|bond_006"');
+    expect(result.contents).toContain('fill="#d02626"');
+    expect(result.contents).toContain('fill-opacity="0.36"');
+    // The ring fill is visible geometry and stays; the transparent interior catcher is a hit
+    // target and must be filtered out of export (it now lives in the render plan).
+    expect(result.contents).not.toContain("native-molecule-ring-hit-target");
+    expect(result.contents).not.toContain("data-ring-hit-key");
   });
 
   it("exports shared visual effect SVG for native molecules", () => {

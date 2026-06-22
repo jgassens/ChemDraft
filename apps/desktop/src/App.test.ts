@@ -18,6 +18,9 @@ import { describe, expect, it } from "vitest";
 import {
   projectGraphicObjectPoint
 } from "@chemdraft/art-engine";
+import {
+  nativeMoleculeRings
+} from "@chemdraft/layout-engine";
 import { inchRulerUnit } from "@chemdraft/viewport-engine";
 import {
   allShellCommands,
@@ -115,6 +118,7 @@ import {
   nativePathWithBasename,
   isSelectionDoublePress,
   manualRotationDeltaDegrees,
+  nativeMoleculeRingSelectionFromPoint,
   planBondDepthPatches,
   reorderSelectedDocumentObjectWithCrossingDefaults,
   nativeMoleculeSelectionDragIntent,
@@ -2586,6 +2590,7 @@ describe("ChemDraft desktop shell", () => {
         "core.layout",
         "core.style",
         "core.text",
+        "core.moleculeInspector",
         "plugin.fixture"
       ])
     );
@@ -3907,6 +3912,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-atom-count="6"');
     expect(markup).toContain('data-bond-count="6"');
     expect(markup).toContain("bond_001:double");
+    expect(markup).toContain("native-molecule-ring-hit-target");
+    expect(markup).toContain('data-ring-hit-key="');
+    const ringHitIndex = markup.indexOf("native-molecule-ring-hit-target");
+    expect(markup.indexOf("native-bond-hit-target", ringHitIndex)).toBeGreaterThan(ringHitIndex);
   });
 
   it("renders invalid-valence markers for over-coordinated native atoms", () => {
@@ -4482,6 +4491,31 @@ describe("ChemDraft desktop shell", () => {
         atomId: "atom_001"
       }
     });
+  });
+
+  it("selects a native molecule ring from an interior point", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Ring Interior Hit"), { x: 300, y: 300 }, "benzene");
+    const molecule = document.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected native molecule fixture.");
+    }
+
+    const ring = nativeMoleculeRings(molecule)[0];
+    if (!ring) {
+      throw new Error("Expected benzene ring.");
+    }
+
+    expect(nativeMoleculeRingSelectionFromPoint(molecule, ring.center)).toEqual({
+      objectId: molecule.id,
+      kind: "ring",
+      ringKey: ring.ringKey,
+      atomIds: ring.atomIds,
+      bondIds: ring.bondIds
+    });
+    expect(nativeMoleculeRingSelectionFromPoint(molecule, {
+      x: molecule.x + molecule.width + 16,
+      y: molecule.y + molecule.height + 16
+    })).toBeUndefined();
   });
 
   it("lets existing charge marks move while charge tools stay active", () => {

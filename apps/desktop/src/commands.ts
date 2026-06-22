@@ -74,6 +74,8 @@ export const structureCleanupCommandId = "structure.cleanup2d";
 export const structureSpin3dCommandId = "structure.spin3d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
+export const moleculeInspectorToolsetId = "core.moleculeInspector";
+export const toggleMoleculeInspectorCommandId = "view.toggleMoleculeInspector";
 export const artBooleanOperationCommandIds = {
   union: "art.boolean.union",
   subtract: "art.boolean.subtract",
@@ -195,6 +197,14 @@ export const viewActions: CommandSpec[] = [
     source: "core",
     category: "view",
     description: "Open or close the 3D spin debugger window"
+  },
+  {
+    id: toggleMoleculeInspectorCommandId,
+    title: "Toggle Molecule Inspector",
+    icon: "inspector",
+    source: "core",
+    category: "view",
+    description: "Open or close the Molecule Inspector"
   },
   {
     id: "view.toggleRulers",
@@ -423,6 +433,14 @@ export const customObjectEffectColorCommandPrefix = "object.effect.color.";
 export const customObjectEffectOpacityCommandPrefix = "object.effect.opacity.";
 export const customObjectEffectSizeCommandPrefix = "object.effect.size.";
 export const customObjectEffectDisableCommandPrefix = "object.effect.disable.";
+export const customMoleculeRingFillColorCommandPrefix = "molecule.ring.fill.color:";
+export const customMoleculeRingFillNoneCommandPrefix = "molecule.ring.fill.none:";
+export const customMoleculeRingFillOpacityCommandPrefix = "molecule.ring.fill.opacity:";
+export const customMoleculeRingEffectCommandPrefix = "molecule.ring.effect:";
+export const customMoleculeRingEffectColorCommandPrefix = "molecule.ring.effect.color:";
+export const customMoleculeRingEffectOpacityCommandPrefix = "molecule.ring.effect.opacity:";
+export const customMoleculeRingEffectSizeCommandPrefix = "molecule.ring.effect.size:";
+export const customMoleculeRingEffectDisableCommandPrefix = "molecule.ring.effect.disable:";
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
@@ -476,6 +494,119 @@ export function objectEffectSizeCommandId(effectKind: ObjectAdjustableEffectKind
 
 export function objectEffectDisableCommandId(effectKind: ObjectAdjustableEffectKind): string {
   return `${customObjectEffectDisableCommandPrefix}${effectKind}`;
+}
+
+export function moleculeRingFillColorCommandId(ringKey: string, color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customMoleculeRingFillColorCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${normalized.slice(1)}`;
+}
+
+export function moleculeRingFillNoneCommandId(ringKey: string): string {
+  return `${customMoleculeRingFillNoneCommandPrefix}${encodeMoleculeRingKey(ringKey)}`;
+}
+
+export function moleculeRingFillOpacityCommandId(ringKey: string, opacity: number): string {
+  return `${customMoleculeRingFillOpacityCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${opacityPercent(opacity)}`;
+}
+
+export function moleculeRingEffectCommandId(ringKey: string, effectKind: ObjectEffectKind): string {
+  return `${customMoleculeRingEffectCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}`;
+}
+
+export function moleculeRingEffectColorCommandId(
+  ringKey: string,
+  effectKind: ObjectAdjustableEffectKind,
+  color: string
+): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customMoleculeRingEffectColorCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}:${normalized.slice(1)}`;
+}
+
+export function moleculeRingEffectOpacityCommandId(
+  ringKey: string,
+  effectKind: ObjectAdjustableEffectKind,
+  opacity: number
+): string {
+  return `${customMoleculeRingEffectOpacityCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}:${opacityPercent(opacity)}`;
+}
+
+export function moleculeRingEffectSizeCommandId(
+  ringKey: string,
+  effectKind: ObjectAdjustableEffectKind,
+  size: number
+): string {
+  return `${customMoleculeRingEffectSizeCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}:${unitPercent(size)}`;
+}
+
+export function moleculeRingEffectDisableCommandId(ringKey: string, effectKind: ObjectAdjustableEffectKind): string {
+  return `${customMoleculeRingEffectDisableCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}`;
+}
+
+export function moleculeRingFillColorForCommand(commandId: string): { ringKey: string; color: string } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingFillColorCommandPrefix, 2);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const color = normalizeHexColor(parsed.parts[1] ? `#${parsed.parts[1]}` : undefined);
+  return color ? { ringKey: parsed.ringKey, color } : undefined;
+}
+
+export function moleculeRingFillNoneForCommand(commandId: string): { ringKey: string } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingFillNoneCommandPrefix, 1);
+  return parsed ? { ringKey: parsed.ringKey } : undefined;
+}
+
+export function moleculeRingFillOpacityForCommand(commandId: string): { ringKey: string; opacity: number } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingFillOpacityCommandPrefix, 2);
+  return parsed
+    ? { ringKey: parsed.ringKey, opacity: opacityFromCommandSuffix(parsed.parts[1] ?? "100") }
+    : undefined;
+}
+
+export function moleculeRingEffectForCommand(commandId: string): { ringKey: string; effectKind: ObjectEffectKind } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectCommandPrefix, 2);
+  const effectKind = objectEffectKind(parsed?.parts[1]);
+  return parsed && effectKind ? { ringKey: parsed.ringKey, effectKind } : undefined;
+}
+
+export function moleculeRingEffectColorForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind; color: string } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectColorCommandPrefix, 3);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  const color = normalizeHexColor(parsed?.parts[2] ? `#${parsed.parts[2]}` : undefined);
+  return parsed && effectKind && color
+    ? { ringKey: parsed.ringKey, effectKind, color }
+    : undefined;
+}
+
+export function moleculeRingEffectOpacityForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind; opacity: number } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectOpacityCommandPrefix, 3);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  return parsed && effectKind
+    ? { ringKey: parsed.ringKey, effectKind, opacity: opacityFromCommandSuffix(parsed.parts[2] ?? "100") }
+    : undefined;
+}
+
+export function moleculeRingEffectSizeForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind; size: number } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectSizeCommandPrefix, 3);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  return parsed && effectKind
+    ? { ringKey: parsed.ringKey, effectKind, size: unitFromCommandSuffix(parsed.parts[2] ?? "0", 0) }
+    : undefined;
+}
+
+export function moleculeRingEffectDisableForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectDisableCommandPrefix, 2);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  return parsed && effectKind ? { ringKey: parsed.ringKey, effectKind } : undefined;
 }
 
 export function objectOpacityForCommand(commandId: string): { key: "opacity" | "fillOpacity" | "strokeOpacity"; value: number } | undefined {
@@ -613,6 +744,44 @@ export function objectEffectForCommand(commandId: string): ObjectEffectKind | un
 
 function objectAdjustableEffectKind(value: string | undefined): ObjectAdjustableEffectKind | undefined {
   return value === "shadow" || value === "glow" || value === "sketch" ? value : undefined;
+}
+
+function objectEffectKind(value: string | undefined): ObjectEffectKind | undefined {
+  return value === "none" || value === "shadow" || value === "glow" || value === "sketch" ? value : undefined;
+}
+
+function encodeMoleculeRingKey(ringKey: string): string {
+  return encodeURIComponent(ringKey);
+}
+
+function decodeMoleculeRingKey(encodedRingKey: string | undefined): string | undefined {
+  if (!encodedRingKey) {
+    return undefined;
+  }
+
+  try {
+    return decodeURIComponent(encodedRingKey);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseMoleculeRingCommand(
+  commandId: string,
+  prefix: string,
+  minParts: number
+): { ringKey: string; parts: string[] } | undefined {
+  if (!commandId.startsWith(prefix)) {
+    return undefined;
+  }
+
+  const parts = commandId.slice(prefix.length).split(":");
+  if (parts.length < minParts) {
+    return undefined;
+  }
+
+  const ringKey = decodeMoleculeRingKey(parts[0]);
+  return ringKey ? { ringKey, parts } : undefined;
 }
 
 export function objectPaintTypeCommandId(paintType: ObjectPaintType): string {
