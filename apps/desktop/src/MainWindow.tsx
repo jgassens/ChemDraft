@@ -1010,7 +1010,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.22.09.08-claude";
+const CURRENT_BUILD_STAMP = "6.22.10.06-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -9117,9 +9117,8 @@ export function MainWindow({
       // the SAME part as the previous press; additive presses (Shift toggle, Alt subtract) and a
       // press that landed on a different part (e.g. ring A then ring B) are never hijacked by it.
       const samePartAsPreviousPress = lastSelectionPressRef.current?.partKey === pressPartKey;
-      const doublePress = selectionMode === "replace" && samePartAsPreviousPress && (
-        event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press)
-      );
+      const rawDoublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+      const doublePress = selectionMode === "replace" && samePartAsPreviousPress && rawDoublePress;
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
@@ -9163,11 +9162,17 @@ export function MainWindow({
                       bondIds: nativeMoleculeRingHit.bondIds
                     }
                   : { kind: "object", objectId: selectableObjectId };
+        // A Shift double-click should ADD the molecule (join it to the selection), not toggle it
+        // back off on the second press: the first press toggles it on, so promote the second press
+        // of a same-target double-click to an idempotent add. Alt (subtract) is left untouched.
+        const effectiveMode = selectionMode === "toggle" && rawDoublePress && samePartAsPreviousPress
+          ? "add"
+          : selectionMode;
         const nextSelection = fromSelectionItems(
           applySelection(
             toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
             additiveItem,
-            selectionMode
+            effectiveMode
           ),
           { scope: "multi" }
         );

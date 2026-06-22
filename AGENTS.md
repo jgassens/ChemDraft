@@ -1,6 +1,6 @@
 # Agent Instructions for ChemDraft Structure Inspector Branch
 
-**Current Build**: 6.22.09.08-claude
+**Current Build**: 6.22.10.06-claude
 
 > [!IMPORTANT]
 > When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`.

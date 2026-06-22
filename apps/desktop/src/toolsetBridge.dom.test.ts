@@ -469,6 +469,57 @@ describe("toolset bridge interactions", () => {
     expect(canvasRegion().getAttribute("data-molecule-inspector-open")).toBe("true");
   });
 
+  it("shift double-clicking a molecule joins it to the existing selection instead of toggling off", async () => {
+    let initialDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Shift double-click add"),
+      { x: 220, y: 220 },
+      "benzene"
+    );
+    initialDocument = insertNativeTemplateMolecule(initialDocument, { x: 560, y: 220 }, "benzene");
+    const molA = initialDocument.pages[0]?.objects[0];
+    const molB = initialDocument.pages[0]?.objects[1];
+    if (molA?.type !== "molecule" || molB?.type !== "molecule") {
+      throw new Error("Expected two benzene molecules.");
+    }
+    // With the inspector closed a ring center is empty space, so a press there resolves to the whole
+    // molecule (no atom/bond/ring hit).
+    const bodyA = nativeMoleculeRings(molA)[0]?.center;
+    const bodyB = nativeMoleculeRings(molB)[0]?.center;
+    if (!bodyA || !bodyB) {
+      throw new Error("Expected benzene ring centers.");
+    }
+
+    const wrapperFor = (objectId: string): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+      if (!element) {
+        throw new Error(`Expected wrapper for ${objectId}.`);
+      }
+      return element;
+    };
+
+    await renderMainWindow(initialDocument);
+
+    // Seed the selection with molecule A (shift-click adds the whole object).
+    await act(async () => {
+      const target = wrapperFor(molA.id);
+      dispatchPointer(target, "pointerdown", bodyA, 61, { shiftKey: true });
+      dispatchPointer(target, "pointerup", bodyA, 61, { shiftKey: true });
+    });
+    expect(wrapperFor(molA.id).classList.contains("native-molecule-selected")).toBe(true);
+
+    // Shift double-click molecule B: the second press must NOT toggle B back off — it joins A.
+    await act(async () => {
+      const target = wrapperFor(molB.id);
+      dispatchPointer(target, "pointerdown", bodyB, 62, { shiftKey: true });
+      dispatchPointer(target, "pointerup", bodyB, 62, { shiftKey: true });
+      dispatchPointer(target, "pointerdown", bodyB, 62, { shiftKey: true });
+      dispatchPointer(target, "pointerup", bodyB, 62, { shiftKey: true });
+    });
+
+    expect(wrapperFor(molA.id).classList.contains("native-molecule-selected")).toBe(true);
+    expect(wrapperFor(molB.id).classList.contains("native-molecule-selected")).toBe(true);
+  });
+
   it("adds a second ring after a normal first-ring click with Shift held", async () => {
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Additive Selection"),
