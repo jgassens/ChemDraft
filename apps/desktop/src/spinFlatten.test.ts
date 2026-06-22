@@ -4,6 +4,8 @@ import { applyPatches, type ChemDraftDocument, type MoleculeObject, type ViewMat
 import { depictSmiles2D, ensureOclResources, oclConformerGenerator, type Depiction2D } from "@chemdraft/ocl-adapter";
 
 import { createPhase4Document, flattenSpunMolecule } from "./documentWorkflow";
+import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
+import { bondDepthWeights, projectSpin, type ScreenPlacement } from "./interaction/spinOverlay";
 
 const IDENTITY: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
@@ -159,6 +161,76 @@ describe("flattenSpunMolecule — perspective depth weights", () => {
     expect(outcome.status).toBe("committed");
     const next = moleculeOf(outcome.document, "mol_flat");
     expect(next.bonds.every((bond) => bond.display?.depthWeight === undefined)).toBe(true);
+  });
+});
+
+describe("flattenSpunMolecule — ScreenPlacement parity", () => {
+  it("matches projectSpin atom coordinates and depth weights when placement is supplied", () => {
+    const mol = molecule(
+      "mol_place",
+      [
+        { id: "a0", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "a1", element: "C", x: 130, y: 112, formalCharge: 0 },
+        { id: "a2", element: "C", x: 160, y: 100, formalCharge: 0 },
+        { id: "a3", element: "C", x: 190, y: 112, formalCharge: 0 }
+      ],
+      [
+        { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" },
+        { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" },
+        { id: "b2", fromAtomId: "a2", toAtomId: "a3", order: "single" }
+      ]
+    );
+    const document = documentWith(mol);
+    const coords3d = [0, 0, 0, 1, 0.4, 1, 2, 0, 2, 3, 0.4, 3];
+    const quat = quatFromAxisAngle([0, 1, 0], Math.PI / 4);
+    const viewMatrix = quatToViewMatrix(quat);
+    const placement: ScreenPlacement = { centerX: 250, centerY: 180, scale: 34 };
+    const bondPairs: [number, number][] = [[0, 1], [1, 2], [2, 3]];
+
+    const outcome = flattenSpunMolecule(document, "mol_place", coords3d, viewMatrix, { placement });
+    expect(outcome.status).toBe("committed");
+
+    const next = moleculeOf(outcome.document, "mol_place");
+    const expected = projectSpin(coords3d, bondPairs, quat, placement);
+    for (let index = 0; index < next.atoms.length; index += 1) {
+      expect(next.atoms[index].x).toBeCloseTo(expected.atoms[index].sx, 6);
+      expect(next.atoms[index].y).toBeCloseTo(expected.atoms[index].sy, 6);
+    }
+    expect(next.bonds.map((bond) => bond.display?.depthWeight))
+      .toEqual(bondDepthWeights(coords3d, bondPairs, viewMatrix));
+  });
+
+  it("keeps an edge-on placed flatten inside the placement envelope instead of inflating", () => {
+    const mol = molecule(
+      "mol_edge",
+      [
+        { id: "a0", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "a1", element: "C", x: 130, y: 102, formalCharge: 0 },
+        { id: "a2", element: "C", x: 160, y: 100, formalCharge: 0 },
+        { id: "a3", element: "C", x: 190, y: 102, formalCharge: 0 }
+      ],
+      [
+        { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" },
+        { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" },
+        { id: "b2", fromAtomId: "a2", toAtomId: "a3", order: "single" }
+      ]
+    );
+    const document = documentWith(mol);
+    const coords3d = [0, 0, 0, 1, 0.05, 0, 2, 0, 0, 3, 0.05, 0];
+    const quat = quatFromAxisAngle([0, 1, 0], Math.PI / 2);
+    const placement: ScreenPlacement = { centerX: 240, centerY: 160, scale: 40 };
+    const outcome = flattenSpunMolecule(document, "mol_edge", coords3d, quatToViewMatrix(quat), { placement });
+    expect(outcome.status).toBe("committed");
+
+    const next = moleculeOf(outcome.document, "mol_edge");
+    const xs = next.atoms.map((atom) => atom.x);
+    const ys = next.atoms.map((atom) => atom.y);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(1);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(6);
+    for (const atom of next.atoms) {
+      expect(Number.isFinite(atom.x)).toBe(true);
+      expect(Number.isFinite(atom.y)).toBe(true);
+    }
   });
 });
 

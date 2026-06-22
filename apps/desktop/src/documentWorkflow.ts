@@ -85,6 +85,7 @@ import {
 } from "@chemdraft/cdx-compat";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
+import type { ScreenPlacement } from "./interaction/spinOverlay";
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlText,
   exportDocumentToSvg,
@@ -9701,7 +9702,8 @@ export function flattenSpunMolecule(
   document: ChemDraftDocument,
   objectId: string,
   coords3d: ArrayLike<number>,
-  viewMatrix: ViewMatrix
+  viewMatrix: ViewMatrix,
+  options: { placement?: ScreenPlacement } = {}
 ): FlattenSpunOutcome {
   let pageId: string | undefined;
   let molecule: MoleculeObject | undefined;
@@ -9754,25 +9756,33 @@ export function flattenSpunMolecule(
     projected.atoms.map((atom) => [atom.id, { ...atom, y: -atom.y }] as const)
   );
 
-  // Rescale the projection to the molecule's existing median bond length and recenter
-  // on its centroid, so the flatten lands where the drawing already was.
+  // Rescale/recenter the projection to its intended visual placement. Older call sites
+  // keep the median-bond fallback; modeled Spin 3D paths pass a fixed ScreenPlacement
+  // so flatten exactly matches the live overlay contract.
   const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
   const bondPairs = molecule.bonds
     .map((bond) => [atomIndex.get(bond.fromAtomId), atomIndex.get(bond.toAtomId)] as const)
     .filter((pair): pair is readonly [number, number] => pair[0] !== undefined && pair[1] !== undefined);
   const projectedInOrder = molecule.atoms.map((atom) => projectedById.get(atom.id) ?? atom);
-  const medianOriginal = medianOf(pointBondLengths(molecule.atoms, bondPairs));
-  const medianProjected = medianOf(pointBondLengths(projectedInOrder, bondPairs));
-  const scale = medianProjected > 0 ? medianOriginal / medianProjected : 1;
   const projectedCentroid = atomsCentroid(projectedInOrder);
-  const originalCentroid = atomsCentroid(molecule.atoms);
+  const placement = options.placement;
+  const scale = placement
+    ? placement.scale
+    : (() => {
+        const medianOriginal = medianOf(pointBondLengths(molecule.atoms, bondPairs));
+        const medianProjected = medianOf(pointBondLengths(projectedInOrder, bondPairs));
+        return medianProjected > 0 ? medianOriginal / medianProjected : 1;
+      })();
+  const targetCenter = placement
+    ? { x: placement.centerX, y: placement.centerY }
+    : atomsCentroid(molecule.atoms);
 
   let nextAtoms: MoleculeAtom[] = molecule.atoms.map((atom) => {
     const p = projectedById.get(atom.id) ?? atom;
     return {
       ...atom,
-      x: originalCentroid.x + (p.x - projectedCentroid.x) * scale,
-      y: originalCentroid.y + (p.y - projectedCentroid.y) * scale
+      x: targetCenter.x + (p.x - projectedCentroid.x) * scale,
+      y: targetCenter.y + (p.y - projectedCentroid.y) * scale
     };
   });
   // Clamp into the page bounds (mirrors scaleParsedMolfileAtoms).

@@ -395,8 +395,9 @@ import {
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
+import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
   conformerOptionsForSpin3d,
   loadSpin3dSettings,
@@ -631,6 +632,8 @@ type Spin3dRotateSnapshot = {
   startOrientation: Quaternion;
   /** Conformer (math frame, y-up), reordered into the current molecule's atom order. */
   coords3d: Float64Array;
+  /** Fixed visual placement shared by every preview frame in this drag. */
+  placement: ScreenPlacement;
   atomIds: string[];
   engine?: Spin3dEngineProvenance;
 };
@@ -959,7 +962,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.21.7.49-codex";
+const CURRENT_BUILD_STAMP = "6.21.8.42-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1181,6 +1184,15 @@ export function MainWindow({
   // immune to stale closures) mirrored into React state so the overlay re-renders.
   const spin3dStateRef = useRef<Spin3dState | undefined>(undefined);
   const [spin3dState, setSpin3dStateRender] = useState<Spin3dState | undefined>(undefined);
+  // A first-time embed is in flight (no overlay yet): drives the on-canvas "Generating 3D…"
+  // cue so the irreducible one-time embed wait reads as intentional progress, not a hang.
+  // (A prefetch cache-hit clears this within ~90ms; the cue's CSS fade-in delay hides that
+  // flash, so it only actually appears for the genuine cold/eager embed.)
+  const [spin3dGenerating, setSpin3dGenerating] = useState<{
+    objectId: string;
+    box: { x: number; y: number; width: number; height: number };
+    atomCount: number;
+  } | undefined>(undefined);
   // Dirty-flag rAF: drag events write to the ref and set the flag; the scheduled
   // rAF renders once and stops. Zero frames fired when the scene isn't changing.
   const spinDirtyRef = useRef(false);
@@ -2349,6 +2361,7 @@ export function MainWindow({
       pendingSpin.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
+      setSpin3dGenerating(undefined); // a first-time embed was in flight — drop its cue
     }
 
     if (hadActiveSpin) {
@@ -2383,7 +2396,9 @@ export function MainWindow({
     const viewMatrix = quatToViewMatrix(state.quat);
     let outcome: ReturnType<typeof flattenSpunMolecule>;
     try {
-      outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix);
+      outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix, {
+        placement: state.placement
+      });
     } catch (error) {
       // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
       // wrong stereo. Surface it as a clean refusal and keep the overlay alive for a retry.
@@ -2476,7 +2491,7 @@ export function MainWindow({
   }, []);
 
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
-  const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array): {
+  const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array, orientation?: Quaternion): {
     bondPairs: [number, number][];
     bondRender: SpinBondRenderInfo[];
     atomLabels: (string | undefined)[];
@@ -2521,7 +2536,9 @@ export function MainWindow({
     const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
     const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
     const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
-    const scale = overlayScale(points2d, coords3d, bondPairs);
+    const scale = orientation
+      ? orientedOverlayScale(points2d, coords3d, bondPairs, quatToViewMatrix(orientation))
+      : overlayScale(points2d, coords3d, bondPairs);
     return { bondPairs, bondRender, atomLabels, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
   }, []);
 
@@ -2607,7 +2624,7 @@ export function MainWindow({
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d);
+      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
       applySpin({
         objectId,
         quat: reopen.quat,
@@ -2674,9 +2691,18 @@ export function MainWindow({
     }, 2000);
     const clearSlowTimer = (): void => window.clearTimeout(slowTimer);
 
+    // Show the on-canvas "Generating 3D…" cue while the first embed runs (cleared the moment
+    // an overlay goes up, generation fails, or the session is cancelled — see below).
+    setSpin3dGenerating({
+      objectId,
+      box: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
+      atomCount: molecule.atoms.length
+    });
+
     // Stage 1 — the embedded conformer is fully manipulable; the overlay goes up NOW.
     const handleEmbedded = (conformer: Generate3DConformerResult): void => {
       clearSlowTimer();
+      setSpin3dGenerating(undefined);
       spin3dPendingRef.current = undefined;
       traceInfo("spin.embedded-callback", {
         atomCount: conformer.originalAtomCount,
@@ -2789,6 +2815,7 @@ export function MainWindow({
         handleRefined(refined);
       } catch (error) {
         clearSlowTimer();
+        setSpin3dGenerating(undefined);
         traceInfo("fallback.error", {
           status: "failed",
           path,
@@ -2822,10 +2849,12 @@ export function MainWindow({
             traceInfo("worker.error", { path: "worker", status: "failed", error: message });
             if (info?.workerCrashed && molecule.atoms.length <= SPIN_IN_PAGE_MAX_ATOMS) {
               // Worker is gone for good — small structures may fall back to the
-              // in-page engine; large ones must NOT (it freezes the whole UI).
+              // in-page engine; large ones must NOT (it freezes the whole UI). The cue
+              // stays up: runInPage owns it from here (clears on its embed or its catch).
               void runInPage();
               return;
             }
+            setSpin3dGenerating(undefined);
             setStatus(`Could not generate a 3D conformer: ${message}`);
           }
         }, { sessionId });
@@ -2837,16 +2866,33 @@ export function MainWindow({
     traceInfo("worker.client", { message: "unavailable" });
     if (molecule.atoms.length > SPIN_IN_PAGE_MAX_ATOMS) {
       clearSlowTimer();
+      setSpin3dGenerating(undefined);
       setStatus("Spin 3D is unavailable for structures this large without background worker support");
       return;
     }
     await runInPage();
   }, [applySpin, selectedNativeMoleculePart, spinPlacementFor]);
 
-  // Warm the conformer worker (OCL module + torsion resources + JIT) at app idle so
-  // the first spin click never pays the ~2s cold-start.
+  // Opt-in console mirror of the spin3d trace stream (localStorage flag / ?spin3dlog=1),
+  // so the prefetch → cache → embed → overlay timeline is capturable without the debugger
+  // window. No-op (returns null) when disabled, so this costs nothing in normal use.
+  useEffect(() => { attachSpin3dTraceConsole(); }, []);
+
+  // Warm the conformer worker (engine module + torsion resources + JIT) as soon as the
+  // main thread goes idle — capped so it never waits past ~1.5s — instead of a flat 1.5s
+  // delay. The first real embed then runs at its floor (no module-load/first-call cost),
+  // which shrinks the window in which an eager Spin 3D click waits on a cold embed.
   useEffect(() => {
-    const timer = setTimeout(() => getConformerWorkerClient()?.warmup({ sessionId: `warmup:${Date.now()}` }), 1500);
+    const warm = (): void => { getConformerWorkerClient()?.warmup({ sessionId: `warmup:${Date.now()}` }); };
+    const win = globalThis as typeof globalThis & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof win.requestIdleCallback === "function") {
+      const handle = win.requestIdleCallback(warm, { timeout: 1500 });
+      return () => win.cancelIdleCallback?.(handle);
+    }
+    const timer = setTimeout(warm, 600); // Safari < 17 etc.: no rIC, warm shortly after boot
     return () => clearTimeout(timer);
   }, []);
 
@@ -2877,6 +2923,10 @@ export function MainWindow({
       }));
       return;
     }
+    // Short debounce: long enough that browsing selections (marquee / arrow-key) still
+    // coalesce to one prefetch, short enough that a deliberate selection (e.g. a paste)
+    // starts its embed promptly — every ms shaved here is a ms sooner the embed completes
+    // and the click lands in the fast cache-hit path.
     const timer = setTimeout(() => {
       const client = getConformerWorkerClient();
       if (!client) return;
@@ -2886,7 +2936,7 @@ export function MainWindow({
       client.warmup({ sessionId: `warmup:${Date.now()}` });
       const options = conformerOptionsForSpin3d(spin3dSettings, molecule.atoms.length);
       client.prefetch(molfile, molecule.atoms.length, options, spin3dSettings.enginePreference, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
-    }, 250);
+    }, 120);
     return () => clearTimeout(timer);
   }, [document, selectedNativeMoleculePart, spin3dState, spin3dSettings]);
 
@@ -6188,13 +6238,15 @@ export function MainWindow({
     if (!model) return undefined;
     const coords3d = spin3dModelCoordsForMolecule(model, molecule);
     if (!coords3d) return undefined;
+    const { placement } = spinPlacementFor(molecule, coords3d, model.orientation);
     return {
       startOrientation: model.orientation,
       coords3d,
+      placement,
       atomIds: molecule.atoms.map((atom) => atom.id),
       engine: model.engine
     };
-  }, []);
+  }, [spinPlacementFor]);
 
   const projectedPlaneTiltFromDrag = useCallback((
     drag: ProjectedPlaneTiltDragState,
@@ -6241,7 +6293,9 @@ export function MainWindow({
       let document = drag.lastValidPreviewDocument ?? drag.startDocument;
       let changed = document !== drag.startDocument;
       try {
-        const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat));
+        const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat), {
+          placement: model.placement
+        });
         if (outcome.status === "committed" && outcome.document !== drag.startDocument) {
           drag.lastValidPreviewDocument = outcome.document;
           drag.lastValidOrientation = nextQuat;
@@ -6546,7 +6600,7 @@ export function MainWindow({
         return undefined;
       }
 
-      const nextDocument = object.type === "molecule" && isNativeMoleculeGraph(object)
+      let nextDocument = object.type === "molecule" && isNativeMoleculeGraph(object)
         ? input.target
           ? rotateNativeMoleculeParts(input.startDocument, input.target, zDegrees)
           : rotateDocumentObject(
@@ -6555,6 +6609,22 @@ export function MainWindow({
               manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees)
             )
         : rotateDocumentObject(input.startDocument, input.objectId, manualRotationDeltaDegrees(object.rotation, zDegrees));
+      if (!input.target && object.type === "molecule" && isNativeMoleculeGraph(object)) {
+        const model = validSpin3dModelFor(object);
+        const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
+        if (model && coords3d) {
+          const deltaDegrees = manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees);
+          const nextQuat = quatNormalize(quatMultiply(
+            quatFromAxisAngle(SPIN_AXIS_Z, -deltaDegrees * Math.PI / 180),
+            model.orientation
+          ));
+          nextDocument = attachSpin3dModelFromConformer(nextDocument, input.objectId, {
+            coords3d,
+            orientation: nextQuat,
+            engine: model.engine
+          });
+        }
+      }
       return { kind: "z", document: nextDocument, zDegrees };
     }
 
@@ -6587,6 +6657,43 @@ export function MainWindow({
 
     if (!isNativeMoleculeGraph(object)) {
       return undefined;
+    }
+
+    if (!input.target) {
+      const model = validSpin3dModelFor(object);
+      const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
+      if (model && coords3d) {
+        const xRad = degreesToRadians(xDegrees);
+        const yRad = degreesToRadians(yDegrees);
+        const { placement } = spinPlacementFor(object, coords3d, model.orientation);
+        const deltaQuat = quatMultiply(
+          quatFromAxisAngle(SPIN_AXIS_Y, yRad),
+          quatFromAxisAngle(SPIN_AXIS_X, xRad)
+        );
+        const nextQuat = quatNormalize(quatMultiply(deltaQuat, model.orientation));
+        let document = input.startDocument;
+        try {
+          const outcome = flattenSpunMolecule(input.startDocument, input.objectId, coords3d, quatToViewMatrix(nextQuat), {
+            placement
+          });
+          if (outcome.status === "committed") {
+            document = attachSpin3dModelFromConformer(outcome.document, input.objectId, {
+              coords3d,
+              orientation: nextQuat,
+              engine: model.engine
+            });
+          }
+        } catch {
+          document = input.startDocument;
+        }
+        return {
+          kind: "xy",
+          document,
+          tiltXRad: xRad,
+          tiltYRad: yRad,
+          clamped: false
+        };
+      }
     }
 
     const fragmentBounds = input.target ? nativeMoleculePartBounds(object, input.target) : undefined;
@@ -6630,7 +6737,7 @@ export function MainWindow({
       tiltYRad: result.tiltYRad,
       clamped: result.clamped
     };
-  }, []);
+  }, [spinPlacementFor]);
 
   const handleRotationInputChange = useCallback((nextInput: RotationInputState) => {
     updateRotationInput(nextInput);
@@ -9238,8 +9345,14 @@ export function MainWindow({
     const targetLabel = selectedFragmentTarget
       ? "selected molecule fragment"
       : object.type === "molecule" ? "selected molecule" : "selected art object";
-    const homeXDegrees = rotationInputDraftDegrees(selectedFragmentTarget ? 0 : transform.tiltXDegrees ?? 0);
-    const homeYDegrees = rotationInputDraftDegrees(selectedFragmentTarget ? 0 : transform.tiltYDegrees ?? 0);
+    const modeledRotationEntry = !selectedFragmentTarget && object.type === "molecule"
+      ? (() => {
+          const model = validSpin3dModelFor(object);
+          return model !== undefined && spin3dModelCoordsForMolecule(model, object) !== undefined;
+        })()
+      : false;
+    const homeXDegrees = rotationInputDraftDegrees(modeledRotationEntry ? 0 : selectedFragmentTarget ? 0 : transform.tiltXDegrees ?? 0);
+    const homeYDegrees = rotationInputDraftDegrees(modeledRotationEntry ? 0 : selectedFragmentTarget ? 0 : transform.tiltYDegrees ?? 0);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
     updateObjectResizeInput(undefined);
@@ -11120,6 +11233,15 @@ export function MainWindow({
                     />
                   );
                 })() : null}
+                {spin3dGenerating && !activeSpin3dState &&
+                  activePage.objects.some((object) => object.id === spin3dGenerating.objectId) ? (
+                  <Spin3dGeneratingCue
+                    box={spin3dGenerating.box}
+                    atomCount={spin3dGenerating.atomCount}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                  />
+                ) : null}
                   </>
                   );
                 })()}
@@ -13684,6 +13806,37 @@ interface Spin3dState {
   lastClient?: { x: number; y: number };
   /** Engine provenance recorded into the persisted 3D model on flatten (best-effort). */
   engine?: Spin3dEngineProvenance;
+}
+
+/**
+ * On-canvas "Generating 3D…" cue shown over a molecule while its FIRST conformer embed
+ * runs (the one-time ~1–2s cost a prefetch cache-hit otherwise hides). Positioned in the
+ * same page-coordinate frame the SpinOverlay uses (a % of the positioned canvas area), so
+ * it lands on the molecule at any zoom. Purely additive chrome — never touches the document
+ * or the conformer geometry. Its CSS fade-in is delayed so a fast cache-hit (~90ms, which
+ * unmounts this almost immediately) never flashes it.
+ */
+function Spin3dGeneratingCue({ box, atomCount, pageWidth, pageHeight }: {
+  box: { x: number; y: number; width: number; height: number };
+  atomCount: number;
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  const leftPct = pageWidth > 0 ? (centerX / pageWidth) * 100 : 50;
+  const topPct = pageHeight > 0 ? (centerY / pageHeight) * 100 : 50;
+  return (
+    <div
+      aria-hidden="true"
+      data-spin3d-generating="true"
+      className="spin3d-generating-cue"
+      style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+    >
+      <span className="spin3d-generating-cue__spinner" />
+      <span>Generating 3D… ({atomCount} atoms)</span>
+    </div>
+  );
 }
 
 /**

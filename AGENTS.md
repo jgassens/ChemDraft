@@ -1,6 +1,6 @@
 # Agent Instructions for ChemDraft
 
-**Current Build**: 6.21.7.49-codex
+**Current Build**: 6.21.8.42-codex
 
 > [!IMPORTANT]
 > **Agent Instruction:** Every time you finish a slice of work or make significant changes, you MUST update the `**Current Build**` stamp above AND the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx` (in the viewport's bottom right corner).
@@ -18,6 +18,7 @@ Before making changes, read:
 
 ```text
 PLAN.md
+PLANS.md
 AGENTS.md
 README.md
 package.json
@@ -25,6 +26,13 @@ pnpm-workspace.yaml
 ```
 
 If the task touches a package, read that package's README or local documentation before editing.
+
+When `PLANS.md` exists, treat it as the active scoped implementation plan unless the user gives
+newer instructions. Keep edits focused on the files, behaviors, and verification listed there;
+do not broaden the slice into adjacent chemistry, rendering, UI polish, or format work.
+
+Notary and app-signing instructions live at `/Users/jeremiahgassensmith/Documents/programming/.notary`.
+Read that directory before signing, notarizing, packaging, or changing release automation.
 
 ## 2. Core priorities
 
@@ -600,6 +608,22 @@ layout-engine rather than copying the function. If the app needs *different* beh
 (e.g. the toolbar wants base colors without the depth tint), give the app-side function a
 distinct name that states the difference (`nativeMoleculeBaseBondColor`) — never reuse a
 layout-engine name for different behavior.
+
+### 5.27 Spin 3D rotation parity is scoped to `ScreenPlacement`
+
+For the current Spin 3D rotation-parity work, follow `PLANS.md`. The shared visual contract is
+`ScreenPlacement`: live overlay, flatten/release, reopen, modeled X/Y drag, modeled typed X/Y,
+drag Z, and typed Z must all preserve one placement contract for modeled molecules.
+
+`flattenSpunMolecule(..., { placement })` must match `projectSpin` for the same conformer,
+orientation, and placement. Keep projection and scale helpers in `apps/desktop/src/interaction/`
+and keep flattening in `documentWorkflow`; do not add duplicate projectors or one-off rendering
+math in `MainWindow.tsx`.
+
+This fix must not change chemical identity, stereo validation, wedge/hash assignment, crossing
+behavior, depth cues, molfile rewrite behavior, CDXML/CDX behavior, legacy non-modeled X/Y tilt,
+or art-object tilt. If a change touches those surfaces, prove it with the focused tests in
+`PLANS.md` or narrow the edit back to the placement/parity path.
 
 ## 6. Package-specific rules
 

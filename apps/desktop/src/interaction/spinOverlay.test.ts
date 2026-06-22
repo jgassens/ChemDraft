@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { quatFromAxisAngle, quatIdentity, type Vec3 } from "./rotation3d";
+import { quatFromAxisAngle, quatIdentity, quatToViewMatrix, type Vec3 } from "./rotation3d";
 import {
   bondDepthWeights,
   conformerCentroid,
   initialViewQuaternion,
   medianBondLength2d,
   medianBondLength3d,
+  orientedOverlayScale,
   overlayScale,
   projectSpin
 } from "./spinOverlay";
 
 const Z: Vec3 = [0, 0, 1];
+const Y: Vec3 = [0, 1, 0];
 const IDENTITY_VIEW: readonly number[] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 describe("spinOverlay — measures", () => {
@@ -37,6 +39,38 @@ describe("spinOverlay — measures", () => {
 
   it("falls back to scale 1 when a length is unmeasurable", () => {
     expect(overlayScale([{ x: 0, y: 0 }], [0, 0, 0], [])).toBe(1);
+  });
+
+  it("computes an orientation-aware scale for already-tilted drawings", () => {
+    const bondPairs: [number, number][] = [[0, 1], [1, 2]];
+    const coords = [0, 0, 0, 1.4, 0.5, 0.2, 2.8, 0, -0.3];
+    const orientation = quatFromAxisAngle(Y, Math.PI / 3);
+    const currentPlacement = { centerX: 20, centerY: -10, scale: 32 };
+    const currentProjection = projectSpin(coords, bondPairs, orientation, currentPlacement);
+    const drawn = currentProjection.atoms.map((atom) => ({ x: atom.sx, y: atom.sy }));
+
+    const scale = orientedOverlayScale(drawn, coords, bondPairs, quatToViewMatrix(orientation));
+    expect(scale).toBeCloseTo(currentPlacement.scale, 9);
+
+    const reprojection = projectSpin(coords, bondPairs, orientation, {
+      centerX: currentPlacement.centerX,
+      centerY: currentPlacement.centerY,
+      scale
+    });
+    expect(medianBondLength2d(reprojection.atoms.map((atom) => ({ x: atom.sx, y: atom.sy })), bondPairs))
+      .toBeCloseTo(medianBondLength2d(drawn, bondPairs), 9);
+  });
+
+  it("keeps orientation-aware scale finite for edge-on projections", () => {
+    const scale = orientedOverlayScale(
+      [{ x: 0, y: 0 }, { x: 30, y: 0 }],
+      [0, 0, 0, 1, 0, 0],
+      [[0, 1]],
+      quatToViewMatrix(quatFromAxisAngle(Y, Math.PI / 2))
+    );
+
+    expect(Number.isFinite(scale)).toBe(true);
+    expect(scale).toBe(1);
   });
 });
 

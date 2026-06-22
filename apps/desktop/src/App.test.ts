@@ -2011,6 +2011,15 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).not.toContain("Apply Z rotation");
   });
 
+  it("threads Spin 3D placement through modeled typed rotation while preserving legacy X/Y tilt", () => {
+    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement\s*}\s*\)/s);
+    expect(mainWindowSource).toContain("modeledRotationEntry ? 0");
+    expect(mainWindowSource).toMatch(/quatFromAxisAngle\(SPIN_AXIS_Z,\s*-deltaDegrees \* Math\.PI \/ 180\)/);
+    expect(mainWindowSource).toMatch(/attachSpin3dModelFromConformer\(nextDocument,\s*input\.objectId/s);
+    expect(mainWindowSource).toMatch(/tiltNativeMoleculeProjectedPlane\(\s*input\.startDocument,\s*input\.objectId/s);
+    expect(mainWindowSource).toMatch(/applyDocumentObjectProjectedPlaneTilt\(\s*input\.startDocument,\s*input\.objectId/s);
+  });
+
   it("gates the browser agent bridge behind explicit QA flags", () => {
     expect(mainWindowSource).toContain("window[AGENT_BRIDGE_GLOBAL_NAME] = installedBridge");
     expect(mainWindowSource).toContain('params.get("agentBridge") === "1"');

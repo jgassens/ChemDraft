@@ -12,6 +12,7 @@ import {
 import {
   SPIN3D_MODEL_KEY,
   attachSpin3dModel,
+  attachSpin3dModelFromConformer,
   buildSpin3dModel,
   conformerGraphSignature,
   createPhase4Document,
@@ -22,7 +23,8 @@ import {
   validSpin3dModelFor,
   type Spin3dDocumentModelV1
 } from "./documentWorkflow";
-import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
+import { quatFromAxisAngle, quatMultiply, quatNormalize, quatToViewMatrix, type Quaternion } from "./interaction/rotation3d";
+import { medianBondLength2d, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 
 // Butane-ish chain (achiral → flatten never refuses) with a genuinely non-planar conformer
 // so projecting it from different orientations produces different depth cues.
@@ -72,6 +74,34 @@ function moleculeOf(document: ChemDraftDocument, id = "mol"): MoleculeObject {
   const found = document.pages[0].objects.find((object) => object.id === id);
   if (!found || found.type !== "molecule") throw new Error("molecule missing");
   return found;
+}
+
+function bondPairsFor(mol: MoleculeObject): [number, number][] {
+  const atomIndex = new Map(mol.atoms.map((atom, index) => [atom.id, index] as const));
+  return mol.bonds
+    .map((bond) => [atomIndex.get(bond.fromAtomId), atomIndex.get(bond.toAtomId)] as const)
+    .filter((pair): pair is [number, number] => pair[0] !== undefined && pair[1] !== undefined);
+}
+
+function moleculeAtomBounds(mol: MoleculeObject): { width: number; height: number } {
+  const xs = mol.atoms.map((atom) => atom.x);
+  const ys = mol.atoms.map((atom) => atom.y);
+  return {
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys)
+  };
+}
+
+function placementFor(mol: MoleculeObject, coords3d: ArrayLike<number>, orientation?: Quaternion): ScreenPlacement {
+  const points = mol.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  const bondPairs = bondPairsFor(mol);
+  return {
+    centerX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    centerY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+    scale: orientation
+      ? orientedOverlayScale(points, coords3d, bondPairs, quatToViewMatrix(orientation))
+      : overlayScale(points, coords3d, bondPairs)
+  };
 }
 
 const IDENTITY_QUAT = { x: 0, y: 0, z: 0, w: 1 } as const;
@@ -193,6 +223,41 @@ describe("spin3d model — depth-cue invariant", () => {
     expect(weightsB.some((value) => typeof value === "number")).toBe(true);
     expect(new Set(weightsB.filter((value): value is number => typeof value === "number")).size).toBeGreaterThan(1);
     expect(JSON.stringify(weightsA)).not.toEqual(JSON.stringify(weightsB));
+  });
+
+  it("keeps modeled X/Y rotations bounded with placement and does not write legacy tilt", () => {
+    const base = documentWith(molecule());
+    const first = flattenSpunMolecule(base, "mol", CHAIN_COORDS3D, quatToViewMatrix(IDENTITY_QUAT), {
+      placement: placementFor(molecule(), CHAIN_COORDS3D)
+    });
+    expect(first.status).toBe("committed");
+
+    let current = attachSpin3dModel(first.document, "mol", modelFor(moleculeOf(first.document)));
+    let currentOrientation: Quaternion = IDENTITY_QUAT;
+    const firstMol = moleculeOf(current);
+    const firstBounds = moleculeAtomBounds(firstMol);
+    const firstMedian = medianBondLength2d(firstMol.atoms, bondPairsFor(firstMol));
+
+    for (const delta of [Math.PI / 3, -Math.PI / 4, Math.PI / 2, -Math.PI / 5]) {
+      const startMol = moleculeOf(current);
+      const placement = placementFor(startMol, CHAIN_COORDS3D, currentOrientation);
+      currentOrientation = quatNormalize(quatMultiply(quatFromAxisAngle([0, 1, 0], delta), currentOrientation));
+      const outcome = flattenSpunMolecule(current, "mol", CHAIN_COORDS3D, quatToViewMatrix(currentOrientation), {
+        placement
+      });
+      expect(outcome.status).toBe("committed");
+      current = attachSpin3dModelFromConformer(outcome.document, "mol", {
+        coords3d: CHAIN_COORDS3D,
+        orientation: currentOrientation
+      });
+      const nextMol = moleculeOf(current);
+      const bounds = moleculeAtomBounds(nextMol);
+      expect(bounds.width).toBeLessThan(firstBounds.width * 1.25);
+      expect(bounds.height).toBeLessThan(firstBounds.width * 1.25);
+      expect(medianBondLength2d(nextMol.atoms, bondPairsFor(nextMol))).toBeLessThan(firstMedian * 1.25);
+      expect(nextMol.transform?.tiltXDegrees).toBeUndefined();
+      expect(nextMol.transform?.tiltYDegrees).toBeUndefined();
+    }
   });
 });
 

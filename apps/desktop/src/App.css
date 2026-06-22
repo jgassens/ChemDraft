@@ -1067,6 +1067,61 @@ textarea:focus-visible,
   }
 }
 
+/* On-canvas "Generating 3D…" cue (see Spin3dGeneratingCue). Centered on the molecule via
+   left/top percentages set inline; sits just under the live spin overlay (z 50). */
+.spin3d-generating-cue {
+  position: absolute;
+  z-index: 49;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transform: translate(-50%, -50%);
+  padding: 5px 11px;
+  border-radius: var(--cd-radius-panel, 4px);
+  background: rgb(34 40 44 / 88%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--cd-shadow-floating, 0 8px 18px rgb(34 40 44 / 14%));
+  /* Stay invisible for the first moment so a fast prefetch cache-hit (~90ms), which unmounts
+     this almost immediately, never flashes it; only a genuine cold/eager embed shows it. */
+  opacity: 0;
+  animation: spin3d-generating-fade-in 0.2s ease-out 0.18s forwards;
+}
+
+.spin3d-generating-cue__spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgb(255 255 255 / 35%);
+  border-top-color: #fff;
+  animation: spin3d-generating-spin 0.7s linear infinite;
+}
+
+@keyframes spin3d-generating-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spin3d-generating-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin3d-generating-cue {
+    animation-delay: 0s;
+  }
+
+  .spin3d-generating-cue__spinner {
+    animation: none;
+  }
+}
+
 .art-target-toggle button:disabled,
 .art-effect-button-group button:disabled,
 .art-inspector-symbol-button:disabled,
