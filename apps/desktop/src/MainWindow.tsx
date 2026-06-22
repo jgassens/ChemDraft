@@ -1010,7 +1010,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.22.08.41-claude";
+const CURRENT_BUILD_STAMP = "6.22.09.08-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -11286,6 +11286,9 @@ export function MainWindow({
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           data-zoom-surface="document"
+          // Gates the ring interior hit surface (see .native-molecule-ring-hit-target): ring
+          // centers only become selectable while the Molecule Inspector is open.
+          data-molecule-inspector-open={moleculeInspectorOpen ? "true" : "false"}
         >
           {rulersVisible ? (
             <DocumentRulers

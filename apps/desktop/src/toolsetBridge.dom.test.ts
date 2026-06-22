@@ -436,6 +436,39 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated 2 selected ring fills");
   });
 
+  it("gates the ring interior hit surface on the Molecule Inspector being open", async () => {
+    const initialDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Ring catcher gating"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    if (initialDocument.pages[0]?.objects[0]?.type !== "molecule") {
+      throw new Error("Expected benzene molecule.");
+    }
+
+    await renderMainWindow(initialDocument);
+
+    const canvasRegion = (): HTMLElement => {
+      const region = container.querySelector<HTMLElement>('[data-zoom-surface="document"]');
+      if (!region) {
+        throw new Error("Expected the document canvas region.");
+      }
+      return region;
+    };
+
+    // Inspector closed: the catcher path is still rendered (one shared stacking layer), but the
+    // ancestor flag is false so CSS gives it pointer-events: none — the ring center is not a hit
+    // surface and is excluded from elementFromPoint.
+    expect(canvasRegion().getAttribute("data-molecule-inspector-open")).toBe("false");
+    // The catcher must be a descendant of the gated ancestor, or the CSS selector would not match.
+    expect(canvasRegion().querySelector(".native-molecule-ring-hit-target")).not.toBeNull();
+
+    routeCommand("view.toggleMoleculeInspector");
+
+    // Inspector open: ring centers become selectable.
+    expect(canvasRegion().getAttribute("data-molecule-inspector-open")).toBe("true");
+  });
+
   it("adds a second ring after a normal first-ring click with Shift held", async () => {
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Additive Selection"),

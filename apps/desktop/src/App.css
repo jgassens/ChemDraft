@@ -3192,6 +3192,14 @@ textarea:focus-visible,
 .native-molecule-ring-hit-target {
   fill: transparent;
   stroke: none;
+  /* Ring interiors are only selectable while the Molecule Inspector is open. The catcher lives in
+     the render plan (shared stacking layer with the atom/bond catchers), so gate the hit surface
+     here instead: pointer-events: none also drops it from elementFromPoint, so a closed-inspector
+     click in an empty ring center passes through as empty space rather than a molecule hit. */
+  pointer-events: none;
+}
+
+[data-molecule-inspector-open="true"] .native-molecule-ring-hit-target {
   pointer-events: fill;
 }
 
