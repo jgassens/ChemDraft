@@ -242,17 +242,16 @@ function takeNextWorkItem(): WorkItem | null {
 }
 
 /**
- * Run the requested mode's MMFF94 minimisation as ONE size-capped call, memoising the
- * refined result on the entry (per mode) and returning it.
+ * Invoke the requested mode's refinement once from the worker, memoising the result on
+ * the entry (per mode). `cap` is the total requested iteration budget for that public call.
  *
- * CRITICAL: OCL's `ForceFieldMMFF94.minimise()` runs to termination in a single,
- * uninterruptible call — it cannot be time-boxed or split into resumable batches (an
- * earlier "chunked" design left structures at ~6 iterations, i.e. the raw non-planar
- * embed, warping flat aromatics). `refineFromEmbedded(cap)` is therefore one capped
- * call. It IS re-runnable across modes because it restores the pristine embed first,
- * so deriving a second mode from the same embed is safe (and cheap — no re-embed).
+ * CRITICAL: OCL's `ForceFieldMMFF94.minimise()` runs to termination in one synchronous,
+ * uninterruptible call; the earlier attempt to chunk it left raw/warped aromatics. OCL
+ * therefore receives the whole budget once. RDKit may divide the same total budget into
+ * a primary pass and at most two focused continuations on its private transient conformer.
+ * The worker remains engine-neutral and calls `refineFromEmbedded(cap)` only once.
  *
- *   • cap  — iteration ceiling for this mode (request options, else the size default).
+ *   • cap  — total iteration budget for this mode (request options, else the size default).
  *
  * `preemptible` only governs whether we START: if a user `generate` is already queued we
  * skip and KEEP the embed's refine capability (an on-demand re-spin refines then), rather
@@ -302,8 +301,10 @@ async function runRefine(
     status = "error"; // leave the entry at its embedded coords (refinement is cosmetic)
     errorMessage = error instanceof Error ? error.message : String(error);
   }
+  const reportedIterations = refined?.forceField?.iterations;
+  const iterationSummary = reportedIterations === undefined ? `≤${cap} iters` : `${reportedIterations}/${cap} iters`;
   span.complete({
-    message: `${cap} iters · ${status} · ${Date.now() - startedAt}ms · ${key}${errorMessage ? ` · ${errorMessage}` : ""}`,
+    message: `${iterationSummary} · ${status} · ${Date.now() - startedAt}ms · ${key}${errorMessage ? ` · ${errorMessage}` : ""}`,
     warningCount: refined?.warnings.length
   });
   return refined;

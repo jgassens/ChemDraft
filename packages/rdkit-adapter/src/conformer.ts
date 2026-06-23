@@ -11,8 +11,9 @@
  * so the worker/client treat the two engines interchangeably.
  *
  * Lifecycle: no long-lived `JSMol` handle is kept. The embed captures a 3D molblock; each
- * refinement re-parses a pristine copy from it (engine atom order preserved) and deletes
- * the transient handle within the call. Every value that leaves this module is plain data
+ * refinement re-parses a pristine copy from it (engine atom order preserved), may split
+ * its existing iteration budget across a few passes on that one transient copy, and then
+ * deletes the handle. Every value that leaves this module is plain data
  * (structured-clone-safe across the worker boundary).
  */
 import {
@@ -120,6 +121,43 @@ function reportNameFor(forceField: RefineForceField): ConformerForceFieldReport[
 function reportStatusFor(status: string | undefined): ConformerForceFieldReport["status"] {
   if (status === "converged" || status === "not-converged" || status === "setup-failed") return status;
   return "not-run";
+}
+
+const MAX_FOCUSED_REFINEMENT_PASSES = 3;
+const PRIMARY_REFINEMENT_BUDGET_FRACTION = 0.8;
+
+/**
+ * Preserve the caller's total cap while reserving a small residual budget for continuation.
+ * An absent cap keeps the historical single engine-default pass.
+ */
+function focusedRefinementBudgets(maxIterations: number | undefined): Array<number | undefined> {
+  if (maxIterations === undefined || !Number.isFinite(maxIterations) || maxIterations <= 0) {
+    return [maxIterations];
+  }
+
+  const total = Math.max(1, Math.floor(maxIterations));
+  if (total === 1) return [1];
+
+  const primary = Math.max(1, Math.floor(total * PRIMARY_REFINEMENT_BUDGET_FRACTION));
+  const residual = total - primary;
+  if (residual <= 0) return [total];
+
+  const second = Math.ceil(residual / 2);
+  const third = residual - second;
+  return [primary, second, third].filter((budget) => budget > 0).slice(0, MAX_FOCUSED_REFINEMENT_PASSES);
+}
+
+function isValidOptimizePayload(candidate: unknown, expectedCoordinateCount: number): candidate is OptimizePayload {
+  if (typeof candidate !== "object" || candidate === null) return false;
+  const payload = candidate as Partial<OptimizePayload>;
+  return (
+    payload.embedOk === true &&
+    Array.isArray(payload.coords3dByEngineAtom) &&
+    payload.coords3dByEngineAtom.length === expectedCoordinateCount &&
+    payload.coords3dByEngineAtom.every(
+      (coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate)
+    )
+  );
 }
 
 /** Scatter engine-order coordinates onto original atoms via the engine→original map. */
@@ -296,43 +334,60 @@ export async function generate3DConformerProgressive(
   }
 
   const embeddedMolblock = payload.molblock;
-  // Each refinement starts from the pristine embed: re-parse the embed molblock (engine
-  // atom order preserved) and optimise that copy, so Fast/Balanced/Quality and MMFF↔UFF
-  // all derive from one embed without re-embedding or warping.
+  // Each public refinement starts from the pristine embed. RDKit may reserve part of the
+  // same total iteration budget for up to two focused continuation passes on this ONE
+  // transient conformer. Cross-call state is never reused.
   const refineFromEmbedded = (maxIts?: number, refineOptions?: ConformerRefineOptions): Generate3DConformerResult => {
     const forceField = refineForceFieldFor(options.optimize, refineOptions?.forceField);
     const work = rdkit.get_mol(embeddedMolblock, JSON.stringify({ removeHs: false }));
     if (!work) {
       return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
     }
+
+    const expectedCoordinateCount = payload.coords3dByEngineAtom.length;
+    const passBudgets = focusedRefinementBudgets(maxIts ?? options.maxMinimiseIterations);
     let optimized: OptimizePayload | undefined;
+    let totalIterations: number | undefined = 0;
     try {
-      optimized = JSON.parse(
-        work.optimize_3d_conformer(
-          JSON.stringify({ forceField, maxIters: maxIts ?? options.maxMinimiseIterations })
-        )
-      ) as OptimizePayload;
-    } catch {
-      optimized = undefined; // a binding throw / bad JSON → keep the embed (handled below)
+      for (const passBudget of passBudgets) {
+        let candidate: unknown;
+        try {
+          candidate = JSON.parse(
+            work.optimize_3d_conformer(JSON.stringify({ forceField, maxIters: passBudget }))
+          );
+        } catch {
+          break; // retain the last valid pass; no valid pass falls back to the embed below
+        }
+
+        // Reject failed, reordered, truncated, null, NaN, or infinite coordinate payloads.
+        // A bad later pass must not discard coordinates from an earlier valid pass.
+        if (!isValidOptimizePayload(candidate, expectedCoordinateCount)) break;
+
+        optimized = candidate;
+        const passIterations = candidate.forceField?.iterations;
+        if (totalIterations !== undefined) {
+          totalIterations =
+            typeof passIterations === "number" && Number.isFinite(passIterations) && passIterations >= 0
+              ? totalIterations + passIterations
+              : undefined;
+        }
+
+        if (reportStatusFor(candidate.forceField?.status) !== "not-converged") break;
+      }
     } finally {
       work.delete();
     }
-    if (!optimized || !optimized.embedOk) {
+
+    if (!optimized) {
       return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
     }
-    // The refine re-parses the embed molblock and scatters via the ORIGINAL engine→original
-    // map, which assumes the re-parse preserved engine atom order. If the optimised coordinate
-    // count differs from the embed's, that assumption broke — keep the embed coords rather
-    // than scatter onto the wrong atoms.
-    if (optimized.coords3dByEngineAtom.length !== payload.coords3dByEngineAtom.length) {
-      return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
-    }
+
     const refinedCoords = scatterToOriginal(optimized.coords3dByEngineAtom, engineToOriginalAtom, originalAtomCount);
     return buildResult(refinedCoords, {
       name: reportNameFor(forceField),
       status: reportStatusFor(optimized.forceField?.status),
       energy: optimized.forceField?.energy,
-      iterations: optimized.forceField?.iterations
+      iterations: totalIterations
     });
   };
 

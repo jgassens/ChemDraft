@@ -1,11 +1,12 @@
 /**
- * MMFF94 minimisation iteration caps for Spin 3D, scaled by molecule size.
+ * Force-field minimisation iteration budgets for Spin 3D, scaled by molecule size.
  *
  * Single source of truth shared by the conformer worker (the on-demand / background
  * refine) and `spin3dSettings` (the user-facing refinement modes), so the two can
- * never drift. MMFF94 cost per iteration grows with the atom-pair count and the
- * planarising/strain-relief work happens in the early iterations, so the caps bound
- * the worst case while keeping small molecules ideal.
+ * never drift. OpenChemLib uses the budget in one capped call. RDKit may split the
+ * same total budget across at most three focused passes on one transient conformer;
+ * it does not multiply the budget. Cost per iteration grows with atom-pair count, so
+ * these values continue to bound worst-case requested work.
  */
 
 /** "Quality" mode: the historical Spin 3D caps (full depiction-grade cleanup). */

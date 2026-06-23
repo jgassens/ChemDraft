@@ -25,6 +25,17 @@ const ENGINE_TO_ORIGINAL = [0, 1, 2, -1, -1];
 const GENERATED_H = [3, 4];
 const EMBED_ENGINE_COORDS = [0.1, 0.2, 0.3, 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 3.1, 3.2, 3.3, 4.1, 4.2, 4.3];
 const REFINE_ENGINE_COORDS = [0.5, 0.6, 0.7, 1.5, 1.6, 1.7, 2.5, 2.6, 2.7, 3.5, 3.6, 3.7, 4.5, 4.6, 4.7];
+const REFINE_ENGINE_COORDS_2 = REFINE_ENGINE_COORDS.map((value) => value + 0.1);
+const REFINE_ENGINE_COORDS_3 = REFINE_ENGINE_COORDS.map((value) => value + 0.2);
+
+interface MockOptimizeResponse {
+  raw?: string;
+  embedOk?: boolean;
+  coords3dByEngineAtom?: number[];
+  status?: string;
+  energy?: number;
+  iterations?: number;
+}
 
 interface MockHooks {
   embedPayload?: Partial<{
@@ -38,6 +49,7 @@ interface MockHooks {
   /** Simulate a real ETKDG embed that only succeeds with `useRandomCoords:true` (a large,
    *  flexible molecule): the first attempt returns embedOk:false, the random-coords retry ok. */
   failUnlessRandomCoords?: boolean;
+  optimizeResponses?: MockOptimizeResponse[];
 }
 
 function installMock(hooks: MockHooks = {}) {
@@ -52,6 +64,7 @@ function installMock(hooks: MockHooks = {}) {
       getMolMolblocks.push(molblock);
       if (hooks.parseReturnsNull) return null;
       const tag = molblock === EMBED_MOLBLOCK ? "work" : "input";
+      let optimizeCall = 0;
       return {
         generate_3d_embed(details: string): string {
           embedDetails.push(details);
@@ -69,10 +82,17 @@ function installMock(hooks: MockHooks = {}) {
         optimize_3d_conformer(details: string): string {
           optimizeDetails.push(details);
           const parsed = JSON.parse(details) as { forceField: string; maxIters?: number };
+          const response = hooks.optimizeResponses?.[optimizeCall++] ?? {};
+          if (response.raw !== undefined) return response.raw;
           return JSON.stringify({
-            embedOk: true,
-            coords3dByEngineAtom: REFINE_ENGINE_COORDS,
-            forceField: { name: parsed.forceField, status: "converged", energy: -9.5, iterations: parsed.maxIters }
+            embedOk: response.embedOk ?? true,
+            coords3dByEngineAtom: response.coords3dByEngineAtom ?? REFINE_ENGINE_COORDS,
+            forceField: {
+              name: parsed.forceField,
+              status: response.status ?? "converged",
+              energy: response.energy ?? -9.5,
+              iterations: response.iterations ?? parsed.maxIters
+            }
           });
         },
         delete() {
@@ -129,10 +149,119 @@ describe("rdkit conformer adapter — refine", () => {
     const refined = refineFromEmbedded!(200);
 
     expect([...refined.mapping.coords3dByOriginalAtom]).toEqual([0.5, 0.6, 0.7, 1.5, 1.6, 1.7, 2.5, 2.6, 2.7]);
-    expect(refined.forceField).toEqual({ name: "MMFF94", status: "converged", energy: -9.5, iterations: 200 });
+    expect(refined.forceField).toEqual({ name: "MMFF94", status: "converged", energy: -9.5, iterations: 160 });
     // Refine re-parsed the embed molblock (not the input) — pristine per call.
     expect(mock.getMolMolblocks[1]).toBe(EMBED_MOLBLOCK);
-    expect(JSON.parse(mock.optimizeDetails[0])).toEqual({ forceField: "mmff94", maxIters: 200 });
+    expect(JSON.parse(mock.optimizeDetails[0])).toEqual({ forceField: "mmff94", maxIters: 160 });
+  });
+
+  it("converges on the third focused pass without exceeding the total budget", async () => {
+    const mock = installMock({
+      optimizeResponses: [
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS, energy: -7.0 },
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS_2, energy: -8.5 },
+        { status: "converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS_3, energy: -9.5 }
+      ]
+    });
+    const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
+    const refined = refineFromEmbedded!(120);
+
+    expect(mock.optimizeDetails.map((details) => JSON.parse(details))).toEqual([
+      { forceField: "mmff94", maxIters: 96 },
+      { forceField: "mmff94", maxIters: 12 },
+      { forceField: "mmff94", maxIters: 12 }
+    ]);
+    expect(mock.getMolMolblocks).toEqual([INPUT.molfile, EMBED_MOLBLOCK]);
+    expect(mock.deletes).toEqual(["input", "work"]);
+    expect([...refined.mapping.coords3dByOriginalAtom]).toEqual(REFINE_ENGINE_COORDS_3.slice(0, 9));
+    expect(refined.forceField).toEqual({
+      name: "MMFF94",
+      status: "converged",
+      energy: -9.5,
+      iterations: 120
+    });
+  });
+
+  it("stops after three non-converged passes while preserving the total budget", async () => {
+    const mock = installMock({
+      optimizeResponses: [
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS },
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS_2 },
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS_3 },
+        { status: "converged" }
+      ]
+    });
+    const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
+    const refined = refineFromEmbedded!(50);
+
+    expect(mock.optimizeDetails.map((details) => JSON.parse(details).maxIters)).toEqual([40, 5, 5]);
+    expect(refined.forceField?.status).toBe("not-converged");
+    expect(refined.forceField?.iterations).toBe(50);
+    expect([...refined.mapping.coords3dByOriginalAtom]).toEqual(REFINE_ENGINE_COORDS_3.slice(0, 9));
+  });
+
+  it("keeps the last valid coordinates when a later pass returns malformed JSON", async () => {
+    const mock = installMock({
+      optimizeResponses: [
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS },
+        { raw: "{" }
+      ]
+    });
+    const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
+    const refined = refineFromEmbedded!(60);
+
+    expect(mock.optimizeDetails).toHaveLength(2);
+    expect([...refined.mapping.coords3dByOriginalAtom]).toEqual(REFINE_ENGINE_COORDS.slice(0, 9));
+    expect(refined.forceField).toEqual({
+      name: "MMFF94",
+      status: "not-converged",
+      energy: -9.5,
+      iterations: 48
+    });
+  });
+
+  it("keeps the last valid coordinates when a later pass changes coordinate count", async () => {
+    const mock = installMock({
+      optimizeResponses: [
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS },
+        { status: "converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS_2.slice(0, -3) }
+      ]
+    });
+    const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
+    const refined = refineFromEmbedded!(60);
+
+    expect(mock.optimizeDetails).toHaveLength(2);
+    expect([...refined.mapping.coords3dByOriginalAtom]).toEqual(REFINE_ENGINE_COORDS.slice(0, 9));
+    expect(refined.forceField?.status).toBe("not-converged");
+    expect(refined.forceField?.iterations).toBe(48);
+  });
+
+  it("returns embedded coordinates with setup-failed when the first pass is malformed", async () => {
+    const mock = installMock({ optimizeResponses: [{ raw: "{" }] });
+    const { embedded, refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
+    const refined = refineFromEmbedded!(60);
+
+    expect(mock.optimizeDetails).toHaveLength(1);
+    expect([...refined.mapping.coords3dByOriginalAtom]).toEqual([...embedded.mapping.coords3dByOriginalAtom]);
+    expect(refined.forceField).toEqual({ name: "MMFF94", status: "setup-failed" });
+  });
+
+  it("starts every public refinement from an independent pristine work molecule", async () => {
+    const mock = installMock({
+      optimizeResponses: [
+        { status: "not-converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS },
+        { status: "converged", coords3dByEngineAtom: REFINE_ENGINE_COORDS_2 }
+      ]
+    });
+    const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
+    const first = refineFromEmbedded!(60);
+    const second = refineFromEmbedded!(60);
+
+    expect(mock.getMolMolblocks).toEqual([INPUT.molfile, EMBED_MOLBLOCK, EMBED_MOLBLOCK]);
+    expect(mock.deletes).toEqual(["input", "work", "work"]);
+    expect(mock.optimizeDetails.map((details) => JSON.parse(details).maxIters)).toEqual([48, 6, 48, 6]);
+    expect([...second.mapping.coords3dByOriginalAtom]).toEqual([...first.mapping.coords3dByOriginalAtom]);
+    expect(second.forceField).toEqual(first.forceField);
   });
 
   it("honours a per-refine force-field override (UFF) without re-embedding", async () => {
@@ -141,7 +270,7 @@ describe("rdkit conformer adapter — refine", () => {
     const refined = refineFromEmbedded!(120, { forceField: "uff" });
 
     expect(refined.forceField?.name).toBe("UFF");
-    expect(JSON.parse(mock.optimizeDetails[0])).toMatchObject({ forceField: "uff", maxIters: 120 });
+    expect(JSON.parse(mock.optimizeDetails[0])).toMatchObject({ forceField: "uff", maxIters: 96 });
     // Two get_mol calls total: one embed (input), one refine (embed molblock). No re-embed.
     expect(mock.getMolMolblocks).toHaveLength(2);
   });

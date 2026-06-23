@@ -93,7 +93,8 @@ export function isSpin3dSettings(value: unknown): value is Spin3dSettings {
 /**
  * Resolve a mode + force field + molecule size to the conformer options sent to the worker
  * (and the in-page fallback). `fast` disables refinement; `balanced`/`quality` request the
- * chosen force field with an explicit, size-scaled iteration cap from the shared cap policy.
+ * chosen force field with an explicit, size-scaled total iteration budget from the shared
+ * budget policy. An engine may split that budget internally but must not multiply it.
  */
 export function conformerOptionsForSpin3d(
   settings: Spin3dSettings,
