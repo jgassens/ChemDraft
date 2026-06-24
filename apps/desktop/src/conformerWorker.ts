@@ -42,10 +42,12 @@ import {
 } from "./conformerDebug";
 
 export interface ConformerWorkRequest {
-  kind: "generate" | "prefetch" | "warmup" | "cancel";
+  kind: "generate" | "prefetch" | "relax" | "warmup" | "cancel";
   id: number;
   molfile?: string;
   originalAtomCount?: number;
+  /** User-deformed original-atom coordinates for a tug relaxation. */
+  coords3dByOriginalAtom?: Float64Array;
   sessionId?: string;
   /** Conformer refinement options for this request (Spin 3D mode → engine options).
    *  Embedding ignores these (it is force-field-independent and cached by molfile);
@@ -57,7 +59,7 @@ export interface ConformerWorkRequest {
 
 export interface ConformerWorkResponse {
   id: number;
-  stage: "embedded" | "refined" | "error" | "warmed" | "trace" | "complete";
+  stage: "embedded" | "refined" | "relaxed" | "error" | "warmed" | "trace" | "complete";
   result?: Generate3DConformerResult;
   message?: string;
   trace?: Spin3dTraceEvent;
@@ -123,6 +125,7 @@ interface CacheEntry {
    *  pristine embed), so different modes/force fields can be derived from the one embed
    *  without re-embedding. Absent only when the embed itself failed. */
   refineFromEmbedded?: (maxIts?: number, options?: ConformerRefineOptions) => Generate3DConformerResult;
+  relaxFromCoordinates?: (coords: ArrayLike<number>, maxIts?: number, options?: ConformerRefineOptions) => Generate3DConformerResult;
   /** Release any engine-held native/WASM resources for this entry. Called on eviction.
    *  (RDKit keeps no long-lived handle, so this is a no-op there; the contract is kept so
    *  an engine that DOES hold handles can free them deterministically.) */
@@ -153,7 +156,7 @@ function traceSessionId(request: Pick<ConformerWorkRequest, "id" | "kind" | "ses
 }
 
 function queueDepth(): number {
-  return pendingGenerates.length +
+  return pendingGenerates.length + pendingRelax.length +
     (pendingPrefetch ? 1 : 0) +
     (pendingRefine ? 1 : 0) +
     (pendingWarmup ? 1 : 0);
@@ -164,6 +167,7 @@ function queueDepth(): number {
 function queueBreakdown(): string {
   const parts: string[] = [];
   if (pendingGenerates.length > 0) parts.push(`${pendingGenerates.length} generate`);
+  if (pendingRelax.length > 0) parts.push(`${pendingRelax.length} relax`);
   if (pendingPrefetch) parts.push("1 prefetch");
   if (pendingRefine) parts.push("1 idle refine");
   if (pendingWarmup) parts.push("1 warmup");
@@ -211,6 +215,7 @@ function postOclTrace(request: ConformerWorkRequest, event: Parameters<typeof cr
 //   • warmup     → coalesced to one, lowest priority (a waiting generate warms OCL itself)
 let running = false;
 const pendingGenerates: ConformerWorkRequest[] = [];
+const pendingRelax: ConformerWorkRequest[] = [];
 let pendingPrefetch: ConformerWorkRequest | null = null;
 // molfile with a cached entry awaiting idle refinement, plus the mode to refine it in
 let pendingRefine: { molfile: string; options?: Generate3DConformerOptions } | null = null;
@@ -223,6 +228,8 @@ type WorkItem =
 function takeNextWorkItem(): WorkItem | null {
   const generate = pendingGenerates.shift();
   if (generate) return { kind: "request", request: generate };
+  const relax = pendingRelax.shift();
+  if (relax) return { kind: "request", request: relax };
   if (pendingPrefetch) {
     const prefetch = pendingPrefetch;
     pendingPrefetch = null;
@@ -340,6 +347,8 @@ async function drain(): Promise<void> {
         }
       } else if (item.request.kind === "warmup") {
         await runWarmup(item.request);
+      } else if (item.request.kind === "relax") {
+        await runRelax(item.request);
       } else {
         await runGenerate(item.request);
       }
@@ -357,6 +366,7 @@ function submit(request: ConformerWorkRequest): void {
   if (request.kind === "cancel") {
     // Drop the job if it is still queued; a running OCL call cannot be interrupted.
     const queuedIndex = pendingGenerates.findIndex((queued) => queued.id === request.id);
+    const queuedRelaxIndex = pendingRelax.findIndex((queued) => queued.id === request.id);
     if (queuedIndex >= 0) {
       const [cancelled] = pendingGenerates.splice(queuedIndex, 1);
       postTrace(cancelled, {
@@ -366,6 +376,8 @@ function submit(request: ConformerWorkRequest): void {
         atomCount: cancelled.originalAtomCount,
         queueDepth: queueDepth()
       });
+    } else if (queuedRelaxIndex >= 0) {
+      pendingRelax.splice(queuedRelaxIndex, 1);
     } else if (pendingPrefetch?.id === request.id) {
       pendingPrefetch = null;
     }
@@ -390,6 +402,14 @@ function submit(request: ConformerWorkRequest): void {
       }
     }
     pendingGenerates.push(request);
+  } else if (request.kind === "relax") {
+    for (let index = pendingRelax.length - 1; index >= 0; index -= 1) {
+      if (pendingRelax[index].molfile === request.molfile) {
+        const [superseded] = pendingRelax.splice(index, 1);
+        post({ id: superseded.id, stage: "complete" });
+      }
+    }
+    pendingRelax.push(request);
   } else if (request.kind === "prefetch") {
     // Already computed UNDER THE ENGINE this prefetch would use? Nothing to do. A cached
     // embed produced by a DIFFERENT engine (e.g. after the user switched the Engine setting)
@@ -421,6 +441,31 @@ function submit(request: ConformerWorkRequest): void {
     queueDepth: queueDepth()
   });
   void drain();
+}
+
+
+async function runRelax(request: ConformerWorkRequest): Promise<void> {
+  const molfile = request.molfile ?? "";
+  const entry = cache.get(molfile);
+  if (!entry || !entry.relaxFromCoordinates || entry.engine !== "rdkit-wasm") {
+    post({ id: request.id, stage: "error", message: "Tug relaxation requires a cached RDKit conformer" });
+    return;
+  }
+  const coords = request.coords3dByOriginalAtom;
+  if (!coords || coords.length !== entry.embedded.originalAtomCount * 3) {
+    post({ id: request.id, stage: "error", message: "Tug relaxation received invalid coordinates" });
+    return;
+  }
+  try {
+    const cap = request.options?.maxMinimiseIterations ?? qualityRefineIterationsFor(entry.embedded.originalAtomCount);
+    const forceField = effectiveRefineForceField(request.options, entry.engine);
+    const relaxed = entry.relaxFromCoordinates(coords, cap, { forceField });
+    // Deliberately do NOT mutate the pristine molfile cache. A completed tug remains
+    // session-local until the user flattens/commits the active Spin 3D overlay.
+    post({ id: request.id, stage: "relaxed", result: relaxed });
+  } catch (error) {
+    post({ id: request.id, stage: "error", message: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 // Engine selection. RDKit ETKDG is the fast embed; it is used when its WASM module is
@@ -553,7 +598,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       runSpan.complete({ cacheStatus: "miss" });
       return;
     }
-    let { embedded, refineFromEmbedded } = await embedConformer(request, engine);
+    let { embedded, refineFromEmbedded, relaxFromCoordinates } = await embedConformer(request, engine);
     let effectiveEngine = engine;
     let rdkitFallback = false;
     // RDKit ETKDG cannot embed some large / highly flexible structures (e.g. long peptides)
@@ -573,6 +618,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       const fallback = await embedConformer(request, "openchemlib");
       embedded = fallback.embedded;
       refineFromEmbedded = fallback.refineFromEmbedded;
+      relaxFromCoordinates = fallback.relaxFromCoordinates;
       if (fallback.embedded.embed.status === "ok") {
         effectiveEngine = "openchemlib";
         rdkitFallback = true;
@@ -589,6 +635,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       engine: effectiveEngine,
       rdkitFallback,
       refineFromEmbedded,
+      relaxFromCoordinates,
       refinedByMode: new Map(),
       traceSessionId: traceSessionId(request),
       traceRequestId: request.id

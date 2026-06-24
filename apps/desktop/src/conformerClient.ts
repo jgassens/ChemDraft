@@ -23,6 +23,11 @@ export interface ConformerStageHandlers {
   onError(message: string, info?: { workerCrashed?: boolean }): void;
 }
 
+export interface ConformerRelaxHandlers {
+  onRelaxed(result: Generate3DConformerResult): void;
+  onError(message: string, info?: { workerCrashed?: boolean }): void;
+}
+
 export interface ConformerTraceContext {
   sessionId: string;
 }
@@ -36,6 +41,15 @@ export interface ConformerWorkerClient {
     options: Generate3DConformerOptions,
     enginePreference: Spin3dEnginePreference,
     handlers: ConformerStageHandlers,
+    traceContext?: ConformerTraceContext
+  ): () => void;
+  /** Relax a user-deformed conformer already cached by a Spin 3D generation. */
+  relax(
+    molfile: string,
+    originalAtomCount: number,
+    coords3dByOriginalAtom: Float64Array,
+    options: Generate3DConformerOptions,
+    handlers: ConformerRelaxHandlers,
     traceContext?: ConformerTraceContext
   ): () => void;
   /** Fire-and-forget: compute + cache so a subsequent generate is instant. */
@@ -53,7 +67,7 @@ export interface ConformerWorkerClient {
 let client: ConformerWorkerClient | null | undefined;
 
 type PendingRequest = {
-  handlers: ConformerStageHandlers;
+  handlers: ConformerStageHandlers | ConformerRelaxHandlers;
   traceContext?: ConformerTraceContext;
 };
 
@@ -90,10 +104,13 @@ export function createConformerWorkerClient(
     const { handlers } = request;
     if (stage === "embedded" && result) {
       if (result.embed.status !== "ok") pending.delete(id);
-      handlers.onEmbedded(result);
+      if ("onEmbedded" in handlers) handlers.onEmbedded(result);
     } else if (stage === "refined" && result) {
       pending.delete(id); // refined is the final stage for a request
-      handlers.onRefined(result);
+      if ("onRefined" in handlers) handlers.onRefined(result);
+    } else if (stage === "relaxed" && result) {
+      pending.delete(id);
+      if ("onRelaxed" in handlers) handlers.onRelaxed(result);
     } else if (stage === "error") {
       pending.delete(id);
       // Deterministic engine failure — the worker itself is healthy.
@@ -201,6 +218,28 @@ export function createConformerWorkerClient(
       return () => {
         // Detach handlers AND tell the worker to drop the job if still queued
         // (a running OCL call is synchronous and cannot be interrupted).
+        pending.delete(id);
+        send({ kind: "cancel", id });
+      };
+    },
+
+    relax(molfile, originalAtomCount, coords3dByOriginalAtom, options, handlers, traceContext) {
+      const id = nextId++;
+      pending.set(id, { handlers, traceContext });
+      if (!send({
+        kind: "relax",
+        id,
+        molfile,
+        originalAtomCount,
+        coords3dByOriginalAtom,
+        options,
+        sessionId: traceContext?.sessionId
+      })) {
+        pending.delete(id);
+        setTimeout(() => handlers.onError("conformer worker unavailable", { workerCrashed: true }), 0);
+        return () => undefined;
+      }
+      return () => {
         pending.delete(id);
         send({ kind: "cancel", id });
       };
