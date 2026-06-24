@@ -182,6 +182,30 @@ describe("lasso selection interactions", () => {
     target.dispatchEvent(event);
   }
 
+  // Group rotate/tilt handles are Shift-gated (MainWindow shows them only while Shift is
+  // held). Mirror the helper used by freehandArt/graphicPathEdit DOM tests. The pointer
+  // events above stay shiftKey:false, so this only toggles handle visibility — it does not
+  // engage any Shift-constrained rotation snapping.
+  async function holdShiftForRotationHandles() {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "Shift",
+        shiftKey: true
+      }));
+    });
+  }
+
+  async function releaseShiftForRotationHandles() {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keyup", {
+        bubbles: true,
+        key: "Shift",
+        shiftKey: false
+      }));
+    });
+  }
+
   it("Shift-double-click adds mixed art objects to the selected group", async () => {
     const withRect = insertNativeArtGraphicObject(
       createPhase4Document("Shift Group Selection"),
@@ -216,7 +240,9 @@ describe("lasso selection interactions", () => {
     });
 
     expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
+    await holdShiftForRotationHandles();
     expect(container.querySelectorAll('[data-group-rotate-handle="true"]')).toHaveLength(1);
+    await releaseShiftForRotationHandles();
     expect(graphicInteractionMode(rectId)).toBeUndefined();
     expect(graphicInteractionMode(lineId)).toBeUndefined();
     expect(activeToolCommandId()).toBe("tool.select");
@@ -285,6 +311,7 @@ describe("lasso selection interactions", () => {
 
     await renderMainWindow(selectedDocument, "tool.lasso");
 
+    await holdShiftForRotationHandles();
     const rotateHandle = container.querySelector<HTMLElement>('[data-group-rotate-handle="true"]');
     if (!rotateHandle) {
       throw new Error("Expected group rotate handle.");
@@ -333,6 +360,7 @@ describe("lasso selection interactions", () => {
     expect(activeToolCommandId()).toBe("tool.lasso");
     expect(container.querySelector(".selection-lasso")).toBeNull();
     expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
+    await releaseShiftForRotationHandles();
   });
 
   it("moves a selected graphic group instead of collapsing to the clicked object", async () => {
