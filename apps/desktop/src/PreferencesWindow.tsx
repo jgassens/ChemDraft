@@ -28,7 +28,8 @@ const ENGINES: RadioOption<Spin3dEnginePreference>[] = [
 ];
 
 const FORCE_FIELDS: RadioOption<Spin3dForceField>[] = [
-  { value: "mmff94", title: "MMFF94", description: "General-purpose force field. Works with both engines." },
+  { value: "mmff94s", title: "MMFF94s", description: "Default planar MMFF variant. Helps aromatics, amides, and conjugated systems read flat." },
+  { value: "mmff94", title: "MMFF94", description: "General-purpose MMFF variant. Available for comparison and compatibility." },
   { value: "uff", title: "UFF", description: "Universal Force Field. Requires the RDKit engine — OpenChemLib refines with MMFF94 regardless." }
 ];
 

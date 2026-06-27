@@ -520,12 +520,17 @@ async function embedConformer(
   const input = { molfile: request.molfile ?? "", originalAtomCount: request.originalAtomCount };
   // Embedding is force-field-independent; always request the refine capability so any mode
   // can be derived from this one embed. The per-mode iteration cap is applied in runRefine.
+  // Preserve the UI-level deterministic seed; the worker used to drop it here.
+  const embedOptions: Generate3DConformerOptions = {
+    optimize: "auto",
+    seed: request.options?.seed
+  };
   if (engine === "rdkit-wasm") {
-    return rdkitGenerate3DConformerProgressive(input, { optimize: "auto" });
+    return rdkitGenerate3DConformerProgressive(input, embedOptions);
   }
   return withOclConformerTrace(
     (event) => postOclTrace(request, event),
-    () => oclGenerate3DConformerProgressive(input, { optimize: "auto" })
+    () => oclGenerate3DConformerProgressive(input, embedOptions)
   );
 }
 

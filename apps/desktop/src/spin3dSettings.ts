@@ -9,15 +9,15 @@
  *                        auto        — RDKit ETKDG when its WASM is available, else OCL.
  *                        rdkit       — RDKit ETKDG (falls back to OCL if it can't load).
  *                        openchemlib — force the legacy OpenChemLib engine (rollback path).
- *   forceField       — refinement force field: MMFF94 (both engines) or UFF (RDKit only;
- *                        OCL refines with MMFF94 regardless, since it ships no UFF).
+ *   forceField       — refinement force field: MMFF94s/MMFF94 (RDKit) or UFF (RDKit only;
+ *                        OCL refines with MMFF94 regardless, since it ships no UFF/MMFF94s).
  */
 import type { Generate3DConformerOptions } from "@chemdraft/chemistry-adapter";
 import { balancedRefineIterationsFor, qualityRefineIterationsFor } from "./spin3dRefineCaps";
 
 export type Spin3dRefinementMode = "fast" | "balanced" | "quality";
 export type Spin3dEnginePreference = "auto" | "rdkit" | "openchemlib";
-export type Spin3dForceField = "mmff94" | "uff";
+export type Spin3dForceField = "mmff94" | "mmff94s" | "uff";
 
 export interface Spin3dSettings {
   refinementMode: Spin3dRefinementMode;
@@ -25,12 +25,14 @@ export interface Spin3dSettings {
   forceField: Spin3dForceField;
 }
 
+export const DEFAULT_SPIN3D_SEED = 42;
+
 export const DEFAULT_SPIN3D_SETTINGS: Spin3dSettings = {
-  // Defaults preserve historical geometry: full MMFF94 cleanup, RDKit-first embedding
-  // (with transparent OCL fallback). Existing users see faster Spin 3D, same chemistry.
+  // Defaults prefer depiction-grade planar cleanup, RDKit-first embedding
+  // (with transparent OCL fallback), and deterministic conformer generation.
   refinementMode: "quality",
   enginePreference: "auto",
-  forceField: "mmff94"
+  forceField: "mmff94s"
 };
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
@@ -44,7 +46,7 @@ export function isSpin3dEnginePreference(value: unknown): value is Spin3dEngineP
 }
 
 export function isSpin3dForceField(value: unknown): value is Spin3dForceField {
-  return value === "mmff94" || value === "uff";
+  return value === "mmff94" || value === "mmff94s" || value === "uff";
 }
 
 export function loadSpin3dSettings(): Spin3dSettings {
@@ -102,11 +104,19 @@ export function conformerOptionsForSpin3d(
 ): Generate3DConformerOptions {
   switch (settings.refinementMode) {
     case "fast":
-      return { optimize: "none" };
+      return { optimize: "none", seed: DEFAULT_SPIN3D_SEED };
     case "balanced":
-      return { optimize: settings.forceField, maxMinimiseIterations: balancedRefineIterationsFor(atomCount) };
+      return {
+        optimize: settings.forceField,
+        seed: DEFAULT_SPIN3D_SEED,
+        maxMinimiseIterations: balancedRefineIterationsFor(atomCount)
+      };
     case "quality":
     default:
-      return { optimize: settings.forceField, maxMinimiseIterations: qualityRefineIterationsFor(atomCount) };
+      return {
+        optimize: settings.forceField,
+        seed: DEFAULT_SPIN3D_SEED,
+        maxMinimiseIterations: qualityRefineIterationsFor(atomCount)
+      };
   }
 }

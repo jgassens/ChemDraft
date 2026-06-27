@@ -109,7 +109,7 @@ export interface Generate3DConformerOptions {
   /** Deterministic seed for the embedding (default engine-defined). */
   seed?: number;
   /** Force-field refinement. "auto" lets the engine choose (MMFF94, else none). */
-  optimize?: "none" | "auto" | "mmff94" | "uff";
+  optimize?: "none" | "auto" | "mmff94" | "mmff94s" | "uff";
   /**
    * Total force-field minimisation iteration budget for one public refinement call
    * (default: the engine's full run). An adapter may divide a finite budget across a
@@ -136,15 +136,17 @@ export interface ConformerRefineOptions {
 
 /**
  * Default refinement force field for an embed-time `optimize` choice: UFF only when the
- * user explicitly asked for it, MMFF94 otherwise. Shared by the conformer worker (which
- * keys its per-mode cache on the force field) and the RDKit adapter (which runs it), so
- * the two can never drift. A per-refine `ConformerRefineOptions.forceField` override takes
- * precedence over this default at the engine.
+ * user explicitly asked for it, explicit MMFF94 when requested, and MMFF94s otherwise.
+ * Shared by the conformer worker (which keys its per-mode cache on the force field) and
+ * the RDKit adapter (which runs it), so the two can never drift. A per-refine
+ * `ConformerRefineOptions.forceField` override takes precedence over this default at the engine.
  */
 export function defaultRefineForceField(
   optimize: Generate3DConformerOptions["optimize"]
 ): NonNullable<ConformerRefineOptions["forceField"]> {
-  return optimize === "uff" ? "uff" : "mmff94";
+  if (optimize === "uff") return "uff";
+  if (optimize === "mmff94") return "mmff94";
+  return "mmff94s";
 }
 
 /**
