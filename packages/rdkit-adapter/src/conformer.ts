@@ -101,6 +101,15 @@ const DEFAULT_EMBED_TIMEOUT_SECONDS = 10;
 // flexible molecules (e.g. long peptides) that random coords embeds successfully.
 const RANDOM_COORDS_RETRY_MIN_ATOMS = 50;
 
+// Best-of-K initial embedding bounds (Spin 3D appearance policy, Slice B). The extra cost is
+// K embeds + K short MMFF scores, incurred only at generation time when a caller requests
+// candidates (`embedCandidates > 1`) — never on a tug rebuild, which leaves it unset.
+const MULTI_EMBED_MAX_CANDIDATES = 6; // hard ceiling on K regardless of the request
+const MULTI_EMBED_TAPER_ATOMS = 60; // above this, halve K to bound large-molecule latency
+const MULTI_EMBED_MAX_ATOMS = 120; // above this, skip best-of-K entirely (single embed)
+const CANDIDATE_SCORE_ITERATIONS = 50; // short MMFF pass, just enough to rank candidates
+const DEFAULT_MULTI_EMBED_SEED = 42; // deterministic base when no seed is supplied
+
 type RefineForceField = NonNullable<ConformerRefineOptions["forceField"]>;
 
 function refineForceFieldFor(
@@ -145,6 +154,19 @@ function focusedRefinementBudgets(maxIterations: number | undefined): Array<numb
   const second = Math.ceil(residual / 2);
   const third = residual - second;
   return [primary, second, third].filter((budget) => budget > 0).slice(0, MAX_FOCUSED_REFINEMENT_PASSES);
+}
+
+/**
+ * Resolve a requested best-of-K candidate count to an effective count, tapered by molecule
+ * size so large structures don't pay the full multi-embed cost. Returns 1 to disable best-of-K
+ * (single embed): for a request of 1 or less, a non-positive/unknown atom count, or a molecule
+ * above the hard atom cap.
+ */
+function effectiveCandidateCount(requested: number, atomCount: number): number {
+  if (!Number.isFinite(requested) || requested <= 1) return 1;
+  if (atomCount <= 0 || atomCount > MULTI_EMBED_MAX_ATOMS) return 1;
+  const capped = Math.min(Math.floor(requested), MULTI_EMBED_MAX_CANDIDATES);
+  return atomCount > MULTI_EMBED_TAPER_ATOMS ? Math.min(capped, 2) : capped;
 }
 
 function isValidOptimizePayload(candidate: unknown, expectedCoordinateCount: number): candidate is OptimizePayload {
@@ -326,12 +348,12 @@ export async function generate3DConformerProgressive(
     | { kind: "parse-failed" }
     | { kind: "error"; message: string }
     | { kind: "payload"; payload: EmbedPayload };
-  const attemptEmbed = (useRandomCoords: boolean): EmbedAttempt => {
+  const attemptEmbed = (useRandomCoords: boolean, seed: number = options.seed ?? -1): EmbedAttempt => {
     const mol = rdkit.get_mol(input.molfile, JSON.stringify({ removeHs: false }));
     if (!mol) return { kind: "parse-failed" };
     try {
       const json = mol.generate_3d_embed(
-        JSON.stringify({ seed: options.seed ?? -1, timeoutSeconds: DEFAULT_EMBED_TIMEOUT_SECONDS, useRandomCoords })
+        JSON.stringify({ seed, timeoutSeconds: DEFAULT_EMBED_TIMEOUT_SECONDS, useRandomCoords })
       );
       return { kind: "payload", payload: JSON.parse(json) as EmbedPayload };
     } catch (error) {
@@ -339,6 +361,49 @@ export async function generate3DConformerProgressive(
     } finally {
       mol.delete(); // plain-data payload captured; never hold a WASM handle across calls
     }
+  };
+
+  // Best-of-K initial embedding (Slice B): score a deformation-free candidate by a short MMFF
+  // relaxation and keep the lowest-energy (most relaxed) embed, so an unlucky single ETKDG draw
+  // never ships. Scoring runs on a throwaway transient mol; only the winning embed flows
+  // downstream, so the refine/tug contract is unchanged. Single-candidate callers skip all of it.
+  const scoreEmbed = (candidate: EmbedPayload, forceField: RefineForceField): number | undefined => {
+    const work = rdkit.get_mol(candidate.molblock, JSON.stringify({ removeHs: false }));
+    if (!work) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(
+        work.optimize_3d_conformer(JSON.stringify({ forceField, maxIters: CANDIDATE_SCORE_ITERATIONS }))
+      );
+      if (!isValidOptimizePayload(parsed, candidate.coords3dByEngineAtom.length)) return undefined;
+      const energy = parsed.forceField?.energy;
+      return typeof energy === "number" && Number.isFinite(energy) ? energy : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      work.delete();
+    }
+  };
+
+  const selectBestEmbed = (baseline: EmbedPayload): EmbedPayload => {
+    const candidateCount = effectiveCandidateCount(options.embedCandidates ?? 1, input.originalAtomCount ?? 0);
+    if (candidateCount <= 1) return baseline;
+    const forceField = refineForceFieldFor(options.optimize, undefined);
+    const baseSeed = options.seed ?? DEFAULT_MULTI_EMBED_SEED;
+    let best = baseline;
+    let bestEnergy = scoreEmbed(baseline, forceField);
+    // Candidate seeds are baseSeed+1.. so they never collide with the baseline (baseSeed),
+    // and the winner is reproducible for a given molfile + seed + candidate count.
+    for (let candidate = 1; candidate < candidateCount; candidate += 1) {
+      const next = attemptEmbed(false, baseSeed + candidate);
+      if (next.kind !== "payload" || !next.payload.embedOk) continue;
+      const energy = scoreEmbed(next.payload, forceField);
+      if (energy === undefined) continue;
+      if (bestEnergy === undefined || energy < bestEnergy) {
+        best = next.payload;
+        bestEnergy = energy;
+      }
+    }
+    return best;
   };
 
   let attempt = attemptEmbed(false);
@@ -358,10 +423,11 @@ export async function generate3DConformerProgressive(
   if (attempt.kind === "error") {
     return failedEmbed(input, `RDKit embed failed: ${attempt.message}`, version);
   }
-  const payload = attempt.payload;
-  if (!payload.embedOk) {
+  if (!attempt.payload.embedOk) {
     return failedEmbed(input, "RDKit ETKDG embedding found no conformer (or timed out)", version);
   }
+  // Optionally upgrade the baseline embed to the best of several deterministic candidates.
+  const payload = selectBestEmbed(attempt.payload);
 
   const engineToOriginalAtom = payload.engineToOriginalAtom;
   const originalAtomCount = originalAtomCountFrom(engineToOriginalAtom, input.originalAtomCount);

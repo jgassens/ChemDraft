@@ -118,6 +118,13 @@ export interface Generate3DConformerOptions {
    * before the engine default, so the budget bounds worst-case work on large molecules.
    */
   maxMinimiseIterations?: number;
+  /**
+   * Number of independent embed candidates to generate and rank by a short force-field
+   * energy, keeping the lowest-energy (most relaxed) conformer. `>1` enables best-of-K
+   * selection for the initial embed; omitted/`1` keeps the historical single embed. The
+   * engine may taper this for large molecules. Deterministic given `seed`.
+   */
+  embedCandidates?: number;
   /** v1 invariant: specified stereo is preserved. */
   preserveSpecifiedStereo?: boolean;
   /** v1 invariant: never invent unspecified stereo. */

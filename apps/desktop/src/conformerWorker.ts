@@ -513,6 +513,11 @@ function cacheEntrySatisfies(entry: CacheEntry, engine: ConformerEngineName): bo
   return entry.engine === engine || (engine === "rdkit-wasm" && entry.rdkitFallback === true);
 }
 
+// Best-of-K initial embedding: ask the RDKit adapter to rank a few deterministic ETKDG
+// candidates and keep the lowest-energy one (Slice B). The adapter tapers/skips this for large
+// molecules; the tug rebuild path does not request candidates, so it stays single-embed.
+const SPIN3D_EMBED_CANDIDATES = 4;
+
 async function embedConformer(
   request: ConformerWorkRequest,
   engine: ConformerEngineName
@@ -523,7 +528,8 @@ async function embedConformer(
   // Preserve the UI-level deterministic seed; the worker used to drop it here.
   const embedOptions: Generate3DConformerOptions = {
     optimize: "auto",
-    seed: request.options?.seed
+    seed: request.options?.seed,
+    embedCandidates: SPIN3D_EMBED_CANDIDATES
   };
   if (engine === "rdkit-wasm") {
     return rdkitGenerate3DConformerProgressive(input, embedOptions);

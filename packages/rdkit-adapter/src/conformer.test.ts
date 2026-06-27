@@ -348,3 +348,92 @@ describe("rdkit conformer adapter — lifecycle + failure", () => {
     expect(attempts).toBe(2);
   });
 });
+
+describe("rdkit conformer adapter — best-of-K embedding", () => {
+  // Each ETKDG seed yields a distinct embed (seed tagged into molblock + atom-0 x-coord) and a
+  // distinct short-MMFF energy, so the lowest-energy winner is observable in the final embed.
+  function installSeedScoredMock(energyBySeed: Map<number, number>) {
+    const embedSeeds: number[] = [];
+    const scoredMolblocks: string[] = [];
+    const module: RdkitMinimalModule = {
+      version: () => "test-rdkit",
+      get_mol(molblock: string): RdkitJsMol | null {
+        return {
+          generate_3d_embed(details: string): string {
+            const seed = (JSON.parse(details) as { seed: number }).seed;
+            embedSeeds.push(seed);
+            const coords = [...EMBED_ENGINE_COORDS];
+            coords[0] = seed; // tag atom 0's x with the seed so the chosen embed is identifiable
+            return JSON.stringify({
+              embedOk: true,
+              coords3dByEngineAtom: coords,
+              engineToOriginalAtom: ENGINE_TO_ORIGINAL,
+              generatedHydrogenEngineAtoms: GENERATED_H,
+              molblock: `EMBED_${seed}`
+            });
+          },
+          optimize_3d_conformer(details: string): string {
+            scoredMolblocks.push(molblock);
+            const seed = Number(molblock.replace("EMBED_", ""));
+            return JSON.stringify({
+              embedOk: true,
+              coords3dByEngineAtom: EMBED_ENGINE_COORDS,
+              forceField: {
+                name: (JSON.parse(details) as { forceField: string }).forceField,
+                status: "converged",
+                energy: energyBySeed.get(seed) ?? 0
+              }
+            });
+          },
+          delete() {}
+        };
+      }
+    };
+    setRdkitModuleLoader(() => Promise.resolve(module));
+    return { embedSeeds, scoredMolblocks };
+  }
+
+  it("keeps the lowest-energy candidate among K deterministic embeds", async () => {
+    const { embedSeeds, scoredMolblocks } = installSeedScoredMock(
+      new Map([[42, -5], [43, -10], [44, -7]])
+    );
+    const result = await generate3DConformerProgressive(INPUT, {
+      optimize: "auto",
+      seed: 42,
+      embedCandidates: 3
+    });
+    // Baseline seed 42 plus two more deterministic candidates (43, 44), each scored once.
+    expect(embedSeeds).toEqual([42, 43, 44]);
+    expect(scoredMolblocks).toEqual(["EMBED_42", "EMBED_43", "EMBED_44"]);
+    // Atom 0's x carries the seed; the lowest-energy winner is seed 43.
+    expect(result.embedded.mapping.coords3dByOriginalAtom[0]).toBe(43);
+  });
+
+  it("is deterministic: same molfile + seed + count picks the same winner", async () => {
+    const energies = new Map([[42, -5], [43, -10], [44, -7]]);
+    installSeedScoredMock(energies);
+    const first = await generate3DConformerProgressive(INPUT, { optimize: "auto", seed: 42, embedCandidates: 3 });
+    installSeedScoredMock(energies);
+    const second = await generate3DConformerProgressive(INPUT, { optimize: "auto", seed: 42, embedCandidates: 3 });
+    expect(second.embedded.mapping.coords3dByOriginalAtom[0]).toBe(first.embedded.mapping.coords3dByOriginalAtom[0]);
+    expect(first.embedded.mapping.coords3dByOriginalAtom[0]).toBe(43);
+  });
+
+  it("does a single embed and no scoring when candidates are not requested", async () => {
+    const { embedSeeds, scoredMolblocks } = installSeedScoredMock(new Map([[42, -5]]));
+    const result = await generate3DConformerProgressive(INPUT, { optimize: "auto", seed: 42 });
+    expect(embedSeeds).toEqual([42]);
+    expect(scoredMolblocks).toEqual([]); // best-of-K never ran
+    expect(result.embedded.mapping.coords3dByOriginalAtom[0]).toBe(42);
+  });
+
+  it("skips best-of-K (single embed) for molecules above the atom cap", async () => {
+    const { embedSeeds, scoredMolblocks } = installSeedScoredMock(new Map([[42, -5]]));
+    await generate3DConformerProgressive(
+      { molfile: INPUT.molfile, originalAtomCount: 200 },
+      { optimize: "auto", seed: 42, embedCandidates: 4 }
+    );
+    expect(embedSeeds).toEqual([42]);
+    expect(scoredMolblocks).toEqual([]);
+  });
+});
