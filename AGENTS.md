@@ -1,6 +1,6 @@
 # Agent Instructions for ChemDraft
 
-**Current Build**: 6.27.14.45-opus
+**Current Build**: 6.28.13.10-sonnet
 
 > [!IMPORTANT]
 > **Agent Instruction:** Every time you finish a slice of work or make significant changes, you MUST update the `**Current Build**` stamp above AND the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx` (in the viewport's bottom right corner).

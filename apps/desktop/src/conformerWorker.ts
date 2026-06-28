@@ -500,8 +500,19 @@ async function currentEngine(preference: Spin3dEnginePreference = "auto"): Promi
   try {
     await ensureRdkit();
     rdkitState = "available";
-  } catch {
+  } catch (error) {
     rdkitState = "unavailable";
+    // Surface WHY RDKit could not load. Swallowing this hid a total feature failure: a webview
+    // that can't load the RDKit WASM silently falls back to the slower, less-planar OpenChemLib
+    // engine, which ALSO disables every RDKit-only feature — Spin 3D atom/chain tug (gated on
+    // engine === "rdkit-wasm"), MMFF94s planar cleanup, and best-of-K conformer selection.
+    // Logged unconditionally (not behind the spin3d trace flag) so it appears in a packaged,
+    // inspectable build's devtools console. The probe only runs once, so this never spams.
+    console.error(
+      "[spin3d] RDKit WASM failed to load in the conformer worker — falling back to OpenChemLib. " +
+        "Spin 3D tug and MMFF94s/best-of-K are unavailable until this is resolved. Cause:",
+      error
+    );
   }
   return rdkitState === "available" ? "rdkit-wasm" : "openchemlib";
 }
