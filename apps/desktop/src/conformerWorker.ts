@@ -24,6 +24,7 @@ import {
 } from "@chemdraft/rdkit-adapter";
 import { defaultRefineForceField } from "@chemdraft/chemistry-adapter";
 import type {
+  ChemistryWarning,
   ConformerEngineName,
   ConformerRefineOptions,
   Generate3DConformerOptions,
@@ -479,6 +480,36 @@ async function runRelax(request: ConformerWorkRequest): Promise<void> {
 // skips the RDKit probe entirely); "auto"/"rdkit" prefer RDKit when available (neither can
 // conjure RDKit if its WASM won't load, so both fall back to OCL in that case).
 let rdkitState: "unknown" | "available" | "unavailable" = "unknown";
+/** Message from the one-time RDKit probe failure (if any), surfaced to the UI so a packaged
+ *  build without devtools can still show WHY Spin 3D fell back to OpenChemLib. */
+let rdkitLoadError: string | undefined;
+
+/** A user-facing warning when RDKit was the preferred engine but its WASM could not load, so
+ *  Spin 3D silently fell back to OpenChemLib — which disables atom/chain tug, MMFF94s planar
+ *  cleanup, and best-of-K. Returns undefined when RDKit is available or the user explicitly
+ *  chose OpenChemLib (then OCL is intentional, not a degradation). */
+function rdkitFallbackWarning(
+  preference: Spin3dEnginePreference = "auto"
+): ChemistryWarning | undefined {
+  if (preference === "openchemlib" || rdkitState !== "unavailable") return undefined;
+  return {
+    code: "rdkit.unavailable",
+    severity: "error",
+    message:
+      "RDKit 3D engine unavailable — Spin 3D is using OpenChemLib, so atom/chain tug and MMFF94s " +
+      "planar cleanup are off." + (rdkitLoadError ? ` Cause: ${rdkitLoadError}` : "")
+  };
+}
+
+/** Append the RDKit-unavailable warning to an embedded result without mutating the cached one. */
+function withRdkitFallbackWarning(
+  result: Generate3DConformerResult,
+  preference: Spin3dEnginePreference | undefined
+): Generate3DConformerResult {
+  const warning = rdkitFallbackWarning(preference);
+  if (!warning || result.warnings.some((existing) => existing.code === warning.code)) return result;
+  return { ...result, warnings: [...result.warnings, warning] };
+}
 
 /** The engine `currentEngine(preference)` would resolve to RIGHT NOW without probing, or
  *  `undefined` when it can't be known yet (an "auto"/"rdkit" preference whose RDKit probe
@@ -506,8 +537,9 @@ async function currentEngine(preference: Spin3dEnginePreference = "auto"): Promi
     // that can't load the RDKit WASM silently falls back to the slower, less-planar OpenChemLib
     // engine, which ALSO disables every RDKit-only feature — Spin 3D atom/chain tug (gated on
     // engine === "rdkit-wasm"), MMFF94s planar cleanup, and best-of-K conformer selection.
-    // Logged unconditionally (not behind the spin3d trace flag) so it appears in a packaged,
-    // inspectable build's devtools console. The probe only runs once, so this never spams.
+    // Captured for UI surfacing (rdkitFallbackWarning) AND logged unconditionally (not behind the
+    // spin3d trace flag). The probe only runs once, so this never spams.
+    rdkitLoadError = error instanceof Error ? error.message : String(error);
     console.error(
       "[spin3d] RDKit WASM failed to load in the conformer worker — falling back to OpenChemLib. " +
         "Spin 3D tug and MMFF94s/best-of-K are unavailable until this is resolved. Cause:",
@@ -581,7 +613,11 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
         return; // already computed (or computing in background)
       }
       // The embedded stage goes out immediately — the user can start spinning.
-      post({ id: request.id, stage: "embedded", result: hit.embedded });
+      post({
+        id: request.id,
+        stage: "embedded",
+        result: withRdkitFallbackWarning(hit.embedded, request.enginePreference)
+      });
       // If the background refine hasn't landed yet, run it NOW (we're the
       // user-priority job) so double bonds/conjugation reach planar MMFF94
       // geometry; it hot-swaps under the live overlay. The user spun THIS molecule,
@@ -651,7 +687,13 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
       runSpan.complete({ cacheStatus: "miss", warningCount: embedded.warnings.length });
       return; // never cache failures — a retry should re-attempt
     }
-    if (!isPrefetch) post({ id: request.id, stage: "embedded", result: embedded });
+    if (!isPrefetch) {
+      post({
+        id: request.id,
+        stage: "embedded",
+        result: withRdkitFallbackWarning(embedded, request.enginePreference)
+      });
+    }
     const entry: CacheEntry = {
       embedded,
       engine: effectiveEngine,

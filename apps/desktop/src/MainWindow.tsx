@@ -973,7 +973,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.28.13.10-sonnet";
+const CURRENT_BUILD_STAMP = "6.28.13.25-sonnet";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2776,7 +2776,15 @@ export function MainWindow({
         dragging: false,
         engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
       });
-      setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
+      // If RDKit could not load, the conformer came back from the OpenChemLib fallback and the
+      // worker tags it with an `rdkit.unavailable` warning. Surface that reason here so a packaged
+      // build (no devtools) shows WHY tug/planar cleanup are off, instead of silently no-op'ing.
+      const rdkitUnavailable = conformer.warnings.find((warning) => warning.code === "rdkit.unavailable");
+      setStatus(
+        rdkitUnavailable
+          ? `Spin 3D — ${rdkitUnavailable.message}`
+          : "Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel"
+      );
     };
 
     // Stage 2 — force-field-refined coordinates hot-swap under the live overlay,
