@@ -265,6 +265,40 @@ export function depictSmiles2D(smiles: string): Depiction2D {
   return { molfile: mol.toMolfile(), atoms, bonds };
 }
 
+/** Per-atom stereo verdict, index-aligned to the molfile's atom order (so index i corresponds to
+ *  the i-th atom of the molecule that produced `molfile`). */
+export interface OclAtomStereo {
+  /** True only when the atom is an ACTUAL tetrahedral stereocenter (constitutionally chiral),
+   *  not merely an atom that happens to carry a drawn wedge/hash. */
+  isStereoCenter: boolean;
+  /** CIP descriptor when OCL can assign one; `"unspecified"` otherwise. */
+  descriptor: "R" | "S" | "unspecified";
+}
+
+/**
+ * Perceive which atoms are TRUE stereocenters. A drawn wedge/hash only encodes stereochemistry at
+ * a real chiral center; on many structures a wedge is a graphic "projects toward/away" cue on an
+ * atom that is not chiral at all (and would otherwise be (mis)treated as a specified center and
+ * block a flatten). OCL reads the molfile's 2D coordinates + wedge bonds to decide. The returned
+ * array is index-aligned to the molfile's atom order.
+ */
+export function perceiveStereoCentersFromMolfile(molfile: string): OclAtomStereo[] {
+  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
+  mol.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  const out: OclAtomStereo[] = [];
+  for (let i = 0; i < mol.getAllAtoms(); i++) {
+    const isStereoCenter = mol.isAtomStereoCenter(i);
+    let descriptor: OclAtomStereo["descriptor"] = "unspecified";
+    if (isStereoCenter) {
+      const cip = mol.getAtomCIPParity(i);
+      if (cip === OCL.Molecule.cAtomCIPParityRorM) descriptor = "R";
+      else if (cip === OCL.Molecule.cAtomCIPParitySorP) descriptor = "S";
+    }
+    out.push({ isStereoCenter, descriptor });
+  }
+  return out;
+}
+
 function countExplicitHydrogens(mol: OclMolecule): number {
   let count = 0;
   for (let i = 0; i < mol.getAllAtoms(); i++) {

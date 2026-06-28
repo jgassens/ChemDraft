@@ -472,3 +472,66 @@ describe("flattenPerspectiveFrom3D — over/under crossings from depth", () => {
     expect(result.warnings.some((w) => w.code === "cyclic-depth")).toBe(true);
   });
 });
+
+describe("flattenPerspectiveFrom3D — stereoCenterAtomIds (drop graphic wedges on non-centers)", () => {
+  // A wedge drawn on an atom whose substituents are coplanar in the conformer: handedness is
+  // undefined there (referenceParitySign === 0). This is exactly the "graphic projection wedge on
+  // a non-chiral atom" case — common in real drawings.
+  function graphicWedgeOnFlatAtom() {
+    const mol = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "O", x: 1, y: 0 },
+        { id: "a2", element: "N", x: -1, y: 1 },
+        { id: "a3", element: "C", x: -1, y: -1 }
+      ],
+      [
+        { id: "b1", from: "a0", to: "a1", style: "wedge" },
+        { id: "b2", from: "a0", to: "a2" },
+        { id: "b3", from: "a0", to: "a3" }
+      ]
+    );
+    // All atoms coplanar (z = 0) → a0 is flat in the conformer (no handedness).
+    const coords3d = [0, 0, 0, 1, 0, 0, -1, 1, 0, -1, -1, 0];
+    return { mol, coords3d };
+  }
+
+  it("legacy (no perceived set): a flat drawn-wedge atom refuses the whole flatten", () => {
+    const { mol, coords3d } = graphicWedgeOnFlatAtom();
+    const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY);
+    expect(result.status).toBe("refused");
+    expect(result.refusalReasons.some((r) => /flat \(no handedness\)/.test(r))).toBe(true);
+  });
+
+  it("drops the wedge and commits when the atom is NOT a perceived stereocenter", () => {
+    const { mol, coords3d } = graphicWedgeOnFlatAtom();
+    const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY, {
+      stereoCenterAtomIds: new Set<string>() // a0 is not a real center → its wedge is graphic
+    });
+    expect(result.status).toBe("committed");
+    // The graphic wedge is gone; no stereo marker survives.
+    expect(stereoBonds(result.mol2dProjected as MoleculeObject)).toHaveLength(0);
+    expect(result.stereoCenters).toHaveLength(0);
+  });
+
+  it("still validates an atom that IS a perceived stereocenter (flat → refuse)", () => {
+    const { mol, coords3d } = graphicWedgeOnFlatAtom();
+    const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY, {
+      stereoCenterAtomIds: new Set<string>(["a0"]) // listed as real → must be soundly encodable
+    });
+    expect(result.status).toBe("refused");
+    expect(result.refusalReasons.some((r) => /flat \(no handedness\)/.test(r))).toBe(true);
+  });
+
+  it("encodes a genuine stereocenter that is in the perceived set", () => {
+    const { mol, coords3d } = chiralCenter(1);
+    const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY, {
+      stereoCenterAtomIds: new Set<string>(["a0"])
+    });
+    expect(result.status).toBe("committed");
+    const wedges = stereoBonds(result.mol2dProjected as MoleculeObject);
+    expect(wedges).toHaveLength(1);
+    expect(wedges[0]?.fromAtomId).toBe("a0");
+    expect(result.stereoCenters[0]).toMatchObject({ atomId: "a0", status: "encoded" });
+  });
+});

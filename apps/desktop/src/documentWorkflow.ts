@@ -9703,7 +9703,7 @@ export function flattenSpunMolecule(
   objectId: string,
   coords3d: ArrayLike<number>,
   viewMatrix: ViewMatrix,
-  options: { placement?: ScreenPlacement } = {}
+  options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string> } = {}
 ): FlattenSpunOutcome {
   let pageId: string | undefined;
   let molecule: MoleculeObject | undefined;
@@ -9739,7 +9739,10 @@ export function flattenSpunMolecule(
     ...molecule,
     atoms: molecule.atoms.map((atom) => ({ ...atom, y: -atom.y }))
   };
-  const result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, { objectId });
+  const result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, {
+    objectId,
+    stereoCenterAtomIds: options.stereoCenterAtomIds
+  });
   if (result.status !== "committed" || !result.mol2dProjected) {
     return {
       document,

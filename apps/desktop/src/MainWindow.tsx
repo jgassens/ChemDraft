@@ -973,7 +973,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.28.13.25-sonnet";
+const CURRENT_BUILD_STAMP = "6.28.19.05-sonnet";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2412,18 +2412,53 @@ export function MainWindow({
 
   // Flatten the current spin orientation into the document as ONE undo step. On
   // refusal the document is untouched and the overlay stays so the user can re-spin.
-  const commitSpinFlatten = useCallback(() => {
+  const commitSpinFlatten = useCallback(async () => {
     const state = spin3dStateRef.current;
     if (!state) return;
     if (spin3dRelaxPendingRef.current) {
       setStatus("Finish relaxing the tugged structure before flattening");
       return;
     }
+    // Perceive which atoms are ACTUAL stereocenters so graphic wedge/hash bonds on non-chiral
+    // atoms (a common "projects toward/away" depiction cue) are dropped on flatten instead of
+    // being mistaken for specified stereo and refusing the whole commit. OCL is lazy-loaded and
+    // perception is best-effort — any failure falls back to the legacy "every drawn wedge is a
+    // center" behavior.
+    let stereoCenterAtomIds: ReadonlySet<string> | undefined;
+    let flattenTarget: MoleculeObject | undefined;
+    for (const page of documentRef.current.pages) {
+      const found = page.objects.find(
+        (object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule"
+      );
+      if (found) {
+        flattenTarget = found;
+        break;
+      }
+    }
+    if (flattenTarget) {
+      try {
+        const molfile = moleculeToMolfileV2000(flattenTarget, { fromDocFrame: true });
+        const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const perAtom = perceiveStereoCentersFromMolfile(molfile);
+        if (perAtom.length === flattenTarget.atoms.length) {
+          const ids = new Set<string>();
+          flattenTarget.atoms.forEach((atom, index) => {
+            if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
+          });
+          stereoCenterAtomIds = ids;
+        }
+      } catch {
+        /* best-effort: fall back to legacy behavior (treat every drawn wedge as a center) */
+      }
+      // The async perception yielded the event loop; abort if the spin session ended or switched.
+      if (spin3dStateRef.current?.objectId !== state.objectId) return;
+    }
     const viewMatrix = quatToViewMatrix(state.quat);
     let outcome: ReturnType<typeof flattenSpunMolecule>;
     try {
       outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix, {
-        placement: state.placement
+        placement: state.placement,
+        stereoCenterAtomIds
       });
     } catch (error) {
       // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
@@ -3040,8 +3075,9 @@ export function MainWindow({
       pageY >= box.y - pad &&
       pageY <= box.y + box.height + pad;
     if (!insideBox) {
-      // Click outside the selection box commits the current orientation.
-      commitSpinFlatten();
+      // Click outside the selection box commits the current orientation. Fire-and-forget: the
+      // flatten is async (it lazily perceives stereocenters first) and manages its own status.
+      void commitSpinFlatten();
       return;
     }
     // Inside the box: grab to rotate. Capture is best-effort.
