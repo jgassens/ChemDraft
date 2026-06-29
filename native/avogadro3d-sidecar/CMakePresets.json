@@ -1,0 +1,31 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "protocol-scout",
+      "displayName": "Protocol scout",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/protocol-scout",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "17",
+        "CHEMDRAFT_AVOGADRO3D_USE_QT": "ON",
+        "CHEMDRAFT_AVOGADRO3D_USE_OPENGL": "ON",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_PYTHON": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_TESTS": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_BENCHMARKS": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_PLOTTER": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_LIBARCHIVE": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_LIBMSYM": "OFF",
+        "CHEMDRAFT_AVOGADRO3D_ENABLE_SPGLIB": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "protocol-scout",
+      "configurePreset": "protocol-scout"
+    }
+  ]
+}

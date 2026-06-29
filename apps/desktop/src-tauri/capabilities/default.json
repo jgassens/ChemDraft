@@ -44,6 +44,8 @@
     "allow-route-palette-command",
     "allow-toggle-spin3d-debugger-window",
     "allow-toggle-preferences-window",
+    "allow-engine3d-sidecar-status",
+    "allow-engine3d-sidecar-round-trip",
     "allow-rasterize-svg",
     "dialog:allow-open",
     "dialog:allow-save",

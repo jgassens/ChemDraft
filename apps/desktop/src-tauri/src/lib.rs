@@ -1,6 +1,14 @@
 mod export;
 
-use std::{collections::HashMap, fs, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use tauri::{
     menu::{
@@ -32,6 +40,12 @@ const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const AGENT_BRIDGE_ENV_VAR: &str = "CHEMDRAFT_AGENT_BRIDGE";
 const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
+const ENGINE3D_PROTOCOL_VERSION: u32 = 1;
+const ENGINE3D_SIDECAR_BASENAME: &str = "avogadro3d-sidecar";
+const ENGINE3D_SIDECAR_ENV_VAR: &str = "CHEMDRAFT_ENGINE3D_SIDECAR";
+const ENGINE3D_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+const ENGINE3D_MAX_BATCH_LINES: usize = 128;
+const ENGINE3D_STDIO_TIMEOUT: Duration = Duration::from_secs(5);
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -64,6 +78,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
     "chemistry.validateSelection",
+    "structure.openInteractive3d",
 ];
 
 #[derive(Clone, serde::Deserialize)]
@@ -154,6 +169,27 @@ struct AgentBridgeStatus {
     source: String,
     env_var: String,
     cli_arg: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Engine3dSidecarStatus {
+    available: bool,
+    protocol_version: u32,
+    source: String,
+    env_var: String,
+    env_override_path: Option<String>,
+    resolved_path: Option<String>,
+    bundled_binary_name: String,
+    target_triple: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Engine3dSidecarTranscript {
+    stdout_lines: Vec<String>,
+    stderr: String,
+    exit_code: Option<i32>,
 }
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -347,6 +383,8 @@ pub fn run() {
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
             agent_bridge_status,
+            engine3d_sidecar_status,
+            engine3d_sidecar_round_trip,
             take_pending_open_document,
             export::rasterize_svg
         ])
@@ -936,6 +974,174 @@ fn agent_bridge_flag_enabled(value: Option<&str>) -> bool {
 }
 
 #[tauri::command]
+fn engine3d_sidecar_status() -> Engine3dSidecarStatus {
+    engine3d_sidecar_status_from(std::env::var(ENGINE3D_SIDECAR_ENV_VAR).ok())
+}
+
+#[tauri::command]
+fn engine3d_sidecar_round_trip(lines: Vec<String>) -> Result<Engine3dSidecarTranscript, String> {
+    let lines = normalize_engine3d_protocol_lines(lines)?;
+    let path = resolve_engine3d_sidecar_path(std::env::var(ENGINE3D_SIDECAR_ENV_VAR).ok())
+        .ok_or_else(|| {
+            format!(
+                "Interactive 3D sidecar is not configured. Set {ENGINE3D_SIDECAR_ENV_VAR} to a sidecar executable or bundle {}.",
+                engine3d_bundled_binary_name()
+            )
+        })?;
+
+    run_engine3d_sidecar_stdio(&path, &lines, ENGINE3D_STDIO_TIMEOUT)
+}
+
+fn engine3d_sidecar_status_from(env_override: Option<String>) -> Engine3dSidecarStatus {
+    let resolved_path = resolve_engine3d_sidecar_path(env_override.clone());
+    let source = if resolved_path.is_some() && env_override.is_some() {
+        "environment"
+    } else if resolved_path.is_some() {
+        "bundled"
+    } else {
+        "missing"
+    };
+
+    Engine3dSidecarStatus {
+        available: resolved_path.is_some(),
+        protocol_version: ENGINE3D_PROTOCOL_VERSION,
+        source: source.to_string(),
+        env_var: ENGINE3D_SIDECAR_ENV_VAR.to_string(),
+        env_override_path: env_override,
+        resolved_path: resolved_path.map(|path| path.to_string_lossy().to_string()),
+        bundled_binary_name: engine3d_bundled_binary_name(),
+        target_triple: engine3d_target_triple().to_string(),
+    }
+}
+
+fn normalize_engine3d_protocol_lines(lines: Vec<String>) -> Result<Vec<String>, String> {
+    if lines.is_empty() {
+        return Err("Interactive 3D protocol batch cannot be empty.".to_string());
+    }
+    if lines.len() > ENGINE3D_MAX_BATCH_LINES {
+        return Err(format!(
+            "Interactive 3D protocol batch cannot exceed {ENGINE3D_MAX_BATCH_LINES} messages."
+        ));
+    }
+
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.contains('\n') || line.contains('\r') {
+                return Err(
+                    "Interactive 3D protocol messages must be one JSON object per line."
+                        .to_string(),
+                );
+            }
+            if line.len() > ENGINE3D_MAX_MESSAGE_BYTES {
+                return Err(format!(
+                    "Interactive 3D protocol message exceeds {ENGINE3D_MAX_MESSAGE_BYTES} bytes."
+                ));
+            }
+            Ok(line)
+        })
+        .collect()
+}
+
+fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf> {
+    env_override
+        .map(|path| PathBuf::from(path.trim()))
+        .filter(|path| path.is_file())
+}
+
+fn run_engine3d_sidecar_stdio(
+    path: &Path,
+    lines: &[String],
+    timeout: Duration,
+) -> Result<Engine3dSidecarTranscript, String> {
+    let mut child = Command::new(path)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start interactive 3D sidecar: {error}"))?;
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "Interactive 3D sidecar stdin is not available.".to_string())?;
+        for line in lines {
+            stdin
+                .write_all(line.as_bytes())
+                .and_then(|_| stdin.write_all(b"\n"))
+                .map_err(|error| format!("Could not write interactive 3D protocol: {error}"))?;
+        }
+    }
+    drop(child.stdin.take());
+
+    let status = wait_for_engine3d_sidecar(&mut child, timeout)?;
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout)
+            .map_err(|error| format!("Could not read interactive 3D sidecar stdout: {error}"))?;
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_string(&mut stderr)
+            .map_err(|error| format!("Could not read interactive 3D sidecar stderr: {error}"))?;
+    }
+
+    Ok(Engine3dSidecarTranscript {
+        stdout_lines: stdout.lines().map(str::to_string).collect(),
+        stderr,
+        exit_code: status.code(),
+    })
+}
+
+fn wait_for_engine3d_sidecar(
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Could not poll interactive 3D sidecar: {error}"))?
+        {
+            return Ok(status);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Interactive 3D sidecar timed out.".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn engine3d_bundled_binary_name() -> String {
+    let stem = format!("{}-{}", ENGINE3D_SIDECAR_BASENAME, engine3d_target_triple());
+    if cfg!(target_os = "windows") {
+        format!("{stem}.exe")
+    } else {
+        stem
+    }
+}
+
+fn engine3d_target_triple() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "x86_64-apple-darwin"
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "x86_64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "unknown"
+    }
+}
+
+#[tauri::command]
 fn take_pending_open_document(
     state: tauri::State<'_, PendingOpenDocument>,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
@@ -1124,13 +1330,23 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 app,
                 "Structure",
                 true,
-                &[&MenuItem::with_id(
-                    app,
-                    "structure.cleanup2d",
-                    "Clean up Structure 2D",
-                    true,
-                    Some("CmdOrCtrl+Shift+K"),
-                )?],
+                &[
+                    &MenuItem::with_id(
+                        app,
+                        "structure.cleanup2d",
+                        "Clean up Structure 2D",
+                        true,
+                        Some("CmdOrCtrl+Shift+K"),
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(
+                        app,
+                        "structure.openInteractive3d",
+                        "Interactive 3D Workspace...",
+                        true,
+                        None::<&str>,
+                    )?,
+                ],
             )?,
             &Submenu::with_items(
                 app,
@@ -1209,7 +1425,13 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &MenuItem::with_id(app, "page.setSize.a0", "A0", true, None::<&str>)?,
             &MenuItem::with_id(app, "page.setSize.a5", "A5", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "page.setSizeCustom", "Custom Size…", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "page.setSizeCustom",
+                "Custom Size…",
+                true,
+                None::<&str>,
+            )?,
         ],
     )?;
     let orientation_menu = Submenu::with_items(
@@ -2135,6 +2357,33 @@ mod tests {
     }
 
     #[test]
+    fn default_capability_allows_only_narrow_engine3d_commands() {
+        let capability = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("default capability should parse");
+        let permissions = parsed
+            .pointer("/permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("default capability should declare permissions");
+
+        for expected_permission in [
+            "allow-engine3d-sidecar-status",
+            "allow-engine3d-sidecar-round-trip",
+        ] {
+            expect_true(permissions.iter().any(|permission| {
+                permission
+                    .as_str()
+                    .is_some_and(|permission| permission == expected_permission)
+            }));
+        }
+        expect_false(permissions.iter().any(|permission| {
+            permission
+                .as_str()
+                .is_some_and(|permission| permission.contains("shell"))
+        }));
+    }
+
+    #[test]
     fn bundle_config_declares_chemical_file_associations() {
         let config = include_str!("../tauri.conf.json");
         let parsed: serde_json::Value =
@@ -2167,6 +2416,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bundle_config_declares_target_triple_sidecar_basename() {
+        let config = include_str!("../tauri.conf.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(config).expect("tauri config should parse");
+        let external_bins = parsed
+            .pointer("/bundle/externalBin")
+            .and_then(serde_json::Value::as_array)
+            .expect("bundle.externalBin should exist");
+
+        expect_true(external_bins.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|entry| entry == "binaries/avogadro3d-sidecar")
+        }));
+        expect_true(engine3d_bundled_binary_name().starts_with(ENGINE3D_SIDECAR_BASENAME));
+        expect_true(engine3d_bundled_binary_name().contains(engine3d_target_triple()));
+    }
+
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
     #[test]
     fn opened_file_urls_read_document_payloads() {
@@ -2193,6 +2461,7 @@ mod tests {
     #[test]
     fn structure_menu_commands_are_routed() {
         expect_true(is_routed_menu_command("structure.cleanup2d"));
+        expect_true(is_routed_menu_command("structure.openInteractive3d"));
     }
 
     #[test]
@@ -2240,6 +2509,81 @@ mod tests {
 
         expect_true(status.enabled);
         expect_eq("argument", status.source.as_str());
+    }
+
+    #[test]
+    fn engine3d_sidecar_status_tracks_env_override_without_running_shell() {
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-engine3d-status-{}", std::process::id()));
+        fs::write(&path, "").expect("fixture should write");
+
+        let status = engine3d_sidecar_status_from(Some(path.to_string_lossy().to_string()));
+
+        expect_true(status.available);
+        expect_eq("environment", status.source.as_str());
+        expect_eq(ENGINE3D_PROTOCOL_VERSION, status.protocol_version);
+        expect_eq(
+            Some(path.to_string_lossy().to_string()),
+            status.resolved_path,
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn engine3d_protocol_batches_are_bounded_ndjson() {
+        expect_true(normalize_engine3d_protocol_lines(vec!["{}".to_string()]).is_ok());
+        expect_true(normalize_engine3d_protocol_lines(vec![]).is_err());
+        expect_true(normalize_engine3d_protocol_lines(vec!["{}\n{}".to_string()]).is_err());
+        expect_true(
+            normalize_engine3d_protocol_lines(vec!["x".repeat(ENGINE3D_MAX_MESSAGE_BYTES + 1)])
+                .is_err(),
+        );
+        expect_true(
+            normalize_engine3d_protocol_lines(vec!["{}".to_string(); ENGINE3D_MAX_BATCH_LINES + 1])
+                .is_err(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine3d_sidecar_runner_round_trips_fake_protocol() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-engine3d-fake-{}.sh", std::process::id()));
+        fs::write(
+            &path,
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  echo \"$line\"\ndone\necho fake-sidecar-log >&2\n",
+        )
+        .expect("fixture should write");
+        let mut permissions = fs::metadata(&path)
+            .expect("fixture should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("fixture should be executable");
+
+        let transcript = run_engine3d_sidecar_stdio(
+            &path,
+            &[
+                "{\"protocolVersion\":1,\"requestId\":\"r1\",\"type\":\"ping\"}".to_string(),
+                "{\"protocolVersion\":1,\"requestId\":\"r2\",\"type\":\"dispose\",\"sessionId\":\"s1\"}".to_string(),
+            ],
+            Duration::from_secs(2),
+        )
+        .expect("fake sidecar should round-trip");
+
+        expect_eq(
+            vec![
+                "{\"protocolVersion\":1,\"requestId\":\"r1\",\"type\":\"ping\"}".to_string(),
+                "{\"protocolVersion\":1,\"requestId\":\"r2\",\"type\":\"dispose\",\"sessionId\":\"s1\"}".to_string(),
+            ],
+            transcript.stdout_lines,
+        );
+        expect_true(transcript.stderr.contains("fake-sidecar-log"));
+        expect_eq(Some(0), transcript.exit_code);
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

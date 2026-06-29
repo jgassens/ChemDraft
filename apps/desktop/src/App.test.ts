@@ -42,6 +42,7 @@ import {
   paletteGroups,
   structureCleanup3dCommandId,
   structureCleanupCommandId,
+  structureInteractive3dCommandId,
   structureSpin3dCommandId,
   structureRotate3dCommandId,
   textCustomColorCommandId,
@@ -1243,6 +1244,7 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "layout.alignCenter")).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignRight")).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignTop")).toBe(true);
+    expect(commands.some((command) => command.id === structureInteractive3dCommandId)).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignMiddle")).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignBottom")).toBe(true);
     expect(commands.some((command) => command.id === "layout.distributeHorizontal")).toBe(true);
@@ -1802,6 +1804,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.eraser",
       structureCleanupCommandId,
       structureSpin3dCommandId,
+      structureInteractive3dCommandId,
       "tool.plus",
       "tool.minus",
       "layout.bringToFront",
@@ -2649,6 +2652,7 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
     expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
     expect([...assetNamesByCommandId.get(structureSpin3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
+    expect([...assetNamesByCommandId.get(structureInteractive3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
   });
 
   it("keeps sparse floating toolsets compact", () => {
@@ -2956,6 +2960,12 @@ describe("ChemDraft desktop shell", () => {
       assetName: "Custom_Spin_3D",
       category: "structure"
     });
+    expect(assetCommands.find((command) => command.id === structureInteractive3dCommandId)).toMatchObject({
+      id: structureInteractive3dCommandId,
+      title: "Interactive 3D Workspace",
+      assetName: "Custom_Spin_3D",
+      category: "structure"
+    });
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
       id: structureCleanup3dCommandId,
       title: "3D Cleanup",
@@ -2974,11 +2984,13 @@ describe("ChemDraft desktop shell", () => {
       "tool.settings",
       structureCleanupCommandId,
       structureSpin3dCommandId,
+      structureInteractive3dCommandId,
       structureCleanup3dCommandId,
       "tool.templateGrid"
     ]);
     expect(styleGroupIds).not.toContain("tool.toolOptions");
     expect(mainGroups.flat().filter((command) => command.id === structureCleanupCommandId)).toHaveLength(1);
+    expect(mainGroups.flat().filter((command) => command.id === structureInteractive3dCommandId)).toHaveLength(1);
     expect(mainGroups.flat().filter((command) => command.id === structureCleanup3dCommandId)).toHaveLength(1);
     expect(mainGroups.flat().filter((command) => command.id === structureRotate3dCommandId)).toHaveLength(0);
   });

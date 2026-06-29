@@ -96,7 +96,7 @@ import {
 } from "@chemdraft/layout-engine";
 import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
-import type { Generate3DConformerOptions, Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
+import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   exportFormatDescriptors,
   getExportFormatDescriptor,
@@ -144,6 +144,7 @@ import {
   pageSizeActions,
   structureCleanup3dCommandId,
   structureCleanupCommandId,
+  structureInteractive3dCommandId,
   structureSpin3dCommandId,
   textScriptForCommand,
   textStylePatchForCommand,
@@ -155,6 +156,7 @@ import {
   PREFERENCES_COMMAND_ID,
   type CommandSpec
 } from "./commands";
+import { readEngine3dSidecarStatus } from "./engine3dSidecar";
 import {
   activateDrawingToolCommand,
   createActiveToolState,
@@ -396,7 +398,6 @@ import {
   type Vec3
 } from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
-import { conformerCentroid, hitTestSpinTug, moveSpinAtomsKeepingCentroid, recenterConformer, screenDeltaToModel } from "./interaction/spinTug";
 import { getConformerWorkerClient } from "./conformerClient";
 import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
@@ -447,16 +448,6 @@ export { nativeMoleculeCanvasHoverTarget };
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
 type ClientPoint = { x: number; y: number };
-type Spin3dTugDragState = {
-  pointerId: number;
-  objectId: string;
-  targetKind: "atom" | "bond";
-  atomIndices: readonly number[];
-  startClient: ClientPoint;
-  startCoords: Float64Array;
-  startCentroid: Vec3;
-  moved: boolean;
-};
 type ObjectPointerEvent = PointerEvent<Element>;
 type ObjectMouseEvent = ReactMouseEvent<Element>;
 type PaletteDragState = {
@@ -973,7 +964,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.29.9.50-sonnet";
+const CURRENT_BUILD_STAMP = "6.29.13.48-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1195,10 +1186,6 @@ export function MainWindow({
   // immune to stale closures) mirrored into React state so the overlay re-renders.
   const spin3dStateRef = useRef<Spin3dState | undefined>(undefined);
   const [spin3dState, setSpin3dStateRender] = useState<Spin3dState | undefined>(undefined);
-  const spin3dTugDragRef = useRef<Spin3dTugDragState | undefined>(undefined);
-  const spin3dRelaxPendingRef = useRef<{ token: number; cancel: () => void } | undefined>(undefined);
-  const spin3dRelaxTokenRef = useRef(0);
-  const spin3dUserEditedRef = useRef(false);
   // A first-time embed is in flight (no overlay yet): drives the on-canvas "Generating 3D…"
   // cue so the irreducible one-time embed wait reads as intentional progress, not a hang.
   // (A prefetch cache-hit clears this within ~90ms; the cue's CSS fade-in delay hides that
@@ -2371,13 +2358,6 @@ export function MainWindow({
   ): boolean => {
     const hadActiveSpin = spin3dStateRef.current !== undefined;
     const pendingSpin = spin3dPendingRef.current;
-    const pendingRelax = spin3dRelaxPendingRef.current;
-    if (pendingRelax) {
-      pendingRelax.cancel();
-      spin3dRelaxPendingRef.current = undefined;
-      spin3dRelaxTokenRef.current += 1;
-    }
-    spin3dTugDragRef.current = undefined;
 
     if (pendingSpin) {
       pendingSpin.cancel();
@@ -2394,7 +2374,7 @@ export function MainWindow({
       spin3dModelCacheRef.current.clear();
     }
 
-    const cancelled = hadActiveSpin || pendingSpin !== undefined || pendingRelax !== undefined;
+    const cancelled = hadActiveSpin || pendingSpin !== undefined;
     if (cancelled) {
       lastSpinPrefetchRef.current = undefined;
       if (message) setStatus(message);
@@ -2415,10 +2395,6 @@ export function MainWindow({
   const commitSpinFlatten = useCallback(async () => {
     const state = spin3dStateRef.current;
     if (!state) return;
-    if (spin3dRelaxPendingRef.current) {
-      setStatus("Finish relaxing the tugged structure before flattening");
-      return;
-    }
     // Perceive which atoms are ACTUAL stereocenters so graphic wedge/hash bonds on non-chiral
     // atoms (a common "projects toward/away" depiction cue) are dropped on flatten instead of
     // being mistaken for specified stereo and refusing the whole commit. OCL is lazy-loaded and
@@ -2614,11 +2590,6 @@ export function MainWindow({
   const startSpin3d = useCallback(async () => {
     const plannedRequestId = spin3dRequestRef.current + 1;
     const sessionId = `spin3d:${plannedRequestId}:${Date.now()}`;
-    spin3dUserEditedRef.current = false;
-    spin3dTugDragRef.current = undefined;
-    spin3dRelaxPendingRef.current?.cancel();
-    spin3dRelaxPendingRef.current = undefined;
-    spin3dRelaxTokenRef.current += 1;
     const emitTrace = (event: Spin3dTraceEvent): void => {
       broadcastSpin3dTraceEvent(event);
     };
@@ -2794,7 +2765,6 @@ export function MainWindow({
         return;
       }
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      spin3dUserEditedRef.current = false;
       const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         objectId,
@@ -2828,7 +2798,6 @@ export function MainWindow({
       if (spin3dRequestRef.current !== requestToken) return;
       const state = spin3dStateRef.current;
       if (!state || state.objectId !== objectId) return;
-      if (spin3dUserEditedRef.current) return; // never overwrite a user tug with a late initial refine
       traceInfo("spin.refined-callback", {
         atomCount: conformer.originalAtomCount,
         warningCount: conformer.warnings.length,
@@ -3034,43 +3003,6 @@ export function MainWindow({
     const page = documentRef.current.pages[0];
     const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
     const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
-    // Tug is available on any conformer the worker can relax. Both engines now expose
-    // relaxFromCoordinates: RDKit (MMFF94/UFF) and OpenChemLib (MMFF94, the fallback that
-    // serves structures RDKit ETKDG can't embed — large conjugated polycations, metal
-    // complexes). Gating to RDKit alone left those un-tuggable despite spinning fine.
-    const canRelaxTug = state.engine?.name === "rdkit-wasm" || state.engine?.name === "openchemlib";
-    const projection = canRelaxTug ? projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement) : undefined;
-    const pxToPage = rect.width > 0 ? page.width / rect.width : 1;
-    const tugTarget = projection ? hitTestSpinTug(projection, state.bondPairs, { x: pageX, y: pageY }, {
-      atomRadius: 14 * pxToPage,
-      bondRadius: 9 * pxToPage
-    }) : undefined;
-    if (tugTarget) {
-      spin3dRelaxPendingRef.current?.cancel();
-      spin3dRelaxPendingRef.current = undefined;
-      spin3dRelaxTokenRef.current += 1;
-      spin3dTugDragRef.current = {
-        pointerId: event.pointerId,
-        objectId: state.objectId,
-        targetKind: tugTarget.kind,
-        atomIndices: [...tugTarget.atomIndices],
-        startClient: { x: event.clientX, y: event.clientY },
-        startCoords: Float64Array.from(state.coords3d),
-        startCentroid: conformerCentroid(state.coords3d),
-        moved: false
-      };
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        /* ignore — pointer capture is an enhancement, not a requirement */
-      }
-      applySpin({ ...state, dragging: false, lastClient: undefined });
-      setStatus(tugTarget.kind === "atom"
-        ? "Spin 3D: tug atom; release to relax"
-        : "Spin 3D: tug chain; release to relax");
-      return;
-    }
-
     const box = state.selectionBox;
     const pad = 14;
     const insideBox =
@@ -3095,35 +3027,7 @@ export function MainWindow({
 
   const handleSpinOverlayPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
-    if (!state) return;
-    const tug = spin3dTugDragRef.current;
-    if (tug && tug.pointerId === event.pointerId && tug.objectId === state.objectId) {
-      event.preventDefault();
-      const rect = event.currentTarget.getBoundingClientRect();
-      const page = documentRef.current.pages[0];
-      const scaleX = page && page.width > 0 ? rect.width / page.width : 1;
-      const scaleY = page && page.height > 0 ? rect.height / page.height : 1;
-      const pageDx = (event.clientX - tug.startClient.x) / (scaleX || 1);
-      const pageDy = (event.clientY - tug.startClient.y) / (scaleY || 1);
-      const delta = screenDeltaToModel(pageDx, pageDy, state.placement.scale, state.quat);
-      const coords3d = moveSpinAtomsKeepingCentroid(tug.startCoords, tug.atomIndices, delta);
-      tug.moved = tug.moved || Math.hypot(event.clientX - tug.startClient.x, event.clientY - tug.startClient.y) >= 3;
-      if (tug.moved) spin3dUserEditedRef.current = true;
-      spin3dStateRef.current = { ...state, coords3d, dragging: false, lastClient: undefined };
-      spinDirtyRef.current = true;
-      if (spinRafRef.current === null) {
-        spinRafRef.current = requestAnimationFrame(() => {
-          spinRafRef.current = null;
-          if (spinDirtyRef.current) {
-            spinDirtyRef.current = false;
-            const latest = spin3dStateRef.current;
-            if (latest) setSpin3dStateRender({ ...latest });
-          }
-        });
-      }
-      return;
-    }
-    if (!state.dragging || !state.lastClient) return;
+    if (!state || !state.dragging || !state.lastClient) return;
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
     // The overlay SVG fills the page area with viewBox "0 0 pageWidth pageHeight", so a
@@ -3171,77 +3075,6 @@ export function MainWindow({
     } catch {
       /* ignore */
     }
-    const tug = spin3dTugDragRef.current;
-    if (tug && tug.pointerId === event.pointerId) {
-      spin3dTugDragRef.current = undefined;
-      if (!tug.moved) {
-        setStatus("Spin 3D: drag empty space to rotate; tug atoms or bonds to reshape");
-        return;
-      }
-      const current = spin3dStateRef.current;
-      const molecule = documentRef.current.pages[0]?.objects.find(
-        (object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule"
-      );
-      const client = getConformerWorkerClient();
-      if (!current || !molecule || !client) {
-        setStatus("Atom tug applied; background relaxation is unavailable");
-        return;
-      }
-      let molfile: string;
-      try {
-        molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
-      } catch (error) {
-        setStatus(`Atom tug applied; cannot relax: ${error instanceof Error ? error.message : String(error)}`);
-        return;
-      }
-      const baseOptions = conformerOptionsForSpin3d(spin3dSettingsRef.current, molecule.atoms.length);
-      const options: Generate3DConformerOptions = {
-        optimize: spin3dSettingsRef.current.forceField,
-        maxMinimiseIterations: baseOptions.maxMinimiseIterations ?? Math.max(60, Math.min(120, molecule.atoms.length * 4))
-      };
-      const token = ++spin3dRelaxTokenRef.current;
-      setStatus("Relaxing tugged 3D structure…");
-      const cancel = client.relax(
-        molfile,
-        molecule.atoms.length,
-        Float64Array.from(current.coords3d),
-        options,
-        {
-          onRelaxed: (result) => {
-            if (spin3dRelaxTokenRef.current !== token) return;
-            spin3dRelaxPendingRef.current = undefined;
-            const latest = spin3dStateRef.current;
-            if (!latest || latest.objectId !== molecule.id) return;
-            const coords3d = recenterConformer(result.mapping.coords3dByOriginalAtom, tug.startCentroid);
-            applySpin({
-              ...latest,
-              coords3d,
-              dragging: false,
-              lastClient: undefined,
-              engine: {
-                name: result.engine.name,
-                version: result.engine.version,
-                forceField: result.forceField?.name
-              }
-            });
-            setStatus(result.forceField?.status === "converged"
-              ? "Tugged structure relaxed"
-              : result.forceField?.status === "setup-failed"
-                ? "Tug kept; force-field relaxation could not start"
-                : "Tugged structure relaxed to the iteration limit");
-          },
-          onError: (message) => {
-            if (spin3dRelaxTokenRef.current !== token) return;
-            spin3dRelaxPendingRef.current = undefined;
-            setStatus(`Atom tug kept; relaxation unavailable: ${message}`);
-          }
-        },
-        { sessionId: `spin3d-relax:${molecule.id}:${Date.now()}` }
-      );
-      spin3dRelaxPendingRef.current = { token, cancel };
-      return;
-    }
-
     // Releasing ends the rotation but STAYS in spin mode — grab inside the box again
     // to keep rotating, or click outside to flatten (handled in pointer-down). Esc cancels.
     if (state.dragging) {
@@ -3284,6 +3117,54 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
     setStatus("3D cleanup requires the conformer-backed cleanup engine");
+  }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
+
+  const openInteractive3dWorkspace = useCallback(async () => {
+    const currentDocument = documentRef.current;
+    const selectedObjectIds = [
+      ...new Set([
+        ...currentDocument.selection.objectIds,
+        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+      ])
+    ];
+
+    if (selectedObjectIds.length === 0) {
+      setStatus("Select a structure before opening Interactive 3D");
+      return;
+    }
+
+    if (selectedObjectIds.length !== 1) {
+      setStatus("Select a single structure for Interactive 3D");
+      return;
+    }
+
+    const objectId = selectedObjectIds[0];
+    const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
+    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
+      setStatus("Interactive 3D needs an editable native molecule");
+      return;
+    }
+
+    const status = await readEngine3dSidecarStatus();
+    if (!status) {
+      setStatus("Interactive 3D sidecar bridge is unavailable in this preview");
+      return;
+    }
+
+    if (!status.available) {
+      setStatus(`Interactive 3D sidecar not configured: bundle ${status.bundledBinaryName}`);
+      return;
+    }
+
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
+    setStatus(`Interactive 3D sidecar ready via ${status.source}; viewport wiring is next`);
   }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
 
   const selectAllCanvasObjects = useCallback(() => {
@@ -4833,6 +4714,11 @@ export function MainWindow({
           return;
         }
 
+        if (tool.id === structureInteractive3dCommandId) {
+          void openInteractive3dWorkspace();
+          return;
+        }
+
         if (tool.id === structureCleanup3dCommandId) {
           cleanUpSelectedStructure3d();
           return;
@@ -4989,6 +4875,7 @@ export function MainWindow({
     layerActions,
     nativePalette,
     openExportDialog,
+    openInteractive3dWorkspace,
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
     pasteClipboard,

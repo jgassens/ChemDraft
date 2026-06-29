@@ -181,16 +181,6 @@ export interface ProgressiveConformerResult {
    * embed failed or `optimize: "none"`.
    */
   refineFromEmbedded?: (maxIts?: number, options?: ConformerRefineOptions) => Generate3DConformerResult;
-  /**
-   * Relax coordinates deliberately deformed by the interactive Spin 3D tug tool. Unlike
-   * refineFromEmbedded(), this starts from the supplied coordinates. Engines that cannot
-   * safely inject coordinates omit this capability.
-   */
-  relaxFromCoordinates?: (
-    coords3dByOriginalAtom: ArrayLike<number>,
-    maxIts?: number,
-    options?: ConformerRefineOptions
-  ) => Generate3DConformerResult;
 }
 
 export interface ConformerInput {
