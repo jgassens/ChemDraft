@@ -25,6 +25,7 @@ import * as OCL from "openchemlib";
 import type {
   ConformerGenerator3D,
   ConformerInput,
+  ConformerRefineOptions,
   Generate3DConformerOptions,
   Generate3DConformerResult,
   ProgressiveConformerResult,
@@ -530,7 +531,70 @@ export async function generate3DConformerProgressive(
     };
   };
 
-  return { embedded, refineFromEmbedded };
+  // Tug relaxation (interactive): inject the user-DEFORMED original-atom coordinates onto the
+  // conformer, then run ONE capped MMFF94 minimisation from there. Unlike refineFromEmbedded()
+  // this starts from the SUPPLIED geometry, mirroring the RDKit adapter's relaxFromCoordinates
+  // so the worker's tug path works on either engine (OCL is what serves conformers RDKit ETKDG
+  // can't embed — large conjugated polycations, metal complexes — which is precisely where tug
+  // used to be dead). Generated hydrogens are baselined at the embed and re-relaxed by MMFF.
+  // OCL's minimise() is single-shot, so this is ONE capped call (re-minimising warps geometry —
+  // see restoreEmbeddedCoords note above). A failed minimise leaves the injected deformed
+  // geometry on the conformer, so the tug stays visible (status setup-failed) instead of snapping back.
+  const relaxFromCoordinates = (
+    coords3dByOriginalAtom: ArrayLike<number>,
+    maxIts?: number,
+    // OCL ships only MMFF94; a requested forceField (e.g. "mmff94s"/"uff") collapses to it.
+    _refineOptions?: ConformerRefineOptions
+  ): Generate3DConformerResult => {
+    const requested = Float64Array.from(coords3dByOriginalAtom);
+    const relaxWarnings: ChemistryWarning[] = [...embeddedWarnings];
+    restoreEmbeddedCoords(); // baseline generated H's (and any un-injectable atom) at the embed
+    if (requested.length === originalAtomCount * 3) {
+      for (let orig = 0; orig < originalAtomCount; orig++) {
+        const eng = embeddedMapping.originalToEngineAtom[orig];
+        if (eng < 0 || eng >= engineAtomCount) continue;
+        const x = requested[orig * 3];
+        const y = requested[orig * 3 + 1];
+        const z = requested[orig * 3 + 2];
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        conformer.setAtomX(eng, x);
+        conformer.setAtomY(eng, y);
+        conformer.setAtomZ(eng, z);
+      }
+    }
+    let forceField: Generate3DConformerResult["forceField"];
+    try {
+      const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
+      const rc = maxIts !== undefined ? ff.minimise({ maxIts }) : ff.minimise();
+      forceField = {
+        name: "MMFF94",
+        status: rc === 0 ? "converged" : "not-converged",
+        returnCode: rc,
+        energy: typeof ff.getTotalEnergy === "function" ? ff.getTotalEnergy() : undefined
+      };
+    } catch (error) {
+      forceField = { name: "MMFF94", status: "setup-failed" };
+      relaxWarnings.push({
+        code: "ocl.forcefield-unavailable",
+        message: `MMFF94 setup failed: ${(error as Error).message}`,
+        severity: "warning"
+      });
+    }
+    const relaxedMapping = readConformerMapping(conformer, originalAtomCount, relaxWarnings);
+    return {
+      mapping: relaxedMapping,
+      originalAtomCount,
+      generatedAtomCount: relaxedMapping.generatedHydrogenEngineAtoms.length,
+      hydrogens: hydrogens(relaxedMapping.generatedHydrogenEngineAtoms.length > 0),
+      engine,
+      embed: { status: "ok" },
+      forceField,
+      unsupportedFeatures: [...unsupportedFeatures],
+      warnings: [...relaxWarnings]
+    };
+  };
+
+  return { embedded, refineFromEmbedded, relaxFromCoordinates };
 }
 
 export const oclConformerGenerator: ConformerGenerator3D = {

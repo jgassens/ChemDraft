@@ -973,7 +973,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.28.19.05-sonnet";
+const CURRENT_BUILD_STAMP = "6.28.22.55-sonnet";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3034,7 +3034,11 @@ export function MainWindow({
     const page = documentRef.current.pages[0];
     const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
     const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
-    const canRelaxTug = state.engine?.name === "rdkit-wasm";
+    // Tug is available on any conformer the worker can relax. Both engines now expose
+    // relaxFromCoordinates: RDKit (MMFF94/UFF) and OpenChemLib (MMFF94, the fallback that
+    // serves structures RDKit ETKDG can't embed — large conjugated polycations, metal
+    // complexes). Gating to RDKit alone left those un-tuggable despite spinning fine.
+    const canRelaxTug = state.engine?.name === "rdkit-wasm" || state.engine?.name === "openchemlib";
     const projection = canRelaxTug ? projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement) : undefined;
     const pxToPage = rect.width > 0 ? page.width / rect.width : 1;
     const tugTarget = projection ? hitTestSpinTug(projection, state.bondPairs, { x: pageX, y: pageY }, {

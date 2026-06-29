@@ -448,8 +448,11 @@ function submit(request: ConformerWorkRequest): void {
 async function runRelax(request: ConformerWorkRequest): Promise<void> {
   const molfile = request.molfile ?? "";
   const entry = cache.get(molfile);
-  if (!entry || !entry.relaxFromCoordinates || entry.engine !== "rdkit-wasm") {
-    post({ id: request.id, stage: "error", message: "Tug relaxation requires a cached RDKit conformer" });
+  // Any engine that exposes relaxFromCoordinates can serve a tug — RDKit (ETKDG) and OCL both
+  // do now. OCL is what backs conformers RDKit ETKDG can't embed (large conjugated polycations,
+  // metal complexes), so gating tug to RDKit left those un-tuggable even though they spin fine.
+  if (!entry || !entry.relaxFromCoordinates) {
+    post({ id: request.id, stage: "error", message: "Tug relaxation requires a cached conformer with a force field" });
     return;
   }
   const coords = request.coords3dByOriginalAtom;

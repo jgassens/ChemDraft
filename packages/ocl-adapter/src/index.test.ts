@@ -218,6 +218,46 @@ describe("ocl-adapter — progressive (embed-first) generation", () => {
     expect([...oneShot.mapping.coords3dByOriginalAtom]).toEqual([...refined.mapping.coords3dByOriginalAtom]);
   });
 
+  it("relaxFromCoordinates() relaxes user-DEFORMED coordinates via MMFF94 (the tug path)", async () => {
+    const molfile = molfileFromSmiles("C[C@H](F)CC(=O)O");
+    const result = await generate3DConformerProgressive({ molfile }, { seed: 7, optimize: "auto" });
+    // OCL now exposes relaxFromCoordinates so the worker can tug OCL-embedded conformers
+    // (structures RDKit ETKDG can't embed), not just RDKit ones.
+    expect(result.relaxFromCoordinates).toBeDefined();
+
+    // Yank original atom 0 well away from the rest, as a tug drag would.
+    const deformed = Float64Array.from(result.embedded.mapping.coords3dByOriginalAtom);
+    deformed[0] += 4;
+    deformed[1] += 4;
+    deformed[2] += 4;
+
+    const relaxed = result.relaxFromCoordinates!(deformed, 200, { forceField: "mmff94" });
+    expect(relaxed.forceField?.name).toBe("MMFF94");
+    expect(["converged", "not-converged"]).toContain(relaxed.forceField?.status);
+    expect(relaxed.mapping.originalToEngineAtom).toEqual(result.embedded.mapping.originalToEngineAtom);
+    const out = relaxed.mapping.coords3dByOriginalAtom;
+    expect([...out].every(Number.isFinite)).toBe(true);
+
+    // The minimiser ran FROM the supplied geometry (output differs from the injected deform).
+    const moved = [...out].some((v, i) => Math.abs(v - deformed[i]) > 1e-6);
+    expect(moved).toBe(true);
+
+    // MMFF94 bond terms are stiff: the yanked atom is pulled back to a real bond length
+    // (~1.1–1.5 Å to its nearest neighbour), not left stranded ~7 Å out where we put it.
+    const atomCount = out.length / 3;
+    let minDist = Infinity;
+    for (let j = 1; j < atomCount; j++) {
+      const d = Math.hypot(out[0] - out[j * 3], out[1] - out[j * 3 + 1], out[2] - out[j * 3 + 2]);
+      if (d < minDist) minDist = d;
+    }
+    expect(minDist).toBeLessThan(2.0);
+  });
+
+  it("relaxFromCoordinates is absent when optimize:'none' (no force field requested)", async () => {
+    const none = await generate3DConformerProgressive({ molfile: molfileFromSmiles("CCO") }, { optimize: "none" });
+    expect(none.relaxFromCoordinates).toBeUndefined();
+  });
+
   it("optimize:'none' yields no refine stage; a capped refine still reports a force field run", async () => {
     const molfile = molfileFromSmiles("CCCCCCCC");
     const none = await generate3DConformerProgressive({ molfile }, { optimize: "none" });
