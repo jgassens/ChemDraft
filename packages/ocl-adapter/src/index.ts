@@ -346,6 +346,12 @@ function readConformerMapping(
   return { coords3dByOriginalAtom, originalToEngineAtom, engineToOriginalAtom, generatedHydrogenEngineAtoms };
 }
 
+/** Loose gradient tolerance for the coarse first pass of a tug relaxation (see
+ *  relaxFromCoordinates). Tight enough that committed bond lengths are chemically sane, loose
+ *  enough that OCL's all-or-nothing minimise() actually converges (and therefore commits) inside
+ *  an interactive iteration budget even for large/slow molecules. */
+const COARSE_RELAX_GRAD_TOL = 0.1;
+
 /**
  * Two-stage generation: the embedded conformer is delivered as soon as it exists
  * (already collision-free with correct E/Z + R/S parities — fully usable for an
@@ -564,13 +570,29 @@ export async function generate3DConformerProgressive(
     }
     let forceField: Generate3DConformerResult["forceField"];
     try {
-      const ff = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
-      const rc = maxIts !== undefined ? ff.minimise({ maxIts }) : ff.minimise();
+      // OCL's minimise() commits coordinates back to the molecule ONLY when it CONVERGES; if it
+      // hits the iteration cap first it discards ALL progress and leaves the input untouched. From
+      // a large tug deformation the default (tight) tolerance routinely fails to converge inside a
+      // responsive iteration budget — so the tugged structure was left stretched, with no relaxation
+      // at all (RDKit, by contrast, commits partial progress, which is why RDKit-backed molecules
+      // tugged fine and only OCL-backed ones — large conjugated systems, metal complexes — did not).
+      // Relax in two passes:
+      //   1. COARSE (loose gradient tolerance) — converges fast and commits chemically-sane bond
+      //      lengths even for big/slow molecules (a 76-atom cyanine: ~0.1s vs >9s at default tol).
+      //   2. FINE (default tolerance) from that geometry — polishes to the true minimum when it can;
+      //      when it can't converge it leaves the already-committed coarse result in place, because
+      //      minimise only ever discards back to ITS OWN input, which is now the sane coarse coords.
+      const coarseOpts = maxIts !== undefined
+        ? { maxIts, gradTol: COARSE_RELAX_GRAD_TOL }
+        : { gradTol: COARSE_RELAX_GRAD_TOL };
+      new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {}).minimise(coarseOpts);
+      const fine = new OCL.ForceFieldMMFF94(conformer, OCL.ForceFieldMMFF94.MMFF94, {});
+      const rc = maxIts !== undefined ? fine.minimise({ maxIts }) : fine.minimise();
       forceField = {
         name: "MMFF94",
         status: rc === 0 ? "converged" : "not-converged",
         returnCode: rc,
-        energy: typeof ff.getTotalEnergy === "function" ? ff.getTotalEnergy() : undefined
+        energy: typeof fine.getTotalEnergy === "function" ? fine.getTotalEnergy() : undefined
       };
     } catch (error) {
       forceField = { name: "MMFF94", status: "setup-failed" };

@@ -258,6 +258,30 @@ describe("ocl-adapter — progressive (embed-first) generation", () => {
     expect(none.relaxFromCoordinates).toBeUndefined();
   });
 
+  it("relax recovers sane bonds at a capped budget even when MMFF94 cannot fully converge", async () => {
+    // OCL's minimise() commits coordinates ONLY on convergence; a tight default tolerance does not
+    // converge within a responsive iteration cap for a floppy ring system, which previously left
+    // the tugged atom stranded (stretched). The coarse-then-fine relax must still return chemically
+    // sane geometry. Tetralin enone (matches one of the structures in the user's repro file).
+    const molfile = molfileFromSmiles("CC(/C=C/CCc1cccc2c1CCCC2)=O");
+    const r = await generate3DConformerProgressive({ molfile }, { seed: 42, optimize: "auto" });
+    r.refineFromEmbedded!(); // mirror the spin's refine pass (shares the conformer state)
+    const deformed = Float64Array.from(r.embedded.mapping.coords3dByOriginalAtom);
+    deformed[0] += 7; deformed[1] += 7; deformed[2] += 7; // yank atom 0 ~12 Å out
+
+    const relaxed = r.relaxFromCoordinates!(deformed, 120, { forceField: "mmff94" });
+    const out = relaxed.mapping.coords3dByOriginalAtom;
+    expect([...out].every(Number.isFinite)).toBe(true);
+    // The yanked atom must be pulled back to a real bond length — NOT left ~12 Å out as it was
+    // before the coarse pass (which would happen if the un-converged minimise discarded its work).
+    let minNeighbor = Infinity;
+    for (let j = 1; j < out.length / 3; j++) {
+      const d = Math.hypot(out[0] - out[j * 3], out[1] - out[j * 3 + 1], out[2] - out[j * 3 + 2]);
+      if (d < minNeighbor) minNeighbor = d;
+    }
+    expect(minNeighbor).toBeLessThan(2.2);
+  });
+
   it("optimize:'none' yields no refine stage; a capped refine still reports a force field run", async () => {
     const molfile = molfileFromSmiles("CCCCCCCC");
     const none = await generate3DConformerProgressive({ molfile }, { optimize: "none" });
