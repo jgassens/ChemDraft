@@ -956,6 +956,27 @@ type Interactive3dWorkspaceState = {
   atoms: readonly Interactive3dAtom[];
   bonds: readonly Interactive3dBond[];
   energyLabel?: string;
+  dragVisualTarget?: Interactive3dDragVisualTarget;
+};
+
+type Interactive3dDragVisualTarget = {
+  generation: number;
+  atomId: string;
+  target: Engine3DCoordinate;
+};
+
+type Interactive3dDragSchedulerState = {
+  generation: number;
+  openId: number;
+  atomId: string;
+  session: Engine3dWorkspaceSessionState;
+  latestTarget?: Engine3DCoordinate;
+  pendingUpdate: boolean;
+  updateInFlight: boolean;
+  ending: boolean;
+  lastSentAt: number;
+  timer?: number;
+  updatePromise?: Promise<void>;
 };
 
 type Interactive3dAtom = {
@@ -988,6 +1009,7 @@ function interactive3dEnergyLabel(session: Engine3dWorkspaceSessionState): strin
 }
 
 const RULER_THICKNESS = 32;
+const INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS = 33;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
@@ -1016,7 +1038,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.30.12.15-codex";
+const CURRENT_BUILD_STAMP = "6.30.14.25-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1387,6 +1409,9 @@ export function MainWindow({
   const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
   const interactive3dCommandQueueRef = useRef<Promise<void>>(Promise.resolve());
   const interactive3dOpenSerialRef = useRef(0);
+  const interactive3dDragGenerationRef = useRef(0);
+  const interactive3dDragSchedulerRef = useRef<Interactive3dDragSchedulerState | undefined>(undefined);
+  const scheduleInteractive3dDragUpdateRef = useRef<(scheduler: Interactive3dDragSchedulerState) => void>(() => undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const nativePaletteRef = useRef(nativePalette);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
@@ -3226,15 +3251,129 @@ export function MainWindow({
     setStatus("3D cleanup requires the conformer-backed cleanup engine");
   }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
 
-  const queueInteractive3dSessionClose = useCallback((session: Engine3dWorkspaceSessionState | undefined) => {
+  const cancelInteractive3dDragScheduler = useCallback((): Interactive3dDragSchedulerState | undefined => {
+    const scheduler = interactive3dDragSchedulerRef.current;
+    if (scheduler?.timer !== undefined) {
+      window.clearTimeout(scheduler.timer);
+      scheduler.timer = undefined;
+    }
+    if (scheduler) {
+      scheduler.ending = true;
+    }
+    interactive3dDragSchedulerRef.current = undefined;
+    return scheduler;
+  }, []);
+
+  const updateInteractive3dWorkspaceSession = useCallback((
+    openId: number,
+    session: Engine3dWorkspaceSessionState,
+    options: { clearDragVisualTarget?: boolean; status?: string } = {}
+  ) => {
+    setInteractive3dWorkspace((currentWorkspace) => currentWorkspace?.openId === openId
+      ? {
+          ...currentWorkspace,
+          session,
+          selectedAtomIds: session.selectedAtomIds.length > 0 ? session.selectedAtomIds : currentWorkspace.selectedAtomIds,
+          status: options.status ?? describeEngine3dWorkspaceSession(session),
+          energyLabel: interactive3dEnergyLabel(session) ?? currentWorkspace.energyLabel,
+          dragVisualTarget: options.clearDragVisualTarget ? undefined : currentWorkspace.dragVisualTarget
+        }
+      : currentWorkspace);
+  }, []);
+
+  const queueInteractive3dSessionClose = useCallback((
+    session: Engine3dWorkspaceSessionState | undefined,
+    dragScheduler = interactive3dDragSchedulerRef.current
+  ) => {
     if (!session) {
       return;
     }
     interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
       .catch(() => undefined)
-      .then(() => closeEngine3dWorkspaceSession(session).then(() => undefined))
+      .then(async () => {
+        await dragScheduler?.updatePromise?.catch(() => undefined);
+        return closeEngine3dWorkspaceSession(session).then(() => undefined);
+      })
       .catch(() => undefined);
   }, []);
+
+  const runInteractive3dDragUpdate = useCallback((scheduler: Interactive3dDragSchedulerState) => {
+    if (
+      scheduler.updateInFlight ||
+      scheduler.ending ||
+      interactive3dDragSchedulerRef.current !== scheduler ||
+      !scheduler.latestTarget
+    ) {
+      return;
+    }
+
+    const target = scheduler.latestTarget;
+    scheduler.pendingUpdate = false;
+    scheduler.updateInFlight = true;
+    scheduler.lastSentAt = Date.now();
+    const updatePromise = interactive3dCommandQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        const latest = interactive3dWorkspaceRef.current;
+        if (!latest?.session || latest.openId !== scheduler.openId) {
+          return;
+        }
+        const session = await updateEngine3dWorkspaceDrag(scheduler.session, scheduler.atomId, target);
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        scheduler.session = session;
+        if (!scheduler.ending) {
+          updateInteractive3dWorkspaceSession(scheduler.openId, session);
+        }
+      })
+      .catch((error) => {
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        setInteractive3dWorkspace((latest) => latest?.openId === scheduler.openId
+          ? {
+              ...latest,
+              status: `Sidecar drag failed: ${String(error)}`
+            }
+          : latest);
+      })
+      .finally(() => {
+        scheduler.updateInFlight = false;
+        scheduler.updatePromise = undefined;
+        if (interactive3dDragSchedulerRef.current !== scheduler || scheduler.ending) {
+          return;
+        }
+        if (scheduler.pendingUpdate) {
+          scheduleInteractive3dDragUpdateRef.current(scheduler);
+        }
+      });
+    scheduler.updatePromise = updatePromise;
+  }, [updateInteractive3dWorkspaceSession]);
+
+  const scheduleInteractive3dDragUpdate = useCallback((scheduler: Interactive3dDragSchedulerState) => {
+    if (
+      scheduler.updateInFlight ||
+      scheduler.ending ||
+      scheduler.timer !== undefined ||
+      interactive3dDragSchedulerRef.current !== scheduler
+    ) {
+      return;
+    }
+    const elapsed = Date.now() - scheduler.lastSentAt;
+    const delay = Math.max(0, INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS - elapsed);
+    scheduler.timer = window.setTimeout(() => {
+      scheduler.timer = undefined;
+      runInteractive3dDragUpdate(scheduler);
+    }, delay);
+  }, [runInteractive3dDragUpdate]);
+
+  useEffect(() => {
+    scheduleInteractive3dDragUpdateRef.current = scheduleInteractive3dDragUpdate;
+  }, [scheduleInteractive3dDragUpdate]);
 
   const openInteractive3dWorkspace = useCallback(async () => {
     const currentDocument = documentRef.current;
@@ -3264,8 +3403,9 @@ export function MainWindow({
     const selectedAtomIds = interactive3dSelectedAtomIds(selectedNativeMoleculePart, objectId);
     const atoms = interactive3dAtomsForMolecule(object);
     const bonds = interactive3dBondsForMolecule(object);
+    const closingDragScheduler = cancelInteractive3dDragScheduler();
     const previousSession = interactive3dWorkspaceRef.current?.session;
-    queueInteractive3dSessionClose(previousSession);
+    queueInteractive3dSessionClose(previousSession, closingDragScheduler);
 
     const openId = interactive3dOpenSerialRef.current + 1;
     interactive3dOpenSerialRef.current = openId;
@@ -3346,18 +3486,20 @@ export function MainWindow({
         : current);
       setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
     }
-  }, [assignHoveredNativeDeleteTarget, queueInteractive3dSessionClose, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, cancelInteractive3dDragScheduler, queueInteractive3dSessionClose, selectedNativeMoleculePart]);
 
   const closeInteractive3dWorkspace = useCallback(() => {
     const session = interactive3dWorkspaceRef.current?.session;
+    const closingDragScheduler = cancelInteractive3dDragScheduler();
     setInteractive3dWorkspace(undefined);
     setStatus("Interactive 3D Workspace closed");
-    queueInteractive3dSessionClose(session);
-  }, [queueInteractive3dSessionClose]);
+    queueInteractive3dSessionClose(session, closingDragScheduler);
+  }, [cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
 
   useEffect(() => () => {
-    queueInteractive3dSessionClose(interactive3dWorkspaceRef.current?.session);
-  }, [queueInteractive3dSessionClose]);
+    const closingDragScheduler = cancelInteractive3dDragScheduler();
+    queueInteractive3dSessionClose(interactive3dWorkspaceRef.current?.session, closingDragScheduler);
+  }, [cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
 
   useEffect(() => {
     if (!interactive3dWorkspace?.bridgeAvailable || interactive3dWorkspace.session) {
@@ -3388,45 +3530,135 @@ export function MainWindow({
     if (!current?.session) {
       return;
     }
-    setInteractive3dWorkspace((workspace) => workspace
+
+    if (phase === "beginDrag") {
+      cancelInteractive3dDragScheduler();
+      const generation = interactive3dDragGenerationRef.current + 1;
+      interactive3dDragGenerationRef.current = generation;
+      const scheduler: Interactive3dDragSchedulerState = {
+        generation,
+        openId: current.openId,
+        atomId,
+        session: current.session,
+        pendingUpdate: false,
+        updateInFlight: false,
+        ending: false,
+        lastSentAt: 0
+      };
+      interactive3dDragSchedulerRef.current = scheduler;
+      setInteractive3dWorkspace((workspace) => workspace?.openId === current.openId
+        ? {
+            ...workspace,
+            status: `beginDrag · ${atomId}`,
+            dragVisualTarget: undefined
+          }
+        : workspace);
+      interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (interactive3dDragSchedulerRef.current !== scheduler) {
+            return;
+          }
+          const session = await beginEngine3dWorkspaceDrag(scheduler.session, atomId);
+          if (interactive3dDragSchedulerRef.current !== scheduler) {
+            return;
+          }
+          scheduler.session = session;
+          updateInteractive3dWorkspaceSession(scheduler.openId, session);
+        })
+        .catch((error) => {
+          if (interactive3dDragSchedulerRef.current === scheduler) {
+            interactive3dDragSchedulerRef.current = undefined;
+          }
+          setInteractive3dWorkspace((latest) => latest?.openId === current.openId
+            ? {
+                ...latest,
+                status: `Sidecar drag failed: ${String(error)}`,
+                dragVisualTarget: undefined
+              }
+            : latest);
+        });
+      return;
+    }
+
+    const scheduler = interactive3dDragSchedulerRef.current;
+    if (!scheduler || scheduler.openId !== current.openId || scheduler.atomId !== atomId) {
+      return;
+    }
+
+    if (phase === "updateDrag") {
+      if (!target || scheduler.ending) {
+        return;
+      }
+      const latestTarget = { ...target };
+      scheduler.latestTarget = latestTarget;
+      scheduler.pendingUpdate = true;
+      setInteractive3dWorkspace((workspace) => workspace?.openId === scheduler.openId
+        ? {
+            ...workspace,
+            status: `${phase} · ${atomId} → ${latestTarget.x.toFixed(2)}, ${latestTarget.y.toFixed(2)}, ${latestTarget.z.toFixed(2)}`,
+            dragVisualTarget: {
+              generation: scheduler.generation,
+              atomId,
+              target: latestTarget
+            }
+          }
+        : workspace);
+      scheduleInteractive3dDragUpdate(scheduler);
+      return;
+    }
+
+    scheduler.ending = true;
+    if (scheduler.timer !== undefined) {
+      window.clearTimeout(scheduler.timer);
+      scheduler.timer = undefined;
+    }
+    setInteractive3dWorkspace((workspace) => workspace?.openId === scheduler.openId
       ? {
           ...workspace,
-          status: phase === "updateDrag" && target
-            ? `${phase} · ${atomId} → ${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${target.z.toFixed(2)}`
-            : `${phase} · ${atomId}`
+          status: `endDrag · ${atomId}`
         }
       : workspace);
     interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
       .catch(() => undefined)
       .then(async () => {
-        const latest = interactive3dWorkspaceRef.current;
-        if (!latest?.session) {
+        await scheduler.updatePromise?.catch(() => undefined);
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
           return;
         }
-        const session = phase === "beginDrag"
-          ? await beginEngine3dWorkspaceDrag(latest.session, atomId)
-          : phase === "updateDrag" && target
-            ? await updateEngine3dWorkspaceDrag(latest.session, atomId, target)
-            : await endEngine3dWorkspaceDrag(latest.session, atomId);
-        setInteractive3dWorkspace((currentWorkspace) => currentWorkspace?.openId === latest.openId
-          ? {
-              ...currentWorkspace,
-              session,
-              selectedAtomIds: session.selectedAtomIds.length > 0 ? session.selectedAtomIds : currentWorkspace.selectedAtomIds,
-              status: describeEngine3dWorkspaceSession(session),
-              energyLabel: interactive3dEnergyLabel(session) ?? currentWorkspace.energyLabel
-            }
-          : currentWorkspace);
+        let session = scheduler.session;
+        if (scheduler.latestTarget) {
+          session = await updateEngine3dWorkspaceDrag(session, atomId, scheduler.latestTarget);
+          if (interactive3dDragSchedulerRef.current !== scheduler) {
+            return;
+          }
+          scheduler.session = session;
+        }
+        session = await endEngine3dWorkspaceDrag(session, atomId);
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        scheduler.session = session;
+        interactive3dDragSchedulerRef.current = undefined;
+        updateInteractive3dWorkspaceSession(scheduler.openId, session, { clearDragVisualTarget: true });
       })
       .catch((error) => {
+        if (interactive3dDragSchedulerRef.current === scheduler) {
+          interactive3dDragSchedulerRef.current = undefined;
+        }
         setInteractive3dWorkspace((latest) => latest?.openId === current.openId
           ? {
               ...latest,
-              status: `Sidecar drag failed: ${String(error)}`
+              status: `Sidecar drag failed: ${String(error)}`,
+              dragVisualTarget: undefined
             }
           : latest);
       });
-  }, []);
+  }, [
+    cancelInteractive3dDragScheduler,
+    scheduleInteractive3dDragUpdate,
+    updateInteractive3dWorkspaceSession
+  ]);
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -11873,7 +12105,11 @@ function Interactive3dViewport({
   const pivotRef = useRef<{ objectId: string; pivot: Engine3DCoordinate } | undefined>(undefined);
   const dragStateRef = useRef<Interactive3dDragState | undefined>(undefined);
   const [camera, setCamera] = useState<Interactive3dCameraState>({ yaw: 0.35, pitch: -0.22, zoom: 1 });
-  const coords = workspace.session?.coords3dByAtomId;
+  const sessionCoords = workspace.session?.coords3dByAtomId;
+  const coords = useMemo(
+    () => interactive3dVisibleCoords(sessionCoords, workspace.dragVisualTarget),
+    [sessionCoords, workspace.dragVisualTarget]
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -12013,6 +12249,19 @@ function Interactive3dViewport({
       />
     </div>
   );
+}
+
+function interactive3dVisibleCoords(
+  coords: Readonly<Record<string, Engine3DCoordinate>> | undefined,
+  dragVisualTarget: Interactive3dDragVisualTarget | undefined
+): Readonly<Record<string, Engine3DCoordinate>> | undefined {
+  if (!coords || !dragVisualTarget || !coords[dragVisualTarget.atomId]) {
+    return coords;
+  }
+  return {
+    ...coords,
+    [dragVisualTarget.atomId]: dragVisualTarget.target
+  };
 }
 
 function interactive3dCoordinateList(
