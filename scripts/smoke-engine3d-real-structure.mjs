@@ -227,7 +227,7 @@ function assertSmokeResult(fixture, messages) {
   const reasons = messages
     .filter((message) => message.type === "event" && message.eventType === "coordinatesChanged")
     .map((message) => message.reason);
-  for (const reason of ["embed", "drag", "settle"]) {
+  for (const reason of ["embed", "initial-relax", "drag", "settle"]) {
     if (!reasons.includes(reason)) {
       fail(`Missing coordinatesChanged reason ${reason}. Got ${reasons.join(", ")}.`);
     }
@@ -279,6 +279,9 @@ function assertSmokeResult(fixture, messages) {
     if (radius < initialRadius * 0.82) {
       fail(`Molecule collapsed during ${event.requestId}: radius ${radius.toFixed(3)} from initial ${initialRadius.toFixed(3)}.`);
     }
+    if (event.reason === "embed" || event.reason === "initial-relax") {
+      continue;
+    }
     const bulk = bulkFrameStats(fixture, baseline, eventCoords);
     if (bulk.centroidDrift > 0.18 || bulk.orientationAngle > radians(3.0) || bulk.maxAtomDrift > 0.42) {
       fail(`Bulk frame drifted during ${event.requestId}: centroid ${bulk.centroidDrift.toFixed(3)}, angle ${degrees(bulk.orientationAngle).toFixed(2)} deg, atom ${bulk.maxAtomDrift.toFixed(3)}.`);
@@ -315,6 +318,14 @@ function assertSmokeResult(fixture, messages) {
 }
 
 function baselineCoordinates(messages) {
+  const initialRelax = messages.find((message) =>
+    message.type === "event" &&
+    message.eventType === "coordinatesChanged" &&
+    message.reason === "initial-relax"
+  );
+  if (initialRelax?.coords3dByAtomId) {
+    return initialRelax.coords3dByAtomId;
+  }
   const embed = messages.find((message) =>
     message.type === "event" &&
     message.eventType === "coordinatesChanged" &&

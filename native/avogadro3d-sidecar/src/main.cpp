@@ -1553,21 +1553,25 @@ int runStdio() {
       dragReferenceCoordinates.clear();
       draggedAtomIndex = atomIds.empty() ? -1 : 0;
       mechanics.reset();
-      forceField = mechanics.usesAvogadro()
-          ? mechanics.optimize(elements, bonds, formalCharges, coordinates, -1, 18)
-          : mechanics.lastReport();
-      if (!allCoordinatesFinite(coordinates)) {
-        coordinates = initialCoordinates.empty()
-            ? (geometry.coordinates.empty() ? defaultCoordinatesForAtoms(atomIds) : geometry.coordinates)
-            : initialCoordinates;
-        addDeterministicDepthJitter(coordinates);
-        forceField = notRunForceFieldReport();
-      }
+      forceField = mechanics.lastReport();
       activeSession = session;
       emitOk(id, activeSession, "{\"sessionId\":\"" + activeSession + "\"}");
       emitReadyEvent(id, activeSession, atomIds, coordinates);
-      emitEnergyChanged(id, session, forceField);
-      emitCoordinatesChanged(id, session, coordinateRevision, atomIds, coordinates, "embed");
+      emitCoordinatesChanged(id, activeSession, coordinateRevision, atomIds, coordinates, "embed");
+      if (mechanics.usesAvogadro()) {
+        forceField = mechanics.optimize(elements, bonds, formalCharges, coordinates, -1, 18);
+        if (!allCoordinatesFinite(coordinates)) {
+          coordinates = initialCoordinates.empty()
+              ? (geometry.coordinates.empty() ? defaultCoordinatesForAtoms(atomIds) : geometry.coordinates)
+              : initialCoordinates;
+          addDeterministicDepthJitter(coordinates);
+          forceField = notRunForceFieldReport();
+        } else {
+          ++coordinateRevision;
+          emitCoordinatesChanged(id, activeSession, coordinateRevision, atomIds, coordinates, "initial-relax");
+        }
+      }
+      emitEnergyChanged(id, activeSession, forceField);
     } else if (type == "ping") {
       emitOk(id, session);
       emitEvent(id, session, "heartbeat");

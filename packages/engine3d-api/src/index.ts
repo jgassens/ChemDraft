@@ -2,7 +2,7 @@ export const Engine3DProtocolVersion = 2 as const;
 export const DefaultEngine3DMaxMessageBytes = 4 * 1024 * 1024;
 
 export type Engine3DStructureFormat = "molfile-v2000" | "molfile-v3000";
-export type Engine3DCoordinateReason = "embed" | "drag" | "settle" | "commit";
+export type Engine3DCoordinateReason = "embed" | "initial-relax" | "drag" | "settle" | "commit";
 
 export interface Engine3DCoordinate {
   x: number;

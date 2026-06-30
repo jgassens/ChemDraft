@@ -159,6 +159,15 @@ export async function openEngine3dWorkspaceSession(
   throw new Error(`Interactive 3D sidecar did not become ready within ${Engine3dWorkspaceReadyTimeoutMs / 1000} seconds.`);
 }
 
+export async function pollEngine3dWorkspaceSessionState(
+  state: Engine3dWorkspaceSessionState
+): Promise<Engine3dWorkspaceSessionState> {
+  if (state.closed || state.exited) {
+    return state;
+  }
+  return reduceEngine3dSidecarOutput(state, await pollEngine3dSidecarSession(state.processSessionId));
+}
+
 export async function beginEngine3dWorkspaceDrag(
   state: Engine3dWorkspaceSessionState,
   atomId: string

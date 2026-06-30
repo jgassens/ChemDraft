@@ -163,6 +163,7 @@ import {
   describeEngine3dWorkspaceSession,
   endEngine3dWorkspaceDrag,
   openEngine3dWorkspaceSession,
+  pollEngine3dWorkspaceSessionState,
   readEngine3dSidecarStatus,
   updateEngine3dWorkspaceDrag,
   type Engine3dWorkspaceSessionState
@@ -1008,8 +1009,31 @@ function interactive3dEnergyLabel(session: Engine3dWorkspaceSessionState): strin
   return session.energy !== undefined ? `Energy ${formatInteractive3dEnergy(session.energy)}` : undefined;
 }
 
+function interactive3dPostOpenSessionChanged(
+  previous: Engine3dWorkspaceSessionState,
+  next: Engine3dWorkspaceSessionState
+): boolean {
+  return next.coordinateRevision !== previous.coordinateRevision ||
+    next.lastCoordinateReason !== previous.lastCoordinateReason ||
+    next.energy !== previous.energy ||
+    next.forceField?.status !== previous.forceField?.status ||
+    next.errors.length !== previous.errors.length ||
+    next.warnings.length !== previous.warnings.length ||
+    next.closed !== previous.closed ||
+    next.exited !== previous.exited;
+}
+
+function interactive3dPostOpenPollingComplete(session: Engine3dWorkspaceSessionState): boolean {
+  return session.lastCoordinateReason === "initial-relax" ||
+    session.closed ||
+    session.exited ||
+    session.errors.length > 0;
+}
+
 const RULER_THICKNESS = 32;
 const INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS = 33;
+const INTERACTIVE_3D_POST_OPEN_POLL_COUNT = 8;
+const INTERACTIVE_3D_POST_OPEN_POLL_MS = 90;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
@@ -1038,7 +1062,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.30.14.25-codex";
+const CURRENT_BUILD_STAMP = "6.30.14.59-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3375,6 +3399,39 @@ export function MainWindow({
     scheduleInteractive3dDragUpdateRef.current = scheduleInteractive3dDragUpdate;
   }, [scheduleInteractive3dDragUpdate]);
 
+  const pollInteractive3dSessionAfterOpen = useCallback((
+    openId: number,
+    startSession: Engine3dWorkspaceSessionState
+  ) => {
+    if (interactive3dPostOpenPollingComplete(startSession)) {
+      return;
+    }
+    const poll = (session: Engine3dWorkspaceSessionState, remaining: number): void => {
+      if (remaining <= 0 || interactive3dPostOpenPollingComplete(session)) {
+        return;
+      }
+      window.setTimeout(() => {
+        const current = interactive3dWorkspaceRef.current;
+        if (
+          current?.openId !== openId ||
+          current.session?.processSessionId !== session.processSessionId ||
+          interactive3dDragSchedulerRef.current?.openId === openId
+        ) {
+          return;
+        }
+        void pollEngine3dWorkspaceSessionState(session)
+          .then((nextSession) => {
+            if (interactive3dPostOpenSessionChanged(session, nextSession)) {
+              updateInteractive3dWorkspaceSession(openId, nextSession);
+            }
+            poll(nextSession, remaining - 1);
+          })
+          .catch(() => undefined);
+      }, INTERACTIVE_3D_POST_OPEN_POLL_MS);
+    };
+    poll(startSession, INTERACTIVE_3D_POST_OPEN_POLL_COUNT);
+  }, [updateInteractive3dWorkspaceSession]);
+
   const openInteractive3dWorkspace = useCallback(async () => {
     const currentDocument = documentRef.current;
     const selectedObjectIds = [
@@ -3477,6 +3534,7 @@ export function MainWindow({
           }
         : current);
       setStatus(`Interactive 3D Workspace streaming ${Object.keys(session.coords3dByAtomId ?? {}).length || "session"} atoms`);
+      pollInteractive3dSessionAfterOpen(openId, session);
     } catch (error) {
       setInteractive3dWorkspace((current) => current?.openId === openId
         ? {
@@ -3486,7 +3544,13 @@ export function MainWindow({
         : current);
       setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
     }
-  }, [assignHoveredNativeDeleteTarget, cancelInteractive3dDragScheduler, queueInteractive3dSessionClose, selectedNativeMoleculePart]);
+  }, [
+    assignHoveredNativeDeleteTarget,
+    cancelInteractive3dDragScheduler,
+    pollInteractive3dSessionAfterOpen,
+    queueInteractive3dSessionClose,
+    selectedNativeMoleculePart
+  ]);
 
   const closeInteractive3dWorkspace = useCallback(() => {
     const session = interactive3dWorkspaceRef.current?.session;
