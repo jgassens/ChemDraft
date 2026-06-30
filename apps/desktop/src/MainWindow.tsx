@@ -156,7 +156,18 @@ import {
   PREFERENCES_COMMAND_ID,
   type CommandSpec
 } from "./commands";
-import { readEngine3dSidecarStatus } from "./engine3dSidecar";
+import {
+  beginEngine3dWorkspaceDrag,
+  closeEngine3dWorkspaceSession,
+  createEngine3dSessionInputFromMolecule,
+  describeEngine3dWorkspaceSession,
+  endEngine3dWorkspaceDrag,
+  openEngine3dWorkspaceSession,
+  readEngine3dSidecarStatus,
+  updateEngine3dWorkspaceDrag,
+  type Engine3dWorkspaceSessionState
+} from "./engine3dSidecar";
+import type { Engine3DCoordinate } from "@chemdraft/engine3d-api";
 import {
   activateDrawingToolCommand,
   createActiveToolState,
@@ -934,6 +945,47 @@ type CustomPageSizeDialogState = {
   height: string;
   unit: PageSizeUnit;
 };
+type Interactive3dWorkspaceState = {
+  openId: number;
+  objectId: string;
+  source: string;
+  bridgeAvailable: boolean;
+  status: string;
+  session?: Engine3dWorkspaceSessionState;
+  selectedAtomIds: readonly string[];
+  atoms: readonly Interactive3dAtom[];
+  bonds: readonly Interactive3dBond[];
+  energyLabel?: string;
+};
+
+type Interactive3dAtom = {
+  id: string;
+  element: string;
+};
+
+type Interactive3dBond = {
+  fromAtomId: string;
+  toAtomId: string;
+  order: string | number;
+};
+
+function formatInteractive3dEnergy(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+  return Math.abs(value) >= 10000 ? value.toExponential(3) : value.toFixed(3);
+}
+
+function interactive3dEnergyLabel(session: Engine3dWorkspaceSessionState): string | undefined {
+  const forceField = session.forceField;
+  if (forceField) {
+    const energy = typeof forceField.energy === "number" && Number.isFinite(forceField.energy)
+      ? ` · ${formatInteractive3dEnergy(forceField.energy)} ${forceField.energyUnits ?? "kJ/mol"}`
+      : "";
+    return `${forceField.name} ${forceField.status}${energy}`;
+  }
+  return session.energy !== undefined ? `Energy ${formatInteractive3dEnergy(session.energy)}` : undefined;
+}
 
 const RULER_THICKNESS = 32;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
@@ -964,7 +1016,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.29.13.48-codex";
+const CURRENT_BUILD_STAMP = "6.30.12.15-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -972,6 +1024,56 @@ const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> 
   [artBooleanOperationCommandIds.intersect]: "intersect",
   [artBooleanOperationCommandIds.split]: "split"
 };
+
+function interactive3dSelectedAtomIds(
+  selection: NativeMoleculeSelectionPart | undefined,
+  objectId: string
+): readonly string[] {
+  if (!selection || selection.objectId !== objectId) {
+    return [];
+  }
+  if (selection.kind === "atom") {
+    return [selection.atomId];
+  }
+  if (selection.kind === "parts") {
+    return selection.atomIds;
+  }
+  return [];
+}
+
+function interactive3dAtomsForMolecule(molecule: MoleculeObject): readonly Interactive3dAtom[] {
+  return molecule.atoms.map((atom) => ({
+    id: atom.id,
+    element: atom.element
+  }));
+}
+
+function interactive3dBondsForMolecule(molecule: MoleculeObject): readonly Interactive3dBond[] {
+  return molecule.bonds.map((bond) => ({
+    fromAtomId: bond.fromAtomId,
+    toAtomId: bond.toAtomId,
+    order: bond.order
+  }));
+}
+
+function interactive3dCoordsFromSpinModel(
+  molecule: MoleculeObject
+): Record<string, { x: number; y: number; z: number }> | undefined {
+  const model = validSpin3dModelFor(molecule);
+  const coords3d = model ? spin3dModelCoordsForMolecule(model, molecule) : undefined;
+  if (!coords3d || coords3d.length < molecule.atoms.length * 3) {
+    return undefined;
+  }
+  const coords3dByAtomId: Record<string, { x: number; y: number; z: number }> = {};
+  molecule.atoms.forEach((atom, index) => {
+    coords3dByAtomId[atom.id] = {
+      x: coords3d[index * 3],
+      y: coords3d[index * 3 + 1],
+      z: coords3d[index * 3 + 2]
+    };
+  });
+  return coords3dByAtomId;
+}
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -1272,6 +1374,7 @@ export function MainWindow({
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
+  const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
@@ -1281,6 +1384,9 @@ export function MainWindow({
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
+  const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
+  const interactive3dCommandQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const interactive3dOpenSerialRef = useRef(0);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const nativePaletteRef = useRef(nativePalette);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
@@ -1312,6 +1418,7 @@ export function MainWindow({
   statusRef.current = status;
   rotationInputRef.current = rotationInput;
   objectResizeInputRef.current = objectResizeInput;
+  interactive3dWorkspaceRef.current = interactive3dWorkspace;
   activeToolCommandIdRef.current = activeToolState.activeCommandId;
   nativePaletteRef.current = nativePalette;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
@@ -3119,6 +3226,16 @@ export function MainWindow({
     setStatus("3D cleanup requires the conformer-backed cleanup engine");
   }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
 
+  const queueInteractive3dSessionClose = useCallback((session: Engine3dWorkspaceSessionState | undefined) => {
+    if (!session) {
+      return;
+    }
+    interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
+      .catch(() => undefined)
+      .then(() => closeEngine3dWorkspaceSession(session).then(() => undefined))
+      .catch(() => undefined);
+  }, []);
+
   const openInteractive3dWorkspace = useCallback(async () => {
     const currentDocument = documentRef.current;
     const selectedObjectIds = [
@@ -3144,15 +3261,43 @@ export function MainWindow({
       setStatus("Interactive 3D needs an editable native molecule");
       return;
     }
+    const selectedAtomIds = interactive3dSelectedAtomIds(selectedNativeMoleculePart, objectId);
+    const atoms = interactive3dAtomsForMolecule(object);
+    const bonds = interactive3dBondsForMolecule(object);
+    const previousSession = interactive3dWorkspaceRef.current?.session;
+    queueInteractive3dSessionClose(previousSession);
+
+    const openId = interactive3dOpenSerialRef.current + 1;
+    interactive3dOpenSerialRef.current = openId;
 
     const status = await readEngine3dSidecarStatus();
     if (!status) {
-      setStatus("Interactive 3D sidecar bridge is unavailable in this preview");
+      setInteractive3dWorkspace({
+        openId,
+        objectId,
+        source: "web-preview",
+        bridgeAvailable: false,
+        status: "Tauri bridge unavailable",
+        selectedAtomIds,
+        atoms,
+        bonds
+      });
+      setStatus("Interactive 3D Workspace opened in preview mode; Tauri bridge unavailable");
       return;
     }
 
     if (!status.available) {
-      setStatus(`Interactive 3D sidecar not configured: bundle ${status.bundledBinaryName}`);
+      setInteractive3dWorkspace({
+        openId,
+        objectId,
+        source: status.source,
+        bridgeAvailable: false,
+        status: `Sidecar not configured: ${status.bundledBinaryName}`,
+        selectedAtomIds,
+        atoms,
+        bonds
+      });
+      setStatus(`Interactive 3D Workspace opened; sidecar not configured: ${status.bundledBinaryName}`);
       return;
     }
 
@@ -3164,8 +3309,124 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
-    setStatus(`Interactive 3D sidecar ready via ${status.source}; viewport wiring is next`);
-  }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
+    setInteractive3dWorkspace({
+      openId,
+      objectId,
+      source: status.source,
+      bridgeAvailable: true,
+      status: `Starting sidecar session via ${status.source}`,
+      selectedAtomIds,
+      atoms,
+      bonds
+    });
+    setStatus(`Interactive 3D Workspace opening via ${status.source}`);
+    try {
+      const sessionInput = createEngine3dSessionInputFromMolecule(object, {
+        selectedAtomIds,
+        coords3dByAtomId: interactive3dCoordsFromSpinModel(object)
+      });
+      const session = await openEngine3dWorkspaceSession({
+        input: sessionInput
+      });
+      setInteractive3dWorkspace((current) => current?.openId === openId
+        ? {
+            ...current,
+            session,
+            status: describeEngine3dWorkspaceSession(session),
+            energyLabel: interactive3dEnergyLabel(session) ?? current.energyLabel
+          }
+        : current);
+      setStatus(`Interactive 3D Workspace streaming ${Object.keys(session.coords3dByAtomId ?? {}).length || "session"} atoms`);
+    } catch (error) {
+      setInteractive3dWorkspace((current) => current?.openId === openId
+        ? {
+            ...current,
+            status: `Sidecar session failed: ${String(error)}`
+          }
+        : current);
+      setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
+    }
+  }, [assignHoveredNativeDeleteTarget, queueInteractive3dSessionClose, selectedNativeMoleculePart]);
+
+  const closeInteractive3dWorkspace = useCallback(() => {
+    const session = interactive3dWorkspaceRef.current?.session;
+    setInteractive3dWorkspace(undefined);
+    setStatus("Interactive 3D Workspace closed");
+    queueInteractive3dSessionClose(session);
+  }, [queueInteractive3dSessionClose]);
+
+  useEffect(() => () => {
+    queueInteractive3dSessionClose(interactive3dWorkspaceRef.current?.session);
+  }, [queueInteractive3dSessionClose]);
+
+  useEffect(() => {
+    if (!interactive3dWorkspace?.bridgeAvailable || interactive3dWorkspace.session) {
+      return undefined;
+    }
+    if (!interactive3dWorkspace.status.startsWith("Starting sidecar session")) {
+      return undefined;
+    }
+    const openId = interactive3dWorkspace.openId;
+    const timer = window.setTimeout(() => {
+      setInteractive3dWorkspace((current) => current?.openId === openId && !current.session
+        ? {
+            ...current,
+            status: "Sidecar session timed out. Close and reopen 3D Workspace."
+          }
+        : current);
+      setStatus("Interactive 3D sidecar session timed out");
+    }, 15_000);
+    return () => window.clearTimeout(timer);
+  }, [interactive3dWorkspace]);
+
+  const sendInteractive3dDragCommand = useCallback((
+    phase: "beginDrag" | "updateDrag" | "endDrag",
+    atomId: string,
+    target?: Engine3DCoordinate
+  ) => {
+    const current = interactive3dWorkspaceRef.current;
+    if (!current?.session) {
+      return;
+    }
+    setInteractive3dWorkspace((workspace) => workspace
+      ? {
+          ...workspace,
+          status: phase === "updateDrag" && target
+            ? `${phase} · ${atomId} → ${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${target.z.toFixed(2)}`
+            : `${phase} · ${atomId}`
+        }
+      : workspace);
+    interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const latest = interactive3dWorkspaceRef.current;
+        if (!latest?.session) {
+          return;
+        }
+        const session = phase === "beginDrag"
+          ? await beginEngine3dWorkspaceDrag(latest.session, atomId)
+          : phase === "updateDrag" && target
+            ? await updateEngine3dWorkspaceDrag(latest.session, atomId, target)
+            : await endEngine3dWorkspaceDrag(latest.session, atomId);
+        setInteractive3dWorkspace((currentWorkspace) => currentWorkspace?.openId === latest.openId
+          ? {
+              ...currentWorkspace,
+              session,
+              selectedAtomIds: session.selectedAtomIds.length > 0 ? session.selectedAtomIds : currentWorkspace.selectedAtomIds,
+              status: describeEngine3dWorkspaceSession(session),
+              energyLabel: interactive3dEnergyLabel(session) ?? currentWorkspace.energyLabel
+            }
+          : currentWorkspace);
+      })
+      .catch((error) => {
+        setInteractive3dWorkspace((latest) => latest?.openId === current.openId
+          ? {
+              ...latest,
+              status: `Sidecar drag failed: ${String(error)}`
+            }
+          : latest);
+      });
+  }, []);
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -11384,6 +11645,15 @@ export function MainWindow({
             onStatus={setStatus}
           />
         ) : null}
+        {interactive3dWorkspace ? (
+          <Interactive3dWorkspacePanel
+            workspace={interactive3dWorkspace}
+            onClose={closeInteractive3dWorkspace}
+            onDragBegin={(atomId) => sendInteractive3dDragCommand("beginDrag", atomId)}
+            onDragUpdate={(atomId, target) => sendInteractive3dDragCommand("updateDrag", atomId, target)}
+            onDragEnd={(atomId) => sendInteractive3dDragCommand("endDrag", atomId)}
+          />
+        ) : null}
         {exportDialog ? (
           <ExportDialog
             state={exportDialog}
@@ -11491,6 +11761,586 @@ export function MainWindow({
       ) : null}
     </main>
   );
+}
+
+interface Interactive3dWorkspacePanelProps {
+  workspace: Interactive3dWorkspaceState;
+  onClose: () => void;
+  onDragBegin: (atomId: string) => void;
+  onDragUpdate: (atomId: string, target: Engine3DCoordinate) => void;
+  onDragEnd: (atomId: string) => void;
+}
+
+function Interactive3dWorkspacePanel({
+  workspace,
+  onClose,
+  onDragBegin,
+  onDragUpdate,
+  onDragEnd
+}: Interactive3dWorkspacePanelProps) {
+  return (
+    <section
+      className="interactive-3d-workspace"
+      data-interactive-3d-workspace="true"
+      data-engine3d-source={workspace.source}
+      data-engine3d-bridge={workspace.bridgeAvailable ? "available" : "unavailable"}
+      data-engine3d-process-session-id={workspace.session?.processSessionId}
+      aria-label="Interactive 3D Workspace"
+    >
+      <header className="interactive-3d-workspace-header">
+        <div>
+          <h2>3D Workspace</h2>
+          <span>{workspace.status}</span>
+        </div>
+        <div className="interactive-3d-workspace-actions">
+          <button type="button" disabled title="Commit will be enabled when sidecar commit-back is wired">
+            Commit
+          </button>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </header>
+      <Interactive3dViewport
+        workspace={workspace}
+        onDragBegin={onDragBegin}
+        onDragUpdate={onDragUpdate}
+        onDragEnd={onDragEnd}
+      />
+      <footer className="interactive-3d-workspace-footer">
+        {workspace.session?.coords3dByAtomId ? (
+          <span>{Object.keys(workspace.session.coords3dByAtomId).length} atoms</span>
+        ) : null}
+        <span>rev {workspace.session?.coordinateRevision ?? 0}</span>
+        {workspace.session?.lastCoordinateReason ? <span>{workspace.session.lastCoordinateReason}</span> : null}
+        {workspace.energyLabel ? <span>{workspace.energyLabel}</span> : null}
+      </footer>
+    </section>
+  );
+}
+
+type Interactive3dCameraState = {
+  yaw: number;
+  pitch: number;
+  zoom: number;
+};
+
+type Interactive3dProjectedAtom = {
+  atom: Interactive3dAtom;
+  coord: Engine3DCoordinate;
+  screenX: number;
+  screenY: number;
+  clipX: number;
+  clipY: number;
+  clipZ: number;
+  depth: number;
+  pointSize: number;
+};
+
+type Interactive3dDragState =
+  | {
+      kind: "atom";
+      pointerId: number;
+      atomId: string;
+      startClientX: number;
+      startClientY: number;
+      startCoord: Engine3DCoordinate;
+      right: Engine3DCoordinate;
+      up: Engine3DCoordinate;
+      unitPerPixel: number;
+    }
+  | {
+      kind: "orbit";
+      pointerId: number;
+      startClientX: number;
+      startClientY: number;
+      startYaw: number;
+      startPitch: number;
+    };
+
+function Interactive3dViewport({
+  workspace,
+  onDragBegin,
+  onDragUpdate,
+  onDragEnd
+}: {
+  workspace: Interactive3dWorkspaceState;
+  onDragBegin: (atomId: string) => void;
+  onDragUpdate: (atomId: string, target: Engine3DCoordinate) => void;
+  onDragEnd: (atomId: string) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pivotRef = useRef<{ objectId: string; pivot: Engine3DCoordinate } | undefined>(undefined);
+  const dragStateRef = useRef<Interactive3dDragState | undefined>(undefined);
+  const [camera, setCamera] = useState<Interactive3dCameraState>({ yaw: 0.35, pitch: -0.22, zoom: 1 });
+  const coords = workspace.session?.coords3dByAtomId;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width * (window.devicePixelRatio || 1)));
+    const height = Math.max(1, Math.round(rect.height * (window.devicePixelRatio || 1)));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    if (!coords) {
+      renderInteractive3dEmpty(canvas);
+      return;
+    }
+    const coordinateList = interactive3dCoordinateList(workspace.atoms, coords);
+    if (coordinateList.length === 0) {
+      renderInteractive3dEmpty(canvas);
+      return;
+    }
+    if (!pivotRef.current || pivotRef.current.objectId !== workspace.objectId) {
+      pivotRef.current = {
+        objectId: workspace.objectId,
+        pivot: interactive3dCentroid(coordinateList.map((entry) => entry.coord))
+      };
+    }
+    renderInteractive3dScene(canvas, workspace, coords, pivotRef.current.pivot, camera);
+  }, [camera, coords, workspace]);
+
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const canvas = event.currentTarget;
+    const currentCoords = workspace.session?.coords3dByAtomId;
+    if (!currentCoords) {
+      return;
+    }
+    const pivot = pivotRef.current?.pivot ?? interactive3dCentroid(Object.values(currentCoords));
+    const rect = canvas.getBoundingClientRect();
+    const projected = interactive3dProjectedAtoms(
+      workspace.atoms,
+      currentCoords,
+      pivot,
+      camera,
+      rect.width,
+      rect.height,
+      workspace.selectedAtomIds
+    );
+    const hit = interactive3dHitAtom(projected, event.clientX - rect.left, event.clientY - rect.top);
+    canvas.setPointerCapture(event.pointerId);
+    if (hit) {
+      const radius = interactive3dRadius(Object.values(currentCoords), pivot);
+      const basis = interactive3dCameraBasis(camera);
+      dragStateRef.current = {
+        kind: "atom",
+        pointerId: event.pointerId,
+        atomId: hit.atom.id,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startCoord: hit.coord,
+        right: basis.right,
+        up: basis.up,
+        unitPerPixel: Math.min(
+          0.0105,
+          (radius * 1.6) / Math.max(1, Math.min(rect.width, rect.height)) / Math.max(0.2, camera.zoom)
+        )
+      };
+      onDragBegin(hit.atom.id);
+      return;
+    }
+    dragStateRef.current = {
+      kind: "orbit",
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startYaw: camera.yaw,
+      startPitch: camera.pitch
+    };
+  }, [camera, onDragBegin, workspace]);
+
+  const handlePointerMove = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    event.preventDefault();
+    if (drag.kind === "orbit") {
+      const dx = event.clientX - drag.startClientX;
+      const dy = event.clientY - drag.startClientY;
+      setCamera({
+        ...camera,
+        yaw: drag.startYaw + dx * 0.008,
+        pitch: Math.max(-1.35, Math.min(1.35, drag.startPitch + dy * 0.008))
+      });
+      return;
+    }
+    const dx = event.clientX - drag.startClientX;
+    const dy = event.clientY - drag.startClientY;
+    const target = {
+      x: drag.startCoord.x + drag.right.x * dx * drag.unitPerPixel - drag.up.x * dy * drag.unitPerPixel,
+      y: drag.startCoord.y + drag.right.y * dx * drag.unitPerPixel - drag.up.y * dy * drag.unitPerPixel,
+      z: drag.startCoord.z + drag.right.z * dx * drag.unitPerPixel - drag.up.z * dy * drag.unitPerPixel
+    };
+    onDragUpdate(drag.atomId, target);
+  }, [camera, onDragUpdate]);
+
+  const handlePointerUp = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    event.preventDefault();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragStateRef.current = undefined;
+    if (drag.kind === "atom") {
+      onDragEnd(drag.atomId);
+    }
+  }, [onDragEnd]);
+
+  return (
+    <div
+      className="interactive-3d-frame"
+      data-engine3d-coordinate-revision={workspace.session?.coordinateRevision ?? 0}
+      data-engine3d-coordinate-reason={workspace.session?.lastCoordinateReason ?? "pending"}
+    >
+      <canvas
+        ref={canvasRef}
+        aria-label="Interactive 3D molecule viewport"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      />
+    </div>
+  );
+}
+
+function interactive3dCoordinateList(
+  atoms: readonly Interactive3dAtom[],
+  coords: Readonly<Record<string, Engine3DCoordinate>>
+): Array<{ atom: Interactive3dAtom; coord: Engine3DCoordinate }> {
+  return atoms
+    .map((atom) => {
+      const coord = coords[atom.id];
+      return coord ? { atom, coord } : undefined;
+    })
+    .filter((entry): entry is { atom: Interactive3dAtom; coord: Engine3DCoordinate } => entry !== undefined);
+}
+
+function interactive3dCentroid(coords: readonly Engine3DCoordinate[]): Engine3DCoordinate {
+  if (coords.length === 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const sum = coords.reduce((acc, coord) => ({
+    x: acc.x + coord.x,
+    y: acc.y + coord.y,
+    z: acc.z + coord.z
+  }), { x: 0, y: 0, z: 0 });
+  return {
+    x: sum.x / coords.length,
+    y: sum.y / coords.length,
+    z: sum.z / coords.length
+  };
+}
+
+function interactive3dRadius(
+  coords: readonly Engine3DCoordinate[],
+  pivot: Engine3DCoordinate
+): number {
+  const radius = Math.max(
+    1,
+    ...coords.map((coord) => {
+      const dx = coord.x - pivot.x;
+      const dy = coord.y - pivot.y;
+      const dz = coord.z - pivot.z;
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    })
+  );
+  return radius;
+}
+
+function interactive3dRotateToView(
+  coord: Engine3DCoordinate,
+  pivot: Engine3DCoordinate,
+  camera: Interactive3dCameraState
+): Engine3DCoordinate {
+  const x = coord.x - pivot.x;
+  const y = coord.y - pivot.y;
+  const z = coord.z - pivot.z;
+  const cy = Math.cos(camera.yaw);
+  const sy = Math.sin(camera.yaw);
+  const cp = Math.cos(camera.pitch);
+  const sp = Math.sin(camera.pitch);
+  const yawX = cy * x + sy * z;
+  const yawZ = -sy * x + cy * z;
+  return {
+    x: yawX,
+    y: cp * y - sp * yawZ,
+    z: sp * y + cp * yawZ
+  };
+}
+
+function interactive3dInverseViewVector(
+  vector: Engine3DCoordinate,
+  camera: Interactive3dCameraState
+): Engine3DCoordinate {
+  const cy = Math.cos(camera.yaw);
+  const sy = Math.sin(camera.yaw);
+  const cp = Math.cos(camera.pitch);
+  const sp = Math.sin(camera.pitch);
+  const pitchY = cp * vector.y + sp * vector.z;
+  const pitchZ = -sp * vector.y + cp * vector.z;
+  return {
+    x: cy * vector.x - sy * pitchZ,
+    y: pitchY,
+    z: sy * vector.x + cy * pitchZ
+  };
+}
+
+function interactive3dCameraBasis(camera: Interactive3dCameraState): { right: Engine3DCoordinate; up: Engine3DCoordinate } {
+  return {
+    right: interactive3dInverseViewVector({ x: 1, y: 0, z: 0 }, camera),
+    up: interactive3dInverseViewVector({ x: 0, y: 1, z: 0 }, camera)
+  };
+}
+
+function interactive3dProjectedAtoms(
+  atoms: readonly Interactive3dAtom[],
+  coords: Readonly<Record<string, Engine3DCoordinate>>,
+  pivot: Engine3DCoordinate,
+  camera: Interactive3dCameraState,
+  width: number,
+  height: number,
+  selectedAtomIds: readonly string[]
+): Interactive3dProjectedAtom[] {
+  const entries = interactive3dCoordinateList(atoms, coords);
+  const radius = interactive3dRadius(entries.map((entry) => entry.coord), pivot);
+  const scale = Math.max(1, radius * 1.45 / Math.max(0.2, camera.zoom));
+  const selected = new Set(selectedAtomIds);
+  return entries.map(({ atom, coord }) => {
+    const view = interactive3dRotateToView(coord, pivot, camera);
+    const clipX = Math.max(-0.98, Math.min(0.98, view.x / scale));
+    const clipY = Math.max(-0.98, Math.min(0.98, view.y / scale));
+    const clipZ = Math.max(-0.9, Math.min(0.9, view.z / (scale * 1.8)));
+    const depthShade = 1 - (clipZ + 0.9) / 2.2;
+    return {
+      atom,
+      coord,
+      screenX: (clipX + 1) * 0.5 * width,
+      screenY: (1 - (clipY + 1) * 0.5) * height,
+      clipX,
+      clipY,
+      clipZ,
+      depth: view.z,
+      pointSize: (selected.has(atom.id) ? 22 : 15) * Math.max(0.74, Math.min(1.18, depthShade))
+    };
+  });
+}
+
+function interactive3dHitAtom(
+  atoms: readonly Interactive3dProjectedAtom[],
+  x: number,
+  y: number
+): Interactive3dProjectedAtom | undefined {
+  let best: Interactive3dProjectedAtom | undefined;
+  let bestDistance = Infinity;
+  for (const atom of atoms) {
+    const dx = atom.screenX - x;
+    const dy = atom.screenY - y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const radius = Math.max(12, atom.pointSize * 0.75);
+    if (distance <= radius && distance < bestDistance) {
+      best = atom;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function interactive3dElementColor(element: string): [number, number, number] {
+  switch (element) {
+    case "O":
+      return [0.86, 0.12, 0.12];
+    case "N":
+      return [0.16, 0.28, 0.9];
+    case "S":
+      return [0.9, 0.68, 0.12];
+    case "P":
+      return [0.9, 0.44, 0.1];
+    case "F":
+    case "Cl":
+    case "Br":
+    case "I":
+      return [0.14, 0.58, 0.35];
+    case "H":
+      return [0.9, 0.9, 0.86];
+    default:
+      return [0.18, 0.19, 0.2];
+  }
+}
+
+function renderInteractive3dEmpty(canvas: HTMLCanvasElement): void {
+  const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
+  if (!gl) {
+    return;
+  }
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.98, 0.985, 0.982, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+function renderInteractive3dScene(
+  canvas: HTMLCanvasElement,
+  workspace: Interactive3dWorkspaceState,
+  coords: Readonly<Record<string, Engine3DCoordinate>>,
+  pivot: Engine3DCoordinate,
+  camera: Interactive3dCameraState
+): void {
+  const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
+  if (!gl) {
+    return;
+  }
+  const width = canvas.width;
+  const height = canvas.height;
+  const cssWidth = Math.max(1, canvas.getBoundingClientRect().width);
+  const cssHeight = Math.max(1, canvas.getBoundingClientRect().height);
+  const projected = interactive3dProjectedAtoms(workspace.atoms, coords, pivot, camera, cssWidth, cssHeight, workspace.selectedAtomIds);
+  const projectedById = new Map(projected.map((atom) => [atom.atom.id, atom]));
+  const program = interactive3dWebglProgram(gl);
+  if (!program) {
+    return;
+  }
+
+  gl.viewport(0, 0, width, height);
+  gl.clearColor(0.98, 0.985, 0.982, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(program.program);
+
+  const lineVertices: number[] = [];
+  for (const bond of workspace.bonds) {
+    const from = projectedById.get(bond.fromAtomId);
+    const to = projectedById.get(bond.toAtomId);
+    if (!from || !to) {
+      continue;
+    }
+    const color = [0.42, 0.44, 0.43];
+    lineVertices.push(from.clipX, from.clipY, from.clipZ, ...color, 1);
+    lineVertices.push(to.clipX, to.clipY, to.clipZ, ...color, 1);
+  }
+  interactive3dDrawVertices(gl, program, lineVertices, gl.LINES, false);
+
+  const atomVertices = [...projected]
+    .sort((left, right) => left.depth - right.depth)
+    .flatMap((atom) => {
+      const color = interactive3dElementColor(atom.atom.element);
+      return [atom.clipX, atom.clipY, atom.clipZ, ...color, atom.pointSize * (window.devicePixelRatio || 1)];
+    });
+  interactive3dDrawVertices(gl, program, atomVertices, gl.POINTS, true);
+}
+
+function interactive3dWebglProgram(gl: WebGLRenderingContext): {
+  program: WebGLProgram;
+  position: number;
+  color: number;
+  pointSize: number;
+  round: WebGLUniformLocation | null;
+} | undefined {
+  const vertexSource = `
+    attribute vec3 a_position;
+    attribute vec3 a_color;
+    attribute float a_point_size;
+    varying vec3 v_color;
+    void main() {
+      gl_Position = vec4(a_position, 1.0);
+      gl_PointSize = a_point_size;
+      v_color = a_color;
+    }
+  `;
+  const fragmentSource = `
+    precision mediump float;
+    uniform bool u_round;
+    varying vec3 v_color;
+    void main() {
+      if (u_round) {
+        vec2 delta = gl_PointCoord - vec2(0.5, 0.5);
+        if (dot(delta, delta) > 0.25) {
+          discard;
+        }
+      }
+      gl_FragColor = vec4(v_color, 1.0);
+    }
+  `;
+  const vertexShader = interactive3dCompileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = interactive3dCompileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  if (!vertexShader || !fragmentShader) {
+    return undefined;
+  }
+  const program = gl.createProgram();
+  if (!program) {
+    return undefined;
+  }
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    return undefined;
+  }
+  return {
+    program,
+    position: gl.getAttribLocation(program, "a_position"),
+    color: gl.getAttribLocation(program, "a_color"),
+    pointSize: gl.getAttribLocation(program, "a_point_size"),
+    round: gl.getUniformLocation(program, "u_round")
+  };
+}
+
+function interactive3dCompileShader(
+  gl: WebGLRenderingContext,
+  type: number,
+  source: string
+): WebGLShader | undefined {
+  const shader = gl.createShader(type);
+  if (!shader) {
+    return undefined;
+  }
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : undefined;
+}
+
+function interactive3dDrawVertices(
+  gl: WebGLRenderingContext,
+  program: {
+    position: number;
+    color: number;
+    pointSize: number;
+    round: WebGLUniformLocation | null;
+  },
+  values: readonly number[],
+  mode: number,
+  round: boolean
+): void {
+  if (values.length === 0) {
+    return;
+  }
+  const buffer = gl.createBuffer();
+  if (!buffer) {
+    return;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.STREAM_DRAW);
+  const stride = 7 * Float32Array.BYTES_PER_ELEMENT;
+  gl.enableVertexAttribArray(program.position);
+  gl.vertexAttribPointer(program.position, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(program.color);
+  gl.vertexAttribPointer(program.color, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
+  gl.enableVertexAttribArray(program.pointSize);
+  gl.vertexAttribPointer(program.pointSize, 1, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
+  gl.uniform1i(program.round, round ? 1 : 0);
+  gl.drawArrays(mode, 0, values.length / 7);
+  gl.deleteBuffer(buffer);
 }
 
 interface ImportedPageFitPromptProps {

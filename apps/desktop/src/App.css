@@ -4285,6 +4285,103 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+.interactive-3d-workspace {
+  position: absolute;
+  top: 48px;
+  right: 48px;
+  z-index: 850;
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr) auto;
+  width: min(680px, calc(100vw - 96px));
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+  box-shadow: var(--cd-shadow-panel);
+}
+
+.interactive-3d-workspace-header,
+.interactive-3d-workspace-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cd-space-4);
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--cd-border-subtle);
+}
+
+.interactive-3d-workspace-header h2 {
+  margin: 0;
+  color: var(--cd-text-primary);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.interactive-3d-workspace-header span,
+.interactive-3d-workspace-footer span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.interactive-3d-workspace-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.interactive-3d-workspace-actions button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-panel);
+  color: var(--cd-text-primary);
+  font: inherit;
+}
+
+.interactive-3d-workspace-actions button:disabled {
+  color: var(--cd-text-muted);
+}
+
+.interactive-3d-frame {
+  position: relative;
+  display: grid;
+  width: min(640px, calc(100vw - 120px));
+  aspect-ratio: 640 / 420;
+  min-height: 0;
+  justify-self: center;
+  cursor: grab;
+  place-items: center;
+  background:
+    linear-gradient(90deg, rgb(29 127 104 / 10%) 1px, transparent 1px),
+    linear-gradient(rgb(29 127 104 / 8%) 1px, transparent 1px),
+    #111716;
+  background-size: 24px 24px;
+  touch-action: none;
+}
+
+.interactive-3d-frame:active {
+  cursor: grabbing;
+}
+
+.interactive-3d-frame canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: auto;
+}
+
+.interactive-3d-workspace-footer {
+  border-top: 1px solid var(--cd-border-subtle);
+  border-bottom: 0;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-rows: minmax(0, 1fr);

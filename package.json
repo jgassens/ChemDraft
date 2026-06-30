@@ -11,6 +11,7 @@
     "build": "pnpm lint && pnpm --filter @chemdraft/desktop build",
     "lint": "tsc -p tsconfig.json --noEmit",
     "audit:engine3d-sidecar": "node scripts/audit-avogadro3d-sidecar.mjs",
+    "smoke:engine3d-real-structure": "node scripts/smoke-engine3d-real-structure.mjs",
     "test": "vitest run"
   },
   "devDependencies": {

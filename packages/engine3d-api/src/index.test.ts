@@ -7,10 +7,13 @@ import {
   formatEngine3DMessage,
   parseEngine3DMessageLine,
   validateEngine3DCommit,
+  type Engine3DBeginDragRequest,
   type Engine3DCreateSessionRequest,
-  type Engine3DPointerRequest,
+  type Engine3DEndDragRequest,
+  type Engine3DEvent,
+  type Engine3DSessionInput,
   type Engine3DSessionRequest,
-  type Engine3DSessionInput
+  type Engine3DUpdateDragRequest
 } from "./index";
 
 const SESSION_INPUT: Engine3DSessionInput = {
@@ -31,7 +34,12 @@ const SESSION_INPUT: Engine3DSessionInput = {
   bondSignature: createEngine3DBondSignature([
     { fromAtomId: "a1", toAtomId: "a2", order: 1 },
     { fromAtomId: "a2", toAtomId: "a3", order: 1 }
-  ])
+  ]),
+  coords3dByAtomId: {
+    a1: { x: 0, y: 0, z: 0 },
+    a2: { x: 1.5, y: 0, z: 0.15 },
+    a3: { x: 2.8, y: 0.4, z: -0.1 }
+  }
 };
 
 function sessionRequest(type: Engine3DSessionRequest["type"], requestId: string): Engine3DSessionRequest {
@@ -43,14 +51,44 @@ function sessionRequest(type: Engine3DSessionRequest["type"], requestId: string)
   };
 }
 
-function pointerRequest(requestId: string, event: Engine3DPointerRequest["event"]): Engine3DPointerRequest {
+function beginDragRequest(requestId: string): Engine3DBeginDragRequest {
   return {
     protocolVersion: Engine3DProtocolVersion,
-    type: "pointer",
+    type: "beginDrag",
     requestId,
     sessionId: "session_1",
-    event
+    atomId: "a2"
   };
+}
+
+function updateDragRequest(requestId: string): Engine3DUpdateDragRequest {
+  return {
+    protocolVersion: Engine3DProtocolVersion,
+    type: "updateDrag",
+    requestId,
+    sessionId: "session_1",
+    atomId: "a2",
+    target: { x: 3.2, y: -0.7, z: 0.9 }
+  };
+}
+
+function endDragRequest(requestId: string): Engine3DEndDragRequest {
+  return {
+    protocolVersion: Engine3DProtocolVersion,
+    type: "endDrag",
+    requestId,
+    sessionId: "session_1",
+    atomId: "a2"
+  };
+}
+
+function eventByType(messages: readonly unknown[], eventType: string): Engine3DEvent | undefined {
+  return messages.find((message): message is Engine3DEvent =>
+    typeof message === "object" &&
+    message !== null &&
+    (message as Engine3DEvent).type === "event" &&
+    (message as Engine3DEvent).eventType === eventType
+  );
 }
 
 describe("Engine 3D protocol", () => {
@@ -74,13 +112,13 @@ describe("Engine 3D protocol", () => {
     expect(parseEngine3DMessageLine("{")).toMatchObject({ ok: false });
     expect(parseEngine3DMessageLine(JSON.stringify({ protocolVersion: 999, type: "ping", requestId: "r", sessionId: "s" })))
       .toMatchObject({ ok: false, error: expect.stringContaining("Unsupported") });
-    expect(parseEngine3DMessageLine(JSON.stringify({ protocolVersion: 1, type: "ping", requestId: "r" })))
+    expect(parseEngine3DMessageLine(JSON.stringify({ protocolVersion: 2, type: "ping", requestId: "r" })))
       .toMatchObject({ ok: false, error: expect.stringContaining("missing sessionId") });
-    expect(parseEngine3DMessageLine(JSON.stringify({ protocolVersion: 1, type: "ping", requestId: "r", sessionId: "s", pad: "x".repeat(80) }), 32))
+    expect(parseEngine3DMessageLine(JSON.stringify({ protocolVersion: 2, type: "ping", requestId: "r", sessionId: "s", pad: "x".repeat(80) }), 32))
       .toMatchObject({ ok: false, error: expect.stringContaining("exceeds") });
   });
 
-  it("runs the fake golden transcript", () => {
+  it("runs the fake headless-physics golden transcript", () => {
     const fake = createFakeEngine3DSession(SESSION_INPUT, "session_1");
     const createMessages = fake.send({
       protocolVersion: Engine3DProtocolVersion,
@@ -88,18 +126,36 @@ describe("Engine 3D protocol", () => {
       requestId: "req_1",
       input: SESSION_INPUT
     });
-    const showMessages = fake.send(sessionRequest("showViewport", "req_2"));
-    const optimizeMessages = fake.send(sessionRequest("startAutoOptimize", "req_3"));
-    const dragMessages = fake.send(pointerRequest("req_4", { kind: "move", atomId: "a2", x: 12, y: -8, buttons: 1 }));
+    const beginMessages = fake.send(beginDragRequest("req_2"));
+    const dragMessages = fake.send(updateDragRequest("req_3"));
+    const endMessages = fake.send(endDragRequest("req_4"));
     const commitMessages = fake.send(sessionRequest("commit", "req_5"));
     const disposeMessages = fake.send(sessionRequest("dispose", "req_6"));
 
-    expect(createMessages.map((message) => message.type)).toEqual(["response", "event"]);
-    expect(showMessages.find((message) => message.type === "event")).toMatchObject({ eventType: "viewportShown" });
-    expect(optimizeMessages.find((message) => message.type === "event")).toMatchObject({ eventType: "energyChanged" });
-    expect(dragMessages.find((message) => message.type === "event")).toMatchObject({
-      eventType: "coordinatesChanged",
-      coordinateRevision: 1
+    expect(createMessages.map((message) => message.type)).toEqual(["response", "event", "event"]);
+    expect(eventByType(createMessages, "ready")).toMatchObject({
+      capabilities: {
+        headlessPhysics: true,
+        worldSpaceDrag: true,
+        frontendRendering: true
+      }
+    });
+    expect(eventByType(createMessages, "coordinatesChanged")).toMatchObject({
+      reason: "embed",
+      coordinateRevision: 0
+    });
+    expect(eventByType(beginMessages, "selectionChanged")).toMatchObject({ selectedAtomIds: ["a2"] });
+    expect(eventByType(dragMessages, "coordinatesChanged")).toMatchObject({
+      reason: "drag",
+      coordinateRevision: 1,
+      coords3dByAtomId: expect.objectContaining({
+        a2: { x: 3.2, y: -0.7, z: 0.9 }
+      })
+    });
+    expect(eventByType(dragMessages, "energyChanged")).toMatchObject({ energy: -1.25 });
+    expect(eventByType(endMessages, "coordinatesChanged")).toMatchObject({
+      reason: "settle",
+      coordinateRevision: 2
     });
     expect(commitMessages[0]).toMatchObject({ type: "response", ok: true });
     expect(disposeMessages.find((message) => message.type === "event")).toMatchObject({ eventType: "closed" });

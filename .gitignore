@@ -10,6 +10,8 @@ coverage/
 !.env.example
 .playwright-cli/
 Custom_Toolbar/
+native/avogadro3d-sidecar/build/
+native/avogadro3d-sidecar/_deps/
 
 # Dev-only native RDKit oracle (never shipped; recreate from tools/rdkit-oracle/requirements-rdkit-oracle.txt)
 .venv-rdkit-oracle/

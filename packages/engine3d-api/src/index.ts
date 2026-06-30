@@ -1,17 +1,13 @@
-export const Engine3DProtocolVersion = 1 as const;
-export const DefaultEngine3DMaxMessageBytes = 64 * 1024;
+export const Engine3DProtocolVersion = 2 as const;
+export const DefaultEngine3DMaxMessageBytes = 4 * 1024 * 1024;
 
 export type Engine3DStructureFormat = "molfile-v2000" | "molfile-v3000";
+export type Engine3DCoordinateReason = "embed" | "drag" | "settle" | "commit";
 
 export interface Engine3DCoordinate {
   x: number;
   y: number;
   z: number;
-}
-
-export interface Engine3DCameraState {
-  viewMatrix: readonly number[];
-  projectionMatrix?: readonly number[];
 }
 
 export interface Engine3DAtomSignatureInput {
@@ -41,6 +37,33 @@ export interface Engine3DSessionInput {
   coords3dByAtomId?: Readonly<Record<string, Engine3DCoordinate>>;
 }
 
+export interface Engine3DReadyCapabilities {
+  headlessPhysics: true;
+  worldSpaceDrag: true;
+  frontendRendering: true;
+  autoOptimize: true;
+  forceField: "UFF" | "protocol-scout";
+}
+
+export type Engine3DForceFieldStatus =
+  | "running"
+  | "converged"
+  | "not-converged"
+  | "not-run"
+  | "optimized"
+  | "skipped"
+  | "unsupported-element"
+  | "failed";
+
+export interface Engine3DForceFieldReport {
+  name: string;
+  energy?: number;
+  energyUnits?: string;
+  status: Engine3DForceFieldStatus;
+  avogadroBacked?: boolean;
+  warning?: string;
+}
+
 export interface Engine3DEnvelope {
   protocolVersion: typeof Engine3DProtocolVersion;
   type: string;
@@ -54,40 +77,36 @@ export interface Engine3DCreateSessionRequest extends Engine3DEnvelope {
 }
 
 export interface Engine3DSessionRequest extends Engine3DEnvelope {
-  type:
-    | "showViewport"
-    | "hideViewport"
-    | "startAutoOptimize"
-    | "stopAutoOptimize"
-    | "commit"
-    | "dispose"
-    | "ping";
+  type: "commit" | "dispose" | "ping";
   sessionId: string;
 }
 
-export interface Engine3DSetCameraRequest extends Engine3DEnvelope {
-  type: "setCamera";
+export interface Engine3DBeginDragRequest extends Engine3DEnvelope {
+  type: "beginDrag";
   sessionId: string;
-  camera: Engine3DCameraState;
+  atomId: string;
 }
 
-export interface Engine3DPointerRequest extends Engine3DEnvelope {
-  type: "pointer";
+export interface Engine3DUpdateDragRequest extends Engine3DEnvelope {
+  type: "updateDrag";
   sessionId: string;
-  event: {
-    kind: "down" | "move" | "up" | "cancel";
-    x: number;
-    y: number;
-    atomId?: string;
-    buttons?: number;
-  };
+  atomId: string;
+  target: Engine3DCoordinate;
+}
+
+export interface Engine3DEndDragRequest extends Engine3DEnvelope {
+  type: "endDrag";
+  sessionId: string;
+  atomId: string;
+  cancelled?: boolean;
 }
 
 export type Engine3DRequest =
   | Engine3DCreateSessionRequest
   | Engine3DSessionRequest
-  | Engine3DSetCameraRequest
-  | Engine3DPointerRequest;
+  | Engine3DBeginDragRequest
+  | Engine3DUpdateDragRequest
+  | Engine3DEndDragRequest;
 
 export interface Engine3DResponse extends Engine3DEnvelope {
   type: "response";
@@ -98,7 +117,6 @@ export interface Engine3DResponse extends Engine3DEnvelope {
 
 export type Engine3DEventType =
   | "ready"
-  | "viewportShown"
   | "coordinatesChanged"
   | "energyChanged"
   | "selectionChanged"
@@ -111,10 +129,12 @@ export interface Engine3DEvent extends Engine3DEnvelope {
   type: "event";
   eventType: Engine3DEventType;
   sessionId: string;
+  capabilities?: Engine3DReadyCapabilities;
   coordinateRevision?: number;
   coords3dByAtomId?: Readonly<Record<string, Engine3DCoordinate>>;
-  camera?: Engine3DCameraState;
+  reason?: Engine3DCoordinateReason;
   energy?: number;
+  forceField?: Engine3DForceFieldReport;
   selectedAtomIds?: readonly string[];
   message?: string;
 }
@@ -125,17 +145,12 @@ export interface Engine3DCommitResult {
   coordinateRevision: number;
   graphSignature: string;
   bondSignature: string;
-  camera: Engine3DCameraState;
   engine: {
     name: string;
     version?: string;
     sourceCommit?: string;
   };
-  forceField?: {
-    name: string;
-    energy?: number;
-    status: "running" | "converged" | "not-converged" | "not-run";
-  };
+  forceField?: Engine3DForceFieldReport;
   warnings: readonly string[];
 }
 
@@ -149,6 +164,14 @@ export interface Engine3DCommitValidationResult {
   ok: boolean;
   errors: string[];
 }
+
+export const DefaultEngine3DReadyCapabilities: Engine3DReadyCapabilities = {
+  headlessPhysics: true,
+  worldSpaceDrag: true,
+  frontendRendering: true,
+  autoOptimize: true,
+  forceField: "UFF"
+};
 
 export function formatEngine3DMessage(message: Engine3DMessage): string {
   return `${JSON.stringify(message)}\n`;
@@ -246,11 +269,7 @@ export interface FakeEngine3DSession {
 
 export function createFakeEngine3DSession(input: Engine3DSessionInput, sessionId = "fake-engine3d-session"): FakeEngine3DSession {
   let coordinateRevision = 0;
-  let visible = false;
-  let autoOptimizing = false;
-  let camera: Engine3DCameraState = {
-    viewMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
-  };
+  let draggedAtomId: string | undefined;
   const coords: Record<string, Engine3DCoordinate> = {};
   input.atomIdByMolfileIndex.forEach((atomId, index) => {
     coords[atomId] = input.coords3dByAtomId?.[atomId] ?? { x: index * 1.5, y: 0, z: 0 };
@@ -264,6 +283,14 @@ export function createFakeEngine3DSession(input: Engine3DSessionInput, sessionId
     ok: true,
     result
   });
+  const errorResponse = (request: Engine3DRequest, error: string): Engine3DResponse => ({
+    protocolVersion: Engine3DProtocolVersion,
+    type: "response",
+    requestId: request.requestId,
+    sessionId,
+    ok: false,
+    error
+  });
   const event = (
     request: Engine3DRequest,
     eventType: Engine3DEventType,
@@ -276,20 +303,31 @@ export function createFakeEngine3DSession(input: Engine3DSessionInput, sessionId
     eventType,
     ...extras
   });
+  const coordinatesChanged = (
+    request: Engine3DRequest,
+    reason: Engine3DCoordinateReason
+  ): Engine3DEvent => event(request, "coordinatesChanged", {
+    coordinateRevision,
+    coords3dByAtomId: { ...coords },
+    reason
+  });
+  const forceField: Engine3DForceFieldReport = {
+    name: "fake",
+    energy: -1.25,
+    energyUnits: "kJ/mol",
+    status: "running"
+  };
   const commit = (): Engine3DCommitResult => ({
     sessionId,
     coords3dByAtomId: { ...coords },
     coordinateRevision,
     graphSignature: input.graphSignature,
     bondSignature: input.bondSignature,
-    camera,
     engine: {
       name: "fake-engine3d",
       version: "0.0.0"
     },
-    forceField: autoOptimizing
-      ? { name: "fake", energy: -1.25, status: "running" }
-      : { name: "fake", status: "not-run" },
+    forceField,
     warnings: []
   });
 
@@ -298,42 +336,53 @@ export function createFakeEngine3DSession(input: Engine3DSessionInput, sessionId
     send(request) {
       switch (request.type) {
         case "createSession":
-          return [response(request, { sessionId }), event(request, "ready", { coordinateRevision, coords3dByAtomId: coords, camera })];
-        case "showViewport":
-          visible = true;
-          return [response(request, { visible }), event(request, "viewportShown")];
-        case "hideViewport":
-          visible = false;
-          return [response(request, { visible })];
-        case "startAutoOptimize":
-          autoOptimizing = true;
-          return [response(request, { autoOptimizing }), event(request, "energyChanged", { energy: -1.25 })];
-        case "stopAutoOptimize":
-          autoOptimizing = false;
-          return [response(request, { autoOptimizing })];
-        case "setCamera":
-          camera = request.camera;
-          return [response(request, { camera })];
-        case "pointer":
-          if (request.event.kind === "move" && request.event.atomId && coords[request.event.atomId]) {
-            const coord = coords[request.event.atomId];
-            coords[request.event.atomId] = {
-              x: coord.x + request.event.x * 0.01,
-              y: coord.y + request.event.y * 0.01,
-              z: coord.z
-            };
-            coordinateRevision += 1;
-            return [
-              response(request, { coordinateRevision }),
-              event(request, "coordinatesChanged", { coordinateRevision, coords3dByAtomId: { ...coords } })
-            ];
+          return [
+            response(request, { sessionId }),
+            event(request, "ready", {
+              capabilities: DefaultEngine3DReadyCapabilities,
+              coordinateRevision,
+              coords3dByAtomId: { ...coords }
+            }),
+            coordinatesChanged(request, "embed")
+          ];
+        case "beginDrag":
+          if (!coords[request.atomId]) {
+            return [errorResponse(request, `Unknown atom "${request.atomId}".`)];
           }
-          return [response(request)];
+          draggedAtomId = request.atomId;
+          return [
+            response(request, { draggedAtomId }),
+            event(request, "selectionChanged", { selectedAtomIds: [draggedAtomId] })
+          ];
+        case "updateDrag":
+          if (!coords[request.atomId]) {
+            return [errorResponse(request, `Unknown atom "${request.atomId}".`)];
+          }
+          draggedAtomId = request.atomId;
+          coords[draggedAtomId] = request.target;
+          coordinateRevision += 1;
+          return [
+            response(request, { coordinateRevision }),
+            coordinatesChanged(request, "drag"),
+            event(request, "energyChanged", { energy: forceField.energy, forceField })
+          ];
+        case "endDrag":
+          if (!coords[request.atomId]) {
+            return [errorResponse(request, `Unknown atom "${request.atomId}".`)];
+          }
+          draggedAtomId = undefined;
+          coordinateRevision += 1;
+          return [
+            response(request, { coordinateRevision, cancelled: request.cancelled === true }),
+            coordinatesChanged(request, "settle"),
+            event(request, "energyChanged", { energy: forceField.energy, forceField })
+          ];
         case "commit":
-          return [response(request, this.commit())];
+          return [response(request, commit())];
         case "ping":
           return [response(request), event(request, "heartbeat")];
         case "dispose":
+          draggedAtomId = undefined;
           return [response(request), event(request, "closed")];
       }
     },

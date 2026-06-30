@@ -4,18 +4,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
-DEV_PORT="5173"
+DEV_PORT="${CHEMDRAFT_DEV_PORT:-5173}"
 RUN_MODE="${1:-app}"
+LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
 TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
-RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app"
-RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
-RUN_APP_DISPLAY_NAME="ChemDraft Run App"
+RUN_APP_BUNDLE="$TAURI_OUTPUT_BUNDLE"
+LEGACY_RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app"
+RUN_APP_BUNDLE_ID="org.chemdraft.desktop"
+LEGACY_RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
+RUN_APP_DISPLAY_NAME="ChemDraft"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 usage() {
   cat <<EOF
 Usage: ./run-app [--dev]
 
-Default: build and launch the inspectable macOS app bundle.
+Default: build and launch the ChemDraft macOS app bundle.
   --dev   launch Tauri dev mode with Vite/HMR.
 EOF
 }
@@ -29,6 +33,12 @@ process_cwd() {
   local pid="$1"
 
   lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+process_command() {
+  local pid="$1"
+
+  ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//' || true
 }
 
 stop_process() {
@@ -50,45 +60,133 @@ stop_existing_dev_apps() {
     return 0
   fi
 
-  local pattern pid pids
-  for pattern in \
-    "target/debug/chemdraft" \
-    "target/release/chemdraft" \
-    "$APP_DIR/src-tauri/target/debug/chemdraft" \
-    "$APP_DIR/src-tauri/target/release/chemdraft" \
-    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app/Contents/MacOS/chemdraft" \
-    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app/Contents/MacOS/chemdraft" \
-    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-working-draft.app/Contents/MacOS/chemdraft" \
-    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-pre-scena-snapshot.app/Contents/MacOS/chemdraft" \
-    "$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft-release-snapshot.app/Contents/MacOS/chemdraft"; do
-    pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
-    for pid in $pids; do
-      if [ "$pid" != "$$" ]; then
-        echo "Stopping existing ChemDraft dev app process $pid."
-        stop_process "$pid"
-      fi
+  local command pattern pid pids
+  pids="$(
+    pgrep -x chemdraft 2>/dev/null || true
+    for pattern in \
+      "target/debug/chemdraft" \
+      "target/release/chemdraft" \
+      "/ChemDraft.app/Contents/MacOS/chemdraft" \
+      "/ChemDraft Run App.app/Contents/MacOS/chemdraft" \
+      "/ChemDraft-working-draft.app/Contents/MacOS/chemdraft" \
+      "/ChemDraft-pre-scena-snapshot.app/Contents/MacOS/chemdraft" \
+      "/ChemDraft-release-snapshot.app/Contents/MacOS/chemdraft"; do
+      pgrep -f "$pattern" 2>/dev/null || true
     done
+  )"
+
+  for pid in $(printf "%s\n" $pids | awk 'NF && !seen[$0]++'); do
+    if [ "$pid" != "$$" ]; then
+      command="$(process_command "$pid")"
+      if [ -n "$command" ]; then
+        echo "Stopping existing ChemDraft app process $pid: $command"
+      else
+        echo "Stopping existing ChemDraft app process $pid."
+      fi
+      stop_process "$pid"
+    fi
   done
 }
 
+unregister_bundle() {
+  local bundle="$1"
+
+  if [ -x "$LSREGISTER" ] && [ -d "$bundle" ]; then
+    "$LSREGISTER" -u "$bundle" >/dev/null 2>&1 || true
+  fi
+}
+
+unregister_stale_chem_draft_bundles() {
+  if [ -x "$LSREGISTER" ] && command -v mdfind >/dev/null 2>&1; then
+    local bundle
+    while IFS= read -r bundle; do
+      if [ -z "$bundle" ] || [ "$bundle" = "$RUN_APP_BUNDLE" ]; then
+        continue
+      fi
+      if [ -d "$bundle" ]; then
+        echo "Unregistering stale ChemDraft app bundle: $bundle"
+        unregister_bundle "$bundle"
+      fi
+    done < <(mdfind 'kMDItemCFBundleIdentifier == "org.chemdraft.desktop" || kMDItemCFBundleIdentifier == "org.chemdraft.desktop.run-app"' 2>/dev/null || true)
+  fi
+
+  if [ -d "$LEGACY_RUN_APP_BUNDLE" ]; then
+    echo "Removing legacy generated ChemDraft bundle: $LEGACY_RUN_APP_BUNDLE"
+    unregister_bundle "$LEGACY_RUN_APP_BUNDLE"
+    rm -rf "$LEGACY_RUN_APP_BUNDLE"
+  fi
+}
+
+force_tauri_context_rebuild() {
+  # `tauri::generate_context!()` bakes frontend assets, app icons, and other config-derived
+  # resources into the Rust crate at compile time. Touching lib.rs forces Cargo to rebuild that
+  # context so dev and packaged launches do not reuse stale app identity assets.
+  touch "$APP_DIR/src-tauri/src/lib.rs"
+}
+
+tauri_context_fingerprint() {
+  if ! command -v shasum >/dev/null 2>&1; then
+    return 1
+  fi
+
+  shasum \
+    "$APP_DIR/src-tauri/tauri.conf.json" \
+    "$APP_DIR/src-tauri/Cargo.toml" \
+    "$APP_DIR/src-tauri/icons/icon.png" \
+    | shasum \
+    | awk '{print $1}'
+}
+
+prime_tauri_context_rebuild_for_dev() {
+  local fingerprint fingerprint_file previous_fingerprint
+  fingerprint_file="$APP_DIR/src-tauri/target/.chemdraft-tauri-context.sha"
+
+  if ! fingerprint="$(tauri_context_fingerprint)"; then
+    echo "Could not fingerprint Tauri app identity assets; clearing cached ChemDraft context."
+    (
+      cd "$APP_DIR/src-tauri"
+      cargo clean -p chemdraft >/dev/null
+    )
+    return 0
+  fi
+
+  previous_fingerprint=""
+  if [ -f "$fingerprint_file" ]; then
+    previous_fingerprint="$(cat "$fingerprint_file" 2>/dev/null || true)"
+  fi
+
+  if [ "$fingerprint" = "$previous_fingerprint" ]; then
+    return 0
+  fi
+
+  echo "Tauri app identity assets changed; clearing cached ChemDraft context."
+  (
+    cd "$APP_DIR/src-tauri"
+    cargo clean -p chemdraft >/dev/null
+  )
+  mkdir -p "$(dirname "$fingerprint_file")"
+  printf "%s\n" "$fingerprint" >"$fingerprint_file"
+}
+
 stop_existing_dev_server() {
-  local unrelated_mode="${1:-strict}"
+  local port="${1:-$DEV_PORT}"
+  local unrelated_mode="${2:-strict}"
 
   if ! command -v lsof >/dev/null 2>&1; then
     return 0
   fi
 
   local cwd pid pids
-  pids="$(lsof -tiTCP:"$DEV_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
   for pid in $pids; do
     cwd="$(process_cwd "$pid")"
     case "$cwd" in
       "$ROOT_DIR"|"$ROOT_DIR"/*)
-        echo "Stopping existing ChemDraft dev server on $DEV_HOST:$DEV_PORT (process $pid)."
+        echo "Stopping existing ChemDraft dev server on $DEV_HOST:$port (process $pid)."
         stop_process "$pid"
         ;;
       *)
-        echo "Port $DEV_PORT is already in use by process $pid."
+        echo "Port $port is already in use by process $pid."
         if [ -n "$cwd" ]; then
           echo "That process is running from: $cwd"
         fi
@@ -102,19 +200,68 @@ stop_existing_dev_server() {
   done
 }
 
+select_dev_port() {
+  if ! command -v lsof >/dev/null 2>&1; then
+    export CHEMDRAFT_DEV_PORT="$DEV_PORT"
+    echo "Using ChemDraft dev server port $DEV_PORT."
+    return 0
+  fi
+
+  local candidate cwd has_unrelated pid pids start
+  start="$DEV_PORT"
+  for ((candidate = start; candidate <= start + 20; candidate++)); do
+    pids="$(lsof -tiTCP:"$candidate" -sTCP:LISTEN 2>/dev/null || true)"
+    if [ -z "$pids" ]; then
+      DEV_PORT="$candidate"
+      export CHEMDRAFT_DEV_PORT="$DEV_PORT"
+      echo "Using ChemDraft dev server port $DEV_PORT."
+      return 0
+    fi
+
+    has_unrelated=0
+    for pid in $pids; do
+      cwd="$(process_cwd "$pid")"
+      case "$cwd" in
+        "$ROOT_DIR"|"$ROOT_DIR"/*)
+          echo "Stopping existing ChemDraft dev server on $DEV_HOST:$candidate (process $pid)."
+          stop_process "$pid"
+          ;;
+        *)
+          has_unrelated=1
+          echo "Port $candidate is already in use by process $pid."
+          if [ -n "$cwd" ]; then
+            echo "That process is running from: $cwd"
+          fi
+          echo "Trying the next port for ChemDraft."
+          ;;
+      esac
+    done
+
+    if [ "$has_unrelated" = "0" ]; then
+      DEV_PORT="$candidate"
+      export CHEMDRAFT_DEV_PORT="$DEV_PORT"
+      echo "Using ChemDraft dev server port $DEV_PORT."
+      return 0
+    fi
+  done
+
+  echo "Could not find a free ChemDraft dev server port from $start through $((start + 20))."
+  exit 1
+}
+
 clear_saved_window_state() {
   local saved_state_dir="$HOME/Library/Saved Application State/org.chemdraft.desktop.savedState"
-  local run_app_saved_state_dir="$HOME/Library/Saved Application State/$RUN_APP_BUNDLE_ID.savedState"
+  local legacy_run_app_saved_state_dir="$HOME/Library/Saved Application State/$LEGACY_RUN_APP_BUNDLE_ID.savedState"
 
   if [ -d "$saved_state_dir" ]; then
     rm -rf "$saved_state_dir"
   fi
-  if [ -d "$run_app_saved_state_dir" ]; then
-    rm -rf "$run_app_saved_state_dir"
+  if [ -d "$legacy_run_app_saved_state_dir" ]; then
+    rm -rf "$legacy_run_app_saved_state_dir"
   fi
 
   defaults delete org.chemdraft.desktop NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
-  defaults delete "$RUN_APP_BUNDLE_ID" NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
+  defaults delete "$LEGACY_RUN_APP_BUNDLE_ID" NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
 }
 
 set_bundle_display_name() {
@@ -148,6 +295,10 @@ stage_run_app_bundle() {
     echo "Tauri build did not produce the expected app bundle:"
     echo "$TAURI_OUTPUT_BUNDLE"
     exit 1
+  fi
+
+  if [ "$TAURI_OUTPUT_BUNDLE" = "$RUN_APP_BUNDLE" ]; then
+    return 0
   fi
 
   if [ -e "$RUN_APP_BUNDLE" ]; then
@@ -188,12 +339,11 @@ launch_bundle() {
   # Contents/MacOS/$CFBundleExecutable exists and codesign verifies. Register the exact bundle
   # path just before opening so ./run-app does not accidentally launch another checkout with the
   # same bundle id or fail against stale cache state.
-  if [ -x /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister ]; then
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-      -f "$bundle" >/dev/null 2>&1 || true
+  if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$bundle" >/dev/null 2>&1 || true
   fi
 
-  if ! open -n "$bundle"; then
+  if ! open "$bundle"; then
     echo "macOS open failed. The bundle was built, but LaunchServices refused to open it."
     echo "Check for stale ChemDraft processes, then run ./run-app again."
     exit 1
@@ -244,13 +394,20 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 stop_existing_dev_apps
+unregister_stale_chem_draft_bundles
 
-if [ "$RUN_MODE" = "--dev" ]; then
-  stop_existing_dev_server strict
-  exec npm run dev
+if [ -z "${CHEMDRAFT_ENGINE3D_SIDECAR:-}" ] && [ -x "$LOCAL_ENGINE3D_SIDECAR" ]; then
+  export CHEMDRAFT_ENGINE3D_SIDECAR="$LOCAL_ENGINE3D_SIDECAR"
+  echo "Using local Engine 3D sidecar: $CHEMDRAFT_ENGINE3D_SIDECAR"
 fi
 
-stop_existing_dev_server ignore-unrelated
+if [ "$RUN_MODE" = "--dev" ]; then
+  select_dev_port
+  prime_tauri_context_rebuild_for_dev
+  exec npm run dev:tauri
+fi
+
+stop_existing_dev_server "$DEV_PORT" ignore-unrelated
 
 if [ -e "$RUN_APP_BUNDLE" ]; then
   rm -rf "$RUN_APP_BUNDLE"
@@ -259,13 +416,7 @@ if [ -e "$TAURI_OUTPUT_BUNDLE" ]; then
   rm -rf "$TAURI_OUTPUT_BUNDLE"
 fi
 
-# Force Tauri to re-embed the freshly built frontend. `tauri::generate_context!()` in
-# src-tauri/src/lib.rs bakes the built `dist/` into the binary at COMPILE time. cargo's
-# incremental build can relink the binary (updating its mtime) while reusing a cached lib.rs
-# object that still embeds STALE frontend assets whenever only the frontend changed and no Rust
-# source did. Bumping lib.rs's mtime forces that crate — and the asset embed — to recompile, so
-# `./run-app` always launches the current frontend.
-touch "$APP_DIR/src-tauri/src/lib.rs"
+force_tauri_context_rebuild
 
 node_modules/.bin/tauri build --bundles app
 set_bundle_display_name "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_DISPLAY_NAME"

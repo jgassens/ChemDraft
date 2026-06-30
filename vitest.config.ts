@@ -13,6 +13,7 @@ export default defineConfig({
       "@chemdraft/ocl-adapter": workspacePackage("./packages/ocl-adapter/src/index.ts"),
       "@chemdraft/chemistry-adapter": workspacePackage("./packages/chemistry-adapter/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("./packages/cdx-compat/src/index.ts"),
+      "@chemdraft/engine3d-api": workspacePackage("./packages/engine3d-api/src/index.ts"),
       "@chemdraft/fixtures": workspacePackage("./packages/fixtures/src/index.ts"),
       "@chemdraft/style-compat": workspacePackage("./packages/style-compat/src/index.ts"),
       "@chemdraft/shortcut-engine": workspacePackage("./packages/shortcut-engine/src/index.ts")

@@ -12,8 +12,11 @@ const failures = [];
 
 const requiredCmakeSnippets = [
   "set(CMAKE_CXX_STANDARD 17)",
+  "CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC \"Link Avogadro Core/Calc for BSD UFF optimization\" OFF",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT \"Allow dev-only sidecar-owned Qt viewport\" OFF",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL \"Allow Open Babel linkage\" OFF",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS \"Allow GPL plugin linkage\" OFF",
+  "target_link_libraries(avogadro3d-sidecar PRIVATE Avogadro::Core Avogadro::Calc)",
   "416651ddaef33a4e20392392e7c0b505d446491b"
 ];
 
@@ -38,9 +41,19 @@ for (const pattern of forbiddenCmakePatterns) {
 const presetJson = JSON.parse(preset);
 const protocolScout = presetJson.configurePresets?.find((entry) => entry.name === "protocol-scout");
 const cacheVariables = protocolScout?.cacheVariables ?? {};
+if (cacheVariables.CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC !== "ON") {
+  failures.push("CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC must be ON in protocol-scout preset.");
+}
+if (cacheVariables.CHEMDRAFT_AVOGADRO3D_USE_QT !== "OFF") {
+  failures.push("CHEMDRAFT_AVOGADRO3D_USE_QT must be OFF until the native offscreen-render slice.");
+}
+if (cacheVariables.CHEMDRAFT_AVOGADRO3D_USE_OPENGL !== "OFF") {
+  failures.push("CHEMDRAFT_AVOGADRO3D_USE_OPENGL must be OFF until the native offscreen-render slice.");
+}
 for (const variable of [
   "CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_PYTHON",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_TESTS",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_BENCHMARKS",
