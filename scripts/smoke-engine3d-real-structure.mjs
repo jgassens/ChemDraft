@@ -54,6 +54,15 @@ console.log(`Bulk frame: centroid drift ${bulk.centroidDrift.toFixed(4)}, orient
 console.log(`Max selected-bond length after tug: ${maxSelectedBondLength.toFixed(3)}.`);
 console.log(`Events: ${messages.filter((message) => message.type === "event").map((message) => `${message.eventType}${message.reason ? `:${message.reason}` : ""}`).join(", ")}.`);
 
+// Print native phase timings when the sidecar emitted them (CHEMDRAFT_ENGINE3D_TIMING=1).
+const timingLines = stderr.split("\n").filter((line) => line.includes("[engine3d-timing]"));
+if (timingLines.length > 0) {
+  console.log("Native phase timings:");
+  for (const line of timingLines) {
+    console.log(`  ${line.trim()}`);
+  }
+}
+
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
   if (index === -1) return fallback;

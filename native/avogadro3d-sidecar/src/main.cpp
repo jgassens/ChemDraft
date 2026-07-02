@@ -1,9 +1,11 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1251,6 +1253,34 @@ void clampDraggedAtomToBondReach(
   }
 }
 
+// Dev/benchmark instrumentation. Off by default so the product pays nothing: timing lines are
+// emitted to stderr (protocol stays on stdout) only when CHEMDRAFT_ENGINE3D_TIMING is set, and
+// the headless smoke sets it. CHEMDRAFT_ENGINE3D_NO_REUSE forces a force-field rebuild per
+// optimize (the pre-reuse behavior) so the two can be A/B timed.
+bool engine3dEnvFlagEnabled(const char* name) {
+  const char* value = std::getenv(name);
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string flag(value);
+  return !(flag.empty() || flag == "0" || flag == "false" || flag == "FALSE");
+}
+
+void emitEngine3dTiming(
+    bool enabled,
+    const std::string& phase,
+    double elapsedMs,
+    std::size_t atomCount) {
+  if (!enabled) {
+    return;
+  }
+  std::ostringstream out;
+  out << "[engine3d-timing] phase=" << phase
+      << " ms=" << std::fixed << std::setprecision(3) << elapsedMs
+      << " atoms=" << atomCount;
+  std::cerr << out.str() << std::endl;
+}
+
 class AvogadroMechanics {
 public:
   bool usesAvogadro() const {
@@ -1261,9 +1291,25 @@ public:
 #endif
   }
 
+  // When disabled, every optimize rebuilds the molecule + force field (pre-reuse behavior).
+  // Used only by the benchmark toggle; the product leaves reuse on.
+  void setForceFieldReuseEnabled(bool enabled) {
+#ifdef CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC
+    m_reuseForceField = enabled;
+#else
+    (void)enabled;
+#endif
+  }
+
   void reset() {
 #ifdef CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC
     m_state = Avogadro::Calc::OptimizerState{};
+    // A new session means new topology; drop the cached molecule + force field so the next
+    // optimize rebuilds them (see prepareForceField).
+    m_uff.reset();
+    m_molecule.reset();
+    m_forceFieldReady = false;
+    m_forceFieldAtomCount = 0;
 #endif
     m_lastReport = notRunForceFieldReport();
   }
@@ -1298,49 +1344,16 @@ public:
       return m_lastReport;
     }
 
-    Avogadro::Core::Molecule molecule;
-    std::string unsupportedElement;
-    for (std::size_t index = 0; index < coordinates.size(); ++index) {
-      const std::string element = index < elements.size() ? elements[index] : "C";
-      const unsigned char atomicNumber = Avogadro::Core::Elements::atomicNumberFromSymbol(element);
-      if (atomicNumber == Avogadro::InvalidElement || atomicNumber == 0) {
-        unsupportedElement = element;
-        break;
+    // Build the molecule + UFF force field once per session and reuse it. Parameter derivation
+    // (atom types, bonds/angles/torsions) depends only on topology, not geometry, so rebuilding
+    // it on every drag/settle step was pure waste. Reuse the cached field and only refresh the
+    // molecule coordinates, the position vector, and the mobile-atom mask each call.
+    if (!m_forceFieldReady || !m_reuseForceField || m_forceFieldAtomCount != coordinates.size()) {
+      if (!prepareForceField(elements, bonds, formalCharges, coordinates)) {
+        return m_lastReport;
       }
-      molecule.addAtom(
-          atomicNumber,
-          Avogadro::Vector3(
-              coordinates[index].x,
-              coordinates[index].y,
-              coordinates[index].z));
-      if (index < formalCharges.size() && formalCharges[index] != 0) {
-        const int charge = std::max(-8, std::min(8, formalCharges[index]));
-        molecule.setFormalCharge(static_cast<Avogadro::Index>(index), static_cast<signed char>(charge));
-      }
-    }
-
-    if (!unsupportedElement.empty()) {
-      m_lastReport = {
-          true,
-          false,
-          "UFF",
-          "unsupported-element",
-          std::numeric_limits<double>::quiet_NaN(),
-          "UFF optimization skipped unsupported element: " + unsupportedElement};
-      resetOptimizer();
-      return m_lastReport;
-    }
-
-    for (const Bond& bond : bonds) {
-      if (bond.from < 0 || bond.to < 0 ||
-          static_cast<std::size_t>(bond.from) >= coordinates.size() ||
-          static_cast<std::size_t>(bond.to) >= coordinates.size()) {
-        continue;
-      }
-      molecule.addBond(
-          static_cast<Avogadro::Index>(bond.from),
-          static_cast<Avogadro::Index>(bond.to),
-          static_cast<unsigned char>(std::max(1, std::min(3, bond.order))));
+    } else {
+      refreshMoleculeCoordinates(coordinates);
     }
 
     Eigen::VectorXd positions(static_cast<Eigen::Index>(coordinates.size() * 3));
@@ -1350,8 +1363,6 @@ public:
       positions[static_cast<Eigen::Index>(index * 3 + 2)] = coordinates[index].z;
     }
 
-    Avogadro::Calc::UFF uff;
-    uff.setMolecule(&molecule);
     Eigen::VectorXd mask = Eigen::VectorXd::Ones(positions.size());
     if (mobileAtoms != nullptr && mobileAtoms->size() == coordinates.size()) {
       mask.setZero();
@@ -1368,7 +1379,7 @@ public:
       mask[static_cast<Eigen::Index>(frozenAtomIndex * 3 + 1)] = 0.0;
       mask[static_cast<Eigen::Index>(frozenAtomIndex * 3 + 2)] = 0.0;
     }
-    uff.setMask(mask);
+    m_uff->setMask(mask);
 
     Avogadro::Calc::OptimizationOptions options;
     options.algorithm = Avogadro::Calc::OptimizationAlgorithm::Hybrid;
@@ -1376,7 +1387,7 @@ public:
     options.fire.maxMove = 0.18;
     options.lbfgs.maxStep = 0.18;
 
-    const bool optimized = Avogadro::Calc::optimizeSteps(uff, positions, options, &m_state);
+    const bool optimized = Avogadro::Calc::optimizeSteps(*m_uff, positions, options, &m_state);
     if (!optimized || !positions.allFinite()) {
       m_lastReport = {
           true,
@@ -1397,7 +1408,7 @@ public:
 
     double energy = m_state.energy;
     if (!std::isfinite(energy)) {
-      energy = uff.evaluate(positions, nullptr);
+      energy = m_uff->evaluate(positions, nullptr);
     }
     if (std::isfinite(energy) && std::fabs(energy) > 1.0e6) {
       m_lastReport = {
@@ -1432,7 +1443,97 @@ public:
 
 private:
 #ifdef CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC
+  // Build the reusable molecule + UFF force field for the current topology. Returns false and
+  // sets m_lastReport (leaving the cache empty) when an element is unsupported.
+  bool prepareForceField(
+      const std::vector<std::string>& elements,
+      const std::vector<Bond>& bonds,
+      const std::vector<int>& formalCharges,
+      const std::vector<Coordinate>& coordinates) {
+    m_uff.reset();
+    m_molecule.reset();
+    m_forceFieldReady = false;
+    m_forceFieldAtomCount = 0;
+
+    auto molecule = std::make_unique<Avogadro::Core::Molecule>();
+    std::string unsupportedElement;
+    for (std::size_t index = 0; index < coordinates.size(); ++index) {
+      const std::string element = index < elements.size() ? elements[index] : "C";
+      const unsigned char atomicNumber = Avogadro::Core::Elements::atomicNumberFromSymbol(element);
+      if (atomicNumber == Avogadro::InvalidElement || atomicNumber == 0) {
+        unsupportedElement = element;
+        break;
+      }
+      molecule->addAtom(
+          atomicNumber,
+          Avogadro::Vector3(
+              coordinates[index].x,
+              coordinates[index].y,
+              coordinates[index].z));
+      if (index < formalCharges.size() && formalCharges[index] != 0) {
+        const int charge = std::max(-8, std::min(8, formalCharges[index]));
+        molecule->setFormalCharge(static_cast<Avogadro::Index>(index), static_cast<signed char>(charge));
+      }
+    }
+
+    if (!unsupportedElement.empty()) {
+      m_lastReport = {
+          true,
+          false,
+          "UFF",
+          "unsupported-element",
+          std::numeric_limits<double>::quiet_NaN(),
+          "UFF optimization skipped unsupported element: " + unsupportedElement};
+      resetOptimizer();
+      return false;
+    }
+
+    for (const Bond& bond : bonds) {
+      if (bond.from < 0 || bond.to < 0 ||
+          static_cast<std::size_t>(bond.from) >= coordinates.size() ||
+          static_cast<std::size_t>(bond.to) >= coordinates.size()) {
+        continue;
+      }
+      molecule->addBond(
+          static_cast<Avogadro::Index>(bond.from),
+          static_cast<Avogadro::Index>(bond.to),
+          static_cast<unsigned char>(std::max(1, std::min(3, bond.order))));
+    }
+
+    auto uff = std::make_unique<Avogadro::Calc::UFF>();
+    // setMolecule stores a raw pointer to the molecule; moving the unique_ptr afterwards keeps
+    // the same heap object (and therefore that pointer) valid.
+    uff->setMolecule(molecule.get());
+    m_molecule = std::move(molecule);
+    m_uff = std::move(uff);
+    m_forceFieldAtomCount = coordinates.size();
+    m_forceFieldReady = true;
+    return true;
+  }
+
+  // Sync the cached molecule's atom positions to the current geometry. The optimizer works on
+  // the position vector, but this keeps the molecule the UFF references consistent with it.
+  void refreshMoleculeCoordinates(const std::vector<Coordinate>& coordinates) {
+    if (!m_molecule) {
+      return;
+    }
+    const std::size_t count = std::min(coordinates.size(), static_cast<std::size_t>(m_molecule->atomCount()));
+    for (std::size_t index = 0; index < count; ++index) {
+      m_molecule->setAtomPosition3d(
+          static_cast<Avogadro::Index>(index),
+          Avogadro::Vector3(
+              coordinates[index].x,
+              coordinates[index].y,
+              coordinates[index].z));
+    }
+  }
+
   Avogadro::Calc::OptimizerState m_state;
+  std::unique_ptr<Avogadro::Core::Molecule> m_molecule;
+  std::unique_ptr<Avogadro::Calc::UFF> m_uff;
+  bool m_forceFieldReady = false;
+  bool m_reuseForceField = true;
+  std::size_t m_forceFieldAtomCount = 0;
 #endif
   ForceFieldReport m_lastReport = notRunForceFieldReport();
 };
@@ -1515,6 +1616,8 @@ int runStdio() {
   std::vector<int> formalCharges;
   std::vector<double> restBondLengths;
   AvogadroMechanics mechanics;
+  const bool timingEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_TIMING");
+  mechanics.setForceFieldReuseEnabled(!engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_NO_REUSE"));
   ForceFieldReport forceField = mechanics.lastReport();
   int draggedAtomIndex = -1;
   std::vector<Coordinate> dragReferenceCoordinates;
@@ -1559,7 +1662,13 @@ int runStdio() {
       emitReadyEvent(id, activeSession, atomIds, coordinates);
       emitCoordinatesChanged(id, activeSession, coordinateRevision, atomIds, coordinates, "embed");
       if (mechanics.usesAvogadro()) {
+        const auto relaxStart = std::chrono::steady_clock::now();
         forceField = mechanics.optimize(elements, bonds, formalCharges, coordinates, -1, 18);
+        emitEngine3dTiming(
+            timingEnabled,
+            "initial-relax",
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - relaxStart).count(),
+            coordinates.size());
         if (!allCoordinatesFinite(coordinates)) {
           coordinates = initialCoordinates.empty()
               ? (geometry.coordinates.empty() ? defaultCoordinatesForAtoms(atomIds) : geometry.coordinates)
@@ -1624,6 +1733,7 @@ int runStdio() {
             draggedAtomIndex,
             4,
             false);
+        const auto dragStart = std::chrono::steady_clock::now();
         forceField = optimizeWithGeometryGuard(
             mechanics,
             elements,
@@ -1634,6 +1744,11 @@ int runStdio() {
             draggedAtomIndex,
             3,
             mobileAtoms);
+        emitEngine3dTiming(
+            timingEnabled,
+            "updateDrag",
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dragStart).count(),
+            coordinates.size());
         if (!forceField.ok || !allCoordinatesFinite(coordinates)) {
           coordinates = reference;
           coordinates[static_cast<std::size_t>(draggedAtomIndex)] = constrainedTarget;
@@ -1675,6 +1790,7 @@ int runStdio() {
             draggedAtomIndex,
             5,
             true);
+        const auto settleStart = std::chrono::steady_clock::now();
         forceField = optimizeMobileAtoms(
             mechanics,
             elements,
@@ -1686,6 +1802,11 @@ int runStdio() {
             mobileAtoms,
             8,
             12);
+        emitEngine3dTiming(
+            timingEnabled,
+            "endDrag-settle",
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - settleStart).count(),
+            coordinates.size());
         if (!forceField.ok || !allCoordinatesFinite(coordinates)) {
           coordinates = reference;
         } else {
