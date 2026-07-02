@@ -1062,7 +1062,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "6.30.14.59-codex";
+const CURRENT_BUILD_STAMP = "7.2.14.52-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -12168,12 +12168,47 @@ function Interactive3dViewport({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pivotRef = useRef<{ objectId: string; pivot: Engine3DCoordinate } | undefined>(undefined);
   const dragStateRef = useRef<Interactive3dDragState | undefined>(undefined);
+  const rendererRef = useRef<Interactive3dRenderer | undefined>(undefined);
   const [camera, setCamera] = useState<Interactive3dCameraState>({ yaw: 0.35, pitch: -0.22, zoom: 1 });
+  // Bumped when the WebGL context is restored, forcing the render effect to rebuild the
+  // cached renderer (its program/buffers were invalidated by the loss).
+  const [glGeneration, setGlGeneration] = useState(0);
   const sessionCoords = workspace.session?.coords3dByAtomId;
   const coords = useMemo(
     () => interactive3dVisibleCoords(sessionCoords, workspace.dragVisualTarget),
     [sessionCoords, workspace.dragVisualTarget]
   );
+
+  // Own the cached WebGL renderer's lifecycle: drop it on context loss (so we never draw into
+  // a dead context) and tear it down on unmount, so a long-lived workspace can't leak GPU
+  // objects. A restore bumps glGeneration, which reruns the render effect to rebuild it.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return undefined;
+    }
+    const handleContextLost: EventListener = (event) => {
+      // preventDefault marks the context restorable; release our now-invalid GPU handles.
+      event.preventDefault();
+      if (rendererRef.current) {
+        disposeInteractive3dRenderer(rendererRef.current);
+        rendererRef.current = undefined;
+      }
+    };
+    const handleContextRestored: EventListener = () => {
+      setGlGeneration((generation) => generation + 1);
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    canvas.addEventListener("webglcontextrestored", handleContextRestored);
+    return () => {
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
+      canvas.removeEventListener("webglcontextrestored", handleContextRestored);
+      if (rendererRef.current) {
+        disposeInteractive3dRenderer(rendererRef.current);
+        rendererRef.current = undefined;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -12188,13 +12223,20 @@ function Interactive3dViewport({
       canvas.height = height;
     }
 
+    const renderer = acquireInteractive3dRenderer(canvas, rendererRef.current);
+    rendererRef.current = renderer;
+    if (!renderer) {
+      // No WebGL context available (e.g. jsdom under test) — nothing to draw.
+      return;
+    }
+
     if (!coords) {
-      renderInteractive3dEmpty(canvas);
+      renderInteractive3dEmpty(renderer);
       return;
     }
     const coordinateList = interactive3dCoordinateList(workspace.atoms, coords);
     if (coordinateList.length === 0) {
-      renderInteractive3dEmpty(canvas);
+      renderInteractive3dEmpty(renderer);
       return;
     }
     if (!pivotRef.current || pivotRef.current.objectId !== workspace.objectId) {
@@ -12203,8 +12245,8 @@ function Interactive3dViewport({
         pivot: interactive3dCentroid(coordinateList.map((entry) => entry.coord))
       };
     }
-    renderInteractive3dScene(canvas, workspace, coords, pivotRef.current.pivot, camera);
-  }, [camera, coords, workspace]);
+    renderInteractive3dScene(renderer, workspace, coords, pivotRef.current.pivot, camera);
+  }, [camera, coords, workspace, glGeneration]);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
     event.preventDefault();
@@ -12492,37 +12534,92 @@ function interactive3dElementColor(element: string): [number, number, number] {
   }
 }
 
-function renderInteractive3dEmpty(canvas: HTMLCanvasElement): void {
+type Interactive3dGlProgram = {
+  program: WebGLProgram;
+  position: number;
+  color: number;
+  pointSize: number;
+  round: WebGLUniformLocation | null;
+};
+
+/**
+ * Cached per-canvas WebGL state. Compiling + linking the shader program and allocating the
+ * vertex buffer is expensive, so we build them ONCE and reuse them across every orbit/drag
+ * redraw. Previously each render recompiled both shaders, relinked a fresh program, and
+ * leaked the program + shaders (only the vertex buffer was deleted) — so a drag could spawn
+ * hundreds of orphaned GPU programs. The renderer is torn down on unmount and on context
+ * loss, and rebuilt on restore.
+ */
+type Interactive3dRenderer = {
+  canvas: HTMLCanvasElement;
+  gl: WebGLRenderingContext;
+  program: Interactive3dGlProgram;
+  buffer: WebGLBuffer;
+  /** Grow-only scratch reused for each draw's interleaved vertex upload. */
+  vertexData: Float32Array;
+};
+
+function createInteractive3dRenderer(canvas: HTMLCanvasElement): Interactive3dRenderer | undefined {
   const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
   if (!gl) {
-    return;
+    return undefined;
   }
-  gl.viewport(0, 0, canvas.width, canvas.height);
+  const program = interactive3dWebglProgram(gl);
+  if (!program) {
+    return undefined;
+  }
+  const buffer = gl.createBuffer();
+  if (!buffer) {
+    gl.deleteProgram(program.program);
+    return undefined;
+  }
+  return { canvas, gl, program, buffer, vertexData: new Float32Array(0) };
+}
+
+/** Reuse the cached renderer while its context is live and bound to the same canvas; otherwise rebuild. */
+function acquireInteractive3dRenderer(
+  canvas: HTMLCanvasElement,
+  current: Interactive3dRenderer | undefined
+): Interactive3dRenderer | undefined {
+  if (current && current.canvas === canvas && !current.gl.isContextLost()) {
+    return current;
+  }
+  if (current) {
+    disposeInteractive3dRenderer(current);
+  }
+  return createInteractive3dRenderer(canvas);
+}
+
+function disposeInteractive3dRenderer(renderer: Interactive3dRenderer): void {
+  const { gl, program, buffer } = renderer;
+  if (!gl.isContextLost()) {
+    gl.deleteBuffer(buffer);
+    gl.deleteProgram(program.program);
+  }
+}
+
+function renderInteractive3dEmpty(renderer: Interactive3dRenderer): void {
+  const { gl } = renderer;
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
   gl.clearColor(0.98, 0.985, 0.982, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
 }
 
 function renderInteractive3dScene(
-  canvas: HTMLCanvasElement,
+  renderer: Interactive3dRenderer,
   workspace: Interactive3dWorkspaceState,
   coords: Readonly<Record<string, Engine3DCoordinate>>,
   pivot: Engine3DCoordinate,
   camera: Interactive3dCameraState
 ): void {
-  const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
-  if (!gl) {
-    return;
-  }
-  const width = canvas.width;
-  const height = canvas.height;
-  const cssWidth = Math.max(1, canvas.getBoundingClientRect().width);
-  const cssHeight = Math.max(1, canvas.getBoundingClientRect().height);
+  const { gl, program } = renderer;
+  const width = gl.drawingBufferWidth;
+  const height = gl.drawingBufferHeight;
+  const rect = renderer.canvas.getBoundingClientRect();
+  const cssWidth = Math.max(1, rect.width);
+  const cssHeight = Math.max(1, rect.height);
   const projected = interactive3dProjectedAtoms(workspace.atoms, coords, pivot, camera, cssWidth, cssHeight, workspace.selectedAtomIds);
   const projectedById = new Map(projected.map((atom) => [atom.atom.id, atom]));
-  const program = interactive3dWebglProgram(gl);
-  if (!program) {
-    return;
-  }
 
   gl.viewport(0, 0, width, height);
   gl.clearColor(0.98, 0.985, 0.982, 1);
@@ -12542,7 +12639,7 @@ function renderInteractive3dScene(
     lineVertices.push(from.clipX, from.clipY, from.clipZ, ...color, 1);
     lineVertices.push(to.clipX, to.clipY, to.clipZ, ...color, 1);
   }
-  interactive3dDrawVertices(gl, program, lineVertices, gl.LINES, false);
+  interactive3dDrawVertices(renderer, lineVertices, gl.LINES, false);
 
   const atomVertices = [...projected]
     .sort((left, right) => left.depth - right.depth)
@@ -12550,16 +12647,10 @@ function renderInteractive3dScene(
       const color = interactive3dElementColor(atom.atom.element);
       return [atom.clipX, atom.clipY, atom.clipZ, ...color, atom.pointSize * (window.devicePixelRatio || 1)];
     });
-  interactive3dDrawVertices(gl, program, atomVertices, gl.POINTS, true);
+  interactive3dDrawVertices(renderer, atomVertices, gl.POINTS, true);
 }
 
-function interactive3dWebglProgram(gl: WebGLRenderingContext): {
-  program: WebGLProgram;
-  position: number;
-  color: number;
-  pointSize: number;
-  round: WebGLUniformLocation | null;
-} | undefined {
+function interactive3dWebglProgram(gl: WebGLRenderingContext): Interactive3dGlProgram | undefined {
   const vertexSource = `
     attribute vec3 a_position;
     attribute vec3 a_color;
@@ -12588,16 +12679,29 @@ function interactive3dWebglProgram(gl: WebGLRenderingContext): {
   const vertexShader = interactive3dCompileShader(gl, gl.VERTEX_SHADER, vertexSource);
   const fragmentShader = interactive3dCompileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
   if (!vertexShader || !fragmentShader) {
+    if (vertexShader) {
+      gl.deleteShader(vertexShader);
+    }
+    if (fragmentShader) {
+      gl.deleteShader(fragmentShader);
+    }
     return undefined;
   }
   const program = gl.createProgram();
   if (!program) {
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
     return undefined;
   }
   gl.attachShader(program, vertexShader);
   gl.attachShader(program, fragmentShader);
   gl.linkProgram(program);
+  // Flag the shaders for deletion now they are linked into the program; the driver frees them
+  // when the program itself is deleted, so we never accumulate orphaned shader objects.
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    gl.deleteProgram(program);
     return undefined;
   }
   return {
@@ -12624,13 +12728,7 @@ function interactive3dCompileShader(
 }
 
 function interactive3dDrawVertices(
-  gl: WebGLRenderingContext,
-  program: {
-    position: number;
-    color: number;
-    pointSize: number;
-    round: WebGLUniformLocation | null;
-  },
+  renderer: Interactive3dRenderer,
   values: readonly number[],
   mode: number,
   round: boolean
@@ -12638,12 +12736,17 @@ function interactive3dDrawVertices(
   if (values.length === 0) {
     return;
   }
-  const buffer = gl.createBuffer();
-  if (!buffer) {
-    return;
+  const { gl, program, buffer } = renderer;
+  // Reuse (growing only when needed) one scratch Float32Array + the persistent buffer rather
+  // than allocating a fresh typed array and GPU buffer on every draw of every frame.
+  let vertexData = renderer.vertexData;
+  if (vertexData.length < values.length) {
+    vertexData = new Float32Array(values.length);
+    renderer.vertexData = vertexData;
   }
+  vertexData.set(values);
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.STREAM_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, vertexData.subarray(0, values.length), gl.DYNAMIC_DRAW);
   const stride = 7 * Float32Array.BYTES_PER_ELEMENT;
   gl.enableVertexAttribArray(program.position);
   gl.vertexAttribPointer(program.position, 3, gl.FLOAT, false, stride, 0);
@@ -12653,7 +12756,6 @@ function interactive3dDrawVertices(
   gl.vertexAttribPointer(program.pointSize, 1, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
   gl.uniform1i(program.round, round ? 1 : 0);
   gl.drawArrays(mode, 0, values.length / 7);
-  gl.deleteBuffer(buffer);
 }
 
 interface ImportedPageFitPromptProps {
