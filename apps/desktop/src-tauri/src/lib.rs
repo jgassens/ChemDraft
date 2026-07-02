@@ -9,7 +9,7 @@ use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -52,6 +52,9 @@ const ENGINE3D_MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const ENGINE3D_MAX_BATCH_LINES: usize = 128;
 const ENGINE3D_SESSION_OUTPUT_TIMEOUT: Duration = Duration::from_millis(250);
 const ENGINE3D_SESSION_OUTPUT_QUIET: Duration = Duration::from_millis(20);
+// A poll that finds nothing buffered returns after this instead of blocking the full output
+// timeout, so idle client polling never ties up a worker thread (or a session lock) for 250ms.
+const ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT: Duration = Duration::from_millis(30);
 static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
@@ -150,7 +153,10 @@ struct PendingOpenDocument {
 
 #[derive(Default)]
 struct Engine3dSidecarSessions {
-    sessions: Mutex<HashMap<String, Engine3dManagedSession>>,
+    // Each session is behind its own Arc<Mutex>, so the map lock is only held for the brief
+    // lookup + clone — never across the (up to 250ms) output wait. That keeps start/stop and
+    // other sessions from serializing behind one session's blocking collect.
+    sessions: Mutex<HashMap<String, Arc<Mutex<Engine3dManagedSession>>>>,
 }
 
 struct Engine3dManagedSession {
@@ -1146,12 +1152,13 @@ fn start_engine3d_sidecar_session_from_path(
         &process_session_id,
         &mut session,
         ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
     );
     let mut guard = sessions
         .sessions
         .lock()
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
-    guard.insert(process_session_id.clone(), session);
+    guard.insert(process_session_id.clone(), Arc::new(Mutex::new(session)));
     output.process_session_id = process_session_id;
     Ok(output)
 }
@@ -1172,22 +1179,35 @@ fn stop_all_engine3d_sidecar_sessions(sessions: &Engine3dSidecarSessions) -> Res
     Ok(())
 }
 
+/// Look up a session handle, holding the map lock only long enough to clone the Arc.
+fn engine3d_session_handle(
+    process_session_id: &str,
+    sessions: &Engine3dSidecarSessions,
+) -> Result<Arc<Mutex<Engine3dManagedSession>>, String> {
+    let guard = sessions
+        .sessions
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+    guard
+        .get(process_session_id)
+        .cloned()
+        .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())
+}
+
 fn send_engine3d_sidecar_session_lines(
     process_session_id: &str,
     lines: &[String],
     sessions: &Engine3dSidecarSessions,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    let mut guard = sessions
-        .sessions
+    let handle = engine3d_session_handle(process_session_id, sessions)?;
+    let mut session = handle
         .lock()
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
-    let session = guard
-        .get_mut(process_session_id)
-        .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())?;
-    write_engine3d_protocol_lines(session, lines)?;
+    write_engine3d_protocol_lines(&mut session, lines)?;
     Ok(collect_engine3d_session_output(
         process_session_id,
-        session,
+        &mut session,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
         ENGINE3D_SESSION_OUTPUT_TIMEOUT,
     ))
 }
@@ -1196,17 +1216,17 @@ fn poll_engine3d_sidecar_session(
     process_session_id: &str,
     sessions: &Engine3dSidecarSessions,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    let mut guard = sessions
-        .sessions
+    let handle = engine3d_session_handle(process_session_id, sessions)?;
+    let mut session = handle
         .lock()
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
-    let session = guard
-        .get_mut(process_session_id)
-        .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())?;
+    // A poll only drains what is already buffered, so return quickly when nothing is waiting
+    // instead of blocking the full output timeout on an idle session.
     Ok(collect_engine3d_session_output(
         process_session_id,
-        session,
+        &mut session,
         ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT,
     ))
 }
 
@@ -1214,7 +1234,7 @@ fn stop_engine3d_sidecar_session(
     process_session_id: &str,
     sessions: &Engine3dSidecarSessions,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    let mut session = {
+    let handle = {
         let mut guard = sessions
             .sessions
             .lock()
@@ -1223,6 +1243,9 @@ fn stop_engine3d_sidecar_session(
             .remove(process_session_id)
             .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())?
     };
+    let mut session = handle
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
     drop(session.stdin.take());
     let graceful_started = Instant::now();
     loop {
@@ -1252,6 +1275,7 @@ fn stop_engine3d_sidecar_session(
         process_session_id,
         &mut session,
         ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
     ))
 }
 
@@ -1278,6 +1302,7 @@ fn collect_engine3d_session_output(
     process_session_id: &str,
     session: &mut Engine3dManagedSession,
     timeout: Duration,
+    empty_timeout: Duration,
 ) -> Engine3dSidecarSessionOutput {
     let started = Instant::now();
     let mut last_output = started;
@@ -1293,7 +1318,13 @@ fn collect_engine3d_session_output(
             saw_output = true;
             last_output = Instant::now();
         }
-        if saw_output && last_output.elapsed() >= ENGINE3D_SESSION_OUTPUT_QUIET {
+        if saw_output {
+            // Output is flowing: return once it has been quiet briefly (a coalesced batch).
+            if last_output.elapsed() >= ENGINE3D_SESSION_OUTPUT_QUIET {
+                break;
+            }
+        } else if started.elapsed() >= empty_timeout {
+            // Nothing has arrived yet: give up early rather than blocking the full timeout.
             break;
         }
         if started.elapsed() >= timeout {
