@@ -1869,6 +1869,7 @@ int runStdio() {
   AvogadroMechanics mechanics;
   const bool timingEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_TIMING");
   const bool annealSettleEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE");
+  const bool continuousDragEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG");
   mechanics.setForceFieldReuseEnabled(!engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_NO_REUSE"));
   ForceFieldReport forceField = mechanics.lastReport();
   int draggedAtomIndex = -1;
@@ -1978,7 +1979,13 @@ int runStdio() {
       draggedAtomTarget = constrainedTarget;
       ++coordinateRevision;
       if (mechanics.usesAvogadro()) {
-        mechanics.resetOptimizer();
+        // Continuous mode: preserve optimizer state (FIRE momentum) across updates so the
+        // molecule flows viscously around the moving constraint instead of cold-restarting
+        // each frame. Legacy mode cold-resets per update. Either way the geometry guard still
+        // resets the optimizer when it reverts an unsafe step.
+        if (!continuousDragEnabled) {
+          mechanics.resetOptimizer();
+        }
         const std::vector<bool> mobileAtoms = localDragMobileAtoms(
             coordinates.size(),
             bonds,
