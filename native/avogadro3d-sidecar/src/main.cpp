@@ -1270,7 +1270,8 @@ void emitEngine3dTiming(
     bool enabled,
     const std::string& phase,
     double elapsedMs,
-    std::size_t atomCount) {
+    std::size_t atomCount,
+    const std::string& extra = "") {
   if (!enabled) {
     return;
   }
@@ -1278,6 +1279,9 @@ void emitEngine3dTiming(
   out << "[engine3d-timing] phase=" << phase
       << " ms=" << std::fixed << std::setprecision(3) << elapsedMs
       << " atoms=" << atomCount;
+  if (!extra.empty()) {
+    out << " " << extra;
+  }
   std::cerr << out.str() << std::endl;
 }
 
@@ -1604,6 +1608,253 @@ ForceFieldReport optimizeMobileAtoms(
   return report;
 }
 
+// ---- Annealed settle v0 (env-gated, endDrag-only) ---------------------------
+// A rotatable-bond rotor: an acyclic single bond whose smaller, fully-mobile side can be
+// rotated about the bond axis to explore torsions during the endDrag settle. Rotation only
+// moves `movers`; the two axis atoms stay put.
+struct Rotor {
+  int axisFrom;
+  int axisTo;
+  std::vector<int> movers;
+};
+
+// Atoms reachable from `start` over `bonds` without ever traversing the (bondA,bondB) edge.
+// Used for ring detection (does the far axis atom come back?) and for side selection.
+std::vector<int> reachableExcludingBond(
+    std::size_t atomCount,
+    const std::vector<Bond>& bonds,
+    int start,
+    int bondA,
+    int bondB) {
+  std::vector<int> result;
+  if (start < 0 || static_cast<std::size_t>(start) >= atomCount) {
+    return result;
+  }
+  std::vector<char> seen(atomCount, 0);
+  std::vector<int> stack;
+  seen[static_cast<std::size_t>(start)] = 1;
+  stack.push_back(start);
+  while (!stack.empty()) {
+    const int current = stack.back();
+    stack.pop_back();
+    result.push_back(current);
+    for (const Bond& bond : bonds) {
+      if ((bond.from == bondA && bond.to == bondB) || (bond.from == bondB && bond.to == bondA)) {
+        continue; // never cross the bond being cut
+      }
+      int next = -1;
+      if (bond.from == current) {
+        next = bond.to;
+      } else if (bond.to == current) {
+        next = bond.from;
+      } else {
+        continue;
+      }
+      if (next < 0 || static_cast<std::size_t>(next) >= atomCount || seen[static_cast<std::size_t>(next)]) {
+        continue;
+      }
+      seen[static_cast<std::size_t>(next)] = 1;
+      stack.push_back(next);
+    }
+  }
+  return result;
+}
+
+// Enumerate local rotatable bonds: single, acyclic, non-terminal, whose smaller side is fully
+// inside the mobile shell and no larger than `maxSideAtoms`.
+std::vector<Rotor> rotatableBondsForMobileShell(
+    std::size_t atomCount,
+    const std::vector<Bond>& bonds,
+    const std::vector<bool>& mobileAtoms,
+    std::size_t maxSideAtoms) {
+  std::vector<Rotor> rotors;
+  for (const Bond& bond : bonds) {
+    if (bond.order != 1) {
+      continue; // single bonds only (skip double/triple/aromatic order)
+    }
+    const int a = bond.from;
+    const int b = bond.to;
+    if (a == b || a < 0 || b < 0 ||
+        static_cast<std::size_t>(a) >= atomCount ||
+        static_cast<std::size_t>(b) >= atomCount) {
+      continue;
+    }
+    const std::vector<int> bSide = reachableExcludingBond(atomCount, bonds, b, a, b);
+    std::vector<char> inBSide(atomCount, 0);
+    bool inRing = false;
+    for (const int idx : bSide) {
+      if (idx == a) {
+        inRing = true; // b reaches a without the bond => ring bond, not rotatable
+        break;
+      }
+      inBSide[static_cast<std::size_t>(idx)] = 1;
+    }
+    if (inRing) {
+      continue;
+    }
+    std::vector<int> bMovers; // b-side minus the axis atom b
+    for (const int idx : bSide) {
+      if (idx != b) {
+        bMovers.push_back(idx);
+      }
+    }
+    std::vector<int> aMovers; // complement minus the axis atom a
+    for (std::size_t idx = 0; idx < atomCount; ++idx) {
+      if (!inBSide[idx] && static_cast<int>(idx) != a) {
+        aMovers.push_back(static_cast<int>(idx));
+      }
+    }
+    // Rotate the smaller side: more local, cheaper, less disruptive.
+    const std::vector<int>& movers = (bMovers.size() <= aMovers.size()) ? bMovers : aMovers;
+    if (movers.empty() || movers.size() > maxSideAtoms) {
+      continue; // terminal (e.g. X-H) or too large to be a local rotor
+    }
+    bool allMobile = true;
+    for (const int idx : movers) {
+      if (static_cast<std::size_t>(idx) >= mobileAtoms.size() || !mobileAtoms[static_cast<std::size_t>(idx)]) {
+        allMobile = false;
+        break;
+      }
+    }
+    if (!allMobile) {
+      continue; // rotation must perturb only mobile-shell atoms
+    }
+    rotors.push_back(Rotor{a, b, movers});
+  }
+  return rotors;
+}
+
+void rotatePointAboutAxis(
+    Coordinate& point,
+    const Coordinate& axisPoint,
+    const Coordinate& axisDir, // normalized
+    double angleRad) {
+  const double vx = point.x - axisPoint.x;
+  const double vy = point.y - axisPoint.y;
+  const double vz = point.z - axisPoint.z;
+  const double c = std::cos(angleRad);
+  const double s = std::sin(angleRad);
+  const double dot = vx * axisDir.x + vy * axisDir.y + vz * axisDir.z;
+  // Rodrigues rotation: v*cos + (d x v)*sin + d*(d.v)*(1-cos)
+  const double crossX = axisDir.y * vz - axisDir.z * vy;
+  const double crossY = axisDir.z * vx - axisDir.x * vz;
+  const double crossZ = axisDir.x * vy - axisDir.y * vx;
+  point.x = axisPoint.x + vx * c + crossX * s + axisDir.x * dot * (1.0 - c);
+  point.y = axisPoint.y + vy * c + crossY * s + axisDir.y * dot * (1.0 - c);
+  point.z = axisPoint.z + vz * c + crossZ * s + axisDir.z * dot * (1.0 - c);
+}
+
+void rotateRotorSide(std::vector<Coordinate>& coordinates, const Rotor& rotor, double angleRad) {
+  const std::size_t from = static_cast<std::size_t>(rotor.axisFrom);
+  const std::size_t to = static_cast<std::size_t>(rotor.axisTo);
+  if (from >= coordinates.size() || to >= coordinates.size()) {
+    return;
+  }
+  Coordinate axisDir{
+      coordinates[to].x - coordinates[from].x,
+      coordinates[to].y - coordinates[from].y,
+      coordinates[to].z - coordinates[from].z};
+  const double length = std::sqrt(axisDir.x * axisDir.x + axisDir.y * axisDir.y + axisDir.z * axisDir.z);
+  if (length < 1e-6) {
+    return;
+  }
+  axisDir.x /= length;
+  axisDir.y /= length;
+  axisDir.z /= length;
+  for (const int idx : rotor.movers) {
+    if (idx < 0 || static_cast<std::size_t>(idx) >= coordinates.size()) {
+      continue;
+    }
+    rotatePointAboutAxis(coordinates[static_cast<std::size_t>(idx)], coordinates[from], axisDir, angleRad);
+  }
+}
+
+// Torsion-trial refinement layered on top of the deterministic settle: perturb each local
+// rotor by a fixed set of angles, locally relax, and keep the lowest-energy candidate that
+// passes the same geometry guard. Deterministic (no RNG); endDrag budget is bounded.
+ForceFieldReport annealedSettle(
+    AvogadroMechanics& mechanics,
+    const std::vector<std::string>& elements,
+    const std::vector<Bond>& bonds,
+    const std::vector<int>& formalCharges,
+    std::vector<Coordinate>& coordinates,
+    const std::vector<double>& restLengths,
+    const std::vector<Coordinate>& reference,
+    int draggedAtomIndex,
+    const std::vector<bool>& mobileAtoms,
+    std::size_t& trialsRun) {
+  ForceFieldReport bestReport = mechanics.lastReport();
+  trialsRun = 0;
+  if (!mechanics.usesAvogadro() || !hasMobileAtoms(mobileAtoms)) {
+    return bestReport;
+  }
+
+  std::vector<Coordinate> best = coordinates;
+  double bestEnergy = bestReport.energy;
+
+  const std::size_t maxSideAtoms = 10;
+  const std::vector<Rotor> rotors =
+      rotatableBondsForMobileShell(coordinates.size(), bonds, mobileAtoms, maxSideAtoms);
+
+  // Deterministic torsion offsets: +120, -120, +180 degrees.
+  const double angles[] = {2.0943951023931953, -2.0943951023931953, 3.141592653589793};
+  const std::size_t maxTrials = 12; // total budget across all rotors
+
+  const Coordinate settledDragged =
+      (draggedAtomIndex >= 0 && static_cast<std::size_t>(draggedAtomIndex) < best.size())
+          ? best[static_cast<std::size_t>(draggedAtomIndex)]
+          : Coordinate{0.0, 0.0, 0.0};
+
+  for (const Rotor& rotor : rotors) {
+    if (trialsRun >= maxTrials) {
+      break;
+    }
+    for (const double angle : angles) {
+      if (trialsRun >= maxTrials) {
+        break;
+      }
+      std::vector<Coordinate> trial = best; // perturb from the current best
+      rotateRotorSide(trial, rotor, angle);
+      mechanics.resetOptimizer();
+      ForceFieldReport report = optimizeMobileAtoms(
+          mechanics, elements, bonds, formalCharges, trial, restLengths, -1, mobileAtoms, 4, 12);
+      ++trialsRun;
+      if (!report.ok || !allCoordinatesFinite(trial)) {
+        continue;
+      }
+      std::string reason;
+      if (geometryChangeIsUnsafe(reference, trial, bonds, restLengths, mobileAtoms, reason)) {
+        continue;
+      }
+      // Reject candidates that fling the just-placed dragged atom away from the deterministic
+      // settle position.
+      if (draggedAtomIndex >= 0 &&
+          coordinateDistance(trial[static_cast<std::size_t>(draggedAtomIndex)], settledDragged) > 0.75) {
+        continue;
+      }
+      if (report.energy + 1e-3 < bestEnergy) {
+        best = trial;
+        bestEnergy = report.energy;
+        bestReport = report;
+      }
+    }
+  }
+
+  coordinates = best;
+  // Final polish on the winner, reverting if it wanders unsafe.
+  mechanics.resetOptimizer();
+  ForceFieldReport polished = optimizeMobileAtoms(
+      mechanics, elements, bonds, formalCharges, coordinates, restLengths, -1, mobileAtoms, 6, 12);
+  std::string polishReason;
+  if (polished.ok && allCoordinatesFinite(coordinates) &&
+      !geometryChangeIsUnsafe(reference, coordinates, bonds, restLengths, mobileAtoms, polishReason)) {
+    bestReport = polished;
+  } else {
+    coordinates = best;
+  }
+  return bestReport;
+}
+
 int runStdio() {
   std::string activeSession = "engine3d-session-1";
   std::string graphSignature;
@@ -1617,6 +1868,7 @@ int runStdio() {
   std::vector<double> restBondLengths;
   AvogadroMechanics mechanics;
   const bool timingEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_TIMING");
+  const bool annealSettleEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE");
   mechanics.setForceFieldReuseEnabled(!engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_NO_REUSE"));
   ForceFieldReport forceField = mechanics.lastReport();
   int draggedAtomIndex = -1;
@@ -1819,6 +2071,44 @@ int runStdio() {
               1.28,
               1.72);
           removeOptimizerRigidBodyDrift(reference, coordinates, draggedAtomIndex, nullptr);
+        }
+        // Env-gated torsion-trial refinement, layered on top of the deterministic settle.
+        // endDrag-only; reuses the same mobile shell and geometry guard. Emits reason "settle"
+        // unchanged (no protocol surface) — observability is the endDrag-anneal timing line.
+        if (annealSettleEnabled && forceField.ok && allCoordinatesFinite(coordinates)) {
+          std::size_t annealTrials = 0;
+          const auto annealStart = std::chrono::steady_clock::now();
+          const ForceFieldReport annealedReport = annealedSettle(
+              mechanics,
+              elements,
+              bonds,
+              formalCharges,
+              coordinates,
+              restBondLengths,
+              reference,
+              draggedAtomIndex,
+              mobileAtoms,
+              annealTrials);
+          emitEngine3dTiming(
+              timingEnabled,
+              "endDrag-anneal",
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - annealStart).count(),
+              coordinates.size(),
+              "trials=" + std::to_string(annealTrials));
+          if (!allCoordinatesFinite(coordinates)) {
+            coordinates = reference;
+          } else {
+            forceField = annealedReport;
+            clampDraggedAtomToBondReach(
+                coordinates,
+                bonds,
+                restBondLengths,
+                draggedAtomIndex,
+                3,
+                1.28,
+                1.72);
+            removeOptimizerRigidBodyDrift(reference, coordinates, draggedAtomIndex, nullptr);
+          }
         }
       }
       ++coordinateRevision;
