@@ -1062,7 +1062,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.2.14.52-opus";
+const CURRENT_BUILD_STAMP = "7.3.14.49-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -12174,10 +12174,10 @@ function Interactive3dViewport({
   // cached renderer (its program/buffers were invalidated by the loss).
   const [glGeneration, setGlGeneration] = useState(0);
   const sessionCoords = workspace.session?.coords3dByAtomId;
-  const coords = useMemo(
-    () => interactive3dVisibleCoords(sessionCoords, workspace.dragVisualTarget),
-    [sessionCoords, workspace.dragVisualTarget]
-  );
+  // The dragged atom's in-flight target is overlaid at lookup time in the render path
+  // (interactive3dCoordinateList), so we hand the session map through without cloning it
+  // on every drag frame.
+  const coords = sessionCoords;
 
   // Own the cached WebGL renderer's lifecycle: drop it on context loss (so we never draw into
   // a dead context) and tear it down on unmount, so a long-lived workspace can't leak GPU
@@ -12234,7 +12234,7 @@ function Interactive3dViewport({
       renderInteractive3dEmpty(renderer);
       return;
     }
-    const coordinateList = interactive3dCoordinateList(workspace.atoms, coords);
+    const coordinateList = interactive3dCoordinateList(workspace.atoms, coords, workspace.dragVisualTarget);
     if (coordinateList.length === 0) {
       renderInteractive3dEmpty(renderer);
       return;
@@ -12357,26 +12357,21 @@ function Interactive3dViewport({
   );
 }
 
-function interactive3dVisibleCoords(
-  coords: Readonly<Record<string, Engine3DCoordinate>> | undefined,
-  dragVisualTarget: Interactive3dDragVisualTarget | undefined
-): Readonly<Record<string, Engine3DCoordinate>> | undefined {
-  if (!coords || !dragVisualTarget || !coords[dragVisualTarget.atomId]) {
-    return coords;
-  }
-  return {
-    ...coords,
-    [dragVisualTarget.atomId]: dragVisualTarget.target
-  };
-}
-
 function interactive3dCoordinateList(
   atoms: readonly Interactive3dAtom[],
-  coords: Readonly<Record<string, Engine3DCoordinate>>
+  coords: Readonly<Record<string, Engine3DCoordinate>>,
+  dragVisualTarget?: Interactive3dDragVisualTarget
 ): Array<{ atom: Interactive3dAtom; coord: Engine3DCoordinate }> {
   return atoms
     .map((atom) => {
-      const coord = coords[atom.id];
+      const base = coords[atom.id];
+      // Overlay the in-flight drag target for just the dragged atom, avoiding a full
+      // coordinate-map clone on every drag frame. Only override when the atom already
+      // has a base coordinate, matching the prior visible-coords semantics.
+      const coord =
+        base && dragVisualTarget && dragVisualTarget.atomId === atom.id
+          ? dragVisualTarget.target
+          : base;
       return coord ? { atom, coord } : undefined;
     })
     .filter((entry): entry is { atom: Interactive3dAtom; coord: Engine3DCoordinate } => entry !== undefined);
@@ -12466,9 +12461,10 @@ function interactive3dProjectedAtoms(
   camera: Interactive3dCameraState,
   width: number,
   height: number,
-  selectedAtomIds: readonly string[]
+  selectedAtomIds: readonly string[],
+  dragVisualTarget?: Interactive3dDragVisualTarget
 ): Interactive3dProjectedAtom[] {
-  const entries = interactive3dCoordinateList(atoms, coords);
+  const entries = interactive3dCoordinateList(atoms, coords, dragVisualTarget);
   const radius = interactive3dRadius(entries.map((entry) => entry.coord), pivot);
   const scale = Math.max(1, radius * 1.45 / Math.max(0.2, camera.zoom));
   const selected = new Set(selectedAtomIds);
@@ -12618,7 +12614,7 @@ function renderInteractive3dScene(
   const rect = renderer.canvas.getBoundingClientRect();
   const cssWidth = Math.max(1, rect.width);
   const cssHeight = Math.max(1, rect.height);
-  const projected = interactive3dProjectedAtoms(workspace.atoms, coords, pivot, camera, cssWidth, cssHeight, workspace.selectedAtomIds);
+  const projected = interactive3dProjectedAtoms(workspace.atoms, coords, pivot, camera, cssWidth, cssHeight, workspace.selectedAtomIds, workspace.dragVisualTarget);
   const projectedById = new Map(projected.map((atom) => [atom.atom.id, atom]));
 
   gl.viewport(0, 0, width, height);

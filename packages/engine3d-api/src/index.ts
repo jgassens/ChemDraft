@@ -181,7 +181,10 @@ export function parseEngine3DMessageLine(
   line: string,
   maxBytes = DefaultEngine3DMaxMessageBytes
 ): Engine3DParseResult {
-  if (new TextEncoder().encode(line).byteLength > maxBytes) {
+  // UTF-8 uses at most 3 bytes per UTF-16 code unit, so `line.length * 3 <= maxBytes`
+  // guarantees the line is under the byte budget without allocating a TextEncoder or
+  // encoding the (frequently multi-KB) payload. Only encode when the cheap bound can't decide.
+  if (line.length * 3 > maxBytes && new TextEncoder().encode(line).byteLength > maxBytes) {
     return { ok: false, error: `Engine 3D message exceeds ${maxBytes} bytes.` };
   }
   let value: unknown;

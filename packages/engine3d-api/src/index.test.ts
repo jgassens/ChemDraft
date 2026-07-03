@@ -116,6 +116,11 @@ describe("Engine 3D protocol", () => {
       .toMatchObject({ ok: false, error: expect.stringContaining("missing sessionId") });
     expect(parseEngine3DMessageLine(JSON.stringify({ protocolVersion: 2, type: "ping", requestId: "r", sessionId: "s", pad: "x".repeat(80) }), 32))
       .toMatchObject({ ok: false, error: expect.stringContaining("exceeds") });
+    // A line whose UTF-16 length is within budget (11) but whose UTF-8 byte length is not
+    // (33 > 32) must still be rejected — the byte guard is authoritative, not the code-unit
+    // count. Guards against a length-only fast path that would silently accept it.
+    expect(parseEngine3DMessageLine("✓".repeat(11), 32))
+      .toMatchObject({ ok: false, error: expect.stringContaining("exceeds") });
   });
 
   it("runs the fake headless-physics golden transcript", () => {
