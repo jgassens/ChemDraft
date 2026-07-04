@@ -1257,10 +1257,15 @@ void clampDraggedAtomToBondReach(
 // emitted to stderr (protocol stays on stdout) only when CHEMDRAFT_ENGINE3D_TIMING is set, and
 // the headless smoke sets it. CHEMDRAFT_ENGINE3D_NO_REUSE forces a force-field rebuild per
 // optimize (the pre-reuse behavior) so the two can be A/B timed.
-bool engine3dEnvFlagEnabled(const char* name) {
+//
+// `defaultWhenUnset` lets a flag ship ON as the product default while keeping an explicit
+// `=0`/`=false` debug escape hatch: continuous drag uses this so the buttery elastic path is
+// the default without a UI toggle, and setting the var to 0 falls back to legacy per-frame
+// cold-reset for debugging/benchmarking.
+bool engine3dEnvFlagEnabled(const char* name, bool defaultWhenUnset = false) {
   const char* value = std::getenv(name);
   if (value == nullptr) {
-    return false;
+    return defaultWhenUnset;
   }
   const std::string flag(value);
   return !(flag.empty() || flag == "0" || flag == "false" || flag == "FALSE");
@@ -1869,7 +1874,11 @@ int runStdio() {
   AvogadroMechanics mechanics;
   const bool timingEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_TIMING");
   const bool annealSettleEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE");
-  const bool continuousDragEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG");
+  // Continuous constrained drag is the product default: preserving FIRE optimizer state across
+  // updateDrag frames gives the buttery Avogadro-like elastic motion. CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG=0
+  // restores the legacy per-frame cold-reset for debugging/benchmarking. Annealed settle stays
+  // opt-in (default off) pending the visual release-jump acceptance.
+  const bool continuousDragEnabled = engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG", true);
   mechanics.setForceFieldReuseEnabled(!engine3dEnvFlagEnabled("CHEMDRAFT_ENGINE3D_NO_REUSE"));
   ForceFieldReport forceField = mechanics.lastReport();
   int draggedAtomIndex = -1;

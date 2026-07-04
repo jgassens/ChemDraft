@@ -82,9 +82,12 @@ if (frozenAtomIds.length < 3) {
   fail(`Fixture too small: only ${frozenAtomIds.length} atoms outside the drag mobile shell; the frozen-set drift signal needs at least 3.`);
 }
 
+// Pin CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG explicitly in both modes: continuous is now the
+// sidecar default, so "0" is required to exercise the legacy cold-reset control (an unset
+// var would run continuous).
 const modes = [
   { label: "continuous", assertSaturation: true, env: { CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG: "1", CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE: undefined } },
-  { label: "deterministic", assertSaturation: false, env: { CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG: undefined, CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE: undefined } }
+  { label: "deterministic", assertSaturation: false, env: { CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG: "0", CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE: undefined } }
 ];
 
 for (const mode of modes) {

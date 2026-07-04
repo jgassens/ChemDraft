@@ -42,8 +42,9 @@ const fixture = createFixtureFromSmiles(smiles, selectedAtomNumber);
 const targetCoord = foldDragTarget(fixture, foldTowardAtomNumber, foldFraction, targetZ);
 const transcript = createTranscript(fixture, targetCoord, { approachFrames: 5, holdFrames: 0 });
 
-// Same transcript, anneal off vs on. Continuous drag stays off in both runs so the energy
-// delta is attributable to the anneal alone; timing stays on for the trials count.
+// Same transcript, anneal off vs on. Continuous drag is pinned OFF ("0", overriding the
+// sidecar's on-by-default) in both runs so the energy delta is attributable to the anneal
+// alone; timing stays on for the trials count.
 const runs = [
   { label: "anneal-off", env: { CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE: undefined } },
   { label: "anneal-on", env: { CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE: "1" } }
@@ -52,7 +53,7 @@ const results = {};
 for (const run of runs) {
   const { stdout, stderr, code, signal } = await runSidecar(sidecarPath, transcript, {
     ...run.env,
-    CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG: undefined,
+    CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG: "0",
     CHEMDRAFT_ENGINE3D_TIMING: "1"
   });
   if (code !== 0) {
