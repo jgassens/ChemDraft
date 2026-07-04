@@ -712,6 +712,24 @@ export function moleculeAtomLabelBackgroundColorCommandId(color: string): string
   return `${customMoleculeAtomLabelBackgroundColorCommandPrefix}${normalized}`;
 }
 
+// Resolves the command for the atom-label Background mode select. Selecting
+// "solid" must never leave the value transparent (the old one-way trap), so it
+// restores the current color, else the last solid color seen, else white.
+export function moleculeAtomLabelBackgroundCommandId(
+  mode: string,
+  currentValue: string | null | undefined,
+  lastSolidColor: string | null | undefined
+): string {
+  if (mode === "transparent") {
+    return moleculeAtomLabelBackgroundColorCommandId("transparent");
+  }
+  const solid =
+    normalizeHexColor(currentValue ?? undefined) ??
+    normalizeHexColor(lastSolidColor ?? undefined) ??
+    "#ffffff";
+  return moleculeAtomLabelBackgroundColorCommandId(solid);
+}
+
 export function moleculeAtomLabelPaddingCommandId(value: number): string {
   return `${customMoleculeAtomLabelPaddingCommandPrefix}${canonicalCommandNumber(value)}`;
 }

@@ -73,6 +73,7 @@ import {
   moleculeAtomLabelFontSizeCommandId,
   moleculeAtomLabelColorCommandId,
   moleculeAtomLabelBackgroundColorCommandId,
+  moleculeAtomLabelBackgroundCommandId,
   moleculeAtomLabelPaddingCommandId,
   moleculeAtomLabelBondClearanceCommandId,
   moleculeAtomLabelAlignmentCommandId,
@@ -866,6 +867,16 @@ function MoleculeInspectorControls({
   const atomLabels = currentMoleculeInspector?.atomLabels;
   const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
   const currentFontFamily = atomLabels?.values.fontFamily.value ?? undefined;
+  const currentBackgroundColor = atomLabels?.values.backgroundColor.value ?? undefined;
+  // Remember the last concrete background color so switching Transparent -> Solid
+  // restores it rather than snapping to the default.
+  const lastSolidBackgroundRef = useRef("#ffffff");
+  useEffect(() => {
+    const normalized = normalizeHexColor(currentBackgroundColor);
+    if (normalized) {
+      lastSolidBackgroundRef.current = normalized;
+    }
+  }, [currentBackgroundColor]);
 
   useEffect(() => {
     if (!initializedTabRef.current) {
@@ -1435,17 +1446,15 @@ function MoleculeInspectorControls({
           aria-label="Atom label background mode"
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => {
-            if (event.currentTarget.value === "transparent") {
-              invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId("transparent"));
-            } else {
-              // Switching back to Solid: commit a concrete hex so backgroundColor
-              // stops being "transparent" and the color input reappears. Reuse the
-              // current color when there is one, else the default solid background.
-              const solid = normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff";
-              invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(solid));
-            }
-          }}
+          onChange={(event) =>
+            invokeOrCommit(
+              moleculeAtomLabelBackgroundCommandId(
+                event.currentTarget.value,
+                currentBackgroundColor,
+                lastSolidBackgroundRef.current
+              )
+            )
+          }
         >
           {atomLabels?.values.backgroundColor.mixed ? <option value="mixed">Mixed</option> : null}
           <option value="solid">Solid</option>

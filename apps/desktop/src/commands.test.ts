@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   moleculeAtomLabelAlignmentCommandId,
   moleculeAtomLabelAlignmentForCommand,
+  moleculeAtomLabelBackgroundColorCommandId,
+  moleculeAtomLabelBackgroundCommandId,
   moleculeAtomLabelFontFaceCommandId,
   moleculeAtomLabelFontFaceForCommand,
   moleculeAtomLabelFontFamilyCommandId,
@@ -82,6 +84,29 @@ describe("Molecule Inspector commands", () => {
     expect(moleculeStructureBondReactionIndicatorsForCommand(
       "molecule.structure.bondIndicators.reaction:toggle"
     )).toBeUndefined();
+  });
+
+  it("keeps the atom-label Background control reversible (Transparent <-> Solid)", () => {
+    const transparent = moleculeAtomLabelBackgroundColorCommandId("transparent");
+
+    // Selecting Transparent commits the transparent background.
+    expect(moleculeAtomLabelBackgroundCommandId("transparent", "#123456", "#abcdef")).toBe(transparent);
+
+    // Solid with a live color keeps that color.
+    expect(moleculeAtomLabelBackgroundCommandId("solid", "#ff0000", "#abcdef")).toBe(
+      moleculeAtomLabelBackgroundColorCommandId("#ff0000")
+    );
+
+    // Regression: Solid while currently transparent must NOT stay transparent; it
+    // restores the last remembered solid color instead.
+    const restored = moleculeAtomLabelBackgroundCommandId("solid", "transparent", "#123456");
+    expect(restored).toBe(moleculeAtomLabelBackgroundColorCommandId("#123456"));
+    expect(restored).not.toBe(transparent);
+
+    // No live or remembered color falls back to a white solid, never transparent.
+    const fallback = moleculeAtomLabelBackgroundCommandId("solid", "transparent", undefined);
+    expect(fallback).toBe(moleculeAtomLabelBackgroundColorCommandId("#ffffff"));
+    expect(fallback).not.toBe(transparent);
   });
 
   it("encodes arbitrary font families and atom-label font faces", () => {
