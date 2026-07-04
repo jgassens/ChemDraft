@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import react from "@vitejs/plugin-react";
+import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
 
 const workspacePackage = (path: string) => new URL(path, import.meta.url).pathname;
@@ -29,11 +29,9 @@ function buildStamp(): string {
 }
 
 export default defineConfig({
-  plugins: [react({
-    babel: {
-      browserslistConfigFile: false
-    }
-  })],
+  // SWC React plugin (replaces the Babel one): no 500KB code-generator deopt on the large
+  // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
+  plugins: [react()],
   define: {
     __BUILD_STAMP__: JSON.stringify(buildStamp())
   },
