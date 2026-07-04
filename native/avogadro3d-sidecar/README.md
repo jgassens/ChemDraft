@@ -79,6 +79,30 @@ commands, rejects bulk rigid-body drift/collapse, checks selected-bond stretch,
 and requires commit metadata to report `forceField.name === "UFF"` and
 `avogadroBacked === true`.
 
+Two sibling smokes cover the env-gated drag/settle experiments (they control the
+flags themselves, so flags leaking in from the calling shell cannot skew them):
+
+```bash
+# Continuous-drag spin/jitter regression: holds the dragged atom at one fixed
+# target for 200 frames and asserts the mask-frozen bulk (the atoms only the
+# Kabsch alignment can move) accumulates no unbounded rotation/translation.
+CHEMDRAFT_ENGINE3D_SIDECAR=native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar pnpm smoke:engine3d-hold-steady
+
+# Annealed-settle energy A/B on a flexible molecule: folds n-octane into a
+# strained torsion basin and asserts the anneal strictly lowers final energy
+# with geometry still safe.
+CHEMDRAFT_ENGINE3D_SIDECAR=native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar pnpm smoke:engine3d-anneal-energy
+```
+
+Runtime env flags (all off by default; the sidecar reads them at startup):
+
+```text
+CHEMDRAFT_ENGINE3D_TIMING           stderr [engine3d-timing] phase lines
+CHEMDRAFT_ENGINE3D_NO_REUSE         force a force-field rebuild per optimize (benchmark only)
+CHEMDRAFT_ENGINE3D_CONTINUOUS_DRAG  keep FIRE optimizer state across updateDrag frames
+CHEMDRAFT_ENGINE3D_ANNEAL_SETTLE    endDrag-only deterministic torsion-trial settle
+```
+
 Send one JSON request per line. For example:
 
 ```json
