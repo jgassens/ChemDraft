@@ -1,6 +1,6 @@
 # Agent Instructions for ChemDraft Structure Inspector Branch
 
-**Current Build**: 7.3.17.51-codex
+**Current Build**: 7.4.9.27-opus
 
 > [!IMPORTANT]
 > When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`.
@@ -32,13 +32,15 @@ Ship the compact hidden-by-default inspector palettes with:
 
 - `core.ringInspector`: a Rings toolbar preserving existing ring identity, per-ring fill/effect rendering, ring interior hit-testing, and ring appearance controls.
 - `core.moleculeInspector`: a Molecule Inspector with `Structure`, `Atom Labels`, and `Templates` tabs.
-- `Structure`: base molecule bond drawing controls for selected molecule targets.
+- `Structure`: molecule bond drawing controls for selected molecule targets. If one or more bonds or atoms are selected, Structure controls apply only to those parts through sparse per-bond / per-atom overrides, mirroring the Atom Labels behavior below.
 - `Atom Labels`: base molecule atom-label typography, display policy, and font-family/face controls. If one or more atom labels are selected, Atom Labels controls must apply only to those labels through sparse per-atom overrides.
 - `Templates`: import ChemDraw `.cds` style-sheet inputs through `packages/style-compat`, apply supported Molecule Inspector settings to selected molecule targets, and export ChemDraft Molecule Inspector presets as `.template` files.
 
+Structure drawing controls (stroke and bold width, spacing, line caps, margins, hashing, overlap, chain angle, and indicator toggles) apply per bond and per atom via sparse maps when specific bonds/atoms are selected, and to the whole molecule otherwise.
+
 Outside this slice:
 
-- Per-bond stroke width, opacity, and effects.
+- Per-bond fill opacity and per-bond visual effects (opacity and effects stay whole-molecule / ring-level through the Rings and Art inspectors).
 - Atom-label underline, outline, and shadow.
 - Font embedding, a font-management preference screen, general CDXML/CDX document import, clipboard, OCSR, or broad toolbar customization.
 
@@ -55,7 +57,7 @@ Verify existing code before adding new code.
 - Commands use value-encoded IDs and factory helpers. Do not introduce generic `*.set` commands with hidden value parameters.
 - `exportDocumentToSvg` already reuses `planPageSvgRender`; per-ring render-plan paths should flow to export through that existing route.
 - Use `MoleculeObject.style` and `nativeDrawingStyleFromObjectStyle()` for Structure and Atom Labels. Do not introduce a parallel molecule-style object.
-- Reuse existing `NativeDrawingStyle` fields for bond and label settings. Add only `atomLabelFontStyle`, `atomLabelAlignment`, `atomLabelPlacement`, `atomLabelShowTerminalCarbons`, and `atomLabelHideImplicitHydrogens`.
+- Keep Structure and Atom Labels state on the shared `NativeDrawingStyle` (never a parallel molecule-style object). Beyond reusing existing bond/label fields, this slice adds base bond-drawing fields (`chainAngleDegrees`, `bondBoldWidthPx`, `bondSpacingMode`, `bondSpacingPercent`, `bondMarginWidthPx`, `bondHashSpacingPx`), the atom/bond structure-indicator toggles (`atomIndicatorShow*`, `bondIndicatorShow*`), and the atom-label fields (`atomLabelFontStyle`, `atomLabelAlignment`, `atomLabelPlacement`, `atomLabelShowTerminalCarbons`, `atomLabelHideImplicitHydrogens`). Each is sparse-overridable per bond/atom via the `documentWorkflow.ts` maps and round-trips through templates/imports.
 - The native system-font database already used by raster export must be shared with the Molecule Inspector font catalog; do not scan system fonts twice.
 
 ## Hard Boundaries
@@ -70,7 +72,7 @@ Verify existing code before adding new code.
 - Keep `core.ringInspector` / `view.toggleRingInspector` for ring appearance and `core.moleculeInspector` / `view.toggleMoleculeInspector` for Structure, Atom Labels, and Templates. Be aware that `view.toggleInspector` and disabled `tool.settings` already exist; do not add additional inspector concepts.
 - Ring interiors are selectable only while the Rings toolbar is open.
 - Keep chemical identity stable. Structure and Atom Label styling must not mutate atom elements, formal charges, bond orders, stereochemistry, atom IDs, bond IDs, or molecule identity.
-- Sparse overrides must remain sparse and visually effective. Base style edits must not clear `style.ringStyles`, `style.bondColors`, `style.atomLabelColors`, or sparse per-atom label style maps.
+- Sparse overrides must remain sparse and visually effective. Base style edits must not clear `style.ringStyles`, `style.bondColors`, `style.atomLabelColors`, sparse per-atom label style maps, or the sparse per-bond/per-atom Structure and indicator style maps.
 - Target bond length must visibly scale selected molecule atom coordinates about each molecule's own center and update `style.bondLengthPx` in one undoable operation, or it must be removed from this slice.
 - Structure indicators must be honest render overlays: atom numbers from atom order; atom/bond stereo from native wedge/hash/dashed display or imported stereo metadata; query indicators only from unknown/query atom or bond metadata; reaction indicators only from reaction/RXN metadata. Do not invent query or reaction chemistry for ordinary SMILES.
 

@@ -1438,6 +1438,12 @@ function MoleculeInspectorControls({
           onChange={(event) => {
             if (event.currentTarget.value === "transparent") {
               invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId("transparent"));
+            } else {
+              // Switching back to Solid: commit a concrete hex so backgroundColor
+              // stops being "transparent" and the color input reappears. Reuse the
+              // current color when there is one, else the default solid background.
+              const solid = normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff";
+              invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(solid));
             }
           }}
         >
