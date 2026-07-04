@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
+  nativeDrawingStyleFromObjectStyle,
   stylePresetToObjectStyle,
   type DocumentObject,
   type DocumentPage,
@@ -9,7 +10,9 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import {
+  atomDisplayLabel,
   atomDegrees,
+  atomLabelAnchorOffset,
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
@@ -18,6 +21,7 @@ import {
   planBondExtension,
   planNativeArtVisual,
   planPageSvgRender,
+  planMoleculeAtomLabels,
   planFreeformBondExtension,
   type BondExtensionPlanningInput,
   type PageSvgElementFragment,
@@ -1037,6 +1041,151 @@ describe("layout-engine page SVG planner", () => {
     `);
   });
 
+  it("plans atom-label visibility, implicit hydrogens, colors, and transparent backgrounds", () => {
+    const molecule = moleculeObject({
+      id: "mol_atom_labels",
+      structure: "CC[H]",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 160, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 240, y: 160, formalCharge: 0 },
+        { id: "atom_004", element: "H", x: 300, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+        { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+        { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" }
+      ],
+      style: {
+        atomLabelShowTerminalCarbons: true,
+        atomLabelHideImplicitHydrogens: false,
+        atomLabelColor: "#111111",
+        atomLabelColors: { atom_003: "#c75c12" },
+        atomLabelBackgroundColor: "transparent",
+        atomLabelFontStyle: "italic",
+        atomLabelPlacement: "above",
+        atomLabelAlignment: "left"
+      }
+    });
+
+    const labels = new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan]));
+
+    expect(labels.get("atom_001")?.label).toBe("CH3");
+    expect(labels.get("atom_002")).toBeUndefined();
+    expect(labels.get("atom_003")?.label).toBe("CH2");
+    expect(labels.get("atom_003")?.color).toBe("#c75c12");
+    expect(labels.get("atom_003")?.backgroundVisible).toBe(false);
+    expect(labels.get("atom_003")?.anchorOffset.y).toBeLessThan(0);
+    expect(labels.get("atom_004")?.label).toBe("H");
+
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments);
+    expect(fragments.some((fragment) => fragment.attrs.class === "native-atom-label-background")).toBe(false);
+    expect(fragments.find((fragment) => fragment.attrs["data-atom-label"] === "CH2")?.attrs).toMatchObject({
+      fill: "#c75c12",
+      "font-style": "italic"
+    });
+  });
+
+  it("resolves sparse atom-label style overrides per atom", () => {
+    const molecule = moleculeObject({
+      id: "mol_sparse_atom_labels",
+      atoms: [
+        { id: "atom_oh", element: "O", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_nh", element: "N", x: 180, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_oh", toAtomId: "atom_nh", order: "single" }
+      ],
+      style: {
+        atomLabelFontSizePx: 12,
+        atomLabelFontWeight: 400,
+        atomLabelFontStyle: "normal",
+        atomLabelColor: "#111111",
+        atomLabelBackgroundColor: "transparent",
+        atomLabelPaddingPx: 1,
+        atomLabelBondClearancePx: 2,
+        atomLabelHideImplicitHydrogens: true,
+        atomLabelFontSizes: { atom_oh: 20 },
+        atomLabelFontWeights: { atom_oh: 700 },
+        atomLabelFontStyles: { atom_oh: "italic" },
+        atomLabelColors: { atom_oh: "#1f5fbf" },
+        atomLabelBackgroundColors: { atom_oh: "#fff0c2" },
+        atomLabelPaddings: { atom_oh: 6 },
+        atomLabelBondClearances: { atom_oh: 9 },
+        atomLabelPlacements: { atom_oh: "above" },
+        atomLabelAlignments: { atom_oh: "left" }
+      }
+    });
+
+    const labels = new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan]));
+    const oxygenLabel = labels.get("atom_oh");
+    const nitrogenLabel = labels.get("atom_nh");
+
+    expect(oxygenLabel).toMatchObject({
+      label: "O",
+      color: "#1f5fbf",
+      backgroundColor: "#fff0c2",
+      backgroundVisible: true,
+      fontSizePx: 20,
+      fontWeight: 700,
+      fontStyle: "italic"
+    });
+    expect(oxygenLabel?.anchorOffset.y).toBeLessThan(0);
+    expect(nitrogenLabel).toMatchObject({
+      label: "N",
+      color: "#111111",
+      backgroundColor: "transparent",
+      backgroundVisible: false,
+      fontSizePx: 12,
+      fontWeight: 400,
+      fontStyle: "normal"
+    });
+
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments);
+    const labelGroups = fragments.filter((fragment) => fragment.attrs.class === "native-atom-label");
+    expect(labelGroups.find((fragment) => fragment.attrs["data-atom-label"] === "O")?.attrs).toMatchObject({
+      fill: "#1f5fbf",
+      "font-size": 20,
+      "font-weight": 700,
+      "font-style": "italic"
+    });
+    expect(labelGroups.find((fragment) => fragment.attrs["data-atom-label"] === "N")?.attrs).toMatchObject({
+      fill: "#111111",
+      "font-size": 12,
+      "font-weight": 400,
+      "font-style": "normal"
+    });
+    expect(fragments.filter((fragment) => fragment.attrs.class === "native-atom-label-background")).toHaveLength(1);
+  });
+
+  it("keeps explicit atom label offsets and chemically required labels ahead of molecule defaults", () => {
+    const molecule = moleculeObject({
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0, labelOffset: { x: 8, y: -6 } },
+        { id: "atom_002", element: "C", x: 180, y: 160, formalCharge: 1 },
+        { id: "atom_003", element: "O", x: 240, y: 160, formalCharge: 0 },
+        { id: "atom_004", element: "H", x: 300, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+        { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+        { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" }
+      ],
+      style: {
+        atomLabelShowTerminalCarbons: false,
+        atomLabelHideImplicitHydrogens: true,
+        atomLabelPlacement: "below"
+      }
+    });
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+
+    expect(atomDisplayLabel(molecule.atoms[0]!, molecule.bonds, drawingStyle, molecule.atoms)).toBeUndefined();
+    expect(atomDisplayLabel(molecule.atoms[1]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("C+");
+    expect(atomDisplayLabel(molecule.atoms[2]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("O");
+    expect(atomDisplayLabel(molecule.atoms[3]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("H");
+    expect(atomLabelAnchorOffset(molecule.atoms[0]!, "C", drawingStyle)).toEqual({ x: 8, y: -6 });
+  });
+
   it("resolves native drawing styles per object", () => {
     const page = pageWithObjects([
       moleculeObject({
@@ -1061,6 +1210,211 @@ describe("layout-engine page SVG planner", () => {
       .map((fragment) => fragment.attrs.stroke);
 
     expect(lineStrokes).toEqual(["#ff0000", "#0000ff"]);
+  });
+
+  it("resolves native bond drawing styles per selected bond override", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_sparse_bonds",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondColor: "#111111",
+          bondStrokeWidthPx: 2,
+          bondLineCap: "butt",
+          bondColors: { bond_001: "#1f5fbf" },
+          bondStrokeWidths: { bond_001: 7 },
+          bondLineCaps: { bond_001: "round" }
+        }
+      })
+    ]);
+
+    const bondLines = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => String(fragment.attrs.class).includes("native-bond-line"));
+    const selectedBondLines = bondLines.filter((fragment) => fragment.attrs["data-bond-id"] === "bond_001");
+
+    expect(selectedBondLines.length).toBeGreaterThan(0);
+    expect(selectedBondLines.every((fragment) => fragment.attrs.stroke === "#1f5fbf")).toBe(true);
+    expect(selectedBondLines.every((fragment) => fragment.attrs["stroke-width"] === 7)).toBe(true);
+    expect(selectedBondLines.every((fragment) => fragment.attrs["stroke-linecap"] === "round")).toBe(true);
+  });
+
+  it("applies percent bond spacing and bold width in native molecule rendering", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_percent_spacing",
+        atoms: [
+          { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+          { id: "atom_002", element: "O", x: 164, y: 160, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_double", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondLengthPx: 44,
+          bondSpacingMode: "percent",
+          bondSpacingPercent: 50,
+          multipleBondGapPx: 3
+        }
+      }),
+      moleculeObject({
+        id: "mol_bold_width",
+        atoms: [
+          { id: "atom_003", element: "C", x: 220, y: 160, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 276, y: 160, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_bold", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single", display: { bondStyle: "bold" } }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondBoldWidthPx: 7
+        }
+      })
+    ]);
+
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const doubleLines = fragments.filter((fragment) => fragment.attrs["data-bond-id"] === "bond_double");
+    const boldLine = fragments.find((fragment) =>
+      fragment.attrs["data-bond-id"] === "bond_bold" &&
+      String(fragment.attrs.class).includes("native-bond-line")
+    );
+
+    expect(Math.abs(Number(doubleLines[0]?.attrs.y1) - Number(doubleLines[1]?.attrs.y1))).toBeCloseTo(22, 6);
+    expect(boldLine?.attrs["stroke-width"]).toBe(7);
+  });
+
+  it("uses native hash spacing for hashed wedge density", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_hash_spacing",
+        atoms: [
+          { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 216, y: 160, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_hash", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "hashed" } }
+        ],
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondHashSpacingPx: 4
+        }
+      })
+    ]);
+
+    const hashes = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs.class === "native-bond-hash");
+
+    expect(hashes).toHaveLength(24);
+  });
+
+  it("uses bond margin width when trimming bonds away from atom labels", () => {
+    const lowMargin = moleculeObject({
+      id: "mol_margin_low",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "O", x: 220, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_margin", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }
+      ],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        atomLabelBondClearancePx: 0,
+        bondMarginWidthPx: 0
+      }
+    });
+    const highMargin = {
+      ...lowMargin,
+      id: "mol_margin_high",
+      style: {
+        ...lowMargin.style,
+        bondMarginWidthPx: 24
+      }
+    };
+    const lowLine = planPageSvgRender(pageWithObjects([lowMargin])).fragments
+      .flatMap(elementFragments)
+      .find((fragment) =>
+        String(fragment.attrs.class).includes("native-bond-line") &&
+        fragment.attrs["data-bond-id"] === "bond_margin"
+      );
+    const highLine = planPageSvgRender(pageWithObjects([highMargin])).fragments
+      .flatMap(elementFragments)
+      .find((fragment) =>
+        String(fragment.attrs.class).includes("native-bond-line") &&
+        fragment.attrs["data-bond-id"] === "bond_margin"
+      );
+
+    expect(Number(highLine?.attrs.x2)).toBeLessThan(Number(lowLine?.attrs.x2) - 10);
+  });
+
+  it("renders molecule structure indicators from native and compatibility metadata", () => {
+    const molecule = moleculeObject({
+      id: "mol_indicators",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 160, formalCharge: 0 },
+        { id: "atom_003", element: "O", x: 180, y: 100, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: 180, y: 220, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_stereo", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } },
+        { id: "bond_query", fromAtomId: "atom_002", toAtomId: "atom_003", order: "unknown" },
+        { id: "bond_reaction", fromAtomId: "atom_002", toAtomId: "atom_004", order: "single" }
+      ],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        atomIndicatorShowQuery: true,
+        atomIndicatorShowStereochemistry: true,
+        atomIndicatorShowEnhancedStereochemistry: true,
+        atomIndicatorShowAtomNumbers: true,
+        bondIndicatorShowQuery: true,
+        bondIndicatorShowStereochemistry: true,
+        bondIndicatorShowReaction: true
+      },
+      compatibility: {
+        sourceFormat: "cdxml",
+        warnings: [],
+        unknown: {
+          atomQueryIds: ["atom_003"],
+          enhancedStereoByAtomId: { atom_002: "or1" },
+          reactionBondIds: ["bond_reaction"]
+        }
+      }
+    });
+
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments);
+    const atomIndicators = fragments.filter((fragment) => fragment.attrs["data-atom-indicator"]);
+    const bondIndicators = fragments.filter((fragment) => fragment.attrs["data-bond-indicator"]);
+
+    expect(atomIndicators.map((fragment) => fragment.attrs["data-atom-indicator"])).toEqual([
+      "number", "number", "number", "number", "query", "stereochemistry", "enhanced-stereochemistry"
+    ]);
+    expect(atomIndicators.find((fragment) =>
+      fragment.attrs["data-atom-indicator"] === "enhanced-stereochemistry"
+    )?.children).toEqual([{ kind: "text", key: "atom-indicator-text-mol_indicators-enhanced-stereochemistry-atom_002", text: "OR1" }]);
+    expect(bondIndicators.map((fragment) => fragment.attrs["data-bond-indicator"])).toEqual([
+      "query", "stereochemistry", "reaction"
+    ]);
+
+    const disabled = {
+      ...molecule,
+      style: {
+        ...molecule.style,
+        atomIndicatorShowQuery: false,
+        atomIndicatorShowStereochemistry: false,
+        atomIndicatorShowEnhancedStereochemistry: false,
+        atomIndicatorShowAtomNumbers: false,
+        bondIndicatorShowQuery: false,
+        bondIndicatorShowStereochemistry: false,
+        bondIndicatorShowReaction: false
+      }
+    };
+    const disabledFragments = planPageSvgRender(pageWithObjects([disabled])).fragments.flatMap(elementFragments);
+    expect(disabledFragments.some((fragment) => fragment.attrs["data-atom-indicator"])).toBe(false);
+    expect(disabledFragments.some((fragment) => fragment.attrs["data-bond-indicator"])).toBe(false);
   });
 
   it("renders explicit line graphics without fallback labels", () => {

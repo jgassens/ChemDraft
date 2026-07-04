@@ -57,6 +57,12 @@ import {
   applyMoleculeRingEffect,
   applyMoleculeRingFillColor,
   applyMoleculeRingFillOpacity,
+  applyMoleculeBaseStylePatch,
+  applyMoleculeAtomIndicatorStylePatch,
+  applyMoleculeAtomLabelStylePatch,
+  applyMoleculeBondStylePatch,
+  applyMoleculeTargetBondLength,
+  applyMoleculeTargetBondLengthToBonds,
   applyColorToNativeMoleculePart,
   clearMoleculeRingStyles,
   applyNativeArtBooleanOperationToSelection,
@@ -240,6 +246,28 @@ function benzeneRingMolecule(overrides: Partial<MoleculeObject> = {}): MoleculeO
     rGroups: [],
     ...overrides
   } satisfies MoleculeObject;
+}
+
+function bondLength(molecule: MoleculeObject, bondId: string): number {
+  const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+  if (!bond) {
+    throw new Error(`Expected bond "${bondId}".`);
+  }
+  const fromAtom = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const toAtom = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!fromAtom || !toAtom) {
+    throw new Error(`Expected atoms for bond "${bondId}".`);
+  }
+  return Math.hypot(toAtom.x - fromAtom.x, toAtom.y - fromAtom.y);
+}
+
+function moleculeAtomCenter(molecule: MoleculeObject): { x: number; y: number } {
+  const xs = molecule.atoms.map((atom) => atom.x);
+  const ys = molecule.atoms.map((atom) => atom.y);
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2
+  };
 }
 
 function moleculeVisualEffects(document: ChemDraftDocument, objectId: string): VisualEffect[] | undefined {
@@ -9403,6 +9431,242 @@ describe("PR #7 review regression fixes", () => {
     expect(ringStyle.fillOpacity).toBe(0.42);
     expect((ringStyle.visualEffects as VisualEffect[])[0]).toMatchObject({ kind: "glow" });
     expect(applyMoleculeRingFillColor(document, { ...target, ringKey: "missing" }, "#111111")).toBe(document);
+  });
+
+  it("applies molecule base style patches without disturbing sparse part overrides", () => {
+    const base = createPhase4Document("Molecule Base Style Patch");
+    const molecule = benzeneRingMolecule({
+      style: {
+        fillColor: "none",
+        bondColors: { bond_001: "#b3261e" },
+        atomLabelColors: { atom_001: "#1f5fbf" }
+      }
+    });
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+
+    const patched = applyMoleculeBaseStylePatch(document, [molecule.id], {
+      chainAngleDegrees: 109.5,
+      bondColor: "#263238",
+      bondBoldWidthPx: 5.2,
+      bondSpacingMode: "percent",
+      bondSpacingPercent: 18,
+      bondHashSpacingPx: 2.5,
+      atomIndicatorShowAtomNumbers: true,
+      bondIndicatorShowReaction: false,
+      atomLabelColor: "#263238"
+    });
+    const next = moleculeById(patched, molecule.id);
+
+    expect(next.style).toMatchObject({
+      chainAngleDegrees: 109.5,
+      bondColor: "#263238",
+      bondBoldWidthPx: 5.2,
+      bondSpacingMode: "percent",
+      bondSpacingPercent: 18,
+      bondHashSpacingPx: 2.5,
+      atomIndicatorShowAtomNumbers: true,
+      bondIndicatorShowReaction: false,
+      atomLabelColor: "#263238",
+      bondColors: { bond_001: "#b3261e" },
+      atomLabelColors: { atom_001: "#1f5fbf" }
+    });
+    expect(applyMoleculeBaseStylePatch(patched, [molecule.id], {
+      bondColor: "#263238",
+      atomLabelColor: "#263238"
+    })).toBe(patched);
+  });
+
+  it("applies atom label style patches only to targeted atoms", () => {
+    const base = createPhase4Document("Atom Label Style Patch");
+    const molecule = benzeneRingMolecule({
+      atoms: [
+        { id: "atom_oh", element: "O", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_nh", element: "N", x: 180, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_oh", toAtomId: "atom_nh", order: "single" }
+      ],
+      style: {
+        atomLabelFontSizePx: 12,
+        atomLabelColor: "#111111",
+        atomLabelColors: { atom_nh: "#b3261e" }
+      }
+    });
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+
+    const patched = applyMoleculeAtomLabelStylePatch(
+      document,
+      [{ objectId: molecule.id, atomId: "atom_oh" }],
+      {
+        atomLabelFontSizePx: 18,
+        atomLabelColor: "#1f5fbf",
+        atomLabelPlacement: "above",
+        atomLabelHideImplicitHydrogens: true
+      }
+    );
+    const next = moleculeById(patched, molecule.id);
+
+    expect(next.style.atomLabelFontSizePx).toBe(12);
+    expect(next.style.atomLabelColor).toBe("#111111");
+    expect(next.style.atomLabelFontSizes).toEqual({ atom_oh: 18 });
+    expect(next.style.atomLabelColors).toEqual({ atom_nh: "#b3261e", atom_oh: "#1f5fbf" });
+    expect(next.style.atomLabelPlacements).toEqual({ atom_oh: "above" });
+    expect(next.style.atomLabelHideImplicitHydrogensByAtomId).toEqual({ atom_oh: true });
+    expect(applyMoleculeAtomLabelStylePatch(patched, [{ objectId: molecule.id, atomId: "atom_oh" }], {
+      atomLabelFontSizePx: 18,
+      atomLabelColor: "#1f5fbf"
+    })).toBe(patched);
+  });
+
+  it("applies bond style patches only to targeted bonds", () => {
+    const base = createPhase4Document("Bond Style Patch");
+    const molecule = benzeneRingMolecule({
+      style: {
+        bondColor: "#111111",
+        bondStrokeWidthPx: 2,
+        bondColors: { bond_002: "#b3261e" }
+      }
+    });
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+
+    const patched = applyMoleculeBondStylePatch(
+      document,
+      [{ objectId: molecule.id, bondId: "bond_001" }],
+      {
+        bondColor: "#1f5fbf",
+        bondStrokeWidthPx: 7,
+        bondLineCap: "round",
+        multipleBondGapPx: 6.5,
+        bondIndicatorShowStereochemistry: true
+      }
+    );
+    const next = moleculeById(patched, molecule.id);
+
+    expect(next.style.bondColor).toBe("#111111");
+    expect(next.style.bondStrokeWidthPx).toBe(2);
+    expect(next.style.bondColors).toEqual({ bond_002: "#b3261e", bond_001: "#1f5fbf" });
+    expect(next.style.bondStrokeWidths).toEqual({ bond_001: 7 });
+    expect(next.style.bondLineCaps).toEqual({ bond_001: "round" });
+    expect(next.style.bondMultipleBondGaps).toEqual({ bond_001: 6.5 });
+    expect(next.style.bondIndicatorShowStereochemistryByBondId).toEqual({ bond_001: true });
+    expect(applyMoleculeBondStylePatch(patched, [{ objectId: molecule.id, bondId: "bond_001" }], {
+      bondColor: "#1f5fbf",
+      bondStrokeWidthPx: 7
+    })).toBe(patched);
+  });
+
+  it("applies atom indicator patches only to targeted atoms", () => {
+    const base = createPhase4Document("Atom Indicator Style Patch");
+    const molecule = benzeneRingMolecule({
+      style: {
+        atomIndicatorShowAtomNumbers: false
+      }
+    });
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+
+    const patched = applyMoleculeAtomIndicatorStylePatch(
+      document,
+      [{ objectId: molecule.id, atomId: "atom_001" }],
+      {
+        atomIndicatorShowAtomNumbers: true,
+        atomIndicatorShowQuery: false
+      }
+    );
+    const next = moleculeById(patched, molecule.id);
+
+    expect(next.style.atomIndicatorShowAtomNumbers).toBe(false);
+    expect(next.style.atomIndicatorShowAtomNumbersByAtomId).toEqual({ atom_001: true });
+    expect(next.style.atomIndicatorShowQueryByAtomId).toEqual({ atom_001: false });
+    expect(applyMoleculeAtomIndicatorStylePatch(patched, [{ objectId: molecule.id, atomId: "atom_001" }], {
+      atomIndicatorShowAtomNumbers: true
+    })).toBe(patched);
+  });
+
+  it("scales selected molecules to a target bond length around each molecule center", () => {
+    const base = createPhase4Document("Target Bond Length");
+    const first = benzeneRingMolecule();
+    const second = benzeneRingMolecule({
+      id: "mol_ring_shifted",
+      x: 430,
+      atoms: benzeneRingMolecule().atoms.map((atom) => ({
+        ...atom,
+        id: `${atom.id}_b`,
+        x: atom.x + 280,
+        y: atom.y + 30,
+        labelOffset: atom.id === "atom_001" ? { x: 8, y: -4 } : atom.labelOffset
+      })),
+      bonds: benzeneRingMolecule().bonds.map((bond) => ({
+        ...bond,
+        id: `${bond.id}_b`,
+        fromAtomId: `${bond.fromAtomId}_b`,
+        toAtomId: `${bond.toAtomId}_b`
+      })),
+      style: {
+        fillColor: "none",
+        ringStyles: {
+          "bond_001_b|bond_002_b|bond_003_b|bond_004_b|bond_005_b|bond_006_b": {
+            fillColor: "#d02626"
+          }
+        }
+      }
+    });
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: first },
+      { op: "addObject", pageId: base.pages[0].id, object: second }
+    ]);
+    const firstBeforeLength = bondLength(first, "bond_001");
+    const secondBeforeLength = bondLength(second, "bond_001_b");
+    const firstCenter = moleculeAtomCenter(first);
+    const secondCenter = moleculeAtomCenter(second);
+
+    const scaled = applyMoleculeTargetBondLength(document, [first.id, second.id], 96);
+    const scaledFirst = moleculeById(scaled, first.id);
+    const scaledSecond = moleculeById(scaled, second.id);
+
+    expect(bondLength(scaledFirst, "bond_001")).toBeCloseTo(96, 6);
+    expect(bondLength(scaledSecond, "bond_001_b")).toBeCloseTo(96, 6);
+    expect(moleculeAtomCenter(scaledFirst)).toEqual(firstCenter);
+    expect(moleculeAtomCenter(scaledSecond)).toEqual(secondCenter);
+    expect(scaledFirst.style.bondLengthPx).toBe(96);
+    expect(scaledSecond.style.bondLengthPx).toBe(96);
+    expect(scaledFirst.atoms[0]?.id).toBe(first.atoms[0]?.id);
+    expect(scaledSecond.bonds[0]?.id).toBe(second.bonds[0]?.id);
+    expect(scaledSecond.atoms[0]?.labelOffset).toEqual({ x: 8 * (96 / secondBeforeLength), y: -4 * (96 / secondBeforeLength) });
+    expect(scaledFirst.atoms[0]?.x).toBeCloseTo(
+      firstCenter.x + (first.atoms[0]!.x - firstCenter.x) * (96 / firstBeforeLength),
+      6
+    );
+    expect(scaledSecond.style.ringStyles).toEqual(second.style.ringStyles);
+  });
+
+  it("scales selected bonds to a target length without scaling the whole molecule", () => {
+    const base = createPhase4Document("Selected Bond Target Length");
+    const molecule = benzeneRingMolecule();
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+    const untouchedBefore = bondLength(molecule, "bond_003");
+
+    const scaled = applyMoleculeTargetBondLengthToBonds(
+      document,
+      [{ objectId: molecule.id, bondId: "bond_001" }],
+      96
+    );
+    const next = moleculeById(scaled, molecule.id);
+
+    expect(bondLength(next, "bond_001")).toBeCloseTo(96, 6);
+    expect(bondLength(next, "bond_003")).toBeCloseTo(untouchedBefore, 6);
+    expect(next.style.bondLengthPx).toBeUndefined();
+    expect(next.style.bondLengths).toEqual({ bond_001: 96 });
+    expect(next.bonds.map((bond) => bond.id)).toEqual(molecule.bonds.map((bond) => bond.id));
   });
 
   it("clears molecule ring styles without changing base molecule style or chemistry", () => {

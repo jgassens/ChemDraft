@@ -1,12 +1,31 @@
 import { visualEffectsForStyle } from "@chemdraft/art-engine";
-import type { ChemDraftDocument, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
-import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import {
+  DefaultNativeDrawingStyle,
+  nativeDrawingStyleFromObjectStyle,
+  type ChemDraftDocument,
+  type GraphicPaint,
+  type MoleculeObject,
+  type NativeAtomLabelAlignment,
+  type NativeAtomLabelPlacement,
+  type NativeBondLineCap,
+  type NativeBondSpacingMode,
+  type NativeTextFontStyle,
+  type VisualEffect
+} from "@chemdraft/chem-core";
+import {
+  nativeMoleculeAtomIndicatorStyle,
+  nativeMoleculeBondDrawingStyle,
+  nativeMoleculeRings
+} from "@chemdraft/layout-engine";
 import type {
   ArtInspectorEffectKind,
   ArtInspectorEffectModel,
   ArtInspectorEffectValue,
   ArtInspectorMixedValue
 } from "./artInspectorModel";
+
+export type MoleculeInspectorTabId = "structure" | "atom-labels" | "templates";
+export type MoleculeInspectorContext = "none" | "molecule" | "ring" | "bond" | "atom";
 
 export interface MoleculeInspectorRingSelection {
   objectId: string;
@@ -16,11 +35,31 @@ export interface MoleculeInspectorRingSelection {
   bondIds: readonly string[];
 }
 
-export interface MoleculeInspectorModel {
+export interface MoleculeInspectorAtomLabelTarget {
+  objectId: string;
+  atomId: string;
+}
+
+export interface MoleculeInspectorBondTarget {
+  objectId: string;
+  bondId: string;
+}
+
+export interface MoleculeInspectorTargets {
+  moleculeObjectIds: readonly string[];
+  ringTargets: readonly MoleculeInspectorRingSelection[];
+  atomTargets: readonly MoleculeInspectorAtomLabelTarget[];
+  bondTargets: readonly MoleculeInspectorBondTarget[];
+  atomLabelTargets: readonly MoleculeInspectorAtomLabelTarget[];
+  context: MoleculeInspectorContext;
+}
+
+export interface MoleculeInspectorRingsModel {
+  enabled: boolean;
   selectedCount: number;
   selectedRing?: MoleculeInspectorRingSelection;
-  selectedRings: MoleculeInspectorRingSelection[];
-  effectKinds: ArtInspectorEffectKind[];
+  selectedRings: readonly MoleculeInspectorRingSelection[];
+  effectKinds: readonly ArtInspectorEffectKind[];
   values: {
     fillPaintType: ArtInspectorMixedValue<"none" | "solid">;
     fillColor: ArtInspectorMixedValue<string>;
@@ -30,55 +69,238 @@ export interface MoleculeInspectorModel {
   effectControls: Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
 }
 
+export interface MoleculeInspectorStructureModel {
+  enabled: boolean;
+  targetCount: number;
+  targetKind: "molecule" | "atom" | "bond";
+  values: {
+    chainAngleDegrees: ArtInspectorMixedValue<number>;
+    bondLengthPx: ArtInspectorMixedValue<number>;
+    bondStrokeWidthPx: ArtInspectorMixedValue<number>;
+    bondBoldWidthPx: ArtInspectorMixedValue<number>;
+    bondColor: ArtInspectorMixedValue<string>;
+    bondLineCap: ArtInspectorMixedValue<NativeBondLineCap>;
+    bondSpacingMode: ArtInspectorMixedValue<NativeBondSpacingMode>;
+    bondSpacingPercent: ArtInspectorMixedValue<number>;
+    multipleBondGapPx: ArtInspectorMixedValue<number>;
+    doubleBondInsetPx: ArtInspectorMixedValue<number>;
+    bondMarginWidthPx: ArtInspectorMixedValue<number>;
+    bondHashSpacingPx: ArtInspectorMixedValue<number>;
+    bondOverlapClearancePx: ArtInspectorMixedValue<number>;
+    atomIndicatorShowQuery: ArtInspectorMixedValue<boolean>;
+    atomIndicatorShowStereochemistry: ArtInspectorMixedValue<boolean>;
+    atomIndicatorShowEnhancedStereochemistry: ArtInspectorMixedValue<boolean>;
+    atomIndicatorShowAtomNumbers: ArtInspectorMixedValue<boolean>;
+    bondIndicatorShowQuery: ArtInspectorMixedValue<boolean>;
+    bondIndicatorShowStereochemistry: ArtInspectorMixedValue<boolean>;
+    bondIndicatorShowReaction: ArtInspectorMixedValue<boolean>;
+  };
+}
+
+export interface MoleculeInspectorFontFace {
+  weight: number;
+  style: NativeTextFontStyle;
+}
+
+export interface MoleculeInspectorAtomLabelsModel {
+  enabled: boolean;
+  targetCount: number;
+  targetKind: "molecule" | "atom";
+  values: {
+    fontFamily: ArtInspectorMixedValue<string>;
+    fontFace: ArtInspectorMixedValue<MoleculeInspectorFontFace>;
+    fontSizePx: ArtInspectorMixedValue<number>;
+    color: ArtInspectorMixedValue<string>;
+    backgroundColor: ArtInspectorMixedValue<string>;
+    paddingPx: ArtInspectorMixedValue<number>;
+    bondClearancePx: ArtInspectorMixedValue<number>;
+    alignment: ArtInspectorMixedValue<NativeAtomLabelAlignment>;
+    placement: ArtInspectorMixedValue<NativeAtomLabelPlacement>;
+    showTerminalCarbons: ArtInspectorMixedValue<boolean>;
+    hideImplicitHydrogens: ArtInspectorMixedValue<boolean>;
+  };
+}
+
+export interface MoleculeInspectorModel {
+  targets: MoleculeInspectorTargets;
+  suggestedTab: MoleculeInspectorTabId;
+  rings: MoleculeInspectorRingsModel;
+  structure: MoleculeInspectorStructureModel;
+  atomLabels: MoleculeInspectorAtomLabelsModel;
+}
+
+export type MoleculeInspectorPartSelection =
+  | { objectId: string; kind: "atom"; atomId: string }
+  | { objectId: string; kind: "bond"; bondId: string }
+  | { objectId: string; kind: "ring"; ringKey: string; atomIds?: readonly string[]; bondIds?: readonly string[] }
+  | { objectId: string; kind: "rings"; rings?: readonly { ringKey: string; atomIds?: readonly string[]; bondIds?: readonly string[] }[] }
+  | { objectId: string; kind: "parts"; atomIds?: readonly string[]; bondIds?: readonly string[] };
+
+export interface MoleculeInspectorSelectionInput {
+  selectedObjectIds: readonly string[];
+  selectedPart?: MoleculeInspectorPartSelection;
+  selectedParts?: readonly MoleculeInspectorPartSelection[];
+}
+
+type MoleculeInspectorRingEntry = {
+  object: MoleculeObject;
+  ring: ReturnType<typeof nativeMoleculeRings>[number];
+  style: Record<string, unknown>;
+  fillPaint: GraphicPaint;
+  effects: readonly VisualEffect[];
+};
+
 export function createMoleculeInspectorModel(
   document: ChemDraftDocument,
-  selectedPart?: {
-    objectId: string;
-    kind: string;
-    ringKey?: string;
-    rings?: readonly { ringKey: string }[];
-  }
+  selection: MoleculeInspectorSelectionInput = { selectedObjectIds: [] }
 ): MoleculeInspectorModel {
-  const empty = emptyMoleculeInspectorModel();
-  const selectedRingKeys = selectedRingKeysForPart(selectedPart);
-  if (selectedRingKeys.length === 0 || !selectedPart) {
-    return empty;
-  }
+  const targets = resolveMoleculeInspectorTargets(document, selection);
+  const targetObjects = moleculeObjectsForTargets(document, targets.moleculeObjectIds);
 
-  const object = document.pages
+  return {
+    targets,
+    suggestedTab: suggestedTabForContext(targets.context),
+    rings: createRingsModel(targetObjects, targets.ringTargets),
+    structure: createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets),
+    atomLabels: createAtomLabelsModel(targetObjects, targets.atomLabelTargets)
+  };
+}
+
+export function resolveMoleculeInspectorTargets(
+  document: ChemDraftDocument,
+  selection: MoleculeInspectorSelectionInput
+): MoleculeInspectorTargets {
+  const molecules = document.pages
     .flatMap((page) => page.objects)
-    .find((candidate): candidate is MoleculeObject =>
-      candidate.type === "molecule" && candidate.id === selectedPart.objectId
-    );
-  if (!object) {
-    return empty;
-  }
-
-  const moleculeRings = nativeMoleculeRings(object);
-  const selectedRings = selectedRingKeys.flatMap((ringKey) => {
-    const ring = moleculeRings.find((candidate) => candidate.ringKey === ringKey);
-    return ring ? [ring] : [];
+    .filter((object): object is MoleculeObject => object.type === "molecule");
+  const moleculeById = new Map(molecules.map((object) => [object.id, object]));
+  const selectedMoleculeIds = new Set(
+    selection.selectedObjectIds.filter((objectId) => moleculeById.has(objectId))
+  );
+  const selectedParts = selection.selectedParts?.length
+    ? selection.selectedParts
+    : selection.selectedPart ? [selection.selectedPart] : [];
+  const selectedPartEntries = selectedParts.flatMap((selectedPart) => {
+    const object = moleculeById.get(selectedPart.objectId);
+    return object ? [{ object, selectedPart }] : [];
   });
-  if (selectedRings.length === 0) {
-    return empty;
+  for (const { object } of selectedPartEntries) {
+    selectedMoleculeIds.add(object.id);
   }
 
-  const entries = selectedRings.map((ring) => {
+  const moleculeObjectIds = molecules
+    .map((object) => object.id)
+    .filter((objectId) => selectedMoleculeIds.has(objectId));
+  const seenRingTargets = new Set<string>();
+  const ringTargets = selectedPartEntries.flatMap(({ object, selectedPart }) =>
+    ringTargetsForPart(object, selectedPart).flatMap((ringTarget) => {
+      const key = `${ringTarget.objectId}:${ringTarget.ringKey}`;
+      if (seenRingTargets.has(key)) {
+        return [];
+      }
+      seenRingTargets.add(key);
+      return [ringTarget];
+    })
+  );
+  const seenAtomLabelTargets = new Set<string>();
+  const atomTargets = selectedPartEntries.flatMap(({ object, selectedPart }) =>
+    atomTargetsForPart(object, selectedPart).flatMap((target) => {
+      const key = `${target.objectId}:${target.atomId}`;
+      if (seenAtomLabelTargets.has(key)) {
+        return [];
+      }
+      seenAtomLabelTargets.add(key);
+      return [target];
+    })
+  );
+  const seenBondTargets = new Set<string>();
+  const bondTargets = selectedPartEntries.flatMap(({ object, selectedPart }) =>
+    bondTargetsForPart(object, selectedPart).flatMap((target) => {
+      const key = `${target.objectId}:${target.bondId}`;
+      if (seenBondTargets.has(key)) {
+        return [];
+      }
+      seenBondTargets.add(key);
+      return [target];
+    })
+  );
+  const atomLabelTargets = atomTargets;
+  const primaryPart = selectedPartEntries.find(({ selectedPart }) => selectedPart === selection.selectedPart)
+    ?? selectedPartEntries[selectedPartEntries.length - 1];
+
+  return {
+    moleculeObjectIds,
+    ringTargets,
+    atomTargets,
+    bondTargets,
+    atomLabelTargets,
+    context: primaryPart
+      ? contextForPart(primaryPart.selectedPart)
+      : moleculeObjectIds.length > 0 ? "molecule" : "none"
+  };
+}
+
+export function representativeMoleculeBondLengthPx(object: MoleculeObject): number {
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const heavyDistances: number[] = [];
+  const allDistances: number[] = [];
+  for (const bond of object.bonds) {
+    const from = atomById.get(bond.fromAtomId);
+    const to = atomById.get(bond.toAtomId);
+    if (!from || !to) {
+      continue;
+    }
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    if (!Number.isFinite(distance) || distance <= 0) {
+      continue;
+    }
+    allDistances.push(distance);
+    if (normalizedElement(from.element) !== "H" && normalizedElement(to.element) !== "H") {
+      heavyDistances.push(distance);
+    }
+  }
+
+  return median(heavyDistances.length > 0 ? heavyDistances : allDistances) ??
+    nativeDrawingStyleFromObjectStyle(object.style).bondLengthPx;
+}
+
+function createRingsModel(
+  targetObjects: readonly MoleculeObject[],
+  ringTargets: readonly MoleculeInspectorRingSelection[]
+): MoleculeInspectorRingsModel {
+  if (ringTargets.length === 0) {
+    return emptyRingsModel();
+  }
+
+  const objectById = new Map(targetObjects.map((object) => [object.id, object]));
+  const entries = ringTargets.flatMap((target): MoleculeInspectorRingEntry[] => {
+    const object = objectById.get(target.objectId);
+    if (!object) {
+      return [];
+    }
+    const ring = nativeMoleculeRings(object).find((candidate) => candidate.ringKey === target.ringKey);
+    if (!ring) {
+      return [];
+    }
     const style = moleculeRingStyle(object, ring.ringKey);
-    return {
+    return [{
+      object,
       ring,
       style,
       fillPaint: moleculeRingFillPaint(object, style),
       effects: visualEffectsForStyle(style)
-    };
+    }];
   });
+  if (entries.length === 0) {
+    return emptyRingsModel();
+  }
+
   const effectControls = {
     shadow: effectModelForKind(entries, "shadow"),
     glow: effectModelForKind(entries, "glow"),
     sketch: effectModelForKind(entries, "sketch")
   } satisfies Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
-  const effectKinds = (["shadow", "glow", "sketch"] as const).filter((kind) => effectControls[kind].presentCount > 0);
-  const ringSelections = selectedRings.map((ring) => ({
+  const selectedRings = entries.map(({ object, ring }) => ({
     objectId: object.id,
     kind: "ring" as const,
     ringKey: ring.ringKey,
@@ -87,30 +309,186 @@ export function createMoleculeInspectorModel(
   }));
 
   return {
-    selectedCount: ringSelections.length,
-    selectedRing: ringSelections[0],
-    selectedRings: ringSelections,
-    effectKinds,
+    enabled: true,
+    selectedCount: selectedRings.length,
+    selectedRing: selectedRings[0],
+    selectedRings,
+    effectKinds: (["shadow", "glow", "sketch"] as const).filter((kind) => effectControls[kind].presentCount > 0),
     values: {
-      fillPaintType: uniformRingValue(entries, (entry) => entry.fillPaint.kind === "none" ? "none" : "solid"),
-      fillColor: uniformRingValue(entries, (entry) => entry.fillPaint.kind === "solid"
-        ? entry.fillPaint.color
-        : moleculeFillBaseColor(object)),
-      fillOpacity: uniformRingValue(entries, (entry) => moleculeRingFillOpacity(object, entry.style, entry.fillPaint)),
-      effect: uniformRingValue(entries, (entry) => ringEffectValue(entry.effects))
+      fillPaintType: uniformValue(entries, (entry) => entry.fillPaint.kind === "none" ? "none" : "solid"),
+      fillColor: uniformValue(entries, (entry) => entry.fillPaint.kind === "solid"
+        ? normalizeHexString(entry.fillPaint.color) ?? entry.fillPaint.color
+        : moleculeFillBaseColor(entry.object)),
+      fillOpacity: uniformValue(entries, (entry) => moleculeRingFillOpacity(entry.object, entry.style, entry.fillPaint)),
+      effect: uniformValue(entries, (entry) => ringEffectValue(entry.effects))
     },
     effectControls
   };
 }
 
-function emptyMoleculeInspectorModel(): MoleculeInspectorModel {
+function createStructureModel(
+  targetObjects: readonly MoleculeObject[],
+  atomTargets: readonly MoleculeInspectorAtomLabelTarget[],
+  bondTargets: readonly MoleculeInspectorBondTarget[]
+): MoleculeInspectorStructureModel {
+  const objectById = new Map(targetObjects.map((object) => [object.id, object]));
+  const bondEntries = bondTargets.flatMap((target) => {
+    const object = objectById.get(target.objectId);
+    if (!object?.bonds.some((bond) => bond.id === target.bondId)) {
+      return [];
+    }
+    return [{ object, style: nativeMoleculeBondDrawingStyle(object, target.bondId) }];
+  });
+  const atomEntries = atomTargets.flatMap((target) => {
+    const object = objectById.get(target.objectId);
+    if (!object?.atoms.some((atom) => atom.id === target.atomId)) {
+      return [];
+    }
+    return [{ object, style: nativeMoleculeAtomIndicatorStyle(object, target.atomId) }];
+  });
+  const moleculeEntries = targetObjects.map((object) => ({
+    object,
+    style: nativeDrawingStyleFromObjectStyle(object.style)
+  }));
+  const bondStyleEntries = bondEntries.length > 0 ? bondEntries : moleculeEntries;
+  const atomIndicatorEntries = atomEntries.length > 0 ? atomEntries : moleculeEntries;
+  const targetKind = bondEntries.length > 0
+    ? "bond"
+    : atomEntries.length > 0 ? "atom" : "molecule";
+  const targetCount = targetKind === "bond"
+    ? bondEntries.length
+    : targetKind === "atom" ? atomEntries.length : moleculeEntries.length;
+  const fallback = DefaultNativeDrawingStyle;
+
   return {
+    enabled: targetCount > 0,
+    targetCount,
+    targetKind,
+    values: {
+      chainAngleDegrees: uniformValue(moleculeEntries, ({ style }) => style.chainAngleDegrees, fallback.chainAngleDegrees),
+      bondLengthPx: uniformValue(
+        bondEntries.length > 0 ? bondStyleEntries : moleculeEntries,
+        ({ object, style }) => bondEntries.length > 0 ? style.bondLengthPx : representativeMoleculeBondLengthPx(object),
+        fallback.bondLengthPx
+      ),
+      bondStrokeWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondStrokeWidthPx, fallback.bondStrokeWidthPx),
+      bondBoldWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondBoldWidthPx, fallback.bondBoldWidthPx),
+      bondColor: uniformValue(
+        bondStyleEntries,
+        ({ style }) => normalizeHexString(style.bondColor) ?? style.bondColor,
+        fallback.bondColor
+      ),
+      bondLineCap: uniformValue(bondStyleEntries, ({ style }) => style.bondLineCap, fallback.bondLineCap),
+      bondSpacingMode: uniformValue(bondStyleEntries, ({ style }) => style.bondSpacingMode, fallback.bondSpacingMode),
+      bondSpacingPercent: uniformValue(bondStyleEntries, ({ style }) => style.bondSpacingPercent, fallback.bondSpacingPercent),
+      multipleBondGapPx: uniformValue(bondStyleEntries, ({ style }) => style.multipleBondGapPx, fallback.multipleBondGapPx),
+      doubleBondInsetPx: uniformValue(bondStyleEntries, ({ style }) => style.doubleBondInsetPx, fallback.doubleBondInsetPx),
+      bondMarginWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondMarginWidthPx, fallback.bondMarginWidthPx),
+      bondHashSpacingPx: uniformValue(bondStyleEntries, ({ style }) => style.bondHashSpacingPx, fallback.bondHashSpacingPx),
+      bondOverlapClearancePx: uniformValue(bondStyleEntries, ({ style }) => style.bondOverlapClearancePx, fallback.bondOverlapClearancePx),
+      atomIndicatorShowQuery: uniformValue(
+        atomIndicatorEntries,
+        ({ style }) => style.atomIndicatorShowQuery,
+        fallback.atomIndicatorShowQuery
+      ),
+      atomIndicatorShowStereochemistry: uniformValue(
+        atomIndicatorEntries,
+        ({ style }) => style.atomIndicatorShowStereochemistry,
+        fallback.atomIndicatorShowStereochemistry
+      ),
+      atomIndicatorShowEnhancedStereochemistry: uniformValue(
+        atomIndicatorEntries,
+        ({ style }) => style.atomIndicatorShowEnhancedStereochemistry,
+        fallback.atomIndicatorShowEnhancedStereochemistry
+      ),
+      atomIndicatorShowAtomNumbers: uniformValue(
+        atomIndicatorEntries,
+        ({ style }) => style.atomIndicatorShowAtomNumbers,
+        fallback.atomIndicatorShowAtomNumbers
+      ),
+      bondIndicatorShowQuery: uniformValue(
+        bondStyleEntries,
+        ({ style }) => style.bondIndicatorShowQuery,
+        fallback.bondIndicatorShowQuery
+      ),
+      bondIndicatorShowStereochemistry: uniformValue(
+        bondStyleEntries,
+        ({ style }) => style.bondIndicatorShowStereochemistry,
+        fallback.bondIndicatorShowStereochemistry
+      ),
+      bondIndicatorShowReaction: uniformValue(
+        bondStyleEntries,
+        ({ style }) => style.bondIndicatorShowReaction,
+        fallback.bondIndicatorShowReaction
+      )
+    }
+  };
+}
+
+function createAtomLabelsModel(
+  targetObjects: readonly MoleculeObject[],
+  atomLabelTargets: readonly MoleculeInspectorAtomLabelTarget[]
+): MoleculeInspectorAtomLabelsModel {
+  const objectById = new Map(targetObjects.map((object) => [object.id, object]));
+  const atomEntries = atomLabelTargets.flatMap((target) => {
+    const object = objectById.get(target.objectId);
+    if (!object?.atoms.some((atom) => atom.id === target.atomId)) {
+      return [];
+    }
+    return [nativeMoleculeAtomLabelStyle(object, target.atomId)];
+  });
+  const targetKind = atomEntries.length > 0 ? "atom" : "molecule";
+  const entries = atomEntries.length > 0
+    ? atomEntries
+    : targetObjects.map((object) => nativeDrawingStyleFromObjectStyle(object.style));
+  const fallback = DefaultNativeDrawingStyle;
+
+  return {
+    enabled: entries.length > 0,
+    targetCount: entries.length,
+    targetKind,
+    values: {
+      fontFamily: uniformValue(entries, (style) => style.atomLabelFontFamily, fallback.atomLabelFontFamily),
+      fontFace: uniformValue(
+        entries,
+        (style) => ({ weight: style.atomLabelFontWeight, style: style.atomLabelFontStyle }),
+        { weight: fallback.atomLabelFontWeight, style: fallback.atomLabelFontStyle },
+        fontFacesEqual
+      ),
+      fontSizePx: uniformValue(entries, (style) => style.atomLabelFontSizePx, fallback.atomLabelFontSizePx),
+      color: uniformValue(entries, (style) => normalizeHexString(style.atomLabelColor) ?? style.atomLabelColor, fallback.atomLabelColor),
+      backgroundColor: uniformValue(
+        entries,
+        (style) => normalizeHexString(style.atomLabelBackgroundColor) ?? style.atomLabelBackgroundColor,
+        fallback.atomLabelBackgroundColor
+      ),
+      paddingPx: uniformValue(entries, (style) => style.atomLabelPaddingPx, fallback.atomLabelPaddingPx),
+      bondClearancePx: uniformValue(entries, (style) => style.atomLabelBondClearancePx, fallback.atomLabelBondClearancePx),
+      alignment: uniformValue(entries, (style) => style.atomLabelAlignment, fallback.atomLabelAlignment),
+      placement: uniformValue(entries, (style) => style.atomLabelPlacement, fallback.atomLabelPlacement),
+      showTerminalCarbons: uniformValue(
+        entries,
+        (style) => style.atomLabelShowTerminalCarbons,
+        fallback.atomLabelShowTerminalCarbons
+      ),
+      hideImplicitHydrogens: uniformValue(
+        entries,
+        (style) => style.atomLabelHideImplicitHydrogens,
+        fallback.atomLabelHideImplicitHydrogens
+      )
+    }
+  };
+}
+
+function emptyRingsModel(): MoleculeInspectorRingsModel {
+  return {
+    enabled: false,
     selectedCount: 0,
     selectedRings: [],
     effectKinds: [],
     values: {
       fillPaintType: { value: "solid", mixed: false },
-      fillColor: { value: "#111111", mixed: false },
+      fillColor: { value: DefaultNativeDrawingStyle.bondColor, mixed: false },
       fillOpacity: { value: 1, mixed: false },
       effect: { value: "none", mixed: false }
     },
@@ -133,55 +511,149 @@ function emptyEffectModel(kind: ArtInspectorEffectKind): ArtInspectorEffectModel
   };
 }
 
-type MoleculeInspectorRingEntry = {
-  ring: ReturnType<typeof nativeMoleculeRings>[number];
-  style: Record<string, unknown>;
-  fillPaint: GraphicPaint;
-  effects: readonly VisualEffect[];
-};
-
-function selectedRingKeysForPart(
-  selectedPart?: {
-    kind: string;
-    ringKey?: string;
-    rings?: readonly { ringKey: string }[];
-  }
-): string[] {
-  if (selectedPart?.kind === "ring" && selectedPart.ringKey) {
-    return [selectedPart.ringKey];
-  }
-
-  if (selectedPart?.kind !== "rings") {
+function ringTargetsForPart(
+  object: MoleculeObject,
+  selectedPart: MoleculeInspectorPartSelection
+): MoleculeInspectorRingSelection[] {
+  if (selectedPart.kind !== "ring" && selectedPart.kind !== "rings") {
     return [];
   }
 
+  const requestedKeys = selectedPart.kind === "ring"
+    ? [selectedPart.ringKey]
+    : (selectedPart.rings ?? []).map((ring) => ring.ringKey);
+  const requested = new Set(requestedKeys);
   const seen = new Set<string>();
-  return (selectedPart.rings ?? [])
-    .map((ring) => ring.ringKey)
-    .filter((ringKey) => {
-      if (seen.has(ringKey)) {
-        return false;
+  return nativeMoleculeRings(object)
+    .filter((ring) => requested.has(ring.ringKey))
+    .sort((first, second) => first.ringKey.localeCompare(second.ringKey))
+    .flatMap((ring) => {
+      const key = `${object.id}::${ring.ringKey}`;
+      if (seen.has(key)) {
+        return [];
       }
-      seen.add(ringKey);
-      return true;
+      seen.add(key);
+      return [{
+        objectId: object.id,
+        kind: "ring" as const,
+        ringKey: ring.ringKey,
+        atomIds: ring.atomIds,
+        bondIds: ring.bondIds
+      }];
     });
 }
 
-function uniformRingValue<T>(
-  entries: readonly MoleculeInspectorRingEntry[],
-  read: (entry: MoleculeInspectorRingEntry) => T | null | undefined
-): ArtInspectorMixedValue<T> {
-  const values = entries
-    .map((entry) => read(entry))
-    .filter((value): value is T => value !== null && value !== undefined);
-  if (values.length === 0) {
-    return { value: null, mixed: false };
+function atomTargetsForPart(
+  object: MoleculeObject,
+  selectedPart: MoleculeInspectorPartSelection
+): MoleculeInspectorAtomLabelTarget[] {
+  const requestedAtomIds = selectedPart.kind === "atom"
+    ? [selectedPart.atomId]
+    : selectedPart.kind === "parts"
+      ? selectedPart.atomIds ?? []
+      : [];
+  if (requestedAtomIds.length === 0) {
+    return [];
   }
 
-  const [first, ...rest] = values;
+  const requested = new Set(requestedAtomIds);
+  return object.atoms
+    .filter((atom) => requested.has(atom.id))
+    .map((atom) => ({ objectId: object.id, atomId: atom.id }));
+}
+
+function bondTargetsForPart(
+  object: MoleculeObject,
+  selectedPart: MoleculeInspectorPartSelection
+): MoleculeInspectorBondTarget[] {
+  const requestedBondIds = selectedPart.kind === "bond"
+    ? [selectedPart.bondId]
+    : selectedPart.kind === "parts"
+      ? selectedPart.bondIds ?? []
+      : [];
+  if (requestedBondIds.length === 0) {
+    return [];
+  }
+
+  const requested = new Set(requestedBondIds);
+  return object.bonds
+    .filter((bond) => requested.has(bond.id))
+    .map((bond) => ({ objectId: object.id, bondId: bond.id }));
+}
+
+function moleculeObjectsForTargets(
+  document: ChemDraftDocument,
+  objectIds: readonly string[]
+): MoleculeObject[] {
+  const targetIds = new Set(objectIds);
+  return document.pages.flatMap((page) =>
+    page.objects.filter((object): object is MoleculeObject =>
+      object.type === "molecule" && targetIds.has(object.id)
+    )
+  );
+}
+
+function contextForPart(selectedPart: MoleculeInspectorPartSelection): MoleculeInspectorContext {
+  switch (selectedPart.kind) {
+    case "ring":
+    case "rings":
+      return "ring";
+    case "atom":
+      return "atom";
+    case "bond":
+      return "bond";
+    case "parts":
+      if ((selectedPart.atomIds?.length ?? 0) > 0 && (selectedPart.bondIds?.length ?? 0) === 0) {
+        return "atom";
+      }
+      if ((selectedPart.bondIds?.length ?? 0) > 0 && (selectedPart.atomIds?.length ?? 0) === 0) {
+        return "bond";
+      }
+      return "molecule";
+    default: {
+      const _exhaustive: never = selectedPart;
+      return _exhaustive;
+    }
+  }
+}
+
+function suggestedTabForContext(context: MoleculeInspectorContext): MoleculeInspectorTabId {
+  if (context === "atom") {
+    return "atom-labels";
+  }
+  return "structure";
+}
+
+function uniformValue<TEntry, T>(
+  entries: readonly TEntry[],
+  read: (entry: TEntry) => T | null | undefined,
+  fallback?: T,
+  equals: (first: T, second: T) => boolean = Object.is
+): ArtInspectorMixedValue<T> {
+  // Single pass, no intermediate arrays: this runs ~20 times per structure-model
+  // rebuild (once per field) over the same entries, so avoiding the map/filter/rest
+  // allocations here removes the bulk of that per-keystroke cost.
+  let first: T | undefined;
+  let hasValue = false;
+  let mixed = false;
+  for (const entry of entries) {
+    const value = read(entry);
+    if (value === null || value === undefined) {
+      continue;
+    }
+    if (!hasValue) {
+      first = value;
+      hasValue = true;
+    } else if (!mixed && !equals(value, first as T)) {
+      mixed = true;
+    }
+  }
+  if (!hasValue) {
+    return fallback === undefined ? { value: null, mixed: false } : { value: fallback, mixed: false };
+  }
   return {
-    value: rest.every((value) => Object.is(value, first)) ? first : null,
-    mixed: rest.some((value) => !Object.is(value, first))
+    value: mixed ? null : (first as T),
+    mixed
   };
 }
 
@@ -295,8 +767,8 @@ function moleculeRingFillOpacity(
 function moleculeFillBaseColor(object: MoleculeObject): string {
   const paint = moleculeFillPaint(object);
   return paint.kind === "solid"
-    ? paint.color
-    : "#111111";
+    ? normalizeHexString(paint.color) ?? paint.color
+    : DefaultNativeDrawingStyle.bondColor;
 }
 
 function graphicPaintFromMetadata(value: unknown): GraphicPaint | undefined {
@@ -342,4 +814,98 @@ function metadataNumber(value: unknown): number | undefined {
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function fontFacesEqual(first: MoleculeInspectorFontFace, second: MoleculeInspectorFontFace): boolean {
+  return first.weight === second.weight && first.style === second.style;
+}
+
+function nativeMoleculeAtomLabelStyle(object: MoleculeObject, atomId: string) {
+  const base = nativeDrawingStyleFromObjectStyle(object.style);
+  return {
+    ...base,
+    atomLabelFontFamily: styleStringMapValue(object.style.atomLabelFontFamilies, atomId) ?? base.atomLabelFontFamily,
+    atomLabelFontSizePx: styleNumberMapValue(object.style.atomLabelFontSizes, atomId) ?? base.atomLabelFontSizePx,
+    atomLabelFontWeight: styleNumberMapValue(object.style.atomLabelFontWeights, atomId) ?? base.atomLabelFontWeight,
+    atomLabelFontStyle: styleFontStyleMapValue(object.style.atomLabelFontStyles, atomId) ?? base.atomLabelFontStyle,
+    atomLabelColor: styleStringMapValue(object.style.atomLabelColors, atomId) ?? base.atomLabelColor,
+    atomLabelBackgroundColor: styleStringMapValue(object.style.atomLabelBackgroundColors, atomId) ?? base.atomLabelBackgroundColor,
+    atomLabelPaddingPx: styleNumberMapValue(object.style.atomLabelPaddings, atomId) ?? base.atomLabelPaddingPx,
+    atomLabelBondClearancePx: styleNumberMapValue(object.style.atomLabelBondClearances, atomId) ?? base.atomLabelBondClearancePx,
+    atomLabelAlignment: styleAtomLabelAlignmentMapValue(object.style.atomLabelAlignments, atomId) ?? base.atomLabelAlignment,
+    atomLabelPlacement: styleAtomLabelPlacementMapValue(object.style.atomLabelPlacements, atomId) ?? base.atomLabelPlacement,
+    atomLabelShowTerminalCarbons: styleBooleanMapValue(
+      object.style.atomLabelShowTerminalCarbonsByAtomId,
+      atomId
+    ) ?? base.atomLabelShowTerminalCarbons,
+    atomLabelHideImplicitHydrogens: styleBooleanMapValue(
+      object.style.atomLabelHideImplicitHydrogensByAtomId,
+      atomId
+    ) ?? base.atomLabelHideImplicitHydrogens
+  };
+}
+
+function styleStringMapValue(value: unknown, id: string): string | undefined {
+  const entry = styleMapEntry(value, id);
+  return typeof entry === "string" ? entry : undefined;
+}
+
+function styleNumberMapValue(value: unknown, id: string): number | undefined {
+  const entry = styleMapEntry(value, id);
+  return typeof entry === "number" && Number.isFinite(entry) ? entry : undefined;
+}
+
+function styleBooleanMapValue(value: unknown, id: string): boolean | undefined {
+  const entry = styleMapEntry(value, id);
+  return typeof entry === "boolean" ? entry : undefined;
+}
+
+function styleFontStyleMapValue(value: unknown, id: string): NativeTextFontStyle | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "normal" || entry === "italic" ? entry : undefined;
+}
+
+function styleAtomLabelAlignmentMapValue(value: unknown, id: string): NativeAtomLabelAlignment | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "automatic" || entry === "left" || entry === "center" || entry === "right"
+    ? entry
+    : undefined;
+}
+
+function styleAtomLabelPlacementMapValue(value: unknown, id: string): NativeAtomLabelPlacement | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "automatic" || entry === "above" || entry === "below" ? entry : undefined;
+}
+
+function styleMapEntry(value: unknown, id: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return (value as Record<string, unknown>)[id];
+}
+
+function normalizeHexString(color: string | undefined): string | undefined {
+  const normalized = color?.trim().replace(/^#/, "").toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (/^[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
+  }
+  return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
+}
+
+function normalizedElement(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function median(values: readonly number[]): number | undefined {
+  if (values.length === 0) {
+    return undefined;
+  }
+  const sorted = [...values].sort((first, second) => first - second);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+    : sorted[middle];
 }

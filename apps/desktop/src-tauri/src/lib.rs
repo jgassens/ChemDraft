@@ -1,4 +1,5 @@
 mod export;
+mod fonts;
 
 use std::{collections::HashMap, fs, path::PathBuf, sync::Mutex};
 
@@ -218,7 +219,9 @@ pub fn run() {
             let command_id = event.id().as_ref();
             if let Some(toolset_id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
                 if toolset_id == MOLECULE_INSPECTOR_TOOLSET_ID {
-                    if let Err(error) = emit_command_to_main(app, MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID) {
+                    if let Err(error) =
+                        emit_command_to_main(app, MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID)
+                    {
                         eprintln!("Could not route ChemDraft Molecule Inspector command: {error}");
                     }
                     return;
@@ -356,7 +359,8 @@ pub fn run() {
             toggle_preferences_window,
             agent_bridge_status,
             take_pending_open_document,
-            export::rasterize_svg
+            export::rasterize_svg,
+            fonts::list_system_fonts
         ])
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
@@ -1217,7 +1221,13 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &MenuItem::with_id(app, "page.setSize.a0", "A0", true, None::<&str>)?,
             &MenuItem::with_id(app, "page.setSize.a5", "A5", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "page.setSizeCustom", "Custom Size…", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "page.setSizeCustom",
+                "Custom Size…",
+                true,
+                None::<&str>,
+            )?,
         ],
     )?;
     let orientation_menu = Submenu::with_items(

@@ -1,4 +1,5 @@
 import {
+  DefaultNativeDrawingStyle,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   type BondRef,
@@ -839,12 +840,8 @@ type PageMoleculeBondSegment = PageBondLineSegment & { bond: CoreMoleculeBond; k
 
 interface PageMoleculeBondSegmentGroup {
   bond: CoreMoleculeBond;
+  drawingStyle: NativeDrawingStyle;
   segments: PageMoleculeBondSegment[];
-}
-
-interface PageMoleculeAtomLabel {
-  atom: MoleculeAtom;
-  label: string;
 }
 
 export interface BondDepthCandidate {
@@ -1104,11 +1101,12 @@ function nativeBondFootprintPx(bond: CoreMoleculeBond, drawingStyle: NativeDrawi
   if (bondStyle === "wedge" || bondStyle === "hashed") {
     return nativeWedgeWidth(drawingStyle);
   }
+  const gap = nativeMultipleBondGapPx(drawingStyle);
   if (bond.order === "triple") {
-    return drawingStyle.multipleBondGapPx * 2 + nativeBondStrokeWidth(bond, drawingStyle);
+    return gap * 2 + nativeBondStrokeWidth(bond, drawingStyle);
   }
   if (bond.order === "double") {
-    return drawingStyle.multipleBondGapPx + nativeBondStrokeWidth(bond, drawingStyle);
+    return gap + nativeBondStrokeWidth(bond, drawingStyle);
   }
   return nativeBondStrokeWidth(bond, drawingStyle);
 }
@@ -1322,33 +1320,35 @@ function planNativeMoleculeGraphSvg(
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
   const moleculeStrokeOpacity = nativeMoleculeStrokeOpacity(object);
-  const atomLabels: PageMoleculeAtomLabel[] = object.atoms.flatMap((atom) => {
-    const label = atomDisplayLabel(atom, object.bonds);
-    return label ? [{ atom, label }] : [];
-  });
-  const labelByAtomId = new Map(atomLabels.map(({ atom, label }) => [atom.id, label]));
+  const atomLabels = planMoleculeAtomLabels(object);
+  const labelPlanByAtomId = new Map(atomLabels.map((plan) => [plan.atom.id, plan]));
   const bondSegmentGroups: PageMoleculeBondSegmentGroup[] = object.bonds.flatMap((bond) => {
     const fromAtom = atomById.get(bond.fromAtomId);
     const toAtom = atomById.get(bond.toAtomId);
     if (!fromAtom || !toAtom) {
       return [];
     }
+    const fromLabelPlan = labelPlanByAtomId.get(fromAtom.id);
+    const toLabelPlan = labelPlanByAtomId.get(toAtom.id);
+    const bondDrawingStyle = nativeMoleculeBondDrawingStyle(object, bond.id, drawingStyle);
 
     const segments = bondLineSegments(
       fromAtom,
       toAtom,
       object,
       bond,
-      drawingStyle,
-      labelByAtomId.get(fromAtom.id),
-      labelByAtomId.get(toAtom.id)
+      bondDrawingStyle,
+      fromLabelPlan?.label,
+      toLabelPlan?.label,
+      fromLabelPlan?.drawingStyle,
+      toLabelPlan?.drawingStyle
     ).map((segment, segmentIndex) => ({
       ...segment,
       bond,
       key: `${bond.id}-${segmentIndex}`
     }));
 
-    return [{ bond, segments }];
+    return [{ bond, drawingStyle: bondDrawingStyle, segments }];
   });
   const primitive = moleculeDrawingPrimitive(object) === "single-bond"
     ? "single-bond"
@@ -1364,7 +1364,7 @@ function planNativeMoleculeGraphSvg(
   });
   const effectFilterId = `molecule-effects-${object.id}`;
   const fillUnderlayFragments = moleculeFillUnderlayFragments(object, drawingStyle);
-  const bondLayerFragments = bondSegmentGroups.map(({ bond, segments }) =>
+  const bondLayerFragments = bondSegmentGroups.map(({ bond, drawingStyle: bondDrawingStyle, segments }) =>
     elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
       "data-bond-layer-id": bond.id
     }, [
@@ -1389,47 +1389,56 @@ function planNativeMoleculeGraphSvg(
         nativeBondSegmentFragments(
           object,
           segment,
-          drawingStyle,
+          bondDrawingStyle,
           moleculeStrokeOpacity,
           gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
         )
       )
     ])
   );
-  const labelBackgroundFragments = atomLabels.map(({ atom, label }) => {
-    const box = atomLabelBox(atom, label, drawingStyle);
-    return elementFragment("rect", `label-background-${object.id}-${atom.id}`, {
+  const labelBackgroundFragments = atomLabels.flatMap((plan) => {
+    if (!plan.backgroundVisible) {
+      return [];
+    }
+    const box = {
+      x: plan.anchor.x + plan.layout.bounds.x,
+      y: plan.anchor.y + plan.layout.bounds.y,
+      width: plan.layout.bounds.width,
+      height: plan.layout.bounds.height
+    };
+    return elementFragment("rect", `label-background-${object.id}-${plan.atom.id}`, {
       class: "native-atom-label-background",
       x: box.x,
       y: box.y,
       width: box.width,
       height: box.height,
-      fill: drawingStyle.atomLabelBackgroundColor
+      fill: plan.backgroundColor
     });
   });
-  const labelFragments = atomLabels.map(({ atom, label }) => {
-    const anchor = atomLabelAnchor(atom);
-    return elementFragment("g", `label-${object.id}-${atom.id}`, {
+  const labelFragments = atomLabels.map((plan) => {
+    return elementFragment("g", `label-${object.id}-${plan.atom.id}`, {
       class: "native-atom-label",
-      "data-atom-label": label,
-        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
-        fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
-        "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
-        "font-family": drawingStyle.atomLabelFontFamily,
-      "font-size": drawingStyle.atomLabelFontSizePx,
-      "font-weight": drawingStyle.atomLabelFontWeight
-    }, atomLabelLayout(label, drawingStyle).runs.map((run, index) =>
-      elementFragment("text", `label-run-${object.id}-${atom.id}-${index}`, {
+      "data-atom-label": plan.label,
+      transform: `translate(${formatNumber(plan.anchor.x)} ${formatNumber(plan.anchor.y)})`,
+      fill: plan.color,
+      "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+      "font-family": plan.fontFamily,
+      "font-size": plan.fontSizePx,
+      "font-weight": plan.fontWeight,
+      "font-style": plan.fontStyle
+    }, plan.layout.runs.map((run, index) =>
+      elementFragment("text", `label-run-${object.id}-${plan.atom.id}-${index}`, {
         class: "native-atom-label-run",
         "data-atom-label-run": run.script === "superscript" ? "charge" : run.script,
         x: run.x,
         y: run.y,
         "dominant-baseline": "central",
         "text-anchor": run.textAnchor,
-        "font-size": atomLabelRunFontSize(run.script, drawingStyle)
-      }, [textFragment(`label-run-text-${object.id}-${atom.id}-${index}`, run.text)])
+        "font-size": atomLabelRunFontSize(run.script, plan.drawingStyle)
+      }, [textFragment(`label-run-text-${object.id}-${plan.atom.id}-${index}`, run.text)])
     ));
   });
+  const indicatorFragments = moleculeStructureIndicatorFragments(object, drawingStyle, moleculeStrokeOpacity);
   const atomHitFragments = object.atoms.map((atom) =>
     elementFragment("circle", `atom-hit-${object.id}-${atom.id}`, {
       class: "native-atom-hit-target",
@@ -1469,6 +1478,7 @@ function planNativeMoleculeGraphSvg(
     ...bondLayerFragments,
     ...labelBackgroundFragments,
     ...labelFragments,
+    ...indicatorFragments,
     ...svgSketchEffectFragmentsForEffects(effects, object.id, {
       className: "native-molecule-sketch",
       dataAttribute: "data-molecule-effect",
@@ -1963,12 +1973,12 @@ function moleculeEffectSourceFragment(
   }
 
   const children = [
-    ...bondSegmentGroups.flatMap(({ bond, segments }) =>
+    ...bondSegmentGroups.flatMap(({ bond, drawingStyle: bondDrawingStyle, segments }) =>
       segments.flatMap((segment) =>
         moleculeBondEffectSourceFragments(
           object,
           segment,
-          drawingStyle,
+          bondDrawingStyle,
           gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
         )
       )
@@ -2140,6 +2150,472 @@ function nativeBondSegmentFragments(
       "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
     })
   );
+}
+
+function moleculeStructureIndicatorFragments(
+  object: MoleculeObject,
+  drawingStyle: NativeDrawingStyle,
+  moleculeStrokeOpacity: number
+): PageSvgElementFragment[] {
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const stereoAtomIds = nativeStereoAtomIndicatorIds(object);
+  const fragments: PageSvgElementFragment[] = [];
+
+  object.atoms.forEach((atom, index) => {
+    const atomIndicatorStyle = nativeMoleculeAtomIndicatorStyle(object, atom.id, drawingStyle);
+    if (atomIndicatorStyle.atomIndicatorShowAtomNumbers) {
+      fragments.push(atomIndicatorTextFragment({
+        objectId: object.id,
+        atom,
+        kind: "number",
+        label: String(index + 1),
+        offset: { x: 8, y: -8 },
+        fill: "#52616b",
+        moleculeStrokeOpacity
+      }));
+    }
+  });
+
+  for (const atomId of nativeAtomQueryIndicatorIds(object)) {
+    const atom = atomById.get(atomId);
+    if (!atom) {
+      continue;
+    }
+    const atomIndicatorStyle = nativeMoleculeAtomIndicatorStyle(object, atom.id, drawingStyle);
+    if (atomIndicatorStyle.atomIndicatorShowQuery) {
+      fragments.push(atomIndicatorTextFragment({
+        objectId: object.id,
+        atom,
+        kind: "query",
+        label: "?",
+        offset: { x: 8, y: 8 },
+        fill: "#7b4dcc",
+        moleculeStrokeOpacity
+      }));
+    }
+  }
+
+  for (const atomId of stereoAtomIds) {
+    const atom = atomById.get(atomId);
+    if (!atom) {
+      continue;
+    }
+    const atomIndicatorStyle = nativeMoleculeAtomIndicatorStyle(object, atom.id, drawingStyle);
+    if (atomIndicatorStyle.atomIndicatorShowStereochemistry) {
+      fragments.push(atomIndicatorTextFragment({
+        objectId: object.id,
+        atom,
+        kind: "stereochemistry",
+        label: "@",
+        offset: { x: -8, y: -8 },
+        fill: "#1f5fbf",
+        moleculeStrokeOpacity
+      }));
+    }
+  }
+
+  for (const { atomId, label } of nativeEnhancedStereoAtomIndicators(object, stereoAtomIds)) {
+    const atom = atomById.get(atomId);
+    if (!atom) {
+      continue;
+    }
+    const atomIndicatorStyle = nativeMoleculeAtomIndicatorStyle(object, atom.id, drawingStyle);
+    if (atomIndicatorStyle.atomIndicatorShowEnhancedStereochemistry) {
+      fragments.push(atomIndicatorTextFragment({
+        objectId: object.id,
+        atom,
+        kind: "enhanced-stereochemistry",
+        label,
+        offset: { x: 0, y: 10 },
+        fill: "#8a5a00",
+        moleculeStrokeOpacity
+      }));
+    }
+  }
+
+  for (const bondId of nativeBondQueryIndicatorIds(object)) {
+    const bond = object.bonds.find((candidate) => candidate.id === bondId);
+    if (!bond) {
+      continue;
+    }
+    const bondDrawingStyle = nativeMoleculeBondDrawingStyle(object, bond.id, drawingStyle);
+    if (bondDrawingStyle.bondIndicatorShowQuery) {
+      const fragment = bondIndicatorTextFragment({
+        object,
+        bond,
+        kind: "query",
+        label: "?",
+        offsetSlot: -1,
+        fill: "#7b4dcc",
+        moleculeStrokeOpacity
+      });
+      if (fragment) {
+        fragments.push(fragment);
+      }
+    }
+  }
+
+  for (const bond of object.bonds) {
+    const label = nativeBondStereoIndicatorLabel(bond);
+    if (!label) {
+      continue;
+    }
+    const bondDrawingStyle = nativeMoleculeBondDrawingStyle(object, bond.id, drawingStyle);
+    if (bondDrawingStyle.bondIndicatorShowStereochemistry) {
+      const fragment = bondIndicatorTextFragment({
+        object,
+        bond,
+        kind: "stereochemistry",
+        label,
+        offsetSlot: 0,
+        fill: "#1f5fbf",
+        moleculeStrokeOpacity
+      });
+      if (fragment) {
+        fragments.push(fragment);
+      }
+    }
+  }
+
+  for (const bondId of nativeBondReactionIndicatorIds(object)) {
+    const bond = object.bonds.find((candidate) => candidate.id === bondId);
+    if (!bond) {
+      continue;
+    }
+    const bondDrawingStyle = nativeMoleculeBondDrawingStyle(object, bond.id, drawingStyle);
+    if (bondDrawingStyle.bondIndicatorShowReaction) {
+      const fragment = bondIndicatorTextFragment({
+        object,
+        bond,
+        kind: "reaction",
+        label: "RXN",
+        offsetSlot: 1,
+        fill: "#b3261e",
+        moleculeStrokeOpacity
+      });
+      if (fragment) {
+        fragments.push(fragment);
+      }
+    }
+  }
+
+  return fragments;
+}
+
+function atomIndicatorTextFragment(options: {
+  objectId: string;
+  atom: MoleculeAtom;
+  kind: string;
+  label: string;
+  offset: LayoutPoint;
+  fill: string;
+  moleculeStrokeOpacity: number;
+}): PageSvgElementFragment {
+  const x = options.atom.x + options.offset.x;
+  const y = options.atom.y + options.offset.y;
+  return elementFragment("text", `atom-indicator-${options.objectId}-${options.kind}-${options.atom.id}`, {
+    class: `native-atom-indicator native-atom-indicator-${options.kind}`,
+    "data-atom-indicator": options.kind,
+    "data-atom-id": options.atom.id,
+    x,
+    y,
+    fill: options.fill,
+    "fill-opacity": options.moleculeStrokeOpacity === 1 ? undefined : options.moleculeStrokeOpacity,
+    "font-family": "Arial, Helvetica, sans-serif",
+    "font-size": options.kind === "enhanced-stereochemistry" ? 6 : 7,
+    "font-weight": 700,
+    "dominant-baseline": "central",
+    "text-anchor": "middle",
+    "pointer-events": "none"
+  }, [textFragment(`atom-indicator-text-${options.objectId}-${options.kind}-${options.atom.id}`, options.label)]);
+}
+
+function bondIndicatorTextFragment(options: {
+  object: MoleculeObject;
+  bond: CoreMoleculeBond;
+  kind: string;
+  label: string;
+  offsetSlot: number;
+  fill: string;
+  moleculeStrokeOpacity: number;
+}): PageSvgElementFragment | undefined {
+  const atomById = new Map(options.object.atoms.map((atom) => [atom.id, atom]));
+  const fromAtom = atomById.get(options.bond.fromAtomId);
+  const toAtom = atomById.get(options.bond.toAtomId);
+  if (!fromAtom || !toAtom) {
+    return undefined;
+  }
+
+  const dx = toAtom.x - fromAtom.x;
+  const dy = toAtom.y - fromAtom.y;
+  const length = Math.hypot(dx, dy);
+  const normal = length > 0
+    ? { x: -dy / length, y: dx / length }
+    : { x: 0, y: -1 };
+  const offset = options.offsetSlot * 9;
+  const x = (fromAtom.x + toAtom.x) / 2 + normal.x * offset;
+  const y = (fromAtom.y + toAtom.y) / 2 + normal.y * offset;
+
+  return elementFragment("text", `bond-indicator-${options.object.id}-${options.kind}-${options.bond.id}`, {
+    class: `native-bond-indicator native-bond-indicator-${options.kind}`,
+    "data-bond-indicator": options.kind,
+    "data-bond-id": options.bond.id,
+    x,
+    y,
+    fill: options.fill,
+    "fill-opacity": options.moleculeStrokeOpacity === 1 ? undefined : options.moleculeStrokeOpacity,
+    "font-family": "Arial, Helvetica, sans-serif",
+    "font-size": options.kind === "reaction" ? 6 : 7,
+    "font-weight": 700,
+    "dominant-baseline": "central",
+    "text-anchor": "middle",
+    "pointer-events": "none"
+  }, [textFragment(`bond-indicator-text-${options.object.id}-${options.kind}-${options.bond.id}`, options.label)]);
+}
+
+function nativeStereoAtomIndicatorIds(object: MoleculeObject): Set<string> {
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const degreeByAtomId = nativeAtomDegreeById(object.bonds);
+  const ids = new Set<string>();
+
+  for (const bond of object.bonds) {
+    if (!nativeBondStereoIndicatorLabel(bond)) {
+      continue;
+    }
+    const candidates = [atomById.get(bond.fromAtomId), atomById.get(bond.toAtomId)]
+      .filter((atom): atom is MoleculeAtom => atom !== undefined);
+    const preferred = candidates.find((atom) => (degreeByAtomId.get(atom.id) ?? 0) >= 3) ?? candidates[0];
+    if (preferred) {
+      ids.add(preferred.id);
+    }
+  }
+
+  for (const atomId of unknownRecordObjectKeys(object.compatibility?.unknown, [
+    "cdxmlAtomStereochemistryByAtomId",
+    "atomStereochemistryByAtomId",
+    "stereochemistryByAtomId"
+  ])) {
+    ids.add(atomId);
+  }
+
+  return ids;
+}
+
+function nativeEnhancedStereoAtomIndicators(
+  object: MoleculeObject,
+  stereoAtomIds: ReadonlySet<string>
+): Array<{ atomId: string; label: string }> {
+  const explicit = unknownRecordStringMap(object.compatibility?.unknown, [
+    "enhancedStereoByAtomId",
+    "atomEnhancedStereoByAtomId",
+    "cdxmlEnhancedStereoByAtomId"
+  ]);
+  if (explicit.size > 0) {
+    return [...explicit.entries()].map(([atomId, label]) => ({ atomId, label: enhancedStereoLabel(label) }));
+  }
+
+  return [...stereoAtomIds].map((atomId) => ({ atomId, label: "ABS" }));
+}
+
+function enhancedStereoLabel(value: string): string {
+  const upper = value.trim().toUpperCase();
+  if (upper.startsWith("OR")) {
+    return upper;
+  }
+  if (upper.startsWith("AND")) {
+    return upper;
+  }
+  if (upper === "REL" || upper === "RAC") {
+    return upper;
+  }
+  return "ABS";
+}
+
+function nativeAtomQueryIndicatorIds(object: MoleculeObject): Set<string> {
+  const ids = new Set<string>();
+  for (const atom of object.atoms) {
+    if (isQueryLikeAtomLabel(atom.element)) {
+      ids.add(atom.id);
+    }
+  }
+
+  for (const rGroup of object.rGroups ?? []) {
+    if (rGroup.querySemantics !== "query") {
+      continue;
+    }
+    for (const anchor of rGroup.attachmentPoints ?? []) {
+      if (anchor.kind === "atom" && anchor.atomId) {
+        ids.add(anchor.atomId);
+      }
+    }
+  }
+
+  for (const atomId of unknownRecordStringSet(object.compatibility?.unknown, [
+    "atomQueryIds",
+    "queryAtomIds",
+    "cdxmlAtomQueryIds"
+  ])) {
+    ids.add(atomId);
+  }
+  for (const atomId of unknownRecordObjectKeys(object.compatibility?.unknown, [
+    "atomQueriesById",
+    "queryAtomsById",
+    "cdxmlAtomQueriesById"
+  ])) {
+    ids.add(atomId);
+  }
+
+  return ids;
+}
+
+function nativeBondQueryIndicatorIds(object: MoleculeObject): Set<string> {
+  const ids = new Set<string>();
+  for (const bond of object.bonds) {
+    if (bond.order === "unknown") {
+      ids.add(bond.id);
+    }
+  }
+
+  for (const bondId of unknownRecordStringSet(object.compatibility?.unknown, [
+    "bondQueryIds",
+    "queryBondIds",
+    "cdxmlBondQueryIds"
+  ])) {
+    ids.add(bondId);
+  }
+  for (const bondId of unknownRecordObjectKeys(object.compatibility?.unknown, [
+    "bondQueriesById",
+    "queryBondsById",
+    "cdxmlBondQueriesById"
+  ])) {
+    ids.add(bondId);
+  }
+
+  return ids;
+}
+
+function nativeBondReactionIndicatorIds(object: MoleculeObject): Set<string> {
+  const ids = new Set<string>();
+  const sourceFormat = object.compatibility?.sourceFormat?.toLowerCase() ?? "";
+  const sourceImpliesReaction = sourceFormat.includes("rxn") || sourceFormat.includes("reaction");
+  for (const bondId of unknownRecordStringSet(object.compatibility?.unknown, [
+    "reactionBondIds",
+    "rxnBondIds",
+    "cdxmlReactionBondIds"
+  ])) {
+    ids.add(bondId);
+  }
+  for (const bondId of unknownRecordObjectKeys(object.compatibility?.unknown, [
+    "reactionBondsById",
+    "rxnBondsById",
+    "bondReactionRolesById"
+  ])) {
+    ids.add(bondId);
+  }
+
+  if (ids.size === 0 && sourceImpliesReaction) {
+    for (const bond of object.bonds) {
+      ids.add(bond.id);
+    }
+  }
+
+  return ids;
+}
+
+function nativeAtomDegreeById(bonds: readonly CoreMoleculeBond[]): Map<string, number> {
+  const degreeByAtomId = new Map<string, number>();
+  for (const bond of bonds) {
+    degreeByAtomId.set(bond.fromAtomId, (degreeByAtomId.get(bond.fromAtomId) ?? 0) + 1);
+    degreeByAtomId.set(bond.toAtomId, (degreeByAtomId.get(bond.toAtomId) ?? 0) + 1);
+  }
+  return degreeByAtomId;
+}
+
+function nativeBondStereoIndicatorLabel(bond: CoreMoleculeBond): string | undefined {
+  const style = nativeBondDisplayStyle(bond);
+  if (style === "wedge") {
+    return "UP";
+  }
+  if (style === "hashed") {
+    return "DN";
+  }
+  if (style === "dashed") {
+    return "ST";
+  }
+  return undefined;
+}
+
+function isQueryLikeAtomLabel(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed === "*" || /^R\d*$/i.test(trimmed)) {
+    return true;
+  }
+  return nativeElementFromAtomLabel(trimmed) === undefined &&
+    /^(A|Q|X|M|L|R#|\[[^\]]+\])$/i.test(trimmed);
+}
+
+function unknownRecordStringSet(
+  unknown: Record<string, unknown> | undefined,
+  keys: readonly string[]
+): Set<string> {
+  const values = new Set<string>();
+  if (!unknown) {
+    return values;
+  }
+  for (const key of keys) {
+    const value = unknown[key];
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === "string" && item.length > 0) {
+          values.add(item);
+        }
+      }
+    }
+  }
+  return values;
+}
+
+function unknownRecordObjectKeys(
+  unknown: Record<string, unknown> | undefined,
+  keys: readonly string[]
+): Set<string> {
+  const values = new Set<string>();
+  if (!unknown) {
+    return values;
+  }
+  for (const key of keys) {
+    const value = unknown[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const itemKey of Object.keys(value)) {
+        if (itemKey.length > 0) {
+          values.add(itemKey);
+        }
+      }
+    }
+  }
+  return values;
+}
+
+function unknownRecordStringMap(
+  unknown: Record<string, unknown> | undefined,
+  keys: readonly string[]
+): Map<string, string> {
+  const values = new Map<string, string>();
+  if (!unknown) {
+    return values;
+  }
+  for (const key of keys) {
+    const value = unknown[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+    for (const [itemKey, itemValue] of Object.entries(value)) {
+      if (itemKey.length > 0 && typeof itemValue === "string" && itemValue.length > 0) {
+        values.set(itemKey, itemValue);
+      }
+    }
+  }
+  return values;
 }
 
 function splitSegmentByCrossingGaps(
@@ -3247,7 +3723,9 @@ function bondLineSegments(
   bond: CoreMoleculeBond,
   drawingStyle: NativeDrawingStyle,
   fromLabel?: string,
-  toLabel?: string
+  toLabel?: string,
+  fromLabelStyle?: NativeDrawingStyle,
+  toLabelStyle?: NativeDrawingStyle
 ): PageBondLineSegment[] {
   const dx = toAtom.x - fromAtom.x;
   const dy = toAtom.y - fromAtom.y;
@@ -3257,14 +3735,24 @@ function bondLineSegments(
   }
 
   const unit = { x: dx / length, y: dy / length };
-  const clearance = labelEndpointClearance(fromAtom, toAtom, fromLabel, toLabel, drawingStyle, length, unit);
+  const clearance = labelEndpointClearance(
+    fromAtom,
+    toAtom,
+    fromLabel,
+    toLabel,
+    drawingStyle,
+    length,
+    unit,
+    fromLabelStyle,
+    toLabelStyle
+  );
   const x1 = fromAtom.x + unit.x * clearance.from;
   const y1 = fromAtom.y + unit.y * clearance.from;
   const x2 = toAtom.x - unit.x * clearance.to;
   const y2 = toAtom.y - unit.y * clearance.to;
   const trimmedLength = Math.hypot(x2 - x1, y2 - y1);
   const normal = { x: -unit.y, y: unit.x };
-  const gap = drawingStyle.multipleBondGapPx;
+  const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
     const doubleBondSide = bond.display?.doubleBondSide ?? "left";
@@ -3329,10 +3817,12 @@ export function labelEndpointClearance(
   toLabel: string | undefined,
   drawingStyle: NativeDrawingStyle,
   bondLength: number,
-  unit: { x: number; y: number }
+  unit: { x: number; y: number },
+  fromLabelStyle: NativeDrawingStyle = drawingStyle,
+  toLabelStyle: NativeDrawingStyle = drawingStyle
 ): { from: number; to: number } {
-  const from = atomLabelBondClearance(fromAtom, fromLabel, drawingStyle, unit);
-  const to = atomLabelBondClearance(toAtom, toLabel, drawingStyle, { x: -unit.x, y: -unit.y });
+  const from = atomLabelBondClearance(fromAtom, fromLabel, fromLabelStyle, unit);
+  const to = atomLabelBondClearance(toAtom, toLabel, toLabelStyle, { x: -unit.x, y: -unit.y });
   const total = from + to;
   const maximumTotal = bondLength * 0.55;
   if (total <= maximumTotal || total === 0) {
@@ -3366,7 +3856,11 @@ function atomLabelBondClearance(
       : Number.POSITIVE_INFINITY;
   const labelBoundaryDistance = Math.min(horizontalDistance, verticalDistance);
 
-  return Math.max(drawingStyle.atomLabelBondClearancePx, Math.max(0, labelBoundaryDistance));
+  return Math.max(
+    drawingStyle.atomLabelBondClearancePx,
+    drawingStyle.bondMarginWidthPx,
+    Math.max(0, labelBoundaryDistance)
+  );
 }
 
 function atomLabelBox(
@@ -3374,8 +3868,9 @@ function atomLabelBox(
   label: string,
   drawingStyle: NativeDrawingStyle
 ): { x: number; y: number; width: number; height: number } {
-  const anchor = atomLabelAnchor(atom);
-  const { bounds } = atomLabelLayout(label, drawingStyle);
+  const layout = atomLabelLayout(label, drawingStyle);
+  const anchor = atomLabelAnchor(atom, label, drawingStyle, layout);
+  const { bounds } = layout;
   return {
     x: anchor.x + bounds.x,
     y: anchor.y + bounds.y,
@@ -3384,11 +3879,38 @@ function atomLabelBox(
   };
 }
 
-function atomLabelAnchor(atom: MoleculeAtom): LayoutPoint {
+function atomLabelAnchor(
+  atom: MoleculeAtom,
+  label: string,
+  drawingStyle: NativeDrawingStyle,
+  layout = atomLabelLayout(label, drawingStyle)
+): LayoutPoint {
+  const offset = atomLabelAnchorOffset(atom, label, drawingStyle, layout);
   return {
-    x: atom.x + (atom.labelOffset?.x ?? 0),
-    y: atom.y + (atom.labelOffset?.y ?? 0)
+    x: atom.x + offset.x,
+    y: atom.y + offset.y
   };
+}
+
+export function atomLabelAnchorOffset(
+  atom: MoleculeAtom,
+  label: string,
+  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
+  layout = atomLabelLayout(label, drawingStyle)
+): LayoutPoint {
+  if (atom.labelOffset) {
+    return atom.labelOffset;
+  }
+
+  const verticalGap = drawingStyle.atomLabelFontSizePx * 0.35;
+  if (drawingStyle.atomLabelPlacement === "above") {
+    return { x: 0, y: -(layout.bounds.height / 2 + verticalGap) };
+  }
+  if (drawingStyle.atomLabelPlacement === "below") {
+    return { x: 0, y: layout.bounds.height / 2 + verticalGap };
+  }
+
+  return { x: 0, y: 0 };
 }
 
 function atomLabelBoundsRelativeToAtom(
@@ -3396,10 +3918,12 @@ function atomLabelBoundsRelativeToAtom(
   label: string,
   drawingStyle: NativeDrawingStyle
 ): { x: number; y: number; width: number; height: number } {
-  const { bounds } = atomLabelLayout(label, drawingStyle);
+  const layout = atomLabelLayout(label, drawingStyle);
+  const { bounds } = layout;
+  const anchorOffset = atomLabelAnchorOffset(atom, label, drawingStyle, layout);
   return {
-    x: (atom.labelOffset?.x ?? 0) + bounds.x,
-    y: (atom.labelOffset?.y ?? 0) + bounds.y,
+    x: anchorOffset.x + bounds.x,
+    y: anchorOffset.y + bounds.y,
     width: bounds.width,
     height: bounds.height
   };
@@ -3415,12 +3939,79 @@ export interface AtomLabelRun {
 export interface AtomLabelLayoutRun extends AtomLabelRun {
   x: number;
   y: number;
-  textAnchor: "middle" | "start";
+  textAnchor: "middle" | "start" | "end";
 }
 
 export interface AtomLabelLayout {
   bounds: { x: number; y: number; width: number; height: number };
   runs: AtomLabelLayoutRun[];
+}
+
+export interface AtomLabelPlan {
+  atom: MoleculeAtom;
+  label: string;
+  anchor: LayoutPoint;
+  anchorOffset: LayoutPoint;
+  layout: AtomLabelLayout;
+  drawingStyle: NativeDrawingStyle;
+  color: string;
+  backgroundColor: string;
+  backgroundVisible: boolean;
+  fontFamily: string;
+  fontSizePx: number;
+  fontWeight: number;
+  fontStyle: NativeDrawingStyle["atomLabelFontStyle"];
+}
+
+export function planMoleculeAtomLabels(object: MoleculeObject): AtomLabelPlan[] {
+  const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
+  return object.atoms.flatMap((atom) => {
+    const atomLabelStyle = nativeMoleculeAtomLabelStyle(object, atom.id, drawingStyle);
+    const plan = planAtomLabel(
+      atom,
+      object.bonds,
+      atomLabelStyle,
+      atomLabelStyle.atomLabelColor,
+      object.atoms
+    );
+    return plan ? [plan] : [];
+  });
+}
+
+export function planAtomLabel(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
+  color = drawingStyle.atomLabelColor,
+  atoms: readonly MoleculeAtom[] = []
+): AtomLabelPlan | undefined {
+  const label = atomDisplayLabel(atom, bonds, drawingStyle, atoms);
+  if (!label) {
+    return undefined;
+  }
+
+  const layout = atomLabelLayout(label, drawingStyle);
+  const anchorOffset = atomLabelAnchorOffset(atom, label, drawingStyle);
+  const anchor = {
+    x: atom.x + anchorOffset.x,
+    y: atom.y + anchorOffset.y
+  };
+  const backgroundColor = drawingStyle.atomLabelBackgroundColor;
+  return {
+    atom,
+    label,
+    anchor,
+    anchorOffset,
+    layout,
+    drawingStyle,
+    color,
+    backgroundColor,
+    backgroundVisible: backgroundColor !== "transparent",
+    fontFamily: drawingStyle.atomLabelFontFamily,
+    fontSizePx: drawingStyle.atomLabelFontSizePx,
+    fontWeight: drawingStyle.atomLabelFontWeight,
+    fontStyle: drawingStyle.atomLabelFontStyle
+  };
 }
 
 export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
@@ -3479,14 +4070,21 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
   }
 
   const padding = drawingStyle.atomLabelPaddingPx;
+  const horizontalShift = drawingStyle.atomLabelAlignment === "left"
+    ? baseHalfWidth
+    : drawingStyle.atomLabelAlignment === "right"
+      ? -right
+      : 0;
   return {
     bounds: {
-      x: -baseHalfWidth - padding,
+      x: -baseHalfWidth + horizontalShift - padding,
       y: top - padding,
       width: right + baseHalfWidth + padding * 2,
       height: bottom - top + padding * 2
     },
-    runs
+    runs: horizontalShift === 0
+      ? runs
+      : runs.map((run) => ({ ...run, x: run.x + horizontalShift }))
   };
 }
 
@@ -3527,7 +4125,9 @@ function splitAtomLabelCharge(label: string): { body: string; charge?: string } 
 function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
   const widthFactor = run.script === "normal" ? 0.62 : 0.5;
-  return run.text.length * fontSize * widthFactor;
+  const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
+  const italicFactor = drawingStyle.atomLabelFontStyle === "italic" ? 1.06 : 1;
+  return run.text.length * fontSize * widthFactor * weightFactor * italicFactor;
 }
 
 function atomLabelScript(character: string): AtomLabelScript {
@@ -3553,7 +4153,12 @@ export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: Nati
  * charge, or undefined for plain bonded carbons. Exported so the 3D spin overlay can
  * label its atoms IDENTICALLY to the drawing it floats over.
  */
-export function atomDisplayLabel(atom: MoleculeAtom, bonds: readonly CoreMoleculeBond[]): string | undefined {
+export function atomDisplayLabel(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
+  atoms: readonly MoleculeAtom[] = []
+): string | undefined {
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
     const symbol = atom.element.trim() || "C";
@@ -3561,12 +4166,22 @@ export function atomDisplayLabel(atom: MoleculeAtom, bonds: readonly CoreMolecul
   }
   const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
   const formalCharge = atom.formalCharge;
+  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens
+    ? ""
+    : implicitHydrogenLabel(Math.max(0, (nativeAtomValence[element] ?? 0) - valenceUsed));
 
-  if (element === "C" && valenceUsed > 0 && formalCharge === 0 && atom.labelVisible !== true) {
-    return undefined;
+  if (element === "C" && formalCharge === 0) {
+    const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
+    const shouldShowCarbon =
+      atom.labelVisible === true ||
+      valenceUsed === 0 ||
+      (atom.labelVisible !== false && drawingStyle.atomLabelShowTerminalCarbons && terminalCarbon);
+    if (!shouldShowCarbon) {
+      return undefined;
+    }
   }
 
-  return `${element}${implicitHydrogenLabel(Math.max(0, (nativeAtomValence[element] ?? 0) - valenceUsed))}${chargeLabelSuffix(formalCharge)}`;
+  return `${element}${implicitHydrogens}${chargeLabelSuffix(formalCharge)}`;
 }
 
 const nativeElementSymbols = [
@@ -3625,6 +4240,30 @@ function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBo
   ), 0);
 }
 
+function heavyAtomNeighborCount(
+  atomId: string,
+  bonds: readonly CoreMoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): number {
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const neighborIds = new Set<string>();
+  for (const bond of bonds) {
+    const neighborId = bond.fromAtomId === atomId
+      ? bond.toAtomId
+      : bond.toAtomId === atomId
+        ? bond.fromAtomId
+        : undefined;
+    if (!neighborId || neighborIds.has(neighborId)) {
+      continue;
+    }
+    const neighbor = atomById.get(neighborId);
+    if (nativeElementFromAtomLabel(neighbor?.element ?? "") !== "H") {
+      neighborIds.add(neighborId);
+    }
+  }
+  return neighborIds.size;
+}
+
 function implicitHydrogenLabel(count: number): string {
   if (count <= 0) {
     return "";
@@ -3649,7 +4288,7 @@ function nativeBondDisplayStyle(bond: CoreMoleculeBond): BondDisplayStyle | unde
 
 function nativeBondStrokeWidth(bond: CoreMoleculeBond, drawingStyle: NativeDrawingStyle): number {
   const base = nativeBondDisplayStyle(bond) === "bold"
-    ? drawingStyle.bondStrokeWidthPx * 2.4
+    ? drawingStyle.bondBoldWidthPx
     : drawingStyle.bondStrokeWidthPx;
   return depthCuedBondStrokeWidth(base, bond.display?.depthWeight);
 }
@@ -3672,7 +4311,14 @@ function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
 }
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle): number {
-  return Math.max(8, drawingStyle.bondStrokeWidthPx * 5.2);
+  return Math.max(8, drawingStyle.bondBoldWidthPx * 2.2);
+}
+
+export function nativeMultipleBondGapPx(drawingStyle: NativeDrawingStyle): number {
+  if (drawingStyle.bondSpacingMode === "percent") {
+    return Math.max(0.5, drawingStyle.bondLengthPx * drawingStyle.bondSpacingPercent / 100);
+  }
+  return drawingStyle.multipleBondGapPx;
 }
 
 function nativeWedgePolygonPoints(
@@ -3710,7 +4356,8 @@ function nativeHashedWedgeSegments(
     return [];
   }
 
-  const hashCount = Math.max(5, Math.min(9, Math.round(geometry.length / 9)));
+  const hashSpacing = Math.max(2, drawingStyle.bondHashSpacingPx);
+  const hashCount = Math.max(5, Math.min(24, Math.round(geometry.length / hashSpacing)));
   const maxWidth = nativeWedgeWidth(drawingStyle);
   return Array.from({ length: hashCount }, (_, index) => {
     const t = (index + 1) / (hashCount + 1);
@@ -3774,6 +4421,66 @@ function nativeMoleculeBondColor(
 ): string {
   const baseColor = styleColorMapValue(object.style.bondColors, bond.id) ?? drawingStyle.bondColor;
   return depthCuedBondColor(baseColor, bond.display?.depthWeight);
+}
+
+export function nativeMoleculeBondDrawingStyle(
+  object: MoleculeObject,
+  bondId: string,
+  drawingStyle: NativeDrawingStyle = nativeDrawingStyleFromObjectStyle(object.style)
+): NativeDrawingStyle {
+  return {
+    ...drawingStyle,
+    bondLengthPx: styleNumberMapValue(object.style.bondLengths, bondId) ?? drawingStyle.bondLengthPx,
+    bondStrokeWidthPx: styleNumberMapValue(object.style.bondStrokeWidths, bondId) ?? drawingStyle.bondStrokeWidthPx,
+    bondBoldWidthPx: styleNumberMapValue(object.style.bondBoldWidths, bondId) ?? drawingStyle.bondBoldWidthPx,
+    bondColor: styleColorMapValue(object.style.bondColors, bondId) ?? drawingStyle.bondColor,
+    bondLineCap: styleBondLineCapMapValue(object.style.bondLineCaps, bondId) ?? drawingStyle.bondLineCap,
+    bondSpacingMode: styleBondSpacingModeMapValue(object.style.bondSpacingModes, bondId) ?? drawingStyle.bondSpacingMode,
+    bondSpacingPercent: styleNumberMapValue(object.style.bondSpacingPercents, bondId) ?? drawingStyle.bondSpacingPercent,
+    multipleBondGapPx: styleNumberMapValue(object.style.bondMultipleBondGaps, bondId) ?? drawingStyle.multipleBondGapPx,
+    doubleBondInsetPx: styleNumberMapValue(object.style.bondDoubleBondInsets, bondId) ?? drawingStyle.doubleBondInsetPx,
+    bondMarginWidthPx: styleNumberMapValue(object.style.bondMarginWidths, bondId) ?? drawingStyle.bondMarginWidthPx,
+    bondHashSpacingPx: styleNumberMapValue(object.style.bondHashSpacings, bondId) ?? drawingStyle.bondHashSpacingPx,
+    bondOverlapClearancePx: styleNumberMapValue(object.style.bondOverlapClearances, bondId) ?? drawingStyle.bondOverlapClearancePx,
+    bondIndicatorShowQuery: styleBooleanMapValue(
+      object.style.bondIndicatorShowQueryByBondId,
+      bondId
+    ) ?? drawingStyle.bondIndicatorShowQuery,
+    bondIndicatorShowStereochemistry: styleBooleanMapValue(
+      object.style.bondIndicatorShowStereochemistryByBondId,
+      bondId
+    ) ?? drawingStyle.bondIndicatorShowStereochemistry,
+    bondIndicatorShowReaction: styleBooleanMapValue(
+      object.style.bondIndicatorShowReactionByBondId,
+      bondId
+    ) ?? drawingStyle.bondIndicatorShowReaction
+  };
+}
+
+export function nativeMoleculeAtomIndicatorStyle(
+  object: MoleculeObject,
+  atomId: string,
+  drawingStyle: NativeDrawingStyle = nativeDrawingStyleFromObjectStyle(object.style)
+): NativeDrawingStyle {
+  return {
+    ...drawingStyle,
+    atomIndicatorShowQuery: styleBooleanMapValue(
+      object.style.atomIndicatorShowQueryByAtomId,
+      atomId
+    ) ?? drawingStyle.atomIndicatorShowQuery,
+    atomIndicatorShowStereochemistry: styleBooleanMapValue(
+      object.style.atomIndicatorShowStereochemistryByAtomId,
+      atomId
+    ) ?? drawingStyle.atomIndicatorShowStereochemistry,
+    atomIndicatorShowEnhancedStereochemistry: styleBooleanMapValue(
+      object.style.atomIndicatorShowEnhancedStereochemistryByAtomId,
+      atomId
+    ) ?? drawingStyle.atomIndicatorShowEnhancedStereochemistry,
+    atomIndicatorShowAtomNumbers: styleBooleanMapValue(
+      object.style.atomIndicatorShowAtomNumbersByAtomId,
+      atomId
+    ) ?? drawingStyle.atomIndicatorShowAtomNumbers
+  };
 }
 
 /**
@@ -3843,6 +4550,46 @@ function nativeMoleculeAtomLabelColor(
   drawingStyle: NativeDrawingStyle
 ): string {
   return styleColorMapValue(object.style.atomLabelColors, atomId) ?? drawingStyle.atomLabelColor;
+}
+
+function nativeMoleculeAtomLabelStyle(
+  object: MoleculeObject,
+  atomId: string,
+  drawingStyle: NativeDrawingStyle
+): NativeDrawingStyle {
+  return {
+    ...drawingStyle,
+    atomLabelFontFamily: styleStringMapValue(object.style.atomLabelFontFamilies, atomId) ?? drawingStyle.atomLabelFontFamily,
+    atomLabelFontSizePx: styleNumberMapValue(object.style.atomLabelFontSizes, atomId) ?? drawingStyle.atomLabelFontSizePx,
+    atomLabelFontWeight: styleNumberMapValue(object.style.atomLabelFontWeights, atomId) ?? drawingStyle.atomLabelFontWeight,
+    atomLabelFontStyle: styleFontStyleMapValue(object.style.atomLabelFontStyles, atomId) ?? drawingStyle.atomLabelFontStyle,
+    atomLabelColor: nativeMoleculeAtomLabelColor(object, atomId, drawingStyle),
+    atomLabelBackgroundColor: styleStringMapValue(
+      object.style.atomLabelBackgroundColors,
+      atomId
+    ) ?? drawingStyle.atomLabelBackgroundColor,
+    atomLabelPaddingPx: styleNumberMapValue(object.style.atomLabelPaddings, atomId) ?? drawingStyle.atomLabelPaddingPx,
+    atomLabelBondClearancePx: styleNumberMapValue(
+      object.style.atomLabelBondClearances,
+      atomId
+    ) ?? drawingStyle.atomLabelBondClearancePx,
+    atomLabelAlignment: styleAtomLabelAlignmentMapValue(
+      object.style.atomLabelAlignments,
+      atomId
+    ) ?? drawingStyle.atomLabelAlignment,
+    atomLabelPlacement: styleAtomLabelPlacementMapValue(
+      object.style.atomLabelPlacements,
+      atomId
+    ) ?? drawingStyle.atomLabelPlacement,
+    atomLabelShowTerminalCarbons: styleBooleanMapValue(
+      object.style.atomLabelShowTerminalCarbonsByAtomId,
+      atomId
+    ) ?? drawingStyle.atomLabelShowTerminalCarbons,
+    atomLabelHideImplicitHydrogens: styleBooleanMapValue(
+      object.style.atomLabelHideImplicitHydrogensByAtomId,
+      atomId
+    ) ?? drawingStyle.atomLabelHideImplicitHydrogens
+  };
 }
 
 function nativeMoleculeStrokeOpacity(object: MoleculeObject): number {
@@ -4016,6 +4763,70 @@ export function styleColorMapValue(value: unknown, id: string): string | undefin
 
   const color = (value as Record<string, unknown>)[id];
   return typeof color === "string" ? color : undefined;
+}
+
+function styleStringMapValue(value: unknown, id: string): string | undefined {
+  const entry = styleMapEntry(value, id);
+  return typeof entry === "string" ? entry : undefined;
+}
+
+function styleNumberMapValue(value: unknown, id: string): number | undefined {
+  const entry = styleMapEntry(value, id);
+  return typeof entry === "number" && Number.isFinite(entry) ? entry : undefined;
+}
+
+function styleBooleanMapValue(value: unknown, id: string): boolean | undefined {
+  const entry = styleMapEntry(value, id);
+  return typeof entry === "boolean" ? entry : undefined;
+}
+
+function styleFontStyleMapValue(
+  value: unknown,
+  id: string
+): NativeDrawingStyle["atomLabelFontStyle"] | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "normal" || entry === "italic" ? entry : undefined;
+}
+
+function styleBondLineCapMapValue(
+  value: unknown,
+  id: string
+): NativeDrawingStyle["bondLineCap"] | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "butt" || entry === "round" || entry === "square" ? entry : undefined;
+}
+
+function styleBondSpacingModeMapValue(
+  value: unknown,
+  id: string
+): NativeDrawingStyle["bondSpacingMode"] | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "absolute" || entry === "percent" ? entry : undefined;
+}
+
+function styleAtomLabelAlignmentMapValue(
+  value: unknown,
+  id: string
+): NativeDrawingStyle["atomLabelAlignment"] | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "automatic" || entry === "left" || entry === "center" || entry === "right"
+    ? entry
+    : undefined;
+}
+
+function styleAtomLabelPlacementMapValue(
+  value: unknown,
+  id: string
+): NativeDrawingStyle["atomLabelPlacement"] | undefined {
+  const entry = styleStringMapValue(value, id);
+  return entry === "automatic" || entry === "above" || entry === "below" ? entry : undefined;
+}
+
+function styleMapEntry(value: unknown, id: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return (value as Record<string, unknown>)[id];
 }
 
 function metadataString(value: unknown): string | undefined {

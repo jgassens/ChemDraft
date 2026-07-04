@@ -30,7 +30,7 @@ pnpm dev:web
 
 `pnpm dev` launches the ChemDraft Tauri desktop app. In the desktop app, drawing toolsets are separate native windows that route command IDs back to the main document window, with visibility and placement persisted by the desktop shell. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface; the browser preview uses in-window floating palette overlays, not palettes embedded in the document canvas.
 
-The `./run-app` helper builds and launches the generated macOS app bundle as `ChemDraft Run App`, which keeps local testing tied to the same inspectable application path. Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR. Tauri requires Rust/Cargo to be installed and available on `PATH`.
+The `./run-app` helper builds and launches the generated macOS app bundle as `ChemDraft Run App`, which keeps local testing tied to the same inspectable application path. Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR from this checkout; the launcher validates the Tauri/Vite dev wiring and uses `http://127.0.0.1:5173`, not ad-hoc Vite ports such as `5174`. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 
 ## Architecture Rules
 

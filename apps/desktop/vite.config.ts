@@ -39,6 +39,7 @@ export default defineConfig({
       "@chemdraft/export-engine/pdf": workspacePackage("../../packages/export-engine/src/pdf.ts"),
       "@chemdraft/export-engine": workspacePackage("../../packages/export-engine/src/index.ts"),
       "@chemdraft/layout-engine": workspacePackage("../../packages/layout-engine/src/index.ts"),
+      "@chemdraft/style-compat": workspacePackage("../../packages/style-compat/src/index.ts"),
       "@chemdraft/toolset-registry": workspacePackage("../../packages/toolset-registry/src/index.ts"),
       "@chemdraft/shortcut-engine": workspacePackage("../../packages/shortcut-engine/src/index.ts"),
       "@chemdraft/viewport-engine": workspacePackage("../../packages/viewport-engine/src/index.ts")

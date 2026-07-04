@@ -42,6 +42,7 @@ import {
   moleculeToMolfileV2000,
   PageSizePresets,
   pageMarginFromLayout,
+  nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   stylePresetToObjectStyle,
   textStyleToObjectStyle,
@@ -65,6 +66,7 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   type MoleculeTransformState,
+  type NativeDrawingStyle,
   type NativeTextStyle,
   type ObjectReorderPlacement,
   type PageOrientation,
@@ -3930,6 +3932,460 @@ export function selectedMoleculeObjectIds(document: ChemDraftDocument): string[]
   );
 }
 
+export type MoleculeBaseStylePatch = Partial<
+  Pick<
+    NativeDrawingStyle,
+    | "chainAngleDegrees"
+    | "bondStrokeWidthPx"
+    | "bondBoldWidthPx"
+    | "bondColor"
+    | "bondLineCap"
+    | "bondSpacingMode"
+    | "bondSpacingPercent"
+    | "multipleBondGapPx"
+    | "doubleBondInsetPx"
+    | "bondMarginWidthPx"
+    | "bondHashSpacingPx"
+    | "bondOverlapClearancePx"
+    | "atomIndicatorShowQuery"
+    | "atomIndicatorShowStereochemistry"
+    | "atomIndicatorShowEnhancedStereochemistry"
+    | "atomIndicatorShowAtomNumbers"
+    | "bondIndicatorShowQuery"
+    | "bondIndicatorShowStereochemistry"
+    | "bondIndicatorShowReaction"
+    | "atomLabelFontFamily"
+    | "atomLabelFontSizePx"
+    | "atomLabelFontWeight"
+    | "atomLabelFontStyle"
+    | "atomLabelColor"
+    | "atomLabelBackgroundColor"
+    | "atomLabelPaddingPx"
+    | "atomLabelBondClearancePx"
+    | "atomLabelAlignment"
+    | "atomLabelPlacement"
+    | "atomLabelShowTerminalCarbons"
+    | "atomLabelHideImplicitHydrogens"
+  >
+>;
+
+export function applyMoleculeBaseStylePatch(
+  document: ChemDraftDocument,
+  moleculeObjectIds: readonly string[],
+  patch: MoleculeBaseStylePatch
+): ChemDraftDocument {
+  const targetIds = new Set(moleculeObjectIds);
+  const patchEntries = Object.entries(patch).filter(([, value]) => value !== undefined);
+  if (targetIds.size === 0 || patchEntries.length === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule" || !targetIds.has(object.id)) {
+        return [];
+      }
+      // Patch values are top-level primitives, so a shallow compare against the
+      // current values is equivalent to the old whole-style JSON.stringify diff and
+      // skips building nextStyle (and serializing twice) on a no-op.
+      const changed = patchEntries.some(
+        ([key, value]) => (object.style as Record<string, unknown>)[key] !== value
+      );
+      return changed
+        ? [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: { style: { ...object.style, ...Object.fromEntries(patchEntries) } }
+          }]
+        : [];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+export interface MoleculeAtomLabelStyleTarget {
+  objectId: string;
+  atomId: string;
+}
+
+export type MoleculeAtomLabelStylePatch = Partial<
+  Pick<
+    NativeDrawingStyle,
+    | "atomLabelFontFamily"
+    | "atomLabelFontSizePx"
+    | "atomLabelFontWeight"
+    | "atomLabelFontStyle"
+    | "atomLabelColor"
+    | "atomLabelBackgroundColor"
+    | "atomLabelPaddingPx"
+    | "atomLabelBondClearancePx"
+    | "atomLabelAlignment"
+    | "atomLabelPlacement"
+    | "atomLabelShowTerminalCarbons"
+    | "atomLabelHideImplicitHydrogens"
+  >
+>;
+
+export function applyMoleculeAtomLabelStylePatch(
+  document: ChemDraftDocument,
+  targets: readonly MoleculeAtomLabelStyleTarget[],
+  patch: MoleculeAtomLabelStylePatch
+): ChemDraftDocument {
+  const patchEntries = Object.entries(patch).filter((entry): entry is [keyof MoleculeAtomLabelStylePatch, NonNullable<MoleculeAtomLabelStylePatch[keyof MoleculeAtomLabelStylePatch]>] =>
+    entry[1] !== undefined
+  );
+  if (targets.length === 0 || patchEntries.length === 0) {
+    return document;
+  }
+
+  const targetAtomIdsByObject = new Map<string, Set<string>>();
+  targets.forEach((target) => {
+    const atomIds = targetAtomIdsByObject.get(target.objectId) ?? new Set<string>();
+    atomIds.add(target.atomId);
+    targetAtomIdsByObject.set(target.objectId, atomIds);
+  });
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule") {
+        return [];
+      }
+      const requestedAtomIds = targetAtomIdsByObject.get(object.id);
+      if (!requestedAtomIds) {
+        return [];
+      }
+      const atomIds = object.atoms.map((atom) => atom.id).filter((atomId) => requestedAtomIds.has(atomId));
+      if (atomIds.length === 0) {
+        return [];
+      }
+
+      let nextStyle = object.style;
+      const touchedKeys = new Set<string>();
+      for (const [field, value] of patchEntries) {
+        const mapKey = atomLabelStyleMapKey(field);
+        if (!mapKey) {
+          continue;
+        }
+        const nextMap = stylePrimitiveMap(nextStyle[mapKey], atomLabelStyleMapValueIsValid(field));
+        atomIds.forEach((atomId) => {
+          nextMap[atomId] = value;
+        });
+        nextStyle = {
+          ...nextStyle,
+          [mapKey]: nextMap
+        };
+        touchedKeys.add(mapKey);
+      }
+
+      return moleculeStyleChangedAtKeys(object.style, nextStyle, touchedKeys)
+        ? [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: { style: nextStyle }
+          }]
+        : [];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+export interface MoleculeBondStyleTarget {
+  objectId: string;
+  bondId: string;
+}
+
+export type MoleculeBondStylePatch = Partial<
+  Pick<
+    NativeDrawingStyle,
+    | "bondLengthPx"
+    | "bondStrokeWidthPx"
+    | "bondBoldWidthPx"
+    | "bondColor"
+    | "bondLineCap"
+    | "bondSpacingMode"
+    | "bondSpacingPercent"
+    | "multipleBondGapPx"
+    | "doubleBondInsetPx"
+    | "bondMarginWidthPx"
+    | "bondHashSpacingPx"
+    | "bondOverlapClearancePx"
+    | "bondIndicatorShowQuery"
+    | "bondIndicatorShowStereochemistry"
+    | "bondIndicatorShowReaction"
+  >
+>;
+
+export function applyMoleculeBondStylePatch(
+  document: ChemDraftDocument,
+  targets: readonly MoleculeBondStyleTarget[],
+  patch: MoleculeBondStylePatch
+): ChemDraftDocument {
+  const patchEntries = Object.entries(patch).filter((entry): entry is [keyof MoleculeBondStylePatch, NonNullable<MoleculeBondStylePatch[keyof MoleculeBondStylePatch]>] =>
+    entry[1] !== undefined
+  );
+  if (targets.length === 0 || patchEntries.length === 0) {
+    return document;
+  }
+
+  const targetBondIdsByObject = new Map<string, Set<string>>();
+  targets.forEach((target) => {
+    const bondIds = targetBondIdsByObject.get(target.objectId) ?? new Set<string>();
+    bondIds.add(target.bondId);
+    targetBondIdsByObject.set(target.objectId, bondIds);
+  });
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule") {
+        return [];
+      }
+      const requestedBondIds = targetBondIdsByObject.get(object.id);
+      if (!requestedBondIds) {
+        return [];
+      }
+      const bondIds = object.bonds.map((bond) => bond.id).filter((bondId) => requestedBondIds.has(bondId));
+      if (bondIds.length === 0) {
+        return [];
+      }
+
+      let nextStyle = object.style;
+      const touchedKeys = new Set<string>();
+      for (const [field, value] of patchEntries) {
+        const mapKey = bondStyleMapKey(field);
+        if (!mapKey) {
+          continue;
+        }
+        const nextMap = stylePrimitiveMap(nextStyle[mapKey], bondStyleMapValueIsValid(field));
+        bondIds.forEach((bondId) => {
+          nextMap[bondId] = value;
+        });
+        nextStyle = {
+          ...nextStyle,
+          [mapKey]: nextMap
+        };
+        touchedKeys.add(mapKey);
+      }
+
+      return moleculeStyleChangedAtKeys(object.style, nextStyle, touchedKeys)
+        ? [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: { style: nextStyle }
+          }]
+        : [];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+export interface MoleculeAtomIndicatorStyleTarget {
+  objectId: string;
+  atomId: string;
+}
+
+export type MoleculeAtomIndicatorStylePatch = Partial<
+  Pick<
+    NativeDrawingStyle,
+    | "atomIndicatorShowQuery"
+    | "atomIndicatorShowStereochemistry"
+    | "atomIndicatorShowEnhancedStereochemistry"
+    | "atomIndicatorShowAtomNumbers"
+  >
+>;
+
+export function applyMoleculeAtomIndicatorStylePatch(
+  document: ChemDraftDocument,
+  targets: readonly MoleculeAtomIndicatorStyleTarget[],
+  patch: MoleculeAtomIndicatorStylePatch
+): ChemDraftDocument {
+  const patchEntries = Object.entries(patch).filter((entry): entry is [keyof MoleculeAtomIndicatorStylePatch, NonNullable<MoleculeAtomIndicatorStylePatch[keyof MoleculeAtomIndicatorStylePatch]>] =>
+    entry[1] !== undefined
+  );
+  if (targets.length === 0 || patchEntries.length === 0) {
+    return document;
+  }
+
+  const targetAtomIdsByObject = new Map<string, Set<string>>();
+  targets.forEach((target) => {
+    const atomIds = targetAtomIdsByObject.get(target.objectId) ?? new Set<string>();
+    atomIds.add(target.atomId);
+    targetAtomIdsByObject.set(target.objectId, atomIds);
+  });
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule") {
+        return [];
+      }
+      const requestedAtomIds = targetAtomIdsByObject.get(object.id);
+      if (!requestedAtomIds) {
+        return [];
+      }
+      const atomIds = object.atoms.map((atom) => atom.id).filter((atomId) => requestedAtomIds.has(atomId));
+      if (atomIds.length === 0) {
+        return [];
+      }
+
+      let nextStyle = object.style;
+      const touchedKeys = new Set<string>();
+      for (const [field, value] of patchEntries) {
+        const mapKey = atomIndicatorStyleMapKey(field);
+        const nextMap = stylePrimitiveMap(nextStyle[mapKey], atomIndicatorStyleMapValueIsValid(field));
+        atomIds.forEach((atomId) => {
+          nextMap[atomId] = value;
+        });
+        nextStyle = {
+          ...nextStyle,
+          [mapKey]: nextMap
+        };
+        touchedKeys.add(mapKey);
+      }
+
+      return moleculeStyleChangedAtKeys(object.style, nextStyle, touchedKeys)
+        ? [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: { style: nextStyle }
+          }]
+        : [];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+export function applyMoleculeTargetBondLength(
+  document: ChemDraftDocument,
+  moleculeObjectIds: readonly string[],
+  targetBondLengthPx: number
+): ChemDraftDocument {
+  if (!Number.isFinite(targetBondLengthPx) || targetBondLengthPx <= 0) {
+    return document;
+  }
+
+  const targetIds = new Set(moleculeObjectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule" || !targetIds.has(object.id)) {
+        return [];
+      }
+
+      const representative = representativeNativeMoleculeBondLength(object);
+      const nextStyle = {
+        ...object.style,
+        bondLengthPx: targetBondLengthPx
+      };
+      const scaled = representative
+        ? scaledMoleculeToTargetBondLength(object, targetBondLengthPx, representative, nextStyle)
+        : normalizeNativeMoleculeGeometry({ ...object, style: nextStyle });
+      const changes = moleculeObjectChanges(object, scaled);
+      return Object.keys(changes).length === 0
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+export function applyMoleculeTargetBondLengthToBonds(
+  document: ChemDraftDocument,
+  targets: readonly MoleculeBondStyleTarget[],
+  targetBondLengthPx: number
+): ChemDraftDocument {
+  if (!Number.isFinite(targetBondLengthPx) || targetBondLengthPx <= 0 || targets.length === 0) {
+    return document;
+  }
+
+  const targetBondIdsByObject = new Map<string, Set<string>>();
+  targets.forEach((target) => {
+    const bondIds = targetBondIdsByObject.get(target.objectId) ?? new Set<string>();
+    bondIds.add(target.bondId);
+    targetBondIdsByObject.set(target.objectId, bondIds);
+  });
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "molecule") {
+        return [];
+      }
+      const requestedBondIds = targetBondIdsByObject.get(object.id);
+      if (!requestedBondIds) {
+        return [];
+      }
+      const selectedBonds = object.bonds.filter((bond) => requestedBondIds.has(bond.id));
+      if (selectedBonds.length === 0) {
+        return [];
+      }
+
+      const nextBondLengths = stylePrimitiveMap(object.style.bondLengths, (candidate): candidate is number =>
+        typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0
+      );
+      selectedBonds.forEach((bond) => {
+        nextBondLengths[bond.id] = targetBondLengthPx;
+      });
+
+      const atomById = new Map(object.atoms.map((atom) => [atom.id, { ...atom }]));
+      selectedBonds.forEach((bond) => {
+        const from = atomById.get(bond.fromAtomId);
+        const to = atomById.get(bond.toAtomId);
+        if (!from || !to) {
+          return;
+        }
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const length = Math.hypot(dx, dy);
+        if (!Number.isFinite(length) || length <= 0) {
+          return;
+        }
+        const unit = { x: dx / length, y: dy / length };
+        const center = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+        const half = targetBondLengthPx / 2;
+        atomById.set(from.id, {
+          ...from,
+          x: center.x - unit.x * half,
+          y: center.y - unit.y * half
+        });
+        atomById.set(to.id, {
+          ...to,
+          x: center.x + unit.x * half,
+          y: center.y + unit.y * half
+        });
+      });
+
+      const nextObject = normalizeNativeMoleculeGeometry({
+        ...object,
+        atoms: object.atoms.map((atom) => atomById.get(atom.id) ?? atom),
+        style: {
+          ...object.style,
+          bondLengths: nextBondLengths
+        }
+      });
+      const changes = moleculeObjectChanges(object, nextObject);
+      return Object.keys(changes).length === 0
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
 export function selectedVisualEffectObjectIds(
   document: ChemDraftDocument,
   options: { excludeMoleculeObjectId?: string } = {}
@@ -5853,13 +6309,15 @@ export function previewNativeMoleculeBondGrowth(
     return undefined;
   }
 
+  const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
   const extension = planBondExtension({
     atoms: molecule.atoms,
     bonds: molecule.bonds,
     clickPoint: point,
-    bondLength: nativeBondLength,
+    bondLength: drawingStyle.bondLengthPx,
     hitRadius: atomHitRadius,
     maxBondsPerAtom: nativeAtomInvalidGrowthLimit,
+    targetBondAngleDegrees: drawingStyle.chainAngleDegrees,
     preferredAtomId: atomHit.atomId,
     pageBounds: { x: 0, y: 0, width: pageWidth, height: pageHeight },
     objectBounds: {
@@ -5881,7 +6339,12 @@ export function previewNativeMoleculeBondGrowth(
     atomId: extension.sourceAtomId,
     targetAtomId: extension.targetAtomId,
     direction: extension.direction,
-    candidateDirections: nativeBondGrowthCandidateDirections(molecule, extension.sourceAtomId, extension.direction),
+    candidateDirections: nativeBondGrowthCandidateDirections(
+      molecule,
+      extension.sourceAtomId,
+      extension.direction,
+      drawingStyle.chainAngleDegrees
+    ),
     newAtomPoint: extension.newAtomPoint,
     distanceToPointer: extension.distanceToClick,
     availableBonds: atomHit.availableBonds
@@ -5891,7 +6354,8 @@ export function previewNativeMoleculeBondGrowth(
 function nativeBondGrowthCandidateDirections(
   molecule: MoleculeObject,
   atomId: string,
-  selectedDirection: PagePoint
+  selectedDirection: PagePoint,
+  targetBondAngleDegrees: number = ChemDraftSyntheticStylePreset.drawing.chainAngleDegrees
 ): PagePoint[] {
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
@@ -5910,7 +6374,7 @@ function nativeBondGrowthCandidateDirections(
 
   const neighbor = neighborAtoms[0];
   const neighborAngle = Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x);
-  const targetAngle = 120 * Math.PI / 180;
+  const targetAngle = targetBondAngleDegrees * Math.PI / 180;
   const directions = [
     selectedDirection,
     directionFromAngle(neighborAngle + targetAngle),
@@ -5973,12 +6437,13 @@ export function previewNativeMoleculeFreeformBondGrowth(
     return undefined;
   }
 
+  const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
   const extension = planFreeformBondExtension({
     atoms: molecule.atoms,
     bonds: molecule.bonds,
     sourceAtomId,
     endPoint: point,
-    bondLength: nativeBondLength,
+    bondLength: drawingStyle.bondLengthPx,
     pageBounds: { x: 0, y: 0, width: pageWidth, height: pageHeight },
     maxBondsPerAtom: nativeAtomInvalidGrowthLimit,
     minimumBondLength: freeformMinimumBondLength,
@@ -5998,13 +6463,18 @@ export function previewNativeMoleculeFreeformBondGrowth(
     atomId: extension.sourceAtomId,
     targetAtomId: extension.targetAtomId,
     direction: extension.direction,
-    candidateDirections: nativeBondGrowthCandidateDirections(molecule, extension.sourceAtomId, extension.direction),
+    candidateDirections: nativeBondGrowthCandidateDirections(
+      molecule,
+      extension.sourceAtomId,
+      extension.direction,
+      drawingStyle.chainAngleDegrees
+    ),
     newAtomPoint: extension.newAtomPoint,
     distanceToPointer: extension.distanceToClick,
     availableBonds: atomHit.availableBonds,
     customLength: extension.lengthMode === "custom",
     length,
-    lengthAngstrom: Number((length / nativeBondLength * nativeCarbonSingleBondLengthAngstrom).toFixed(3))
+    lengthAngstrom: Number((length / drawingStyle.bondLengthPx * nativeCarbonSingleBondLengthAngstrom).toFixed(3))
   };
 }
 
@@ -6527,6 +6997,111 @@ function updateMoleculeObjects(
   );
 
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const heavyDistances: number[] = [];
+  const allDistances: number[] = [];
+  for (const bond of molecule.bonds) {
+    const from = atomById.get(bond.fromAtomId);
+    const to = atomById.get(bond.toAtomId);
+    if (!from || !to) {
+      continue;
+    }
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    if (!Number.isFinite(distance) || distance <= 0) {
+      continue;
+    }
+    allDistances.push(distance);
+    if (nativeElementFromAtomLabel(from.element) !== "H" && nativeElementFromAtomLabel(to.element) !== "H") {
+      heavyDistances.push(distance);
+    }
+  }
+  return medianNumber(heavyDistances.length > 0 ? heavyDistances : allDistances);
+}
+
+function scaledMoleculeToTargetBondLength(
+  molecule: MoleculeObject,
+  targetBondLengthPx: number,
+  representativeBondLengthPx: number,
+  nextStyle: Record<string, unknown>
+): MoleculeObject {
+  const scale = targetBondLengthPx / representativeBondLengthPx;
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return normalizeNativeMoleculeGeometry({ ...molecule, style: nextStyle });
+  }
+
+  const center = moleculeAtomBoundsCenter(molecule.atoms);
+  if (!center) {
+    return normalizeNativeMoleculeGeometry({ ...molecule, style: nextStyle });
+  }
+
+  const atoms = molecule.atoms.map((atom) => ({
+    ...atom,
+    x: center.x + (atom.x - center.x) * scale,
+    y: center.y + (atom.y - center.y) * scale,
+    ...(atom.labelOffset ? {
+      labelOffset: {
+        x: atom.labelOffset.x * scale,
+        y: atom.labelOffset.y * scale
+      }
+    } : {})
+  }));
+
+  return normalizeNativeMoleculeGeometry({
+    ...molecule,
+    style: nextStyle,
+    atoms
+  });
+}
+
+function moleculeAtomBoundsCenter(atoms: readonly MoleculeAtom[]): PagePoint | undefined {
+  if (atoms.length === 0) {
+    return undefined;
+  }
+  const minX = Math.min(...atoms.map((atom) => atom.x));
+  const maxX = Math.max(...atoms.map((atom) => atom.x));
+  const minY = Math.min(...atoms.map((atom) => atom.y));
+  const maxY = Math.max(...atoms.map((atom) => atom.y));
+  return {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2
+  };
+}
+
+function moleculeObjectChanges(previous: MoleculeObject, next: MoleculeObject): Partial<MoleculeObject> {
+  const changes: Partial<MoleculeObject> = {};
+  if (JSON.stringify(previous.style) !== JSON.stringify(next.style)) {
+    changes.style = next.style;
+  }
+  if (JSON.stringify(previous.atoms) !== JSON.stringify(next.atoms)) {
+    changes.atoms = next.atoms;
+  }
+  if (previous.x !== next.x) {
+    changes.x = next.x;
+  }
+  if (previous.y !== next.y) {
+    changes.y = next.y;
+  }
+  if (previous.width !== next.width) {
+    changes.width = next.width;
+  }
+  if (previous.height !== next.height) {
+    changes.height = next.height;
+  }
+  return changes;
+}
+
+function medianNumber(values: readonly number[]): number | undefined {
+  if (values.length === 0) {
+    return undefined;
+  }
+  const sorted = [...values].sort((first, second) => first - second);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+    : sorted[middle];
 }
 
 type MoleculeRingStyleRecord = Record<string, unknown>;
@@ -7303,6 +7878,193 @@ function styleColorMap(value: unknown): Record<string, string> {
     Object.entries(value)
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
   );
+}
+
+function stylePrimitiveMap<T extends string | number | boolean>(
+  value: unknown,
+  isValid: (candidate: unknown) => candidate is T
+): Record<string, T> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry): entry is [string, T] => isValid(entry[1]))
+  );
+}
+
+// nextStyle is built by spreading object.style and reassigning only the touched
+// sparse-map keys, so every other key is reference-identical. Comparing just the
+// touched keys reproduces the old whole-style JSON.stringify diff while skipping
+// serialization of the many untouched per-atom/per-bond override maps.
+function moleculeStyleChangedAtKeys(
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+  keys: ReadonlySet<string>
+): boolean {
+  for (const key of keys) {
+    if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function atomLabelStyleMapKey(field: keyof MoleculeAtomLabelStylePatch): string | undefined {
+  switch (field) {
+    case "atomLabelFontFamily":
+      return "atomLabelFontFamilies";
+    case "atomLabelFontSizePx":
+      return "atomLabelFontSizes";
+    case "atomLabelFontWeight":
+      return "atomLabelFontWeights";
+    case "atomLabelFontStyle":
+      return "atomLabelFontStyles";
+    case "atomLabelColor":
+      return "atomLabelColors";
+    case "atomLabelBackgroundColor":
+      return "atomLabelBackgroundColors";
+    case "atomLabelPaddingPx":
+      return "atomLabelPaddings";
+    case "atomLabelBondClearancePx":
+      return "atomLabelBondClearances";
+    case "atomLabelAlignment":
+      return "atomLabelAlignments";
+    case "atomLabelPlacement":
+      return "atomLabelPlacements";
+    case "atomLabelShowTerminalCarbons":
+      return "atomLabelShowTerminalCarbonsByAtomId";
+    case "atomLabelHideImplicitHydrogens":
+      return "atomLabelHideImplicitHydrogensByAtomId";
+    default: {
+      const _exhaustive: never = field;
+      return _exhaustive;
+    }
+  }
+}
+
+function atomLabelStyleMapValueIsValid(
+  field: keyof MoleculeAtomLabelStylePatch
+): (candidate: unknown) => candidate is string | number | boolean {
+  switch (field) {
+    case "atomLabelFontFamily":
+    case "atomLabelColor":
+    case "atomLabelBackgroundColor":
+      return (candidate): candidate is string => typeof candidate === "string";
+    case "atomLabelFontSizePx":
+    case "atomLabelFontWeight":
+    case "atomLabelPaddingPx":
+    case "atomLabelBondClearancePx":
+      return (candidate): candidate is number => typeof candidate === "number" && Number.isFinite(candidate);
+    case "atomLabelFontStyle":
+      return (candidate): candidate is string => candidate === "normal" || candidate === "italic";
+    case "atomLabelAlignment":
+      return (candidate): candidate is string =>
+        candidate === "automatic" || candidate === "left" || candidate === "center" || candidate === "right";
+    case "atomLabelPlacement":
+      return (candidate): candidate is string => candidate === "automatic" || candidate === "above" || candidate === "below";
+    case "atomLabelShowTerminalCarbons":
+    case "atomLabelHideImplicitHydrogens":
+      return (candidate): candidate is boolean => typeof candidate === "boolean";
+    default: {
+      const _exhaustive: never = field;
+      return _exhaustive;
+    }
+  }
+}
+
+function bondStyleMapKey(field: keyof MoleculeBondStylePatch): string | undefined {
+  switch (field) {
+    case "bondLengthPx":
+      return "bondLengths";
+    case "bondStrokeWidthPx":
+      return "bondStrokeWidths";
+    case "bondBoldWidthPx":
+      return "bondBoldWidths";
+    case "bondColor":
+      return "bondColors";
+    case "bondLineCap":
+      return "bondLineCaps";
+    case "bondSpacingMode":
+      return "bondSpacingModes";
+    case "bondSpacingPercent":
+      return "bondSpacingPercents";
+    case "multipleBondGapPx":
+      return "bondMultipleBondGaps";
+    case "doubleBondInsetPx":
+      return "bondDoubleBondInsets";
+    case "bondMarginWidthPx":
+      return "bondMarginWidths";
+    case "bondHashSpacingPx":
+      return "bondHashSpacings";
+    case "bondOverlapClearancePx":
+      return "bondOverlapClearances";
+    case "bondIndicatorShowQuery":
+      return "bondIndicatorShowQueryByBondId";
+    case "bondIndicatorShowStereochemistry":
+      return "bondIndicatorShowStereochemistryByBondId";
+    case "bondIndicatorShowReaction":
+      return "bondIndicatorShowReactionByBondId";
+    default: {
+      const _exhaustive: never = field;
+      return _exhaustive;
+    }
+  }
+}
+
+function bondStyleMapValueIsValid(
+  field: keyof MoleculeBondStylePatch
+): (candidate: unknown) => candidate is string | number | boolean {
+  switch (field) {
+    case "bondColor":
+      return (candidate): candidate is string => typeof candidate === "string";
+    case "bondLineCap":
+      return (candidate): candidate is string => candidate === "butt" || candidate === "round" || candidate === "square";
+    case "bondSpacingMode":
+      return (candidate): candidate is string => candidate === "absolute" || candidate === "percent";
+    case "bondLengthPx":
+    case "bondStrokeWidthPx":
+    case "bondBoldWidthPx":
+    case "bondSpacingPercent":
+    case "multipleBondGapPx":
+    case "doubleBondInsetPx":
+    case "bondMarginWidthPx":
+    case "bondHashSpacingPx":
+    case "bondOverlapClearancePx":
+      return (candidate): candidate is number => typeof candidate === "number" && Number.isFinite(candidate);
+    case "bondIndicatorShowQuery":
+    case "bondIndicatorShowStereochemistry":
+    case "bondIndicatorShowReaction":
+      return (candidate): candidate is boolean => typeof candidate === "boolean";
+    default: {
+      const _exhaustive: never = field;
+      return _exhaustive;
+    }
+  }
+}
+
+function atomIndicatorStyleMapKey(field: keyof MoleculeAtomIndicatorStylePatch): string {
+  switch (field) {
+    case "atomIndicatorShowQuery":
+      return "atomIndicatorShowQueryByAtomId";
+    case "atomIndicatorShowStereochemistry":
+      return "atomIndicatorShowStereochemistryByAtomId";
+    case "atomIndicatorShowEnhancedStereochemistry":
+      return "atomIndicatorShowEnhancedStereochemistryByAtomId";
+    case "atomIndicatorShowAtomNumbers":
+      return "atomIndicatorShowAtomNumbersByAtomId";
+    default: {
+      const _exhaustive: never = field;
+      return _exhaustive;
+    }
+  }
+}
+
+function atomIndicatorStyleMapValueIsValid(
+  _field: keyof MoleculeAtomIndicatorStylePatch
+): (candidate: unknown) => candidate is boolean {
+  return (candidate): candidate is boolean => typeof candidate === "boolean";
 }
 
 export function getSelectedMolecule(document: ChemDraftDocument): MoleculeObject | undefined {

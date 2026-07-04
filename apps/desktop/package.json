@@ -25,6 +25,7 @@
     "@chemdraft/plugin-host": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
     "@chemdraft/shortcut-engine": "workspace:*",
+    "@chemdraft/style-compat": "workspace:*",
     "@chemdraft/toolset-registry": "workspace:*",
     "@chemdraft/viewport-engine": "workspace:*",
     "@jaames/iro": "^5.5.2",

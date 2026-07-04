@@ -363,12 +363,30 @@
       ]
     },
     {
+      "id": "core.ringInspector",
+      "title": "Rings",
+      "source": "core",
+      "defaultVisible": false,
+      "defaultMode": "floating",
+      "preferredWindowSize": { "width": 360, "height": 300, "minWidth": 320, "minHeight": 240 },
+      "category": "core",
+      "gridLayout": { "orientation": "horizontal", "rows": 1, "cellWidth": 24, "cellHeight": 24 },
+      "groups": [
+        {
+          "id": "core.ringInspector.toggle",
+          "items": [
+            { "commandId": "view.toggleRingInspector", "title": "Rings", "icon": "inspector", "category": "view" }
+          ]
+        }
+      ]
+    },
+    {
       "id": "core.moleculeInspector",
       "title": "Molecule Inspector",
       "source": "core",
       "defaultVisible": false,
       "defaultMode": "floating",
-      "preferredWindowSize": { "width": 312, "height": 224, "minWidth": 288, "minHeight": 196 },
+      "preferredWindowSize": { "width": 520, "height": 520, "minWidth": 500, "minHeight": 340 },
       "category": "core",
       "gridLayout": { "orientation": "horizontal", "rows": 1, "cellWidth": 24, "cellHeight": 24 },
       "groups": [

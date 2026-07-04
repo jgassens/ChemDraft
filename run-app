@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
 DEV_PORT="5173"
+DEV_URL="http://$DEV_HOST:$DEV_PORT"
 RUN_MODE="${1:-app}"
 TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
 RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app"
@@ -16,7 +17,7 @@ usage() {
 Usage: ./run-app [--dev]
 
 Default: build and launch the inspectable macOS app bundle.
-  --dev   launch Tauri dev mode with Vite/HMR.
+  --dev   launch Tauri dev mode from this checkout with Vite/HMR at $DEV_URL.
 EOF
 }
 
@@ -100,6 +101,41 @@ stop_existing_dev_server() {
         ;;
     esac
   done
+}
+
+warn_about_other_preview_ports() {
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local port pids
+  for port in 5174; do
+    if [ "$port" = "$DEV_PORT" ]; then
+      continue
+    fi
+    pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+    if [ -n "$pids" ]; then
+      echo "Note: port $port is already listening, but this launcher uses $DEV_URL."
+      echo "Use $DEV_URL for this checkout's dev frontend; do not trust port $port for this run."
+    fi
+  done
+}
+
+assert_dev_wiring_matches_script() {
+  local tauri_config="$APP_DIR/src-tauri/tauri.conf.json"
+  local desktop_package="$APP_DIR/package.json"
+
+  if ! grep -Fq "\"devUrl\": \"$DEV_URL\"" "$tauri_config"; then
+    echo "Refusing to launch dev mode: $tauri_config is not wired to $DEV_URL."
+    echo "Update DEV_HOST/DEV_PORT in ./run-app or the Tauri devUrl so they match."
+    exit 1
+  fi
+
+  if ! grep -Fq "vite --host $DEV_HOST --port $DEV_PORT --strictPort" "$desktop_package"; then
+    echo "Refusing to launch dev mode: $desktop_package does not start Vite on $DEV_URL with --strictPort."
+    echo "Update the dev:web script or DEV_HOST/DEV_PORT in ./run-app so they match."
+    exit 1
+  fi
 }
 
 clear_saved_window_state() {
@@ -219,6 +255,20 @@ activate_launched_bundle() {
   echo "If the window is not active, click $RUN_APP_DISPLAY_NAME once or run ./run-app again."
 }
 
+launch_dev_mode() {
+  assert_dev_wiring_matches_script
+  stop_existing_dev_server strict
+  clear_saved_window_state
+  warn_about_other_preview_ports
+
+  echo "Launching ChemDraft Tauri dev mode from:"
+  echo "$ROOT_DIR"
+  echo "Dev frontend URL: $DEV_URL"
+  echo "For the inspectable packaged app bundle, run ./run-app without --dev."
+
+  exec npm run dev
+}
+
 cd "$ROOT_DIR"
 
 if [ ! -d "$ROOT_DIR/node_modules" ] || [ ! -d "$APP_DIR/node_modules" ]; then
@@ -246,8 +296,7 @@ fi
 stop_existing_dev_apps
 
 if [ "$RUN_MODE" = "--dev" ]; then
-  stop_existing_dev_server strict
-  exec npm run dev
+  launch_dev_mode
 fi
 
 stop_existing_dev_server ignore-unrelated

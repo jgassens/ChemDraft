@@ -158,6 +158,9 @@ import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DEFAULT_TOOLSET_ID,
+  PALETTE_COMMAND_CANCEL_EVENT,
+  PALETTE_COMMAND_COMMIT_EVENT,
+  PALETTE_COMMAND_PREVIEW_EVENT,
   TOOLSET_ACTIVE_TOOL_EVENT,
   TOOLSET_ACTIVE_TOOL_REQUEST_EVENT,
   TOOLSET_TEXT_STYLE_EVENT,
@@ -307,6 +310,11 @@ describe("ChemDraft desktop shell", () => {
     const markup = renderToStaticMarkup(createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: false }));
 
     expect(markup).toContain("app-shell");
+    expect(markup).toContain("dev-browser-menu-shell");
+    expect(markup).toContain("dev-browser-menu-bar");
+    expect(markup).toContain('data-dev-browser-menu-bar="true"');
+    expect(markup).toContain('data-dev-browser-menu-button="file"');
+    expect(markup).toContain('data-dev-browser-menu-button="view"');
     expect(markup).toContain("web-floating-palette");
     expect(markup).toContain("data-floating-palette");
     expect(markup).toContain("tool-palette");
@@ -317,12 +325,28 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("crosshair-axis-vertical");
     expect(markup).toContain("crosshair-tick-quarter");
     expect(markup).toContain("document-board without-rulers");
-    expect(markup).not.toContain("menu-bar");
     expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("statusbar");
     expect(markup).not.toContain("EditorAdapter not connected");
     expect(markup).not.toContain("tool-palette docked");
     expect(markup.indexOf("web-floating-palette")).toBeLessThan(markup.indexOf('class="workspace"'));
+  });
+
+  it("keeps the browser-only menu bar out of Tauri runtime renders", () => {
+    const tauriGlobal = globalThis as typeof globalThis & { __TAURI__?: unknown };
+    tauriGlobal.__TAURI__ = {};
+    try {
+      const markup = renderToStaticMarkup(
+        createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: false })
+      );
+
+      expect(markup).toContain("web-shell");
+      expect(markup).not.toContain("dev-browser-menu-shell");
+      expect(markup).not.toContain('data-dev-browser-menu-bar="true"');
+      expect(markup).not.toContain("dev-browser-menu-bar");
+    } finally {
+      delete tauriGlobal.__TAURI__;
+    }
   });
 
   it("renders the main desktop document window without an in-window palette by default", () => {
@@ -1346,6 +1370,18 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("descriptor.menuLabel");
     expect(mainWindowSource).toContain("setStatus(`Command failed: ${message}`)");
     expect(mainWindowSource).toContain('role="status"');
+  });
+
+  it("keeps native template dialogs on the fast path", () => {
+    expect(mainWindowSource).toContain("prewarmNativeDialogModule()");
+    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"@tauri-apps/plugin-dialog\")");
+    expect(mainWindowSource).toContain("const { open } = await loadTauriDialogModule();");
+    expect(mainWindowSource).toContain("const { save } = await loadTauriDialogModule();");
+
+    const saveDialogIndex = mainWindowSource.indexOf("const path = await pickNativeMoleculeTemplateSavePath(defaultPath);");
+    const serializeIndex = mainWindowSource.indexOf("const contents = buildTemplateContents();", saveDialogIndex);
+    expect(saveDialogIndex).toBeGreaterThan(-1);
+    expect(serializeIndex).toBeGreaterThan(saveDialogIndex);
   });
 
   it("offers a page-size choice when imported CDXML content overflows the current page", () => {
@@ -2590,6 +2626,7 @@ describe("ChemDraft desktop shell", () => {
         "core.layout",
         "core.style",
         "core.text",
+        "core.ringInspector",
         "core.moleculeInspector",
         "plugin.fixture"
       ])
@@ -3006,6 +3043,9 @@ describe("ChemDraft desktop shell", () => {
     expect(TOOLSET_TEXT_STYLE_EVENT).toBe("chemdraft://toolset-text-style");
     expect(TOOLSET_TEXT_STYLE_REQUEST_EVENT).toBe("chemdraft://toolset-text-style-request");
     expect(TOOLSET_WINDOW_STATE_EVENT).toBe("chemdraft://toolset-window-state");
+    expect(PALETTE_COMMAND_PREVIEW_EVENT).toBe("chemdraft://palette-command-preview");
+    expect(PALETTE_COMMAND_COMMIT_EVENT).toBe("chemdraft://palette-command-commit");
+    expect(PALETTE_COMMAND_CANCEL_EVENT).toBe("chemdraft://palette-command-cancel");
     expect(createToolsetWindowStatePayload("core.structure", true, false, { x: 120, y: 180 })).toEqual({
       toolsetId: "core.structure",
       open: true,

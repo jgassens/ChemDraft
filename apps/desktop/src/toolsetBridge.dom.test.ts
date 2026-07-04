@@ -94,6 +94,14 @@ describe("toolset bridge interactions", () => {
     });
   }
 
+  function expectRingsToolbarOpen() {
+    const panel = container.querySelector<HTMLElement>('[data-toolbar-style-controls="ring-inspector"]');
+    if (!panel) {
+      throw new Error("Expected Rings toolbar controls.");
+    }
+    return panel;
+  }
+
   function dispatchPointer(
     target: EventTarget,
     type: "pointerdown" | "pointerup",
@@ -138,7 +146,19 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Toggled Molecule Inspector");
   });
 
-  it("does not select ring interiors while Molecule Inspector is closed", async () => {
+  it("opens the dedicated Rings toolbar from its view command", async () => {
+    await renderMainWindow();
+
+    expect(container.querySelector('[data-toolset-id="core.ringInspector"]')).toBeNull();
+
+    routeCommand("view.toggleRingInspector");
+
+    expect(container.querySelectorAll('[data-toolset-id="core.ringInspector"]')).toHaveLength(1);
+    expect(container.querySelector('[data-toolbar-style-controls="ring-inspector"]')).not.toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Toggled Rings");
+  });
+
+  it("does not select ring interiors while the Rings toolbar is closed", async () => {
     const initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Selection Gate"),
       { x: 300, y: 300 },
@@ -166,7 +186,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Selected ring");
   });
 
-  it("clears an active ring selection when Molecule Inspector closes", async () => {
+  it("clears an active ring selection when the Rings toolbar closes", async () => {
     const initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Selection Close Gate"),
       { x: 300, y: 300 },
@@ -182,7 +202,7 @@ describe("toolset bridge interactions", () => {
     }
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(ring.ringKey);
@@ -195,17 +215,17 @@ describe("toolset bridge interactions", () => {
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 120));
     });
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
     await act(async () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[data-toolset-id="core.moleculeInspector"]')).toBeNull();
+    expect(container.querySelector('[data-toolset-id="core.ringInspector"]')).toBeNull();
     expect(container.querySelector(`[data-selected-native-ring-key="${ring.ringKey}"]`)).toBeNull();
     expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).toBeNull();
   });
 
-  it("selects a rendered ring interior and enables Molecule Inspector ring controls", async () => {
+  it("selects a rendered ring interior and enables Rings toolbar controls", async () => {
     const initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Selection"),
       { x: 300, y: 300 },
@@ -221,7 +241,7 @@ describe("toolset bridge interactions", () => {
     }
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(ring.ringKey);
@@ -231,6 +251,7 @@ describe("toolset bridge interactions", () => {
 
     expect(container.querySelector(`[data-selected-native-ring-key="${ring.ringKey}"]`)).not.toBeNull();
     expect(container.querySelector(`[data-selected-ring-key="${ring.ringKey}"]`)).not.toBeNull();
+    expectRingsToolbarOpen();
     expect(container.querySelector("[data-molecule-inspector-selection-count=\"1\"]")).not.toBeNull();
     const blueSwatch = container.querySelector<HTMLButtonElement>('[aria-label="Ring Color: Blue"]');
     expect(blueSwatch?.disabled).toBe(false);
@@ -238,6 +259,7 @@ describe("toolset bridge interactions", () => {
 
     await act(async () => {
       blueSwatch?.click();
+      await Promise.resolve();
     });
 
     const renderedRingFill = container.querySelector<SVGPathElement>(
@@ -247,7 +269,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected ring fill");
   });
 
-  it("routes Art toolbar fill and effects to the selected ring target", async () => {
+  it("keeps ring controls in the Rings toolbar instead of duplicating them in Art", async () => {
     const initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Ring Art Routing"),
       { x: 300, y: 300 },
@@ -263,7 +285,7 @@ describe("toolset bridge interactions", () => {
     }
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(ring.ringKey);
@@ -271,26 +293,50 @@ describe("toolset bridge interactions", () => {
       dispatchPointer(target, "pointerup", ring.center, 17);
     });
 
-    expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).not.toBeNull();
-    expect(container.querySelector('[data-art-inspector-slider="object-opacity"]')).toBeNull();
-    expect(container.querySelector('[data-art-inspector-slider="fill-opacity"]')).not.toBeNull();
+    expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).toBeNull();
+    expect(container.querySelectorAll('[data-toolbar-style-controls="ring-inspector"]')).toHaveLength(1);
 
-    routeCommand("object.color.red");
+    const redSwatch = container.querySelector<HTMLButtonElement>(
+      '[data-toolbar-style-controls="ring-inspector"] [aria-label="Ring Color: Red"]'
+    );
+    expect(redSwatch?.disabled).toBe(false);
+    await act(async () => {
+      redSwatch?.click();
+      await Promise.resolve();
+    });
     let renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
     );
     expect(renderedRingFill?.getAttribute("fill")).toBe("#b3261e");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected ring fill");
 
-    routeCommand(objectFillOpacityCommandId(0.42));
+    const fillSlider = container.querySelector<HTMLInputElement>(
+      '[data-toolbar-style-controls="ring-inspector"] [aria-label="Ring fill"]'
+    );
+    expect(fillSlider?.disabled).toBe(false);
+    await act(async () => {
+      if (fillSlider) {
+        fillSlider.value = "42";
+        fillSlider.dispatchEvent(new Event("change", { bubbles: true }));
+        fillSlider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
     renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
     );
     expect(renderedRingFill?.getAttribute("fill-opacity")).toBe("0.42");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected ring fill opacity");
 
-    routeCommand("object.effect.glow");
-    expect(container.querySelector('[data-art-effect-controls="glow"]')).not.toBeNull();
+    const glowButton = container.querySelector<HTMLButtonElement>(
+      '[data-toolbar-style-controls="ring-inspector"] [aria-label="Ring Effect: Glow"]'
+    );
+    expect(glowButton?.disabled).toBe(false);
+    await act(async () => {
+      glowButton?.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-visible-effect-kind="glow"]')).not.toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Applied selected ring glow effect");
   });
 
@@ -332,7 +378,7 @@ describe("toolset bridge interactions", () => {
     expect(rings).toHaveLength(2);
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(rings[0].ringKey);
@@ -345,6 +391,7 @@ describe("toolset bridge interactions", () => {
       dispatchPointer(target, "pointerup", rings[1].center, 9, { shiftKey: true });
     });
 
+    expectRingsToolbarOpen();
     expect(container.querySelector("[data-molecule-inspector-selection-count=\"2\"]")).not.toBeNull();
     expect(container.querySelector(`[data-selected-native-ring-keys="${rings.map((ring) => ring.ringKey).join(",")}"]`)).not.toBeNull();
     expect(container.querySelectorAll(".native-molecule-selected-ring")).toHaveLength(2);
@@ -401,7 +448,7 @@ describe("toolset bridge interactions", () => {
     };
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringCatcherIn(molA.id);
@@ -420,6 +467,7 @@ describe("toolset bridge interactions", () => {
     // The status counts rings across both molecules, not just the primary.
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected 2 rings");
 
+    expectRingsToolbarOpen();
     const blueSwatch = container.querySelector<HTMLButtonElement>('[aria-label="Ring Color: Blue"]');
     expect(blueSwatch?.disabled).toBe(false);
     await act(async () => {
@@ -436,7 +484,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated 2 selected ring fills");
   });
 
-  it("gates the ring interior hit surface on the Molecule Inspector being open", async () => {
+  it("gates the ring interior hit surface on the Rings toolbar being open", async () => {
     const initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Ring catcher gating"),
       { x: 300, y: 300 },
@@ -456,17 +504,17 @@ describe("toolset bridge interactions", () => {
       return region;
     };
 
-    // Inspector closed: the catcher path is still rendered (one shared stacking layer), but the
+    // Rings toolbar closed: the catcher path is still rendered (one shared stacking layer), but the
     // ancestor flag is false so CSS gives it pointer-events: none — the ring center is not a hit
     // surface and is excluded from elementFromPoint.
-    expect(canvasRegion().getAttribute("data-molecule-inspector-open")).toBe("false");
+    expect(canvasRegion().getAttribute("data-ring-inspector-open")).toBe("false");
     // The catcher must be a descendant of the gated ancestor, or the CSS selector would not match.
     expect(canvasRegion().querySelector(".native-molecule-ring-hit-target")).not.toBeNull();
 
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
-    // Inspector open: ring centers become selectable.
-    expect(canvasRegion().getAttribute("data-molecule-inspector-open")).toBe("true");
+    // Rings toolbar open: ring centers become selectable.
+    expect(canvasRegion().getAttribute("data-ring-inspector-open")).toBe("true");
   });
 
   it("shift double-clicking a molecule joins it to the existing selection instead of toggling off", async () => {
@@ -620,7 +668,7 @@ describe("toolset bridge interactions", () => {
     expect(rings).toHaveLength(2);
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(rings[0].ringKey);
@@ -678,7 +726,7 @@ describe("toolset bridge interactions", () => {
     expect(rings).toHaveLength(2);
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(rings[0].ringKey);
@@ -738,7 +786,7 @@ describe("toolset bridge interactions", () => {
     expect(rings).toHaveLength(2);
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(rings[0].ringKey);
@@ -758,6 +806,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector(`[data-selected-native-ring-key="${rings[1].ringKey}"]`)).not.toBeNull();
     expect(container.querySelector(`[data-selected-native-ring-key="${rings[0].ringKey}"]`)).toBeNull();
     expect(container.querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    expectRingsToolbarOpen();
     expect(container.querySelector("[data-molecule-inspector-selection-count=\"1\"]")).not.toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected ring");
   });
@@ -800,7 +849,7 @@ describe("toolset bridge interactions", () => {
     expect(rings).toHaveLength(2);
 
     await renderMainWindow(initialDocument);
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleRingInspector");
 
     await act(async () => {
       const target = ringHitTarget(rings[0].ringKey);
@@ -813,7 +862,8 @@ describe("toolset bridge interactions", () => {
       dispatchPointer(target, "pointerup", rings[1].center, 22, { shiftKey: true });
     });
 
-    expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).not.toBeNull();
+    expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).toBeNull();
+    expect(container.querySelectorAll('[data-toolbar-style-controls="ring-inspector"]')).toHaveLength(1);
 
     routeCommand("object.color.red");
     routeCommand("object.paint.type.none");

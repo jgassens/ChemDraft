@@ -14,7 +14,7 @@ import {
   selectedGraphicObjectsForArtInspector,
   selectedVisualObjectsForArtInspector
 } from "./artInspectorModel";
-import type { MoleculeInspectorModel } from "./moleculeInspectorModel";
+import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 const baseGraphic = {
   type: "graphic",
@@ -532,7 +532,8 @@ describe("ArtInspectorModel", () => {
   });
 
   it("projects selected molecule rings into the Art toolbar target model", () => {
-    const moleculeInspector: MoleculeInspectorModel = {
+    const moleculeInspector: MoleculeInspectorRingsModel = {
+      enabled: true,
       selectedCount: 2,
       selectedRing: {
         objectId: "mol_ring",
@@ -741,7 +742,7 @@ function moleculeObject(id: string, overrides: Partial<MoleculeObject> = {}): Mo
 
 function moleculeInspectorEffect(
   kind: "shadow" | "glow" | "sketch"
-): MoleculeInspectorModel["effectControls"]["shadow"] {
+): MoleculeInspectorRingsModel["effectControls"]["shadow"] {
   return {
     kind,
     presentCount: 0,

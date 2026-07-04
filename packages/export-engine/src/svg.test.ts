@@ -168,6 +168,41 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("native-crossing-hit-target");
   });
 
+  it("exports molecule structure indicator overlays as visible SVG", () => {
+    const molecule = {
+      ...nativeBondMolecule(),
+      id: "mol_svg_indicators",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 140, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 160, y: 140, formalCharge: 0 },
+        { id: "atom_003", element: "O", x: 160, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_stereo", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } },
+        { id: "bond_query", fromAtomId: "atom_002", toAtomId: "atom_003", order: "unknown" }
+      ],
+      style: {
+        source: "chemdraft-native-drawing",
+        atomIndicatorShowAtomNumbers: true,
+        atomIndicatorShowStereochemistry: true,
+        bondIndicatorShowQuery: true,
+        bondIndicatorShowStereochemistry: true
+      }
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Indicator SVG", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+    const result = exportDocumentToSvg(document);
+
+    expect(result.contents).toContain('data-atom-indicator="number"');
+    expect(result.contents).toContain('data-atom-indicator="stereochemistry"');
+    expect(result.contents).toContain('data-bond-indicator="query"');
+    expect(result.contents).toContain('data-bond-indicator="stereochemistry"');
+    expect(result.contents).not.toContain("native-bond-hit-target");
+  });
+
   it("exports styled native molecule rings as per-ring fill paths", () => {
     const document = applyPatch(
       createEmptyDocument({ title: "Ring Fill SVG", now: timestamp }),

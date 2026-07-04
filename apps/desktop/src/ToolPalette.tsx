@@ -47,6 +47,41 @@ import {
   moleculeRingFillColorCommandId,
   moleculeRingFillNoneCommandId,
   moleculeRingFillOpacityCommandId,
+  moleculeStructureChainAngleCommandId,
+  moleculeStructureBondLengthCommandId,
+  moleculeStructureBondStrokeWidthCommandId,
+  moleculeStructureBondBoldWidthCommandId,
+  moleculeStructureBondColorCommandId,
+  moleculeStructureBondLineCapCommandId,
+  moleculeStructureBondSpacingModeCommandId,
+  moleculeStructureBondSpacingPercentCommandId,
+  moleculeStructureMultipleBondGapCommandId,
+  moleculeStructureDoubleBondInsetCommandId,
+  moleculeStructureBondMarginWidthCommandId,
+  moleculeStructureBondHashSpacingCommandId,
+  moleculeStructureOverlapClearanceCommandId,
+  moleculeStructureAtomQueryIndicatorsCommandId,
+  moleculeStructureAtomStereochemistryCommandId,
+  moleculeStructureAtomEnhancedStereochemistryCommandId,
+  moleculeStructureAtomNumbersCommandId,
+  moleculeStructureBondQueryIndicatorsCommandId,
+  moleculeStructureBondStereochemistryCommandId,
+  moleculeStructureBondReactionIndicatorsCommandId,
+  moleculeStructureNumberRanges,
+  moleculeAtomLabelFontFamilyCommandId,
+  moleculeAtomLabelFontFaceCommandId,
+  moleculeAtomLabelFontSizeCommandId,
+  moleculeAtomLabelColorCommandId,
+  moleculeAtomLabelBackgroundColorCommandId,
+  moleculeAtomLabelPaddingCommandId,
+  moleculeAtomLabelBondClearanceCommandId,
+  moleculeAtomLabelAlignmentCommandId,
+  moleculeAtomLabelPlacementCommandId,
+  moleculeAtomLabelShowTerminalCarbonsCommandId,
+  moleculeAtomLabelHideImplicitHydrogensCommandId,
+  moleculeAtomLabelNumberRanges,
+  moleculeInspectorTemplateExportCommandId,
+  moleculeInspectorTemplateImportCommandId,
   textCustomColorCommandId,
   textAlignmentCommands,
   textColorCommands,
@@ -60,6 +95,7 @@ import {
 import { Icon } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
+import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type { ToolsetArtPaintTarget, ToolsetArtStylePayload, ToolsetMoleculeInspectorPayload } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
@@ -187,6 +223,7 @@ export function ToolPalette({
   showMainStyleControls = false,
   showTextStyleControls = false,
   showArtStyleControls = false,
+  showRingInspectorControls = false,
   showMoleculeInspectorControls = false,
   currentDistributeMode = "centers",
   currentObjectColor,
@@ -212,6 +249,7 @@ export function ToolPalette({
   showMainStyleControls?: boolean;
   showTextStyleControls?: boolean;
   showArtStyleControls?: boolean;
+  showRingInspectorControls?: boolean;
   showMoleculeInspectorControls?: boolean;
   currentDistributeMode?: ToolPaletteDistributeMode;
   currentObjectColor?: string;
@@ -334,6 +372,7 @@ export function ToolPalette({
         showMainStyleControls ? "main-style-palette" : "",
         showTextStyleControls ? "text-style-palette" : "",
         showArtStyleControls ? "art-style-palette" : "",
+        showRingInspectorControls ? "ring-inspector-palette" : "",
         showMoleculeInspectorControls ? "molecule-inspector-palette" : ""
       ].filter(Boolean).join(" ")}
       aria-label={title}
@@ -348,7 +387,7 @@ export function ToolPalette({
           data-tauri-drag-region="true"
         />
       ) : null}
-      {showMoleculeInspectorControls ? null : showArtStyleControls ? (
+      {showRingInspectorControls || showMoleculeInspectorControls ? null : showArtStyleControls ? (
         <div className="art-toolbar-command-band" data-art-command-band="true">
           <div className="art-toolbar-command-grid" data-art-command-grid="true">
             {artCommandColumnElements}
@@ -379,6 +418,16 @@ export function ToolPalette({
           onPreview={onArtStylePreview}
           onCommit={onArtStyleCommit}
           onCancel={onArtStyleCancel}
+          onInvoke={onInvoke}
+        />
+      ) : null}
+      {showRingInspectorControls ? (
+        <MoleculeInspectorControls
+          currentMoleculeInspector={currentMoleculeInspector}
+          ringOnly={true}
+          onPreview={onMoleculeInspectorPreview}
+          onCommit={onMoleculeInspectorCommit}
+          onCancel={onMoleculeInspectorCancel}
           onInvoke={onInvoke}
         />
       ) : null}
@@ -772,39 +821,76 @@ function objectStrokeDashCommandId(strokeDasharray: string | undefined): string 
     objectStrokeDashCommands[0].id;
 }
 
+const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;
+
 function MoleculeInspectorControls({
   currentMoleculeInspector,
+  ringOnly = false,
   onPreview,
   onCommit,
   onCancel,
   onInvoke
 }: {
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+  ringOnly?: boolean;
   onPreview?: (commandId: string) => void;
   onCommit?: (commandId: string) => void;
   onCancel?: () => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const selectedRing = currentMoleculeInspector?.selectedRing;
-  const selectedRingKeys = currentMoleculeInspector?.selectedRings.map((ring) => ring.ringKey) ?? [];
-  const selectedCount = currentMoleculeInspector?.selectedCount ?? 0;
+  const ringsModel = currentMoleculeInspector?.rings;
+  const selectedRing = ringsModel?.selectedRing;
+  const selectedRingKeys = ringsModel?.selectedRings.map((ring) => ring.ringKey) ?? [];
+  const selectedCount = ringsModel?.selectedCount ?? 0;
   const selected = selectedRing !== undefined;
   const ringKey = selectedRing?.ringKey ?? "";
-  const fillColorMixed = currentMoleculeInspector?.values.fillColor.mixed === true;
-  const currentColor = normalizeHexColor(currentMoleculeInspector?.values.fillColor.value ?? "#111111") ?? "#111111";
-  const fillOpacity = currentMoleculeInspector?.values.fillOpacity.value ?? 1;
-  const activeEffectValue = currentMoleculeInspector?.values.effect.mixed
+  const fillColorMixed = ringsModel?.values.fillColor.mixed === true;
+  const currentColor = normalizeHexColor(ringsModel?.values.fillColor.value ?? "#111111") ?? "#111111";
+  const fillOpacity = ringsModel?.values.fillOpacity.value ?? 1;
+  const activeEffectValue = ringsModel?.values.effect.mixed
     ? "multiple"
-    : currentMoleculeInspector?.values.effect.value ?? "none";
-  const activeEffectKinds = currentMoleculeInspector?.effectKinds ?? [];
+    : ringsModel?.values.effect.value ?? "none";
+  const activeEffectKinds = ringsModel?.effectKinds ?? [];
   const visibleEffectKind = activeEffectValue === "shadow" || activeEffectValue === "glow" || activeEffectValue === "sketch"
     ? activeEffectValue
     : activeEffectKinds[0];
-  const visibleEffectModel = visibleEffectKind ? currentMoleculeInspector?.effectControls[visibleEffectKind] : undefined;
+  const visibleEffectModel = visibleEffectKind ? ringsModel?.effectControls[visibleEffectKind] : undefined;
   const currentEffectColor = normalizeHexColor(visibleEffectModel?.color.value ?? "#52616b") ?? "#52616b";
   const effectOpacity = visibleEffectModel?.opacity.value ?? 1;
   const effectSize = visibleEffectModel?.size.value ?? 0.25;
   const showEffectControls = selected && visibleEffectKind !== undefined && (visibleEffectModel?.presentCount ?? 0) > 0;
+  const suggestedTab = currentMoleculeInspector?.suggestedTab === "atom-labels" ? "atom-labels" : "structure";
+  const [activeTab, setActiveTab] = useState<"structure" | "atom-labels" | "templates">(suggestedTab);
+  const initializedTabRef = useRef(false);
+  const structure = currentMoleculeInspector?.structure;
+  const atomLabels = currentMoleculeInspector?.atomLabels;
+  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
+  const currentFontFamily = atomLabels?.values.fontFamily.value ?? undefined;
+
+  useEffect(() => {
+    if (!initializedTabRef.current) {
+      setActiveTab(suggestedTab);
+      initializedTabRef.current = true;
+    }
+  }, [suggestedTab]);
+
+  useEffect(() => {
+    if (activeTab !== "atom-labels") {
+      return;
+    }
+    // Single load per (tab, family): the cleanup below flips `disposed` before the
+    // next run starts, so a slow earlier response can never clobber a newer one.
+    let disposed = false;
+    void loadSystemFonts(currentFontFamily ? [currentFontFamily] : [])
+      .then((fonts) => {
+        if (!disposed) {
+          setSystemFonts(fonts);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activeTab, currentFontFamily]);
 
   const invokeOrCommit = (commandId: string) => {
     if (onCommit) {
@@ -815,6 +901,29 @@ function MoleculeInspectorControls({
   };
   const previewCommand = (commandId: string) => {
     onPreview?.(commandId);
+  };
+  const changeTab = (tabId: "structure" | "atom-labels" | "templates") => {
+    onCancel?.();
+    setActiveTab(tabId);
+  };
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, tabId: "structure" | "atom-labels" | "templates") => {
+    const tabs = MOLECULE_INSPECTOR_TABS;
+    const index = tabs.indexOf(tabId);
+    const nextTab = event.key === "ArrowDown"
+      ? tabs[Math.min(tabs.length - 1, index + 1)]
+      : event.key === "ArrowUp"
+        ? tabs[Math.max(0, index - 1)]
+        : event.key === "Home"
+          ? tabs[0]
+          : event.key === "End"
+            ? tabs[tabs.length - 1]
+            : undefined;
+    if (!nextTab) {
+      return;
+    }
+    event.preventDefault();
+    changeTab(nextTab);
+    document.getElementById(`molecule-inspector-tab-${nextTab}`)?.focus();
   };
   const commitRingCommand = (commandId: string) => {
     if (!selected) {
@@ -890,10 +999,99 @@ function MoleculeInspectorControls({
     );
   };
 
-  return (
+  const valueOrFallback = (value: number | null | undefined, fallback: number) => value ?? fallback;
+  const numericControl = (
+    label: string,
+    value: number | null | undefined,
+    mixed: boolean | undefined,
+    range: { min: number; max: number; step: number },
+    commandId: (value: number) => string,
+    disabled: boolean
+  ) => {
+    const effectiveValue = valueOrFallback(value, range.min);
+    const commitValue = (rawValue: string) => {
+      const nextValue = Number(rawValue);
+      if (!Number.isFinite(nextValue)) {
+        return;
+      }
+      invokeOrCommit(commandId(nextValue));
+    };
+    return (
+      <label className="molecule-inspector-field molecule-inspector-number-field">
+        <span>{label}</span>
+        <input
+          type="number"
+          min={range.min}
+          max={range.max}
+          step={range.step}
+          value={mixed ? "" : formatInspectorNumber(effectiveValue)}
+          placeholder={mixed ? "Mixed" : undefined}
+          disabled={disabled}
+          aria-label={label}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value)))}
+          onBlur={(event) => commitValue(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              commitValue(event.currentTarget.value);
+            }
+            if (event.key === "Escape") {
+              onCancel?.();
+            }
+          }}
+        />
+        <input
+          type="range"
+          min={range.min}
+          max={range.max}
+          step={range.step}
+          value={effectiveValue}
+          disabled={disabled}
+          aria-label={`${label} slider`}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value)))}
+          onPointerUp={(event) => {
+            event.stopPropagation();
+            invokeOrCommit(commandId(Number(event.currentTarget.value)));
+          }}
+          onKeyUp={(event) => invokeOrCommit(commandId(Number(event.currentTarget.value)))}
+        />
+      </label>
+    );
+  };
+
+  const colorControl = (
+    label: string,
+    value: string | null | undefined,
+    mixed: boolean | undefined,
+    commandId: (color: string) => string,
+    disabled: boolean
+  ) => {
+    const color = normalizeHexColor(value ?? undefined) ?? "#000000";
+    return (
+      <label className="molecule-inspector-field molecule-inspector-color-field">
+        <span>{label}</span>
+        <span className="molecule-inspector-color-input">
+          <span className="toolbar-color-trigger-swatch" style={{ "--current-color": mixed ? "#8a949e" : color } as CSSProperties} />
+          <input
+            type="color"
+            value={color}
+            disabled={disabled}
+            aria-label={label}
+            data-palette-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => previewCommand(commandId(event.currentTarget.value))}
+            onBlur={(event) => invokeOrCommit(commandId(event.currentTarget.value))}
+          />
+        </span>
+      </label>
+    );
+  };
+
+  const ringsPanel = (
     <div
-      className="molecule-inspector-controls"
-      data-toolbar-style-controls="molecule-inspector"
       data-molecule-inspector-selection-count={selectedCount}
       data-selected-ring-key={selectedRing?.ringKey}
       data-selected-ring-keys={selectedRingKeys.length > 0 ? selectedRingKeys.join(",") : undefined}
@@ -907,6 +1105,7 @@ function MoleculeInspectorControls({
         <span className="molecule-inspector-target-label">{selected ? selectedCount === 1 ? "Ring" : "Rings" : "No ring"}</span>
         <span className="molecule-inspector-target-key">{selectedCount > 1 ? `${selectedCount} selected` : selectedRing?.ringKey ?? ""}</span>
       </div>
+      {!selected ? <p className="molecule-inspector-empty-message">Select a ring interior to edit ring appearance.</p> : null}
       <div className="molecule-inspector-section" data-molecule-inspector-section="fill">
         <div className="molecule-inspector-swatch-grid" role="group" aria-label="Ring fill color">
           {objectColorCommands.slice(0, 8).map((command) => {
@@ -1010,6 +1209,498 @@ function MoleculeInspectorControls({
       </div>
     </div>
   );
+
+  if (ringOnly) {
+    return (
+      <div
+        className="molecule-inspector-controls ring-inspector-controls"
+        data-toolbar-style-controls="ring-inspector"
+      >
+        <div className="molecule-inspector-tab-panel" role="group" aria-label="Rings">
+          {ringsPanel}
+        </div>
+      </div>
+    );
+  }
+
+  const structureDisabled = structure?.enabled !== true;
+  const structureBondSpacingMode = structure?.values.bondSpacingMode.mixed
+    ? "mixed"
+    : structure?.values.bondSpacingMode.value ?? "absolute";
+  const structureTargetLabel = structure?.targetCount
+    ? structure.targetKind === "bond"
+      ? `${structure.targetCount} bond${structure.targetCount === 1 ? "" : "s"}`
+      : structure.targetKind === "atom"
+        ? `${structure.targetCount} atom${structure.targetCount === 1 ? "" : "s"}`
+        : `${structure.targetCount} molecule${structure.targetCount === 1 ? "" : "s"}`
+    : "No molecule";
+  const structurePanel = (
+    <div className="molecule-inspector-panel-body" data-molecule-inspector-section="structure">
+      <div className="molecule-inspector-target-row">
+        <span className="molecule-inspector-target-label">Structure</span>
+        <span className="molecule-inspector-target-key">{structureTargetLabel}</span>
+      </div>
+      {structureDisabled ? <p className="molecule-inspector-empty-message">Select a molecule, atom, bond, or ring to edit its parent molecule.</p> : null}
+      {numericControl("Chain angle", structure?.values.chainAngleDegrees.value, structure?.values.chainAngleDegrees.mixed, moleculeStructureNumberRanges.chainAngleDegrees, moleculeStructureChainAngleCommandId, structureDisabled)}
+      {numericControl("Target bond length", structure?.values.bondLengthPx.value, structure?.values.bondLengthPx.mixed, moleculeStructureNumberRanges.bondLengthPx, moleculeStructureBondLengthCommandId, structureDisabled)}
+      {numericControl("Line width", structure?.values.bondStrokeWidthPx.value, structure?.values.bondStrokeWidthPx.mixed, moleculeStructureNumberRanges.bondStrokeWidthPx, moleculeStructureBondStrokeWidthCommandId, structureDisabled)}
+      {numericControl("Bold width", structure?.values.bondBoldWidthPx.value, structure?.values.bondBoldWidthPx.mixed, moleculeStructureNumberRanges.bondBoldWidthPx, moleculeStructureBondBoldWidthCommandId, structureDisabled)}
+      {colorControl("Bond color", structure?.values.bondColor.value, structure?.values.bondColor.mixed, moleculeStructureBondColorCommandId, structureDisabled)}
+      <label className="molecule-inspector-field molecule-inspector-select-field">
+        <span>Bond spacing</span>
+        <select
+          value={structureBondSpacingMode}
+          disabled={structureDisabled}
+          aria-label="Bond spacing mode"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") {
+              invokeOrCommit(moleculeStructureBondSpacingModeCommandId(event.currentTarget.value as "absolute" | "percent"));
+            }
+          }}
+        >
+          {structure?.values.bondSpacingMode.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="percent">% of length</option>
+          <option value="absolute">Absolute</option>
+        </select>
+      </label>
+      {numericControl("Spacing %", structure?.values.bondSpacingPercent.value, structure?.values.bondSpacingPercent.mixed, moleculeStructureNumberRanges.bondSpacingPercent, moleculeStructureBondSpacingPercentCommandId, structureDisabled)}
+      {numericControl("Spacing abs.", structure?.values.multipleBondGapPx.value, structure?.values.multipleBondGapPx.mixed, moleculeStructureNumberRanges.multipleBondGapPx, moleculeStructureMultipleBondGapCommandId, structureDisabled)}
+      {numericControl("Margin width", structure?.values.bondMarginWidthPx.value, structure?.values.bondMarginWidthPx.mixed, moleculeStructureNumberRanges.bondMarginWidthPx, moleculeStructureBondMarginWidthCommandId, structureDisabled)}
+      {numericControl("Hash spacing", structure?.values.bondHashSpacingPx.value, structure?.values.bondHashSpacingPx.mixed, moleculeStructureNumberRanges.bondHashSpacingPx, moleculeStructureBondHashSpacingCommandId, structureDisabled)}
+      {numericControl("Double-bond inset", structure?.values.doubleBondInsetPx.value, structure?.values.doubleBondInsetPx.mixed, moleculeStructureNumberRanges.doubleBondInsetPx, moleculeStructureDoubleBondInsetCommandId, structureDisabled)}
+      {numericControl("Overlap clearance", structure?.values.bondOverlapClearancePx.value, structure?.values.bondOverlapClearancePx.mixed, moleculeStructureNumberRanges.bondOverlapClearancePx, moleculeStructureOverlapClearanceCommandId, structureDisabled)}
+      <label className="molecule-inspector-field molecule-inspector-select-field">
+        <span>Line cap</span>
+        <select
+          value={structure?.values.bondLineCap.mixed ? "mixed" : structure?.values.bondLineCap.value ?? "butt"}
+          disabled={structureDisabled}
+          aria-label="Bond line cap"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") {
+              invokeOrCommit(moleculeStructureBondLineCapCommandId(event.currentTarget.value as "butt" | "round" | "square"));
+            }
+          }}
+        >
+          {structure?.values.bondLineCap.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="butt">Flat</option>
+          <option value="round">Round</option>
+          <option value="square">Square</option>
+        </select>
+      </label>
+      <div className="molecule-inspector-check-group" role="group" aria-label="Atom indicators">
+        <span className="molecule-inspector-check-group-title">Atom Indicators</span>
+        <MoleculeInspectorCheckbox
+          label="Query indicators"
+          value={structure?.values.atomIndicatorShowQuery.value}
+          mixed={structure?.values.atomIndicatorShowQuery.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureAtomQueryIndicatorsCommandId}
+          onInvoke={invokeOrCommit}
+        />
+        <MoleculeInspectorCheckbox
+          label="Stereochemistry"
+          value={structure?.values.atomIndicatorShowStereochemistry.value}
+          mixed={structure?.values.atomIndicatorShowStereochemistry.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureAtomStereochemistryCommandId}
+          onInvoke={invokeOrCommit}
+        />
+        <MoleculeInspectorCheckbox
+          label="Enhanced stereochemistry"
+          value={structure?.values.atomIndicatorShowEnhancedStereochemistry.value}
+          mixed={structure?.values.atomIndicatorShowEnhancedStereochemistry.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureAtomEnhancedStereochemistryCommandId}
+          onInvoke={invokeOrCommit}
+        />
+        <MoleculeInspectorCheckbox
+          label="Atom numbers"
+          value={structure?.values.atomIndicatorShowAtomNumbers.value}
+          mixed={structure?.values.atomIndicatorShowAtomNumbers.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureAtomNumbersCommandId}
+          onInvoke={invokeOrCommit}
+        />
+      </div>
+      <div className="molecule-inspector-check-group" role="group" aria-label="Bond indicators">
+        <span className="molecule-inspector-check-group-title">Bond Indicators</span>
+        <MoleculeInspectorCheckbox
+          label="Query indicators"
+          value={structure?.values.bondIndicatorShowQuery.value}
+          mixed={structure?.values.bondIndicatorShowQuery.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureBondQueryIndicatorsCommandId}
+          onInvoke={invokeOrCommit}
+        />
+        <MoleculeInspectorCheckbox
+          label="Stereochemistry"
+          value={structure?.values.bondIndicatorShowStereochemistry.value}
+          mixed={structure?.values.bondIndicatorShowStereochemistry.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureBondStereochemistryCommandId}
+          onInvoke={invokeOrCommit}
+        />
+        <MoleculeInspectorCheckbox
+          label="Reaction indicators"
+          value={structure?.values.bondIndicatorShowReaction.value}
+          mixed={structure?.values.bondIndicatorShowReaction.mixed}
+          disabled={structureDisabled}
+          commandId={moleculeStructureBondReactionIndicatorsCommandId}
+          onInvoke={invokeOrCommit}
+        />
+      </div>
+    </div>
+  );
+
+  const atomLabelsDisabled = atomLabels?.enabled !== true;
+  const currentFontFace = atomLabels?.values.fontFace.value;
+  const fontFamilyOptions = useMemo(
+    () => systemFonts.length > 0
+      ? systemFonts
+      : fallbackFontFamilyOptions(currentFontFamily),
+    [currentFontFamily, systemFonts]
+  );
+  const fontFaceOptions = useMemo(
+    () => fontFacesForFamily(fontFamilyOptions, currentFontFamily, currentFontFace),
+    [currentFontFace, currentFontFamily, fontFamilyOptions]
+  );
+  const atomLabelsPanel = (
+    <div className="molecule-inspector-panel-body" data-molecule-inspector-section="atom-labels">
+      <div className="molecule-inspector-target-row">
+        <span className="molecule-inspector-target-label">Atom Labels</span>
+        <span className="molecule-inspector-target-key">
+          {atomLabels?.targetCount
+            ? atomLabels.targetKind === "atom"
+              ? `${atomLabels.targetCount} atom label${atomLabels.targetCount === 1 ? "" : "s"}`
+              : `${atomLabels.targetCount} molecule${atomLabels.targetCount === 1 ? "" : "s"}`
+            : "No molecule"}
+        </span>
+      </div>
+      {atomLabelsDisabled ? <p className="molecule-inspector-empty-message">Select a molecule or one of its atoms, bonds, or rings to edit molecule label appearance.</p> : null}
+      <label className="molecule-inspector-field">
+        <span>Font family</span>
+        <select
+          value={atomLabels?.values.fontFamily.mixed ? "mixed" : currentFontFamily ?? textFontCommands[0].fontFamily}
+          disabled={atomLabelsDisabled}
+          aria-label="Atom label font family"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") {
+              invokeOrCommit(moleculeAtomLabelFontFamilyCommandId(event.currentTarget.value));
+            }
+          }}
+        >
+          {atomLabels?.values.fontFamily.mixed ? <option value="mixed">Mixed</option> : null}
+          {fontFamilyOptions.map((fontFamily) => (
+            <option key={fontFamily.family} value={fontFamily.family}>{fontFamilyLabel(fontFamily.family)}</option>
+          ))}
+        </select>
+      </label>
+      <label className="molecule-inspector-field">
+        <span>Font face</span>
+        <select
+          value={atomLabels?.values.fontFace.mixed ? "mixed" : `${currentFontFace?.weight ?? 400}:${currentFontFace?.style ?? "normal"}`}
+          disabled={atomLabelsDisabled}
+          aria-label="Atom label font face"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value === "mixed") {
+              return;
+            }
+            const [weight, style] = event.currentTarget.value.split(":");
+            invokeOrCommit(moleculeAtomLabelFontFaceCommandId(Number(weight), style === "italic" ? "italic" : "normal"));
+          }}
+        >
+          {atomLabels?.values.fontFace.mixed ? <option value="mixed">Mixed</option> : null}
+          {fontFaceOptions.map((face) => (
+            <option key={`${face.weight}:${face.style}`} value={`${face.weight}:${face.style}`}>
+              {fontFaceLabel(face.weight, face.style)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {numericControl("Size", atomLabels?.values.fontSizePx.value, atomLabels?.values.fontSizePx.mixed, moleculeAtomLabelNumberRanges.fontSizePx, moleculeAtomLabelFontSizeCommandId, atomLabelsDisabled)}
+      {colorControl("Label color", atomLabels?.values.color.value, atomLabels?.values.color.mixed, moleculeAtomLabelColorCommandId, atomLabelsDisabled)}
+      <label className="molecule-inspector-field molecule-inspector-background-field">
+        <span>Background</span>
+        <select
+          value={atomLabels?.values.backgroundColor.mixed ? "mixed" : atomLabels?.values.backgroundColor.value === "transparent" ? "transparent" : "solid"}
+          disabled={atomLabelsDisabled}
+          aria-label="Atom label background mode"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value === "transparent") {
+              invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId("transparent"));
+            }
+          }}
+        >
+          {atomLabels?.values.backgroundColor.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="solid">Solid</option>
+          <option value="transparent">Transparent</option>
+        </select>
+        {atomLabels?.values.backgroundColor.value !== "transparent"
+          ? <span className="molecule-inspector-color-input">
+              <span
+                className="toolbar-color-trigger-swatch"
+                style={{
+                  "--current-color": normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff"
+                } as CSSProperties}
+              />
+              <input
+                type="color"
+                value={normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff"}
+                disabled={atomLabelsDisabled}
+                aria-label="Atom label background color"
+                data-palette-control="true"
+                onPointerDown={(event) => event.stopPropagation()}
+                onChange={(event) => previewCommand(moleculeAtomLabelBackgroundColorCommandId(event.currentTarget.value))}
+                onBlur={(event) => invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(event.currentTarget.value))}
+              />
+            </span>
+          : null}
+      </label>
+      {numericControl("Padding", atomLabels?.values.paddingPx.value, atomLabels?.values.paddingPx.mixed, moleculeAtomLabelNumberRanges.paddingPx, moleculeAtomLabelPaddingCommandId, atomLabelsDisabled)}
+      {numericControl("Bond clearance", atomLabels?.values.bondClearancePx.value, atomLabels?.values.bondClearancePx.mixed, moleculeAtomLabelNumberRanges.bondClearancePx, moleculeAtomLabelBondClearanceCommandId, atomLabelsDisabled)}
+      <label className="molecule-inspector-field">
+        <span>Alignment</span>
+        <select
+          value={atomLabels?.values.alignment.mixed ? "mixed" : atomLabels?.values.alignment.value ?? "automatic"}
+          disabled={atomLabelsDisabled}
+          aria-label="Atom label alignment"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") {
+              invokeOrCommit(moleculeAtomLabelAlignmentCommandId(event.currentTarget.value as "automatic" | "left" | "center" | "right"));
+            }
+          }}
+        >
+          {atomLabels?.values.alignment.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="automatic">Automatic</option>
+          <option value="left">Left</option>
+          <option value="center">Center</option>
+          <option value="right">Right</option>
+        </select>
+      </label>
+      <label className="molecule-inspector-field">
+        <span>Placement</span>
+        <select
+          value={atomLabels?.values.placement.mixed ? "mixed" : atomLabels?.values.placement.value ?? "automatic"}
+          disabled={atomLabelsDisabled}
+          aria-label="Atom label placement"
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") {
+              invokeOrCommit(moleculeAtomLabelPlacementCommandId(event.currentTarget.value as "automatic" | "above" | "below"));
+            }
+          }}
+        >
+          {atomLabels?.values.placement.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="automatic">Automatic</option>
+          <option value="above">Above</option>
+          <option value="below">Below</option>
+        </select>
+      </label>
+      <MoleculeInspectorCheckbox
+        label="Terminal carbon labels"
+        value={atomLabels?.values.showTerminalCarbons.value}
+        mixed={atomLabels?.values.showTerminalCarbons.mixed}
+        disabled={atomLabelsDisabled}
+        commandId={moleculeAtomLabelShowTerminalCarbonsCommandId}
+        onInvoke={invokeOrCommit}
+      />
+      <MoleculeInspectorCheckbox
+        label="Hide implicit hydrogens"
+        value={atomLabels?.values.hideImplicitHydrogens.value}
+        mixed={atomLabels?.values.hideImplicitHydrogens.mixed}
+        disabled={atomLabelsDisabled}
+        commandId={moleculeAtomLabelHideImplicitHydrogensCommandId}
+        onInvoke={invokeOrCommit}
+      />
+    </div>
+  );
+  const templateTargetCount = currentMoleculeInspector?.targets.moleculeObjectIds.length ?? 0;
+  const templatesDisabled = templateTargetCount === 0;
+  const templatesPanel = (
+    <div className="molecule-inspector-panel-body" data-molecule-inspector-section="templates">
+      <div className="molecule-inspector-target-row">
+        <span className="molecule-inspector-target-label">Templates</span>
+        <span className="molecule-inspector-target-key">
+          {templateTargetCount > 0
+            ? `${templateTargetCount} molecule${templateTargetCount === 1 ? "" : "s"}`
+            : "No molecule"}
+        </span>
+      </div>
+      {templatesDisabled ? <p className="molecule-inspector-empty-message">Select a molecule to apply or export Molecule Inspector settings.</p> : null}
+      <div className="molecule-inspector-template-actions">
+        <button
+          type="button"
+          className="toolbar-text-button molecule-inspector-template-button"
+          data-command-id={moleculeInspectorTemplateImportCommandId}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onInvoke(moleculeInspectorTemplateImportCommandId)}
+        >
+          Load
+        </button>
+        <button
+          type="button"
+          className="toolbar-text-button molecule-inspector-template-button"
+          disabled={templatesDisabled}
+          data-command-id={moleculeInspectorTemplateExportCommandId}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onInvoke(moleculeInspectorTemplateExportCommandId)}
+        >
+          Export
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      className="molecule-inspector-controls"
+      data-toolbar-style-controls="molecule-inspector"
+      data-molecule-inspector-active-tab={activeTab}
+    >
+      <div className="molecule-inspector-tab-rail" role="tablist" aria-orientation="vertical">
+        {([
+          ["structure", "Structure"],
+          ["atom-labels", "Atom Labels"],
+          ["templates", "Templates"]
+        ] as const).map(([tabId, label]) => (
+          <button
+            type="button"
+            id={`molecule-inspector-tab-${tabId}`}
+            className={["molecule-inspector-tab", activeTab === tabId ? "active" : ""].filter(Boolean).join(" ")}
+            role="tab"
+            aria-selected={activeTab === tabId}
+            aria-controls={`molecule-inspector-panel-${tabId}`}
+            tabIndex={activeTab === tabId ? 0 : -1}
+            data-palette-control="true"
+            key={tabId}
+            onPointerDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => handleTabKeyDown(event, tabId)}
+            onClick={() => changeTab(tabId)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        className="molecule-inspector-tab-panel"
+        id={`molecule-inspector-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`molecule-inspector-tab-${activeTab}`}
+      >
+        {activeTab === "structure"
+          ? structurePanel
+          : activeTab === "atom-labels" ? atomLabelsPanel : templatesPanel}
+      </div>
+    </div>
+  );
+}
+
+function MoleculeInspectorCheckbox({
+  commandId,
+  disabled,
+  label,
+  mixed,
+  onInvoke,
+  value
+}: {
+  commandId: (value: boolean) => string;
+  disabled: boolean;
+  label: string;
+  mixed?: boolean;
+  onInvoke: (commandId: string) => void;
+  value: boolean | null | undefined;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = mixed === true;
+    }
+  }, [mixed]);
+  const checked = mixed ? false : value === true;
+  return (
+    <label className="molecule-inspector-field molecule-inspector-checkbox-field">
+      <input
+        ref={inputRef}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-label={label}
+        data-palette-control="true"
+        onPointerDown={(event) => event.stopPropagation()}
+        onChange={() => onInvoke(commandId(mixed ? true : !checked))}
+      />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function formatInspectorNumber(value: number): string {
+  return Number.isFinite(value) ? Number(value.toFixed(3)).toString() : "";
+}
+
+function fallbackFontFamilyOptions(current: string | null | undefined): SystemFontFamily[] {
+  const options = [
+    current,
+    ...textFontCommands.map((command) => command.fontFamily),
+    "Arial",
+    "Helvetica",
+    "Times New Roman",
+    "Courier New",
+    "sans-serif",
+    "serif",
+    "monospace"
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return [...new Set(options)].map((family) => ({ family, faces: defaultFontFaces() }));
+}
+
+function fontFacesForFamily(
+  families: readonly SystemFontFamily[],
+  currentFamily: string | undefined,
+  currentFace: SystemFontFace | null | undefined
+): SystemFontFace[] {
+  const faces = families.find((family) => family.family === currentFamily)?.faces ?? defaultFontFaces();
+  const currentFacePresent = currentFace
+    ? faces.some((face) => face.weight === currentFace.weight && face.style === currentFace.style)
+    : true;
+  return (currentFace && !currentFacePresent ? [...faces, currentFace] : faces)
+    .sort((left, right) => left.weight - right.weight || left.style.localeCompare(right.style));
+}
+
+function defaultFontFaces(): SystemFontFace[] {
+  return [
+    { weight: 400, style: "normal" },
+    { weight: 700, style: "normal" },
+    { weight: 400, style: "italic" },
+    { weight: 700, style: "italic" }
+  ];
+}
+
+function fontFamilyLabel(fontFamily: string): string {
+  return fontFamily.split(",")[0]?.replace(/^["']|["']$/g, "") ?? fontFamily;
+}
+
+function fontFaceLabel(weight: number, style: "normal" | "italic"): string {
+  const weightLabel = weight === 400
+    ? "Regular"
+    : weight === 700
+      ? "Bold"
+      : `Weight ${weight}`;
+  return style === "italic" ? `${weightLabel} Italic` : weightLabel;
 }
 
 function ArtToolbarStyleControls({

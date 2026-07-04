@@ -1,6 +1,6 @@
 import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
 import type { ChemDraftDocument, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
-import type { MoleculeInspectorModel } from "./moleculeInspectorModel";
+import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
 export type ArtInspectorPaintType = GraphicPaint["kind"] | "gloss";
@@ -233,7 +233,7 @@ export function createArtInspectorModel({
 }
 
 export function createMoleculeRingArtInspectorModel(
-  moleculeInspector: MoleculeInspectorModel,
+  moleculeInspector: MoleculeInspectorRingsModel,
   requestedPaintTarget: ArtInspectorPaintTarget = "fill"
 ): ArtInspectorModel | undefined {
   const selectedCount = moleculeInspector.selectedCount;
@@ -254,7 +254,7 @@ export function createMoleculeRingArtInspectorModel(
         ringKey: ring.ringKey
       }))
     },
-    effectKinds: moleculeInspector.effectKinds,
+    effectKinds: [...moleculeInspector.effectKinds],
     requestedPaintTarget,
     activePaintTarget: "fill",
     supportsFillAny: true,
