@@ -101,6 +101,7 @@ import {
   findNearestBondHit,
   planBondExtension,
   planFreeformBondExtension,
+  ringInteriorDoubleBondSides,
   type LayoutPoint
 } from "@chemdraft/layout-engine";
 import {
@@ -11337,7 +11338,29 @@ function nativeBondDisplayObject(
   return bondStyle ? { display: { bondStyle } } : {};
 }
 
+// Per-molecule cache of the ring-interior side map (molecule objects are immutable, so a new
+// object is produced on every edit). Avoids recomputing ring perception for each bond when
+// defaultDoubleBondSide is called inside a bond .map.
+const ringInteriorSideCache = new WeakMap<MoleculeObject, Map<string, NativeDoubleBondSide>>();
+
+function ringInteriorSideForBond(molecule: MoleculeObject, bondId: string): NativeDoubleBondSide | undefined {
+  let sides = ringInteriorSideCache.get(molecule);
+  if (!sides) {
+    sides = ringInteriorDoubleBondSides(molecule);
+    ringInteriorSideCache.set(molecule, sides);
+  }
+  return sides.get(bondId);
+}
+
 function defaultDoubleBondSide(molecule: MoleculeObject, bond: MoleculeBond): NativeDoubleBondSide {
+  // A ring double bond's inner line belongs inside the ring — the authoritative default,
+  // matching what layout-engine renders. Only fall back to the substituent heuristic for
+  // non-ring (chain) double bonds.
+  const ringSide = ringInteriorSideForBond(molecule, bond.id);
+  if (ringSide) {
+    return ringSide;
+  }
+
   const geometry = bondGeometry(molecule, bond);
   if (!geometry) {
     return "left";

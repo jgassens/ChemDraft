@@ -1317,6 +1317,8 @@ function planNativeMoleculeGraphSvg(
     return label ? [{ atom, label }] : [];
   });
   const labelByAtomId = new Map(atomLabels.map(({ atom, label }) => [atom.id, label]));
+  // Ring double bonds default their inner line to the ring interior. Computed once per molecule.
+  const ringInteriorSides = ringInteriorDoubleBondSides(object);
   const bondSegmentGroups: PageMoleculeBondSegmentGroup[] = object.bonds.flatMap((bond) => {
     const fromAtom = atomById.get(bond.fromAtomId);
     const toAtom = atomById.get(bond.toAtomId);
@@ -1331,7 +1333,8 @@ function planNativeMoleculeGraphSvg(
       bond,
       drawingStyle,
       labelByAtomId.get(fromAtom.id),
-      labelByAtomId.get(toAtom.id)
+      labelByAtomId.get(toAtom.id),
+      ringInteriorSides.get(bond.id)
     ).map((segment, segmentIndex) => ({
       ...segment,
       bond,
@@ -1584,6 +1587,104 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   return [...cycles.values()].sort((left, right) =>
     moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
   );
+}
+
+/**
+ * For every bond that lies on a ring, the atom ids of the SMALLEST ring containing it — the
+ * ring whose interior a double bond's inner line should point into. Built from the same
+ * chordless ring perception the aromatic fill uses, so it is consistent across the app.
+ */
+export function smallestRingAtomIdsByBondId(object: MoleculeObject): Map<string, readonly string[]> {
+  const result = new Map<string, readonly string[]>();
+  for (const cycle of moleculeFillRingCycles(object)) {
+    for (const bondId of cycle.bondIds) {
+      const existing = result.get(bondId);
+      if (!existing || cycle.atomIds.length < existing.length) {
+        result.set(bondId, cycle.atomIds);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * The double-bond side ("left"/"right") whose inner line points toward the ring interior, for
+ * every double bond lying on a ring. This is the canonical default for a ring double bond
+ * (aromatic or otherwise): the second line sits INSIDE the ring unless the user overrides
+ * `bond.display.doubleBondSide`. Non-ring double bonds are absent from the map (callers keep
+ * their own default). "left" is the +normal side, matching `bondLineSegments`' offset
+ * convention, so the render, the spin overlay, and the flatten commit all agree.
+ *
+ * This replaces a substituent-count heuristic that mistook a ring bond's *outside* for the
+ * interior whenever exocyclic substituents outweighed the ring neighbours (e.g. an aromatic
+ * ring carrying amide/carbonyl groups).
+ */
+export function ringInteriorDoubleBondSides(object: MoleculeObject): Map<string, DoubleBondSide> {
+  const rings = smallestRingAtomIdsByBondId(object);
+  const result = new Map<string, DoubleBondSide>();
+  if (rings.size === 0) {
+    return result;
+  }
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  for (const bond of object.bonds) {
+    if (bond.order !== "double") {
+      continue;
+    }
+    const ringAtomIds = rings.get(bond.id);
+    if (!ringAtomIds) {
+      continue;
+    }
+    const fromAtom = atomById.get(bond.fromAtomId);
+    const toAtom = atomById.get(bond.toAtomId);
+    if (!fromAtom || !toAtom) {
+      continue;
+    }
+    const side = doubleBondSideTowardRingInterior(fromAtom, toAtom, ringAtomIds, atomById);
+    if (side) {
+      result.set(bond.id, side);
+    }
+  }
+  return result;
+}
+
+function doubleBondSideTowardRingInterior(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  ringAtomIds: readonly string[],
+  atomById: ReadonlyMap<string, MoleculeAtom>
+): DoubleBondSide | undefined {
+  const dx = toAtom.x - fromAtom.x;
+  const dy = toAtom.y - fromAtom.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return undefined;
+  }
+  // Bond normal, identical to bondLineSegments: normal = { x: -unit.y, y: unit.x }.
+  const nx = -dy / length;
+  const ny = dx / length;
+  const midX = (fromAtom.x + toAtom.x) / 2;
+  const midY = (fromAtom.y + toAtom.y) / 2;
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+  for (const atomId of ringAtomIds) {
+    const atom = atomById.get(atomId);
+    if (atom) {
+      sumX += atom.x;
+      sumY += atom.y;
+      count += 1;
+    }
+  }
+  if (count === 0) {
+    return undefined;
+  }
+  // Side of the bond normal the ring centroid falls on. "left" offsets the inner line toward
+  // +normal (see bondLineSegments), so the inner line lands inside the ring.
+  const dot = (sumX / count - midX) * nx + (sumY / count - midY) * ny;
+  if (Math.abs(dot) < 1e-9) {
+    return undefined; // centroid on the bond axis — interior ambiguous, keep caller default
+  }
+  return dot >= 0 ? "left" : "right";
 }
 
 function moleculeFillShortestPath(
@@ -3101,7 +3202,8 @@ function bondLineSegments(
   bond: CoreMoleculeBond,
   drawingStyle: NativeDrawingStyle,
   fromLabel?: string,
-  toLabel?: string
+  toLabel?: string,
+  ringInteriorSide?: DoubleBondSide
 ): PageBondLineSegment[] {
   const dx = toAtom.x - fromAtom.x;
   const dy = toAtom.y - fromAtom.y;
@@ -3121,7 +3223,9 @@ function bondLineSegments(
   const gap = drawingStyle.multipleBondGapPx;
 
   if (bond.order === "double") {
-    const doubleBondSide = bond.display?.doubleBondSide ?? "left";
+    // Default a ring double bond's inner line to the ring interior; the user's explicit side
+    // (bond.display.doubleBondSide) always wins, and non-ring bonds keep the legacy default.
+    const doubleBondSide = bond.display?.doubleBondSide ?? ringInteriorSide ?? "left";
     if (isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
       const offset = gap / 2;
       return [

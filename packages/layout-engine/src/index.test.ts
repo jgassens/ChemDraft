@@ -17,6 +17,7 @@ import {
   planNativeArtVisual,
   planPageSvgRender,
   planFreeformBondExtension,
+  ringInteriorDoubleBondSides,
   type BondExtensionPlanningInput,
   type PageSvgElementFragment,
   type PageSvgFragment
@@ -1645,5 +1646,98 @@ describe("layout-engine page SVG planner", () => {
     expect(lines.map((fragment) => fragment.attrs["data-bond-id"])).toEqual(["bond_far", "bond_mid", "bond_near"]);
     expect(lines.map((fragment) => fragment.attrs.stroke)).toEqual(["#969696", "#4b4b4b", "#000000"]);
     expect(lines.map((fragment) => fragment.attrs["stroke-width"])).toEqual([1.2, 2, 2.8]);
+  });
+});
+
+describe("ring-interior double bond side", () => {
+  // Regular hexagon centred on (100,100), radius 40, Kekulé doubles on 001-002 / 003-004 /
+  // 005-006, plus a FAR exocyclic substituent on atom_001. The old substituent-mass heuristic
+  // is dominated by the distant substituent and flips the 001-002 inner line OUTSIDE; the
+  // ring-interior rule must keep it inside (toward the centroid) regardless.
+  function benzeneWithFarSubstituent(): MoleculeObject {
+    return moleculeObject({
+      id: "benzene",
+      structure: "c1ccccc1",
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y: 100, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 120, y: 134.64, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 80, y: 134.64, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: 60, y: 100, formalCharge: 0 },
+        { id: "atom_005", element: "C", x: 80, y: 65.36, formalCharge: 0 },
+        { id: "atom_006", element: "C", x: 120, y: 65.36, formalCharge: 0 },
+        { id: "atom_007", element: "O", x: 300, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_12", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" },
+        { id: "bond_23", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+        { id: "bond_34", fromAtomId: "atom_003", toAtomId: "atom_004", order: "double" },
+        { id: "bond_45", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+        { id: "bond_56", fromAtomId: "atom_005", toAtomId: "atom_006", order: "double" },
+        { id: "bond_61", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" },
+        { id: "bond_17", fromAtomId: "atom_001", toAtomId: "atom_007", order: "single" }
+      ]
+    });
+  }
+
+  // Given a ring double bond, which geometric side ("left" = +normal) faces the ring centroid.
+  function interiorSideOf(molecule: MoleculeObject, bondId: string): "left" | "right" {
+    const bond = molecule.bonds.find((candidate) => candidate.id === bondId)!;
+    const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    const nx = -(to.y - from.y) / len;
+    const ny = (to.x - from.x) / len;
+    const centroid = { x: 100, y: 100 };
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    return (centroid.x - midX) * nx + (centroid.y - midY) * ny >= 0 ? "left" : "right";
+  }
+
+  it("points every ring double bond's inner line toward the ring interior", () => {
+    const molecule = benzeneWithFarSubstituent();
+    const sides = ringInteriorDoubleBondSides(molecule);
+    for (const bondId of ["bond_12", "bond_34", "bond_56"]) {
+      expect(sides.get(bondId)).toBe(interiorSideOf(molecule, bondId));
+    }
+  });
+
+  it("keeps the inner line inside even when a far exocyclic substituent would flip a neighbor-mass heuristic", () => {
+    const molecule = benzeneWithFarSubstituent();
+    // Sanity: the far substituent really does out-mass the ring neighbours for bond_12, i.e.
+    // the OLD neighbor-sum would have chosen the opposite (outside) side.
+    const bond = molecule.bonds.find((candidate) => candidate.id === "bond_12")!;
+    const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    const nx = -(to.y - from.y) / len;
+    const ny = (to.x - from.x) / len;
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    const neighborIds = ["atom_006", "atom_003", "atom_007"]; // ring neighbours + substituent
+    const neighborScore = neighborIds.reduce((sum, atomId) => {
+      const atom = molecule.atoms.find((candidate) => candidate.id === atomId)!;
+      return sum + (atom.x - midX) * nx + (atom.y - midY) * ny;
+    }, 0);
+    const neighborSide = neighborScore >= 0 ? "left" : "right";
+    expect(neighborSide).not.toBe(interiorSideOf(molecule, "bond_12"));
+    // The ring-interior rule ignores that and stays inside.
+    expect(ringInteriorDoubleBondSides(molecule).get("bond_12")).toBe(interiorSideOf(molecule, "bond_12"));
+  });
+
+  it("does not assign a side to non-ring (chain) double bonds", () => {
+    const molecule = moleculeObject({
+      id: "acrolein",
+      structure: "C=CC=O",
+      atoms: [
+        { id: "atom_001", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 140, y: 100, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 180, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_12", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" },
+        { id: "bond_23", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
+      ]
+    });
+    expect(ringInteriorDoubleBondSides(molecule).size).toBe(0);
   });
 });

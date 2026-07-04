@@ -84,6 +84,7 @@ import {
   planPageSvgRender,
   planNativeArtVisual,
   sameBondRef,
+  smallestRingAtomIdsByBondId,
   styleColorMapValue,
   textObjectSpansForRendering,
   type PageSvgAttributeValue,
@@ -402,14 +403,16 @@ import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRaste
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
   applyTrackballDrag,
+  quatConjugate,
   quatFromAxisAngle,
   quatMultiply,
   quatNormalize,
   quatToViewMatrix,
+  rotateVectorByQuat,
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
@@ -1062,7 +1065,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.3.14.49-opus";
+const CURRENT_BUILD_STAMP = "7.4.14.38-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1071,21 +1074,6 @@ const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> 
   [artBooleanOperationCommandIds.split]: "split"
 };
 
-function interactive3dSelectedAtomIds(
-  selection: NativeMoleculeSelectionPart | undefined,
-  objectId: string
-): readonly string[] {
-  if (!selection || selection.objectId !== objectId) {
-    return [];
-  }
-  if (selection.kind === "atom") {
-    return [selection.atomId];
-  }
-  if (selection.kind === "parts") {
-    return selection.atomIds;
-  }
-  return [];
-}
 
 function interactive3dAtomsForMolecule(molecule: MoleculeObject): readonly Interactive3dAtom[] {
   return molecule.atoms.map((atom) => ({
@@ -1102,24 +1090,6 @@ function interactive3dBondsForMolecule(molecule: MoleculeObject): readonly Inter
   }));
 }
 
-function interactive3dCoordsFromSpinModel(
-  molecule: MoleculeObject
-): Record<string, { x: number; y: number; z: number }> | undefined {
-  const model = validSpin3dModelFor(molecule);
-  const coords3d = model ? spin3dModelCoordsForMolecule(model, molecule) : undefined;
-  if (!coords3d || coords3d.length < molecule.atoms.length * 3) {
-    return undefined;
-  }
-  const coords3dByAtomId: Record<string, { x: number; y: number; z: number }> = {};
-  molecule.atoms.forEach((atom, index) => {
-    coords3dByAtomId[atom.id] = {
-      x: coords3d[index * 3],
-      y: coords3d[index * 3 + 1],
-      z: coords3d[index * 3 + 2]
-    };
-  });
-  return coords3dByAtomId;
-}
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -1436,6 +1406,32 @@ export function MainWindow({
   const interactive3dDragGenerationRef = useRef(0);
   const interactive3dDragSchedulerRef = useRef<Interactive3dDragSchedulerState | undefined>(undefined);
   const scheduleInteractive3dDragUpdateRef = useRef<(scheduler: Interactive3dDragSchedulerState) => void>(() => undefined);
+  // Interactive 3D rides the spin overlay (owner directive: the tug experience must be
+  // indistinguishable from ChemDraft — no separate surface, the sidecar stays invisible).
+  // The command ARMS a tug attach; an effect opens a HEADLESS sidecar session once the spin
+  // overlay is live, seeded from the spin conformer (a real embed — never flat 2D). The
+  // session's coordinatesChanged events flow back into the same spin3dState the overlay
+  // renders, so the molecule the user tugs IS the drawing.
+  const interactive3dArmRef = useRef<{ objectId: string } | undefined>(undefined);
+  const [interactive3dArmToken, setInteractive3dArmToken] = useState(0);
+  // Maps sidecar atomId → index into the spin coords3d Float64Array, for writing streamed
+  // coordinates back into the overlay geometry.
+  const interactive3dAtomIndexByIdRef = useRef<Map<string, number>>(new Map());
+  const interactive3dAtomIdByIndexRef = useRef<string[]>([]);
+  // Live tug gesture: which atom is grabbed and where it started, so screen motion maps to a
+  // model-frame target for the dragged atom.
+  const spin3dTugDragRef = useRef<{
+    pointerId: number;
+    atomId: string;
+    startPageX: number;
+    startPageY: number;
+    startModel: Vec3;
+  } | undefined>(undefined);
+  // Forward reference to the drag-command dispatcher (defined below the spin pointer handlers),
+  // so those handlers stay stable and free of a temporal-dead-zone dependency.
+  const sendInteractive3dDragCommandRef = useRef<
+    (phase: "beginDrag" | "updateDrag" | "endDrag", atomId: string, target?: Engine3DCoordinate) => void
+  >(() => undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const nativePaletteRef = useRef(nativePalette);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
@@ -2710,6 +2706,10 @@ export function MainWindow({
       (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(to);
       (adjacency.get(to) ?? adjacency.set(to, []).get(to)!).push(from);
     }
+    // Smallest ring per bond, as atom INDICES — so a ring double bond's inner line can point
+    // to the PROJECTED ring interior each frame (matching the 2D drawing and the flatten),
+    // instead of the substituent-count heuristic that flips outward on substituted rings.
+    const ringAtomIdsByBond = smallestRingAtomIdsByBondId(molecule);
     const bondPairs: [number, number][] = [];
     const bondRender: SpinBondRenderInfo[] = [];
     for (const bond of molecule.bonds) {
@@ -2721,6 +2721,12 @@ export function MainWindow({
       const toAtom = atomById.get(bond.toAtomId);
       const neighborIndices = [...(adjacency.get(from) ?? []), ...(adjacency.get(to) ?? [])]
         .filter((index) => index !== from && index !== to);
+      const ringAtomIds = ringAtomIdsByBond.get(bond.id);
+      const ringAtomIndices = ringAtomIds
+        ? ringAtomIds
+            .map((atomId) => atomIndex.get(atomId))
+            .filter((index): index is number => index !== undefined)
+        : undefined;
       bondRender.push({
         // aromatic/unknown render as a single line ON PURPOSE: the 2D layout engine
         // (bondLineSegments) only draws inner lines for double/triple, so matching it here
@@ -2728,7 +2734,8 @@ export function MainWindow({
         order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
           isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
-        neighborIndices
+        neighborIndices,
+        ringAtomIndices
       });
     }
     // The exact labels the 2D drawing shows (element + implicit H + charge; plain
@@ -3159,6 +3166,49 @@ export function MainWindow({
     const page = documentRef.current.pages[0];
     const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
     const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
+    // Interactive 3D tug: if a sidecar session is attached to this molecule and the grab lands
+    // ON an atom, tug that atom instead of rotating the whole molecule. Grabbing empty space
+    // still rotates; clicking outside still flattens.
+    const tugWorkspace = interactive3dWorkspaceRef.current;
+    if (tugWorkspace?.session && tugWorkspace.objectId === state.objectId) {
+      const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
+      const hitRadius = Math.max(6, 0.5 * state.placement.scale * medianBondLength3d(state.coords3d, state.bondPairs));
+      let bestIndex = -1;
+      let bestScore = Infinity;
+      for (const atom of projection.atoms) {
+        const dist = Math.hypot(atom.sx - pageX, atom.sy - pageY);
+        // Break ties toward the nearer-the-viewer atom (larger depth) so overlapping atoms
+        // grab the one on top.
+        const score = dist - atom.depth * 1e-3;
+        if (dist <= hitRadius && score < bestScore) {
+          bestScore = score;
+          bestIndex = atom.index;
+        }
+      }
+      if (bestIndex >= 0) {
+        const atomId = interactive3dAtomIdByIndexRef.current[bestIndex];
+        if (atomId) {
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            /* best-effort */
+          }
+          spin3dTugDragRef.current = {
+            pointerId: event.pointerId,
+            atomId,
+            startPageX: pageX,
+            startPageY: pageY,
+            startModel: [
+              state.coords3d[bestIndex * 3],
+              state.coords3d[bestIndex * 3 + 1],
+              state.coords3d[bestIndex * 3 + 2]
+            ]
+          };
+          sendInteractive3dDragCommandRef.current("beginDrag", atomId);
+          return;
+        }
+      }
+    }
     const box = state.selectionBox;
     const pad = 14;
     const insideBox =
@@ -3183,7 +3233,32 @@ export function MainWindow({
 
   const handleSpinOverlayPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
-    if (!state || !state.dragging || !state.lastClient) return;
+    if (!state) return;
+    // Tug in progress: map the cursor's page motion into a model-frame target for the grabbed
+    // atom and stream it to the sidecar. The delta is un-projected through the inverse of the
+    // current view rotation so the atom follows the cursor in the view plane at any orientation.
+    const tug = spin3dTugDragRef.current;
+    if (tug && tug.pointerId === event.pointerId) {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const page = documentRef.current.pages[0];
+      const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
+      const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
+      const scale = state.placement.scale > 1e-6 ? state.placement.scale : 1;
+      const viewDelta: Vec3 = [
+        (pageX - tug.startPageX) / scale,
+        -((pageY - tug.startPageY) / scale), // page y-down → view y-up
+        0
+      ];
+      const modelDelta = rotateVectorByQuat(quatConjugate(state.quat), viewDelta);
+      sendInteractive3dDragCommandRef.current("updateDrag", tug.atomId, {
+        x: tug.startModel[0] + modelDelta[0],
+        y: tug.startModel[1] + modelDelta[1],
+        z: tug.startModel[2] + modelDelta[2]
+      });
+      return;
+    }
+    if (!state.dragging || !state.lastClient) return;
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
     // The overlay SVG fills the page area with viewBox "0 0 pageWidth pageHeight", so a
@@ -3230,6 +3305,14 @@ export function MainWindow({
       }
     } catch {
       /* ignore */
+    }
+    // Releasing a tug ends the drag on the sidecar (which runs its release settle); the overlay
+    // keeps the settled geometry and stays in spin mode for the next tug/rotate.
+    const tug = spin3dTugDragRef.current;
+    if (tug && tug.pointerId === event.pointerId) {
+      spin3dTugDragRef.current = undefined;
+      sendInteractive3dDragCommandRef.current("endDrag", tug.atomId);
+      return;
     }
     // Releasing ends the rotation but STAYS in spin mode — grab inside the box again
     // to keep rotating, or click outside to flatten (handled in pointer-down). Esc cancels.
@@ -3432,6 +3515,11 @@ export function MainWindow({
     poll(startSession, INTERACTIVE_3D_POST_OPEN_POLL_COUNT);
   }, [updateInteractive3dWorkspaceSession]);
 
+  // Interactive 3D = Spin 3D overlay + a live sidecar tug session. Opening it ensures the
+  // spin overlay is up (which runs a REAL 3D conformer embed — fixing the old flat-2D start)
+  // and ARMS the tug attach; the attach effect below opens the sidecar session seeded from
+  // that conformer and streams eased coordinates back into the same overlay. There is no
+  // separate window or WebGL stage — the molecule the user manipulates IS the drawing.
   const openInteractive3dWorkspace = useCallback(async () => {
     const currentDocument = documentRef.current;
     const selectedObjectIds = [
@@ -3445,7 +3533,6 @@ export function MainWindow({
       setStatus("Select a structure before opening Interactive 3D");
       return;
     }
-
     if (selectedObjectIds.length !== 1) {
       setStatus("Select a single structure for Interactive 3D");
       return;
@@ -3457,113 +3544,167 @@ export function MainWindow({
       setStatus("Interactive 3D needs an editable native molecule");
       return;
     }
-    const selectedAtomIds = interactive3dSelectedAtomIds(selectedNativeMoleculePart, objectId);
-    const atoms = interactive3dAtomsForMolecule(object);
-    const bonds = interactive3dBondsForMolecule(object);
-    const closingDragScheduler = cancelInteractive3dDragScheduler();
-    const previousSession = interactive3dWorkspaceRef.current?.session;
-    queueInteractive3dSessionClose(previousSession, closingDragScheduler);
-
-    const openId = interactive3dOpenSerialRef.current + 1;
-    interactive3dOpenSerialRef.current = openId;
 
     const status = await readEngine3dSidecarStatus();
-    if (!status) {
-      setInteractive3dWorkspace({
-        openId,
-        objectId,
-        source: "web-preview",
-        bridgeAvailable: false,
-        status: "Tauri bridge unavailable",
-        selectedAtomIds,
-        atoms,
-        bonds
-      });
-      setStatus("Interactive 3D Workspace opened in preview mode; Tauri bridge unavailable");
+    if (!status?.available) {
+      setStatus(
+        status
+          ? `Interactive 3D unavailable; sidecar not configured: ${status.bundledBinaryName}`
+          : "Interactive 3D unavailable; Tauri bridge not present"
+      );
       return;
     }
 
-    if (!status.available) {
-      setInteractive3dWorkspace({
-        openId,
-        objectId,
-        source: status.source,
-        bridgeAvailable: false,
-        status: `Sidecar not configured: ${status.bundledBinaryName}`,
-        selectedAtomIds,
-        atoms,
-        bonds
-      });
-      setStatus(`Interactive 3D Workspace opened; sidecar not configured: ${status.bundledBinaryName}`);
-      return;
+    // Arm the tug attach for this molecule and bump the token so the attach effect fires for
+    // BOTH the fresh-embed path (spin3dState changes when the overlay mounts) and the reuse
+    // path (spin overlay already up — only the token changes). Then ensure the spin overlay
+    // is live: startSpin3d reuses a stored conformer or embeds a real one — never flat 2D.
+    interactive3dArmRef.current = { objectId };
+    setInteractive3dArmToken((token) => token + 1);
+    if (spin3dStateRef.current?.objectId !== objectId) {
+      await startSpin3d();
     }
-
-    setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(undefined);
-    setActiveAtomLabelEdit(undefined);
-    setHoveredNativeAtom(undefined);
-    assignHoveredNativeDeleteTarget(undefined);
-    setFreeformNativeBond(undefined);
-    setNativeDoubleBondSidePreview(undefined);
-    setObjectContextMenu(undefined);
-    setInteractive3dWorkspace({
-      openId,
-      objectId,
-      source: status.source,
-      bridgeAvailable: true,
-      status: `Starting sidecar session via ${status.source}`,
-      selectedAtomIds,
-      atoms,
-      bonds
-    });
-    setStatus(`Interactive 3D Workspace opening via ${status.source}`);
-    try {
-      const sessionInput = createEngine3dSessionInputFromMolecule(object, {
-        selectedAtomIds,
-        coords3dByAtomId: interactive3dCoordsFromSpinModel(object)
-      });
-      const session = await openEngine3dWorkspaceSession({
-        input: sessionInput
-      });
-      setInteractive3dWorkspace((current) => current?.openId === openId
-        ? {
-            ...current,
-            session,
-            status: describeEngine3dWorkspaceSession(session),
-            energyLabel: interactive3dEnergyLabel(session) ?? current.energyLabel
-          }
-        : current);
-      setStatus(`Interactive 3D Workspace streaming ${Object.keys(session.coords3dByAtomId ?? {}).length || "session"} atoms`);
-      pollInteractive3dSessionAfterOpen(openId, session);
-    } catch (error) {
-      setInteractive3dWorkspace((current) => current?.openId === openId
-        ? {
-            ...current,
-            status: `Sidecar session failed: ${String(error)}`
-          }
-        : current);
-      setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
-    }
-  }, [
-    assignHoveredNativeDeleteTarget,
-    cancelInteractive3dDragScheduler,
-    pollInteractive3dSessionAfterOpen,
-    queueInteractive3dSessionClose,
-    selectedNativeMoleculePart
-  ]);
-
-  const closeInteractive3dWorkspace = useCallback(() => {
-    const session = interactive3dWorkspaceRef.current?.session;
-    const closingDragScheduler = cancelInteractive3dDragScheduler();
-    setInteractive3dWorkspace(undefined);
-    setStatus("Interactive 3D Workspace closed");
-    queueInteractive3dSessionClose(session, closingDragScheduler);
-  }, [cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
+  }, [selectedNativeMoleculePart, startSpin3d]);
 
   useEffect(() => () => {
     const closingDragScheduler = cancelInteractive3dDragScheduler();
     queueInteractive3dSessionClose(interactive3dWorkspaceRef.current?.session, closingDragScheduler);
   }, [cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
+
+  // Open a headless sidecar tug session for the armed molecule, seeded from the LIVE spin
+  // conformer (a real 3D embed, engine frame). The session is invisible; its coordinate
+  // stream flows back into spin3dState so the spin overlay renders the tug. Idempotent: once
+  // a session exists for the armed molecule it no-ops.
+  const attachInteractive3dTug = useCallback(async () => {
+    const arm = interactive3dArmRef.current;
+    const spin = spin3dStateRef.current;
+    if (!arm || !spin || spin.objectId !== arm.objectId) {
+      return;
+    }
+    const existing = interactive3dWorkspaceRef.current;
+    if (existing?.objectId === arm.objectId && (existing.session || existing.status === "attaching")) {
+      return; // already attaching/attached for this molecule
+    }
+    const molecule = findDocumentObject(documentRef.current, arm.objectId);
+    if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) {
+      return;
+    }
+    if (spin.coords3d.length < molecule.atoms.length * 3) {
+      return;
+    }
+
+    // atomId <-> coords3d index maps, and the seed coordinates from the live conformer.
+    const idByIndex: string[] = [];
+    const indexById = new Map<string, number>();
+    const seedCoords: Record<string, Engine3DCoordinate> = {};
+    molecule.atoms.forEach((atom, index) => {
+      idByIndex[index] = atom.id;
+      indexById.set(atom.id, index);
+      seedCoords[atom.id] = {
+        x: spin.coords3d[index * 3],
+        y: spin.coords3d[index * 3 + 1],
+        z: spin.coords3d[index * 3 + 2]
+      };
+    });
+    interactive3dAtomIdByIndexRef.current = idByIndex;
+    interactive3dAtomIndexByIdRef.current = indexById;
+
+    const openId = interactive3dOpenSerialRef.current + 1;
+    interactive3dOpenSerialRef.current = openId;
+    const closingScheduler = cancelInteractive3dDragScheduler();
+    queueInteractive3dSessionClose(existing?.session, closingScheduler);
+
+    const status = await readEngine3dSidecarStatus();
+    setInteractive3dWorkspace({
+      openId,
+      objectId: arm.objectId,
+      source: status?.source ?? "unknown",
+      bridgeAvailable: true,
+      status: "attaching",
+      selectedAtomIds: [],
+      atoms: interactive3dAtomsForMolecule(molecule),
+      bonds: interactive3dBondsForMolecule(molecule)
+    });
+    try {
+      const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords });
+      const session = await openEngine3dWorkspaceSession({ input: sessionInput });
+      setInteractive3dWorkspace((current) => current?.openId === openId
+        ? { ...current, session, status: "tug-ready" }
+        : current);
+      pollInteractive3dSessionAfterOpen(openId, session);
+      setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel");
+    } catch (error) {
+      setInteractive3dWorkspace((current) => current?.openId === openId ? undefined : current);
+      setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
+    }
+  }, [cancelInteractive3dDragScheduler, pollInteractive3dSessionAfterOpen, queueInteractive3dSessionClose]);
+
+  // Fire the attach once the spin overlay is live for the armed molecule (covers both the
+  // async fresh-embed path — spin3dState becomes defined — and the reuse path — only the arm
+  // token changes). attachInteractive3dTug itself is idempotent.
+  useEffect(() => {
+    const arm = interactive3dArmRef.current;
+    if (arm && spin3dState?.objectId === arm.objectId) {
+      void attachInteractive3dTug();
+    }
+  }, [spin3dState, interactive3dArmToken, attachInteractive3dTug]);
+
+  // Spin overlay ended (flatten / cancel / Esc / selection change) → tear the tug session
+  // down. Flatten has already committed the tugged geometry via the overlay's coords3d, so
+  // there is nothing to persist here.
+  useEffect(() => {
+    if (spin3dState || !interactive3dWorkspaceRef.current) {
+      return;
+    }
+    interactive3dArmRef.current = undefined;
+    const session = interactive3dWorkspaceRef.current.session;
+    const closingScheduler = cancelInteractive3dDragScheduler();
+    setInteractive3dWorkspace(undefined);
+    queueInteractive3dSessionClose(session, closingScheduler);
+  }, [spin3dState, cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
+
+  // Stream sidecar coordinates back into the spin overlay: rebuild the conformer's coords3d
+  // from the latest snapshot (dragged atom pinned to its live cursor target for zero lag) and
+  // hand it to applySpin. Placement/bond-render stay fixed so the molecule deforms in place
+  // rather than re-centering each frame; the overlay recomputes depth cues from the new coords.
+  const interactive3dSessionCoords = interactive3dWorkspace?.session?.coords3dByAtomId;
+  const interactive3dDragVisualTarget = interactive3dWorkspace?.dragVisualTarget;
+  useEffect(() => {
+    if (!interactive3dSessionCoords) {
+      return;
+    }
+    const spin = spin3dStateRef.current;
+    const idByIndex = interactive3dAtomIdByIndexRef.current;
+    if (!spin || idByIndex.length * 3 !== spin.coords3d.length) {
+      return;
+    }
+    const next = new Float64Array(spin.coords3d.length);
+    let changed = false;
+    for (let index = 0; index < idByIndex.length; index += 1) {
+      const atomId = idByIndex[index];
+      const pinned = interactive3dDragVisualTarget?.atomId === atomId
+        ? interactive3dDragVisualTarget.target
+        : undefined;
+      const coord = pinned ?? interactive3dSessionCoords[atomId];
+      if (coord) {
+        next[index * 3] = coord.x;
+        next[index * 3 + 1] = coord.y;
+        next[index * 3 + 2] = coord.z;
+        if (coord.x !== spin.coords3d[index * 3] ||
+            coord.y !== spin.coords3d[index * 3 + 1] ||
+            coord.z !== spin.coords3d[index * 3 + 2]) {
+          changed = true;
+        }
+      } else {
+        next[index * 3] = spin.coords3d[index * 3];
+        next[index * 3 + 1] = spin.coords3d[index * 3 + 1];
+        next[index * 3 + 2] = spin.coords3d[index * 3 + 2];
+      }
+    }
+    if (changed) {
+      applySpin({ ...spin, coords3d: next });
+    }
+  }, [interactive3dSessionCoords, interactive3dDragVisualTarget, applySpin]);
 
   useEffect(() => {
     if (!interactive3dWorkspace?.bridgeAvailable || interactive3dWorkspace.session) {
@@ -3723,6 +3864,8 @@ export function MainWindow({
     scheduleInteractive3dDragUpdate,
     updateInteractive3dWorkspaceSession
   ]);
+  // Keep the forward ref the spin pointer handlers call in sync with the latest dispatcher.
+  sendInteractive3dDragCommandRef.current = sendInteractive3dDragCommand;
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -6155,6 +6298,10 @@ export function MainWindow({
   window.addEventListener("keydown", handleSpinEscape, { capture: true });
   return () => window.removeEventListener("keydown", handleSpinEscape, { capture: true });
   }, [cancelSpin3dSession]);
+
+  // Interactive 3D tug rides the Spin 3D overlay, so Esc is handled by the spin Esc handler
+  // above (cancelSpin3dSession) and the detach effect tears the sidecar session down when the
+  // overlay ends. No separate Esc listener is needed.
 
   useEffect(() => {
     if (!effectiveNativePalette) {
@@ -11941,15 +12088,6 @@ export function MainWindow({
             onStatus={setStatus}
           />
         ) : null}
-        {interactive3dWorkspace ? (
-          <Interactive3dWorkspacePanel
-            workspace={interactive3dWorkspace}
-            onClose={closeInteractive3dWorkspace}
-            onDragBegin={(atomId) => sendInteractive3dDragCommand("beginDrag", atomId)}
-            onDragUpdate={(atomId, target) => sendInteractive3dDragCommand("updateDrag", atomId, target)}
-            onDragEnd={(atomId) => sendInteractive3dDragCommand("endDrag", atomId)}
-          />
-        ) : null}
         {exportDialog ? (
           <ExportDialog
             state={exportDialog}
@@ -12029,7 +12167,13 @@ export function MainWindow({
             zIndex: 1000
           }}
         >
-          {status}
+          {interactive3dWorkspace
+            ? [
+                interactive3dWorkspace.status,
+                interactive3dWorkspace.energyLabel,
+                "Esc to close"
+              ].filter(Boolean).join(" · ")
+            : status}
         </div>
       </section>
       {objectContextMenu ? (
@@ -12059,700 +12203,6 @@ export function MainWindow({
   );
 }
 
-interface Interactive3dWorkspacePanelProps {
-  workspace: Interactive3dWorkspaceState;
-  onClose: () => void;
-  onDragBegin: (atomId: string) => void;
-  onDragUpdate: (atomId: string, target: Engine3DCoordinate) => void;
-  onDragEnd: (atomId: string) => void;
-}
-
-function Interactive3dWorkspacePanel({
-  workspace,
-  onClose,
-  onDragBegin,
-  onDragUpdate,
-  onDragEnd
-}: Interactive3dWorkspacePanelProps) {
-  return (
-    <section
-      className="interactive-3d-workspace"
-      data-interactive-3d-workspace="true"
-      data-engine3d-source={workspace.source}
-      data-engine3d-bridge={workspace.bridgeAvailable ? "available" : "unavailable"}
-      data-engine3d-process-session-id={workspace.session?.processSessionId}
-      aria-label="Interactive 3D Workspace"
-    >
-      <header className="interactive-3d-workspace-header">
-        <div>
-          <h2>3D Workspace</h2>
-          <span>{workspace.status}</span>
-        </div>
-        <div className="interactive-3d-workspace-actions">
-          <button type="button" disabled title="Commit will be enabled when sidecar commit-back is wired">
-            Commit
-          </button>
-          <button type="button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </header>
-      <Interactive3dViewport
-        workspace={workspace}
-        onDragBegin={onDragBegin}
-        onDragUpdate={onDragUpdate}
-        onDragEnd={onDragEnd}
-      />
-      <footer className="interactive-3d-workspace-footer">
-        {workspace.session?.coords3dByAtomId ? (
-          <span>{Object.keys(workspace.session.coords3dByAtomId).length} atoms</span>
-        ) : null}
-        <span>rev {workspace.session?.coordinateRevision ?? 0}</span>
-        {workspace.session?.lastCoordinateReason ? <span>{workspace.session.lastCoordinateReason}</span> : null}
-        {workspace.energyLabel ? <span>{workspace.energyLabel}</span> : null}
-      </footer>
-    </section>
-  );
-}
-
-type Interactive3dCameraState = {
-  yaw: number;
-  pitch: number;
-  zoom: number;
-};
-
-type Interactive3dProjectedAtom = {
-  atom: Interactive3dAtom;
-  coord: Engine3DCoordinate;
-  screenX: number;
-  screenY: number;
-  clipX: number;
-  clipY: number;
-  clipZ: number;
-  depth: number;
-  pointSize: number;
-};
-
-type Interactive3dDragState =
-  | {
-      kind: "atom";
-      pointerId: number;
-      atomId: string;
-      startClientX: number;
-      startClientY: number;
-      startCoord: Engine3DCoordinate;
-      right: Engine3DCoordinate;
-      up: Engine3DCoordinate;
-      unitPerPixel: number;
-    }
-  | {
-      kind: "orbit";
-      pointerId: number;
-      startClientX: number;
-      startClientY: number;
-      startYaw: number;
-      startPitch: number;
-    };
-
-function Interactive3dViewport({
-  workspace,
-  onDragBegin,
-  onDragUpdate,
-  onDragEnd
-}: {
-  workspace: Interactive3dWorkspaceState;
-  onDragBegin: (atomId: string) => void;
-  onDragUpdate: (atomId: string, target: Engine3DCoordinate) => void;
-  onDragEnd: (atomId: string) => void;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const pivotRef = useRef<{ objectId: string; pivot: Engine3DCoordinate } | undefined>(undefined);
-  const dragStateRef = useRef<Interactive3dDragState | undefined>(undefined);
-  const rendererRef = useRef<Interactive3dRenderer | undefined>(undefined);
-  const [camera, setCamera] = useState<Interactive3dCameraState>({ yaw: 0.35, pitch: -0.22, zoom: 1 });
-  // Bumped when the WebGL context is restored, forcing the render effect to rebuild the
-  // cached renderer (its program/buffers were invalidated by the loss).
-  const [glGeneration, setGlGeneration] = useState(0);
-  const sessionCoords = workspace.session?.coords3dByAtomId;
-  // The dragged atom's in-flight target is overlaid at lookup time in the render path
-  // (interactive3dCoordinateList), so we hand the session map through without cloning it
-  // on every drag frame.
-  const coords = sessionCoords;
-
-  // Own the cached WebGL renderer's lifecycle: drop it on context loss (so we never draw into
-  // a dead context) and tear it down on unmount, so a long-lived workspace can't leak GPU
-  // objects. A restore bumps glGeneration, which reruns the render effect to rebuild it.
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) {
-      return undefined;
-    }
-    const handleContextLost: EventListener = (event) => {
-      // preventDefault marks the context restorable; release our now-invalid GPU handles.
-      event.preventDefault();
-      if (rendererRef.current) {
-        disposeInteractive3dRenderer(rendererRef.current);
-        rendererRef.current = undefined;
-      }
-    };
-    const handleContextRestored: EventListener = () => {
-      setGlGeneration((generation) => generation + 1);
-    };
-    canvas.addEventListener("webglcontextlost", handleContextLost);
-    canvas.addEventListener("webglcontextrestored", handleContextRestored);
-    return () => {
-      canvas.removeEventListener("webglcontextlost", handleContextLost);
-      canvas.removeEventListener("webglcontextrestored", handleContextRestored);
-      if (rendererRef.current) {
-        disposeInteractive3dRenderer(rendererRef.current);
-        rendererRef.current = undefined;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) {
-      return;
-    }
-    const rect = canvas.getBoundingClientRect();
-    const width = Math.max(1, Math.round(rect.width * (window.devicePixelRatio || 1)));
-    const height = Math.max(1, Math.round(rect.height * (window.devicePixelRatio || 1)));
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-    }
-
-    const renderer = acquireInteractive3dRenderer(canvas, rendererRef.current);
-    rendererRef.current = renderer;
-    if (!renderer) {
-      // No WebGL context available (e.g. jsdom under test) — nothing to draw.
-      return;
-    }
-
-    if (!coords) {
-      renderInteractive3dEmpty(renderer);
-      return;
-    }
-    const coordinateList = interactive3dCoordinateList(workspace.atoms, coords, workspace.dragVisualTarget);
-    if (coordinateList.length === 0) {
-      renderInteractive3dEmpty(renderer);
-      return;
-    }
-    if (!pivotRef.current || pivotRef.current.objectId !== workspace.objectId) {
-      pivotRef.current = {
-        objectId: workspace.objectId,
-        pivot: interactive3dCentroid(coordinateList.map((entry) => entry.coord))
-      };
-    }
-    renderInteractive3dScene(renderer, workspace, coords, pivotRef.current.pivot, camera);
-  }, [camera, coords, workspace, glGeneration]);
-
-  const handlePointerDown = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
-    event.preventDefault();
-    const canvas = event.currentTarget;
-    const currentCoords = workspace.session?.coords3dByAtomId;
-    if (!currentCoords) {
-      return;
-    }
-    const pivot = pivotRef.current?.pivot ?? interactive3dCentroid(Object.values(currentCoords));
-    const rect = canvas.getBoundingClientRect();
-    const projected = interactive3dProjectedAtoms(
-      workspace.atoms,
-      currentCoords,
-      pivot,
-      camera,
-      rect.width,
-      rect.height,
-      workspace.selectedAtomIds
-    );
-    const hit = interactive3dHitAtom(projected, event.clientX - rect.left, event.clientY - rect.top);
-    canvas.setPointerCapture(event.pointerId);
-    if (hit) {
-      const radius = interactive3dRadius(Object.values(currentCoords), pivot);
-      const basis = interactive3dCameraBasis(camera);
-      dragStateRef.current = {
-        kind: "atom",
-        pointerId: event.pointerId,
-        atomId: hit.atom.id,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        startCoord: hit.coord,
-        right: basis.right,
-        up: basis.up,
-        unitPerPixel: Math.min(
-          0.0105,
-          (radius * 1.6) / Math.max(1, Math.min(rect.width, rect.height)) / Math.max(0.2, camera.zoom)
-        )
-      };
-      onDragBegin(hit.atom.id);
-      return;
-    }
-    dragStateRef.current = {
-      kind: "orbit",
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startYaw: camera.yaw,
-      startPitch: camera.pitch
-    };
-  }, [camera, onDragBegin, workspace]);
-
-  const handlePointerMove = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
-    const drag = dragStateRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    event.preventDefault();
-    if (drag.kind === "orbit") {
-      const dx = event.clientX - drag.startClientX;
-      const dy = event.clientY - drag.startClientY;
-      setCamera({
-        ...camera,
-        yaw: drag.startYaw + dx * 0.008,
-        pitch: Math.max(-1.35, Math.min(1.35, drag.startPitch + dy * 0.008))
-      });
-      return;
-    }
-    const dx = event.clientX - drag.startClientX;
-    const dy = event.clientY - drag.startClientY;
-    const target = {
-      x: drag.startCoord.x + drag.right.x * dx * drag.unitPerPixel - drag.up.x * dy * drag.unitPerPixel,
-      y: drag.startCoord.y + drag.right.y * dx * drag.unitPerPixel - drag.up.y * dy * drag.unitPerPixel,
-      z: drag.startCoord.z + drag.right.z * dx * drag.unitPerPixel - drag.up.z * dy * drag.unitPerPixel
-    };
-    onDragUpdate(drag.atomId, target);
-  }, [camera, onDragUpdate]);
-
-  const handlePointerUp = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
-    const drag = dragStateRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    event.preventDefault();
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    dragStateRef.current = undefined;
-    if (drag.kind === "atom") {
-      onDragEnd(drag.atomId);
-    }
-  }, [onDragEnd]);
-
-  return (
-    <div
-      className="interactive-3d-frame"
-      data-engine3d-coordinate-revision={workspace.session?.coordinateRevision ?? 0}
-      data-engine3d-coordinate-reason={workspace.session?.lastCoordinateReason ?? "pending"}
-    >
-      <canvas
-        ref={canvasRef}
-        aria-label="Interactive 3D molecule viewport"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-      />
-    </div>
-  );
-}
-
-function interactive3dCoordinateList(
-  atoms: readonly Interactive3dAtom[],
-  coords: Readonly<Record<string, Engine3DCoordinate>>,
-  dragVisualTarget?: Interactive3dDragVisualTarget
-): Array<{ atom: Interactive3dAtom; coord: Engine3DCoordinate }> {
-  return atoms
-    .map((atom) => {
-      const base = coords[atom.id];
-      // Overlay the in-flight drag target for just the dragged atom, avoiding a full
-      // coordinate-map clone on every drag frame. Only override when the atom already
-      // has a base coordinate, matching the prior visible-coords semantics.
-      const coord =
-        base && dragVisualTarget && dragVisualTarget.atomId === atom.id
-          ? dragVisualTarget.target
-          : base;
-      return coord ? { atom, coord } : undefined;
-    })
-    .filter((entry): entry is { atom: Interactive3dAtom; coord: Engine3DCoordinate } => entry !== undefined);
-}
-
-function interactive3dCentroid(coords: readonly Engine3DCoordinate[]): Engine3DCoordinate {
-  if (coords.length === 0) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const sum = coords.reduce((acc, coord) => ({
-    x: acc.x + coord.x,
-    y: acc.y + coord.y,
-    z: acc.z + coord.z
-  }), { x: 0, y: 0, z: 0 });
-  return {
-    x: sum.x / coords.length,
-    y: sum.y / coords.length,
-    z: sum.z / coords.length
-  };
-}
-
-function interactive3dRadius(
-  coords: readonly Engine3DCoordinate[],
-  pivot: Engine3DCoordinate
-): number {
-  const radius = Math.max(
-    1,
-    ...coords.map((coord) => {
-      const dx = coord.x - pivot.x;
-      const dy = coord.y - pivot.y;
-      const dz = coord.z - pivot.z;
-      return Math.sqrt(dx * dx + dy * dy + dz * dz);
-    })
-  );
-  return radius;
-}
-
-function interactive3dRotateToView(
-  coord: Engine3DCoordinate,
-  pivot: Engine3DCoordinate,
-  camera: Interactive3dCameraState
-): Engine3DCoordinate {
-  const x = coord.x - pivot.x;
-  const y = coord.y - pivot.y;
-  const z = coord.z - pivot.z;
-  const cy = Math.cos(camera.yaw);
-  const sy = Math.sin(camera.yaw);
-  const cp = Math.cos(camera.pitch);
-  const sp = Math.sin(camera.pitch);
-  const yawX = cy * x + sy * z;
-  const yawZ = -sy * x + cy * z;
-  return {
-    x: yawX,
-    y: cp * y - sp * yawZ,
-    z: sp * y + cp * yawZ
-  };
-}
-
-function interactive3dInverseViewVector(
-  vector: Engine3DCoordinate,
-  camera: Interactive3dCameraState
-): Engine3DCoordinate {
-  const cy = Math.cos(camera.yaw);
-  const sy = Math.sin(camera.yaw);
-  const cp = Math.cos(camera.pitch);
-  const sp = Math.sin(camera.pitch);
-  const pitchY = cp * vector.y + sp * vector.z;
-  const pitchZ = -sp * vector.y + cp * vector.z;
-  return {
-    x: cy * vector.x - sy * pitchZ,
-    y: pitchY,
-    z: sy * vector.x + cy * pitchZ
-  };
-}
-
-function interactive3dCameraBasis(camera: Interactive3dCameraState): { right: Engine3DCoordinate; up: Engine3DCoordinate } {
-  return {
-    right: interactive3dInverseViewVector({ x: 1, y: 0, z: 0 }, camera),
-    up: interactive3dInverseViewVector({ x: 0, y: 1, z: 0 }, camera)
-  };
-}
-
-function interactive3dProjectedAtoms(
-  atoms: readonly Interactive3dAtom[],
-  coords: Readonly<Record<string, Engine3DCoordinate>>,
-  pivot: Engine3DCoordinate,
-  camera: Interactive3dCameraState,
-  width: number,
-  height: number,
-  selectedAtomIds: readonly string[],
-  dragVisualTarget?: Interactive3dDragVisualTarget
-): Interactive3dProjectedAtom[] {
-  const entries = interactive3dCoordinateList(atoms, coords, dragVisualTarget);
-  const radius = interactive3dRadius(entries.map((entry) => entry.coord), pivot);
-  const scale = Math.max(1, radius * 1.45 / Math.max(0.2, camera.zoom));
-  const selected = new Set(selectedAtomIds);
-  return entries.map(({ atom, coord }) => {
-    const view = interactive3dRotateToView(coord, pivot, camera);
-    const clipX = Math.max(-0.98, Math.min(0.98, view.x / scale));
-    const clipY = Math.max(-0.98, Math.min(0.98, view.y / scale));
-    const clipZ = Math.max(-0.9, Math.min(0.9, view.z / (scale * 1.8)));
-    const depthShade = 1 - (clipZ + 0.9) / 2.2;
-    return {
-      atom,
-      coord,
-      screenX: (clipX + 1) * 0.5 * width,
-      screenY: (1 - (clipY + 1) * 0.5) * height,
-      clipX,
-      clipY,
-      clipZ,
-      depth: view.z,
-      pointSize: (selected.has(atom.id) ? 22 : 15) * Math.max(0.74, Math.min(1.18, depthShade))
-    };
-  });
-}
-
-function interactive3dHitAtom(
-  atoms: readonly Interactive3dProjectedAtom[],
-  x: number,
-  y: number
-): Interactive3dProjectedAtom | undefined {
-  let best: Interactive3dProjectedAtom | undefined;
-  let bestDistance = Infinity;
-  for (const atom of atoms) {
-    const dx = atom.screenX - x;
-    const dy = atom.screenY - y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const radius = Math.max(12, atom.pointSize * 0.75);
-    if (distance <= radius && distance < bestDistance) {
-      best = atom;
-      bestDistance = distance;
-    }
-  }
-  return best;
-}
-
-function interactive3dElementColor(element: string): [number, number, number] {
-  switch (element) {
-    case "O":
-      return [0.86, 0.12, 0.12];
-    case "N":
-      return [0.16, 0.28, 0.9];
-    case "S":
-      return [0.9, 0.68, 0.12];
-    case "P":
-      return [0.9, 0.44, 0.1];
-    case "F":
-    case "Cl":
-    case "Br":
-    case "I":
-      return [0.14, 0.58, 0.35];
-    case "H":
-      return [0.9, 0.9, 0.86];
-    default:
-      return [0.18, 0.19, 0.2];
-  }
-}
-
-type Interactive3dGlProgram = {
-  program: WebGLProgram;
-  position: number;
-  color: number;
-  pointSize: number;
-  round: WebGLUniformLocation | null;
-};
-
-/**
- * Cached per-canvas WebGL state. Compiling + linking the shader program and allocating the
- * vertex buffer is expensive, so we build them ONCE and reuse them across every orbit/drag
- * redraw. Previously each render recompiled both shaders, relinked a fresh program, and
- * leaked the program + shaders (only the vertex buffer was deleted) — so a drag could spawn
- * hundreds of orphaned GPU programs. The renderer is torn down on unmount and on context
- * loss, and rebuilt on restore.
- */
-type Interactive3dRenderer = {
-  canvas: HTMLCanvasElement;
-  gl: WebGLRenderingContext;
-  program: Interactive3dGlProgram;
-  buffer: WebGLBuffer;
-  /** Grow-only scratch reused for each draw's interleaved vertex upload. */
-  vertexData: Float32Array;
-};
-
-function createInteractive3dRenderer(canvas: HTMLCanvasElement): Interactive3dRenderer | undefined {
-  const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
-  if (!gl) {
-    return undefined;
-  }
-  const program = interactive3dWebglProgram(gl);
-  if (!program) {
-    return undefined;
-  }
-  const buffer = gl.createBuffer();
-  if (!buffer) {
-    gl.deleteProgram(program.program);
-    return undefined;
-  }
-  return { canvas, gl, program, buffer, vertexData: new Float32Array(0) };
-}
-
-/** Reuse the cached renderer while its context is live and bound to the same canvas; otherwise rebuild. */
-function acquireInteractive3dRenderer(
-  canvas: HTMLCanvasElement,
-  current: Interactive3dRenderer | undefined
-): Interactive3dRenderer | undefined {
-  if (current && current.canvas === canvas && !current.gl.isContextLost()) {
-    return current;
-  }
-  if (current) {
-    disposeInteractive3dRenderer(current);
-  }
-  return createInteractive3dRenderer(canvas);
-}
-
-function disposeInteractive3dRenderer(renderer: Interactive3dRenderer): void {
-  const { gl, program, buffer } = renderer;
-  if (!gl.isContextLost()) {
-    gl.deleteBuffer(buffer);
-    gl.deleteProgram(program.program);
-  }
-}
-
-function renderInteractive3dEmpty(renderer: Interactive3dRenderer): void {
-  const { gl } = renderer;
-  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-  gl.clearColor(0.98, 0.985, 0.982, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-}
-
-function renderInteractive3dScene(
-  renderer: Interactive3dRenderer,
-  workspace: Interactive3dWorkspaceState,
-  coords: Readonly<Record<string, Engine3DCoordinate>>,
-  pivot: Engine3DCoordinate,
-  camera: Interactive3dCameraState
-): void {
-  const { gl, program } = renderer;
-  const width = gl.drawingBufferWidth;
-  const height = gl.drawingBufferHeight;
-  const rect = renderer.canvas.getBoundingClientRect();
-  const cssWidth = Math.max(1, rect.width);
-  const cssHeight = Math.max(1, rect.height);
-  const projected = interactive3dProjectedAtoms(workspace.atoms, coords, pivot, camera, cssWidth, cssHeight, workspace.selectedAtomIds, workspace.dragVisualTarget);
-  const projectedById = new Map(projected.map((atom) => [atom.atom.id, atom]));
-
-  gl.viewport(0, 0, width, height);
-  gl.clearColor(0.98, 0.985, 0.982, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.useProgram(program.program);
-
-  const lineVertices: number[] = [];
-  for (const bond of workspace.bonds) {
-    const from = projectedById.get(bond.fromAtomId);
-    const to = projectedById.get(bond.toAtomId);
-    if (!from || !to) {
-      continue;
-    }
-    const color = [0.42, 0.44, 0.43];
-    lineVertices.push(from.clipX, from.clipY, from.clipZ, ...color, 1);
-    lineVertices.push(to.clipX, to.clipY, to.clipZ, ...color, 1);
-  }
-  interactive3dDrawVertices(renderer, lineVertices, gl.LINES, false);
-
-  const atomVertices = [...projected]
-    .sort((left, right) => left.depth - right.depth)
-    .flatMap((atom) => {
-      const color = interactive3dElementColor(atom.atom.element);
-      return [atom.clipX, atom.clipY, atom.clipZ, ...color, atom.pointSize * (window.devicePixelRatio || 1)];
-    });
-  interactive3dDrawVertices(renderer, atomVertices, gl.POINTS, true);
-}
-
-function interactive3dWebglProgram(gl: WebGLRenderingContext): Interactive3dGlProgram | undefined {
-  const vertexSource = `
-    attribute vec3 a_position;
-    attribute vec3 a_color;
-    attribute float a_point_size;
-    varying vec3 v_color;
-    void main() {
-      gl_Position = vec4(a_position, 1.0);
-      gl_PointSize = a_point_size;
-      v_color = a_color;
-    }
-  `;
-  const fragmentSource = `
-    precision mediump float;
-    uniform bool u_round;
-    varying vec3 v_color;
-    void main() {
-      if (u_round) {
-        vec2 delta = gl_PointCoord - vec2(0.5, 0.5);
-        if (dot(delta, delta) > 0.25) {
-          discard;
-        }
-      }
-      gl_FragColor = vec4(v_color, 1.0);
-    }
-  `;
-  const vertexShader = interactive3dCompileShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragmentShader = interactive3dCompileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  if (!vertexShader || !fragmentShader) {
-    if (vertexShader) {
-      gl.deleteShader(vertexShader);
-    }
-    if (fragmentShader) {
-      gl.deleteShader(fragmentShader);
-    }
-    return undefined;
-  }
-  const program = gl.createProgram();
-  if (!program) {
-    gl.deleteShader(vertexShader);
-    gl.deleteShader(fragmentShader);
-    return undefined;
-  }
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
-  // Flag the shaders for deletion now they are linked into the program; the driver frees them
-  // when the program itself is deleted, so we never accumulate orphaned shader objects.
-  gl.deleteShader(vertexShader);
-  gl.deleteShader(fragmentShader);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    gl.deleteProgram(program);
-    return undefined;
-  }
-  return {
-    program,
-    position: gl.getAttribLocation(program, "a_position"),
-    color: gl.getAttribLocation(program, "a_color"),
-    pointSize: gl.getAttribLocation(program, "a_point_size"),
-    round: gl.getUniformLocation(program, "u_round")
-  };
-}
-
-function interactive3dCompileShader(
-  gl: WebGLRenderingContext,
-  type: number,
-  source: string
-): WebGLShader | undefined {
-  const shader = gl.createShader(type);
-  if (!shader) {
-    return undefined;
-  }
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : undefined;
-}
-
-function interactive3dDrawVertices(
-  renderer: Interactive3dRenderer,
-  values: readonly number[],
-  mode: number,
-  round: boolean
-): void {
-  if (values.length === 0) {
-    return;
-  }
-  const { gl, program, buffer } = renderer;
-  // Reuse (growing only when needed) one scratch Float32Array + the persistent buffer rather
-  // than allocating a fresh typed array and GPU buffer on every draw of every frame.
-  let vertexData = renderer.vertexData;
-  if (vertexData.length < values.length) {
-    vertexData = new Float32Array(values.length);
-    renderer.vertexData = vertexData;
-  }
-  vertexData.set(values);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, vertexData.subarray(0, values.length), gl.DYNAMIC_DRAW);
-  const stride = 7 * Float32Array.BYTES_PER_ELEMENT;
-  gl.enableVertexAttribArray(program.position);
-  gl.vertexAttribPointer(program.position, 3, gl.FLOAT, false, stride, 0);
-  gl.enableVertexAttribArray(program.color);
-  gl.vertexAttribPointer(program.color, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
-  gl.enableVertexAttribArray(program.pointSize);
-  gl.vertexAttribPointer(program.pointSize, 1, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
-  gl.uniform1i(program.round, round ? 1 : 0);
-  gl.drawArrays(mode, 0, values.length / 7);
-}
 
 interface ImportedPageFitPromptProps {
   recommendation: ImportedPageFitPromptState;
@@ -15150,10 +14600,13 @@ interface SpinBondRenderInfo {
   /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
    *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
   symmetric: boolean;
-  /** Atom indices bonded to either endpoint (excluding the endpoints): the secondary
-   *  line goes on the substituent-rich side — ring-interior for ring bonds — which is
-   *  the same neighbor-mass rule the 2D `defaultDoubleBondSide` uses. */
+  /** Atom indices bonded to either endpoint (excluding the endpoints): the fallback
+   *  substituent-rich side for NON-ring double bonds, matching `defaultDoubleBondSide`. */
   neighborIndices: number[];
+  /** Atom indices of the smallest ring the bond lies on, if any. A ring double bond's inner
+   *  line points toward this ring's PROJECTED centroid (true interior), overriding the
+   *  neighbor-mass rule which flips outward when exocyclic substituents dominate. */
+  ringAtomIndices?: number[];
 }
 
 interface Spin3dState {
@@ -15303,20 +14756,28 @@ function SpinOverlay({
           ];
         }
         if (render.order === 2) {
-          // 2D convention: primary line on the bond axis, shorter secondary line a full
-          // gap toward the substituent-rich side (ring interior for ring bonds). The side
-          // is chosen per frame from the PROJECTED neighbor positions, so it tracks the
-          // molecule as it rotates — matching what the drawing will look like flattened.
-          // MAGNITUDE-weighted projection onto the bond normal (NOT a sign-sum) so this is
-          // the identical heuristic defaultDoubleBondSide uses on commit — otherwise the
-          // inner line could resolve to the opposite side and visibly jump on release.
-          // (The reference point along the bond axis is irrelevant: the axis is ⊥ to the
-          // normal, so the midpoint gives the same dot as each neighbor's own endpoint.)
+          // 2D convention: primary line on the bond axis, shorter secondary line a full gap to
+          // one side. The side is chosen per frame from PROJECTED positions so it tracks the
+          // rotation and matches the flattened drawing. For a RING bond the inner line points
+          // toward the projected ring CENTROID (true interior) — this is the fix for aromatic
+          // rings whose exocyclic substituents used to flip the neighbor-mass heuristic below
+          // and push the double bond outside. Non-ring doubles keep the substituent-rich rule,
+          // which is exactly what defaultDoubleBondSide falls back to on commit.
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           let score = 0;
-          for (const neighborIndex of render.neighborIndices) {
-            const p = projection.atoms[neighborIndex];
-            if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
+          if (render.ringAtomIndices && render.ringAtomIndices.length > 0) {
+            let cx = 0, cy = 0, n = 0;
+            for (const ringIndex of render.ringAtomIndices) {
+              const p = projection.atoms[ringIndex];
+              if (p) { cx += p.sx; cy += p.sy; n += 1; }
+            }
+            if (n > 0) score = (cx / n - mx) * nx + (cy / n - my) * ny;
+          }
+          if (score === 0) {
+            for (const neighborIndex of render.neighborIndices) {
+              const p = projection.atoms[neighborIndex];
+              if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
+            }
           }
           const dir = score >= 0 ? 1 : -1;
           const minimumVisible = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, length);
