@@ -165,6 +165,21 @@ describe("Phase 6 — committed structure re-opens cleanly", () => {
       expect(Number.isFinite(atom.x) && Number.isFinite(atom.y)).toBe(true);
     }
   });
+
+  it("round-trips a placed flatten through the app's molfile loader", async () => {
+    const { mol, coords3d } = await conformerFromSmiles("C[C@H](F)Cl", "mol_reopen_placed");
+    const document = documentWith(mol);
+    const outcome = flattenSpunMolecule(document, "mol_reopen_placed", coords3d, IDENTITY, {
+      placement: { centerX: 180, centerY: 160, scale: 24 }
+    });
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+    const next = moleculeOf(outcome.document, "mol_reopen_placed");
+
+    const reparsed = parseMolfileGraph(next.structure);
+    expect(reparsed.atoms).toHaveLength(mol.atoms.length);
+    expect(reparsed.bonds).toHaveLength(mol.bonds.length);
+    expect(reparsed.warnings).toHaveLength(0);
+  });
 });
 
 describe("Phase 6 — repeat-edit: re-flatten never duplicates markers", () => {

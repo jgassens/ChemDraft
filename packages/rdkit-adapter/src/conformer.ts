@@ -11,8 +11,9 @@
  * so the worker/client treat the two engines interchangeably.
  *
  * Lifecycle: no long-lived `JSMol` handle is kept. The embed captures a 3D molblock; each
- * refinement re-parses a pristine copy from it (engine atom order preserved) and deletes
- * the transient handle within the call. Every value that leaves this module is plain data
+ * refinement re-parses a pristine copy from it (engine atom order preserved), may split
+ * its existing iteration budget across a few passes on that one transient copy, and then
+ * deletes the handle. Every value that leaves this module is plain data
  * (structured-clone-safe across the worker boundary).
  */
 import {
@@ -100,6 +101,15 @@ const DEFAULT_EMBED_TIMEOUT_SECONDS = 10;
 // flexible molecules (e.g. long peptides) that random coords embeds successfully.
 const RANDOM_COORDS_RETRY_MIN_ATOMS = 50;
 
+// Best-of-K initial embedding bounds (Spin 3D appearance policy, Slice B). The extra cost is
+// K embeds + K short MMFF scores, incurred only at generation time when a caller requests
+// candidates (`embedCandidates > 1`) — never on a tug rebuild, which leaves it unset.
+const MULTI_EMBED_MAX_CANDIDATES = 6; // hard ceiling on K regardless of the request
+const MULTI_EMBED_TAPER_ATOMS = 60; // above this, halve K to bound large-molecule latency
+const MULTI_EMBED_MAX_ATOMS = 120; // above this, skip best-of-K entirely (single embed)
+const CANDIDATE_SCORE_ITERATIONS = 50; // short MMFF pass, just enough to rank candidates
+const DEFAULT_MULTI_EMBED_SEED = 42; // deterministic base when no seed is supplied
+
 type RefineForceField = NonNullable<ConformerRefineOptions["forceField"]>;
 
 function refineForceFieldFor(
@@ -120,6 +130,56 @@ function reportNameFor(forceField: RefineForceField): ConformerForceFieldReport[
 function reportStatusFor(status: string | undefined): ConformerForceFieldReport["status"] {
   if (status === "converged" || status === "not-converged" || status === "setup-failed") return status;
   return "not-run";
+}
+
+const MAX_FOCUSED_REFINEMENT_PASSES = 3;
+const PRIMARY_REFINEMENT_BUDGET_FRACTION = 0.8;
+
+/**
+ * Preserve the caller's total cap while reserving a small residual budget for continuation.
+ * An absent cap keeps the historical single engine-default pass.
+ */
+function focusedRefinementBudgets(maxIterations: number | undefined): Array<number | undefined> {
+  if (maxIterations === undefined || !Number.isFinite(maxIterations) || maxIterations <= 0) {
+    return [maxIterations];
+  }
+
+  const total = Math.max(1, Math.floor(maxIterations));
+  if (total === 1) return [1];
+
+  const primary = Math.max(1, Math.floor(total * PRIMARY_REFINEMENT_BUDGET_FRACTION));
+  const residual = total - primary;
+  if (residual <= 0) return [total];
+
+  const second = Math.ceil(residual / 2);
+  const third = residual - second;
+  return [primary, second, third].filter((budget) => budget > 0).slice(0, MAX_FOCUSED_REFINEMENT_PASSES);
+}
+
+/**
+ * Resolve a requested best-of-K candidate count to an effective count, tapered by molecule
+ * size so large structures don't pay the full multi-embed cost. Returns 1 to disable best-of-K
+ * (single embed): for a request of 1 or less, a non-positive/unknown atom count, or a molecule
+ * above the hard atom cap.
+ */
+function effectiveCandidateCount(requested: number, atomCount: number): number {
+  if (!Number.isFinite(requested) || requested <= 1) return 1;
+  if (atomCount <= 0 || atomCount > MULTI_EMBED_MAX_ATOMS) return 1;
+  const capped = Math.min(Math.floor(requested), MULTI_EMBED_MAX_CANDIDATES);
+  return atomCount > MULTI_EMBED_TAPER_ATOMS ? Math.min(capped, 2) : capped;
+}
+
+function isValidOptimizePayload(candidate: unknown, expectedCoordinateCount: number): candidate is OptimizePayload {
+  if (typeof candidate !== "object" || candidate === null) return false;
+  const payload = candidate as Partial<OptimizePayload>;
+  return (
+    payload.embedOk === true &&
+    Array.isArray(payload.coords3dByEngineAtom) &&
+    payload.coords3dByEngineAtom.length === expectedCoordinateCount &&
+    payload.coords3dByEngineAtom.every(
+      (coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate)
+    )
+  );
 }
 
 /** Scatter engine-order coordinates onto original atoms via the engine→original map. */
@@ -206,12 +266,12 @@ export async function generate3DConformerProgressive(
     | { kind: "parse-failed" }
     | { kind: "error"; message: string }
     | { kind: "payload"; payload: EmbedPayload };
-  const attemptEmbed = (useRandomCoords: boolean): EmbedAttempt => {
+  const attemptEmbed = (useRandomCoords: boolean, seed: number = options.seed ?? -1): EmbedAttempt => {
     const mol = rdkit.get_mol(input.molfile, JSON.stringify({ removeHs: false }));
     if (!mol) return { kind: "parse-failed" };
     try {
       const json = mol.generate_3d_embed(
-        JSON.stringify({ seed: options.seed ?? -1, timeoutSeconds: DEFAULT_EMBED_TIMEOUT_SECONDS, useRandomCoords })
+        JSON.stringify({ seed, timeoutSeconds: DEFAULT_EMBED_TIMEOUT_SECONDS, useRandomCoords })
       );
       return { kind: "payload", payload: JSON.parse(json) as EmbedPayload };
     } catch (error) {
@@ -221,7 +281,57 @@ export async function generate3DConformerProgressive(
     }
   };
 
-  let attempt = attemptEmbed(false);
+  // Best-of-K initial embedding (Slice B): score a deformation-free candidate by a short MMFF
+  // relaxation and keep the lowest-energy (most relaxed) embed, so an unlucky single ETKDG draw
+  // never ships. Scoring runs on a throwaway transient mol; only the winning embed flows
+  // downstream, so the refine/tug contract is unchanged. Single-candidate callers skip all of it.
+  const scoreEmbed = (candidate: EmbedPayload, forceField: RefineForceField): number | undefined => {
+    const work = rdkit.get_mol(candidate.molblock, JSON.stringify({ removeHs: false }));
+    if (!work) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(
+        work.optimize_3d_conformer(JSON.stringify({ forceField, maxIters: CANDIDATE_SCORE_ITERATIONS }))
+      );
+      if (!isValidOptimizePayload(parsed, candidate.coords3dByEngineAtom.length)) return undefined;
+      const energy = parsed.forceField?.energy;
+      return typeof energy === "number" && Number.isFinite(energy) ? energy : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      work.delete();
+    }
+  };
+
+  const selectBestEmbed = (baseline: EmbedPayload): EmbedPayload => {
+    const candidateCount = effectiveCandidateCount(options.embedCandidates ?? 1, input.originalAtomCount ?? 0);
+    if (candidateCount <= 1) return baseline;
+    const forceField = refineForceFieldFor(options.optimize, undefined);
+    const baseSeed = options.seed ?? DEFAULT_MULTI_EMBED_SEED;
+    let best = baseline;
+    let bestEnergy = scoreEmbed(baseline, forceField);
+    // Candidate seeds are baseSeed+1.. so they never collide with the baseline (baseSeed),
+    // and the winner is reproducible for a given molfile + seed + candidate count.
+    for (let candidate = 1; candidate < candidateCount; candidate += 1) {
+      const next = attemptEmbed(false, baseSeed + candidate);
+      if (next.kind !== "payload" || !next.payload.embedOk) continue;
+      const energy = scoreEmbed(next.payload, forceField);
+      if (energy === undefined) continue;
+      if (bestEnergy === undefined || energy < bestEnergy) {
+        best = next.payload;
+        bestEnergy = energy;
+      }
+    }
+    return best;
+  };
+
+  // Best-of-K uses deterministic candidate seeds multiEmbedBaseSeed+0.. When the caller asked for
+  // multiple candidates but supplied no explicit seed, seed the baseline deterministically too, so
+  // the baseline is a candidate on equal footing and the winner is reproducible for a given
+  // molfile + candidate count (a `?? -1` baseline would draw a different, random conformer each run).
+  const embedCandidateCount = effectiveCandidateCount(options.embedCandidates ?? 1, input.originalAtomCount ?? 0);
+  const multiEmbedBaseSeed = options.seed ?? DEFAULT_MULTI_EMBED_SEED;
+  const baselineSeed = options.seed ?? (embedCandidateCount > 1 ? multiEmbedBaseSeed : -1);
+  let attempt = attemptEmbed(false, baselineSeed);
   if (attempt.kind === "parse-failed") {
     return failedEmbed(input, "RDKit could not parse the molfile", version);
   }
@@ -235,13 +345,29 @@ export async function generate3DConformerProgressive(
     const retry = attemptEmbed(true);
     if (retry.kind === "payload" && retry.payload.embedOk) attempt = retry;
   }
+  // Best-of-K rescue: if the baseline seed failed to embed, a later deterministic candidate seed
+  // may still succeed. Try them before giving up, so one unlucky baseline draw does not fail a
+  // request that asked for several candidates.
+  if (
+    (attempt.kind === "error" || (attempt.kind === "payload" && !attempt.payload.embedOk)) &&
+    embedCandidateCount > 1
+  ) {
+    for (let candidate = 1; candidate < embedCandidateCount; candidate += 1) {
+      const rescue = attemptEmbed(false, multiEmbedBaseSeed + candidate);
+      if (rescue.kind === "payload" && rescue.payload.embedOk) {
+        attempt = rescue;
+        break;
+      }
+    }
+  }
   if (attempt.kind === "error") {
     return failedEmbed(input, `RDKit embed failed: ${attempt.message}`, version);
   }
-  const payload = attempt.payload;
-  if (!payload.embedOk) {
+  if (!attempt.payload.embedOk) {
     return failedEmbed(input, "RDKit ETKDG embedding found no conformer (or timed out)", version);
   }
+  // Optionally upgrade the baseline embed to the best of several deterministic candidates.
+  const payload = selectBestEmbed(attempt.payload);
 
   const engineToOriginalAtom = payload.engineToOriginalAtom;
   const originalAtomCount = originalAtomCountFrom(engineToOriginalAtom, input.originalAtomCount);
@@ -296,43 +422,60 @@ export async function generate3DConformerProgressive(
   }
 
   const embeddedMolblock = payload.molblock;
-  // Each refinement starts from the pristine embed: re-parse the embed molblock (engine
-  // atom order preserved) and optimise that copy, so Fast/Balanced/Quality and MMFF↔UFF
-  // all derive from one embed without re-embedding or warping.
+  // Each public refinement starts from the pristine embed. RDKit may reserve part of the
+  // same total iteration budget for up to two focused continuation passes on this ONE
+  // transient conformer. Cross-call state is never reused.
   const refineFromEmbedded = (maxIts?: number, refineOptions?: ConformerRefineOptions): Generate3DConformerResult => {
     const forceField = refineForceFieldFor(options.optimize, refineOptions?.forceField);
     const work = rdkit.get_mol(embeddedMolblock, JSON.stringify({ removeHs: false }));
     if (!work) {
       return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
     }
+
+    const expectedCoordinateCount = payload.coords3dByEngineAtom.length;
+    const passBudgets = focusedRefinementBudgets(maxIts ?? options.maxMinimiseIterations);
     let optimized: OptimizePayload | undefined;
+    let totalIterations: number | undefined = 0;
     try {
-      optimized = JSON.parse(
-        work.optimize_3d_conformer(
-          JSON.stringify({ forceField, maxIters: maxIts ?? options.maxMinimiseIterations })
-        )
-      ) as OptimizePayload;
-    } catch {
-      optimized = undefined; // a binding throw / bad JSON → keep the embed (handled below)
+      for (const passBudget of passBudgets) {
+        let candidate: unknown;
+        try {
+          candidate = JSON.parse(
+            work.optimize_3d_conformer(JSON.stringify({ forceField, maxIters: passBudget }))
+          );
+        } catch {
+          break; // retain the last valid pass; no valid pass falls back to the embed below
+        }
+
+        // Reject failed, reordered, truncated, null, NaN, or infinite coordinate payloads.
+        // A bad later pass must not discard coordinates from an earlier valid pass.
+        if (!isValidOptimizePayload(candidate, expectedCoordinateCount)) break;
+
+        optimized = candidate;
+        const passIterations = candidate.forceField?.iterations;
+        if (totalIterations !== undefined) {
+          totalIterations =
+            typeof passIterations === "number" && Number.isFinite(passIterations) && passIterations >= 0
+              ? totalIterations + passIterations
+              : undefined;
+        }
+
+        if (reportStatusFor(candidate.forceField?.status) !== "not-converged") break;
+      }
     } finally {
       work.delete();
     }
-    if (!optimized || !optimized.embedOk) {
+
+    if (!optimized) {
       return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
     }
-    // The refine re-parses the embed molblock and scatters via the ORIGINAL engine→original
-    // map, which assumes the re-parse preserved engine atom order. If the optimised coordinate
-    // count differs from the embed's, that assumption broke — keep the embed coords rather
-    // than scatter onto the wrong atoms.
-    if (optimized.coords3dByEngineAtom.length !== payload.coords3dByEngineAtom.length) {
-      return buildResult(Float64Array.from(embeddedCoords), { name: reportNameFor(forceField), status: "setup-failed" });
-    }
+
     const refinedCoords = scatterToOriginal(optimized.coords3dByEngineAtom, engineToOriginalAtom, originalAtomCount);
     return buildResult(refinedCoords, {
       name: reportNameFor(forceField),
       status: reportStatusFor(optimized.forceField?.status),
       energy: optimized.forceField?.energy,
-      iterations: optimized.forceField?.iterations
+      iterations: totalIterations
     });
   };
 

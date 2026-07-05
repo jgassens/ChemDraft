@@ -72,6 +72,7 @@ export const drawerActions: CommandSpec[] = [
 
 export const structureCleanupCommandId = "structure.cleanup2d";
 export const structureSpin3dCommandId = "structure.spin3d";
+export const structureInteractive3dCommandId = "structure.openInteractive3d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
 export const artBooleanOperationCommandIds = {

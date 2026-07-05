@@ -153,6 +153,54 @@ async function startSpinSession(bridge: ChemDraftAgentBridge) {
   });
 }
 
+async function commitSpinOverlay(container: HTMLDivElement, bridge: ChemDraftAgentBridge) {
+  const overlay = container.querySelector<SVGSVGElement>('[data-spin3d-overlay="true"]');
+  expect(overlay).not.toBeNull();
+
+  const originalElementFromPoint = document.elementFromPoint;
+  const originalRect = overlay!.getBoundingClientRect;
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: vi.fn(() => overlay)
+  });
+  overlay!.getBoundingClientRect = () => ({
+    x: 0,
+    y: 0,
+    left: 0,
+    top: 0,
+    right: 1000,
+    bottom: 1000,
+    width: 1000,
+    height: 1000,
+    toJSON: () => ({})
+  } as DOMRect);
+
+  try {
+    await act(async () => {
+      bridge.pointerDown({ page: { x: 1, y: 1 } }, { pointerId: 91, buttons: 1 });
+      await bridge.waitForIdle();
+    });
+  } finally {
+    if (originalElementFromPoint) {
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: originalElementFromPoint
+      });
+    } else {
+      Reflect.deleteProperty(document, "elementFromPoint");
+    }
+    overlay!.getBoundingClientRect = originalRect;
+  }
+}
+
+function selectedObjectBounds(bridge: ChemDraftAgentBridge): { x: number; y: number; width: number; height: number } {
+  const snapshot = bridge.snapshot();
+  const selectedId = snapshot.selection.objectIds[0];
+  const object = snapshot.objects.find((candidate) => candidate.id === selectedId);
+  if (!object) throw new Error("Selected object missing from snapshot.");
+  return { x: object.x, y: object.y, width: object.width, height: object.height };
+}
+
 afterEach(() => {
   delete window[AGENT_BRIDGE_GLOBAL_NAME];
   window.history.replaceState({}, "", "/");
@@ -203,6 +251,31 @@ describe("Spin 3D session state", () => {
       });
       expect(container.querySelector('[data-spin3d-overlay="true"]')).toBeNull();
       expect(bridge.snapshot().page.objectCount).toBe(0);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("commits a Spin 3D flatten and reopens the overlay without moving document bounds", async () => {
+    const { bridge, container, root } = await renderMainWindow();
+    try {
+      await startSpinSession(bridge);
+      expect(container.querySelector('[data-spin3d-overlay="true"]')).not.toBeNull();
+
+      await commitSpinOverlay(container, bridge);
+      expect(container.querySelector('[data-spin3d-overlay="true"]')).toBeNull();
+      const committedBounds = selectedObjectBounds(bridge);
+
+      await startSpinSession(bridge);
+      expect(container.querySelector('[data-spin3d-overlay="true"]')).not.toBeNull();
+      const reopenedBounds = selectedObjectBounds(bridge);
+
+      expect(reopenedBounds.x).toBeCloseTo(committedBounds.x, 6);
+      expect(reopenedBounds.y).toBeCloseTo(committedBounds.y, 6);
+      expect(reopenedBounds.width).toBeCloseTo(committedBounds.width, 6);
+      expect(reopenedBounds.height).toBeCloseTo(committedBounds.height, 6);
     } finally {
       await act(async () => {
         root.unmount();

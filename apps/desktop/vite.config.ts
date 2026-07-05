@@ -1,8 +1,13 @@
 import { execSync } from "node:child_process";
-import react from "@vitejs/plugin-react";
+import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
 
 const workspacePackage = (path: string) => new URL(path, import.meta.url).pathname;
+const gitStampCommandOptions = {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "ignore"],
+  timeout: 750
+} as const;
 
 // Computed once per `vite build` / `vite dev` start, so the on-screen stamp always reflects
 // the actual source that was bundled. Format: "YYYY-MM-DD HH:MM:SS <shortSha>[+dirty]".
@@ -15,15 +20,17 @@ function buildStamp(): string {
   let sha = "nogit";
   let dirty = "";
   try {
-    sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-    dirty = execSync("git status --porcelain", { encoding: "utf8" }).trim().length > 0 ? "+dirty" : "";
+    sha = execSync("git rev-parse --short HEAD", gitStampCommandOptions).trim();
+    dirty = execSync("git status --porcelain", gitStampCommandOptions).trim().length > 0 ? "+dirty" : "";
   } catch {
-    // not a git checkout / git unavailable — keep the placeholder.
+    // Not a git checkout, git unavailable, or a damaged shared object store. Keep dev startup moving.
   }
   return `${when} ${sha}${dirty}`;
 }
 
 export default defineConfig({
+  // SWC React plugin (replaces the Babel one): no 500KB code-generator deopt on the large
+  // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
   plugins: [react()],
   define: {
     __BUILD_STAMP__: JSON.stringify(buildStamp())
@@ -35,6 +42,7 @@ export default defineConfig({
       "@chemdraft/ocl-adapter": workspacePackage("../../packages/ocl-adapter/src/index.ts"),
       "@chemdraft/chemistry-adapter": workspacePackage("../../packages/chemistry-adapter/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("../../packages/cdx-compat/src/index.ts"),
+      "@chemdraft/engine3d-api": workspacePackage("../../packages/engine3d-api/src/index.ts"),
       "@chemdraft/export-engine/pdf": workspacePackage("../../packages/export-engine/src/pdf.ts"),
       "@chemdraft/export-engine": workspacePackage("../../packages/export-engine/src/index.ts"),
       "@chemdraft/layout-engine": workspacePackage("../../packages/layout-engine/src/index.ts"),

@@ -95,11 +95,19 @@ export interface FlattenOptions {
   crossingDepthEpsilonFraction?: number;
   /** Substituent–axis angle (degrees) below which an E/Z bond reads edge-on. */
   ezEdgeOnAngleDeg?: number;
+  /**
+   * Atom ids that are ACTUAL tetrahedral stereocenters (perceived chemically by the caller, e.g.
+   * via OpenChemLib). When provided, a drawn wedge/hash is treated as specified stereo ONLY if its
+   * narrow-end atom is in this set; wedges on non-chiral atoms — common as graphic "projects
+   * toward/away" cues — are dropped (stripped with all markers, never encoded, never a refusal).
+   * When omitted, every drawn wedge is treated as a center (legacy, geometry-only behavior).
+   */
+  stereoCenterAtomIds?: ReadonlySet<string>;
 }
 
 type Required<T> = { [K in keyof T]-?: T[K] };
 
-const DEFAULTS: Required<Omit<FlattenOptions, "objectId">> = {
+const DEFAULTS: Required<Omit<FlattenOptions, "objectId" | "stereoCenterAtomIds">> = {
   minProjectedBondLengthFraction: 0.2,
   parityVolumeEpsilon: 0.05,
   crossingDepthEpsilonFraction: 0.04,
@@ -368,6 +376,11 @@ export function flattenPerspectiveFrom3D(
   for (const bond of bonds) {
     if (isStereoStyle(bond.display?.bondStyle)) {
       // narrow end (stereocenter) is fromAtomId by ChemDraft convention.
+      // A wedge/hash only encodes stereo at an ACTUAL stereocenter. When the caller supplies the
+      // perceived stereocenter set, ignore markers on non-centers: they are graphic "toward/away"
+      // cues, not specified stereo, and are dropped (they get stripped with all markers below and
+      // never re-encoded) instead of being (mis)enforced and refusing the whole flatten.
+      if (opts.stereoCenterAtomIds && !opts.stereoCenterAtomIds.has(bond.fromAtomId)) continue;
       originalMarkerByCenter.set(bond.fromAtomId, {
         neighborId: bond.toAtomId,
         style: bond.display?.bondStyle as StereoMarkerStyle
@@ -734,7 +747,7 @@ function computeCrossings(
   bonds: readonly MoleculeBond[],
   projected: Map<string, Projected>,
   objectId: string,
-  opts: Required<Omit<FlattenOptions, "objectId">>,
+  opts: Required<Omit<FlattenOptions, "objectId" | "stereoCenterAtomIds">>,
   medianLength: number,
   warnings: FlattenWarning[]
 ): CrossingOverride[] {

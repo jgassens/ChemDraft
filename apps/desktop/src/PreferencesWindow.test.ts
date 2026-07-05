@@ -28,7 +28,7 @@ describe("PreferencesWindow", () => {
     for (const heading of ["3D refinement", "Embedding engine", "Force field"]) {
       expect(markup).toContain(heading);
     }
-    for (const title of ["Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94", "UFF"]) {
+    for (const title of ["Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
       expect(markup).toContain(title);
     }
     expect(markup).toContain("Requires the RDKit engine");
@@ -44,11 +44,11 @@ describe("PreferencesWindow", () => {
     expect(markup).toMatch(selected("spin3d-force-field", "uff"));
   });
 
-  it("defaults to quality / auto / mmff94 when nothing is stored", () => {
+  it("defaults to quality / auto / mmff94s when nothing is stored", () => {
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(markup.match(/data-selected="true"/g)).toHaveLength(3);
     expect(markup).toMatch(selected("spin3d-refinement-mode", "quality"));
     expect(markup).toMatch(selected("spin3d-engine", "auto"));
-    expect(markup).toMatch(selected("spin3d-force-field", "mmff94"));
+    expect(markup).toMatch(selected("spin3d-force-field", "mmff94s"));
   });
 });

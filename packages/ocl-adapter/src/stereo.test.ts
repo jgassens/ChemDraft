@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as OCL from "openchemlib";
-import { ensureOclResources, generate3DConformerProgressive } from "./index";
+import { ensureOclResources, generate3DConformerProgressive, perceiveUnrepresentableStereo } from "./index";
 
 // 3D conformer generation/minimisation is CPU-heavy; under a fully parallel `vitest run` these
 // cases run ~2-3s each but can tip past the 5s default when the machine is loaded. Give them headroom
@@ -118,4 +118,25 @@ describe("2D→3D stereochemistry fidelity", () => {
       expect(flipped).toBe(A.centers.length);
     });
   }
+});
+
+describe("perceiveUnrepresentableStereo — axial chirality a flat drawing can't hold", () => {
+  const molfileOf = (smiles: string) => OCL.Molecule.fromSmiles(smiles).toMolfile();
+
+  it("flags an allene axial stereocenter", () => {
+    const result = perceiveUnrepresentableStereo(molfileOf("CC=C=CC")); // 2,3-pentadiene
+    expect(result.alleneAtoms.length).toBeGreaterThan(0);
+  });
+
+  it("flags an atropisomer (BINAP) axis", () => {
+    const result = perceiveUnrepresentableStereo(molfileOf("Oc1ccc2ccccc2c1-c1c(O)ccc2ccccc12")); // BINOL
+    expect(result.atropisomerBonds.length).toBeGreaterThan(0);
+  });
+
+  it("does NOT flag ordinary molecules (no cry-wolf)", () => {
+    for (const smiles of ["C[C@H](N)C(=O)O", "c1ccccc1", "C/C=C/C", "C1CCCCC1", "OC[C@@H](O)[C@H](O)[C@@H](O)[C@@H](O)C=O"]) {
+      const result = perceiveUnrepresentableStereo(molfileOf(smiles));
+      expect(result.alleneAtoms.length + result.atropisomerBonds.length, smiles).toBe(0);
+    }
+  });
 });

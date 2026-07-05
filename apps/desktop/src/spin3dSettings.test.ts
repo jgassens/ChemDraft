@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_SPIN3D_SEED,
   DEFAULT_SPIN3D_SETTINGS,
   conformerOptionsForSpin3d,
   isSpin3dEnginePreference,
@@ -31,8 +32,8 @@ afterEach(() => {
 const settings = (patch: Partial<Spin3dSettings> = {}): Spin3dSettings => ({ ...DEFAULT_SPIN3D_SETTINGS, ...patch });
 
 describe("spin3dSettings", () => {
-  it("defaults to quality + auto engine + MMFF94 (preserves historical chemistry)", () => {
-    expect(DEFAULT_SPIN3D_SETTINGS).toEqual({ refinementMode: "quality", enginePreference: "auto", forceField: "mmff94" });
+  it("defaults to quality + auto engine + MMFF94s (planar depiction cleanup)", () => {
+    expect(DEFAULT_SPIN3D_SETTINGS).toEqual({ refinementMode: "quality", enginePreference: "auto", forceField: "mmff94s" });
     expect(loadSpin3dSettings()).toEqual(DEFAULT_SPIN3D_SETTINGS);
   });
 
@@ -65,6 +66,7 @@ describe("spin3dSettings", () => {
     expect(isSpin3dEnginePreference("openchemlib")).toBe(true);
     expect(isSpin3dEnginePreference("ocl")).toBe(false);
     expect(isSpin3dForceField("mmff94")).toBe(true);
+    expect(isSpin3dForceField("mmff94s")).toBe(true);
     expect(isSpin3dForceField("uff")).toBe(true);
     expect(isSpin3dForceField("gaff")).toBe(false);
     expect(isSpin3dSettings(DEFAULT_SPIN3D_SETTINGS)).toBe(true);
@@ -72,18 +74,23 @@ describe("spin3dSettings", () => {
   });
 
   describe("conformerOptionsForSpin3d", () => {
-    it("fast disables refinement (force field irrelevant)", () => {
-      expect(conformerOptionsForSpin3d(settings({ refinementMode: "fast", forceField: "uff" }), 20)).toEqual({ optimize: "none" });
+    it("fast disables refinement but still provides a deterministic embed seed", () => {
+      expect(conformerOptionsForSpin3d(settings({ refinementMode: "fast", forceField: "uff" }), 20)).toEqual({
+        optimize: "none",
+        seed: DEFAULT_SPIN3D_SEED
+      });
     });
 
-    it("balanced/quality request the chosen force field with the size-scaled cap", () => {
+    it("balanced/quality request the chosen force field with the size-scaled cap and deterministic seed", () => {
       for (const n of [10, 45, 90]) {
         expect(conformerOptionsForSpin3d(settings({ refinementMode: "balanced" }), n)).toEqual({
-          optimize: "mmff94",
+          optimize: "mmff94s",
+          seed: DEFAULT_SPIN3D_SEED,
           maxMinimiseIterations: balancedRefineIterationsFor(n)
         });
         expect(conformerOptionsForSpin3d(settings({ refinementMode: "quality", forceField: "uff" }), n)).toEqual({
           optimize: "uff",
+          seed: DEFAULT_SPIN3D_SEED,
           maxMinimiseIterations: qualityRefineIterationsFor(n)
         });
       }

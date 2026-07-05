@@ -285,6 +285,35 @@ export function overlayScale(
 }
 
 /**
+ * Scale for an already-modeled molecule whose current 2D drawing is a committed
+ * projection at `viewMatrix`. Fresh embeds use `overlayScale`; reopen/rotate paths
+ * need this orientation-aware scale so the live overlay lands on the tilted drawing.
+ */
+export function orientedOverlayScale(
+  drawn2dPoints: readonly { x: number; y: number }[],
+  coords3d: ArrayLike<number>,
+  bondPairs: readonly BondPair[],
+  viewMatrix: ViewMatrix
+): number {
+  const centroid = conformerCentroid(coords3d);
+  const projectedPoints: { x: number; y: number }[] = [];
+  const atomCount = coords3d.length / 3;
+  for (let i = 0; i < atomCount; i += 1) {
+    const centered: Vec3 = [
+      coords3d[i * 3] - centroid[0],
+      coords3d[i * 3 + 1] - centroid[1],
+      coords3d[i * 3 + 2] - centroid[2]
+    ];
+    const [px, py] = projectPoint(viewMatrix, centered);
+    projectedPoints.push({ x: px, y: -py });
+  }
+  const drawn = medianBondLength2d(drawn2dPoints, bondPairs);
+  const projected = medianBondLength2d(projectedPoints, bondPairs);
+  if (drawn <= 0 || projected <= 1e-9) return 1;
+  return drawn / projected;
+}
+
+/**
  * Per-bond perspective depth weight (0 = farthest … 1 = nearest), or `undefined` for a
  * near-planar view with no meaningful depth spread.
  *

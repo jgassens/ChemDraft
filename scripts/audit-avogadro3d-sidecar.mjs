@@ -1,0 +1,80 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const sidecarRoot = join(repoRoot, "native", "avogadro3d-sidecar");
+const cmake = readFileSync(join(sidecarRoot, "CMakeLists.txt"), "utf8");
+const preset = readFileSync(join(sidecarRoot, "CMakePresets.json"), "utf8");
+const tauriConfig = readFileSync(join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8");
+
+const failures = [];
+
+const requiredCmakeSnippets = [
+  "set(CMAKE_CXX_STANDARD 17)",
+  "CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC \"Link Avogadro Core/Calc for BSD UFF optimization\" OFF",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT \"Allow dev-only sidecar-owned Qt viewport\" OFF",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL \"Allow Open Babel linkage\" OFF",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS \"Allow GPL plugin linkage\" OFF",
+  "target_link_libraries(avogadro3d-sidecar PRIVATE Avogadro::Core Avogadro::Calc)",
+  "416651ddaef33a4e20392392e7c0b505d446491b"
+];
+
+for (const snippet of requiredCmakeSnippets) {
+  if (!cmake.includes(snippet)) {
+    failures.push(`Missing CMake guard: ${snippet}`);
+  }
+}
+
+const forbiddenCmakePatterns = [
+  /\bfind_package\s*\(\s*OpenBabel/i,
+  /\btarget_link_libraries\s*\([^)]*\bOpenBabel\b/i,
+  /\bBUILD_GPL_PLUGINS\b[^"\n]*ON/i
+];
+
+for (const pattern of forbiddenCmakePatterns) {
+  if (pattern.test(cmake)) {
+    failures.push(`Forbidden sidecar linkage pattern matched: ${pattern}`);
+  }
+}
+
+const presetJson = JSON.parse(preset);
+const protocolScout = presetJson.configurePresets?.find((entry) => entry.name === "protocol-scout");
+const cacheVariables = protocolScout?.cacheVariables ?? {};
+if (cacheVariables.CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC !== "ON") {
+  failures.push("CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC must be ON in protocol-scout preset.");
+}
+if (cacheVariables.CHEMDRAFT_AVOGADRO3D_USE_QT !== "OFF") {
+  failures.push("CHEMDRAFT_AVOGADRO3D_USE_QT must be OFF until the native offscreen-render slice.");
+}
+if (cacheVariables.CHEMDRAFT_AVOGADRO3D_USE_OPENGL !== "OFF") {
+  failures.push("CHEMDRAFT_AVOGADRO3D_USE_OPENGL must be OFF until the native offscreen-render slice.");
+}
+for (const variable of [
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_PYTHON",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_TESTS",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_BENCHMARKS",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_PLOTTER",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_LIBARCHIVE",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_LIBMSYM",
+  "CHEMDRAFT_AVOGADRO3D_ENABLE_SPGLIB"
+]) {
+  if (cacheVariables[variable] !== "OFF") {
+    failures.push(`${variable} must be OFF in protocol-scout preset.`);
+  }
+}
+
+const config = JSON.parse(tauriConfig);
+if (!config.bundle?.externalBin?.includes("binaries/avogadro3d-sidecar")) {
+  failures.push("Tauri bundle.externalBin must include binaries/avogadro3d-sidecar.");
+}
+
+if (failures.length > 0) {
+  console.error(failures.join("\n"));
+  process.exit(1);
+}
+
+console.log("avogadro3d-sidecar audit passed");

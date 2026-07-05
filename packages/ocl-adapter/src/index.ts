@@ -265,6 +265,77 @@ export function depictSmiles2D(smiles: string): Depiction2D {
   return { molfile: mol.toMolfile(), atoms, bonds };
 }
 
+/** Per-atom stereo verdict, index-aligned to the molfile's atom order (so index i corresponds to
+ *  the i-th atom of the molecule that produced `molfile`). */
+export interface OclAtomStereo {
+  /** True only when the atom is an ACTUAL tetrahedral stereocenter (constitutionally chiral),
+   *  not merely an atom that happens to carry a drawn wedge/hash. */
+  isStereoCenter: boolean;
+  /** CIP descriptor when OCL can assign one; `"unspecified"` otherwise. */
+  descriptor: "R" | "S" | "unspecified";
+}
+
+/**
+ * Perceive which atoms are TRUE stereocenters. A drawn wedge/hash only encodes stereochemistry at
+ * a real chiral center; on many structures a wedge is a graphic "projects toward/away" cue on an
+ * atom that is not chiral at all (and would otherwise be (mis)treated as a specified center and
+ * block a flatten). OCL reads the molfile's 2D coordinates + wedge bonds to decide. The returned
+ * array is index-aligned to the molfile's atom order.
+ */
+export function perceiveStereoCentersFromMolfile(molfile: string): OclAtomStereo[] {
+  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
+  mol.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  const out: OclAtomStereo[] = [];
+  for (let i = 0; i < mol.getAllAtoms(); i++) {
+    const isStereoCenter = mol.isAtomStereoCenter(i);
+    let descriptor: OclAtomStereo["descriptor"] = "unspecified";
+    // A cumulated-π axial center (allene/cumulene, pi ≥ 2) is a genuine stereocenter, but its hand
+    // is carried by the AXIS, not by a σ-bond wedge, so a flat 2D depiction cannot encode it. Leave
+    // its descriptor "unspecified" so the flatten read-back guard never treats it as a center it
+    // must preserve — which it never can, so the whole flatten would otherwise be refused. Such
+    // axes are surfaced separately by perceiveUnrepresentableStereo.
+    if (isStereoCenter && mol.getAtomPi(i) < 2) {
+      const cip = mol.getAtomCIPParity(i);
+      if (cip === OCL.Molecule.cAtomCIPParityRorM) descriptor = "R";
+      else if (cip === OCL.Molecule.cAtomCIPParitySorP) descriptor = "S";
+    }
+    out.push({ isStereoCenter, descriptor });
+  }
+  return out;
+}
+
+export interface UnrepresentableStereo {
+  /** Allene / cumulene axial stereocenters: the central atom's asymmetry is carried by a
+   *  cumulated-π AXIS (≥2 π bonds), not by four σ substituents — there is no bond to wedge. */
+  alleneAtoms: number[];
+  /** Atropisomer (BINAP-type) hindered-rotation stereo axes, reported by their pivot bond index. */
+  atropisomerBonds: number[];
+}
+
+/**
+ * Detect stereogenic units a FLAT 2D wedge drawing cannot carry — the "axial" chirality types
+ * OpenChemLib still recognizes: allene/cumulene axes and atropisomer (BINAP) axes. Used to WARN a
+ * user that flattening a spun 3D model drops stereochemistry the 2D depiction can't hold.
+ *
+ * Deliberate gap: PLANAR (cyclophane, trans-cyclooctene) and HELICAL (helicene) chirality are
+ * invisible to CIP perception AND inexpressible in 2D notation, so they can be neither detected
+ * here nor supplied as 2D input — a molecule only acquires them from a hand-built 3D structure.
+ * Indices are in molfile atom/bond order.
+ */
+export function perceiveUnrepresentableStereo(molfile: string): UnrepresentableStereo {
+  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
+  mol.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  const alleneAtoms: number[] = [];
+  for (let i = 0; i < mol.getAllAtoms(); i++) {
+    if (mol.isAtomStereoCenter(i) && mol.getAtomPi(i) >= 2) alleneAtoms.push(i);
+  }
+  const atropisomerBonds: number[] = [];
+  for (let b = 0; b < mol.getAllBonds(); b++) {
+    if (mol.isBINAPChiralityBond(b)) atropisomerBonds.push(b);
+  }
+  return { alleneAtoms, atropisomerBonds };
+}
+
 function countExplicitHydrogens(mol: OclMolecule): number {
   let count = 0;
   for (let i = 0; i < mol.getAllAtoms(); i++) {

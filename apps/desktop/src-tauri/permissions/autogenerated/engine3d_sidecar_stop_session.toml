@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-engine3d-sidecar-stop-session"
+description = "Enables the engine3d_sidecar_stop_session command without any pre-configured scope."
+commands.allow = ["engine3d_sidecar_stop_session"]
+
+[[permission]]
+identifier = "deny-engine3d-sidecar-stop-session"
+description = "Denies the engine3d_sidecar_stop_session command without any pre-configured scope."
+commands.deny = ["engine3d_sidecar_stop_session"]
