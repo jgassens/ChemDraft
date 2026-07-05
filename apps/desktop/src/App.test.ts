@@ -4531,10 +4531,15 @@ describe("ChemDraft desktop shell", () => {
     })).toBeUndefined();
   });
 
-  it("routes Delete through selected native molecule fragments before whole-object deletion", () => {
-    expect(mainWindowSource).toContain("applyNativeMoleculePartDeleteTarget(currentDocument, selectedPartTarget)");
-    expect(mainWindowSource.indexOf("const selectedFragmentTarget = selectedNativeMoleculePart?.kind === \"parts\""))
-      .toBeLessThan(mainWindowSource.indexOf("const target = selectedFragmentTarget ? undefined : hoveredNativeDeleteTargetRef.current"));
+  it("routes Delete through EVERY selected native molecule part before whole-object deletion", () => {
+    // Phase 7: Delete removes all selected parts across molecules, not just the primary slot,
+    // by folding the part-delete over every selected target.
+    expect(mainWindowSource).toContain("for (const deleteTarget of selectedDeleteTargets)");
+    expect(mainWindowSource).toContain("applyNativeMoleculePartDeleteTarget(nextDocument, deleteTarget)");
+    // A lasso fragment or a genuine multi-molecule selection takes precedence over a hovered
+    // atom/bond; a lone atom/bond part still defers to the hovered target.
+    expect(mainWindowSource.indexOf("const selectionTakesPrecedence = selectedDeleteTargets.length > 1"))
+      .toBeLessThan(mainWindowSource.indexOf("const target = selectionTakesPrecedence ? undefined : hoveredNativeDeleteTargetRef.current"));
     expect(mainWindowSource).toContain("Deleted selected molecule fragment");
   });
 

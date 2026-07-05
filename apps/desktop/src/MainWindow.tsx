@@ -1898,12 +1898,12 @@ export function MainWindow({
       document,
       selectedGraphicObjects: [],
       selectedVisualObjects: selectedVisualObjectsForArtInspector(document, {
-        excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
+        excludeMoleculeObjectIds: new Set(selectedNativeMoleculeParts.map((part) => part.objectId))
       }),
       requestedPaintTarget: activeArtPaintTarget
     });
     return model.selectedCount > 0 ? model : undefined;
-  }, [activeArtPaintTarget, document, selectedNativeMoleculePart]);
+  }, [activeArtPaintTarget, document, selectedNativeMoleculeParts]);
   const effectiveArtPaintTarget = currentArtStyle?.activePaintTarget ?? activeArtPaintTarget;
   const currentEyedropperStatus = currentArtStyle
     ? eyedropperStatusLabel(effectiveArtPaintTarget)
@@ -2566,21 +2566,31 @@ export function MainWindow({
     // A lasso fragment selection ("parts") takes precedence over a hovered atom/bond:
     // delete every selected atom and bond in one step. A non-fragment selected part
     // (single atom/bond) still routes through the same part-delete path.
-    const selectedFragmentTarget = selectedNativeMoleculePart?.kind === "parts"
-      ? selectedNativeMoleculePart
-      : undefined;
-    const target = selectedFragmentTarget ? undefined : hoveredNativeDeleteTargetRef.current;
-    const selectedPartTarget = selectedFragmentTarget ?? nativeTransformableSelectionPart(selectedNativeMoleculePart);
-    if (!target && selectedPartTarget) {
-      const nextDocument = applyNativeMoleculePartDeleteTarget(currentDocument, selectedPartTarget);
+    // Delete EVERY selected native part, across molecules (Phase 7 cross-molecule selection), not
+    // just the primary slot — otherwise selecting a bond on A then Shift-selecting a bond on B and
+    // pressing Delete would remove only B. Ring parts aren't deletable (excluded here). A lasso
+    // "parts" fragment or a genuine multi-molecule selection takes precedence over a hovered
+    // atom/bond; a lone atom/bond part still defers to the hovered target (single-select feel).
+    const selectedDeleteTargets = selectedNativeMoleculeParts
+      .map((part) => nativeTransformableSelectionPart(part))
+      .filter((part): part is NativeMoleculeTransformableSelectionPart => part !== undefined);
+    const selectionTakesPrecedence = selectedDeleteTargets.length > 1
+      || selectedDeleteTargets.some((part) => part.kind === "parts");
+    const target = selectionTakesPrecedence ? undefined : hoveredNativeDeleteTargetRef.current;
+    if (!target && selectedDeleteTargets.length > 0) {
+      let nextDocument = currentDocument;
+      for (const deleteTarget of selectedDeleteTargets) {
+        nextDocument = applyNativeMoleculePartDeleteTarget(nextDocument, deleteTarget);
+      }
       if (nextDocument === currentDocument) {
         setStatus("No selected atom, bond, or fragment");
         return;
       }
 
+      const deletedObjectIds = new Set(selectedDeleteTargets.map((part) => part.objectId));
       commitDocumentChange(nextDocument);
       toolbarStyleTargetRef.current = undefined;
-      setActiveEditorObjectId((current) => current === selectedPartTarget.objectId ? undefined : current);
+      setActiveEditorObjectId((current) => current && deletedObjectIds.has(current) ? undefined : current);
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
@@ -2589,9 +2599,11 @@ export function MainWindow({
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
       setObjectContextMenu(undefined);
-      setStatus(selectedPartTarget.kind === "parts"
-        ? "Deleted selected molecule fragment"
-        : selectedPartTarget.kind === "atom" ? "Deleted carbon atom" : "Deleted carbon bond");
+      setStatus(selectedDeleteTargets.length > 1
+        ? `Deleted ${selectedDeleteTargets.length} selected fragments`
+        : selectedDeleteTargets[0]!.kind === "parts"
+          ? "Deleted selected molecule fragment"
+          : selectedDeleteTargets[0]!.kind === "atom" ? "Deleted carbon atom" : "Deleted carbon bond");
       return;
     }
 
@@ -4896,11 +4908,15 @@ export function MainWindow({
     }
 
     const graphicObjectIds = selectedGraphicObjectIds(currentDocument);
+    // Any molecule with a selected PART is styled through the part path, so exclude EVERY part-host
+    // molecule from whole-molecule styling — not just the primary slot. Otherwise a non-primary
+    // selected-part molecule (e.g. A while B is primary) would be styled as a whole object.
+    const nativePartHostObjectIds = new Set(selectedNativeMoleculeParts.map((part) => part.objectId));
     const moleculeObjectIds = selectedMoleculeObjectIds(currentDocument).filter((objectId) =>
-      objectId !== selectedNativeMoleculePart?.objectId
+      !nativePartHostObjectIds.has(objectId)
     );
     const visualEffectObjectIds = selectedVisualEffectObjectIds(currentDocument, {
-      excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
+      excludeMoleculeObjectIds: nativePartHostObjectIds
     });
     const gradientObjectIds = target === "fill"
       ? [...graphicObjectIds, ...moleculeObjectIds]
@@ -5188,7 +5204,7 @@ export function MainWindow({
       targeted: colorResult.targetedSelection,
       message: colorResult.changed ? "Updated selected object color" : "Selected object color unchanged"
     };
-  }, [selectedMoleculeRingTargets, selectedNativeMoleculePart]);
+  }, [selectedMoleculeRingTargets, selectedNativeMoleculeParts]);
 
   const applyObjectStyleCommand = useCallback((commandId: string): boolean => {
     const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);

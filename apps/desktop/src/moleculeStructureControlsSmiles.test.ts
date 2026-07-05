@@ -216,10 +216,6 @@ function forceCrossing(molecule: MoleculeObject): { molecule: MoleculeObject; ba
   };
 }
 
-function textFor(fragment: PageSvgElementFragment): string {
-  return fragment.children.map((child) => child.kind === "text" ? child.text : "").join("");
-}
-
 beforeAll(async () => {
   await ensureOclResources();
 });
@@ -331,7 +327,10 @@ describe("Structure controls on the user's two SMILES", () => {
     const bondStereo = pageFragments(styledMolecule(molecule, { bondIndicatorShowStereochemistry: true }))
       .filter((fragment) => fragment.attrs["data-bond-indicator"] === "stereochemistry");
     expect(atomStereo.length).toBeGreaterThan(0);
-    expect(atomEnhanced.map(textFor)).toContain("ABS");
+    // Enhanced stereo (ABS/OR/AND) is NOT invented from a bare drawn stereocenter — it comes only
+    // from imported metadata, which these SMILES-built molecules don't carry (same as the
+    // query/reaction indicators asserted absent below).
+    expect(atomEnhanced).toEqual([]);
     expect(bondStereo.length).toBeGreaterThan(0);
 
     const ordinaryIndicators = pageFragments(styledMolecule(molecule, {

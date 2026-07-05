@@ -1428,6 +1428,35 @@ describe("layout-engine page SVG planner", () => {
     expect(disabledFragments.some((fragment) => fragment.attrs["data-bond-indicator"])).toBe(false);
   });
 
+  it("never invents enhanced-stereo (ABS) or reaction (RXN) indicators without metadata", () => {
+    // With the show flags ON, a drawn wedge stereocenter and a reaction-looking source format but
+    // NO enhanced-stereo / reaction-bond metadata: enhanced stereo and reaction are chemical
+    // assertions that come only from imported metadata — a bare wedge is not "ABS", and the
+    // source-format string alone must not paint every bond "RXN".
+    const molecule = moleculeObject({
+      id: "mol_no_invented_indicators",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 160, formalCharge: 0 },
+        { id: "atom_003", element: "O", x: 180, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_stereo", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } },
+        { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
+      ],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        atomIndicatorShowEnhancedStereochemistry: true,
+        bondIndicatorShowReaction: true
+      },
+      compatibility: { sourceFormat: "mdl-rxn", warnings: [], unknown: {} }
+    });
+
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments);
+    expect(fragments.some((fragment) => fragment.attrs["data-atom-indicator"] === "enhanced-stereochemistry")).toBe(false);
+    expect(fragments.some((fragment) => fragment.attrs["data-bond-indicator"] === "reaction")).toBe(false);
+  });
+
   it("renders explicit line graphics without fallback labels", () => {
     const page = pageWithObjects([
       {

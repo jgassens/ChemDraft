@@ -4390,7 +4390,7 @@ export function applyMoleculeTargetBondLengthToBonds(
 
 export function selectedVisualEffectObjectIds(
   document: ChemDraftDocument,
-  options: { excludeMoleculeObjectId?: string } = {}
+  options: { excludeMoleculeObjectIds?: ReadonlySet<string> } = {}
 ): string[] {
   const selectedIds = new Set(document.selection.objectIds);
   if (selectedIds.size === 0) {
@@ -4402,7 +4402,7 @@ export function selectedVisualEffectObjectIds(
       .filter((object): object is GraphicObject | MoleculeObject =>
         (object.type === "graphic" || object.type === "molecule") &&
         selectedIds.has(object.id) &&
-        object.id !== options.excludeMoleculeObjectId
+        !options.excludeMoleculeObjectIds?.has(object.id)
       )
       .map((object) => object.id)
   );

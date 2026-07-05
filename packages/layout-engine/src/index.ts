@@ -2330,7 +2330,7 @@ function moleculeStructureIndicatorFragments(
     }
   }
 
-  for (const { atomId, label } of nativeEnhancedStereoAtomIndicators(object, stereoAtomIds)) {
+  for (const { atomId, label } of nativeEnhancedStereoAtomIndicators(object)) {
     const atom = atomById.get(atomId);
     if (!atom) {
       continue;
@@ -2518,19 +2518,17 @@ function nativeStereoAtomIndicatorIds(object: MoleculeObject): Set<string> {
 }
 
 function nativeEnhancedStereoAtomIndicators(
-  object: MoleculeObject,
-  stereoAtomIds: ReadonlySet<string>
+  object: MoleculeObject
 ): Array<{ atomId: string; label: string }> {
+  // Enhanced stereochemistry (ABS/OR/AND/REL/RAC) is a chemical assertion that lives ONLY in
+  // native/imported metadata — never invent it from a plain drawn wedge/hash. Absent that
+  // metadata, there are no enhanced-stereo indicators: a bare stereocenter is not "ABS".
   const explicit = unknownRecordStringMap(object.compatibility?.unknown, [
     "enhancedStereoByAtomId",
     "atomEnhancedStereoByAtomId",
     "cdxmlEnhancedStereoByAtomId"
   ]);
-  if (explicit.size > 0) {
-    return [...explicit.entries()].map(([atomId, label]) => ({ atomId, label: enhancedStereoLabel(label) }));
-  }
-
-  return [...stereoAtomIds].map((atomId) => ({ atomId, label: "ABS" }));
+  return [...explicit.entries()].map(([atomId, label]) => ({ atomId, label: enhancedStereoLabel(label) }));
 }
 
 function enhancedStereoLabel(value: string): string {
@@ -2611,9 +2609,10 @@ function nativeBondQueryIndicatorIds(object: MoleculeObject): Set<string> {
 }
 
 function nativeBondReactionIndicatorIds(object: MoleculeObject): Set<string> {
+  // Reaction-role indicators come ONLY from explicit imported reaction-bond metadata. Never paint
+  // every bond "RXN" just because the source format string happens to mention a reaction — that
+  // marks a whole molecule as a reaction with no per-bond information behind it.
   const ids = new Set<string>();
-  const sourceFormat = object.compatibility?.sourceFormat?.toLowerCase() ?? "";
-  const sourceImpliesReaction = sourceFormat.includes("rxn") || sourceFormat.includes("reaction");
   for (const bondId of unknownRecordStringSet(object.compatibility?.unknown, [
     "reactionBondIds",
     "rxnBondIds",
@@ -2627,12 +2626,6 @@ function nativeBondReactionIndicatorIds(object: MoleculeObject): Set<string> {
     "bondReactionRolesById"
   ])) {
     ids.add(bondId);
-  }
-
-  if (ids.size === 0 && sourceImpliesReaction) {
-    for (const bond of object.bonds) {
-      ids.add(bond.id);
-    }
   }
 
   return ids;
