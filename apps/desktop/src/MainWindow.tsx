@@ -2564,6 +2564,8 @@ export function MainWindow({
     // Injected into flatten so it can READ ITS OWN wedge output back with the real CIP engine and
     // repair (or refuse) any center that would otherwise commit a different stereoisomer.
     let perceiveStereo: StereoPerceiver | undefined;
+    // Axial stereochemistry (allene / atropisomer) has no 2D wedge encoding — warn on commit.
+    let unrepresentableStereoKinds: string[] | undefined;
     let flattenTarget: MoleculeObject | undefined;
     for (const page of documentRef.current.pages) {
       const found = page.objects.find(
@@ -2577,7 +2579,7 @@ export function MainWindow({
     if (flattenTarget) {
       try {
         const molfile = moleculeToMolfileV2000(flattenTarget, { fromDocFrame: true });
-        const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
         perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
         if (perAtom.length === flattenTarget.atoms.length) {
@@ -2587,6 +2589,11 @@ export function MainWindow({
           });
           stereoCenterAtomIds = ids;
         }
+        const unrepresentable = perceiveUnrepresentableStereo(molfile);
+        const kinds: string[] = [];
+        if (unrepresentable.alleneAtoms.length > 0) kinds.push("allene");
+        if (unrepresentable.atropisomerBonds.length > 0) kinds.push("atropisomer");
+        if (kinds.length > 0) unrepresentableStereoKinds = kinds;
       } catch {
         /* best-effort: fall back to legacy behavior (treat every drawn wedge as a center) */
       }
@@ -2647,11 +2654,16 @@ export function MainWindow({
     const codeSummary = [...codeCounts.entries()]
       .map(([code, count]) => (count > 1 ? `${code} ×${count}` : code))
       .join(", ");
-    setStatus(
+    const baseStatus =
       meaningful.length > 0
         ? `Flattened perspective with ${meaningful.length} warning(s): ${codeSummary}`
-        : "Flattened to a 2D perspective"
-    );
+        : "Flattened to a 2D perspective";
+    // Axial stereochemistry has no 2D wedge encoding: the spun 3D model kept it, but the flat
+    // drawing can't show it and it will not survive an export or a structural edit.
+    const stereoNote = unrepresentableStereoKinds
+      ? ` — note: ${unrepresentableStereoKinds.join(" & ")} stereochemistry isn't captured by the flat drawing (kept in the 3D model; lost on export or a structural edit)`
+      : "";
+    setStatus(baseStatus + stereoNote);
   }, [applySpin, commitDocumentChange]);
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
