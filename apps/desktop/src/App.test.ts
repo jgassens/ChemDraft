@@ -45,6 +45,7 @@ import {
   paletteGroups,
   structureCleanup3dCommandId,
   structureCleanupCommandId,
+  structureInteractive3dCommandId,
   structureSpin3dCommandId,
   structureRotate3dCommandId,
   textCustomColorCommandId,
@@ -325,6 +326,11 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("crosshair-axis-vertical");
     expect(markup).toContain("crosshair-tick-quarter");
     expect(markup).toContain("document-board without-rulers");
+    // The browser build recreates the native menu in-viewport (no OS menu on the web).
+    expect(markup).toContain("menu-bar");
+    expect(markup).toContain('aria-label="Application menu"');
+    expect(markup).toContain('data-menu-section="file"');
+    expect(markup).toContain('data-menu-section="analyze"');
     expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("statusbar");
     expect(markup).not.toContain("EditorAdapter not connected");
@@ -350,27 +356,35 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("renders the main desktop document window without an in-window palette by default", () => {
-    const markup = renderToStaticMarkup(
-      createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
-    );
+    // Simulate the Tauri desktop runtime: the native OS menu owns the menus there, so the
+    // in-viewport menu bar (a browser-only fallback) must stay hidden.
+    const tauriGlobal = globalThis as { __TAURI_INTERNALS__?: unknown };
+    tauriGlobal.__TAURI_INTERNALS__ = {};
+    try {
+      const markup = renderToStaticMarkup(
+        createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
+      );
 
-    expect(markup).toContain("app-shell");
-    expect(markup).toContain("native-shell");
-    expect(markup).toContain("canvas-region");
-    expect(markup).toContain("rulers-visible");
-    expect(markup).toContain("document-rulers-overlay");
-    expect(markup).toContain("ruler-top");
-    expect(markup).toContain('data-zoom-surface="document"');
-    expect(markup).toContain('data-can-undo="false"');
-    expect(markup).toContain('data-can-redo="false"');
-    expect(markup).toContain("crosshair-axis-horizontal");
-    expect(markup).toContain("crosshair-tick-half");
-    expect(markup).toContain("document-board without-rulers");
-    expect(markup).not.toContain("menu-bar");
-    expect(markup).not.toContain("command-bar");
-    expect(markup).not.toContain("tool-palette");
-    expect(markup).not.toContain("drawer-rail");
-    expect(markup).not.toContain("statusbar");
+      expect(markup).toContain("app-shell");
+      expect(markup).toContain("native-shell");
+      expect(markup).toContain("canvas-region");
+      expect(markup).toContain("rulers-visible");
+      expect(markup).toContain("document-rulers-overlay");
+      expect(markup).toContain("ruler-top");
+      expect(markup).toContain('data-zoom-surface="document"');
+      expect(markup).toContain('data-can-undo="false"');
+      expect(markup).toContain('data-can-redo="false"');
+      expect(markup).toContain("crosshair-axis-horizontal");
+      expect(markup).toContain("crosshair-tick-half");
+      expect(markup).toContain("document-board without-rulers");
+      expect(markup).not.toContain("menu-bar");
+      expect(markup).not.toContain("command-bar");
+      expect(markup).not.toContain("tool-palette");
+      expect(markup).not.toContain("drawer-rail");
+      expect(markup).not.toContain("statusbar");
+    } finally {
+      delete tauriGlobal.__TAURI_INTERNALS__;
+    }
   });
 
   it("keeps viewport zoom reserved for trackpad pinch and command-style wheel gestures", () => {
@@ -1271,6 +1285,7 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "layout.alignCenter")).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignRight")).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignTop")).toBe(true);
+    expect(commands.some((command) => command.id === structureInteractive3dCommandId)).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignMiddle")).toBe(true);
     expect(commands.some((command) => command.id === "layout.alignBottom")).toBe(true);
     expect(commands.some((command) => command.id === "layout.distributeHorizontal")).toBe(true);
@@ -1842,6 +1857,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.eraser",
       structureCleanupCommandId,
       structureSpin3dCommandId,
+      structureInteractive3dCommandId,
       "tool.plus",
       "tool.minus",
       "layout.bringToFront",
@@ -2049,6 +2065,17 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).not.toContain("ApplyRotationInputIcon");
     expect(mainWindowSource).not.toContain("Apply X Y rotation");
     expect(mainWindowSource).not.toContain("Apply Z rotation");
+  });
+
+  it("threads Spin 3D placement through modeled typed rotation while preserving legacy X/Y tilt", () => {
+    // The numeric-rotation flatten must run the stereo read-back guard (spin3dFlattenStereoOptions),
+    // not commit geometry-only, so a typed rotation can't silently persist a different stereoisomer.
+    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId\)\s*}\s*\)/s);
+    expect(mainWindowSource).toContain("modeledRotationEntry ? 0");
+    expect(mainWindowSource).toMatch(/quatFromAxisAngle\(SPIN_AXIS_Z,\s*-deltaDegrees \* Math\.PI \/ 180\)/);
+    expect(mainWindowSource).toMatch(/attachSpin3dModelFromConformer\(nextDocument,\s*input\.objectId/s);
+    expect(mainWindowSource).toMatch(/tiltNativeMoleculeProjectedPlane\(\s*input\.startDocument,\s*input\.objectId/s);
+    expect(mainWindowSource).toMatch(/applyDocumentObjectProjectedPlaneTilt\(\s*input\.startDocument,\s*input\.objectId/s);
   });
 
   it("gates the browser agent bridge behind explicit QA flags", () => {
@@ -2682,6 +2709,7 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
     expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
     expect([...assetNamesByCommandId.get(structureSpin3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
+    expect([...assetNamesByCommandId.get(structureInteractive3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
   });
 
   it("keeps sparse floating toolsets compact", () => {
@@ -2989,6 +3017,12 @@ describe("ChemDraft desktop shell", () => {
       assetName: "Custom_Spin_3D",
       category: "structure"
     });
+    expect(assetCommands.find((command) => command.id === structureInteractive3dCommandId)).toMatchObject({
+      id: structureInteractive3dCommandId,
+      title: "Interactive 3D Workspace",
+      assetName: "Custom_Spin_3D",
+      category: "structure"
+    });
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
       id: structureCleanup3dCommandId,
       title: "3D Cleanup",
@@ -3007,11 +3041,13 @@ describe("ChemDraft desktop shell", () => {
       "tool.settings",
       structureCleanupCommandId,
       structureSpin3dCommandId,
+      structureInteractive3dCommandId,
       structureCleanup3dCommandId,
       "tool.templateGrid"
     ]);
     expect(styleGroupIds).not.toContain("tool.toolOptions");
     expect(mainGroups.flat().filter((command) => command.id === structureCleanupCommandId)).toHaveLength(1);
+    expect(mainGroups.flat().filter((command) => command.id === structureInteractive3dCommandId)).toHaveLength(1);
     expect(mainGroups.flat().filter((command) => command.id === structureCleanup3dCommandId)).toHaveLength(1);
     expect(mainGroups.flat().filter((command) => command.id === structureRotate3dCommandId)).toHaveLength(0);
   });
@@ -3773,14 +3809,16 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    const labelBackgroundIndex = markup.indexOf("native-atom-label-background");
+    // The label's paper knockout is now a paint-order stroke on the label group (not a separate
+    // background rect); the selection highlight must still paint above that group so it reads.
+    const labelGroupIndex = markup.indexOf('class="native-atom-label"');
     const selectionBlobIndex = markup.indexOf("native-molecule-selection-blob");
     const labelTextIndex = markup.indexOf('data-atom-label="OH"');
 
     expect(markup).toContain('data-atom-label="OH"');
     expect(markup).toContain('data-selected-atom-id="atom_002"');
-    expect(labelBackgroundIndex).toBeGreaterThan(-1);
-    expect(selectionBlobIndex).toBeGreaterThan(labelBackgroundIndex);
+    expect(labelGroupIndex).toBeGreaterThan(-1);
+    expect(selectionBlobIndex).toBeGreaterThan(labelGroupIndex);
     expect(labelTextIndex).toBeGreaterThan(-1);
   });
 
@@ -4010,7 +4048,9 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain('data-structure="CO"');
-    expect(markup).toContain("native-atom-label-background");
+    // Heteroatom labels carry a glyph-hugging paper knockout (paint-order stroke) in place of the
+    // old opaque background rect.
+    expect(markup).toContain('paint-order="stroke"');
     expect(markup).toContain('font-family="Arial, Helvetica, sans-serif"');
     expect(markup).toContain('data-atom-label="OH"');
     expect(markup).toContain('data-atom-label-run="normal"');

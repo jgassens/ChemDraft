@@ -10,6 +10,10 @@
     "dev:web": "pnpm --filter @chemdraft/desktop dev:web",
     "build": "pnpm lint && pnpm --filter @chemdraft/desktop build",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "audit:engine3d-sidecar": "node scripts/audit-avogadro3d-sidecar.mjs",
+    "smoke:engine3d-real-structure": "node scripts/smoke-engine3d-real-structure.mjs",
+    "smoke:engine3d-hold-steady": "node scripts/smoke-engine3d-hold-steady.mjs",
+    "smoke:engine3d-anneal-energy": "node scripts/smoke-engine3d-anneal-energy.mjs",
     "test": "vitest run"
   },
   "devDependencies": {

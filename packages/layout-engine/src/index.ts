@@ -1322,6 +1322,8 @@ function planNativeMoleculeGraphSvg(
   const moleculeStrokeOpacity = nativeMoleculeStrokeOpacity(object);
   const atomLabels = planMoleculeAtomLabels(object);
   const labelPlanByAtomId = new Map(atomLabels.map((plan) => [plan.atom.id, plan]));
+  // Ring double bonds default their inner line to the ring interior. Computed once per molecule.
+  const ringInteriorSides = ringInteriorDoubleBondSides(object);
   const bondSegmentGroups: PageMoleculeBondSegmentGroup[] = object.bonds.flatMap((bond) => {
     const fromAtom = atomById.get(bond.fromAtomId);
     const toAtom = atomById.get(bond.toAtomId);
@@ -1341,7 +1343,8 @@ function planNativeMoleculeGraphSvg(
       fromLabelPlan?.label,
       toLabelPlan?.label,
       fromLabelPlan?.drawingStyle,
-      toLabelPlan?.drawingStyle
+      toLabelPlan?.drawingStyle,
+      ringInteriorSides.get(bond.id)
     ).map((segment, segmentIndex) => ({
       ...segment,
       bond,
@@ -1396,32 +1399,48 @@ function planNativeMoleculeGraphSvg(
       )
     ])
   );
-  const labelBackgroundFragments = atomLabels.flatMap((plan) => {
-    if (!plan.backgroundVisible) {
-      return [];
+  // Per-labeled-atom depth weight, derived from the incident bonds' baked weights (the SAME
+  // derivation the live overlay runs), so labels depth-cue in lock-step with the bonds and the
+  // flatten-on-release commit changes nothing visually.
+  const incidentBondWeights = new Map<string, (number | undefined)[]>();
+  for (const bond of object.bonds) {
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      const list = incidentBondWeights.get(atomId) ?? [];
+      list.push(bond.display?.depthWeight);
+      incidentBondWeights.set(atomId, list);
     }
-    const box = {
-      x: plan.anchor.x + plan.layout.bounds.x,
-      y: plan.anchor.y + plan.layout.bounds.y,
-      width: plan.layout.bounds.width,
-      height: plan.layout.bounds.height
-    };
-    return elementFragment("rect", `label-background-${object.id}-${plan.atom.id}`, {
-      class: "native-atom-label-background",
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
-      fill: plan.backgroundColor
-    });
-  });
-  const labelFragments = atomLabels.map((plan) => {
+  }
+  const labelDepthWeightByAtomId = new Map<string, number | undefined>(
+    atomLabels.map((plan) => [plan.atom.id, averageDefinedDepthWeights(incidentBondWeights.get(plan.atom.id) ?? [])])
+  );
+  // Paint labels far → near so a nearer heteroatom's glyph sits over a farther one where the 3D
+  // projection stacks them (the "ONH" pile-ups on a symmetric cage). Halos share the order.
+  const orderedAtomLabels = [...atomLabels].sort(
+    (a, b) =>
+      (labelDepthWeightByAtomId.get(a.atom.id) ?? 0.5) - (labelDepthWeightByAtomId.get(b.atom.id) ?? 0.5)
+  );
+  // The label's knockout is a glyph-hugging halo — a paint-order stroke of the label itself
+  // (stroke painted UNDER the fill) — instead of an opaque bounding box, so it clears the bonds
+  // right around the letters without an oversized rectangle, and because labels paint far → near
+  // a nearer heteroatom's halo knocks a clean gap out of a farther label it overlaps. Per-atom
+  // Inspector styling feeds the SAME halo: the per-atom "background color" IS the halo stroke
+  // (default paper #ffffff; "transparent" opts out), and the halo width tracks the per-atom font
+  // size via the plan's resolved drawing style, so styled labels keep their depth cues.
+  const labelFragments = orderedAtomLabels.map((plan) => {
+    const depthWeight = labelDepthWeightByAtomId.get(plan.atom.id);
+    const scale = depthCuedLabelScale(depthWeight);
+    const baseTransform = `translate(${formatNumber(plan.anchor.x)} ${formatNumber(plan.anchor.y)})`;
     return elementFragment("g", `label-${object.id}-${plan.atom.id}`, {
       class: "native-atom-label",
       "data-atom-label": plan.label,
-      transform: `translate(${formatNumber(plan.anchor.x)} ${formatNumber(plan.anchor.y)})`,
-      fill: plan.color,
+      transform: scale === 1 ? baseTransform : `${baseTransform} scale(${formatNumber(scale)})`,
+      fill: depthCuedLabelColor(plan.color, depthWeight),
       "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+      stroke: plan.backgroundVisible ? plan.backgroundColor : undefined,
+      "stroke-width": plan.backgroundVisible ? formatNumber(atomLabelHaloWidthPx(plan.drawingStyle)) : undefined,
+      "stroke-linejoin": plan.backgroundVisible ? "round" : undefined,
+      "stroke-linecap": plan.backgroundVisible ? "round" : undefined,
+      "paint-order": plan.backgroundVisible ? "stroke" : undefined,
       "font-family": plan.fontFamily,
       "font-size": plan.fontSizePx,
       "font-weight": plan.fontWeight,
@@ -1476,7 +1495,6 @@ function planNativeMoleculeGraphSvg(
     ...(effectSource ? [effectSource] : []),
     ...moleculeRingHitTargetFragments(object),
     ...bondLayerFragments,
-    ...labelBackgroundFragments,
     ...labelFragments,
     ...indicatorFragments,
     ...svgSketchEffectFragmentsForEffects(effects, object.id, {
@@ -1702,6 +1720,104 @@ function pointInPolygon(point: LayoutPoint, polygon: readonly LayoutPoint[]): bo
     }
   }
   return inside;
+}
+
+/**
+ * For every bond that lies on a ring, the atom ids of the SMALLEST ring containing it — the
+ * ring whose interior a double bond's inner line should point into. Built from the same
+ * chordless ring perception the aromatic fill uses, so it is consistent across the app.
+ */
+export function smallestRingAtomIdsByBondId(object: MoleculeObject): Map<string, readonly string[]> {
+  const result = new Map<string, readonly string[]>();
+  for (const cycle of moleculeFillRingCycles(object)) {
+    for (const bondId of cycle.bondIds) {
+      const existing = result.get(bondId);
+      if (!existing || cycle.atomIds.length < existing.length) {
+        result.set(bondId, cycle.atomIds);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * The double-bond side ("left"/"right") whose inner line points toward the ring interior, for
+ * every double bond lying on a ring. This is the canonical default for a ring double bond
+ * (aromatic or otherwise): the second line sits INSIDE the ring unless the user overrides
+ * `bond.display.doubleBondSide`. Non-ring double bonds are absent from the map (callers keep
+ * their own default). "left" is the +normal side, matching `bondLineSegments`' offset
+ * convention, so the render, the spin overlay, and the flatten commit all agree.
+ *
+ * This replaces a substituent-count heuristic that mistook a ring bond's *outside* for the
+ * interior whenever exocyclic substituents outweighed the ring neighbours (e.g. an aromatic
+ * ring carrying amide/carbonyl groups).
+ */
+export function ringInteriorDoubleBondSides(object: MoleculeObject): Map<string, DoubleBondSide> {
+  const rings = smallestRingAtomIdsByBondId(object);
+  const result = new Map<string, DoubleBondSide>();
+  if (rings.size === 0) {
+    return result;
+  }
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  for (const bond of object.bonds) {
+    if (bond.order !== "double") {
+      continue;
+    }
+    const ringAtomIds = rings.get(bond.id);
+    if (!ringAtomIds) {
+      continue;
+    }
+    const fromAtom = atomById.get(bond.fromAtomId);
+    const toAtom = atomById.get(bond.toAtomId);
+    if (!fromAtom || !toAtom) {
+      continue;
+    }
+    const side = doubleBondSideTowardRingInterior(fromAtom, toAtom, ringAtomIds, atomById);
+    if (side) {
+      result.set(bond.id, side);
+    }
+  }
+  return result;
+}
+
+function doubleBondSideTowardRingInterior(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  ringAtomIds: readonly string[],
+  atomById: ReadonlyMap<string, MoleculeAtom>
+): DoubleBondSide | undefined {
+  const dx = toAtom.x - fromAtom.x;
+  const dy = toAtom.y - fromAtom.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) {
+    return undefined;
+  }
+  // Bond normal, identical to bondLineSegments: normal = { x: -unit.y, y: unit.x }.
+  const nx = -dy / length;
+  const ny = dx / length;
+  const midX = (fromAtom.x + toAtom.x) / 2;
+  const midY = (fromAtom.y + toAtom.y) / 2;
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+  for (const atomId of ringAtomIds) {
+    const atom = atomById.get(atomId);
+    if (atom) {
+      sumX += atom.x;
+      sumY += atom.y;
+      count += 1;
+    }
+  }
+  if (count === 0) {
+    return undefined;
+  }
+  // Side of the bond normal the ring centroid falls on. "left" offsets the inner line toward
+  // +normal (see bondLineSegments), so the inner line lands inside the ring.
+  const dot = (sumX / count - midX) * nx + (sumY / count - midY) * ny;
+  if (Math.abs(dot) < 1e-9) {
+    return undefined; // centroid on the bond axis — interior ambiguous, keep caller default
+  }
+  return dot >= 0 ? "left" : "right";
 }
 
 function moleculeFillShortestPath(
@@ -3725,7 +3841,8 @@ function bondLineSegments(
   fromLabel?: string,
   toLabel?: string,
   fromLabelStyle?: NativeDrawingStyle,
-  toLabelStyle?: NativeDrawingStyle
+  toLabelStyle?: NativeDrawingStyle,
+  ringInteriorSide?: DoubleBondSide
 ): PageBondLineSegment[] {
   const dx = toAtom.x - fromAtom.x;
   const dy = toAtom.y - fromAtom.y;
@@ -3755,7 +3872,9 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
-    const doubleBondSide = bond.display?.doubleBondSide ?? "left";
+    // Default a ring double bond's inner line to the ring interior; the user's explicit side
+    // (bond.display.doubleBondSide) always wins, and non-ring bonds keep the legacy default.
+    const doubleBondSide = bond.display?.doubleBondSide ?? ringInteriorSide ?? "left";
     if (isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
       const offset = gap / 2;
       return [
@@ -4505,6 +4624,60 @@ export function depthCuedBondColor(baseColor: string, depthWeight: number | unde
     g: farGrey + (color.g - farGrey) * near,
     b: farGrey + (color.b - farGrey) * near
   });
+}
+
+/**
+ * A labeled atom's depth weight, derived as the mean of the depth weights of the bonds meeting
+ * it. Atoms don't carry a baked depth weight of their own, but the SAME derivation runs in the
+ * committed 2D render and the live spin overlay — both average the identical per-bond weights —
+ * so label depth-cueing matches on flatten (no snap on release). Returns undefined when no
+ * incident bond is depth-cued (a near-planar view), i.e. no cue, exactly like the bonds.
+ */
+export function averageDefinedDepthWeights(weights: readonly (number | undefined)[]): number | undefined {
+  let sum = 0;
+  let count = 0;
+  for (const weight of weights) {
+    if (weight !== undefined) {
+      sum += weight;
+      count += 1;
+    }
+  }
+  return count === 0 ? undefined : sum / count;
+}
+
+/**
+ * Perspective depth → atom-label fill: the label counterpart of {@link depthCuedBondColor}. Fades
+ * a far label toward light grey so it recedes with the bonds; near labels keep their base colour.
+ * The far grey is a little darker than the bond fog (125 vs 150) so small glyphs stay legible at
+ * the back. Shared by the committed render and the live overlay so releasing a spin re-shades
+ * nothing.
+ */
+export function depthCuedLabelColor(baseColor: string, depthWeight: number | undefined): string {
+  if (depthWeight === undefined) return baseColor;
+  const color = parseCssRgbColor(baseColor);
+  if (!color) return baseColor;
+  const near = clamp(depthWeight, 0, 1);
+  const farGrey = 125;
+  return rgbToHex({
+    r: farGrey + (color.r - farGrey) * near,
+    g: farGrey + (color.g - farGrey) * near,
+    b: farGrey + (color.b - farGrey) * near
+  });
+}
+
+/**
+ * Perspective depth → atom-label scale (0.92 far … 1.08 near). A gentle size cue echoing the bond
+ * stroke-width cue, applied as a transform scale about the label anchor so the run layout and the
+ * halo stay consistent. Kept subtle so the drawing doesn't visibly reflow while spinning.
+ */
+export function depthCuedLabelScale(depthWeight: number | undefined): number {
+  if (depthWeight === undefined) return 1;
+  return 0.92 + clamp(depthWeight, 0, 1) * 0.16;
+}
+
+/** Glyph-hugging halo stroke width — the paper-coloured knockout that replaces the label box. */
+export function atomLabelHaloWidthPx(drawingStyle: NativeDrawingStyle): number {
+  return drawingStyle.atomLabelFontSizePx * 0.3;
 }
 
 function parseCssRgbColor(value: string): { r: number; g: number; b: number } | undefined {

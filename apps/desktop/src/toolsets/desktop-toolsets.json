@@ -99,6 +99,7 @@
             { "commandId": "tool.settings", "title": "Object Settings", "icon": "inspector", "assetName": "Custom_Settings", "disabledReason": "unavailable until selectable document objects exist", "category": "selection" },
             { "commandId": "structure.cleanup2d", "title": "Clean up Structure 2D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "shortcutDisplay": "Shift+Cmd+K", "category": "structure" },
             { "commandId": "structure.spin3d", "title": "Spin 3D", "icon": "style", "assetName": "Custom_Spin_3D", "category": "structure" },
+            { "commandId": "structure.openInteractive3d", "title": "Interactive 3D Workspace", "icon": "style", "assetName": "Custom_Spin_3D", "category": "structure" },
             { "commandId": "structure.cleanup3d", "title": "3D Cleanup", "icon": "style", "assetName": "Custom_Structure_Cleanup_3D", "disabledReason": "requires conformer-backed 3D cleanup engine", "category": "structure" },
             { "commandId": "tool.templateGrid", "title": "Template Grid", "icon": "grid", "assetName": "Custom_Tools", "disabledReason": "Requires an active structure editor", "category": "template" }
           ]
@@ -120,6 +121,7 @@
             { "commandId": "tool.bond", "title": "Single Bond", "icon": "bond", "assetName": "Custom_Bond", "shortcutDisplay": "M", "category": "structure" },
             { "commandId": "structure.cleanup2d", "title": "Clean up Structure 2D", "icon": "style", "assetName": "Custom_Structure_Cleanup", "shortcutDisplay": "Shift+Cmd+K", "category": "structure" },
             { "commandId": "structure.spin3d", "title": "Spin 3D", "icon": "style", "assetName": "Custom_Spin_3D", "category": "structure" },
+            { "commandId": "structure.openInteractive3d", "title": "Interactive 3D Workspace", "icon": "style", "assetName": "Custom_Spin_3D", "category": "structure" },
             { "commandId": "structure.cleanup3d", "title": "3D Cleanup", "icon": "style", "assetName": "Custom_Structure_Cleanup_3D", "disabledReason": "requires conformer-backed 3D cleanup engine", "category": "structure" },
             { "commandId": "tool.wedgeBond", "title": "Solid Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Wedge", "category": "structure" },
             { "commandId": "tool.hashedBond", "title": "Hashed Wedge Bond", "icon": "bond", "assetName": "Custom_Bond_Hashed", "category": "structure" },

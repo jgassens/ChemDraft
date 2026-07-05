@@ -1,7 +1,20 @@
 mod export;
 mod fonts;
 
-use std::{collections::HashMap, fs, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fs,
+    io::{BufRead, BufReader, Read, Write},
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+        Arc, Mutex,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use tauri::{
     menu::{
@@ -35,6 +48,17 @@ const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
 const AGENT_BRIDGE_ENV_VAR: &str = "CHEMDRAFT_AGENT_BRIDGE";
 const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
+const ENGINE3D_PROTOCOL_VERSION: u32 = 2;
+const ENGINE3D_SIDECAR_BASENAME: &str = "avogadro3d-sidecar";
+const ENGINE3D_SIDECAR_ENV_VAR: &str = "CHEMDRAFT_ENGINE3D_SIDECAR";
+const ENGINE3D_MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+const ENGINE3D_MAX_BATCH_LINES: usize = 128;
+const ENGINE3D_SESSION_OUTPUT_TIMEOUT: Duration = Duration::from_millis(250);
+const ENGINE3D_SESSION_OUTPUT_QUIET: Duration = Duration::from_millis(20);
+// A poll that finds nothing buffered returns after this instead of blocking the full output
+// timeout, so idle client polling never ties up a worker thread (or a session lock) for 250ms.
+const ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT: Duration = Duration::from_millis(30);
+static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -67,6 +91,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
     "chemistry.validateSelection",
+    "structure.openInteractive3d",
 ];
 
 #[derive(Clone, serde::Deserialize)]
@@ -129,6 +154,21 @@ struct PendingOpenDocument {
     payload: Mutex<Option<NativeOpenDocumentPayload>>,
 }
 
+#[derive(Default)]
+struct Engine3dSidecarSessions {
+    // Each session is behind its own Arc<Mutex>, so the map lock is only held for the brief
+    // lookup + clone — never across the (up to 250ms) output wait. That keeps start/stop and
+    // other sessions from serializing behind one session's blocking collect.
+    sessions: Mutex<HashMap<String, Arc<Mutex<Engine3dManagedSession>>>>,
+}
+
+struct Engine3dManagedSession {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout_rx: Receiver<String>,
+    stderr_rx: Receiver<String>,
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClipboardTextItem {
@@ -157,6 +197,29 @@ struct AgentBridgeStatus {
     source: String,
     env_var: String,
     cli_arg: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Engine3dSidecarStatus {
+    available: bool,
+    protocol_version: u32,
+    source: String,
+    env_var: String,
+    env_override_path: Option<String>,
+    resolved_path: Option<String>,
+    bundled_binary_name: String,
+    target_triple: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Engine3dSidecarSessionOutput {
+    process_session_id: String,
+    stdout_lines: Vec<String>,
+    stderr: String,
+    exited: bool,
+    exit_code: Option<i32>,
 }
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -212,6 +275,7 @@ struct ToolsetCustomizationOverride {
 pub fn run() {
     tauri::Builder::default()
         .manage(PendingOpenDocument::default())
+        .manage(Engine3dSidecarSessions::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
@@ -358,6 +422,11 @@ pub fn run() {
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
             agent_bridge_status,
+            engine3d_sidecar_status,
+            engine3d_sidecar_start_session,
+            engine3d_sidecar_send_session,
+            engine3d_sidecar_poll_session,
+            engine3d_sidecar_stop_session,
             take_pending_open_document,
             export::rasterize_svg,
             fonts::list_system_fonts
@@ -948,6 +1017,425 @@ fn agent_bridge_flag_enabled(value: Option<&str>) -> bool {
 }
 
 #[tauri::command]
+fn engine3d_sidecar_status() -> Engine3dSidecarStatus {
+    engine3d_sidecar_status_from(std::env::var(ENGINE3D_SIDECAR_ENV_VAR).ok())
+}
+
+#[tauri::command]
+fn engine3d_sidecar_start_session(
+    lines: Vec<String>,
+    sessions: tauri::State<'_, Engine3dSidecarSessions>,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    let lines = normalize_engine3d_protocol_lines(lines, true)?;
+    let path = resolve_engine3d_sidecar_path(std::env::var(ENGINE3D_SIDECAR_ENV_VAR).ok())
+        .ok_or_else(|| {
+            format!(
+                "Interactive 3D sidecar is not configured. Set {ENGINE3D_SIDECAR_ENV_VAR} to a sidecar executable or bundle {}.",
+                engine3d_bundled_binary_name()
+            )
+        })?;
+
+    start_engine3d_sidecar_session_from_path(&path, &lines, &sessions)
+}
+
+#[tauri::command]
+fn engine3d_sidecar_send_session(
+    process_session_id: String,
+    lines: Vec<String>,
+    sessions: tauri::State<'_, Engine3dSidecarSessions>,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    let lines = normalize_engine3d_protocol_lines(lines, false)?;
+    send_engine3d_sidecar_session_lines(&process_session_id, &lines, &sessions)
+}
+
+#[tauri::command]
+fn engine3d_sidecar_poll_session(
+    process_session_id: String,
+    sessions: tauri::State<'_, Engine3dSidecarSessions>,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    poll_engine3d_sidecar_session(&process_session_id, &sessions)
+}
+
+#[tauri::command]
+fn engine3d_sidecar_stop_session(
+    process_session_id: String,
+    sessions: tauri::State<'_, Engine3dSidecarSessions>,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    stop_engine3d_sidecar_session(&process_session_id, &sessions)
+}
+
+fn engine3d_sidecar_status_from(env_override: Option<String>) -> Engine3dSidecarStatus {
+    let resolved_path = resolve_engine3d_sidecar_path(env_override.clone());
+    let source = if resolved_path.is_some() && env_override.is_some() {
+        "environment"
+    } else if resolved_path.is_some() {
+        "bundled"
+    } else {
+        "missing"
+    };
+
+    Engine3dSidecarStatus {
+        available: resolved_path.is_some(),
+        protocol_version: ENGINE3D_PROTOCOL_VERSION,
+        source: source.to_string(),
+        env_var: ENGINE3D_SIDECAR_ENV_VAR.to_string(),
+        env_override_path: env_override,
+        resolved_path: resolved_path.map(|path| path.to_string_lossy().to_string()),
+        bundled_binary_name: engine3d_bundled_binary_name(),
+        target_triple: engine3d_target_triple().to_string(),
+    }
+}
+
+fn normalize_engine3d_protocol_lines(
+    lines: Vec<String>,
+    allow_empty: bool,
+) -> Result<Vec<String>, String> {
+    if lines.is_empty() && !allow_empty {
+        return Err("Interactive 3D protocol batch cannot be empty.".to_string());
+    }
+    if lines.len() > ENGINE3D_MAX_BATCH_LINES {
+        return Err(format!(
+            "Interactive 3D protocol batch cannot exceed {ENGINE3D_MAX_BATCH_LINES} messages."
+        ));
+    }
+
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.contains('\n') || line.contains('\r') {
+                return Err(
+                    "Interactive 3D protocol messages must be one JSON object per line."
+                        .to_string(),
+                );
+            }
+            if line.len() > ENGINE3D_MAX_MESSAGE_BYTES {
+                return Err(format!(
+                    "Interactive 3D protocol message exceeds {ENGINE3D_MAX_MESSAGE_BYTES} bytes."
+                ));
+            }
+            Ok(line)
+        })
+        .collect()
+}
+
+fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf> {
+    // Development / explicit override: an absolute path to a locally built sidecar wins.
+    if let Some(path) = env_override {
+        let candidate = PathBuf::from(path.trim());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // Packaged app: Tauri bundles the `externalBin` sidecar (target-triple suffix stripped) next to
+    // the main executable. Resolve it there so a normally launched bundle finds its sidecar instead
+    // of reporting Interactive 3D unavailable when the env override is unset.
+    let executable_dir = std::env::current_exe().ok()?;
+    let executable_dir = executable_dir.parent()?;
+    let sidecar_name = if cfg!(windows) {
+        "avogadro3d-sidecar.exe"
+    } else {
+        "avogadro3d-sidecar"
+    };
+    let bundled = executable_dir.join(sidecar_name);
+    if bundled.is_file() {
+        Some(bundled)
+    } else {
+        None
+    }
+}
+
+fn start_engine3d_sidecar_session_from_path(
+    path: &Path,
+    lines: &[String],
+    sessions: &Engine3dSidecarSessions,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    stop_all_engine3d_sidecar_sessions(sessions)?;
+
+    let process_session_id = format!(
+        "engine3d-sidecar-{}-{}",
+        std::process::id(),
+        ENGINE3D_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut child = Command::new(path)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start interactive 3D sidecar: {error}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Interactive 3D sidecar stdout is not available.".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Interactive 3D sidecar stderr is not available.".to_string())?;
+    let mut session = Engine3dManagedSession {
+        stdin: child.stdin.take(),
+        child,
+        stdout_rx: spawn_engine3d_line_reader(stdout),
+        stderr_rx: spawn_engine3d_line_reader(stderr),
+    };
+
+    write_engine3d_protocol_lines(&mut session, lines)?;
+    let mut output = collect_engine3d_session_output(
+        &process_session_id,
+        &mut session,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+    );
+    let mut guard = sessions
+        .sessions
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+    guard.insert(process_session_id.clone(), Arc::new(Mutex::new(session)));
+    output.process_session_id = process_session_id;
+    Ok(output)
+}
+
+fn stop_all_engine3d_sidecar_sessions(sessions: &Engine3dSidecarSessions) -> Result<(), String> {
+    let process_session_ids = {
+        let guard = sessions
+            .sessions
+            .lock()
+            .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+        guard.keys().cloned().collect::<Vec<_>>()
+    };
+
+    for process_session_id in process_session_ids {
+        let _ = stop_engine3d_sidecar_session(&process_session_id, sessions);
+    }
+
+    Ok(())
+}
+
+/// Look up a session handle, holding the map lock only long enough to clone the Arc.
+fn engine3d_session_handle(
+    process_session_id: &str,
+    sessions: &Engine3dSidecarSessions,
+) -> Result<Arc<Mutex<Engine3dManagedSession>>, String> {
+    let guard = sessions
+        .sessions
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+    guard
+        .get(process_session_id)
+        .cloned()
+        .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())
+}
+
+fn send_engine3d_sidecar_session_lines(
+    process_session_id: &str,
+    lines: &[String],
+    sessions: &Engine3dSidecarSessions,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    let handle = engine3d_session_handle(process_session_id, sessions)?;
+    let mut session = handle
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+    write_engine3d_protocol_lines(&mut session, lines)?;
+    Ok(collect_engine3d_session_output(
+        process_session_id,
+        &mut session,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+    ))
+}
+
+fn poll_engine3d_sidecar_session(
+    process_session_id: &str,
+    sessions: &Engine3dSidecarSessions,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    let handle = engine3d_session_handle(process_session_id, sessions)?;
+    let mut session = handle
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+    // A poll only drains what is already buffered, so return quickly when nothing is waiting
+    // instead of blocking the full output timeout on an idle session.
+    Ok(collect_engine3d_session_output(
+        process_session_id,
+        &mut session,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT,
+    ))
+}
+
+fn stop_engine3d_sidecar_session(
+    process_session_id: &str,
+    sessions: &Engine3dSidecarSessions,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    let handle = {
+        let mut guard = sessions
+            .sessions
+            .lock()
+            .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+        guard
+            .remove(process_session_id)
+            .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())?
+    };
+    let mut session = handle
+        .lock()
+        .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+    drop(session.stdin.take());
+    let graceful_started = Instant::now();
+    loop {
+        if session
+            .child
+            .try_wait()
+            .map_err(|error| format!("Could not poll interactive 3D sidecar: {error}"))?
+            .is_some()
+        {
+            break;
+        }
+        if graceful_started.elapsed() >= ENGINE3D_SESSION_OUTPUT_TIMEOUT {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    if session
+        .child
+        .try_wait()
+        .map_err(|error| format!("Could not poll interactive 3D sidecar: {error}"))?
+        .is_none()
+    {
+        let _ = session.child.kill();
+    }
+    let _ = session.child.wait();
+    Ok(collect_engine3d_session_output(
+        process_session_id,
+        &mut session,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+        ENGINE3D_SESSION_OUTPUT_TIMEOUT,
+    ))
+}
+
+fn write_engine3d_protocol_lines(
+    session: &mut Engine3dManagedSession,
+    lines: &[String],
+) -> Result<(), String> {
+    let stdin = session
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Interactive 3D sidecar stdin is not available.".to_string())?;
+    for line in lines {
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .map_err(|error| format!("Could not write interactive 3D protocol: {error}"))?;
+    }
+    stdin
+        .flush()
+        .map_err(|error| format!("Could not flush interactive 3D protocol: {error}"))
+}
+
+fn collect_engine3d_session_output(
+    process_session_id: &str,
+    session: &mut Engine3dManagedSession,
+    timeout: Duration,
+    empty_timeout: Duration,
+) -> Engine3dSidecarSessionOutput {
+    let started = Instant::now();
+    let mut last_output = started;
+    let mut saw_output = false;
+    let mut stdout_lines = Vec::new();
+    let mut stderr_lines = Vec::new();
+
+    loop {
+        let mut drained = false;
+        drained |= drain_engine3d_receiver(&session.stdout_rx, &mut stdout_lines);
+        drained |= drain_engine3d_receiver(&session.stderr_rx, &mut stderr_lines);
+        if drained {
+            saw_output = true;
+            last_output = Instant::now();
+        }
+        if saw_output {
+            // Output is flowing: return once it has been quiet briefly (a coalesced batch).
+            if last_output.elapsed() >= ENGINE3D_SESSION_OUTPUT_QUIET {
+                break;
+            }
+        } else if started.elapsed() >= empty_timeout {
+            // Nothing has arrived yet: give up early rather than blocking the full timeout.
+            break;
+        }
+        if started.elapsed() >= timeout {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let status = session.child.try_wait().ok().flatten();
+    let exited = status.is_some();
+    let exit_code = status.and_then(|status| status.code());
+
+    Engine3dSidecarSessionOutput {
+        process_session_id: process_session_id.to_string(),
+        stdout_lines,
+        stderr: stderr_lines.join("\n"),
+        exited,
+        exit_code,
+    }
+}
+
+fn drain_engine3d_receiver(receiver: &Receiver<String>, lines: &mut Vec<String>) -> bool {
+    let mut drained = false;
+    loop {
+        match receiver.try_recv() {
+            Ok(line) => {
+                lines.push(line);
+                drained = true;
+            }
+            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return drained,
+        }
+    }
+}
+
+fn spawn_engine3d_line_reader<R>(pipe: R) -> Receiver<String>
+where
+    R: Read + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let reader = BufReader::new(pipe);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+fn engine3d_bundled_binary_name() -> String {
+    let stem = format!("{}-{}", ENGINE3D_SIDECAR_BASENAME, engine3d_target_triple());
+    if cfg!(target_os = "windows") {
+        format!("{stem}.exe")
+    } else {
+        stem
+    }
+}
+
+fn engine3d_target_triple() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "x86_64-apple-darwin"
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "x86_64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "unknown"
+    }
+}
+
+#[tauri::command]
 fn take_pending_open_document(
     state: tauri::State<'_, PendingOpenDocument>,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
@@ -1136,13 +1624,23 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 app,
                 "Structure",
                 true,
-                &[&MenuItem::with_id(
-                    app,
-                    "structure.cleanup2d",
-                    "Clean up Structure 2D",
-                    true,
-                    Some("CmdOrCtrl+Shift+K"),
-                )?],
+                &[
+                    &MenuItem::with_id(
+                        app,
+                        "structure.cleanup2d",
+                        "Clean up Structure 2D",
+                        true,
+                        Some("CmdOrCtrl+Shift+K"),
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(
+                        app,
+                        "structure.openInteractive3d",
+                        "Interactive 3D Workspace...",
+                        true,
+                        None::<&str>,
+                    )?,
+                ],
             )?,
             &Submenu::with_items(
                 app,
@@ -2153,6 +2651,36 @@ mod tests {
     }
 
     #[test]
+    fn default_capability_allows_only_narrow_engine3d_commands() {
+        let capability = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("default capability should parse");
+        let permissions = parsed
+            .pointer("/permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("default capability should declare permissions");
+
+        for expected_permission in [
+            "allow-engine3d-sidecar-status",
+            "allow-engine3d-sidecar-start-session",
+            "allow-engine3d-sidecar-send-session",
+            "allow-engine3d-sidecar-poll-session",
+            "allow-engine3d-sidecar-stop-session",
+        ] {
+            expect_true(permissions.iter().any(|permission| {
+                permission
+                    .as_str()
+                    .is_some_and(|permission| permission == expected_permission)
+            }));
+        }
+        expect_false(permissions.iter().any(|permission| {
+            permission
+                .as_str()
+                .is_some_and(|permission| permission.contains("shell"))
+        }));
+    }
+
+    #[test]
     fn bundle_config_declares_chemical_file_associations() {
         let config = include_str!("../tauri.conf.json");
         let parsed: serde_json::Value =
@@ -2185,6 +2713,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bundle_config_declares_target_triple_sidecar_basename() {
+        let config = include_str!("../tauri.conf.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(config).expect("tauri config should parse");
+        let external_bins = parsed
+            .pointer("/bundle/externalBin")
+            .and_then(serde_json::Value::as_array)
+            .expect("bundle.externalBin should exist");
+
+        expect_true(external_bins.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|entry| entry == "binaries/avogadro3d-sidecar")
+        }));
+        expect_true(engine3d_bundled_binary_name().starts_with(ENGINE3D_SIDECAR_BASENAME));
+        expect_true(engine3d_bundled_binary_name().contains(engine3d_target_triple()));
+    }
+
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
     #[test]
     fn opened_file_urls_read_document_payloads() {
@@ -2211,6 +2758,7 @@ mod tests {
     #[test]
     fn structure_menu_commands_are_routed() {
         expect_true(is_routed_menu_command("structure.cleanup2d"));
+        expect_true(is_routed_menu_command("structure.openInteractive3d"));
     }
 
     #[test]
@@ -2258,6 +2806,231 @@ mod tests {
 
         expect_true(status.enabled);
         expect_eq("argument", status.source.as_str());
+    }
+
+    #[test]
+    fn engine3d_sidecar_status_tracks_env_override_without_running_shell() {
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-engine3d-status-{}", std::process::id()));
+        fs::write(&path, "").expect("fixture should write");
+
+        let status = engine3d_sidecar_status_from(Some(path.to_string_lossy().to_string()));
+
+        expect_true(status.available);
+        expect_eq("environment", status.source.as_str());
+        expect_eq(ENGINE3D_PROTOCOL_VERSION, status.protocol_version);
+        expect_eq(
+            Some(path.to_string_lossy().to_string()),
+            status.resolved_path,
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn engine3d_protocol_batches_are_bounded_ndjson() {
+        expect_true(normalize_engine3d_protocol_lines(vec!["{}".to_string()], false).is_ok());
+        expect_true(normalize_engine3d_protocol_lines(vec![], false).is_err());
+        expect_true(normalize_engine3d_protocol_lines(vec![], true).is_ok());
+        expect_true(normalize_engine3d_protocol_lines(vec!["{}\n{}".to_string()], false).is_err());
+        expect_true(
+            normalize_engine3d_protocol_lines(
+                vec!["x".repeat(ENGINE3D_MAX_MESSAGE_BYTES + 1)],
+                false,
+            )
+            .is_err(),
+        );
+        expect_true(
+            normalize_engine3d_protocol_lines(
+                vec!["{}".to_string(); ENGINE3D_MAX_BATCH_LINES + 1],
+                false,
+            )
+            .is_err(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine3d_sidecar_session_manager_round_trips_fake_protocol() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-engine3d-fake-{}.sh", std::process::id()));
+        fs::write(
+            &path,
+            "#!/bin/sh\necho ready-event\nwhile IFS= read -r line; do\n  echo \"$line\"\ndone\n",
+        )
+        .expect("fixture should write");
+        let mut permissions = fs::metadata(&path)
+            .expect("fixture should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("fixture should be executable");
+
+        let sessions = Engine3dSidecarSessions::default();
+        let start = start_engine3d_sidecar_session_from_path(
+            &path,
+            &[
+                "{\"protocolVersion\":2,\"requestId\":\"r1\",\"type\":\"createSession\"}"
+                    .to_string(),
+            ],
+            &sessions,
+        )
+        .expect("fake sidecar should start");
+        let start_poll = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
+            .expect("fake sidecar should still be active");
+        let start_lines = start
+            .stdout_lines
+            .iter()
+            .chain(start_poll.stdout_lines.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut start_lines = start_lines;
+        for _ in 0..10 {
+            if start_lines.contains(&"ready-event".to_string())
+                && start_lines.contains(
+                    &"{\"protocolVersion\":2,\"requestId\":\"r1\",\"type\":\"createSession\"}"
+                        .to_string(),
+                )
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+            let polled = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
+                .expect("fake sidecar should still be active while waiting for startup output");
+            start_lines.extend(polled.stdout_lines);
+        }
+        expect_true(start_lines.contains(&"ready-event".to_string()));
+        expect_true(start_lines.contains(
+            &"{\"protocolVersion\":2,\"requestId\":\"r1\",\"type\":\"createSession\"}".to_string(),
+        ));
+
+        let sent = send_engine3d_sidecar_session_lines(
+            &start.process_session_id,
+            &["{\"protocolVersion\":2,\"requestId\":\"r2\",\"type\":\"updateDrag\",\"sessionId\":\"s1\",\"atomId\":\"a1\",\"target\":{\"x\":1,\"y\":2,\"z\":3}}".to_string()],
+            &sessions,
+        )
+        .expect("fake sidecar should receive forwarded command");
+        let sent_poll = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
+            .expect("fake sidecar should still be active after send");
+        let sent_lines = sent
+            .stdout_lines
+            .iter()
+            .chain(sent_poll.stdout_lines.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut sent_lines = sent_lines;
+        for _ in 0..10 {
+            if sent_lines
+                .contains(&"{\"protocolVersion\":2,\"requestId\":\"r2\",\"type\":\"updateDrag\",\"sessionId\":\"s1\",\"atomId\":\"a1\",\"target\":{\"x\":1,\"y\":2,\"z\":3}}".to_string())
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+            let polled = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
+                .expect("fake sidecar should still be active while waiting for forwarded output");
+            sent_lines.extend(polled.stdout_lines);
+        }
+
+        expect_true(
+            sent_lines
+                .contains(&"{\"protocolVersion\":2,\"requestId\":\"r2\",\"type\":\"updateDrag\",\"sessionId\":\"s1\",\"atomId\":\"a1\",\"target\":{\"x\":1,\"y\":2,\"z\":3}}".to_string()),
+        );
+
+        let stopped = stop_engine3d_sidecar_session(&start.process_session_id, &sessions)
+            .expect("fake sidecar should stop");
+        expect_eq(start.process_session_id.clone(), stopped.process_session_id);
+        expect_true(poll_engine3d_sidecar_session(&start.process_session_id, &sessions).is_err());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine3d_sidecar_captures_stderr_without_protocol_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "chemdraft-engine3d-stderr-fake-{}.sh",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\necho fake-sidecar-log >&2\n").expect("fixture should write");
+        let mut permissions = fs::metadata(&path)
+            .expect("fixture should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("fixture should be executable");
+
+        let sessions = Engine3dSidecarSessions::default();
+        let started = start_engine3d_sidecar_session_from_path(&path, &[], &sessions)
+            .expect("fake sidecar should start");
+
+        let mut stderr_text = started.stderr;
+        for _ in 0..10 {
+            if stderr_text.contains("fake-sidecar-log") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+            if let Ok(polled) =
+                poll_engine3d_sidecar_session(&started.process_session_id, &sessions)
+            {
+                if !polled.stderr.is_empty() {
+                    stderr_text.push('\n');
+                    stderr_text.push_str(&polled.stderr);
+                }
+            }
+        }
+        expect_true(stderr_text.contains("fake-sidecar-log"));
+
+        let _ = stop_engine3d_sidecar_session(&started.process_session_id, &sessions);
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine3d_sidecar_start_replaces_stale_sessions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "chemdraft-engine3d-replace-fake-{}.sh",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "#!/bin/sh\necho ready-event\nwhile IFS= read -r line; do\n  echo \"$line\"\ndone\n",
+        )
+        .expect("fixture should write");
+        let mut permissions = fs::metadata(&path)
+            .expect("fixture should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("fixture should be executable");
+
+        let sessions = Engine3dSidecarSessions::default();
+        let first = start_engine3d_sidecar_session_from_path(
+            &path,
+            &[
+                "{\"protocolVersion\":2,\"requestId\":\"r1\",\"type\":\"createSession\"}"
+                    .to_string(),
+            ],
+            &sessions,
+        )
+        .expect("first fake sidecar should start");
+        let second = start_engine3d_sidecar_session_from_path(
+            &path,
+            &[
+                "{\"protocolVersion\":2,\"requestId\":\"r2\",\"type\":\"createSession\"}"
+                    .to_string(),
+            ],
+            &sessions,
+        )
+        .expect("second fake sidecar should replace first");
+
+        expect_true(poll_engine3d_sidecar_session(&first.process_session_id, &sessions).is_err());
+        expect_true(poll_engine3d_sidecar_session(&second.process_session_id, &sessions).is_ok());
+
+        let _ = stop_engine3d_sidecar_session(&second.process_session_id, &sessions);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

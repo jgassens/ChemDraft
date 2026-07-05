@@ -89,6 +89,7 @@ export interface ConformerForceFieldReport {
   status: "not-run" | "converged" | "not-converged" | "setup-failed" | "unsupported";
   returnCode?: number;
   energy?: number;
+  /** Total engine-reported iterations across all passes in this public refinement call. */
   iterations?: number;
 }
 
@@ -108,13 +109,22 @@ export interface Generate3DConformerOptions {
   /** Deterministic seed for the embedding (default engine-defined). */
   seed?: number;
   /** Force-field refinement. "auto" lets the engine choose (MMFF94, else none). */
-  optimize?: "none" | "auto" | "mmff94" | "uff";
+  optimize?: "none" | "auto" | "mmff94" | "mmff94s" | "uff";
   /**
-   * Cap on force-field minimisation iterations (default: the engine's full run).
-   * Depiction-grade geometry reaches essentially the final energy well before the
-   * engine default; capping bounds the worst case on large molecules.
+   * Total force-field minimisation iteration budget for one public refinement call
+   * (default: the engine's full run). An adapter may divide a finite budget across a
+   * small number of continuation passes, but the requested total must remain bounded
+   * by this value. Depiction-grade geometry usually reaches the useful energy well
+   * before the engine default, so the budget bounds worst-case work on large molecules.
    */
   maxMinimiseIterations?: number;
+  /**
+   * Number of independent embed candidates to generate and rank by a short force-field
+   * energy, keeping the lowest-energy (most relaxed) conformer. `>1` enables best-of-K
+   * selection for the initial embed; omitted/`1` keeps the historical single embed. The
+   * engine may taper this for large molecules. Deterministic given `seed`.
+   */
+  embedCandidates?: number;
   /** v1 invariant: specified stereo is preserved. */
   preserveSpecifiedStereo?: boolean;
   /** v1 invariant: never invent unspecified stereo. */
@@ -133,15 +143,17 @@ export interface ConformerRefineOptions {
 
 /**
  * Default refinement force field for an embed-time `optimize` choice: UFF only when the
- * user explicitly asked for it, MMFF94 otherwise. Shared by the conformer worker (which
- * keys its per-mode cache on the force field) and the RDKit adapter (which runs it), so
- * the two can never drift. A per-refine `ConformerRefineOptions.forceField` override takes
- * precedence over this default at the engine.
+ * user explicitly asked for it, explicit MMFF94 when requested, and MMFF94s otherwise.
+ * Shared by the conformer worker (which keys its per-mode cache on the force field) and
+ * the RDKit adapter (which runs it), so the two can never drift. A per-refine
+ * `ConformerRefineOptions.forceField` override takes precedence over this default at the engine.
  */
 export function defaultRefineForceField(
   optimize: Generate3DConformerOptions["optimize"]
 ): NonNullable<ConformerRefineOptions["forceField"]> {
-  return optimize === "uff" ? "uff" : "mmff94";
+  if (optimize === "uff") return "uff";
+  if (optimize === "mmff94") return "mmff94";
+  return "mmff94s";
 }
 
 /**
@@ -158,12 +170,13 @@ export interface ProgressiveConformerResult {
    * minimisation; pass `maxIts` to cap a run to that many steps, and `options` to pick
    * the force field (engines with a single force field ignore it).
    *
-   * RE-RUNNABLE FROM EMBED: minimisation is single-shot and mutates the conformer in
-   * place, and re-minimising from already-relaxed coordinates can warp geometry (e.g.
-   * flatten aromatic rings). To let callers compare iteration caps / refinement modes
-   * without re-embedding, each call starts from the pristine embedded coordinates — so
-   * every call is independent and reproducible (same args ⇒ same geometry). Callers that
-   * want to avoid recomputation should memoise per mode themselves.
+   * RE-RUNNABLE FROM EMBED: every public call starts from the pristine embedded
+   * coordinates. An engine may split that call's total iteration budget into a small
+   * number of focused passes on one private transient conformer, but it must never
+   * continue from a previous public call. Re-minimising a previously returned geometry
+   * can warp structures such as aromatic rings. Calls therefore remain independent and
+   * reproducible (same args ⇒ same geometry). Callers that want to avoid recomputation
+   * should memoise per mode themselves.
    * `forceField.returnCode === 0` means the in-process field converged. Absent when the
    * embed failed or `optimize: "none"`.
    */

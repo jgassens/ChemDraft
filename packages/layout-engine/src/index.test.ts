@@ -13,6 +13,10 @@ import {
   atomDisplayLabel,
   atomDegrees,
   atomLabelAnchorOffset,
+  atomLabelHaloWidthPx,
+  averageDefinedDepthWeights,
+  depthCuedLabelColor,
+  depthCuedLabelScale,
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
@@ -23,6 +27,7 @@ import {
   planPageSvgRender,
   planMoleculeAtomLabels,
   planFreeformBondExtension,
+  ringInteriorDoubleBondSides,
   type BondExtensionPlanningInput,
   type PageSvgElementFragment,
   type PageSvgFragment
@@ -1031,7 +1036,6 @@ describe("layout-engine page SVG planner", () => {
       [
         "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|162.4|157|162.4",
         "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|157.6|157|157.6",
-        "rect|mol_snapshot|molecule|native-atom-label-background|157.35|143.936",
         "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
         "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
         "text|text_snapshot|text|220|178|start",
@@ -1155,7 +1159,14 @@ describe("layout-engine page SVG planner", () => {
       "font-weight": 400,
       "font-style": "normal"
     });
-    expect(fragments.filter((fragment) => fragment.attrs.class === "native-atom-label-background")).toHaveLength(1);
+    // Per-atom backgrounds render as the label's glyph-hugging halo stroke, not an opaque rect:
+    // the O override colors its halo (width tracks its 20px font), and N's "transparent"
+    // background opts out of the knockout entirely.
+    const oxygenAttrs = labelGroups.find((fragment) => fragment.attrs["data-atom-label"] === "O")?.attrs;
+    expect(oxygenAttrs).toMatchObject({ stroke: "#fff0c2", "paint-order": "stroke" });
+    expect(Number(oxygenAttrs?.["stroke-width"])).toBeCloseTo(20 * 0.3, 5);
+    expect(labelGroups.find((fragment) => fragment.attrs["data-atom-label"] === "N")?.attrs.stroke).toBeUndefined();
+    expect(fragments.filter((fragment) => fragment.attrs.class === "native-atom-label-background")).toHaveLength(0);
   });
 
   it("keeps explicit atom label offsets and chemically required labels ahead of molecule defaults", () => {
@@ -2147,5 +2158,134 @@ describe("layout-engine page SVG planner", () => {
     expect(lines.map((fragment) => fragment.attrs["data-bond-id"])).toEqual(["bond_far", "bond_mid", "bond_near"]);
     expect(lines.map((fragment) => fragment.attrs.stroke)).toEqual(["#969696", "#4b4b4b", "#000000"]);
     expect(lines.map((fragment) => fragment.attrs["stroke-width"])).toEqual([1.2, 2, 2.8]);
+  });
+});
+
+describe("ring-interior double bond side", () => {
+  // Regular hexagon centred on (100,100), radius 40, Kekulé doubles on 001-002 / 003-004 /
+  // 005-006, plus a FAR exocyclic substituent on atom_001. The old substituent-mass heuristic
+  // is dominated by the distant substituent and flips the 001-002 inner line OUTSIDE; the
+  // ring-interior rule must keep it inside (toward the centroid) regardless.
+  function benzeneWithFarSubstituent(): MoleculeObject {
+    return moleculeObject({
+      id: "benzene",
+      structure: "c1ccccc1",
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y: 100, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 120, y: 134.64, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 80, y: 134.64, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: 60, y: 100, formalCharge: 0 },
+        { id: "atom_005", element: "C", x: 80, y: 65.36, formalCharge: 0 },
+        { id: "atom_006", element: "C", x: 120, y: 65.36, formalCharge: 0 },
+        { id: "atom_007", element: "O", x: 300, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_12", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" },
+        { id: "bond_23", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" },
+        { id: "bond_34", fromAtomId: "atom_003", toAtomId: "atom_004", order: "double" },
+        { id: "bond_45", fromAtomId: "atom_004", toAtomId: "atom_005", order: "single" },
+        { id: "bond_56", fromAtomId: "atom_005", toAtomId: "atom_006", order: "double" },
+        { id: "bond_61", fromAtomId: "atom_006", toAtomId: "atom_001", order: "single" },
+        { id: "bond_17", fromAtomId: "atom_001", toAtomId: "atom_007", order: "single" }
+      ]
+    });
+  }
+
+  // Given a ring double bond, which geometric side ("left" = +normal) faces the ring centroid.
+  function interiorSideOf(molecule: MoleculeObject, bondId: string): "left" | "right" {
+    const bond = molecule.bonds.find((candidate) => candidate.id === bondId)!;
+    const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    const nx = -(to.y - from.y) / len;
+    const ny = (to.x - from.x) / len;
+    const centroid = { x: 100, y: 100 };
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    return (centroid.x - midX) * nx + (centroid.y - midY) * ny >= 0 ? "left" : "right";
+  }
+
+  it("points every ring double bond's inner line toward the ring interior", () => {
+    const molecule = benzeneWithFarSubstituent();
+    const sides = ringInteriorDoubleBondSides(molecule);
+    for (const bondId of ["bond_12", "bond_34", "bond_56"]) {
+      expect(sides.get(bondId)).toBe(interiorSideOf(molecule, bondId));
+    }
+  });
+
+  it("keeps the inner line inside even when a far exocyclic substituent would flip a neighbor-mass heuristic", () => {
+    const molecule = benzeneWithFarSubstituent();
+    // Sanity: the far substituent really does out-mass the ring neighbours for bond_12, i.e.
+    // the OLD neighbor-sum would have chosen the opposite (outside) side.
+    const bond = molecule.bonds.find((candidate) => candidate.id === "bond_12")!;
+    const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    const nx = -(to.y - from.y) / len;
+    const ny = (to.x - from.x) / len;
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    const neighborIds = ["atom_006", "atom_003", "atom_007"]; // ring neighbours + substituent
+    const neighborScore = neighborIds.reduce((sum, atomId) => {
+      const atom = molecule.atoms.find((candidate) => candidate.id === atomId)!;
+      return sum + (atom.x - midX) * nx + (atom.y - midY) * ny;
+    }, 0);
+    const neighborSide = neighborScore >= 0 ? "left" : "right";
+    expect(neighborSide).not.toBe(interiorSideOf(molecule, "bond_12"));
+    // The ring-interior rule ignores that and stays inside.
+    expect(ringInteriorDoubleBondSides(molecule).get("bond_12")).toBe(interiorSideOf(molecule, "bond_12"));
+  });
+
+  it("does not assign a side to non-ring (chain) double bonds", () => {
+    const molecule = moleculeObject({
+      id: "acrolein",
+      structure: "C=CC=O",
+      atoms: [
+        { id: "atom_001", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 140, y: 100, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 180, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_12", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" },
+        { id: "bond_23", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
+      ]
+    });
+    expect(ringInteriorDoubleBondSides(molecule).size).toBe(0);
+  });
+});
+
+describe("atom-label depth cueing", () => {
+  it("averages only the defined incident bond weights", () => {
+    expect(averageDefinedDepthWeights([0.2, 0.8])).toBeCloseTo(0.5);
+    expect(averageDefinedDepthWeights([undefined, 0.6])).toBeCloseTo(0.6);
+  });
+
+  it("returns undefined when no incident bond is depth-cued (planar view)", () => {
+    expect(averageDefinedDepthWeights([])).toBeUndefined();
+    expect(averageDefinedDepthWeights([undefined, undefined])).toBeUndefined();
+  });
+
+  it("fades a far label toward grey and keeps a near label at its base colour", () => {
+    // weight 0 = farthest → the fixed far-grey; weight 1 = nearest → unchanged base.
+    expect(depthCuedLabelColor("#111111", 0)).toBe("#7d7d7d");
+    expect(depthCuedLabelColor("#111111", 1)).toBe("#111111");
+    // A mid-depth label sits between the two, still darker than the bond fog (150).
+    const mid = depthCuedLabelColor("#111111", 0.5);
+    expect(mid).not.toBe("#111111");
+    expect(mid).not.toBe("#7d7d7d");
+  });
+
+  it("passes the colour through unchanged when there is no depth cue", () => {
+    expect(depthCuedLabelColor("#b3261e", undefined)).toBe("#b3261e");
+  });
+
+  it("scales labels gently by depth (0.92 far … 1.08 near), no scale when uncued", () => {
+    expect(depthCuedLabelScale(0)).toBeCloseTo(0.92);
+    expect(depthCuedLabelScale(1)).toBeCloseTo(1.08);
+    expect(depthCuedLabelScale(undefined)).toBe(1);
+  });
+
+  it("sizes the knockout halo from the label font size", () => {
+    expect(atomLabelHaloWidthPx({ atomLabelFontSizePx: 15 } as never)).toBeCloseTo(4.5);
   });
 });

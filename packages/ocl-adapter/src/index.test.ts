@@ -4,7 +4,13 @@ import * as OCL from "openchemlib";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
-import { depictSmiles2D, ensureOclResources, generate3DConformerProgressive, oclConformerGenerator } from "./index";
+import {
+  depictSmiles2D,
+  ensureOclResources,
+  generate3DConformerProgressive,
+  oclConformerGenerator,
+  perceiveStereoCentersFromMolfile
+} from "./index";
 
 /** Minimal V2000 atom-block y-coordinate reader, to pin the depiction's y convention. */
 function molfileAtomYs(molfile: string, count: number): number[] {
@@ -243,5 +249,31 @@ describe("ocl-adapter — progressive (embed-first) generation", () => {
     // More iterations changes the geometry (otherwise the cap is doing nothing).
     expect([...high.mapping.coords3dByOriginalAtom]).not.toEqual([...low.mapping.coords3dByOriginalAtom]);
     expect(high.mapping.originalToEngineAtom).toEqual(low.mapping.originalToEngineAtom);
+  });
+});
+
+describe("ocl-adapter — perceiveStereoCentersFromMolfile", () => {
+  it("flags the true tetrahedral stereocenter (and only it) with a CIP descriptor", () => {
+    // C[C@H](F)Cl — the second carbon is the lone stereocenter; CH3/F/Cl are not.
+    const { molfile } = depictSmiles2D("C[C@H](F)Cl");
+    const perceived = perceiveStereoCentersFromMolfile(molfile);
+    const centers = perceived.filter((atom) => atom.isStereoCenter);
+    expect(centers).toHaveLength(1);
+    expect(["R", "S"]).toContain(centers[0]?.descriptor);
+  });
+
+  it("reports no stereocenters for an achiral molecule", () => {
+    const { molfile } = depictSmiles2D("OCCO"); // ethylene glycol — no chiral atom
+    const perceived = perceiveStereoCentersFromMolfile(molfile);
+    expect(perceived.some((atom) => atom.isStereoCenter)).toBe(false);
+  });
+
+  it("does NOT treat a wedge on a non-chiral atom as a stereocenter (graphic projection bond)", () => {
+    // FC(F)CO: the wedged carbon carries two identical F substituents, so it is not chiral even
+    // with an explicit wedge bond drawn on it — exactly the graphic-wedge case to ignore.
+    const mol = OCL.Molecule.fromSmiles("FC(F)CO");
+    mol.setBondType(0, OCL.Molecule.cBondTypeUp); // draw a wedge on a non-stereocenter bond
+    const perceived = perceiveStereoCentersFromMolfile(mol.toMolfile());
+    expect(perceived.some((atom) => atom.isStereoCenter)).toBe(false);
   });
 });

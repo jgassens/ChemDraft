@@ -73,12 +73,17 @@ import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
+  atomDisplayLabel,
   atomLabelAnchorOffset,
+  atomLabelHaloWidthPx,
   atomLabelLayout,
   atomLabelRunFontSize,
+  averageDefinedDepthWeights,
   bondRefKey,
   depthCuedBondColor,
   depthCuedBondStrokeWidth,
+  depthCuedLabelColor,
+  depthCuedLabelScale,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
   nativeMoleculeRings,
@@ -87,6 +92,7 @@ import {
   planPageSvgRender,
   planNativeArtVisual,
   sameBondRef,
+  smallestRingAtomIdsByBondId,
   styleColorMapValue,
   textObjectSpansForRendering,
   type PageSvgAttributeValue,
@@ -191,6 +197,7 @@ import {
   pageSizeActions,
   structureCleanup3dCommandId,
   structureCleanupCommandId,
+  structureInteractive3dCommandId,
   structureSpin3dCommandId,
   textScriptForCommand,
   textStylePatchForCommand,
@@ -203,6 +210,19 @@ import {
   toggleMoleculeInspectorCommandId,
   type CommandSpec
 } from "./commands";
+import {
+  beginEngine3dWorkspaceDrag,
+  closeEngine3dWorkspaceSession,
+  createEngine3dSessionInputFromMolecule,
+  describeEngine3dWorkspaceSession,
+  endEngine3dWorkspaceDrag,
+  openEngine3dWorkspaceSession,
+  pollEngine3dWorkspaceSessionState,
+  readEngine3dSidecarStatus,
+  updateEngine3dWorkspaceDrag,
+  type Engine3dWorkspaceSessionState
+} from "./engine3dSidecar";
+import type { Engine3DCoordinate } from "@chemdraft/engine3d-api";
 import {
   activateDrawingToolCommand,
   createActiveToolState,
@@ -280,6 +300,7 @@ import {
   validSpin3dModelFor,
   type ProjectedPlaneTiltDocumentResult,
   type Spin3dEngineProvenance,
+  type StereoPerceiver,
   flattenSpunMolecule,
   deleteSelectedDocumentObjects,
   splitNativeGraphicPathSegmentAtPoint,
@@ -445,27 +466,32 @@ import {
   createDesktopToolsetRegistry,
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
+  getToolbarsMenuModel,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
-  getToolbarsMenuModel,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry
 } from "./toolsets";
+import { MenuBar } from "./MenuBar";
+import { buildAppMenuModel } from "./appMenu";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
   applyTrackballDrag,
+  quatConjugate,
   quatFromAxisAngle,
   quatMultiply,
   quatNormalize,
   quatToViewMatrix,
+  rotateVectorByQuat,
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, projectSpin, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
+import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
   conformerOptionsForSpin3d,
   loadSpin3dSettings,
@@ -739,6 +765,8 @@ type Spin3dRotateSnapshot = {
   startOrientation: Quaternion;
   /** Conformer (math frame, y-up), reordered into the current molecule's atom order. */
   coords3d: Float64Array;
+  /** Fixed visual placement shared by every preview frame in this drag. */
+  placement: ScreenPlacement;
   atomIds: string[];
   engine?: Spin3dEngineProvenance;
 };
@@ -1059,7 +1087,94 @@ type MoleculeStyleOverridePromptState = {
   objectIds: string[];
 };
 
+type Interactive3dWorkspaceState = {
+  openId: number;
+  objectId: string;
+  source: string;
+  bridgeAvailable: boolean;
+  status: string;
+  session?: Engine3dWorkspaceSessionState;
+  selectedAtomIds: readonly string[];
+  atoms: readonly Interactive3dAtom[];
+  bonds: readonly Interactive3dBond[];
+  energyLabel?: string;
+  dragVisualTarget?: Interactive3dDragVisualTarget;
+};
+
+type Interactive3dDragVisualTarget = {
+  generation: number;
+  atomId: string;
+  target: Engine3DCoordinate;
+};
+
+type Interactive3dDragSchedulerState = {
+  generation: number;
+  openId: number;
+  atomId: string;
+  session: Engine3dWorkspaceSessionState;
+  latestTarget?: Engine3DCoordinate;
+  pendingUpdate: boolean;
+  updateInFlight: boolean;
+  ending: boolean;
+  lastSentAt: number;
+  timer?: number;
+  updatePromise?: Promise<void>;
+};
+
+type Interactive3dAtom = {
+  id: string;
+  element: string;
+};
+
+type Interactive3dBond = {
+  fromAtomId: string;
+  toAtomId: string;
+  order: string | number;
+};
+
+function formatInteractive3dEnergy(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+  return Math.abs(value) >= 10000 ? value.toExponential(3) : value.toFixed(3);
+}
+
+function interactive3dEnergyLabel(session: Engine3dWorkspaceSessionState): string | undefined {
+  const forceField = session.forceField;
+  if (forceField) {
+    const energy = typeof forceField.energy === "number" && Number.isFinite(forceField.energy)
+      ? ` · ${formatInteractive3dEnergy(forceField.energy)} ${forceField.energyUnits ?? "kJ/mol"}`
+      : "";
+    return `${forceField.name} ${forceField.status}${energy}`;
+  }
+  return session.energy !== undefined ? `Energy ${formatInteractive3dEnergy(session.energy)}` : undefined;
+}
+
+function interactive3dPostOpenSessionChanged(
+  previous: Engine3dWorkspaceSessionState,
+  next: Engine3dWorkspaceSessionState
+): boolean {
+  return next.coordinateRevision !== previous.coordinateRevision ||
+    next.lastCoordinateReason !== previous.lastCoordinateReason ||
+    next.energy !== previous.energy ||
+    next.forceField?.status !== previous.forceField?.status ||
+    next.errors.length !== previous.errors.length ||
+    next.warnings.length !== previous.warnings.length ||
+    next.closed !== previous.closed ||
+    next.exited !== previous.exited;
+}
+
+function interactive3dPostOpenPollingComplete(session: Engine3dWorkspaceSessionState): boolean {
+  return session.lastCoordinateReason === "initial-relax" ||
+    session.closed ||
+    session.exited ||
+    session.errors.length > 0;
+}
+
 const RULER_THICKNESS = 32;
+const INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS = 33;
+const INTERACTIVE_3D_POST_OPEN_POLL_COUNT = 8;
+const INTERACTIVE_3D_POST_OPEN_POLL_MS = 90;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
@@ -1088,7 +1203,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.4.9.27-opus";
+const CURRENT_BUILD_STAMP = "7.5.18.24-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1096,6 +1211,23 @@ const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> 
   [artBooleanOperationCommandIds.intersect]: "intersect",
   [artBooleanOperationCommandIds.split]: "split"
 };
+
+
+function interactive3dAtomsForMolecule(molecule: MoleculeObject): readonly Interactive3dAtom[] {
+  return molecule.atoms.map((atom) => ({
+    id: atom.id,
+    element: atom.element
+  }));
+}
+
+function interactive3dBondsForMolecule(molecule: MoleculeObject): readonly Interactive3dBond[] {
+  return molecule.bonds.map((bond) => ({
+    fromAtomId: bond.fromAtomId,
+    toAtomId: bond.toAtomId,
+    order: bond.order
+  }));
+}
+
 const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
@@ -1450,7 +1582,24 @@ export function MainWindow({
   // 3D spin (Phase 4): authoritative state in a ref (read by pointer handlers,
   // immune to stale closures) mirrored into React state so the overlay re-renders.
   const spin3dStateRef = useRef<Spin3dState | undefined>(undefined);
+  // Monotonic token identifying the current spin SESSION (a fresh embed / cancel / restart), so an
+  // async continuation can detect that the session it captured was replaced — even a cancel-and-
+  // restart on the same molecule. Bumped when the conformer identity changes, not on drags (a drag
+  // reuses the same coords3d reference), so it survives orientation changes within one session.
+  const spin3dSessionGenerationRef = useRef(0);
+  // Lazily-loaded OCL stereo perceiver, cached so the synchronous rotate-commit paths can run the
+  // read-back guard without an await (perception depends only on the 2D graph, not orientation).
+  const spin3dStereoPerceiverRef = useRef<StereoPerceiver | undefined>(undefined);
   const [spin3dState, setSpin3dStateRender] = useState<Spin3dState | undefined>(undefined);
+  // A first-time embed is in flight (no overlay yet): drives the on-canvas "Generating 3D…"
+  // cue so the irreducible one-time embed wait reads as intentional progress, not a hang.
+  // (A prefetch cache-hit clears this within ~90ms; the cue's CSS fade-in delay hides that
+  // flash, so it only actually appears for the genuine cold/eager embed.)
+  const [spin3dGenerating, setSpin3dGenerating] = useState<{
+    objectId: string;
+    box: { x: number; y: number; width: number; height: number };
+    atomCount: number;
+  } | undefined>(undefined);
   // Dirty-flag rAF: drag events write to the ref and set the flag; the scheduled
   // rAF renders once and stops. Zero frames fired when the scene isn't changing.
   const spinDirtyRef = useRef(false);
@@ -1559,6 +1708,7 @@ export function MainWindow({
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
   const [moleculeStyleOverridePrompt, setMoleculeStyleOverridePrompt] =
     useState<MoleculeStyleOverridePromptState | undefined>();
+  const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
@@ -1568,6 +1718,37 @@ export function MainWindow({
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
+  const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
+  const interactive3dCommandQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const interactive3dOpenSerialRef = useRef(0);
+  const interactive3dDragGenerationRef = useRef(0);
+  const interactive3dDragSchedulerRef = useRef<Interactive3dDragSchedulerState | undefined>(undefined);
+  const scheduleInteractive3dDragUpdateRef = useRef<(scheduler: Interactive3dDragSchedulerState) => void>(() => undefined);
+  // Interactive 3D rides the spin overlay (owner directive: the tug experience must be
+  // indistinguishable from ChemDraft — no separate surface, the sidecar stays invisible).
+  // The command ARMS a tug attach; an effect opens a HEADLESS sidecar session once the spin
+  // overlay is live, seeded from the spin conformer (a real embed — never flat 2D). The
+  // session's coordinatesChanged events flow back into the same spin3dState the overlay
+  // renders, so the molecule the user tugs IS the drawing.
+  const interactive3dArmRef = useRef<{ objectId: string } | undefined>(undefined);
+  const [interactive3dArmToken, setInteractive3dArmToken] = useState(0);
+  // Maps a coords3d index → sidecar atomId, for writing streamed coordinates back into the
+  // overlay geometry.
+  const interactive3dAtomIdByIndexRef = useRef<string[]>([]);
+  // Live tug gesture: which atom is grabbed and where it started, so screen motion maps to a
+  // model-frame target for the dragged atom.
+  const spin3dTugDragRef = useRef<{
+    pointerId: number;
+    atomId: string;
+    startPageX: number;
+    startPageY: number;
+    startModel: Vec3;
+  } | undefined>(undefined);
+  // Forward reference to the drag-command dispatcher (defined below the spin pointer handlers),
+  // so those handlers stay stable and free of a temporal-dead-zone dependency.
+  const sendInteractive3dDragCommandRef = useRef<
+    (phase: "beginDrag" | "updateDrag" | "endDrag", atomId: string, target?: Engine3DCoordinate) => void
+  >(() => undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
   const nativePaletteRef = useRef(nativePalette);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
@@ -1601,6 +1782,7 @@ export function MainWindow({
   statusRef.current = status;
   rotationInputRef.current = rotationInput;
   objectResizeInputRef.current = objectResizeInput;
+  interactive3dWorkspaceRef.current = interactive3dWorkspace;
   activeToolCommandIdRef.current = activeToolState.activeCommandId;
   nativePaletteRef.current = nativePalette;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
@@ -2674,6 +2856,13 @@ export function MainWindow({
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
   const applySpin = useCallback((next: Spin3dState | undefined) => {
+    // A new session's conformer is a distinct coords3d array; a drag/flag update reuses the same
+    // reference. Bump the session token only when that identity changes, so async continuations
+    // (e.g. stereo perception in commitSpinFlatten) can tell a replaced session from an orientation
+    // change within the same one.
+    if (next?.coords3d !== spin3dStateRef.current?.coords3d) {
+      spin3dSessionGenerationRef.current += 1;
+    }
     spin3dStateRef.current = next;
     setSpin3dStateRender(next);
     if (!next) {
@@ -2697,6 +2886,7 @@ export function MainWindow({
       pendingSpin.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
+      setSpin3dGenerating(undefined); // a first-time embed was in flight — drop its cue
     }
 
     if (hadActiveSpin) {
@@ -2725,13 +2915,66 @@ export function MainWindow({
 
   // Flatten the current spin orientation into the document as ONE undo step. On
   // refusal the document is untouched and the overlay stays so the user can re-spin.
-  const commitSpinFlatten = useCallback(() => {
+  const commitSpinFlatten = useCallback(async () => {
     const state = spin3dStateRef.current;
     if (!state) return;
+    // Capture the session token: the stereo perception below is async, and a cancel-and-restart on
+    // the same molecule during that await must not let this stale continuation commit old coords.
+    const sessionGeneration = spin3dSessionGenerationRef.current;
+    // Perceive which atoms are ACTUAL stereocenters so graphic wedge/hash bonds on non-chiral
+    // atoms (a common "projects toward/away" depiction cue) are dropped on flatten instead of
+    // being mistaken for specified stereo and refusing the whole commit. OCL is lazy-loaded and
+    // perception is best-effort — any failure falls back to the legacy "every drawn wedge is a
+    // center" behavior.
+    let stereoCenterAtomIds: ReadonlySet<string> | undefined;
+    // Injected into flatten so it can READ ITS OWN wedge output back with the real CIP engine and
+    // repair (or refuse) any center that would otherwise commit a different stereoisomer.
+    let perceiveStereo: StereoPerceiver | undefined;
+    // Axial stereochemistry (allene / atropisomer) has no 2D wedge encoding — warn on commit.
+    let unrepresentableStereoKinds: string[] | undefined;
+    let flattenTarget: MoleculeObject | undefined;
+    for (const page of documentRef.current.pages) {
+      const found = page.objects.find(
+        (object): object is MoleculeObject => object.id === state.objectId && object.type === "molecule"
+      );
+      if (found) {
+        flattenTarget = found;
+        break;
+      }
+    }
+    if (flattenTarget) {
+      try {
+        const molfile = moleculeToMolfileV2000(flattenTarget, { fromDocFrame: true });
+        const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
+        perceiveStereo = perceiveStereoCentersFromMolfile;
+        const perAtom = perceiveStereoCentersFromMolfile(molfile);
+        if (perAtom.length === flattenTarget.atoms.length) {
+          const ids = new Set<string>();
+          flattenTarget.atoms.forEach((atom, index) => {
+            if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
+          });
+          stereoCenterAtomIds = ids;
+        }
+        const unrepresentable = perceiveUnrepresentableStereo(molfile);
+        const kinds: string[] = [];
+        if (unrepresentable.alleneAtoms.length > 0) kinds.push("allene");
+        if (unrepresentable.atropisomerBonds.length > 0) kinds.push("atropisomer");
+        if (kinds.length > 0) unrepresentableStereoKinds = kinds;
+      } catch {
+        /* best-effort: fall back to legacy behavior (treat every drawn wedge as a center) */
+      }
+      // The async perception yielded the event loop; abort if the spin session was replaced
+      // (ended, switched molecule, or cancelled-and-restarted) while we awaited OCL.
+      if (spin3dSessionGenerationRef.current !== sessionGeneration) return;
+    }
     const viewMatrix = quatToViewMatrix(state.quat);
     let outcome: ReturnType<typeof flattenSpunMolecule>;
     try {
-      outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix);
+      outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix, {
+        placement: state.placement,
+        stereoCenterAtomIds,
+        perceiveStereo
+      });
     } catch (error) {
       // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
       // wrong stereo. Surface it as a clean refusal and keep the overlay alive for a retry.
@@ -2770,12 +3013,72 @@ export function MainWindow({
     commitDocumentChange(committedDocument);
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
-    setStatus(
+    // A dense polycyclic structure can emit the SAME benign warning (e.g. degenerate-drawn-parity)
+    // for many centers at once; listing the code 23× reads like 23 distinct problems. Collapse to
+    // one entry per code with a count so the status conveys "one kind of caveat, N centers".
+    const codeCounts = new Map<string, number>();
+    for (const warning of meaningful) codeCounts.set(warning.code, (codeCounts.get(warning.code) ?? 0) + 1);
+    const codeSummary = [...codeCounts.entries()]
+      .map(([code, count]) => (count > 1 ? `${code} ×${count}` : code))
+      .join(", ");
+    const baseStatus =
       meaningful.length > 0
-        ? `Flattened perspective with ${meaningful.length} warning(s): ${meaningful.map((w) => w.code).join(", ")}`
-        : "Flattened to a 2D perspective"
-    );
+        ? `Flattened perspective with ${meaningful.length} warning(s): ${codeSummary}`
+        : "Flattened to a 2D perspective";
+    // Axial stereochemistry has no 2D wedge encoding: the spun 3D model kept it, but the flat
+    // drawing can't show it and it will not survive an export or a structural edit.
+    const stereoNote = unrepresentableStereoKinds
+      ? ` — note: ${unrepresentableStereoKinds.join(" & ")} stereochemistry isn't captured by the flat drawing (kept in the 3D model; lost on export or a structural edit)`
+      : "";
+    setStatus(baseStatus + stereoNote);
   }, [applySpin, commitDocumentChange]);
+
+  // Preload the OCL stereo perceiver once so the synchronous rotate-commit paths can run the
+  // read-back guard. Perception depends only on the molecule graph, so a single load serves every
+  // orientation. Best-effort: on failure the rotate commits fall back to geometry-only flattening.
+  useEffect(() => {
+    let cancelled = false;
+    void import("@chemdraft/ocl-adapter")
+      .then((module) => {
+        if (!cancelled) spin3dStereoPerceiverRef.current = module.perceiveStereoCentersFromMolfile;
+      })
+      .catch(() => {
+        /* best-effort: rotate commits fall back to legacy geometry-only flatten */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Stereo read-back guard options for flattening a spun molecule — the SAME protection the Spin 3D
+  // overlay commit applies (commitSpinFlatten), but synchronous, so the whole-molecule rotate paths
+  // (drag handle + numeric X/Y) that also persist a flattened projection can't silently commit a
+  // different stereoisomer. Returns {} (legacy geometry-only flatten) when the perceiver has not
+  // loaded yet or the target isn't an editable native graph.
+  const spin3dFlattenStereoOptions = useCallback((
+    sourceDocument: ChemDraftDocument,
+    objectId: string
+  ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
+    const perceive = spin3dStereoPerceiverRef.current;
+    if (!perceive) return {};
+    const molecule = findDocumentObject(sourceDocument, objectId);
+    if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
+    try {
+      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      const perAtom = perceive(molfile);
+      let stereoCenterAtomIds: ReadonlySet<string> | undefined;
+      if (perAtom.length === molecule.atoms.length) {
+        const ids = new Set<string>();
+        molecule.atoms.forEach((atom, index) => {
+          if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
+        });
+        stereoCenterAtomIds = ids;
+      }
+      return { stereoCenterAtomIds, perceiveStereo: perceive };
+    } catch {
+      return {};
+    }
+  }, []);
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
   const spin3dRequestRef = useRef(0);
@@ -2824,7 +3127,7 @@ export function MainWindow({
   }, []);
 
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
-  const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array): {
+  const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array, orientation?: Quaternion): {
     bondPairs: [number, number][];
     bondRender: SpinBondRenderInfo[];
     atomLabels: (string | undefined)[];
@@ -2843,6 +3146,10 @@ export function MainWindow({
       (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(to);
       (adjacency.get(to) ?? adjacency.set(to, []).get(to)!).push(from);
     }
+    // Smallest ring per bond, as atom INDICES — so a ring double bond's inner line can point
+    // to the PROJECTED ring interior each frame (matching the 2D drawing and the flatten),
+    // instead of the substituent-count heuristic that flips outward on substituted rings.
+    const ringAtomIdsByBond = smallestRingAtomIdsByBondId(molecule);
     const bondPairs: [number, number][] = [];
     const bondRender: SpinBondRenderInfo[] = [];
     for (const bond of molecule.bonds) {
@@ -2854,6 +3161,12 @@ export function MainWindow({
       const toAtom = atomById.get(bond.toAtomId);
       const neighborIndices = [...(adjacency.get(from) ?? []), ...(adjacency.get(to) ?? [])]
         .filter((index) => index !== from && index !== to);
+      const ringAtomIds = ringAtomIdsByBond.get(bond.id);
+      const ringAtomIndices = ringAtomIds
+        ? ringAtomIds
+            .map((atomId) => atomIndex.get(atomId))
+            .filter((index): index is number => index !== undefined)
+        : undefined;
       bondRender.push({
         // aromatic/unknown render as a single line ON PURPOSE: the 2D layout engine
         // (bondLineSegments) only draws inner lines for double/triple, so matching it here
@@ -2862,7 +3175,8 @@ export function MainWindow({
         bold: bond.display?.bondStyle === "bold",
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
           isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
-        neighborIndices
+        neighborIndices,
+        ringAtomIndices
       });
     }
     // The exact labels the 2D drawing shows (element + implicit H + charge; plain
@@ -2873,7 +3187,9 @@ export function MainWindow({
     const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
     const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
     const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
-    const scale = overlayScale(points2d, coords3d, bondPairs);
+    const scale = orientation
+      ? orientedOverlayScale(points2d, coords3d, bondPairs, quatToViewMatrix(orientation))
+      : overlayScale(points2d, coords3d, bondPairs);
     return { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
   }, []);
 
@@ -2959,7 +3275,7 @@ export function MainWindow({
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d);
+      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
       applySpin({
         objectId,
         quat: reopen.quat,
@@ -3027,9 +3343,18 @@ export function MainWindow({
     }, 2000);
     const clearSlowTimer = (): void => window.clearTimeout(slowTimer);
 
+    // Show the on-canvas "Generating 3D…" cue while the first embed runs (cleared the moment
+    // an overlay goes up, generation fails, or the session is cancelled — see below).
+    setSpin3dGenerating({
+      objectId,
+      box: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
+      atomCount: molecule.atoms.length
+    });
+
     // Stage 1 — the embedded conformer is fully manipulable; the overlay goes up NOW.
     const handleEmbedded = (conformer: Generate3DConformerResult): void => {
       clearSlowTimer();
+      setSpin3dGenerating(undefined);
       spin3dPendingRef.current = undefined;
       traceInfo("spin.embedded-callback", {
         atomCount: conformer.originalAtomCount,
@@ -3064,7 +3389,15 @@ export function MainWindow({
         dragging: false,
         engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
       });
-      setStatus("Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel");
+      // If RDKit could not load, the conformer came back from the OpenChemLib fallback and the
+      // worker tags it with an `rdkit.unavailable` warning. Surface that reason here so a packaged
+      // build (no devtools) shows WHY tug/planar cleanup are off, instead of silently no-op'ing.
+      const rdkitUnavailable = conformer.warnings.find((warning) => warning.code === "rdkit.unavailable");
+      setStatus(
+        rdkitUnavailable
+          ? `Spin 3D — ${rdkitUnavailable.message}`
+          : "Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel"
+      );
     };
 
     // Stage 2 — force-field-refined coordinates hot-swap under the live overlay,
@@ -3143,6 +3476,7 @@ export function MainWindow({
         handleRefined(refined);
       } catch (error) {
         clearSlowTimer();
+        setSpin3dGenerating(undefined);
         traceInfo("fallback.error", {
           status: "failed",
           path,
@@ -3176,10 +3510,12 @@ export function MainWindow({
             traceInfo("worker.error", { path: "worker", status: "failed", error: message });
             if (info?.workerCrashed && molecule.atoms.length <= SPIN_IN_PAGE_MAX_ATOMS) {
               // Worker is gone for good — small structures may fall back to the
-              // in-page engine; large ones must NOT (it freezes the whole UI).
+              // in-page engine; large ones must NOT (it freezes the whole UI). The cue
+              // stays up: runInPage owns it from here (clears on its embed or its catch).
               void runInPage();
               return;
             }
+            setSpin3dGenerating(undefined);
             setStatus(`Could not generate a 3D conformer: ${message}`);
           }
         }, { sessionId });
@@ -3191,16 +3527,33 @@ export function MainWindow({
     traceInfo("worker.client", { message: "unavailable" });
     if (molecule.atoms.length > SPIN_IN_PAGE_MAX_ATOMS) {
       clearSlowTimer();
+      setSpin3dGenerating(undefined);
       setStatus("Spin 3D is unavailable for structures this large without background worker support");
       return;
     }
     await runInPage();
   }, [applySpin, selectedNativeMoleculePart, spinPlacementFor]);
 
-  // Warm the conformer worker (OCL module + torsion resources + JIT) at app idle so
-  // the first spin click never pays the ~2s cold-start.
+  // Opt-in console mirror of the spin3d trace stream (localStorage flag / ?spin3dlog=1),
+  // so the prefetch → cache → embed → overlay timeline is capturable without the debugger
+  // window. No-op (returns null) when disabled, so this costs nothing in normal use.
+  useEffect(() => { attachSpin3dTraceConsole(); }, []);
+
+  // Warm the conformer worker (engine module + torsion resources + JIT) as soon as the
+  // main thread goes idle — capped so it never waits past ~1.5s — instead of a flat 1.5s
+  // delay. The first real embed then runs at its floor (no module-load/first-call cost),
+  // which shrinks the window in which an eager Spin 3D click waits on a cold embed.
   useEffect(() => {
-    const timer = setTimeout(() => getConformerWorkerClient()?.warmup({ sessionId: `warmup:${Date.now()}` }), 1500);
+    const warm = (): void => { getConformerWorkerClient()?.warmup({ sessionId: `warmup:${Date.now()}` }); };
+    const win = globalThis as typeof globalThis & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof win.requestIdleCallback === "function") {
+      const handle = win.requestIdleCallback(warm, { timeout: 1500 });
+      return () => win.cancelIdleCallback?.(handle);
+    }
+    const timer = setTimeout(warm, 600); // Safari < 17 etc.: no rIC, warm shortly after boot
     return () => clearTimeout(timer);
   }, []);
 
@@ -3231,6 +3584,10 @@ export function MainWindow({
       }));
       return;
     }
+    // Short debounce: long enough that browsing selections (marquee / arrow-key) still
+    // coalesce to one prefetch, short enough that a deliberate selection (e.g. a paste)
+    // starts its embed promptly — every ms shaved here is a ms sooner the embed completes
+    // and the click lands in the fast cache-hit path.
     const timer = setTimeout(() => {
       const client = getConformerWorkerClient();
       if (!client) return;
@@ -3240,7 +3597,7 @@ export function MainWindow({
       client.warmup({ sessionId: `warmup:${Date.now()}` });
       const options = conformerOptionsForSpin3d(spin3dSettings, molecule.atoms.length);
       client.prefetch(molfile, molecule.atoms.length, options, spin3dSettings.enginePreference, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
-    }, 250);
+    }, 120);
     return () => clearTimeout(timer);
   }, [document, selectedNativeMoleculePart, spin3dState, spin3dSettings]);
 
@@ -3254,6 +3611,49 @@ export function MainWindow({
     const page = documentRef.current.pages[0];
     const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
     const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
+    // Interactive 3D tug: if a sidecar session is attached to this molecule and the grab lands
+    // ON an atom, tug that atom instead of rotating the whole molecule. Grabbing empty space
+    // still rotates; clicking outside still flattens.
+    const tugWorkspace = interactive3dWorkspaceRef.current;
+    if (tugWorkspace?.session && tugWorkspace.objectId === state.objectId) {
+      const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
+      const hitRadius = Math.max(6, 0.5 * state.placement.scale * medianBondLength3d(state.coords3d, state.bondPairs));
+      let bestIndex = -1;
+      let bestScore = Infinity;
+      for (const atom of projection.atoms) {
+        const dist = Math.hypot(atom.sx - pageX, atom.sy - pageY);
+        // Break ties toward the nearer-the-viewer atom (larger depth) so overlapping atoms
+        // grab the one on top.
+        const score = dist - atom.depth * 1e-3;
+        if (dist <= hitRadius && score < bestScore) {
+          bestScore = score;
+          bestIndex = atom.index;
+        }
+      }
+      if (bestIndex >= 0) {
+        const atomId = interactive3dAtomIdByIndexRef.current[bestIndex];
+        if (atomId) {
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            /* best-effort */
+          }
+          spin3dTugDragRef.current = {
+            pointerId: event.pointerId,
+            atomId,
+            startPageX: pageX,
+            startPageY: pageY,
+            startModel: [
+              state.coords3d[bestIndex * 3],
+              state.coords3d[bestIndex * 3 + 1],
+              state.coords3d[bestIndex * 3 + 2]
+            ]
+          };
+          sendInteractive3dDragCommandRef.current("beginDrag", atomId);
+          return;
+        }
+      }
+    }
     const box = state.selectionBox;
     const pad = 14;
     const insideBox =
@@ -3262,8 +3662,9 @@ export function MainWindow({
       pageY >= box.y - pad &&
       pageY <= box.y + box.height + pad;
     if (!insideBox) {
-      // Click outside the selection box commits the current orientation.
-      commitSpinFlatten();
+      // Click outside the selection box commits the current orientation. Fire-and-forget: the
+      // flatten is async (it lazily perceives stereocenters first) and manages its own status.
+      void commitSpinFlatten();
       return;
     }
     // Inside the box: grab to rotate. Capture is best-effort.
@@ -3277,7 +3678,32 @@ export function MainWindow({
 
   const handleSpinOverlayPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
     const state = spin3dStateRef.current;
-    if (!state || !state.dragging || !state.lastClient) return;
+    if (!state) return;
+    // Tug in progress: map the cursor's page motion into a model-frame target for the grabbed
+    // atom and stream it to the sidecar. The delta is un-projected through the inverse of the
+    // current view rotation so the atom follows the cursor in the view plane at any orientation.
+    const tug = spin3dTugDragRef.current;
+    if (tug && tug.pointerId === event.pointerId) {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const page = documentRef.current.pages[0];
+      const pageX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * page.width : 0;
+      const pageY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * page.height : 0;
+      const scale = state.placement.scale > 1e-6 ? state.placement.scale : 1;
+      const viewDelta: Vec3 = [
+        (pageX - tug.startPageX) / scale,
+        -((pageY - tug.startPageY) / scale), // page y-down → view y-up
+        0
+      ];
+      const modelDelta = rotateVectorByQuat(quatConjugate(state.quat), viewDelta);
+      sendInteractive3dDragCommandRef.current("updateDrag", tug.atomId, {
+        x: tug.startModel[0] + modelDelta[0],
+        y: tug.startModel[1] + modelDelta[1],
+        z: tug.startModel[2] + modelDelta[2]
+      });
+      return;
+    }
+    if (!state.dragging || !state.lastClient) return;
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
     // The overlay SVG fills the page area with viewBox "0 0 pageWidth pageHeight", so a
@@ -3325,6 +3751,14 @@ export function MainWindow({
     } catch {
       /* ignore */
     }
+    // Releasing a tug ends the drag on the sidecar (which runs its release settle); the overlay
+    // keeps the settled geometry and stays in spin mode for the next tug/rotate.
+    const tug = spin3dTugDragRef.current;
+    if (tug && tug.pointerId === event.pointerId) {
+      spin3dTugDragRef.current = undefined;
+      sendInteractive3dDragCommandRef.current("endDrag", tug.atomId);
+      return;
+    }
     // Releasing ends the rotation but STAYS in spin mode — grab inside the box again
     // to keep rotating, or click outside to flatten (handled in pointer-down). Esc cancels.
     if (state.dragging) {
@@ -3368,6 +3802,522 @@ export function MainWindow({
     setObjectContextMenu(undefined);
     setStatus("3D cleanup requires the conformer-backed cleanup engine");
   }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
+
+  const cancelInteractive3dDragScheduler = useCallback((): Interactive3dDragSchedulerState | undefined => {
+    const scheduler = interactive3dDragSchedulerRef.current;
+    if (scheduler?.timer !== undefined) {
+      window.clearTimeout(scheduler.timer);
+      scheduler.timer = undefined;
+    }
+    if (scheduler) {
+      scheduler.ending = true;
+    }
+    interactive3dDragSchedulerRef.current = undefined;
+    return scheduler;
+  }, []);
+
+  const updateInteractive3dWorkspaceSession = useCallback((
+    openId: number,
+    session: Engine3dWorkspaceSessionState,
+    options: { clearDragVisualTarget?: boolean; status?: string } = {}
+  ) => {
+    setInteractive3dWorkspace((currentWorkspace) => currentWorkspace?.openId === openId
+      ? {
+          ...currentWorkspace,
+          session,
+          selectedAtomIds: session.selectedAtomIds.length > 0 ? session.selectedAtomIds : currentWorkspace.selectedAtomIds,
+          status: options.status ?? describeEngine3dWorkspaceSession(session),
+          energyLabel: interactive3dEnergyLabel(session) ?? currentWorkspace.energyLabel,
+          dragVisualTarget: options.clearDragVisualTarget ? undefined : currentWorkspace.dragVisualTarget
+        }
+      : currentWorkspace);
+  }, []);
+
+  const queueInteractive3dSessionClose = useCallback((
+    session: Engine3dWorkspaceSessionState | undefined,
+    dragScheduler = interactive3dDragSchedulerRef.current
+  ) => {
+    if (!session) {
+      return;
+    }
+    interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        await dragScheduler?.updatePromise?.catch(() => undefined);
+        return closeEngine3dWorkspaceSession(session).then(() => undefined);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const runInteractive3dDragUpdate = useCallback((scheduler: Interactive3dDragSchedulerState) => {
+    if (
+      scheduler.updateInFlight ||
+      scheduler.ending ||
+      interactive3dDragSchedulerRef.current !== scheduler ||
+      !scheduler.latestTarget
+    ) {
+      return;
+    }
+
+    const target = scheduler.latestTarget;
+    // Consume the target as it is dispatched. A newer pointer move re-populates it (and re-arms
+    // pendingUpdate); if none arrives, endDrag must not re-send this already-delivered target.
+    scheduler.latestTarget = undefined;
+    scheduler.pendingUpdate = false;
+    scheduler.updateInFlight = true;
+    scheduler.lastSentAt = Date.now();
+    const updatePromise = interactive3dCommandQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        const latest = interactive3dWorkspaceRef.current;
+        if (!latest?.session || latest.openId !== scheduler.openId) {
+          return;
+        }
+        const session = await updateEngine3dWorkspaceDrag(scheduler.session, scheduler.atomId, target);
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        scheduler.session = session;
+        if (!scheduler.ending) {
+          updateInteractive3dWorkspaceSession(scheduler.openId, session);
+        }
+      })
+      .catch((error) => {
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        setInteractive3dWorkspace((latest) => latest?.openId === scheduler.openId
+          ? {
+              ...latest,
+              status: `Sidecar drag failed: ${String(error)}`
+            }
+          : latest);
+      })
+      .finally(() => {
+        scheduler.updateInFlight = false;
+        scheduler.updatePromise = undefined;
+        if (interactive3dDragSchedulerRef.current !== scheduler || scheduler.ending) {
+          return;
+        }
+        if (scheduler.pendingUpdate) {
+          scheduleInteractive3dDragUpdateRef.current(scheduler);
+        }
+      });
+    scheduler.updatePromise = updatePromise;
+  }, [updateInteractive3dWorkspaceSession]);
+
+  const scheduleInteractive3dDragUpdate = useCallback((scheduler: Interactive3dDragSchedulerState) => {
+    if (
+      scheduler.updateInFlight ||
+      scheduler.ending ||
+      scheduler.timer !== undefined ||
+      interactive3dDragSchedulerRef.current !== scheduler
+    ) {
+      return;
+    }
+    const elapsed = Date.now() - scheduler.lastSentAt;
+    const delay = Math.max(0, INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS - elapsed);
+    scheduler.timer = window.setTimeout(() => {
+      scheduler.timer = undefined;
+      runInteractive3dDragUpdate(scheduler);
+    }, delay);
+  }, [runInteractive3dDragUpdate]);
+
+  useEffect(() => {
+    scheduleInteractive3dDragUpdateRef.current = scheduleInteractive3dDragUpdate;
+  }, [scheduleInteractive3dDragUpdate]);
+
+  const pollInteractive3dSessionAfterOpen = useCallback((
+    openId: number,
+    startSession: Engine3dWorkspaceSessionState
+  ) => {
+    if (interactive3dPostOpenPollingComplete(startSession)) {
+      return;
+    }
+    const poll = (session: Engine3dWorkspaceSessionState, remaining: number): void => {
+      if (remaining <= 0 || interactive3dPostOpenPollingComplete(session)) {
+        return;
+      }
+      window.setTimeout(() => {
+        const current = interactive3dWorkspaceRef.current;
+        if (
+          current?.openId !== openId ||
+          current.session?.processSessionId !== session.processSessionId ||
+          interactive3dDragSchedulerRef.current?.openId === openId
+        ) {
+          return;
+        }
+        void pollEngine3dWorkspaceSessionState(session)
+          .then((nextSession) => {
+            if (interactive3dPostOpenSessionChanged(session, nextSession)) {
+              updateInteractive3dWorkspaceSession(openId, nextSession);
+            }
+            poll(nextSession, remaining - 1);
+          })
+          .catch(() => undefined);
+      }, INTERACTIVE_3D_POST_OPEN_POLL_MS);
+    };
+    poll(startSession, INTERACTIVE_3D_POST_OPEN_POLL_COUNT);
+  }, [updateInteractive3dWorkspaceSession]);
+
+  // Interactive 3D = Spin 3D overlay + a live sidecar tug session. Opening it ensures the
+  // spin overlay is up (which runs a REAL 3D conformer embed — fixing the old flat-2D start)
+  // and ARMS the tug attach; the attach effect below opens the sidecar session seeded from
+  // that conformer and streams eased coordinates back into the same overlay. There is no
+  // separate window or WebGL stage — the molecule the user manipulates IS the drawing.
+  const openInteractive3dWorkspace = useCallback(async () => {
+    const currentDocument = documentRef.current;
+    const selectedObjectIds = [
+      ...new Set([
+        ...currentDocument.selection.objectIds,
+        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+      ])
+    ];
+
+    if (selectedObjectIds.length === 0) {
+      setStatus("Select a structure before opening Interactive 3D");
+      return;
+    }
+    if (selectedObjectIds.length !== 1) {
+      setStatus("Select a single structure for Interactive 3D");
+      return;
+    }
+
+    const objectId = selectedObjectIds[0];
+    const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
+    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
+      setStatus("Interactive 3D needs an editable native molecule");
+      return;
+    }
+
+    const status = await readEngine3dSidecarStatus();
+    if (!status?.available) {
+      setStatus(
+        status
+          ? `Interactive 3D unavailable; sidecar not configured: ${status.bundledBinaryName}`
+          : "Interactive 3D unavailable; Tauri bridge not present"
+      );
+      return;
+    }
+
+    // Arm the tug attach for this molecule and bump the token so the attach effect fires for
+    // BOTH the fresh-embed path (spin3dState changes when the overlay mounts) and the reuse
+    // path (spin overlay already up — only the token changes). Then ensure the spin overlay
+    // is live: startSpin3d reuses a stored conformer or embeds a real one — never flat 2D.
+    interactive3dArmRef.current = { objectId };
+    setInteractive3dArmToken((token) => token + 1);
+    if (spin3dStateRef.current?.objectId !== objectId) {
+      await startSpin3d();
+    }
+  }, [selectedNativeMoleculePart, startSpin3d]);
+
+  useEffect(() => () => {
+    const closingDragScheduler = cancelInteractive3dDragScheduler();
+    queueInteractive3dSessionClose(interactive3dWorkspaceRef.current?.session, closingDragScheduler);
+  }, [cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
+
+  // Open a headless sidecar tug session for the armed molecule, seeded from the LIVE spin
+  // conformer (a real 3D embed, engine frame). The session is invisible; its coordinate
+  // stream flows back into spin3dState so the spin overlay renders the tug. Idempotent: once
+  // a session exists for the armed molecule it no-ops.
+  const attachInteractive3dTug = useCallback(async () => {
+    const arm = interactive3dArmRef.current;
+    const spin = spin3dStateRef.current;
+    if (!arm || !spin || spin.objectId !== arm.objectId) {
+      return;
+    }
+    const existing = interactive3dWorkspaceRef.current;
+    if (existing?.objectId === arm.objectId && (existing.session || existing.status === "attaching")) {
+      return; // already attaching/attached for this molecule
+    }
+    const molecule = findDocumentObject(documentRef.current, arm.objectId);
+    if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) {
+      return;
+    }
+    if (spin.coords3d.length < molecule.atoms.length * 3) {
+      return;
+    }
+
+    // atomId -> coords3d index map, and the seed coordinates from the live conformer.
+    const idByIndex: string[] = [];
+    const seedCoords: Record<string, Engine3DCoordinate> = {};
+    molecule.atoms.forEach((atom, index) => {
+      idByIndex[index] = atom.id;
+      seedCoords[atom.id] = {
+        x: spin.coords3d[index * 3],
+        y: spin.coords3d[index * 3 + 1],
+        z: spin.coords3d[index * 3 + 2]
+      };
+    });
+    interactive3dAtomIdByIndexRef.current = idByIndex;
+
+    const openId = interactive3dOpenSerialRef.current + 1;
+    interactive3dOpenSerialRef.current = openId;
+    const closingScheduler = cancelInteractive3dDragScheduler();
+    queueInteractive3dSessionClose(existing?.session, closingScheduler);
+
+    const status = await readEngine3dSidecarStatus();
+    setInteractive3dWorkspace({
+      openId,
+      objectId: arm.objectId,
+      source: status?.source ?? "unknown",
+      bridgeAvailable: true,
+      status: "attaching",
+      selectedAtomIds: [],
+      atoms: interactive3dAtomsForMolecule(molecule),
+      bonds: interactive3dBondsForMolecule(molecule)
+    });
+    try {
+      const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords });
+      const session = await openEngine3dWorkspaceSession({ input: sessionInput });
+      // Superseded (a newer attach) or torn down (spin ended / Esc / selection change) while we
+      // awaited startup: the workspace no longer carries our openId. Close the freshly opened
+      // session so its native child process is not orphaned in the Rust session map.
+      if (interactive3dWorkspaceRef.current?.openId !== openId) {
+        queueInteractive3dSessionClose(session, cancelInteractive3dDragScheduler());
+        return;
+      }
+      setInteractive3dWorkspace((current) => current?.openId === openId
+        ? { ...current, session, status: "tug-ready" }
+        : current);
+      pollInteractive3dSessionAfterOpen(openId, session);
+      setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel");
+    } catch (error) {
+      setInteractive3dWorkspace((current) => current?.openId === openId ? undefined : current);
+      setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
+    }
+  }, [cancelInteractive3dDragScheduler, pollInteractive3dSessionAfterOpen, queueInteractive3dSessionClose]);
+
+  // Fire the attach once the spin overlay is live for the armed molecule (covers both the
+  // async fresh-embed path — spin3dState becomes defined — and the reuse path — only the arm
+  // token changes). attachInteractive3dTug itself is idempotent.
+  useEffect(() => {
+    const arm = interactive3dArmRef.current;
+    if (arm && spin3dState?.objectId === arm.objectId) {
+      void attachInteractive3dTug();
+    }
+  }, [spin3dState, interactive3dArmToken, attachInteractive3dTug]);
+
+  // Spin overlay ended (flatten / cancel / Esc / selection change) → tear the tug session
+  // down. Flatten has already committed the tugged geometry via the overlay's coords3d, so
+  // there is nothing to persist here.
+  useEffect(() => {
+    if (spin3dState || !interactive3dWorkspaceRef.current) {
+      return;
+    }
+    interactive3dArmRef.current = undefined;
+    const session = interactive3dWorkspaceRef.current.session;
+    const closingScheduler = cancelInteractive3dDragScheduler();
+    setInteractive3dWorkspace(undefined);
+    queueInteractive3dSessionClose(session, closingScheduler);
+  }, [spin3dState, cancelInteractive3dDragScheduler, queueInteractive3dSessionClose]);
+
+  // Stream sidecar coordinates back into the spin overlay: rebuild the conformer's coords3d
+  // from the latest snapshot (dragged atom pinned to its live cursor target for zero lag) and
+  // hand it to applySpin. Placement/bond-render stay fixed so the molecule deforms in place
+  // rather than re-centering each frame; the overlay recomputes depth cues from the new coords.
+  const interactive3dSessionCoords = interactive3dWorkspace?.session?.coords3dByAtomId;
+  const interactive3dDragVisualTarget = interactive3dWorkspace?.dragVisualTarget;
+  useEffect(() => {
+    if (!interactive3dSessionCoords) {
+      return;
+    }
+    const spin = spin3dStateRef.current;
+    const idByIndex = interactive3dAtomIdByIndexRef.current;
+    if (!spin || idByIndex.length * 3 !== spin.coords3d.length) {
+      return;
+    }
+    const next = new Float64Array(spin.coords3d.length);
+    let changed = false;
+    for (let index = 0; index < idByIndex.length; index += 1) {
+      const atomId = idByIndex[index];
+      const pinned = interactive3dDragVisualTarget?.atomId === atomId
+        ? interactive3dDragVisualTarget.target
+        : undefined;
+      const coord = pinned ?? interactive3dSessionCoords[atomId];
+      if (coord) {
+        next[index * 3] = coord.x;
+        next[index * 3 + 1] = coord.y;
+        next[index * 3 + 2] = coord.z;
+        if (coord.x !== spin.coords3d[index * 3] ||
+            coord.y !== spin.coords3d[index * 3 + 1] ||
+            coord.z !== spin.coords3d[index * 3 + 2]) {
+          changed = true;
+        }
+      } else {
+        next[index * 3] = spin.coords3d[index * 3];
+        next[index * 3 + 1] = spin.coords3d[index * 3 + 1];
+        next[index * 3 + 2] = spin.coords3d[index * 3 + 2];
+      }
+    }
+    if (changed) {
+      applySpin({ ...spin, coords3d: next });
+    }
+  }, [interactive3dSessionCoords, interactive3dDragVisualTarget, applySpin]);
+
+  useEffect(() => {
+    if (!interactive3dWorkspace?.bridgeAvailable || interactive3dWorkspace.session) {
+      return undefined;
+    }
+    if (!interactive3dWorkspace.status.startsWith("Starting sidecar session")) {
+      return undefined;
+    }
+    const openId = interactive3dWorkspace.openId;
+    const timer = window.setTimeout(() => {
+      setInteractive3dWorkspace((current) => current?.openId === openId && !current.session
+        ? {
+            ...current,
+            status: "Sidecar session timed out. Close and reopen 3D Workspace."
+          }
+        : current);
+      setStatus("Interactive 3D sidecar session timed out");
+    }, 15_000);
+    return () => window.clearTimeout(timer);
+  }, [interactive3dWorkspace]);
+
+  const sendInteractive3dDragCommand = useCallback((
+    phase: "beginDrag" | "updateDrag" | "endDrag",
+    atomId: string,
+    target?: Engine3DCoordinate
+  ) => {
+    const current = interactive3dWorkspaceRef.current;
+    if (!current?.session) {
+      return;
+    }
+
+    if (phase === "beginDrag") {
+      cancelInteractive3dDragScheduler();
+      const generation = interactive3dDragGenerationRef.current + 1;
+      interactive3dDragGenerationRef.current = generation;
+      const scheduler: Interactive3dDragSchedulerState = {
+        generation,
+        openId: current.openId,
+        atomId,
+        session: current.session,
+        pendingUpdate: false,
+        updateInFlight: false,
+        ending: false,
+        lastSentAt: 0
+      };
+      interactive3dDragSchedulerRef.current = scheduler;
+      setInteractive3dWorkspace((workspace) => workspace?.openId === current.openId
+        ? {
+            ...workspace,
+            status: `beginDrag · ${atomId}`,
+            dragVisualTarget: undefined
+          }
+        : workspace);
+      interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (interactive3dDragSchedulerRef.current !== scheduler) {
+            return;
+          }
+          const session = await beginEngine3dWorkspaceDrag(scheduler.session, atomId);
+          if (interactive3dDragSchedulerRef.current !== scheduler) {
+            return;
+          }
+          scheduler.session = session;
+          updateInteractive3dWorkspaceSession(scheduler.openId, session);
+        })
+        .catch((error) => {
+          if (interactive3dDragSchedulerRef.current === scheduler) {
+            interactive3dDragSchedulerRef.current = undefined;
+          }
+          setInteractive3dWorkspace((latest) => latest?.openId === current.openId
+            ? {
+                ...latest,
+                status: `Sidecar drag failed: ${String(error)}`,
+                dragVisualTarget: undefined
+              }
+            : latest);
+        });
+      return;
+    }
+
+    const scheduler = interactive3dDragSchedulerRef.current;
+    if (!scheduler || scheduler.openId !== current.openId || scheduler.atomId !== atomId) {
+      return;
+    }
+
+    if (phase === "updateDrag") {
+      if (!target || scheduler.ending) {
+        return;
+      }
+      const latestTarget = { ...target };
+      scheduler.latestTarget = latestTarget;
+      scheduler.pendingUpdate = true;
+      setInteractive3dWorkspace((workspace) => workspace?.openId === scheduler.openId
+        ? {
+            ...workspace,
+            status: `${phase} · ${atomId} → ${latestTarget.x.toFixed(2)}, ${latestTarget.y.toFixed(2)}, ${latestTarget.z.toFixed(2)}`,
+            dragVisualTarget: {
+              generation: scheduler.generation,
+              atomId,
+              target: latestTarget
+            }
+          }
+        : workspace);
+      scheduleInteractive3dDragUpdate(scheduler);
+      return;
+    }
+
+    scheduler.ending = true;
+    if (scheduler.timer !== undefined) {
+      window.clearTimeout(scheduler.timer);
+      scheduler.timer = undefined;
+    }
+    setInteractive3dWorkspace((workspace) => workspace?.openId === scheduler.openId
+      ? {
+          ...workspace,
+          status: `endDrag · ${atomId}`
+        }
+      : workspace);
+    interactive3dCommandQueueRef.current = interactive3dCommandQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        await scheduler.updatePromise?.catch(() => undefined);
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        let session = scheduler.session;
+        if (scheduler.latestTarget) {
+          session = await updateEngine3dWorkspaceDrag(session, atomId, scheduler.latestTarget);
+          if (interactive3dDragSchedulerRef.current !== scheduler) {
+            return;
+          }
+          scheduler.session = session;
+        }
+        session = await endEngine3dWorkspaceDrag(session, atomId);
+        if (interactive3dDragSchedulerRef.current !== scheduler) {
+          return;
+        }
+        scheduler.session = session;
+        interactive3dDragSchedulerRef.current = undefined;
+        updateInteractive3dWorkspaceSession(scheduler.openId, session, { clearDragVisualTarget: true });
+      })
+      .catch((error) => {
+        if (interactive3dDragSchedulerRef.current === scheduler) {
+          interactive3dDragSchedulerRef.current = undefined;
+        }
+        setInteractive3dWorkspace((latest) => latest?.openId === current.openId
+          ? {
+              ...latest,
+              status: `Sidecar drag failed: ${String(error)}`,
+              dragVisualTarget: undefined
+            }
+          : latest);
+      });
+  }, [
+    cancelInteractive3dDragScheduler,
+    scheduleInteractive3dDragUpdate,
+    updateInteractive3dWorkspaceSession
+  ]);
+  // Keep the forward ref the spin pointer handlers call in sync with the latest dispatcher.
+  sendInteractive3dDragCommandRef.current = sendInteractive3dDragCommand;
 
   const selectAllCanvasObjects = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -5556,6 +6506,11 @@ export function MainWindow({
           return;
         }
 
+        if (tool.id === structureInteractive3dCommandId) {
+          void openInteractive3dWorkspace();
+          return;
+        }
+
         if (tool.id === structureCleanup3dCommandId) {
           cleanUpSelectedStructure3d();
           return;
@@ -5735,6 +6690,7 @@ export function MainWindow({
     layerActions,
     nativePalette,
     openExportDialog,
+    openInteractive3dWorkspace,
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
     pasteClipboard,
@@ -6513,6 +7469,10 @@ export function MainWindow({
   window.addEventListener("keydown", handleSpinEscape, { capture: true });
   return () => window.removeEventListener("keydown", handleSpinEscape, { capture: true });
   }, [cancelSpin3dSession]);
+
+  // Interactive 3D tug rides the Spin 3D overlay, so Esc is handled by the spin Esc handler
+  // above (cancelSpin3dSession) and the detach effect tears the sidecar session down when the
+  // overlay ends. No separate Esc listener is needed.
 
   useEffect(() => {
     if (!effectiveNativePalette) {
@@ -7336,13 +8296,15 @@ export function MainWindow({
     if (!model) return undefined;
     const coords3d = spin3dModelCoordsForMolecule(model, molecule);
     if (!coords3d) return undefined;
+    const { placement } = spinPlacementFor(molecule, coords3d, model.orientation);
     return {
       startOrientation: model.orientation,
       coords3d,
+      placement,
       atomIds: molecule.atoms.map((atom) => atom.id),
       engine: model.engine
     };
-  }, []);
+  }, [spinPlacementFor]);
 
   const projectedPlaneTiltFromDrag = useCallback((
     drag: ProjectedPlaneTiltDragState,
@@ -7389,7 +8351,9 @@ export function MainWindow({
       let document = drag.lastValidPreviewDocument ?? drag.startDocument;
       let changed = document !== drag.startDocument;
       try {
-        const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat));
+        const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat), {
+          placement: model.placement
+        });
         if (outcome.status === "committed" && outcome.document !== drag.startDocument) {
           drag.lastValidPreviewDocument = outcome.document;
           drag.lastValidOrientation = nextQuat;
@@ -7655,13 +8619,32 @@ export function MainWindow({
     // commit the last valid preview and attach lastValidOrientation (NOT the refused quat),
     // so the stored model never drifts away from the displayed depth/wedge/crossing state.
     if (drag.spin3dModel) {
-      const finalDocument = drag.lastValidPreviewDocument;
       const finalOrientation = drag.lastValidOrientation;
-      if (!result.changed || !finalDocument || !finalOrientation || finalDocument === drag.startDocument) {
+      if (
+        !result.changed ||
+        !finalOrientation ||
+        !drag.lastValidPreviewDocument ||
+        drag.lastValidPreviewDocument === drag.startDocument
+      ) {
         replacePresentDocument(drag.startDocument);
         return false;
       }
-      const modeled = attachSpin3dModelFromConformer(finalDocument, drag.objectId, {
+      // Preview frames flatten geometry-only for speed; the PERSISTED commit must re-flatten the
+      // final orientation through the stereo read-back guard so a rotation can't silently commit a
+      // different stereoisomer (the same protection the Spin 3D overlay commit applies).
+      const guarded = flattenSpunMolecule(
+        drag.startDocument,
+        drag.objectId,
+        drag.spin3dModel.coords3d,
+        quatToViewMatrix(finalOrientation),
+        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId) }
+      );
+      if (guarded.status !== "committed") {
+        replacePresentDocument(drag.startDocument);
+        setStatus(`3D rotation not applied: ${guarded.refusalReasons[0] ?? "stereochemistry would change"}`);
+        return false;
+      }
+      const modeled = attachSpin3dModelFromConformer(guarded.document, drag.objectId, {
         coords3d: drag.spin3dModel.coords3d,
         orientation: finalOrientation,
         engine: drag.spin3dModel.engine
@@ -7680,7 +8663,7 @@ export function MainWindow({
     const currentHistory = documentHistoryRef.current;
     installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, result.document));
     return true;
-  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout]);
+  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
   const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
@@ -7694,7 +8677,7 @@ export function MainWindow({
         return undefined;
       }
 
-      const nextDocument = object.type === "molecule" && isNativeMoleculeGraph(object)
+      let nextDocument = object.type === "molecule" && isNativeMoleculeGraph(object)
         ? input.target
           ? rotateNativeMoleculeParts(input.startDocument, input.target, zDegrees)
           : rotateDocumentObject(
@@ -7703,6 +8686,22 @@ export function MainWindow({
               manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees)
             )
         : rotateDocumentObject(input.startDocument, input.objectId, manualRotationDeltaDegrees(object.rotation, zDegrees));
+      if (!input.target && object.type === "molecule" && isNativeMoleculeGraph(object)) {
+        const model = validSpin3dModelFor(object);
+        const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
+        if (model && coords3d) {
+          const deltaDegrees = manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees);
+          const nextQuat = quatNormalize(quatMultiply(
+            quatFromAxisAngle(SPIN_AXIS_Z, -deltaDegrees * Math.PI / 180),
+            model.orientation
+          ));
+          nextDocument = attachSpin3dModelFromConformer(nextDocument, input.objectId, {
+            coords3d,
+            orientation: nextQuat,
+            engine: model.engine
+          });
+        }
+      }
       return { kind: "z", document: nextDocument, zDegrees };
     }
 
@@ -7735,6 +8734,47 @@ export function MainWindow({
 
     if (!isNativeMoleculeGraph(object)) {
       return undefined;
+    }
+
+    if (!input.target) {
+      const model = validSpin3dModelFor(object);
+      const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
+      if (model && coords3d) {
+        const xRad = degreesToRadians(xDegrees);
+        const yRad = degreesToRadians(yDegrees);
+        const { placement } = spinPlacementFor(object, coords3d, model.orientation);
+        const deltaQuat = quatMultiply(
+          quatFromAxisAngle(SPIN_AXIS_Y, yRad),
+          quatFromAxisAngle(SPIN_AXIS_X, xRad)
+        );
+        const nextQuat = quatNormalize(quatMultiply(deltaQuat, model.orientation));
+        let document = input.startDocument;
+        try {
+          // Numeric X/Y rotation persists a flattened projection, so it runs the same stereo
+          // read-back guard as the overlay/handle commits; a refused view leaves the document
+          // unchanged (input.startDocument) rather than committing altered stereochemistry.
+          const outcome = flattenSpunMolecule(input.startDocument, input.objectId, coords3d, quatToViewMatrix(nextQuat), {
+            placement,
+            ...spin3dFlattenStereoOptions(input.startDocument, input.objectId)
+          });
+          if (outcome.status === "committed") {
+            document = attachSpin3dModelFromConformer(outcome.document, input.objectId, {
+              coords3d,
+              orientation: nextQuat,
+              engine: model.engine
+            });
+          }
+        } catch {
+          document = input.startDocument;
+        }
+        return {
+          kind: "xy",
+          document,
+          tiltXRad: xRad,
+          tiltYRad: yRad,
+          clamped: false
+        };
+      }
     }
 
     const fragmentBounds = input.target ? nativeMoleculePartBounds(object, input.target) : undefined;
@@ -7778,7 +8818,7 @@ export function MainWindow({
       tiltYRad: result.tiltYRad,
       clamped: result.clamped
     };
-  }, []);
+  }, [spinPlacementFor, spin3dFlattenStereoOptions]);
 
   const handleRotationInputChange = useCallback((nextInput: RotationInputState) => {
     updateRotationInput(nextInput);
@@ -10468,8 +11508,14 @@ export function MainWindow({
     const targetLabel = selectedFragmentTarget
       ? "selected molecule fragment"
       : object.type === "molecule" ? "selected molecule" : "selected art object";
-    const homeXDegrees = rotationInputDraftDegrees(selectedFragmentTarget ? 0 : transform.tiltXDegrees ?? 0);
-    const homeYDegrees = rotationInputDraftDegrees(selectedFragmentTarget ? 0 : transform.tiltYDegrees ?? 0);
+    const modeledRotationEntry = !selectedFragmentTarget && object.type === "molecule"
+      ? (() => {
+          const model = validSpin3dModelFor(object);
+          return model !== undefined && spin3dModelCoordsForMolecule(model, object) !== undefined;
+        })()
+      : false;
+    const homeXDegrees = rotationInputDraftDegrees(modeledRotationEntry ? 0 : selectedFragmentTarget ? 0 : transform.tiltXDegrees ?? 0);
+    const homeYDegrees = rotationInputDraftDegrees(modeledRotationEntry ? 0 : selectedFragmentTarget ? 0 : transform.tiltYDegrees ?? 0);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
     updateObjectResizeInput(undefined);
@@ -11964,11 +13010,38 @@ export function MainWindow({
     ? spin3dState
     : undefined;
 
+  // The browser build has no native OS menu, so it renders the shared app-menu model in-viewport.
+  // On the Tauri desktop build the native menu owns this, so the in-window bar stays hidden.
+  const showAppMenuBar = !isDesktopRuntime();
+  const appMenuSections = useMemo(
+    () =>
+      buildAppMenuModel({
+        rulersVisible,
+        crosshairsVisible,
+        canUndo,
+        canRedo,
+        hasSelection: document.selection.objectIds.length > 0,
+        hasSelectedMolecule: selectedMolecule !== undefined,
+        toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry)
+      }),
+    [
+      rulersVisible,
+      crosshairsVisible,
+      canUndo,
+      canRedo,
+      document.selection.objectIds.length,
+      selectedMolecule,
+      visibleToolsetIds,
+      toolsetRegistry
+    ]
+  );
+
   return (
     <main
       className={[
         "app-shell",
         effectiveNativePalette ? "native-shell" : "web-shell",
+        showAppMenuBar ? "has-app-menu-bar" : "",
         showDevBrowserMenuBar ? "dev-browser-menu-shell" : ""
       ].filter(Boolean).join(" ")}
       aria-label="ChemDraft desktop workspace"
@@ -12006,6 +13079,8 @@ export function MainWindow({
           }}
         />
       ) : null}
+
+      {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
       {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {
@@ -12385,6 +13460,15 @@ export function MainWindow({
                     />
                   );
                 })() : null}
+                {spin3dGenerating && !activeSpin3dState &&
+                  activePage.objects.some((object) => object.id === spin3dGenerating.objectId) ? (
+                  <Spin3dGeneratingCue
+                    box={spin3dGenerating.box}
+                    atomCount={spin3dGenerating.atomCount}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                  />
+                ) : null}
                   </>
                   );
                 })()}
@@ -12506,7 +13590,13 @@ export function MainWindow({
             zIndex: 1000
           }}
         >
-          {status}
+          {interactive3dWorkspace
+            ? [
+                interactive3dWorkspace.status,
+                interactive3dWorkspace.energyLabel,
+                "Esc to close"
+              ].filter(Boolean).join(" · ")
+            : status}
         </div>
       </section>
       {objectContextMenu ? (
@@ -15365,10 +16455,13 @@ interface SpinBondRenderInfo {
   /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
    *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
   symmetric: boolean;
-  /** Atom indices bonded to either endpoint (excluding the endpoints): the secondary
-   *  line goes on the substituent-rich side — ring-interior for ring bonds — which is
-   *  the same neighbor-mass rule the 2D `defaultDoubleBondSide` uses. */
+  /** Atom indices bonded to either endpoint (excluding the endpoints): the fallback
+   *  substituent-rich side for NON-ring double bonds, matching `defaultDoubleBondSide`. */
   neighborIndices: number[];
+  /** Atom indices of the smallest ring the bond lies on, if any. A ring double bond's inner
+   *  line points toward this ring's PROJECTED centroid (true interior), overriding the
+   *  neighbor-mass rule which flips outward when exocyclic substituents dominate. */
+  ringAtomIndices?: number[];
 }
 
 interface Spin3dState {
@@ -15392,6 +16485,37 @@ interface Spin3dState {
   lastClient?: { x: number; y: number };
   /** Engine provenance recorded into the persisted 3D model on flatten (best-effort). */
   engine?: Spin3dEngineProvenance;
+}
+
+/**
+ * On-canvas "Generating 3D…" cue shown over a molecule while its FIRST conformer embed
+ * runs (the one-time ~1–2s cost a prefetch cache-hit otherwise hides). Positioned in the
+ * same page-coordinate frame the SpinOverlay uses (a % of the positioned canvas area), so
+ * it lands on the molecule at any zoom. Purely additive chrome — never touches the document
+ * or the conformer geometry. Its CSS fade-in is delayed so a fast cache-hit (~90ms, which
+ * unmounts this almost immediately) never flashes it.
+ */
+function Spin3dGeneratingCue({ box, atomCount, pageWidth, pageHeight }: {
+  box: { x: number; y: number; width: number; height: number };
+  atomCount: number;
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  const leftPct = pageWidth > 0 ? (centerX / pageWidth) * 100 : 50;
+  const topPct = pageHeight > 0 ? (centerY / pageHeight) * 100 : 50;
+  return (
+    <div
+      aria-hidden="true"
+      data-spin3d-generating="true"
+      className="spin3d-generating-cue"
+      style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+    >
+      <span className="spin3d-generating-cue__spinner" />
+      <span>Generating 3D… ({atomCount} atoms)</span>
+    </div>
+  );
 }
 
 /**
@@ -15427,6 +16551,43 @@ function SpinOverlay({
   // live overlay's stroke weighting is identical to the flattened result (no snap on
   // release). `undefined` = near-planar view ⇒ no depth cue, same as the commit.
   const depthWeights = bondDepthWeights(state.coords3d, state.bondPairs, quatToViewMatrix(state.quat));
+  // Per-labeled-atom depth weight, derived from the incident bonds' weights exactly as the
+  // committed 2D render does (packages/layout-engine averageDefinedDepthWeights over the SAME
+  // per-bond weights), so label depth-cueing matches on flatten — no re-shade on release.
+  const atomIncidentWeights: (number | undefined)[][] = projection.atoms.map(() => []);
+  state.bondPairs.forEach(([from, to], bondIndex) => {
+    const weight = depthWeights[bondIndex];
+    atomIncidentWeights[from]?.push(weight);
+    atomIncidentWeights[to]?.push(weight);
+  });
+  // Labeled atoms painted far → near so a nearer heteroatom's glyph sits over a farther one where
+  // the projection stacks them; halo and fill passes share this order. Each label resolves its
+  // per-atom Inspector style (font, color, halo color/width, anchor placement) exactly as the
+  // committed 2D render does, so styled labels look identical live and on flatten.
+  const spinLabels = projection.atoms
+    .flatMap((atom) => {
+      const label = state.atomLabels[atom.index];
+      if (!label) return [];
+      const labelStyle = state.atomLabelStyles[atom.index] ?? drawingStyle;
+      const layout = atomLabelLayout(label, labelStyle);
+      const sourceAtom = state.atoms[atom.index];
+      const anchorOffset = sourceAtom
+        ? atomLabelAnchorOffset(sourceAtom, label, labelStyle, layout)
+        : { x: 0, y: 0 };
+      const weight = averageDefinedDepthWeights(atomIncidentWeights[atom.index] ?? []);
+      return [{
+        atom,
+        label,
+        labelStyle,
+        anchorOffset,
+        weight,
+        scale: depthCuedLabelScale(weight),
+        runs: layout.runs,
+        haloColor: labelStyle.atomLabelBackgroundColor !== "transparent" ? labelStyle.atomLabelBackgroundColor : undefined,
+        haloWidth: atomLabelHaloWidthPx(labelStyle)
+      }];
+    })
+    .sort((a, b) => (a.weight ?? 0.5) - (b.weight ?? 0.5));
   return (
     <svg
       aria-hidden="true"
@@ -15438,6 +16599,13 @@ function SpinOverlay({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
     >
+      {/* Full-page transparent hit-catcher. An SVG root only hit-tests where it is PAINTED,
+          so without this a pointer-down on empty page area (away from a bond/atom) misses the
+          overlay entirely and falls through to the tool underneath — e.g. the active benzene
+          tool drops a new ring instead of the click flattening. A transparent-filled rect
+          counts as painted (fill is rgba 0, not `none`), so every in-page click reaches
+          handleSpinOverlayPointerDown, which routes inside-box → rotate, outside → flatten. */}
+      <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="transparent" />
       {projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
@@ -15485,20 +16653,28 @@ function SpinOverlay({
           ];
         }
         if (render.order === 2) {
-          // 2D convention: primary line on the bond axis, shorter secondary line a full
-          // gap toward the substituent-rich side (ring interior for ring bonds). The side
-          // is chosen per frame from the PROJECTED neighbor positions, so it tracks the
-          // molecule as it rotates — matching what the drawing will look like flattened.
-          // MAGNITUDE-weighted projection onto the bond normal (NOT a sign-sum) so this is
-          // the identical heuristic defaultDoubleBondSide uses on commit — otherwise the
-          // inner line could resolve to the opposite side and visibly jump on release.
-          // (The reference point along the bond axis is irrelevant: the axis is ⊥ to the
-          // normal, so the midpoint gives the same dot as each neighbor's own endpoint.)
+          // 2D convention: primary line on the bond axis, shorter secondary line a full gap to
+          // one side. The side is chosen per frame from PROJECTED positions so it tracks the
+          // rotation and matches the flattened drawing. For a RING bond the inner line points
+          // toward the projected ring CENTROID (true interior) — this is the fix for aromatic
+          // rings whose exocyclic substituents used to flip the neighbor-mass heuristic below
+          // and push the double bond outside. Non-ring doubles keep the substituent-rich rule,
+          // which is exactly what defaultDoubleBondSide falls back to on commit.
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           let score = 0;
-          for (const neighborIndex of render.neighborIndices) {
-            const p = projection.atoms[neighborIndex];
-            if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
+          if (render.ringAtomIndices && render.ringAtomIndices.length > 0) {
+            let cx = 0, cy = 0, n = 0;
+            for (const ringIndex of render.ringAtomIndices) {
+              const p = projection.atoms[ringIndex];
+              if (p) { cx += p.sx; cy += p.sy; n += 1; }
+            }
+            if (n > 0) score = (cx / n - mx) * nx + (cy / n - my) * ny;
+          }
+          if (score === 0) {
+            for (const neighborIndex of render.neighborIndices) {
+              const p = projection.atoms[neighborIndex];
+              if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
+            }
           }
           const dir = score >= 0 ? 1 : -1;
           const minimumVisible = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, length);
@@ -15520,57 +16696,44 @@ function SpinOverlay({
         }
         return line(ax, ay, bx, by, "p");
       })}
-      {projection.atoms.map((atom) => {
-        // Labeled atoms render their 2D label (same layout engine: runs, scripts,
-        // charge superscript, background box). Plain carbons draw nothing — exactly
-        // like the drawing. The label sits over the trimmed bond ends.
-        const label = state.atomLabels[atom.index];
-        if (!label) return null;
-        const labelStyle = state.atomLabelStyles[atom.index] ?? drawingStyle;
-        const layout = atomLabelLayout(label, labelStyle);
-        const sourceAtom = state.atoms[atom.index];
-        const anchorOffset = sourceAtom
-          ? atomLabelAnchorOffset(sourceAtom, label, labelStyle, layout)
-          : { x: 0, y: 0 };
-        const labelX = atom.sx + anchorOffset.x;
-        const labelY = atom.sy + anchorOffset.y;
-        return (
-          <g key={`label-${atom.index}`}>
-            {labelStyle.atomLabelBackgroundColor !== "transparent" ? (
-              <rect
-                x={labelX + layout.bounds.x}
-                y={labelY + layout.bounds.y}
-                width={layout.bounds.width}
-                height={layout.bounds.height}
-                fill={labelStyle.atomLabelBackgroundColor}
-              />
-            ) : null}
+      {/* Labels, painted far → near, depth-cued to match the bonds: far labels fade lighter and
+          shrink slightly, near labels stay dark and full-size. The knockout is a glyph-hugging
+          halo (paint-order stroke, painted UNDER the fill) instead of an opaque box, so bonds
+          behind a label vanish right at the letters; a nearer label's halo also clears a farther
+          one it overlaps. Per-atom Inspector styles feed the SAME halo: the per-atom background
+          color IS the halo stroke ("transparent" opts out), and the anchor honors per-atom
+          placement/offsets so the live overlay matches the flatten commit exactly. */}
+      {spinLabels.map(({ atom, label, labelStyle, anchorOffset, weight, scale, runs, haloColor, haloWidth }) => (
+        <g
+          key={`label-${atom.index}`}
+          data-atom-label={label}
+          transform={`translate(${atom.sx + anchorOffset.x} ${atom.sy + anchorOffset.y})${scale === 1 ? "" : ` scale(${scale})`}`}
+          fill={depthCuedLabelColor(labelStyle.atomLabelColor, weight)}
+          stroke={haloColor}
+          strokeWidth={haloColor === undefined ? undefined : haloWidth}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          paintOrder="stroke"
+          fontFamily={labelStyle.atomLabelFontFamily}
+          fontSize={labelStyle.atomLabelFontSizePx}
+          fontWeight={labelStyle.atomLabelFontWeight}
+          fontStyle={labelStyle.atomLabelFontStyle}
+          style={{ pointerEvents: "none", userSelect: "none" }}
+        >
+          {runs.map((run, runIndex) => (
             <text
-              x={labelX}
-              y={labelY}
-              fill={labelStyle.atomLabelColor}
-              fontFamily={labelStyle.atomLabelFontFamily}
-              fontSize={labelStyle.atomLabelFontSizePx}
-              fontWeight={labelStyle.atomLabelFontWeight}
-              fontStyle={labelStyle.atomLabelFontStyle}
-              style={{ pointerEvents: "none", userSelect: "none" }}
+              key={runIndex}
+              x={run.x}
+              y={run.y}
+              textAnchor={run.textAnchor}
+              dominantBaseline="central"
+              fontSize={atomLabelRunFontSize(run.script, labelStyle) ?? labelStyle.atomLabelFontSizePx}
             >
-              {layout.runs.map((run, runIndex) => (
-                <tspan
-                  key={runIndex}
-                  x={labelX + run.x}
-                  y={labelY + run.y}
-                  textAnchor={run.textAnchor}
-                  dominantBaseline="central"
-                  fontSize={atomLabelRunFontSize(run.script, labelStyle) ?? labelStyle.atomLabelFontSizePx}
-                >
-                  {run.text}
-                </tspan>
-              ))}
+              {run.text}
             </text>
-          </g>
-        );
-      })}
+          ))}
+        </g>
+      ))}
       <text
         x={pageWidth / 2}
         y={24}
@@ -17712,6 +18875,7 @@ function reactSvgAttributeName(name: string): string {
     "letter-spacing": "letterSpacing",
     "marker-end": "markerEnd",
     "marker-start": "markerStart",
+    "paint-order": "paintOrder",
     "pointer-events": "pointerEvents",
     "stop-color": "stopColor",
     "stop-opacity": "stopOpacity",

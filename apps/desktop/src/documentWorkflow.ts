@@ -87,6 +87,7 @@ import {
 } from "@chemdraft/cdx-compat";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
+import type { ScreenPlacement } from "./interaction/spinOverlay";
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlText,
   exportDocumentToSvg,
@@ -103,6 +104,7 @@ import {
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
+  ringInteriorDoubleBondSides,
   type LayoutPoint
 } from "@chemdraft/layout-engine";
 import {
@@ -10712,6 +10714,84 @@ function atomsCentroid(atoms: readonly { x: number; y: number }[]): { x: number;
 }
 
 /**
+ * Reads a 2D depiction's molfile and reports, per atom (index-aligned), whether it is a true
+ * stereocenter and its CIP descriptor. Injected (not imported) so this module stays independent of
+ * the chemistry engine and the reconcile logic is unit-testable with a fake reader.
+ */
+export type StereoPerceiver = (
+  molfile: string
+) => ReadonlyArray<{ isStereoCenter: boolean; descriptor: "R" | "S" | "unspecified" }>;
+
+/**
+ * Make a freshly flattened depiction READ BACK as the same stereochemistry it started with.
+ *
+ * The perspective encoder proves each wedge sound against its OWN geometric model, but that model
+ * can disagree with how a real CIP perceiver reads the squished 2D drawing of a dense fused cage
+ * (see the strychnine/fenchol class of failures). Here we ask the actual perceiver (injected) what
+ * the drawing says; wherever a center that was specified BEFORE the flatten now reads the wrong
+ * hand, we flip that center's own wedge↔hash — which inverts only that center's reading — and
+ * re-check. `ok:false` means no consistent set of flips reproduces every specified center (a
+ * genuinely un-encodable view); the caller then refuses, leaving the document untouched.
+ *
+ * `ok:true` is returned ONLY straight after a perception that confirmed every specified center, so
+ * the returned bonds are always validated-correct, never a hopeful guess.
+ */
+export function reconcileFlattenedStereo(
+  templateMolecule: MoleculeObject,
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  reference: ReadonlyMap<number, "R" | "S">,
+  perceive: StereoPerceiver
+): { ok: boolean; bonds: MoleculeBond[]; unresolved: number[] } {
+  const cloneBonds = (source: readonly MoleculeBond[]): MoleculeBond[] =>
+    source.map((bond) => ({ ...bond, display: bond.display ? { ...bond.display } : undefined }));
+  if (reference.size === 0) return { ok: true, bonds: cloneBonds(bonds), unresolved: [] };
+
+  const atomIdByIndex = atoms.map((atom) => atom.id);
+  const isWedge = (bond: MoleculeBond): boolean =>
+    bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed";
+  const signatureOf = (source: readonly MoleculeBond[]): string =>
+    source.map((bond) => (bond.display?.bondStyle === "wedge" ? "W" : bond.display?.bondStyle === "hashed" ? "H" : "-")).join("");
+  const perceiveOf = (source: readonly MoleculeBond[]) =>
+    perceive(moleculeToMolfileV2000({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }, { fromDocFrame: true }));
+
+  let current = cloneBonds(bonds);
+  const seen = new Set<string>();
+  const maxIterations = reference.size + 4;
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const signature = signatureOf(current);
+    if (seen.has(signature)) break; // revisited a configuration ⇒ cycling among wrong states, give up
+    seen.add(signature);
+
+    const perceived = perceiveOf(current);
+    const wrong: number[] = [];
+    for (const [index, want] of reference) {
+      const got = perceived[index];
+      if (!got || !got.isStereoCenter || got.descriptor !== want) wrong.push(index);
+    }
+    if (wrong.length === 0) return { ok: true, bonds: current, unresolved: [] }; // validated-correct
+
+    const next = cloneBonds(current);
+    const unfixable: number[] = [];
+    let flippedAny = false;
+    for (const index of wrong) {
+      const centerId = atomIdByIndex[index];
+      // The encoder writes each center's wedge narrow-end-at-center (fromAtomId === center).
+      const ownWedge = next.find((bond) => bond.fromAtomId === centerId && isWedge(bond));
+      if (!ownWedge?.display) {
+        unfixable.push(index); // defined by neighbours' wedges, no own wedge to flip
+        continue;
+      }
+      ownWedge.display.bondStyle = ownWedge.display.bondStyle === "wedge" ? "hashed" : "wedge";
+      flippedAny = true;
+    }
+    if (!flippedAny) return { ok: false, bonds: current, unresolved: unfixable.length > 0 ? unfixable : wrong };
+    current = next;
+  }
+  return { ok: false, bonds: current, unresolved: [...reference.keys()] };
+}
+
+/**
  * Commit a spun 3D conformer as a flattened 2D perspective depiction (Phase 5).
  *
  * `coords3d` is the spun conformer (math frame, y-up), indexed by the molecule's
@@ -10726,7 +10806,8 @@ export function flattenSpunMolecule(
   document: ChemDraftDocument,
   objectId: string,
   coords3d: ArrayLike<number>,
-  viewMatrix: ViewMatrix
+  viewMatrix: ViewMatrix,
+  options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } = {}
 ): FlattenSpunOutcome {
   let pageId: string | undefined;
   let molecule: MoleculeObject | undefined;
@@ -10762,7 +10843,10 @@ export function flattenSpunMolecule(
     ...molecule,
     atoms: molecule.atoms.map((atom) => ({ ...atom, y: -atom.y }))
   };
-  const result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, { objectId });
+  const result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, {
+    objectId,
+    stereoCenterAtomIds: options.stereoCenterAtomIds
+  });
   if (result.status !== "committed" || !result.mol2dProjected) {
     return {
       document,
@@ -10779,25 +10863,33 @@ export function flattenSpunMolecule(
     projected.atoms.map((atom) => [atom.id, { ...atom, y: -atom.y }] as const)
   );
 
-  // Rescale the projection to the molecule's existing median bond length and recenter
-  // on its centroid, so the flatten lands where the drawing already was.
+  // Rescale/recenter the projection to its intended visual placement. Older call sites
+  // keep the median-bond fallback; modeled Spin 3D paths pass a fixed ScreenPlacement
+  // so flatten exactly matches the live overlay contract.
   const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
   const bondPairs = molecule.bonds
     .map((bond) => [atomIndex.get(bond.fromAtomId), atomIndex.get(bond.toAtomId)] as const)
     .filter((pair): pair is readonly [number, number] => pair[0] !== undefined && pair[1] !== undefined);
   const projectedInOrder = molecule.atoms.map((atom) => projectedById.get(atom.id) ?? atom);
-  const medianOriginal = medianOf(pointBondLengths(molecule.atoms, bondPairs));
-  const medianProjected = medianOf(pointBondLengths(projectedInOrder, bondPairs));
-  const scale = medianProjected > 0 ? medianOriginal / medianProjected : 1;
   const projectedCentroid = atomsCentroid(projectedInOrder);
-  const originalCentroid = atomsCentroid(molecule.atoms);
+  const placement = options.placement;
+  const scale = placement
+    ? placement.scale
+    : (() => {
+        const medianOriginal = medianOf(pointBondLengths(molecule.atoms, bondPairs));
+        const medianProjected = medianOf(pointBondLengths(projectedInOrder, bondPairs));
+        return medianProjected > 0 ? medianOriginal / medianProjected : 1;
+      })();
+  const targetCenter = placement
+    ? { x: placement.centerX, y: placement.centerY }
+    : atomsCentroid(molecule.atoms);
 
   let nextAtoms: MoleculeAtom[] = molecule.atoms.map((atom) => {
     const p = projectedById.get(atom.id) ?? atom;
     return {
       ...atom,
-      x: originalCentroid.x + (p.x - projectedCentroid.x) * scale,
-      y: originalCentroid.y + (p.y - projectedCentroid.y) * scale
+      x: targetCenter.x + (p.x - projectedCentroid.x) * scale,
+      y: targetCenter.y + (p.y - projectedCentroid.y) * scale
     };
   });
   // Clamp into the page bounds (mirrors scaleParsedMolfileAtoms).
@@ -10874,10 +10966,41 @@ export function flattenSpunMolecule(
     else delete display.depthWeight;
     return Object.keys(display).length > 0 ? { ...bond, display } : { ...bond, display: undefined };
   });
+  // Read-back stereo guard: the encoder proved its wedges sound against its own geometric model,
+  // but that model can mis-read the squished projection of a dense fused cage. Ask the real CIP
+  // perceiver (injected) what the drawing actually says and flip any center that reads the wrong
+  // hand; if the depiction can't be made to read back as the original stereochemistry, refuse the
+  // view (document untouched) instead of silently committing a different stereoisomer.
+  let committedBonds = nextBonds;
+  if (options.perceiveStereo) {
+    const perceive = options.perceiveStereo;
+    const referenceStereo = perceive(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+    const reference = new Map<number, "R" | "S">();
+    molecule.atoms.forEach((_, index) => {
+      const entry = referenceStereo[index];
+      if (entry?.isStereoCenter && (entry.descriptor === "R" || entry.descriptor === "S")) {
+        reference.set(index, entry.descriptor);
+      }
+    });
+    const reconciled = reconcileFlattenedStereo(molecule, nextAtoms, nextBonds, reference, perceive);
+    if (!reconciled.ok) {
+      return {
+        document,
+        status: "refused",
+        warnings: result.warnings,
+        refusalReasons: [
+          `flatten would change stereochemistry at ${reconciled.unresolved.length} center(s); re-orient and try again`
+        ],
+        stereoCenters: result.stereoCenters
+      };
+    }
+    committedBonds = reconciled.bonds;
+  }
+
   const stagedMolecule: MoleculeObject = {
     ...molecule,
     atoms: nextAtoms,
-    bonds: nextBonds,
+    bonds: committedBonds,
     ...geometry
   };
   const structure = moleculeToMolfileV2000(stagedMolecule, { fromDocFrame: true });
@@ -10888,7 +11011,7 @@ export function flattenSpunMolecule(
       objectId,
       changes: {
         atoms: nextAtoms,
-        bonds: nextBonds,
+        bonds: committedBonds,
         x: geometry.x,
         y: geometry.y,
         width: geometry.width,
@@ -12349,7 +12472,29 @@ function nativeBondDisplayObject(
   return bondStyle ? { display: { bondStyle } } : {};
 }
 
+// Per-molecule cache of the ring-interior side map (molecule objects are immutable, so a new
+// object is produced on every edit). Avoids recomputing ring perception for each bond when
+// defaultDoubleBondSide is called inside a bond .map.
+const ringInteriorSideCache = new WeakMap<MoleculeObject, Map<string, NativeDoubleBondSide>>();
+
+function ringInteriorSideForBond(molecule: MoleculeObject, bondId: string): NativeDoubleBondSide | undefined {
+  let sides = ringInteriorSideCache.get(molecule);
+  if (!sides) {
+    sides = ringInteriorDoubleBondSides(molecule);
+    ringInteriorSideCache.set(molecule, sides);
+  }
+  return sides.get(bondId);
+}
+
 function defaultDoubleBondSide(molecule: MoleculeObject, bond: MoleculeBond): NativeDoubleBondSide {
+  // A ring double bond's inner line belongs inside the ring — the authoritative default,
+  // matching what layout-engine renders. Only fall back to the substituent heuristic for
+  // non-ring (chain) double bonds.
+  const ringSide = ringInteriorSideForBond(molecule, bond.id);
+  if (ringSide) {
+    return ringSide;
+  }
+
   const geometry = bondGeometry(molecule, bond);
   if (!geometry) {
     return "left";
