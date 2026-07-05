@@ -242,6 +242,7 @@ import {
   validSpin3dModelFor,
   type ProjectedPlaneTiltDocumentResult,
   type Spin3dEngineProvenance,
+  type StereoPerceiver,
   flattenSpunMolecule,
   deleteSelectedDocumentObjects,
   splitNativeGraphicPathSegmentAtPoint,
@@ -2560,6 +2561,9 @@ export function MainWindow({
     // perception is best-effort — any failure falls back to the legacy "every drawn wedge is a
     // center" behavior.
     let stereoCenterAtomIds: ReadonlySet<string> | undefined;
+    // Injected into flatten so it can READ ITS OWN wedge output back with the real CIP engine and
+    // repair (or refuse) any center that would otherwise commit a different stereoisomer.
+    let perceiveStereo: StereoPerceiver | undefined;
     let flattenTarget: MoleculeObject | undefined;
     for (const page of documentRef.current.pages) {
       const found = page.objects.find(
@@ -2574,6 +2578,7 @@ export function MainWindow({
       try {
         const molfile = moleculeToMolfileV2000(flattenTarget, { fromDocFrame: true });
         const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
         if (perAtom.length === flattenTarget.atoms.length) {
           const ids = new Set<string>();
@@ -2593,7 +2598,8 @@ export function MainWindow({
     try {
       outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix, {
         placement: state.placement,
-        stereoCenterAtomIds
+        stereoCenterAtomIds,
+        perceiveStereo
       });
     } catch (error) {
       // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
