@@ -289,7 +289,12 @@ export function perceiveStereoCentersFromMolfile(molfile: string): OclAtomStereo
   for (let i = 0; i < mol.getAllAtoms(); i++) {
     const isStereoCenter = mol.isAtomStereoCenter(i);
     let descriptor: OclAtomStereo["descriptor"] = "unspecified";
-    if (isStereoCenter) {
+    // A cumulated-π axial center (allene/cumulene, pi ≥ 2) is a genuine stereocenter, but its hand
+    // is carried by the AXIS, not by a σ-bond wedge, so a flat 2D depiction cannot encode it. Leave
+    // its descriptor "unspecified" so the flatten read-back guard never treats it as a center it
+    // must preserve — which it never can, so the whole flatten would otherwise be refused. Such
+    // axes are surfaced separately by perceiveUnrepresentableStereo.
+    if (isStereoCenter && mol.getAtomPi(i) < 2) {
       const cip = mol.getAtomCIPParity(i);
       if (cip === OCL.Molecule.cAtomCIPParityRorM) descriptor = "R";
       else if (cip === OCL.Molecule.cAtomCIPParitySorP) descriptor = "S";

@@ -1073,7 +1073,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.4.14.38-fable";
+const CURRENT_BUILD_STAMP = "7.5.13.12-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1311,6 +1311,14 @@ export function MainWindow({
   // 3D spin (Phase 4): authoritative state in a ref (read by pointer handlers,
   // immune to stale closures) mirrored into React state so the overlay re-renders.
   const spin3dStateRef = useRef<Spin3dState | undefined>(undefined);
+  // Monotonic token identifying the current spin SESSION (a fresh embed / cancel / restart), so an
+  // async continuation can detect that the session it captured was replaced — even a cancel-and-
+  // restart on the same molecule. Bumped when the conformer identity changes, not on drags (a drag
+  // reuses the same coords3d reference), so it survives orientation changes within one session.
+  const spin3dSessionGenerationRef = useRef(0);
+  // Lazily-loaded OCL stereo perceiver, cached so the synchronous rotate-commit paths can run the
+  // read-back guard without an await (perception depends only on the 2D graph, not orientation).
+  const spin3dStereoPerceiverRef = useRef<StereoPerceiver | undefined>(undefined);
   const [spin3dState, setSpin3dStateRender] = useState<Spin3dState | undefined>(undefined);
   // A first-time embed is in flight (no overlay yet): drives the on-canvas "Generating 3D…"
   // cue so the irreducible one-time embed wait reads as intentional progress, not a hang.
@@ -1422,9 +1430,8 @@ export function MainWindow({
   // renders, so the molecule the user tugs IS the drawing.
   const interactive3dArmRef = useRef<{ objectId: string } | undefined>(undefined);
   const [interactive3dArmToken, setInteractive3dArmToken] = useState(0);
-  // Maps sidecar atomId → index into the spin coords3d Float64Array, for writing streamed
-  // coordinates back into the overlay geometry.
-  const interactive3dAtomIndexByIdRef = useRef<Map<string, number>>(new Map());
+  // Maps a coords3d index → sidecar atomId, for writing streamed coordinates back into the
+  // overlay geometry.
   const interactive3dAtomIdByIndexRef = useRef<string[]>([]);
   // Live tug gesture: which atom is grabbed and where it started, so screen motion maps to a
   // model-frame target for the dragged atom.
@@ -2500,6 +2507,13 @@ export function MainWindow({
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
   const applySpin = useCallback((next: Spin3dState | undefined) => {
+    // A new session's conformer is a distinct coords3d array; a drag/flag update reuses the same
+    // reference. Bump the session token only when that identity changes, so async continuations
+    // (e.g. stereo perception in commitSpinFlatten) can tell a replaced session from an orientation
+    // change within the same one.
+    if (next?.coords3d !== spin3dStateRef.current?.coords3d) {
+      spin3dSessionGenerationRef.current += 1;
+    }
     spin3dStateRef.current = next;
     setSpin3dStateRender(next);
     if (!next) {
@@ -2555,6 +2569,9 @@ export function MainWindow({
   const commitSpinFlatten = useCallback(async () => {
     const state = spin3dStateRef.current;
     if (!state) return;
+    // Capture the session token: the stereo perception below is async, and a cancel-and-restart on
+    // the same molecule during that await must not let this stale continuation commit old coords.
+    const sessionGeneration = spin3dSessionGenerationRef.current;
     // Perceive which atoms are ACTUAL stereocenters so graphic wedge/hash bonds on non-chiral
     // atoms (a common "projects toward/away" depiction cue) are dropped on flatten instead of
     // being mistaken for specified stereo and refusing the whole commit. OCL is lazy-loaded and
@@ -2597,8 +2614,9 @@ export function MainWindow({
       } catch {
         /* best-effort: fall back to legacy behavior (treat every drawn wedge as a center) */
       }
-      // The async perception yielded the event loop; abort if the spin session ended or switched.
-      if (spin3dStateRef.current?.objectId !== state.objectId) return;
+      // The async perception yielded the event loop; abort if the spin session was replaced
+      // (ended, switched molecule, or cancelled-and-restarted) while we awaited OCL.
+      if (spin3dSessionGenerationRef.current !== sessionGeneration) return;
     }
     const viewMatrix = quatToViewMatrix(state.quat);
     let outcome: ReturnType<typeof flattenSpunMolecule>;
@@ -2665,6 +2683,53 @@ export function MainWindow({
       : "";
     setStatus(baseStatus + stereoNote);
   }, [applySpin, commitDocumentChange]);
+
+  // Preload the OCL stereo perceiver once so the synchronous rotate-commit paths can run the
+  // read-back guard. Perception depends only on the molecule graph, so a single load serves every
+  // orientation. Best-effort: on failure the rotate commits fall back to geometry-only flattening.
+  useEffect(() => {
+    let cancelled = false;
+    void import("@chemdraft/ocl-adapter")
+      .then((module) => {
+        if (!cancelled) spin3dStereoPerceiverRef.current = module.perceiveStereoCentersFromMolfile;
+      })
+      .catch(() => {
+        /* best-effort: rotate commits fall back to legacy geometry-only flatten */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Stereo read-back guard options for flattening a spun molecule — the SAME protection the Spin 3D
+  // overlay commit applies (commitSpinFlatten), but synchronous, so the whole-molecule rotate paths
+  // (drag handle + numeric X/Y) that also persist a flattened projection can't silently commit a
+  // different stereoisomer. Returns {} (legacy geometry-only flatten) when the perceiver has not
+  // loaded yet or the target isn't an editable native graph.
+  const spin3dFlattenStereoOptions = useCallback((
+    sourceDocument: ChemDraftDocument,
+    objectId: string
+  ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
+    const perceive = spin3dStereoPerceiverRef.current;
+    if (!perceive) return {};
+    const molecule = findDocumentObject(sourceDocument, objectId);
+    if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
+    try {
+      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      const perAtom = perceive(molfile);
+      let stereoCenterAtomIds: ReadonlySet<string> | undefined;
+      if (perAtom.length === molecule.atoms.length) {
+        const ids = new Set<string>();
+        molecule.atoms.forEach((atom, index) => {
+          if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
+        });
+        stereoCenterAtomIds = ids;
+      }
+      return { stereoCenterAtomIds, perceiveStereo: perceive };
+    } catch {
+      return {};
+    }
+  }, []);
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
   const spin3dRequestRef = useRef(0);
@@ -3440,6 +3505,9 @@ export function MainWindow({
     }
 
     const target = scheduler.latestTarget;
+    // Consume the target as it is dispatched. A newer pointer move re-populates it (and re-arms
+    // pendingUpdate); if none arrives, endDrag must not re-send this already-delivered target.
+    scheduler.latestTarget = undefined;
     scheduler.pendingUpdate = false;
     scheduler.updateInFlight = true;
     scheduler.lastSentAt = Date.now();
@@ -3618,13 +3686,11 @@ export function MainWindow({
       return;
     }
 
-    // atomId <-> coords3d index maps, and the seed coordinates from the live conformer.
+    // atomId -> coords3d index map, and the seed coordinates from the live conformer.
     const idByIndex: string[] = [];
-    const indexById = new Map<string, number>();
     const seedCoords: Record<string, Engine3DCoordinate> = {};
     molecule.atoms.forEach((atom, index) => {
       idByIndex[index] = atom.id;
-      indexById.set(atom.id, index);
       seedCoords[atom.id] = {
         x: spin.coords3d[index * 3],
         y: spin.coords3d[index * 3 + 1],
@@ -3632,7 +3698,6 @@ export function MainWindow({
       };
     });
     interactive3dAtomIdByIndexRef.current = idByIndex;
-    interactive3dAtomIndexByIdRef.current = indexById;
 
     const openId = interactive3dOpenSerialRef.current + 1;
     interactive3dOpenSerialRef.current = openId;
@@ -3653,6 +3718,13 @@ export function MainWindow({
     try {
       const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords });
       const session = await openEngine3dWorkspaceSession({ input: sessionInput });
+      // Superseded (a newer attach) or torn down (spin ended / Esc / selection change) while we
+      // awaited startup: the workspace no longer carries our openId. Close the freshly opened
+      // session so its native child process is not orphaned in the Rust session map.
+      if (interactive3dWorkspaceRef.current?.openId !== openId) {
+        queueInteractive3dSessionClose(session, cancelInteractive3dDragScheduler());
+        return;
+      }
       setInteractive3dWorkspace((current) => current?.openId === openId
         ? { ...current, session, status: "tug-ready" }
         : current);
@@ -7398,13 +7470,32 @@ export function MainWindow({
     // commit the last valid preview and attach lastValidOrientation (NOT the refused quat),
     // so the stored model never drifts away from the displayed depth/wedge/crossing state.
     if (drag.spin3dModel) {
-      const finalDocument = drag.lastValidPreviewDocument;
       const finalOrientation = drag.lastValidOrientation;
-      if (!result.changed || !finalDocument || !finalOrientation || finalDocument === drag.startDocument) {
+      if (
+        !result.changed ||
+        !finalOrientation ||
+        !drag.lastValidPreviewDocument ||
+        drag.lastValidPreviewDocument === drag.startDocument
+      ) {
         replacePresentDocument(drag.startDocument);
         return false;
       }
-      const modeled = attachSpin3dModelFromConformer(finalDocument, drag.objectId, {
+      // Preview frames flatten geometry-only for speed; the PERSISTED commit must re-flatten the
+      // final orientation through the stereo read-back guard so a rotation can't silently commit a
+      // different stereoisomer (the same protection the Spin 3D overlay commit applies).
+      const guarded = flattenSpunMolecule(
+        drag.startDocument,
+        drag.objectId,
+        drag.spin3dModel.coords3d,
+        quatToViewMatrix(finalOrientation),
+        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId) }
+      );
+      if (guarded.status !== "committed") {
+        replacePresentDocument(drag.startDocument);
+        setStatus(`3D rotation not applied: ${guarded.refusalReasons[0] ?? "stereochemistry would change"}`);
+        return false;
+      }
+      const modeled = attachSpin3dModelFromConformer(guarded.document, drag.objectId, {
         coords3d: drag.spin3dModel.coords3d,
         orientation: finalOrientation,
         engine: drag.spin3dModel.engine
@@ -7423,7 +7514,7 @@ export function MainWindow({
     const currentHistory = documentHistoryRef.current;
     installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, result.document));
     return true;
-  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout]);
+  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
   const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
@@ -7510,8 +7601,12 @@ export function MainWindow({
         const nextQuat = quatNormalize(quatMultiply(deltaQuat, model.orientation));
         let document = input.startDocument;
         try {
+          // Numeric X/Y rotation persists a flattened projection, so it runs the same stereo
+          // read-back guard as the overlay/handle commits; a refused view leaves the document
+          // unchanged (input.startDocument) rather than committing altered stereochemistry.
           const outcome = flattenSpunMolecule(input.startDocument, input.objectId, coords3d, quatToViewMatrix(nextQuat), {
-            placement
+            placement,
+            ...spin3dFlattenStereoOptions(input.startDocument, input.objectId)
           });
           if (outcome.status === "committed") {
             document = attachSpin3dModelFromConformer(outcome.document, input.objectId, {
@@ -7574,7 +7669,7 @@ export function MainWindow({
       tiltYRad: result.tiltYRad,
       clamped: result.clamped
     };
-  }, [spinPlacementFor]);
+  }, [spinPlacementFor, spin3dFlattenStereoOptions]);
 
   const handleRotationInputChange = useCallback((nextInput: RotationInputState) => {
     updateRotationInput(nextInput);

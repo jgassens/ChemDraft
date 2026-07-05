@@ -1107,9 +1107,29 @@ fn normalize_engine3d_protocol_lines(
 }
 
 fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf> {
-    env_override
-        .map(|path| PathBuf::from(path.trim()))
-        .filter(|path| path.is_file())
+    // Development / explicit override: an absolute path to a locally built sidecar wins.
+    if let Some(path) = env_override {
+        let candidate = PathBuf::from(path.trim());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // Packaged app: Tauri bundles the `externalBin` sidecar (target-triple suffix stripped) next to
+    // the main executable. Resolve it there so a normally launched bundle finds its sidecar instead
+    // of reporting Interactive 3D unavailable when the env override is unset.
+    let executable_dir = std::env::current_exe().ok()?;
+    let executable_dir = executable_dir.parent()?;
+    let sidecar_name = if cfg!(windows) {
+        "avogadro3d-sidecar.exe"
+    } else {
+        "avogadro3d-sidecar"
+    };
+    let bundled = executable_dir.join(sidecar_name);
+    if bundled.is_file() {
+        Some(bundled)
+    } else {
+        None
+    }
 }
 
 fn start_engine3d_sidecar_session_from_path(

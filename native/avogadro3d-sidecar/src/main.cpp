@@ -62,16 +62,6 @@ ForceFieldReport notRunForceFieldReport() {
       "Avogadro Core/Calc was not linked in this build."};
 }
 
-ForceFieldReport avogadroArmedForceFieldReport() {
-  return {
-      true,
-      true,
-      "UFF",
-      "armed",
-      std::numeric_limits<double>::quiet_NaN(),
-      ""};
-}
-
 std::string jsonNumber(double value) {
   if (!std::isfinite(value)) {
     return "null";
@@ -354,11 +344,6 @@ std::string requestId(const std::string& line) {
   return id.empty() ? "sidecar-request" : id;
 }
 
-std::string sessionId(const std::string& line, const std::string& fallback) {
-  const std::string id = jsonStringValue(line, "sessionId");
-  return id.empty() ? fallback : id;
-}
-
 std::string responsePrefix(const std::string& id, const std::string& session) {
   std::string prefix = "{\"protocolVersion\":" + std::to_string(kProtocolVersion) +
                        ",\"requestId\":\"" + id + "\"";
@@ -485,7 +470,10 @@ MolfileGeometry parseMolfileGeometry(
   int atomCount = 0;
   int bondCount = 0;
   for (std::size_t index = 0; index < lines.size(); ++index) {
-    if (lines[index].find("V2000") == std::string::npos && lines[index].find("V3000") == std::string::npos) {
+    // V2000 ONLY: the atom/bond blocks below are read as V2000 fixed columns. A V3000 counts line
+    // carries 0 in these columns (real counts live in "M  V30 COUNTS"), so matching it here would
+    // mis-read the file; createSession rejects V3000 up front, and this keeps the parser honest.
+    if (lines[index].find("V2000") == std::string::npos) {
       continue;
     }
     atomCount = intField(lines[index], 0, 3);
@@ -1072,16 +1060,6 @@ std::vector<bool> allAtomsMobileExcept(std::size_t atomCount, int frozenAtomInde
   return mobileAtoms;
 }
 
-std::vector<bool> allAtomsMobileExceptMany(std::size_t atomCount, const std::vector<int>& frozenAtomIndices) {
-  std::vector<bool> mobileAtoms(atomCount, true);
-  for (const int frozenAtomIndex : frozenAtomIndices) {
-    if (frozenAtomIndex >= 0 && static_cast<std::size_t>(frozenAtomIndex) < atomCount) {
-      mobileAtoms[static_cast<std::size_t>(frozenAtomIndex)] = false;
-    }
-  }
-  return mobileAtoms;
-}
-
 std::vector<bool> localDragMobileAtoms(
     std::size_t atomCount,
     const std::vector<Bond>& bonds,
@@ -1120,89 +1098,6 @@ std::vector<bool> localDragMobileAtoms(
     return includeDraggedAtom ? allAtomsMobile(atomCount) : allAtomsMobileExcept(atomCount, draggedIndex);
   }
   return mobileAtoms;
-}
-
-std::vector<int> dragAnchorAtomIndices(
-    const std::vector<Coordinate>& coordinates,
-    const std::vector<Bond>& bonds,
-    int draggedIndex) {
-  struct AnchorCandidate {
-    int index;
-    int graphDistance;
-    double spatialDistance;
-  };
-
-  if (draggedIndex < 0 || static_cast<std::size_t>(draggedIndex) >= coordinates.size()) {
-    return {};
-  }
-
-  const std::vector<int> graphDistance = graphDistances(coordinates.size(), bonds, draggedIndex);
-  const Coordinate& dragged = coordinates[static_cast<std::size_t>(draggedIndex)];
-  std::vector<AnchorCandidate> candidates;
-  candidates.reserve(coordinates.size());
-  for (std::size_t index = 0; index < coordinates.size(); ++index) {
-    if (static_cast<int>(index) == draggedIndex) {
-      continue;
-    }
-    const int distance = index < graphDistance.size() ? graphDistance[index] : std::numeric_limits<int>::max();
-    if (distance == std::numeric_limits<int>::max()) {
-      continue;
-    }
-    candidates.push_back({
-        static_cast<int>(index),
-        distance,
-        coordinateDistance(dragged, coordinates[index])});
-  }
-
-  std::sort(candidates.begin(), candidates.end(), [](const AnchorCandidate& left, const AnchorCandidate& right) {
-    if (left.graphDistance != right.graphDistance) {
-      return left.graphDistance > right.graphDistance;
-    }
-    if (left.spatialDistance != right.spatialDistance) {
-      return left.spatialDistance > right.spatialDistance;
-    }
-    return left.index < right.index;
-  });
-
-  std::vector<int> anchors;
-  anchors.reserve(3);
-  for (const AnchorCandidate& candidate : candidates) {
-    if (anchors.size() >= 3) {
-      break;
-    }
-    anchors.push_back(candidate.index);
-  }
-  return anchors;
-}
-
-std::vector<int> dragFrozenAtomIndices(
-    int draggedIndex,
-    const std::vector<int>& anchorAtomIndices,
-    bool freezeDragged) {
-  std::vector<int> frozenAtomIndices;
-  frozenAtomIndices.reserve(anchorAtomIndices.size() + 1);
-  if (freezeDragged) {
-    frozenAtomIndices.push_back(draggedIndex);
-  }
-  frozenAtomIndices.insert(frozenAtomIndices.end(), anchorAtomIndices.begin(), anchorAtomIndices.end());
-  return frozenAtomIndices;
-}
-
-void moveDraggedAtomToPointerTarget(
-    std::vector<Coordinate>& coordinates,
-    const std::vector<Coordinate>& dragStartCoordinates,
-    int draggedIndex,
-    double totalDeltaX,
-    double totalDeltaY) {
-  if (draggedIndex < 0 ||
-      static_cast<std::size_t>(draggedIndex) >= coordinates.size() ||
-      dragStartCoordinates.size() != coordinates.size()) {
-    return;
-  }
-  const std::size_t index = static_cast<std::size_t>(draggedIndex);
-  coordinates[index].x = dragStartCoordinates[index].x + totalDeltaX;
-  coordinates[index].y = dragStartCoordinates[index].y + totalDeltaY;
-  coordinates[index].z = dragStartCoordinates[index].z;
 }
 
 void clampDraggedAtomToBondReach(
@@ -1889,13 +1784,29 @@ int runStdio() {
   while (std::getline(std::cin, line)) {
     const std::string id = requestId(line);
     const std::string type = jsonStringValue(line, "type");
-    const std::string session = sessionId(line, activeSession);
+    const std::string explicitSession = jsonStringValue(line, "sessionId");
+    const std::string session = explicitSession.empty() ? activeSession : explicitSession;
+
+    // Scoped requests must carry their own sessionId (matches the shared parseEngine3DMessageLine
+    // contract). Without this, a stale or malformed updateDrag with no sessionId would silently
+    // fall back to activeSession and mutate the live session instead of being rejected.
+    if (type != "createSession" && explicitSession.empty()) {
+      emitError(id, session, "Interactive 3D request is missing sessionId.");
+      continue;
+    }
 
     if (type == "createSession") {
+      const std::string molfile = jsonStringValue(line, "molfile");
+      // V2000 only: parseMolfileGeometry reads V2000 fixed columns. Reject V3000 up front rather
+      // than silently seeding default geometry (which would drop real connectivity/atom types).
+      if (jsonStringValue(line, "format") == "molfile-v3000") {
+        emitError(id, session, "Interactive 3D sidecar supports molfile-v2000 only; molfile-v3000 is not parsed.");
+        continue;
+      }
       graphSignature = jsonStringValue(line, "graphSignature");
       bondSignature = jsonStringValue(line, "bondSignature");
       atomIds = jsonStringArrayValue(line, "atomIdByMolfileIndex");
-      const MolfileGeometry geometry = parseMolfileGeometry(jsonStringValue(line, "molfile"), atomIds);
+      const MolfileGeometry geometry = parseMolfileGeometry(molfile, atomIds);
       const std::vector<Coordinate> initialCoordinates = coords3dByAtomIdValue(line, atomIds);
       coordinates = initialCoordinates.empty()
           ? (geometry.coordinates.empty() ? defaultCoordinatesForAtoms(atomIds) : geometry.coordinates)

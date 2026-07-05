@@ -324,7 +324,14 @@ export async function generate3DConformerProgressive(
     return best;
   };
 
-  let attempt = attemptEmbed(false);
+  // Best-of-K uses deterministic candidate seeds multiEmbedBaseSeed+0.. When the caller asked for
+  // multiple candidates but supplied no explicit seed, seed the baseline deterministically too, so
+  // the baseline is a candidate on equal footing and the winner is reproducible for a given
+  // molfile + candidate count (a `?? -1` baseline would draw a different, random conformer each run).
+  const embedCandidateCount = effectiveCandidateCount(options.embedCandidates ?? 1, input.originalAtomCount ?? 0);
+  const multiEmbedBaseSeed = options.seed ?? DEFAULT_MULTI_EMBED_SEED;
+  const baselineSeed = options.seed ?? (embedCandidateCount > 1 ? multiEmbedBaseSeed : -1);
+  let attempt = attemptEmbed(false, baselineSeed);
   if (attempt.kind === "parse-failed") {
     return failedEmbed(input, "RDKit could not parse the molfile", version);
   }
@@ -337,6 +344,21 @@ export async function generate3DConformerProgressive(
   if (embedFailed && (input.originalAtomCount ?? 0) >= RANDOM_COORDS_RETRY_MIN_ATOMS) {
     const retry = attemptEmbed(true);
     if (retry.kind === "payload" && retry.payload.embedOk) attempt = retry;
+  }
+  // Best-of-K rescue: if the baseline seed failed to embed, a later deterministic candidate seed
+  // may still succeed. Try them before giving up, so one unlucky baseline draw does not fail a
+  // request that asked for several candidates.
+  if (
+    (attempt.kind === "error" || (attempt.kind === "payload" && !attempt.payload.embedOk)) &&
+    embedCandidateCount > 1
+  ) {
+    for (let candidate = 1; candidate < embedCandidateCount; candidate += 1) {
+      const rescue = attemptEmbed(false, multiEmbedBaseSeed + candidate);
+      if (rescue.kind === "payload" && rescue.payload.embedOk) {
+        attempt = rescue;
+        break;
+      }
+    }
   }
   if (attempt.kind === "error") {
     return failedEmbed(input, `RDKit embed failed: ${attempt.message}`, version);

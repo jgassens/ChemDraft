@@ -138,16 +138,16 @@ export async function openEngine3dWorkspaceSession(
   };
   const started = await startEngine3dSidecarSession([engine3dProtocolLine(createRequest)]);
   let state = reduceEngine3dSidecarOutput(createInitialEngine3dWorkspaceSessionState(started.processSessionId), started);
-  if (engine3dWorkspaceSessionIsReady(state)) {
-    return state;
+  if (engine3dWorkspaceSessionSettled(state)) {
+    return finalizeEngine3dWorkspaceSession(state);
   }
 
   const deadline = Date.now() + Engine3dWorkspaceReadyTimeoutMs;
   while (Date.now() < deadline) {
     await sleepEngine3dWorkspaceReadyPoll();
     state = reduceEngine3dSidecarOutput(state, await pollEngine3dSidecarSession(state.processSessionId));
-    if (engine3dWorkspaceSessionIsReady(state)) {
-      return state;
+    if (engine3dWorkspaceSessionSettled(state)) {
+      return finalizeEngine3dWorkspaceSession(state);
     }
   }
 
@@ -359,7 +359,9 @@ function reduceEngine3dMessage(
     case "energyChanged":
       return {
         ...state,
-        energy: message.energy,
+        // Preserve the last known energy when a frame omits it (a non-finite UFF energy is emitted
+        // without the field) instead of clearing the readout, matching the ?? merge used elsewhere.
+        energy: message.energy ?? state.energy,
         forceField: message.forceField ?? state.forceField
       };
     case "selectionChanged":
@@ -381,6 +383,10 @@ function reduceEngine3dMessage(
       };
     case "heartbeat":
       return state;
+    default:
+      // Fail closed on an unknown/typoed event variant (protocol drift) rather than falling off
+      // the switch and returning undefined, which would corrupt the session state to undefined.
+      return state;
   }
 }
 
@@ -397,13 +403,38 @@ function createInitialEngine3dWorkspaceSessionState(processSessionId: string): E
   };
 }
 
-function engine3dWorkspaceSessionIsReady(state: Engine3dWorkspaceSessionState): boolean {
+/**
+ * The startup poll stops once the session has SETTLED: either it produced coordinates (usable) or
+ * it reached a terminal failure (error / closed / exited). "Settled" is not the same as "usable" —
+ * see finalizeEngine3dWorkspaceSession, which decides success vs. failure.
+ */
+function engine3dWorkspaceSessionSettled(state: Engine3dWorkspaceSessionState): boolean {
   return Boolean(
     state.coords3dByAtomId ||
     state.errors.length > 0 ||
     state.closed ||
     state.exited
   );
+}
+
+/**
+ * Resolve a settled session ONLY when it is actually usable — coordinates arrived and the native
+ * process is still alive. Otherwise throw, so the caller reports a clean startup failure instead of
+ * marking a dead/errored session tug-ready (a later drag would then no-op against a gone process).
+ */
+function finalizeEngine3dWorkspaceSession(
+  state: Engine3dWorkspaceSessionState
+): Engine3dWorkspaceSessionState {
+  if (state.coords3dByAtomId && state.errors.length === 0 && !state.exited && !state.closed) {
+    return state;
+  }
+  const detail = state.errors.at(-1)
+    ?? (state.exited
+      ? "the sidecar process exited before sending coordinates"
+      : state.closed
+        ? "the sidecar session closed before sending coordinates"
+        : "the sidecar produced no coordinates");
+  throw new Error(`Interactive 3D sidecar failed to start: ${detail}`);
 }
 
 function sleepEngine3dWorkspaceReadyPoll(): Promise<void> {

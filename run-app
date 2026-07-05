@@ -60,17 +60,18 @@ stop_existing_dev_apps() {
     return 0
   fi
 
+  # Only stop ChemDraft processes launched from THIS checkout's build output. A bare
+  # `pgrep -x chemdraft` (or unanchored path fragments like "target/debug/chemdraft") would also
+  # match sibling worktrees or other builds and kill them — potentially discarding unsaved work in
+  # another window. Anchoring every pattern to this checkout's target dir keeps the blast radius
+  # to the app this script actually rebuilds and relaunches.
+  local target_dir="$APP_DIR/src-tauri/target"
   local command pattern pid pids
   pids="$(
-    pgrep -x chemdraft 2>/dev/null || true
     for pattern in \
-      "target/debug/chemdraft" \
-      "target/release/chemdraft" \
-      "/ChemDraft.app/Contents/MacOS/chemdraft" \
-      "/ChemDraft Run App.app/Contents/MacOS/chemdraft" \
-      "/ChemDraft-working-draft.app/Contents/MacOS/chemdraft" \
-      "/ChemDraft-pre-scena-snapshot.app/Contents/MacOS/chemdraft" \
-      "/ChemDraft-release-snapshot.app/Contents/MacOS/chemdraft"; do
+      "$target_dir/debug/chemdraft" \
+      "$target_dir/release/chemdraft" \
+      "$target_dir/release/bundle/macos/"; do
       pgrep -f "$pattern" 2>/dev/null || true
     done
   )"

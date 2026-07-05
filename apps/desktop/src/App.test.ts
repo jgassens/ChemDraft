@@ -2027,7 +2027,9 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("threads Spin 3D placement through modeled typed rotation while preserving legacy X/Y tilt", () => {
-    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement\s*}\s*\)/s);
+    // The numeric-rotation flatten must run the stereo read-back guard (spin3dFlattenStereoOptions),
+    // not commit geometry-only, so a typed rotation can't silently persist a different stereoisomer.
+    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId\)\s*}\s*\)/s);
     expect(mainWindowSource).toContain("modeledRotationEntry ? 0");
     expect(mainWindowSource).toMatch(/quatFromAxisAngle\(SPIN_AXIS_Z,\s*-deltaDegrees \* Math\.PI \/ 180\)/);
     expect(mainWindowSource).toMatch(/attachSpin3dModelFromConformer\(nextDocument,\s*input\.objectId/s);
