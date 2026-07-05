@@ -10,6 +10,10 @@ import {
 } from "@chemdraft/chem-core";
 import {
   atomDegrees,
+  atomLabelHaloWidthPx,
+  averageDefinedDepthWeights,
+  depthCuedLabelColor,
+  depthCuedLabelScale,
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
@@ -887,7 +891,6 @@ describe("layout-engine page SVG planner", () => {
       [
         "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|162.4|157|162.4",
         "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|157.6|157|157.6",
-        "rect|mol_snapshot|molecule|native-atom-label-background|157.35|143.936",
         "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
         "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
         "text|text_snapshot|text|220|178|start",
@@ -1739,5 +1742,41 @@ describe("ring-interior double bond side", () => {
       ]
     });
     expect(ringInteriorDoubleBondSides(molecule).size).toBe(0);
+  });
+});
+
+describe("atom-label depth cueing", () => {
+  it("averages only the defined incident bond weights", () => {
+    expect(averageDefinedDepthWeights([0.2, 0.8])).toBeCloseTo(0.5);
+    expect(averageDefinedDepthWeights([undefined, 0.6])).toBeCloseTo(0.6);
+  });
+
+  it("returns undefined when no incident bond is depth-cued (planar view)", () => {
+    expect(averageDefinedDepthWeights([])).toBeUndefined();
+    expect(averageDefinedDepthWeights([undefined, undefined])).toBeUndefined();
+  });
+
+  it("fades a far label toward grey and keeps a near label at its base colour", () => {
+    // weight 0 = farthest → the fixed far-grey; weight 1 = nearest → unchanged base.
+    expect(depthCuedLabelColor("#111111", 0)).toBe("#7d7d7d");
+    expect(depthCuedLabelColor("#111111", 1)).toBe("#111111");
+    // A mid-depth label sits between the two, still darker than the bond fog (150).
+    const mid = depthCuedLabelColor("#111111", 0.5);
+    expect(mid).not.toBe("#111111");
+    expect(mid).not.toBe("#7d7d7d");
+  });
+
+  it("passes the colour through unchanged when there is no depth cue", () => {
+    expect(depthCuedLabelColor("#b3261e", undefined)).toBe("#b3261e");
+  });
+
+  it("scales labels gently by depth (0.92 far … 1.08 near), no scale when uncued", () => {
+    expect(depthCuedLabelScale(0)).toBeCloseTo(0.92);
+    expect(depthCuedLabelScale(1)).toBeCloseTo(1.08);
+    expect(depthCuedLabelScale(undefined)).toBe(1);
+  });
+
+  it("sizes the knockout halo from the label font size", () => {
+    expect(atomLabelHaloWidthPx({ atomLabelFontSizePx: 15 } as never)).toBeCloseTo(4.5);
   });
 });

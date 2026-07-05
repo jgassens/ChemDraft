@@ -74,11 +74,15 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
+  atomLabelHaloWidthPx,
   atomLabelLayout,
   atomLabelRunFontSize,
+  averageDefinedDepthWeights,
   bondRefKey,
   depthCuedBondColor,
   depthCuedBondStrokeWidth,
+  depthCuedLabelColor,
+  depthCuedLabelScale,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
   planPageSvgRender,
@@ -14694,6 +14698,26 @@ function SpinOverlay({
   // live overlay's stroke weighting is identical to the flattened result (no snap on
   // release). `undefined` = near-planar view ⇒ no depth cue, same as the commit.
   const depthWeights = bondDepthWeights(state.coords3d, state.bondPairs, quatToViewMatrix(state.quat));
+  // Per-labeled-atom depth weight, derived from the incident bonds' weights exactly as the
+  // committed 2D render does (packages/layout-engine averageDefinedDepthWeights over the SAME
+  // per-bond weights), so label depth-cueing matches on flatten — no re-shade on release.
+  const atomIncidentWeights: (number | undefined)[][] = projection.atoms.map(() => []);
+  state.bondPairs.forEach(([from, to], bondIndex) => {
+    const weight = depthWeights[bondIndex];
+    atomIncidentWeights[from]?.push(weight);
+    atomIncidentWeights[to]?.push(weight);
+  });
+  const labelHaloWidth = atomLabelHaloWidthPx(drawingStyle);
+  // Labeled atoms painted far → near so a nearer heteroatom's glyph sits over a farther one where
+  // the projection stacks them; halo and fill passes share this order.
+  const spinLabels = projection.atoms
+    .flatMap((atom) => {
+      const label = state.atomLabels[atom.index];
+      if (!label) return [];
+      const weight = averageDefinedDepthWeights(atomIncidentWeights[atom.index] ?? []);
+      return [{ atom, label, weight, scale: depthCuedLabelScale(weight), runs: atomLabelLayout(label, drawingStyle).runs }];
+    })
+    .sort((a, b) => (a.weight ?? 0.5) - (b.weight ?? 0.5));
   return (
     <svg
       aria-hidden="true"
@@ -14799,47 +14823,41 @@ function SpinOverlay({
         }
         return line(ax, ay, bx, by, "p");
       })}
-      {projection.atoms.map((atom) => {
-        // Labeled atoms render their 2D label (same layout engine: runs, scripts,
-        // charge superscript, background box). Plain carbons draw nothing — exactly
-        // like the drawing. The label sits over the trimmed bond ends.
-        const label = state.atomLabels[atom.index];
-        if (!label) return null;
-        const layout = atomLabelLayout(label, drawingStyle);
-        return (
-          <g key={`label-${atom.index}`}>
-            <rect
-              x={atom.sx + layout.bounds.x}
-              y={atom.sy + layout.bounds.y}
-              width={layout.bounds.width}
-              height={layout.bounds.height}
-              fill={drawingStyle.atomLabelBackgroundColor}
-            />
+      {/* Labels, painted far → near, depth-cued to match the bonds: far labels fade lighter and
+          shrink slightly, near labels stay dark and full-size. The paper-coloured knockout is a
+          glyph-hugging halo (paint-order stroke, painted UNDER the fill) instead of an opaque box,
+          so bonds behind a label vanish right at the letters; because it rides on the same element
+          and paints far → near, a nearer label's halo also clears a farther one it overlaps. */}
+      {spinLabels.map(({ atom, label, weight, scale, runs }) => (
+        <g
+          key={`label-${atom.index}`}
+          data-atom-label={label}
+          transform={`translate(${atom.sx} ${atom.sy})${scale === 1 ? "" : ` scale(${scale})`}`}
+          fill={depthCuedLabelColor(drawingStyle.atomLabelColor, weight)}
+          stroke={drawingStyle.atomLabelBackgroundColor}
+          strokeWidth={labelHaloWidth}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          paintOrder="stroke"
+          fontFamily={drawingStyle.atomLabelFontFamily}
+          fontSize={drawingStyle.atomLabelFontSizePx}
+          fontWeight={drawingStyle.atomLabelFontWeight}
+          style={{ pointerEvents: "none", userSelect: "none" }}
+        >
+          {runs.map((run, runIndex) => (
             <text
-              x={atom.sx}
-              y={atom.sy}
-              fill={drawingStyle.atomLabelColor}
-              fontFamily={drawingStyle.atomLabelFontFamily}
-              fontSize={drawingStyle.atomLabelFontSizePx}
-              fontWeight={drawingStyle.atomLabelFontWeight}
-              style={{ pointerEvents: "none", userSelect: "none" }}
+              key={runIndex}
+              x={run.x}
+              y={run.y}
+              textAnchor={run.textAnchor}
+              dominantBaseline="central"
+              fontSize={atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx}
             >
-              {layout.runs.map((run, runIndex) => (
-                <tspan
-                  key={runIndex}
-                  x={atom.sx + run.x}
-                  y={atom.sy + run.y}
-                  textAnchor={run.textAnchor}
-                  dominantBaseline="central"
-                  fontSize={atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx}
-                >
-                  {run.text}
-                </tspan>
-              ))}
+              {run.text}
             </text>
-          </g>
-        );
-      })}
+          ))}
+        </g>
+      ))}
       <text
         x={pageWidth / 2}
         y={24}
@@ -16784,6 +16802,7 @@ function reactSvgAttributeName(name: string): string {
     "letter-spacing": "letterSpacing",
     "marker-end": "markerEnd",
     "marker-start": "markerStart",
+    "paint-order": "paintOrder",
     "pointer-events": "pointerEvents",
     "stop-color": "stopColor",
     "stop-opacity": "stopOpacity",

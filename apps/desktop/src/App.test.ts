@@ -3749,14 +3749,16 @@ describe("ChemDraft desktop shell", () => {
         nativePalette: true
       })
     );
-    const labelBackgroundIndex = markup.indexOf("native-atom-label-background");
+    // The label's paper knockout is now a paint-order stroke on the label group (not a separate
+    // background rect); the selection highlight must still paint above that group so it reads.
+    const labelGroupIndex = markup.indexOf('class="native-atom-label"');
     const selectionBlobIndex = markup.indexOf("native-molecule-selection-blob");
     const labelTextIndex = markup.indexOf('data-atom-label="OH"');
 
     expect(markup).toContain('data-atom-label="OH"');
     expect(markup).toContain('data-selected-atom-id="atom_002"');
-    expect(labelBackgroundIndex).toBeGreaterThan(-1);
-    expect(selectionBlobIndex).toBeGreaterThan(labelBackgroundIndex);
+    expect(labelGroupIndex).toBeGreaterThan(-1);
+    expect(selectionBlobIndex).toBeGreaterThan(labelGroupIndex);
     expect(labelTextIndex).toBeGreaterThan(-1);
   });
 
@@ -3982,7 +3984,9 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain('data-structure="CO"');
-    expect(markup).toContain("native-atom-label-background");
+    // Heteroatom labels carry a glyph-hugging paper knockout (paint-order stroke) in place of the
+    // old opaque background rect.
+    expect(markup).toContain('paint-order="stroke"');
     expect(markup).toContain('font-family="Arial, Helvetica, sans-serif"');
     expect(markup).toContain('data-atom-label="OH"');
     expect(markup).toContain('data-atom-label-run="normal"');

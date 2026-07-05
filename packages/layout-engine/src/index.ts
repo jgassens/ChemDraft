@@ -1389,25 +1389,51 @@ function planNativeMoleculeGraphSvg(
       )
     ])
   );
-  const labelBackgroundFragments = atomLabels.map(({ atom, label }) => {
-    const box = atomLabelBox(atom, label, drawingStyle);
-    return elementFragment("rect", `label-background-${object.id}-${atom.id}`, {
-      class: "native-atom-label-background",
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
-      fill: drawingStyle.atomLabelBackgroundColor
-    });
-  });
-  const labelFragments = atomLabels.map(({ atom, label }) => {
+  // Per-labeled-atom depth weight, derived from the incident bonds' baked weights (the SAME
+  // derivation the live overlay runs), so labels depth-cue in lock-step with the bonds and the
+  // flatten-on-release commit changes nothing visually.
+  const incidentBondWeights = new Map<string, (number | undefined)[]>();
+  for (const bond of object.bonds) {
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      const list = incidentBondWeights.get(atomId) ?? [];
+      list.push(bond.display?.depthWeight);
+      incidentBondWeights.set(atomId, list);
+    }
+  }
+  const labelDepthWeightByAtomId = new Map<string, number | undefined>(
+    atomLabels.map(({ atom }) => [atom.id, averageDefinedDepthWeights(incidentBondWeights.get(atom.id) ?? [])])
+  );
+  // Paint labels far → near so a nearer heteroatom's glyph sits over a farther one where the 3D
+  // projection stacks them (the "ONH" pile-ups on a symmetric cage). Halos share the order.
+  const orderedAtomLabels = [...atomLabels].sort(
+    (a, b) =>
+      (labelDepthWeightByAtomId.get(a.atom.id) ?? 0.5) - (labelDepthWeightByAtomId.get(b.atom.id) ?? 0.5)
+  );
+  const labelHaloWidthPx = atomLabelHaloWidthPx(drawingStyle);
+  const labelTransform = (atom: MoleculeAtom): string => {
     const anchor = atomLabelAnchor(atom);
+    const scale = depthCuedLabelScale(labelDepthWeightByAtomId.get(atom.id));
+    const base = `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`;
+    return scale === 1 ? base : `${base} scale(${formatNumber(scale)})`;
+  };
+  // The label's paper-coloured knockout is a glyph-hugging halo — a paint-order stroke of the
+  // label itself (stroke painted UNDER the fill) — instead of an opaque bounding box, so it clears
+  // the bonds right around the letters without the oversized white rectangle. Because it rides on
+  // the same element as the fill and the labels paint far → near, a nearer heteroatom's halo also
+  // knocks a clean gap out of a farther label it overlaps (the "ONH" pile-ups on a symmetric cage).
+  const labelFragments = orderedAtomLabels.map(({ atom, label }) => {
+    const baseColor = nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle);
     return elementFragment("g", `label-${object.id}-${atom.id}`, {
       class: "native-atom-label",
       "data-atom-label": label,
-        transform: `translate(${formatNumber(anchor.x)} ${formatNumber(anchor.y)})`,
-        fill: nativeMoleculeAtomLabelColor(object, atom.id, drawingStyle),
+        transform: labelTransform(atom),
+        fill: depthCuedLabelColor(baseColor, labelDepthWeightByAtomId.get(atom.id)),
         "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+        stroke: drawingStyle.atomLabelBackgroundColor,
+        "stroke-width": formatNumber(labelHaloWidthPx),
+        "stroke-linejoin": "round",
+        "stroke-linecap": "round",
+        "paint-order": "stroke",
         "font-family": drawingStyle.atomLabelFontFamily,
       "font-size": drawingStyle.atomLabelFontSizePx,
       "font-weight": drawingStyle.atomLabelFontWeight
@@ -1459,7 +1485,6 @@ function planNativeMoleculeGraphSvg(
     ...fillUnderlayFragments,
     ...(effectSource ? [effectSource] : []),
     ...bondLayerFragments,
-    ...labelBackgroundFragments,
     ...labelFragments,
     ...svgSketchEffectFragmentsForEffects(effects, object.id, {
       className: "native-molecule-sketch",
@@ -3327,21 +3352,6 @@ function atomLabelBondClearance(
   return Math.max(drawingStyle.atomLabelBondClearancePx, Math.max(0, labelBoundaryDistance));
 }
 
-function atomLabelBox(
-  atom: MoleculeAtom,
-  label: string,
-  drawingStyle: NativeDrawingStyle
-): { x: number; y: number; width: number; height: number } {
-  const anchor = atomLabelAnchor(atom);
-  const { bounds } = atomLabelLayout(label, drawingStyle);
-  return {
-    x: anchor.x + bounds.x,
-    y: anchor.y + bounds.y,
-    width: bounds.width,
-    height: bounds.height
-  };
-}
-
 function atomLabelAnchor(atom: MoleculeAtom): LayoutPoint {
   return {
     x: atom.x + (atom.labelOffset?.x ?? 0),
@@ -3756,6 +3766,60 @@ export function depthCuedBondColor(baseColor: string, depthWeight: number | unde
     g: farGrey + (color.g - farGrey) * near,
     b: farGrey + (color.b - farGrey) * near
   });
+}
+
+/**
+ * A labeled atom's depth weight, derived as the mean of the depth weights of the bonds meeting
+ * it. Atoms don't carry a baked depth weight of their own, but the SAME derivation runs in the
+ * committed 2D render and the live spin overlay — both average the identical per-bond weights —
+ * so label depth-cueing matches on flatten (no snap on release). Returns undefined when no
+ * incident bond is depth-cued (a near-planar view), i.e. no cue, exactly like the bonds.
+ */
+export function averageDefinedDepthWeights(weights: readonly (number | undefined)[]): number | undefined {
+  let sum = 0;
+  let count = 0;
+  for (const weight of weights) {
+    if (weight !== undefined) {
+      sum += weight;
+      count += 1;
+    }
+  }
+  return count === 0 ? undefined : sum / count;
+}
+
+/**
+ * Perspective depth → atom-label fill: the label counterpart of {@link depthCuedBondColor}. Fades
+ * a far label toward light grey so it recedes with the bonds; near labels keep their base colour.
+ * The far grey is a little darker than the bond fog (125 vs 150) so small glyphs stay legible at
+ * the back. Shared by the committed render and the live overlay so releasing a spin re-shades
+ * nothing.
+ */
+export function depthCuedLabelColor(baseColor: string, depthWeight: number | undefined): string {
+  if (depthWeight === undefined) return baseColor;
+  const color = parseCssRgbColor(baseColor);
+  if (!color) return baseColor;
+  const near = clamp(depthWeight, 0, 1);
+  const farGrey = 125;
+  return rgbToHex({
+    r: farGrey + (color.r - farGrey) * near,
+    g: farGrey + (color.g - farGrey) * near,
+    b: farGrey + (color.b - farGrey) * near
+  });
+}
+
+/**
+ * Perspective depth → atom-label scale (0.92 far … 1.08 near). A gentle size cue echoing the bond
+ * stroke-width cue, applied as a transform scale about the label anchor so the run layout and the
+ * halo stay consistent. Kept subtle so the drawing doesn't visibly reflow while spinning.
+ */
+export function depthCuedLabelScale(depthWeight: number | undefined): number {
+  if (depthWeight === undefined) return 1;
+  return 0.92 + clamp(depthWeight, 0, 1) * 0.16;
+}
+
+/** Glyph-hugging halo stroke width — the paper-coloured knockout that replaces the label box. */
+export function atomLabelHaloWidthPx(drawingStyle: NativeDrawingStyle): number {
+  return drawingStyle.atomLabelFontSizePx * 0.3;
 }
 
 function parseCssRgbColor(value: string): { r: number; g: number; b: number } | undefined {
