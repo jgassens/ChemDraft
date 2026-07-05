@@ -396,12 +396,15 @@ import {
   createDesktopToolsetRegistry,
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
+  getToolbarsMenuModel,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry
 } from "./toolsets";
+import { MenuBar } from "./MenuBar";
+import { buildAppMenuModel } from "./appMenu";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
@@ -11663,9 +11666,37 @@ export function MainWindow({
     ? spin3dState
     : undefined;
 
+  // The browser build has no native OS menu, so it renders the shared app-menu model in-viewport.
+  // On the Tauri desktop build the native menu owns this, so the in-window bar stays hidden.
+  const showAppMenuBar = !isDesktopRuntime();
+  const appMenuSections = useMemo(
+    () =>
+      buildAppMenuModel({
+        rulersVisible,
+        crosshairsVisible,
+        canUndo,
+        canRedo,
+        hasSelection: document.selection.objectIds.length > 0,
+        hasSelectedMolecule: selectedMolecule !== undefined,
+        toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry)
+      }),
+    [
+      rulersVisible,
+      crosshairsVisible,
+      canUndo,
+      canRedo,
+      document.selection.objectIds.length,
+      selectedMolecule,
+      visibleToolsetIds,
+      toolsetRegistry
+    ]
+  );
+
   return (
     <main
-      className={["app-shell", effectiveNativePalette ? "native-shell" : "web-shell"].join(" ")}
+      className={["app-shell", effectiveNativePalette ? "native-shell" : "web-shell", showAppMenuBar ? "has-app-menu-bar" : ""]
+        .filter(Boolean)
+        .join(" ")}
       aria-label="ChemDraft desktop workspace"
       data-active-tool={activeToolState.activeCommandId}
       data-active-tool-kind={activeToolState.activeKind}
@@ -11681,6 +11712,8 @@ export function MainWindow({
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
       />
+
+      {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
       {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {

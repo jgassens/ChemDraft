@@ -314,7 +314,11 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("crosshair-axis-vertical");
     expect(markup).toContain("crosshair-tick-quarter");
     expect(markup).toContain("document-board without-rulers");
-    expect(markup).not.toContain("menu-bar");
+    // The browser build recreates the native menu in-viewport (no OS menu on the web).
+    expect(markup).toContain("menu-bar");
+    expect(markup).toContain('aria-label="Application menu"');
+    expect(markup).toContain('data-menu-section="file"');
+    expect(markup).toContain('data-menu-section="analyze"');
     expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("statusbar");
     expect(markup).not.toContain("EditorAdapter not connected");
@@ -323,27 +327,35 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("renders the main desktop document window without an in-window palette by default", () => {
-    const markup = renderToStaticMarkup(
-      createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
-    );
+    // Simulate the Tauri desktop runtime: the native OS menu owns the menus there, so the
+    // in-viewport menu bar (a browser-only fallback) must stay hidden.
+    const tauriGlobal = globalThis as { __TAURI_INTERNALS__?: unknown };
+    tauriGlobal.__TAURI_INTERNALS__ = {};
+    try {
+      const markup = renderToStaticMarkup(
+        createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: true })
+      );
 
-    expect(markup).toContain("app-shell");
-    expect(markup).toContain("native-shell");
-    expect(markup).toContain("canvas-region");
-    expect(markup).toContain("rulers-visible");
-    expect(markup).toContain("document-rulers-overlay");
-    expect(markup).toContain("ruler-top");
-    expect(markup).toContain('data-zoom-surface="document"');
-    expect(markup).toContain('data-can-undo="false"');
-    expect(markup).toContain('data-can-redo="false"');
-    expect(markup).toContain("crosshair-axis-horizontal");
-    expect(markup).toContain("crosshair-tick-half");
-    expect(markup).toContain("document-board without-rulers");
-    expect(markup).not.toContain("menu-bar");
-    expect(markup).not.toContain("command-bar");
-    expect(markup).not.toContain("tool-palette");
-    expect(markup).not.toContain("drawer-rail");
-    expect(markup).not.toContain("statusbar");
+      expect(markup).toContain("app-shell");
+      expect(markup).toContain("native-shell");
+      expect(markup).toContain("canvas-region");
+      expect(markup).toContain("rulers-visible");
+      expect(markup).toContain("document-rulers-overlay");
+      expect(markup).toContain("ruler-top");
+      expect(markup).toContain('data-zoom-surface="document"');
+      expect(markup).toContain('data-can-undo="false"');
+      expect(markup).toContain('data-can-redo="false"');
+      expect(markup).toContain("crosshair-axis-horizontal");
+      expect(markup).toContain("crosshair-tick-half");
+      expect(markup).toContain("document-board without-rulers");
+      expect(markup).not.toContain("menu-bar");
+      expect(markup).not.toContain("command-bar");
+      expect(markup).not.toContain("tool-palette");
+      expect(markup).not.toContain("drawer-rail");
+      expect(markup).not.toContain("statusbar");
+    } finally {
+      delete tauriGlobal.__TAURI_INTERNALS__;
+    }
   });
 
   it("keeps viewport zoom reserved for trackpad pinch and command-style wheel gestures", () => {
