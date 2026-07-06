@@ -33,7 +33,10 @@ import {
   moleculeStructureBondStrokeWidthCommandId,
   moleculeStructureBondStrokeWidthForCommand,
   moleculeStructureChainAngleCommandId,
-  moleculeStructureChainAngleForCommand
+  moleculeStructureChainAngleForCommand,
+  textFontFamilyCommandId,
+  textFontFamilyForCommand,
+  textStylePatchForCommand
 } from "./commands";
 
 describe("Molecule Inspector commands", () => {
@@ -121,6 +124,23 @@ describe("Molecule Inspector commands", () => {
     });
     expect(moleculeAtomLabelFontFaceForCommand("molecule.atomLabel.fontFace:0:italic")).toBeUndefined();
     expect(moleculeAtomLabelFontFaceForCommand("molecule.atomLabel.fontFace:700:oblique")).toBeUndefined();
+  });
+
+  it("applies any installed system font to text objects via a dynamic command id", () => {
+    const command = textFontFamilyCommandId("PT Sans Narrow");
+
+    expect(command).toBe("text.font.family:PT%20Sans%20Narrow");
+    expect(textFontFamilyForCommand(command)).toEqual({ fontFamily: "PT Sans Narrow" });
+    // Malformed or control-character payloads are rejected rather than corrupting the style.
+    expect(textFontFamilyForCommand("text.font.family:%00bad")).toBeUndefined();
+    expect(textFontFamilyForCommand("text.color.custom.ff0000")).toBeUndefined();
+
+    // The dynamic id resolves through the same text-style patch the toolbar dispatches.
+    expect(textStylePatchForCommand(command)).toEqual({ fontFamily: "PT Sans Narrow" });
+    // The four legacy presets keep applying their full font stacks unchanged.
+    expect(textStylePatchForCommand("text.font.times")).toEqual({
+      fontFamily: "Times New Roman, Times, serif"
+    });
   });
 
   it("keeps atom-label alignment, placement, and display toggles explicit", () => {

@@ -87,6 +87,7 @@ import {
   textAlignmentCommands,
   textColorCommands,
   textFontCommands,
+  textFontFamilyCommandId,
   textLetterSpacingCommands,
   textLineHeightCommands,
   textParagraphSpacingCommands,
@@ -542,6 +543,78 @@ function usePaletteTooltipState() {
   };
 }
 
+// Text objects can use any installed font. The four legacy presets stay pinned at the
+// top for quick access; the full system catalog (shared with the atom-label picker via
+// loadSystemFonts) follows. A non-preset family round-trips through a dynamic
+// `text.font.family:` command id, mirroring how custom text colors are applied.
+function TextFontSelect({
+  currentTextStyle,
+  labelClassName,
+  onInvoke
+}: {
+  currentTextStyle?: NativeTextStyle;
+  labelClassName: string;
+  onInvoke: (commandId: string) => void;
+}) {
+  const currentFontFamily = currentTextStyle?.fontFamily;
+  const presetCommandId = presetTextFontCommandId(currentFontFamily);
+  // A non-preset family is a specific installed font; keep it selectable even before the
+  // catalog resolves (and on the web build, where there is no system-font bridge).
+  const customFamily = presetCommandId ? undefined : currentFontFamily?.trim() || undefined;
+  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
+
+  useEffect(() => {
+    let disposed = false;
+    void loadSystemFonts(customFamily ? [customFamily] : []).then((fonts) => {
+      if (!disposed) {
+        setSystemFonts(fonts);
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [customFamily]);
+
+  const systemFontFamilies = systemFonts.length > 0
+    ? systemFonts
+    : customFamily
+      ? [{ family: customFamily, faces: defaultFontFaces() }]
+      : [];
+  const value = presetCommandId
+    ?? (customFamily ? textFontFamilyCommandId(customFamily) : textFontCommands[0].id);
+
+  return (
+    <label className={labelClassName}>
+      <span className="visually-hidden">Text font</span>
+      <select
+        className="toolbar-select toolbar-font-select"
+        value={value}
+        aria-label="Text font"
+        data-palette-control="true"
+        onPointerDown={(event) => event.stopPropagation()}
+        onChange={(event) => onInvoke(event.currentTarget.value)}
+      >
+        <optgroup label="Suggested">
+          {textFontCommands.map((command) => (
+            <option key={command.id} value={command.id}>
+              {fontLabel(command.title)}
+            </option>
+          ))}
+        </optgroup>
+        {systemFontFamilies.length > 0 ? (
+          <optgroup label="System fonts">
+            {systemFontFamilies.map((font) => (
+              <option key={font.family} value={textFontFamilyCommandId(font.family)}>
+                {fontFamilyLabel(font.family)}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+      </select>
+    </label>
+  );
+}
+
 function MainToolbarStyleControls({
   currentTextStyle,
   currentTextScript = "normal",
@@ -551,7 +624,6 @@ function MainToolbarStyleControls({
   currentTextScript?: TextSpan["script"];
   onInvoke: (commandId: string) => void;
 }) {
-  const fontCommandId = closestFontCommandId(currentTextStyle?.fontFamily);
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
   const textAlign = currentTextStyle?.textAlign ?? "left";
   const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
@@ -584,23 +656,11 @@ function MainToolbarStyleControls({
         </div>
       </div>
       <div className="toolbar-style-row toolbar-style-row-secondary">
-        <label className="toolbar-control-label toolbar-font-control">
-          <span className="visually-hidden">Text font</span>
-          <select
-            className="toolbar-select toolbar-font-select"
-            value={fontCommandId}
-            aria-label="Text font"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {textFontCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {fontLabel(command.title)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <TextFontSelect
+          currentTextStyle={currentTextStyle}
+          labelClassName="toolbar-control-label toolbar-font-control"
+          onInvoke={onInvoke}
+        />
         <label className="toolbar-control-label toolbar-size-control">
           <span className="visually-hidden">Text size</span>
           <select
@@ -673,7 +733,6 @@ function TextToolbarStyleControls({
   onColorPickerOpenChange?: (open: boolean) => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const fontCommandId = closestFontCommandId(currentTextStyle?.fontFamily);
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
   const textAlign = currentTextStyle?.textAlign ?? "left";
   const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
@@ -687,23 +746,11 @@ function TextToolbarStyleControls({
   return (
     <div className="text-toolbar-style-controls" data-toolbar-style-controls="text">
       <div className="text-toolbar-row text-toolbar-row-font">
-        <label className="toolbar-control-label text-toolbar-font-control">
-          <span className="visually-hidden">Text font</span>
-          <select
-            className="toolbar-select toolbar-font-select"
-            value={fontCommandId}
-            aria-label="Text font"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {textFontCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {fontLabel(command.title)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <TextFontSelect
+          currentTextStyle={currentTextStyle}
+          labelClassName="toolbar-control-label text-toolbar-font-control"
+          onInvoke={onInvoke}
+        />
         <label className="toolbar-control-label text-toolbar-size-control">
           <span className="visually-hidden">Text size</span>
           <select
@@ -3456,8 +3503,8 @@ function fontLabel(title: string): string {
   return title.replace(/^Font: /, "").replace("System Sans", "Arial");
 }
 
-function closestFontCommandId(fontFamily: string | undefined): string {
-  return textFontCommands.find((command) => fontFamily === command.fontFamily)?.id ?? textFontCommands[0].id;
+function presetTextFontCommandId(fontFamily: string | undefined): string | undefined {
+  return textFontCommands.find((command) => fontFamily === command.fontFamily)?.id;
 }
 
 function closestSizeCommandId(fontSizePx: number | undefined): string {

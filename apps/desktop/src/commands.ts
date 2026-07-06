@@ -483,6 +483,9 @@ export const customMoleculeAtomLabelFontFamilyCommandPrefix = "molecule.atomLabe
 export const customMoleculeAtomLabelFontFaceCommandPrefix = "molecule.atomLabel.fontFace:";
 export const customMoleculeAtomLabelFontSizeCommandPrefix = "molecule.atomLabel.fontSize:";
 export const customMoleculeAtomLabelColorCommandPrefix = "molecule.atomLabel.color:";
+// Text objects can be set to any installed system font family, carried as a dynamic
+// command id (family name percent-encoded) rather than one of the fixed presets.
+export const customTextFontFamilyCommandPrefix = "text.font.family:";
 export const customMoleculeAtomLabelBackgroundColorCommandPrefix = "molecule.atomLabel.backgroundColor:";
 export const customMoleculeAtomLabelPaddingCommandPrefix = "molecule.atomLabel.padding:";
 export const customMoleculeAtomLabelBondClearanceCommandPrefix = "molecule.atomLabel.bondClearance:";
@@ -693,6 +696,10 @@ export function moleculeStructureBondReactionIndicatorsCommandId(value: boolean)
 
 export function moleculeAtomLabelFontFamilyCommandId(fontFamily: string): string {
   return `${customMoleculeAtomLabelFontFamilyCommandPrefix}${encodeURIComponent(fontFamily.trim())}`;
+}
+
+export function textFontFamilyCommandId(fontFamily: string): string {
+  return `${customTextFontFamilyCommandPrefix}${encodeURIComponent(fontFamily.trim())}`;
 }
 
 export function moleculeAtomLabelFontFaceCommandId(weight: number, style: NativeTextFontStyle): string {
@@ -927,6 +934,26 @@ export function moleculeAtomLabelFontFamilyForCommand(commandId: string): { font
     return undefined;
   }
   return decoded.length > 0 && decoded.length <= 256 && !/[\u0000-\u001f\u007f]/.test(decoded)
+    ? { fontFamily: decoded }
+    : undefined;
+}
+
+export function textFontFamilyForCommand(commandId: string): { fontFamily: string } | undefined {
+  if (!commandId.startsWith(customTextFontFamilyCommandPrefix)) {
+    return undefined;
+  }
+  const encoded = commandId.slice(customTextFontFamilyCommandPrefix.length);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encoded).trim();
+  } catch {
+    return undefined;
+  }
+  const hasControlCharacter = [...decoded].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f;
+  });
+  return decoded.length > 0 && decoded.length <= 256 && !hasControlCharacter
     ? { fontFamily: decoded }
     : undefined;
 }
@@ -1418,6 +1445,11 @@ export function textStylePatchForCommand(
   const font = textFontCommands.find((command) => command.id === commandId);
   if (font) {
     return { fontFamily: font.fontFamily };
+  }
+
+  const customFont = textFontFamilyForCommand(commandId);
+  if (customFont) {
+    return { fontFamily: customFont.fontFamily };
   }
 
   const size = textSizeCommands.find((command) => command.id === commandId);
