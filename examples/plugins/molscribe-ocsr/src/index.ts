@@ -68,6 +68,7 @@ export const molscribeOcsrManifest: PluginManifest = {
       }
     ],
     toolbarButtons: [],
+    toolsets: [],
     inspectors: [],
     templates: [],
     importers: [],

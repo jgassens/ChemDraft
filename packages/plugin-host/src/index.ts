@@ -5,13 +5,17 @@ import type {
   PluginCommandHandler,
   NormalizedProposedDocumentPatch,
   PluginManifest,
+  PluginPanelAPI,
+  PluginPanelReport,
   PluginPermission,
+  PluginSelectionAPI,
+  PluginSelectionSnapshot,
   PluginStorage,
   ProposedDocumentPatch,
   ProposedPatchReceipt,
   ProposedPatchStatus
 } from "@chemdraft/plugin-api";
-import { ProposedDocumentPatchSchema, parsePluginManifest } from "@chemdraft/plugin-api";
+import { PluginPanelReportSchema, ProposedDocumentPatchSchema, parsePluginManifest } from "@chemdraft/plugin-api";
 
 export interface CommandDefinition {
   id: string;
@@ -124,6 +128,14 @@ export interface QueuedProposedPatch extends ProposedPatchReceipt {
 export interface PluginHostOptions {
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
+  getSelection?: () => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
+  /** Storage backend factory (defaults to per-plugin in-memory maps). The desktop app
+   *  supplies a disk-backed implementation; the host stays platform-free. */
+  createStorage?: (pluginId: string) => PluginStorage;
+  /** Renders a validated panel report; absent hosts simply expose no panels API. */
+  showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
+  /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
+  onProposedPatchesChanged?: () => void;
   now?: () => Date | string;
 }
 
@@ -133,13 +145,22 @@ export class PluginHost {
   private readonly plugins = new Map<string, RegisteredPlugin>();
   private readonly proposedPatches = new Map<string, QueuedProposedPatch>();
   private readonly storageScopes = new Map<string, Map<string, unknown>>();
+  private readonly storageByPluginId = new Map<string, PluginStorage>();
   private readonly getActiveDocument?: PluginHostOptions["getActiveDocument"];
+  private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
+  private readonly createStorage?: PluginHostOptions["createStorage"];
+  private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
+  private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
   private readonly now: () => Date | string;
   private nextProposalId = 1;
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
     this.getActiveDocument = options.getActiveDocument;
+    this.getSelectionSnapshot = options.getSelection;
+    this.createStorage = options.createStorage;
+    this.showPanelReport = options.showPanelReport;
+    this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -158,6 +179,16 @@ export class PluginHost {
     this.plugins.set(manifest.id, registered);
     this.registerManifestCommands(manifest, options.commandHandlers ?? {});
     return registered;
+  }
+
+  /** Removes a plugin and its registered commands. Storage scopes and proposal history
+   *  survive on purpose: they are user-facing records, not runtime wiring. */
+  unregisterPlugin(pluginId: string): void {
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    for (const command of plugin.manifest.contributes.commands) {
+      this.commands.unregister(command.id);
+    }
+    this.plugins.delete(pluginId);
   }
 
   async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
@@ -203,6 +234,28 @@ export class PluginHost {
   createCommandContext(pluginId: string): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const storage = this.hasPermission(pluginId, "plugin.storage") ? this.getStorage(pluginId) : undefined;
+    const selection: PluginSelectionAPI | undefined = this.hasPermission(pluginId, "selection.read")
+      ? {
+          getSelection: async () => {
+            this.requirePermission(pluginId, "selection.read");
+            return (await this.getSelectionSnapshot?.()) ?? { objectIds: [], molecules: [] };
+          }
+        }
+      : undefined;
+    const panels: PluginPanelAPI | undefined =
+      this.hasPermission(pluginId, "ui.panel") && this.showPanelReport
+        ? {
+            showReport: async (panelId, report) => {
+              this.requirePermission(pluginId, "ui.panel");
+              const declared = plugin.manifest.contributes.panels.some((panel) => panel.id === panelId);
+              if (!declared) {
+                throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${panelId}".`);
+              }
+              const parsedReport = PluginPanelReportSchema.parse(report);
+              await this.showPanelReport?.(pluginId, panelId, parsedReport);
+            }
+          }
+        : undefined;
 
     return {
       plugin: {
@@ -219,6 +272,8 @@ export class PluginHost {
         proposePatch: async (proposal) => this.proposePatch(pluginId, proposal)
       },
       storage,
+      selection,
+      panels,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
     };
@@ -237,6 +292,7 @@ export class PluginHost {
     };
 
     this.proposedPatches.set(queued.id, queued);
+    this.onProposedPatchesChanged?.();
     return queued;
   }
 
@@ -256,6 +312,7 @@ export class PluginHost {
 
     queued.status = "accepted";
     queued.resolvedAt = this.timestamp();
+    this.onProposedPatchesChanged?.();
     return updated;
   }
 
@@ -263,11 +320,21 @@ export class PluginHost {
     const queued = this.requirePendingProposal(proposalId);
     queued.status = "rejected";
     queued.resolvedAt = this.timestamp();
+    this.onProposedPatchesChanged?.();
     return queued;
   }
 
   getStorage(pluginId: string): PluginStorage {
     this.requirePermission(pluginId, "plugin.storage");
+    if (this.createStorage) {
+      let storage = this.storageByPluginId.get(pluginId);
+      if (!storage) {
+        storage = this.createStorage(pluginId);
+        this.storageByPluginId.set(pluginId, storage);
+      }
+      return storage;
+    }
+
     let scope = this.storageScopes.get(pluginId);
     if (!scope) {
       scope = new Map<string, unknown>();

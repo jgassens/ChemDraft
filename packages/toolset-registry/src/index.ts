@@ -44,6 +44,12 @@ export const ToolsetItemSchema = z
     title: NonEmptyStringSchema.optional(),
     icon: NonEmptyStringSchema.optional(),
     assetName: NonEmptyStringSchema.optional(),
+    /** Inline icon for contributions that cannot ship named assets (plugins). */
+    iconDataUri: z
+      .string()
+      .regex(/^data:image\/(png|svg\+xml);base64,/, "Toolset icons must be base64 png or svg+xml data URIs.")
+      .max(64_000)
+      .optional(),
     shortcutDisplay: z.string().optional(),
     disabledReason: z.string().optional(),
     category: z.string().optional(),
@@ -169,6 +175,11 @@ export interface ToolsetToggleCommandDefinition {
 
 export interface ApplyToolsetLayoutStateOptions {
   registeredCommandIds?: ReadonlySet<string> | readonly string[];
+  /** "throw" (default) rejects layout state referencing unknown commands; "prune" drops the
+   *  offending items/overrides instead — persisted customization must never crash startup
+   *  just because a plugin was removed — and reports each drop through onWarning. */
+  onUnknownCommand?: "throw" | "prune";
+  onWarning?: (warning: string) => void;
 }
 
 export class ToolsetRegistry<TIcon extends string = string, TAssetName extends string = string> {
@@ -243,10 +254,20 @@ export function applyToolsetLayoutState<TIcon extends string = string, TAssetNam
 ): ToolsetDefinition<TIcon, TAssetName>[] {
   const parsed = parseToolsetLayoutState<TIcon, TAssetName>(state);
   const commandIds = commandIdSetFromOptions(toolsets, options);
+  const onUnknownCommand = options.onUnknownCommand ?? "throw";
+  const warn = options.onWarning ?? (() => undefined);
   const baseToolsets = toolsets.map(cloneToolset);
-  const userToolsets = parsed.userToolsets.map(cloneToolset);
+  const userToolsets = parsed.userToolsets
+    .map(cloneToolset)
+    .map((toolset) => {
+      if (onUnknownCommand === "prune") {
+        return pruneUnknownToolsetCommands(toolset, commandIds, warn);
+      }
+      assertToolsetCommandsRegistered(toolset, commandIds);
+      return toolset;
+    })
+    .filter((toolset): toolset is ToolsetDefinition<TIcon, TAssetName> => toolset !== undefined);
   assertUniqueUserToolsets(baseToolsets, userToolsets);
-  userToolsets.forEach((toolset) => assertToolsetCommandsRegistered(toolset, commandIds));
 
   const toolsetsById = new Map<string, ToolsetDefinition<TIcon, TAssetName>>();
   [...baseToolsets, ...userToolsets].forEach((toolset) => {
@@ -259,11 +280,70 @@ export function applyToolsetLayoutState<TIcon extends string = string, TAssetNam
       continue;
     }
 
-    assertOverrideCommandsRegistered(override, commandIds);
-    toolsetsById.set(override.toolsetId, applyUserToolsetOverride(toolset, override));
+    let safeOverride = override;
+    if (onUnknownCommand === "prune") {
+      safeOverride = pruneUnknownOverrideCommands(override, commandIds, warn);
+    } else {
+      assertOverrideCommandsRegistered(override, commandIds);
+    }
+    toolsetsById.set(override.toolsetId, applyUserToolsetOverride(toolset, safeOverride));
   }
 
   return orderToolsets([...toolsetsById.values()], parsed.toolsetOrder);
+}
+
+function pruneUnknownToolsetCommands<TIcon extends string, TAssetName extends string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>,
+  registeredCommandIds: ReadonlySet<string>,
+  warn: (warning: string) => void
+): ToolsetDefinition<TIcon, TAssetName> | undefined {
+  const groups = toolset.groups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => {
+        if (registeredCommandIds.has(item.commandId)) {
+          return true;
+        }
+        warn(`User toolset "${toolset.id}" dropped unknown command "${item.commandId}".`);
+        return false;
+      })
+    }))
+    .filter((group) => group.items.length > 0);
+
+  if (groups.length === 0) {
+    warn(`User toolset "${toolset.id}" was dropped: none of its commands are registered.`);
+    return undefined;
+  }
+
+  return { ...toolset, groups };
+}
+
+function pruneUnknownOverrideCommands(
+  override: UserToolsetOverride,
+  registeredCommandIds: ReadonlySet<string>,
+  warn: (warning: string) => void
+): UserToolsetOverride {
+  const keep = (commandId: string, context: string): boolean => {
+    if (registeredCommandIds.has(commandId)) {
+      return true;
+    }
+    warn(`Toolbar customization for "${override.toolsetId}" dropped unknown command "${commandId}" (${context}).`);
+    return false;
+  };
+
+  return {
+    ...override,
+    hiddenCommandIds: override.hiddenCommandIds?.filter((commandId) => keep(commandId, "hidden command")),
+    itemOverrides: override.itemOverrides?.filter((itemOverride) => keep(itemOverride.commandId, "item override")),
+    itemOrder: override.itemOrder
+      ? Object.fromEntries(
+          Object.entries(override.itemOrder).map(([groupId, commandIdList]) => [
+            groupId,
+            commandIdList.filter((commandId) => keep(commandId, "item order"))
+          ])
+        )
+      : undefined
+  };
 }
 
 export function createToolsetToggleCommandId(toolsetId: string): string {

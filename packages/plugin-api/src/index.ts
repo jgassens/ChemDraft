@@ -81,6 +81,46 @@ export const PluginToolbarContributionSchema = z
   })
   .strict();
 
+/** Base64 data-URI icons keep plugin toolbars UI-framework-free and avoid file access. */
+const IconDataUriSchema = z
+  .string()
+  .regex(/^data:image\/(png|svg\+xml);base64,/, "Toolset icons must be base64 png or svg+xml data URIs.")
+  .max(64_000);
+
+export const PluginToolsetItemSchema = z
+  .object({
+    commandId: IdSchema,
+    title: NonEmptyStringSchema.optional(),
+    iconDataUri: IconDataUriSchema.optional(),
+    shortcutDisplay: z.string().optional()
+  })
+  .strict();
+
+export const PluginToolsetGroupSchema = z
+  .object({
+    id: IdSchema.optional(),
+    title: NonEmptyStringSchema.optional(),
+    items: z.array(PluginToolsetItemSchema).min(1)
+  })
+  .strict();
+
+export const PluginToolsetContributionSchema = z
+  .object({
+    id: IdSchema.regex(/^plugin\.[A-Za-z0-9][A-Za-z0-9._-]*$/, 'Plugin toolset ids must be namespaced under "plugin.".'),
+    title: NonEmptyStringSchema,
+    defaultVisible: z.boolean().default(false),
+    groups: z.array(PluginToolsetGroupSchema).min(1),
+    preferredWindowSize: z
+      .object({
+        width: z.number().positive(),
+        height: z.number().positive()
+      })
+      .strict()
+      .optional(),
+    requiredPermissions: OptionalPermissionListSchema
+  })
+  .strict();
+
 export const PluginPanelContributionSchema = z
   .object({
     id: IdSchema,
@@ -135,6 +175,7 @@ export const PluginContributionsSchema = z
     menus: z.array(PluginMenuContributionSchema).default([]),
     panels: z.array(PluginPanelContributionSchema).default([]),
     toolbarButtons: z.array(PluginToolbarContributionSchema).default([]),
+    toolsets: z.array(PluginToolsetContributionSchema).default([]),
     inspectors: z.array(PluginPanelContributionSchema).default([]),
     templates: z.array(PluginTemplateContributionSchema).default([]),
     importers: z.array(PluginFormatContributionSchema).default([]),
@@ -182,7 +223,81 @@ export const PluginManifestSchema = z
       "command id",
       ctx
     );
+
+    addDuplicateIssue(
+      manifest.contributes.toolsets.map((toolset) => toolset.id),
+      ["contributes", "toolsets"],
+      "toolset id",
+      ctx
+    );
+
+    // Toolbar buttons never own behavior: every toolset item must invoke a command this
+    // same plugin contributes, so permissions and provenance stay attached to the command.
+    const contributedCommandIds = new Set(manifest.contributes.commands.map((command) => command.id));
+    manifest.contributes.toolsets.forEach((toolset, toolsetIndex) => {
+      toolset.groups.forEach((group, groupIndex) => {
+        group.items.forEach((item, itemIndex) => {
+          if (!contributedCommandIds.has(item.commandId)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["contributes", "toolsets", toolsetIndex, "groups", groupIndex, "items", itemIndex, "commandId"],
+              message: `Toolset item references command "${item.commandId}" that this plugin does not contribute.`
+            });
+          }
+        });
+      });
+    });
   });
+
+/** Declarative panel content: plugins describe results as data (never framework
+ *  components), and the host renders them with core UI. Spectra travel as SVG strings
+ *  rendered in an <img> context so scripts can never execute. */
+export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("text"),
+      title: NonEmptyStringSchema.optional(),
+      body: z.string()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("keyValue"),
+      title: NonEmptyStringSchema.optional(),
+      rows: z.array(z.object({ label: z.string(), value: z.string() }).strict())
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("table"),
+      title: NonEmptyStringSchema.optional(),
+      columns: z.array(z.string()),
+      rows: z.array(z.array(z.string()))
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("svg"),
+      title: NonEmptyStringSchema.optional(),
+      svg: z.string().max(512_000),
+      caption: z.string().optional()
+    })
+    .strict()
+]);
+
+export const PluginPanelReportSchema = z
+  .object({
+    title: NonEmptyStringSchema,
+    sections: z.array(PluginPanelSectionSchema)
+  })
+  .strict();
+
+export type PluginPanelSection = z.infer<typeof PluginPanelSectionSchema>;
+export type PluginPanelReport = z.infer<typeof PluginPanelReportSchema>;
+
+export interface PluginPanelAPI {
+  showReport(panelId: string, report: PluginPanelReport): Promise<void>;
+}
 
 export const RecognitionWarningSchema = z
   .object({
@@ -230,6 +345,9 @@ export const RecognizedStructureResultSchema = z
 export type PluginCommandContribution = z.infer<typeof PluginCommandContributionSchema>;
 export type PluginMenuContribution = z.infer<typeof PluginMenuContributionSchema>;
 export type PluginToolbarContribution = z.infer<typeof PluginToolbarContributionSchema>;
+export type PluginToolsetItem = z.infer<typeof PluginToolsetItemSchema>;
+export type PluginToolsetGroup = z.infer<typeof PluginToolsetGroupSchema>;
+export type PluginToolsetContribution = z.infer<typeof PluginToolsetContributionSchema>;
 export type PluginPanelContribution = z.infer<typeof PluginPanelContributionSchema>;
 export type PluginTemplateContribution = z.infer<typeof PluginTemplateContributionSchema>;
 export type PluginFormatContribution = z.infer<typeof PluginFormatContributionSchema>;
@@ -265,6 +383,21 @@ export interface PluginDocumentAPI {
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
 }
 
+export interface PluginSelectedMolecule {
+  objectId: string;
+  structureFormat: string;
+  structure: string;
+}
+
+export interface PluginSelectionSnapshot {
+  objectIds: readonly string[];
+  molecules: readonly PluginSelectedMolecule[];
+}
+
+export interface PluginSelectionAPI {
+  getSelection(): Promise<PluginSelectionSnapshot>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -276,6 +409,10 @@ export interface PluginCommandContext {
   plugin: PluginRuntimeIdentity;
   documents: PluginDocumentAPI;
   storage?: PluginStorage;
+  /** Present only when the plugin declares "selection.read". */
+  selection?: PluginSelectionAPI;
+  /** Present only when the plugin declares "ui.panel" and the host renders panels. */
+  panels?: PluginPanelAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }
@@ -368,6 +505,10 @@ function collectContributionPermissions(contributions: PluginContributions): Arr
     })),
     ...contributions.toolbarButtons.map((contribution, index) => ({
       path: ["contributes", "toolbarButtons", index, "requiredPermissions"],
+      permissions: contribution.requiredPermissions
+    })),
+    ...contributions.toolsets.map((contribution, index) => ({
+      path: ["contributes", "toolsets", index, "requiredPermissions"],
       permissions: contribution.requiredPermissions
     })),
     ...contributions.inspectors.map((contribution, index) => ({
