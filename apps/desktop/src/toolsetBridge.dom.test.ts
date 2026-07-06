@@ -3,7 +3,7 @@
 import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MainWindow } from "./MainWindow";
+import { MainWindow, pruneNativeMoleculePart } from "./MainWindow";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import {
   applyMoleculeRingFillColor,
@@ -267,6 +267,41 @@ describe("toolset bridge interactions", () => {
     );
     expect(renderedRingFill?.getAttribute("fill")).toBe("#1f5fbf");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected ring fill");
+  });
+
+  it("keeps a valid ring selection during document pruning and drops stale parts", () => {
+    const initialDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Ring Prune"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const molecule = initialDocument.pages[0]?.objects[0];
+    if (molecule?.type !== "molecule") {
+      throw new Error("Expected benzene molecule.");
+    }
+    const ring = nativeMoleculeRings(molecule)[0];
+    if (!ring) {
+      throw new Error("Expected benzene ring.");
+    }
+    const ringPart = {
+      objectId: molecule.id,
+      kind: "ring" as const,
+      ringKey: ring.ringKey,
+      atomIds: ring.atomIds,
+      bondIds: ring.bondIds
+    };
+
+    // A structurally valid ring selection survives document pruning regardless of Rings-toolbar
+    // state. It used to be dropped whenever ringInspectorOpen read false — including on spurious
+    // async native window-state events — which is why a fresh ring selection never reached the
+    // toolbar in the packaged app.
+    expect(pruneNativeMoleculePart(initialDocument, ringPart)).toMatchObject({
+      kind: "ring",
+      ringKey: ring.ringKey
+    });
+    // A ring that no longer exists, or a part whose molecule is gone, is still dropped.
+    expect(pruneNativeMoleculePart(initialDocument, { ...ringPart, ringKey: "does|not|exist" })).toBeUndefined();
+    expect(pruneNativeMoleculePart(initialDocument, { ...ringPart, objectId: "missing" })).toBeUndefined();
   });
 
   it("keeps ring controls in the Rings toolbar instead of duplicating them in Art", async () => {

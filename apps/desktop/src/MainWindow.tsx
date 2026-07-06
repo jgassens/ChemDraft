@@ -1758,6 +1758,10 @@ export function MainWindow({
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
   const selectedNativeMoleculePartsRef = useRef<NativeMoleculeSelectionPart[]>([]);
+  // Latest visible-toolset set, read synchronously in toggleToolset to decide whether a toggle is
+  // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
+  // on a possibly-stale render closure.
+  const visibleToolsetIdsRef = useRef(visibleToolsetIds);
   const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
@@ -1789,6 +1793,7 @@ export function MainWindow({
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
   selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
   selectedNativeMoleculePartsRef.current = selectedNativeMoleculeParts;
+  visibleToolsetIdsRef.current = visibleToolsetIds;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -2336,7 +2341,7 @@ export function MainWindow({
         return current;
       }
       const pruned = current.flatMap((part) => {
-        const next = pruneNativeMoleculePart(document, part, ringInspectorOpen);
+        const next = pruneNativeMoleculePart(document, part);
         return next ? [next] : [];
       });
       // Preserve the identity when nothing dropped and each entry is unchanged, so an unrelated
@@ -2344,7 +2349,7 @@ export function MainWindow({
       const unchanged = pruned.length === current.length && pruned.every((part, index) => part === current[index]);
       return unchanged ? current : pruned;
     });
-  }, [document, ringInspectorOpen]);
+  }, [document]);
 
   useEffect(() => {
     setActiveTextEditObjectId((current) => {
@@ -2545,6 +2550,13 @@ export function MainWindow({
     };
   }, [zoomCanvasAtClientPoint, zoomCanvasFromWheelEvent]);
 
+  const clearNativeRingParts = useCallback(() => {
+    setSelectedNativeMoleculeParts((current) => {
+      const next = current.filter((part) => part.kind !== "ring" && part.kind !== "rings");
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
   const toggleToolset = useCallback(async (toolsetId: string) => {
     if (!toolsetRegistry.get(toolsetId)) {
       setStatus(`Unknown toolbar ${toolsetId}`);
@@ -2554,13 +2566,23 @@ export function MainWindow({
     if (effectiveNativePalette) {
       const nextState = await toggleToolsetWindow(toolsetId);
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
+      // Deliberately closing the Rings toolbar clears the ring selection. The pruning effect no
+      // longer does this off `ringInspectorOpen`, so a spurious async "closed" window event can
+      // no longer clobber a live selection — only an explicit toggle does.
+      if (toolsetId === ringInspectorToolsetId && !nextState.open) {
+        clearNativeRingParts();
+      }
       setStatus(nextState.open ? `${toolsetRegistry.require(toolsetId).title} open` : `${toolsetRegistry.require(toolsetId).title} closed`);
       return;
     }
 
+    const wasOpen = visibleToolsetIdsRef.current.has(toolsetId);
     setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
+    if (toolsetId === ringInspectorToolsetId && wasOpen) {
+      clearNativeRingParts();
+    }
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
-  }, [effectiveNativePalette, toolsetRegistry]);
+  }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -17941,10 +17963,15 @@ function nativeRingSelectionFromItems(
  * Shared by the post-mutation prune effect so every selected molecule stays consistent (Phase 7
  * keeps a part per molecule, so this runs once per entry instead of once for a single slot).
  */
-function pruneNativeMoleculePart(
+// Prunes a stored native part against the current document, dropping only parts whose
+// atoms/bonds/rings no longer exist. It deliberately does NOT clear ring parts based on
+// whether the Rings toolbar is open: that state is synced from asynchronous native
+// window events and can momentarily read "closed" while the toolbar is genuinely open,
+// which used to clobber a just-made ring selection on the next document change. Clearing a
+// ring selection when the toolbar is *deliberately* closed is handled in `toggleToolset`.
+export function pruneNativeMoleculePart(
   document: ChemDraftDocument,
-  part: NativeMoleculeSelectionPart,
-  ringInspectorOpen: boolean
+  part: NativeMoleculeSelectionPart
 ): NativeMoleculeSelectionPart | undefined {
   const object = findDocumentObject(document, part.objectId);
   if (object?.type !== "molecule") {
@@ -17957,10 +17984,6 @@ function pruneNativeMoleculePart(
 
   if (part.kind === "bond") {
     return object.bonds.some((bond) => bond.id === part.bondId) ? part : undefined;
-  }
-
-  if (!ringInspectorOpen && (part.kind === "ring" || part.kind === "rings")) {
-    return undefined;
   }
 
   if (part.kind === "ring") {
