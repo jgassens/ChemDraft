@@ -97,6 +97,7 @@ type NativeDrawingStyleImportPatch = Partial<
     | "bondStrokeWidthPx"
     | "bondBoldWidthPx"
     | "bondSpacingPercent"
+    | "bondSpacingMode"
     | "multipleBondGapPx"
     | "bondMarginWidthPx"
     | "bondHashSpacingPx"
@@ -185,6 +186,13 @@ function decodeChemDrawStyleProperties(bytes: Uint8Array): {
     "bondSpacingPercent",
     scaleValue(uint16Property(properties, cdxStylePropertyTags.bondSpacingPercentTenths), 0.1)
   );
+  if (patch.bondSpacingPercent !== undefined) {
+    // ChemDraw's BondSpacing (tag 0x0804) is a percent of bond length. Without also
+    // selecting percent mode, nativeMultipleBondGapPx keeps the "absolute" default and
+    // silently ignores the value we just decoded.
+    patch.bondSpacingMode = "percent";
+    decodedFields.push("bondSpacingMode");
+  }
   setNumber(
     "multipleBondGapPx",
     scaleValue(

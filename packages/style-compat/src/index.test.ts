@@ -68,6 +68,7 @@ describe("ChemDraw .cds style-sheet import", () => {
         "bondStrokeWidthPx",
         "bondBoldWidthPx",
         "bondSpacingPercent",
+        "bondSpacingMode",
         "multipleBondGapPx",
         "bondMarginWidthPx",
         "bondHashSpacingPx"
@@ -86,6 +87,7 @@ describe("ChemDraw .cds style-sheet import", () => {
         bondStrokeWidthPx: 2,
         bondBoldWidthPx: 4.8,
         bondSpacingPercent: 18,
+        bondSpacingMode: "percent",
         multipleBondGapPx: 4.8,
         bondMarginWidthPx: 6,
         bondHashSpacingPx: 9,

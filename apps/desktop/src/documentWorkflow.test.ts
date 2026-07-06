@@ -9669,6 +9669,31 @@ describe("PR #7 review regression fixes", () => {
     expect(next.bonds.map((bond) => bond.id)).toEqual(molecule.bonds.map((bond) => bond.id));
   });
 
+  it("reaches the target length on both selected bonds that share an atom", () => {
+    const base = createPhase4Document("Adjacent Selected Bond Target Length");
+    const molecule = benzeneRingMolecule();
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule }
+    ]);
+
+    // bond_001 (atom_001-atom_002) and bond_002 (atom_002-atom_003) share atom_002.
+    const scaled = applyMoleculeTargetBondLengthToBonds(
+      document,
+      [
+        { objectId: molecule.id, bondId: "bond_001" },
+        { objectId: molecule.id, bondId: "bond_002" }
+      ],
+      96
+    );
+    const next = moleculeById(scaled, molecule.id);
+
+    // Both bonds end at the requested length; the shared atom is not clobbered by the
+    // second bond overwriting the first.
+    expect(bondLength(next, "bond_001")).toBeCloseTo(96, 6);
+    expect(bondLength(next, "bond_002")).toBeCloseTo(96, 6);
+    expect(next.style.bondLengths).toEqual({ bond_001: 96, bond_002: 96 });
+  });
+
   it("clears molecule ring styles without changing base molecule style or chemistry", () => {
     const base = createPhase4Document("Ring Style Clear");
     const molecule = benzeneRingMolecule();

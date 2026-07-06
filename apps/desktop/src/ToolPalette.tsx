@@ -1067,12 +1067,21 @@ function MoleculeInspectorControls({
     disabled: boolean
   ) => {
     const effectiveValue = valueOrFallback(value, range.min);
-    const commitValue = (rawValue: string) => {
-      const nextValue = Number(rawValue);
-      if (!Number.isFinite(nextValue)) {
-        return;
+    const parseInputValue = (rawValue: string): number | undefined => {
+      const trimmed = rawValue.trim();
+      if (trimmed === "") {
+        // Empty (cleared, or an unedited "Mixed") field: Number("") is 0, which would
+        // silently stamp 0 onto every target. Treat blank as "leave unchanged".
+        return undefined;
       }
-      invokeOrCommit(commandId(nextValue));
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    const commitValue = (rawValue: string) => {
+      const nextValue = parseInputValue(rawValue);
+      if (nextValue !== undefined) {
+        invokeOrCommit(commandId(nextValue));
+      }
     };
     return (
       <label className="molecule-inspector-field molecule-inspector-number-field">
@@ -1088,7 +1097,12 @@ function MoleculeInspectorControls({
           aria-label={label}
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value)))}
+          onChange={(event) => {
+            const nextValue = parseInputValue(event.currentTarget.value);
+            if (nextValue !== undefined) {
+              previewCommand(commandId(nextValue));
+            }
+          }}
           onBlur={(event) => commitValue(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {

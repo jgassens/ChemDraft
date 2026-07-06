@@ -23,6 +23,7 @@ import type {
   ArtInspectorEffectValue,
   ArtInspectorMixedValue
 } from "./artInspectorModel";
+import { normalizeNativeAtomElementLabel } from "./documentWorkflow";
 
 export type MoleculeInspectorTabId = "structure" | "atom-labels" | "templates";
 export type MoleculeInspectorContext = "none" | "molecule" | "ring" | "bond" | "atom";
@@ -255,7 +256,7 @@ export function representativeMoleculeBondLengthPx(object: MoleculeObject): numb
       continue;
     }
     allDistances.push(distance);
-    if (normalizedElement(from.element) !== "H" && normalizedElement(to.element) !== "H") {
+    if (normalizeNativeAtomElementLabel(from.element) !== "H" && normalizeNativeAtomElementLabel(to.element) !== "H") {
       heavyDistances.push(distance);
     }
   }
@@ -893,10 +894,6 @@ function normalizeHexString(color: string | undefined): string | undefined {
     return `#${normalized.split("").map((character) => `${character}${character}`).join("")}`;
   }
   return /^[0-9a-f]{6}$/.test(normalized) ? `#${normalized}` : undefined;
-}
-
-function normalizedElement(value: string): string {
-  return value.trim().toUpperCase();
 }
 
 function median(values: readonly number[]): number | undefined {

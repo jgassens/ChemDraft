@@ -4339,6 +4339,12 @@ export function applyMoleculeTargetBondLengthToBonds(
       });
 
       const atomById = new Map(object.atoms.map((atom) => [atom.id, { ...atom }]));
+      // Atoms already repositioned by an earlier selected bond are anchored so a later
+      // selected bond that shares one can't drag it back off-target. The first bond to touch
+      // a pair recenters it around its midpoint; a bond that shares an already-placed atom
+      // pivots around it, moving only its free endpoint. Without this, two selected bonds
+      // sharing an atom clobber each other and neither ends at the requested length.
+      const anchoredAtomIds = new Set<string>();
       selectedBonds.forEach((bond) => {
         const from = atomById.get(bond.fromAtomId);
         const to = atomById.get(bond.toAtomId);
@@ -4352,18 +4358,41 @@ export function applyMoleculeTargetBondLengthToBonds(
           return;
         }
         const unit = { x: dx / length, y: dy / length };
-        const center = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
-        const half = targetBondLengthPx / 2;
-        atomById.set(from.id, {
-          ...from,
-          x: center.x - unit.x * half,
-          y: center.y - unit.y * half
-        });
-        atomById.set(to.id, {
-          ...to,
-          x: center.x + unit.x * half,
-          y: center.y + unit.y * half
-        });
+        const fromAnchored = anchoredAtomIds.has(from.id);
+        const toAnchored = anchoredAtomIds.has(to.id);
+        if (fromAnchored && toAnchored) {
+          // Both endpoints are already pinned by earlier selected bonds; moving either would
+          // break those. Leave the geometry as-is (the target is still recorded in style).
+          return;
+        }
+        if (fromAnchored) {
+          atomById.set(to.id, {
+            ...to,
+            x: from.x + unit.x * targetBondLengthPx,
+            y: from.y + unit.y * targetBondLengthPx
+          });
+        } else if (toAnchored) {
+          atomById.set(from.id, {
+            ...from,
+            x: to.x - unit.x * targetBondLengthPx,
+            y: to.y - unit.y * targetBondLengthPx
+          });
+        } else {
+          const center = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+          const half = targetBondLengthPx / 2;
+          atomById.set(from.id, {
+            ...from,
+            x: center.x - unit.x * half,
+            y: center.y - unit.y * half
+          });
+          atomById.set(to.id, {
+            ...to,
+            x: center.x + unit.x * half,
+            y: center.y + unit.y * half
+          });
+        }
+        anchoredAtomIds.add(from.id);
+        anchoredAtomIds.add(to.id);
       });
 
       const nextObject = normalizeNativeMoleculeGeometry({

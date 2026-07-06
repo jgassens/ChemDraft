@@ -208,6 +208,7 @@ import {
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
   toggleMoleculeInspectorCommandId,
+  moleculeStructureNumberRanges,
   type CommandSpec
 } from "./commands";
 import {
@@ -5800,8 +5801,16 @@ export function MainWindow({
 
     cancelMoleculeInspectorPreview();
     const { bondLengthPx, ...baseStylePatch } = moleculeInspectorTemplatePatchFromDrawingStyle(imported.drawing);
+    // A template's bond length rescales the selected molecule's geometry. Clamp it to the same
+    // range the Structure field enforces so a malformed / out-of-range template can't explode or
+    // collapse the drawing. (The interactive edit path clamps via numberCommandValue; this one
+    // fed the raw value straight into the scaler.)
+    const bondLengthRange = moleculeStructureNumberRanges.bondLengthPx;
+    const targetBondLengthPx = typeof bondLengthPx === "number" && Number.isFinite(bondLengthPx)
+      ? Math.min(bondLengthRange.max, Math.max(bondLengthRange.min, bondLengthPx))
+      : bondLengthPx;
     const startDocument = documentRef.current;
-    const resizedDocument = applyMoleculeTargetBondLength(startDocument, moleculeObjectIds, bondLengthPx);
+    const resizedDocument = applyMoleculeTargetBondLength(startDocument, moleculeObjectIds, targetBondLengthPx);
     const styledDocument = applyMoleculeBaseStylePatch(resizedDocument, moleculeObjectIds, baseStylePatch);
     const changed = commitDocumentChange(styledDocument);
     setActiveEditorObjectId(undefined);

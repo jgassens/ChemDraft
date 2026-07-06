@@ -16,6 +16,7 @@ import {
   objectGradientStopOffsetCommandId,
   moleculeInspectorTemplateExportCommandId,
   moleculeInspectorTemplateImportCommandId,
+  moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
 import { getToolsetCommandGroups } from "./toolsets";
@@ -507,6 +508,51 @@ describe("ToolPalette molecule inspector font controls", () => {
     expect([...familySelect?.options ?? []].map((option) => option.value)).toContain("Arial");
     expect(familySelect?.value).toBe("Unavailable Lab Font");
     expect([...faceSelect?.options ?? []].map((option) => option.value)).toContain("650:italic");
+  });
+
+  it("does not commit 0 when a numeric structure field is cleared to empty", async () => {
+    const onInvoke = vi.fn();
+    const model = createMoleculeInspectorModel(moleculeInspectorDocument(), {
+      selectedObjectIds: ["mol_font"]
+    });
+
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showMoleculeInspectorControls: true,
+        currentMoleculeInspector: model,
+        onInvoke
+      }));
+    });
+
+    // Ensure the Structure tab (which owns the numeric fields) is active.
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>("#molecule-inspector-tab-structure")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const bondLengthInput = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length"]');
+    if (!bondLengthInput) {
+      throw new Error("Expected the Target bond length field on the Structure tab.");
+    }
+    expect(bondLengthInput.disabled).toBe(false);
+
+    // Clearing the field and committing must leave the value untouched, not stamp 0.
+    act(() => {
+      bondLengthInput.value = "";
+      bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
+
+    // A real numeric edit still commits.
+    act(() => {
+      bondLengthInput.value = "20";
+      bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith(moleculeStructureBondLengthCommandId(20));
   });
 
   it("renders a Templates tab that routes import and export commands", async () => {
