@@ -71,6 +71,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
+import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
@@ -6313,12 +6314,22 @@ export function MainWindow({
     }
   }, [exportDialog]);
 
-  const registry = useMemo(() => {
-    const commandRegistry = new CommandRegistry();
+  const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
+    new Map()
+  );
+
+  // Core command handlers are rebuilt every render (they close over live state), but they
+  // now populate a plain Map instead of a fresh CommandRegistry. The registry instance
+  // itself is created once (below) and its handlers delegate to this ref, so plugin
+  // commands registered into the same registry survive re-renders (Phase 2 depends on this).
+  const coreCommandBindings = useMemo(() => {
+    const bindings = new Map<string, { spec: CommandSpec; run: () => Promise<void> }>();
     const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
-      commandRegistry.register(definition, async () => {
-        await handler?.();
-        return { ok: definition.enabled !== false, commandId: definition.id };
+      bindings.set(definition.id, {
+        spec: definition,
+        run: async () => {
+          await handler?.();
+        }
       });
     };
 
@@ -6721,7 +6732,7 @@ export function MainWindow({
       });
     });
 
-    return commandRegistry;
+    return bindings;
   }, [
     activeToolState,
     addChargeToHoveredNativeAtom,
@@ -6764,6 +6775,23 @@ export function MainWindow({
     toolCommandSpecs,
     toolsetRegistry
   ]);
+
+  coreCommandBindingsRef.current = coreCommandBindings;
+
+  // The registry and its core-command registrar are created exactly once. Handlers delegate
+  // to the live bindings ref, so plugin commands registered into the same stable instance in
+  // Phase 2 are never wiped when core bindings change. See createCoreCommandRegistrar.
+  const { registry, syncCoreCommands } = useMemo(() => {
+    const commandRegistry = new CommandRegistry();
+    return {
+      registry: commandRegistry,
+      syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
+    };
+  }, []);
+
+  useEffect(() => {
+    syncCoreCommands(coreCommandBindings);
+  }, [syncCoreCommands, coreCommandBindings]);
 
   const invoke = useCallback(async (commandId: string) => {
     if (commandId === moleculeInspectorTemplateImportCommandId) {
