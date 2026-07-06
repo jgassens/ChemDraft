@@ -1,20 +1,20 @@
-# Agent Instructions for ChemDraft
+# Agent Instructions for ChemDraft Structure Inspector Branch
 
-**Current Build**: 7.5.14.35-codex
+**Current Build**: 7.5.18.24-fable
 
 > [!IMPORTANT]
-> **Agent Instruction:** Every time you finish a slice of work or make significant changes, you MUST update the `**Current Build**` stamp above AND the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx` (in the viewport's bottom right corner).
-> The version format is `[month].[day].[hour].[minute]-[agent_name]` (e.g. `6.6.7.42-antigravity`). This helps the user track if their local build is stale.
+> When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`.
 
-This file governs how AI coding agents, Codex, and human contributors should work in this repository.
+This branch is for the active Structure Inspector worktree: a dedicated Rings toolbar plus Molecule Inspector tabs for Structure, Atom Labels, and Templates.
 
-ChemDraft is a lightweight, open-source chemical drawing application with a plugin architecture. The core app must stay small, stable, testable, legally clean, and focused on drawing workflows.
+- Worktree: `/Users/jeremiahgassensmith/Documents/programming/chemdraw-structure inspector`
+- Branch: `codex/structure-inspector`
+- Planning source: `PLANS.md`
+- Current state: active implementation. The user has explicitly requested implementation of the Molecule Inspector tabs plan.
 
-Do not use **MolScribe** as the app name. MolScribe refers to the external image-to-graph molecular recognition project and, in this repository, only to the optional **MolScribe OCSR** plugin or integration.
+## Required Reading Before Coding
 
-## 1. Read before coding
-
-Before making changes, read:
+Before editing implementation files, read:
 
 ```text
 PLAN.md
@@ -25,7 +25,7 @@ package.json
 pnpm-workspace.yaml
 ```
 
-If the task touches a package, read that package's README or local documentation before editing.
+If the work touches a package, also read that package's README or local documentation before editing.
 
 When `PLANS.md` exists, treat it as the active scoped implementation plan unless the user gives
 newer instructions. Keep edits focused on the files, behaviors, and verification listed there;
@@ -36,557 +36,60 @@ Read that directory before signing, notarizing, packaging, or changing release a
 
 ## 2. Core priorities
 
-The priorities are, in order:
-
-1. Chemical identity must not be silently changed.
-2. The core drawing workflow must be fast and reliable.
-3. Migration-critical workflows must not be treated as optional bloat: Office-friendly copy/paste, CDXML with stereochemistry, best-effort CDX read/paste, RXN, mechanism annotations, abbreviations/superatoms, basic R-group display, templates/styles, layout tools, and hotkeys are core release concerns.
-4. The native document model must remain stable and versioned.
-5. Advanced and heavy features should use plugins when possible.
-6. External engines must be isolated behind adapters or plugin service boundaries.
-7. Compatibility formats must not become the internal source of truth.
-8. The codebase must avoid proprietary assets and visual cloning.
-9. Tests must cover chemistry, compatibility, clipboard behavior, layout, mechanism annotations, plugin boundaries, and recognition-plugin proposed patches.
-
-## 3. What this app is
-
-The app is:
-
-- A lightweight chemical drawing application.
-- A local-file-first desktop app.
-- A familiar structure, reaction, and mechanism drawing workflow.
-- A manuscript and slide figure-preparation tool.
-- A plugin-capable chemistry tool.
-- An open-source project.
-
-The app is not:
-
-- A direct ChemDraw clone.
-- A full ELN.
-- A cloud chemistry suite.
-- A proprietary-format-only editor.
-- A dumping ground for every chemistry feature request.
-- A full chemistry prediction or naming platform in the core.
-- An AI image-recognition app in the core.
-
-## 4. Architecture boundaries
-
-Respect these boundaries.
-
-```text
-chem-core          Owns native document model, schemas, patches, migrations
-editor-adapter     Defines abstract drawing editor interface
-ketcher-adapter    Wraps Ketcher only through EditorAdapter
-chemistry-adapter  Defines abstract chemistry computation interface
-rdkit-adapter      Wraps RDKit or RDKit-like functionality
-cdx-compat         Owns CDXML/CDX import/export compatibility
-clipboard-adapter  Owns native clipboard formats and Office-friendly copy/paste
-style-compat       Owns external style-sheet compatibility such as `.cds` import
-layout-engine      Owns page/object layout operations
-shortcut-engine    Owns command-bound shortcuts and type-to-build behavior
-mechanism-tools    Owns mechanism annotation primitives and rendering hooks
-template-library   Owns original templates, abbreviations/superatoms, and style presets
-toolset-registry   Owns typed toolset manifests, built-in/plugin/user toolset models, customization state, menu models, and command-ID validation
-viewport-engine    Owns viewport state, coordinate conversion, zoom math, and ruler render state
-apps/desktop/src/surfaces  Local UX surface metadata scaffold for menu/status/canvas-control/panel chrome; metadata only
-apps/desktop/src/agentBridge  Opt-in local automation bridge for agent QA; commands/pointers only, no direct document mutation
-plugin-api         Defines public plugin API types
-plugin-host        Loads plugins, validates manifests, enforces permissions
-export-engine      Coordinates export formats
-ui-kit             Owns original UI components and icons
-window-manager     Owns native floating utility palette/window coordination if shared; otherwise keep it app-specific
-examples/plugins/molscribe-ocsr  Optional MolScribe OCSR plugin scaffold; never a core dependency
-apps/desktop       Wires packages into the Tauri desktop app
-```
-
-Do not create cross-package shortcuts that violate these responsibilities.
-
-## 5. Hard rules
-
-### 5.1 Do not copy proprietary assets
-
-Do not copy ChemDraw icons, toolbar art, templates, help text, menu text verbatim, sample files, proprietary splash screens, fonts, or branded assets.
-
-Functional familiarity is allowed. Direct visual copying is not.
-
-### 5.2 Do not make CDXML/CDX the native document model
-
-The native document model lives in `chem-core`. CDXML/CDX support lives in `cdx-compat`.
-
-Correct direction:
-
-```text
-native document -> cdx-compat -> CDXML/CDX
-CDXML/CDX -> cdx-compat -> native document
-```
-
-Incorrect direction:
-
-```text
-entire app state == CDXML/CDX
-```
-
-### 5.3 Do not let plugins mutate documents directly
-
-Plugins may request changes only through proposed patches or controlled document APIs.
-
-Forbidden pattern:
-
-```ts
-document.pages[0].objects.push(object);
-```
-
-Allowed pattern:
-
-```ts
-await ctx.documents.proposePatch({
-  op: "addObject",
-  pageId,
-  object,
-  reason: "recognized-structure"
-});
-```
-
-The host applies accepted patches.
-
-### 5.4 Do not bypass adapters
-
-Do not import Ketcher, RDKit, MolScribe OCSR, Open Babel, or other external engines throughout the app.
-
-Use adapter packages or plugin service boundaries.
-
-Forbidden pattern:
-
-```ts
-import { something } from "ketcher";
-```
-
-inside random UI packages.
-
-Allowed pattern:
-
-```ts
-import type { EditorAdapter } from "@chemdraft/editor-adapter";
-```
-
-The current exception is the narrow desktop Ketcher host component that lazy-loads `ketcher-react` and `ketcher-standalone` to create an `EditorAdapter` host. Do not copy that import pattern into other UI files.
-
-### 5.5 Do not add unreviewed dependencies
-
-Before adding a dependency, check license, size, maintenance status, actual need, native build complexity, and compatibility with the intended project license.
-
-Avoid dependencies for simple utilities.
-
-### 5.6 Do not add GPL/AGPL code to permissive core packages by accident
-
-GPL or AGPL tools may be useful, but they must not be embedded into the core unless the project explicitly accepts the license implications.
-
-Safer pattern:
-
-```text
-optional external converter
-separate plugin
-separate process
-clear license notice
-```
-
-### 5.7 Do not silently degrade chemistry
-
-If an operation cannot preserve chemical meaning, return a warning or error.
-
-Examples:
-
-- Lost stereochemistry
-- Lost charge
-- Lost radical state
-- Unsupported isotope
-- Unsupported polymer bracket
-- Unsupported atom list
-- Unsupported reaction mapping
-- Approximated arrow type
-- Abbreviation/superatom downgraded to plain text
-- R-group display lost
-- Mechanism annotation exported only as a graphic
-- AI-recognized structure inserted without validation or user approval
-
-### 5.8 Do not defer basic Office-friendly clipboard behavior
-
-For migration work, basic copy/paste is a core user workflow.
-
-Required minimum:
-
-```text
-copy to SVG/PNG for Office-style apps
-copy chemical payload where supported
-paste CDXML/CDX/MOL/RXN/SMILES where supported
-warn when paste/import becomes image-only or lossy
-```
-
-Full Office add-ins, OLE servers, and edit-in-place Office integration are not required for the first release.
-
-### 5.9 Do not make the page a set of isolated molecule islands
-
-The native document is a composited page containing molecules, reactions, arrows, mechanism annotations, text, brackets, and graphics. Ketcher or another editor may own the active structure-editing session, but it must not become the whole document model.
-
-Cross-object reaction arrows, mechanism arrows, reaction conditions, layout, and export must work at page level.
-
-### 5.10 Do not store editable mechanism annotations as opaque SVG only
-
-Curved arrows, half-headed arrows, lone-pair marks, and radical-electron marks must be represented as native editable objects when they are part of the document.
-
-SVG-only export is fine. SVG-only storage is not fine for editable core annotations.
-
-### 5.11 Do not treat naming as solved without proof
-
-Name-to-structure and structure-to-name are migration pressure points. Do not claim robust support unless the implementation is present, licensed appropriately, tested, and documented with limitations.
-
-OPSIN-style name-to-structure may be an optional plugin. It must be labeled as name-to-structure only. Do not imply structure-to-name support from OPSIN or from any placeholder.
-
-### 5.12 Do not treat abbreviations/superatoms as cosmetic text
-
-Abbreviations/superatoms are a core migration workflow. They should preserve collapsed labels, expansion metadata, attachment points, and compatibility warnings where feasible.
-
-Do not silently convert a chemically meaningful abbreviation into plain text.
-
-### 5.13 Do not treat hotkeys as polish
-
-Keyboard shortcuts and type-to-build behavior are part of the product, not decoration. Important drawing actions must be command-bound and testable through `shortcut-engine` or equivalent command-routing code.
-
-Do not copy proprietary shortcut documentation verbatim.
-
-### 5.14 Prioritize CDX read before CDX write for migration
-
-Migrants need to open old files and paste from existing tools before they need perfect CDX writing. When implementing CDX, prefer a tested best-effort read/paste path before broad write support.
-
-### 5.15 Keep OCSR and other AI recognition optional and reviewable
-
-Image-to-structure recognition, including integrations based on the external MolScribe OCSR project, belongs in optional plugins or services. It must not become core startup code.
-
-Recognizer plugins must:
-
-- Require explicit user action on a selected/imported image or crop.
-- Return proposed molecule/reaction objects or proposed patches, not direct document mutation.
-- Show confidence and validation warnings.
-- Require user acceptance before inserting generated chemistry.
-- Preserve source-image context where feasible.
-- Avoid hidden model downloads, hidden network calls, or silent native execution.
-- Keep PyTorch, OpenCV, model checkpoints, and other heavy recognition dependencies out of core packages.
-
-For MolScribe OCSR or similar plugins:
-
-- Do not vendor external code into the core app.
-- Do not add PyTorch, OpenCV, Hugging Face download logic, model checkpoint loading, or Python service startup to the core app.
-- Use a local-service/native-service plugin boundary with explicit permissions when real inference is implemented.
-- Document license notices, model-checkpoint source, citation expectations, and dependency licenses.
-
-### 5.16 Do not build dashboard UI
-
-Do not build ChemDraft like a generic web dashboard. The default UI must be a compact desktop drawing workspace: dense, functional, icon-first, and document-centered.
-
-Forbidden UI patterns:
-
-- Large text-labeled vertical tool buttons as the main chemistry toolbar.
-- Permanent right inspector in the default view.
-- Fake dashed molecule, reaction-arrow, product, or mechanism placeholders.
-- Fake mechanism, product, analysis, or reaction placeholders.
-- Plugin demo buttons hard-coded into the inspector.
-- Rounded card-based dashboard layout.
-- SaaS navigation rails.
-- Decorative UI that reduces drawing workspace density.
-- Copied proprietary icons, toolbar art, templates, help text, menu text, trade dress, or brand identity.
-
-Required UI patterns:
-
-- Native or native-feeling menu bar.
-- Dense quick-action toolbar.
-- Dominant document/page workspace.
-- Compact icon-first floating or dockable tool palette.
-- Optional inspector and plugin panels hidden by default.
-- Original SVG/icon glyphs.
-- Tooltips, accessible labels, and shortcut support.
-
-Do not show molecule, reaction, arrow, product, or mechanism placeholders unless they are backed by real `chem-core` document objects or explicitly marked as disabled development placeholders. Prefer an honest "EditorAdapter not connected" placeholder over fake chemistry.
-
-Do not show molecule, reaction, mechanism, arrow, product, or analysis objects unless they are backed by `chem-core` document objects, produced by the active editor adapter and explicitly represented as adapter-backed temporary state, or clearly marked as disabled/unavailable development placeholders. Prefer "EditorAdapter not connected" or "No selected structure" over fake chemistry content.
-
-### 5.16.1 Design language rules
-
-Use this design-language phrase in documentation when describing the direction:
-
-```text
-Restrained technical minimalism: Metro-like canvas minimalism with Material-like interaction clarity.
-```
-
-ChemDraft should feel like a precision scientific drawing tool, not a consumer note-taking app. The canvas should be flat, quiet, typographic, low-chrome, and content-first. Surrounding controls should have consistent spacing, predictable component states, and clear hover, active, focus, selected, and disabled feedback.
-
-For the current desktop shell, `apps/desktop/src/App.css` is the canonical design-token layer. Do not create separate `App.css` and `ui-kit` token systems that can drift. Export or expand `ui-kit` design tokens only when another package actually needs them, and document which layer is canonical.
-
-Use `#1d7f68` as the restrained accent, with derived shades allowed when contrast requires readable active, selected, hover, or focus states. Red remains semantic for invalid, delete, and warning states.
-
-Style only ChemDraft-owned Ketcher host and wrapper chrome. Do not patch vendored Ketcher internals or change Ketcher behavior as part of visual cleanup.
-
-Design-language cleanup work must not change molecule drawing behavior, bond creation behavior, selection logic, file formats, chemistry model logic, renderer math, command IDs, keyboard shortcuts, or tool behavior except for visual state styling such as selected, hover, focus, disabled, and active affordances.
-
-Tests for design-language work should be focused and non-brittle: token-shape checks, render smoke tests, and existing layout or behavior tests. Do not add pixel-perfect tests unless the repo already has that convention.
-
-### 5.17 Phase closeout and current boundary
-
-Do not consider Phase 4 complete if it only displays visual placeholders.
-
-Phase 4 completion requires real implemented behavior or clearly labeled adapter-backed fallback behavior for:
-
-- Document creation.
-- Editor adapter path.
-- Save/open.
-- Insert/update document object or explicit adapter-backed state.
-- SVG/PNG export.
-- Status reporting.
-- Tests.
-
-The Phase 4.5 toolset/viewport interlude should wire persisted user toolbar layout state into desktop startup/menu/window generation and keep Rust/Tauri menu behavior aligned with the TypeScript registry model.
-
-Phase 5 should focus on `chemistry-adapter`, `rdkit-adapter` or an honest placeholder, selected-structure validation, formula, average mass, exact mass where available, total charge, basic stereochemistry warnings where available, and fixture tests.
-
-Phase 5 should not add broad UI polish, new toolbar concepts, CDXML/CDX compatibility, clipboard compatibility, NMR/MS/pKa/logP plugins, or image-to-structure recognition unless explicitly requested.
-
-Phase 6 editor engine hardening is conditionally complete as an adapter boundary. `KetcherAdapter` exists with capability reporting and molecule load/save contracts. Phase 7.1 adds a narrow lazy desktop Ketcher host for active selected-molecule editing only; this does not mean Ketcher owns the ChemDraft document canvas. Keep page-level gaps explicit and keep `chem-core` as the composited page source of truth.
-
-Phase 6.5 canvas page-size infrastructure is closed out and should be treated as the baseline for later drawing, export, and layout work. Preserve native page layout state, geometry invariants, legacy migration, command-backed US Letter, US Legal, popular ISO A-size, portrait, and landscape controls under File > Page Setup, document-backed viewport/ruler/crosshair/object/export geometry, and tests.
-
-The current next implementation lane is Phase 7: core drawing productivity. Do not restart Phase 6.5 unless fixing a regression.
-
-Phase 7 rules:
-
-- Keep tools command-backed.
-- Tool buttons may activate tools only through command/state architecture.
-- Do not wire chemistry behavior only into button-local handlers.
-- Do not show fake molecule, reaction, mechanism, arrow, product, or analysis output.
-- Unsupported tools must remain disabled or report explicit unavailable state.
-- Do not import Ketcher or RDKit directly into random UI code. Direct Ketcher imports are allowed only in the narrow desktop Ketcher host boundary, or a named successor host boundary, and must not spread.
-- Use `editor-adapter`, `chem-core`, and command-registry boundaries.
-- Do not turn Phase 7 into CDXML/CDX, clipboard, OCSR, `.cds` style import, NMR/MS/pKa/logP, full Page Setup, add-page UI, drag/drop toolbar customization, or broad UI-polish work.
-
-### 5.18 Floating palette rules
-
-Floating tool palettes may be native desktop windows in the Tauri app. In-window floating palettes are acceptable fallback or secondary behavior, especially for browser/web builds.
-
-Rules:
-
-- Palette windows route actions through command IDs.
-- Palette windows do not import Ketcher or RDKit directly.
-- Palette windows do not mutate `chem-core` state directly.
-- Palette windows do not own chemistry behavior.
-- Do not use global always-on-top by default.
-- Do not turn the tool palette into a permanent SaaS-style sidebar.
-- Native floating palette behavior should live behind a desktop window-manager boundary, not random UI code.
-
-### 5.19 Toolset customization rules
-
-Toolbars/toolsets are declarative command-backed data.
-
-Rules:
-
-- Toolbar buttons invoke command IDs; they do not own chemistry behavior.
-- Built-in toolsets come from ChemDraft manifests.
-- Plugin toolsets come from plugin contributions.
-- User toolsets and user customizations come from versioned user layout state.
-- User customization must not mutate built-in manifests.
-- User customization must not mutate plugin manifests.
-- User customization must not grant plugin permissions.
-- User customization must not bypass command registration.
-- User customization must not duplicate command implementations.
-- Persisted user layout state must be applied before menu/window models are finalized.
-- If a user customization references an unregistered command ID, reject it or disable it with a clear warning.
-
-When changing desktop toolbar/menu/window startup behavior, keep these in sync:
-
-- TypeScript toolset registry.
-- Persisted user layout state.
-- Native Tauri View > Toolbars menu.
-- Native toolset windows.
-- Web fallback toolsets.
-- Command registry.
-
-Do not let Rust menu generation and TypeScript registry behavior drift apart. If Rust must parse shared JSON, tests or fixtures must cover alignment.
-
-Full drag-and-drop toolbar customization UI is deferred until the state model is wired and tested. Do not add a drag-and-drop dependency until implementing the real customization editor. Prefer `dnd-kit` for that future editor. Do not use `react-beautiful-dnd`.
-
-### 5.20 ChemDraw toolbar XML boundary
-
-Do not copy ChemDraw toolbar XML, schemas, command IDs, icon names, images, menu files, command definition files, file paths, or toolbar art.
-
-Uploaded ChemDraw custom toolbar files may be used only as conceptual evidence that toolbar layout can be declarative. They are not ChemDraft runtime fixtures and should not be committed or imported unless an explicit clean-room compatibility task is created.
-
-### 5.21 Viewport and ruler ownership
-
-`viewport-engine` is the source of truth for viewport state.
-
-Rules:
-
-- Ruler renderers consume viewport state; they do not own geometry.
-- Zoom, pinch, and pan behavior must preserve coordinate conversion correctness.
-- Do not hide scale/origin math inside React components.
-- Do not add another viewport dependency without updating dependency inventory and tests.
-- Any pointer or hit-testing work must use viewport conversion helpers.
-
-### 5.22 Page layout and canvas geometry
-
-Page size lives in native page layout state. Do not let React canvas constants, CSS literals, ruler renderers, or export helpers become the geometry source of truth.
-
-Rules:
-
-- `chem-core` owns page layout state: paper preset, orientation, internal CSS-pixel size, margins, and source physical units.
-- If both `page.width`/`page.height` and `page.layout.widthPx`/`page.layout.heightPx` exist, they must match. Treat top-level width/height as denormalized compatibility fields, not a second source of truth.
-- Legacy pages without layout metadata must migrate cleanly to US Letter portrait without changing objects, selection, molecule payloads, or chemistry metadata.
-- `MainWindow` must not define hard-coded Letter dimensions as the canvas geometry source of truth.
-- Viewport, rulers, crosshairs, object positioning, hit testing, and export must consume document page layout.
-- Page-size changes must be command-backed and patch-based.
-- Page-size changes must not scale, move, reorder, select, deselect, or chemically alter page objects.
-- SVG export should use physical `width`/`height` units from page layout when available while keeping `viewBox` in ChemDraft CSS-pixel coordinates. PNG export remains pixel-based.
-- Rulers, grid, and crosshair tick spacing should follow the active page family: inches for US paper presets and centimeters for ISO A presets.
-- The first page-size UI should stay command-backed and minimal under File > Page Setup: US Letter, US Legal, popular ISO A sizes, portrait, and landscape.
-- Full Page Setup UI, custom-size editing, printing, favorites, and broad layout tooling remain deferred until explicitly scoped.
-
-Required page-size tests:
-
-- US Letter, US Legal, popular ISO A-size conversion and orientation.
-- Invariant enforcement between layout dimensions and denormalized page dimensions.
-- Legacy Phase 4 document migration.
-- Save/open preservation.
-- SVG physical units plus CSS-pixel `viewBox`.
-- PNG export avoiding hard-coded Letter fallback.
-- Ruler/grid/crosshair unit switching between US and ISO page families.
-- Page-size commands preserving object coordinates, selection, and molecule payloads.
-
-### 5.23 Style sheets and default styles
-
-ChemDraw `.cds` files are compatibility inputs to native ChemDraft style presets. They are not molecule, reaction, page, document, or native style model formats.
-
-Rules:
-
-- Native style presets in `chem-core`, `template-library`, or a dedicated style package are the source of truth.
-- `.cds` parsing/import belongs in `style-compat` or a documented temporary style compatibility boundary.
-- Import style sheets through command-backed actions such as `style.importStyleSheet`.
-- Apply presets, set default presets, and manage presets through command definitions.
-- Do not fake successful `.cds` import. Report unsupported settings, malformed input, and lossy conversions.
-- Do not commit user-provided `.cds` files such as `Tot_Syn_Style.cds` or derived fixtures unless redistribution rights are clear.
-- Public tests should use synthetic or generated style fixtures.
-- Applying a style preset must not change chemical identity and should be explicit and undoable where practical.
-
-### 5.24 UX surface flexibility
-
-Do not bake user-facing controls into permanent architecture. Chemistry behavior, document state, command IDs, plugin permissions, adapter boundaries, and viewport coordinate math are stable contracts. Menu placement, toolbar grouping, panel layout, labels, icons, status items, canvas controls, shortcut maps, and default visibility are volatile surfaces and should be configurable where practical.
-
-For every new user-facing control:
-
-- Use a command ID if it performs an action.
-- Use a surface ID if it appears somewhere.
-- Include slot or placement metadata where relevant.
-- Include `source`: `core`, `plugin`, `user`, or `owner`.
-- Add test or smoke coverage for command routing where practical.
-
-Keep owner defaults, user preferences, and document state separate:
-
-- Owner defaults are project-level layout/style choices and may change as product direction changes.
-- User preferences are local app configuration such as toolbar visibility, panel state, and shortcut overrides.
-- Document state travels with `.chemdraft` files, including pages, page sizes, objects, and document-used styles.
-
-Do not store owner defaults or installed-user preferences in the native document unless the value truly belongs to the file. Do not treat document state as a convenient place to remember local UI layout.
-
-Plugin-contributed panels, menus, toolbar buttons, and future canvas controls should use the same command/surface contribution system where practical. Plugins must not directly mutate core UI layout without declared contributions and permissions.
-
-If a control is hard-coded temporarily:
-
-- Name the command it should eventually invoke.
-- Explain why hard-coding is temporary.
-- Keep the hard-coded placement local instead of spreading it across multiple files.
-
-UX surface tests should focus on command routing, surface registration, owner/user/document state separation, no document mutation from pure UX changes, and no chemistry mutation from layout changes.
-
-The local `apps/desktop/src/surfaces` module may describe menu, status, canvas-control, panel-trigger, and empty-state metadata. It must not own chemistry behavior, document mutation, plugin permissions, command implementation, or rendering side effects. Surface metadata may reference command IDs, but command implementation stays in the command registry or the relevant owning package.
-
-Disabled future surfaces, including `surface.canvas.addPageAfter`, must not be rendered as active controls until the referenced command exists and is wired. Phase 6.5 page-size infrastructure is closed out; the next implementation lane is Phase 7 core drawing productivity, not a full UX registry package, add-page button, plugin surface renderer, or customization UI.
-
-### 5.25 Tauri Agent Bridge
-
-The Agent Bridge is a local opt-in QA and automation surface for ChemDraft agents. It exists to make bugs reproducible through the same command registry, viewport conversion, hit testing, and pointer handlers that real users exercise. It is not a plugin API, not a remote-control feature, and not a substitute for command-backed product architecture.
-
-Implementation ownership:
-
-```text
-apps/desktop/src/agentBridge.ts        TypeScript bridge API, permission resolution, synthetic pointer dispatch
-apps/desktop/src/MainWindow.tsx        Installs window.__CHEMDRAFT_AGENT__ and maps bridge calls to app state
-apps/desktop/src-tauri/src/lib.rs      Native opt-in gate through agent_bridge_status
-apps/desktop/src/agentBridge.test.ts   Bridge command, pointer, install, and lasso regression tests
-```
-
-Enablement must stay explicit:
+Ship the compact hidden-by-default inspector palettes with:
+
+- `core.ringInspector`: a Rings toolbar preserving existing ring identity, per-ring fill/effect rendering, ring interior hit-testing, and ring appearance controls.
+- `core.moleculeInspector`: a Molecule Inspector with `Structure`, `Atom Labels`, and `Templates` tabs.
+- `Structure`: molecule bond drawing controls for selected molecule targets. If one or more bonds or atoms are selected, Structure controls apply only to those parts through sparse per-bond / per-atom overrides, mirroring the Atom Labels behavior below.
+- `Atom Labels`: base molecule atom-label typography, display policy, and font-family/face controls. If one or more atom labels are selected, Atom Labels controls must apply only to those labels through sparse per-atom overrides.
+- `Templates`: import ChemDraw `.cds` style-sheet inputs through `packages/style-compat`, apply supported Molecule Inspector settings to selected molecule targets, and export ChemDraft Molecule Inspector presets as `.template` files.
+
+Structure drawing controls (stroke and bold width, spacing, line caps, margins, hashing, overlap, chain angle, and indicator toggles) apply per bond and per atom via sparse maps when specific bonds/atoms are selected, and to the whole molecule otherwise.
+
+Outside this slice:
+
+- Per-bond fill opacity and per-bond visual effects (opacity and effects stay whole-molecule / ring-level through the Rings and Art inspectors).
+- Atom-label underline, outline, and shadow.
+- Font embedding, a font-management preference screen, general CDXML/CDX document import, clipboard, OCSR, or broad toolbar customization.
+
+Do not add `NativeMoleculeDrawingSettings`, `NativeAtomLabelSettings`, or `NativeMoleculeIndicatorSettings`.
+
+## Reuse Existing Systems
+
+Verify existing code before adding new code.
+
+- Whole-molecule fill/stroke color, paint type, opacity, none, and visual effects already apply to molecule objects through `documentWorkflow.ts` and `artInspectorModel.ts`. Reuse those paths where applicable.
+- Per-bond color already exists through `applyColorToNativeMoleculePart`, writing `style.bondColors` and `style.atomLabelColors`.
+- Per-bond style identity already lives on `bond.display.bondStyle`. Do not add a duplicate `style.bondStyles` map.
+- The live inspector pattern already exists in `ArtToolbarStyleControls`. Mirror its model, payload, controls, and preview/commit/cancel behavior.
+- Commands use value-encoded IDs and factory helpers. Do not introduce generic `*.set` commands with hidden value parameters.
+- `exportDocumentToSvg` already reuses `planPageSvgRender`; per-ring render-plan paths should flow to export through that existing route.
+- Use `MoleculeObject.style` and `nativeDrawingStyleFromObjectStyle()` for Structure and Atom Labels. Do not introduce a parallel molecule-style object.
+- Keep Structure and Atom Labels state on the shared `NativeDrawingStyle` (never a parallel molecule-style object). Beyond reusing existing bond/label fields, this slice adds base bond-drawing fields (`chainAngleDegrees`, `bondBoldWidthPx`, `bondSpacingMode`, `bondSpacingPercent`, `bondMarginWidthPx`, `bondHashSpacingPx`), the atom/bond structure-indicator toggles (`atomIndicatorShow*`, `bondIndicatorShow*`), and the atom-label fields (`atomLabelFontStyle`, `atomLabelAlignment`, `atomLabelPlacement`, `atomLabelShowTerminalCarbons`, `atomLabelHideImplicitHydrogens`). Each is sparse-overridable per bond/atom via the `documentWorkflow.ts` maps and round-trips through templates/imports.
+- The native system-font database already used by raster export must be shared with the Molecule Inspector font catalog; do not scan system fonts twice.
+
+## Hard Boundaries
+
+- Do not change the main checkout. Work only in this worktree for this branch.
+- Do not copy proprietary assets, icons, dialog art, help text, sample files, command IDs, trade dress, or branded UI.
+- Keep chemical identity stable. Ring styling must not mutate atoms, bonds, bond order, charges, stereochemistry, reactions, or molecule metadata.
+- Ring geometry and key logic must live in `packages/layout-engine`; app code imports helpers and does not duplicate ring math.
+- Ring appearance storage remains `style.ringStyles`, keyed by topology-derived ring keys.
+- Ring keys must derive from sorted bond IDs, never coordinates.
+- The Rings toolbar and Molecule Inspector must be hidden by default, compact, dense, and floating. Do not create a permanent right inspector or card/dashboard UI.
+- Keep `core.ringInspector` / `view.toggleRingInspector` for ring appearance and `core.moleculeInspector` / `view.toggleMoleculeInspector` for Structure, Atom Labels, and Templates. Be aware that `view.toggleInspector` and disabled `tool.settings` already exist; do not add additional inspector concepts.
+- Ring interiors are selectable only while the Rings toolbar is open.
+- Keep chemical identity stable. Structure and Atom Label styling must not mutate atom elements, formal charges, bond orders, stereochemistry, atom IDs, bond IDs, or molecule identity.
+- Sparse overrides must remain sparse and visually effective. Base style edits must not clear `style.ringStyles`, `style.bondColors`, `style.atomLabelColors`, sparse per-atom label style maps, or the sparse per-bond/per-atom Structure and indicator style maps.
+- Target bond length must visibly scale selected molecule atom coordinates about each molecule's own center and update `style.bondLengthPx` in one undoable operation, or it must be removed from this slice.
+- Structure indicators must be honest render overlays: atom numbers from atom order; atom/bond stereo from native wedge/hash/dashed display or imported stereo metadata; query indicators only from unknown/query atom or bond metadata; reaction indicators only from reaction/RXN metadata. Do not invent query or reaction chemistry for ordinary SMILES.
+
+## Verification
+
+Run focused suites for touched files, including:
 
 ```bash
-CHEMDRAFT_AGENT_BRIDGE=1 pnpm --filter @chemdraft/desktop dev
-pnpm --filter @chemdraft/desktop dev -- --chemdraft-agent-bridge
-```
-
-For web-preview/debug-only runs, the renderer may also install the bridge with:
-
-```text
-http://127.0.0.1:5173/?agentBridge=1
-localStorage["chemdraft.agentBridge"] = "enabled"
-```
-
-The installed browser global is:
-
-```ts
-window.__CHEMDRAFT_AGENT__
-```
-
-The bridge exposes these operations:
-
-- `snapshot()` returns the current document, selected object IDs, selected native molecule part, active tool command ID, viewport state, file state, build stamp, and object summaries.
-- `command(commandId)` invokes a registered command ID and waits for the app to settle. Command handlers must be awaited; do not reintroduce fire-and-forget command dispatch.
-- `resolvePoint(target)` converts `page`, `client`, `objectId`, `atom`, or `bond` targets into page and client coordinates.
-- `hitTest(target)` reports the app's native hit-test result at a bridge target.
-- `pointerDown`, `pointerMove`, `pointerUp`, and `pointerCancel` dispatch synthetic pointer events through the rendered page and preserve pointer target capture semantics.
-- `click(target)` is a pointer down/up convenience and must still route through the same pointer handlers as the UI.
-- `drag(request)` is a straight-line drag convenience only. Use explicit pointer calls for freehand lasso or any gesture that needs a polygon.
-- `waitForIdle()` waits for rendering/animation-frame settling and returns a fresh snapshot.
-
-Rules:
-
-- The bridge must never mutate `chem-core` documents directly. All behavior must route through command IDs, page/document pointer handlers, controlled document APIs, or existing app workflows.
-- The bridge must not bypass plugin permissions, command registration, toolset validation, viewport conversion, native molecule hit testing, or document history.
-- The bridge must be disabled by default in native desktop runs. Do not expose it in public builds without the explicit environment variable or launch argument.
-- Do not add network access, file access, clipboard access, native execution, or cross-window control to the bridge unless a task explicitly scopes it and tests cover the permission boundary.
-- Bridge snapshots may contain full document state. Treat them as local debugging data, not telemetry, logs, or shareable user data.
-- Bridge commands should use stable command IDs such as `tool.bond`, `tool.lasso`, `tool.eraser`, and `document.save`, never toolbar labels or DOM selectors.
-- Bridge pointer tests should prefer page/object/atom/bond targets over raw client coordinates unless the bug is specifically about screen-coordinate conversion.
-- After every bridge `command`, `click`, or pointer gesture, call `waitForIdle()` or use the returned snapshot before asserting state.
-
-Required bridge QA for pointer-sensitive work:
-
-```ts
-const agent = window.__CHEMDRAFT_AGENT__;
-await agent.command("tool.bond");
-await agent.click({ page: { x: 300, y: 300 } });
-await agent.command("tool.lasso");
-agent.pointerDown({ page: { x: 280, y: 296 } }, { pointerId: 31, buttons: 1 });
-agent.pointerMove({ page: { x: 320, y: 296 } }, { pointerId: 31, buttons: 1 });
-agent.pointerMove({ page: { x: 320, y: 304 } }, { pointerId: 31, buttons: 1 });
-agent.pointerMove({ page: { x: 280, y: 304 } }, { pointerId: 31, buttons: 1 });
-agent.pointerUp({ page: { x: 280, y: 296 } }, { pointerId: 31, buttons: 0 });
-const snapshot = await agent.waitForIdle();
-```
-
-For lasso regressions, assert the intended selection contract explicitly:
-
-- Tight lasso over atoms/bonds: `snapshot.selectedNativeMoleculePart?.kind === "parts"` and `snapshot.selection.objectIds` is empty.
-- Whole-object lasso: `snapshot.selection.objectIds` contains the molecule ID and `snapshot.selectedNativeMoleculePart` is undefined.
-- Lasso tool chrome: transform resize/rotate handles must not intercept lasso pointer gestures.
-
-Required verification when changing the bridge or bridge-tested pointer behavior:
-
-```bash
-pnpm vitest run apps/desktop/src/agentBridge.test.ts apps/desktop/src/App.test.ts apps/desktop/src/drawingTools.test.ts
+pnpm vitest run packages/chem-core/src/styles.test.ts packages/layout-engine/src/index.test.ts packages/export-engine/src/svg.test.ts apps/desktop/src/moleculeInspectorModel.test.ts apps/desktop/src/commands.test.ts apps/desktop/src/documentWorkflow.test.ts apps/desktop/src/window-manager/index.test.ts apps/desktop/src/App.test.ts
 pnpm lint
 cargo test agent_bridge
 git diff --check
@@ -1300,127 +803,20 @@ pnpm install
 pnpm lint
 pnpm test
 pnpm build
-pnpm --filter desktop tauri dev
+git diff --check
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-If scripts are missing, add them or explain why they cannot be added yet.
+If hit-testing, pointer behavior, or the agent bridge changes, also run the relevant DOM/agent bridge/drawing-tool suites.
 
-## 20. Dependency policy
+Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring selection after tab switching/closing.
 
-Before adding a dependency, document:
+## Closeout Requirements
 
-```text
-package name
-purpose
-license
-why it is needed
-whether it is core or optional
-whether it affects distribution
-```
+At implementation closeout:
 
-Prefer dependencies that are maintained, small, permissively licensed, well documented, and easy to replace.
-
-Avoid dependencies that are unmaintained, huge for trivial functionality, GPL/AGPL in permissive core packages, native-heavy without a clear reason, or security-sensitive without strong maintenance.
-
-For heavy recognition plugins such as MolScribe OCSR, keep Python, PyTorch, OpenCV, model checkpoints, and Hugging Face download logic out of core packages. They may live in an optional plugin or native-service wrapper with explicit permissions, user approval, and license notices.
-
-## 21. Naming policy
-
-Avoid names that imply affiliation with proprietary chemistry products.
-
-Avoid:
-
-```text
-ChemDrawFree
-OpenChemDraw
-ChemDrawLite
-CDraw
-ChemOfficeOpen
-MolScribeApp
-```
-
-Acceptable working names:
-
-```text
-ChemDraft
-MolCanvas
-OpenStructure
-MolDraft
-```
-
-Do not use MolScribe as the app name unless the project intentionally accepts collision with the established external OCSR project. Use `MolScribe OCSR` only for the plugin/integration that wraps `thomas0809/MolScribe`.
-
-## 22. First milestone focus
-
-The first milestone should establish the foundation, not the full chemistry feature set.
-
-Implement first:
-
-```text
-monorepo
-desktop shell skeleton
-package skeletons
-native document schema
-plugin API schema
-command registry
-example plugin command through the command/plugin contribution system
-MolScribe OCSR placeholder plugin manifest and README only
-tests
-```
-
-Do not start with:
-
-```text
-real MolScribe OCSR inference
-PyTorch/OpenCV/model checkpoints
-NMR prediction
-mass-spec prediction
-full CDX binary writer
-cloud sync
-ELN features
-full structure-to-name
-```
-
-## 23. Guiding rule for feature requests
-
-When a new feature request arrives, classify it:
-
-```text
-Core drawing workflow
-Core document/import/export workflow
-Core clipboard/migration workflow
-Plugin infrastructure
-Plugin feature
-Deferred feature
-```
-
-Treat these as core drawing or migration workflow unless there is a strong reason not to:
-
-```text
-Office-friendly copy/paste
-CDXML import/export with stereochemistry
-best-effort CDX read/paste
-RXN import/export
-mechanism arrows and electron/lone-pair/radical glyphs
-abbreviations/superatoms
-basic R-group display
-basic templates and style presets
-native default style presets
-ChemDraw .cds style-sheet import into native style presets
-layout and page editing
-hotkeys and type-to-build behavior
-```
-
-Treat these as plugin or deferred features:
-
-```text
-MolScribe OCSR image-to-structure recognition
-NMR prediction
-MS fragmentation
-pKa/logP/logS
-retrosynthesis
-ELN/cloud integrations
-full structure-to-name
-advanced SAR tables
-stoichiometry grids
-```
+- Update the build stamp in this file.
+- Update the `Build` string in `apps/desktop/src/MainWindow.tsx`.
+- Report tests run and any skipped verification.
+- Keep the final answer focused on the branch and the specific slice completed.

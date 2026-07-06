@@ -15,11 +15,15 @@ import {
   requestToolsetActiveTool,
   requestToolsetTextStyle,
   sendPaletteCommand,
+  sendPaletteCommandCancel,
+  sendPaletteCommandCommit,
+  sendPaletteCommandPreview,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   startPaletteWindowDrag,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
+  type ToolsetMoleculeInspectorPayload,
   type ToolsetWindowPosition
 } from "./window-manager";
 
@@ -46,6 +50,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
+  const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
   const shortcutRegistry = useMemo(
@@ -148,6 +153,7 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
       setCurrentTextScript(payload.currentTextScript);
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
+      setCurrentMoleculeInspector(payload.currentMoleculeInspector);
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -179,6 +185,15 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
 
   const invokeCommand = (commandId: string) => {
     void sendPaletteCommand(commandId).catch(() => undefined);
+  };
+  const previewCommand = (commandId: string) => {
+    void sendPaletteCommandPreview(commandId).catch(() => undefined);
+  };
+  const commitPreviewCommand = (commandId: string) => {
+    void sendPaletteCommandCommit(commandId).catch(() => undefined);
+  };
+  const cancelPreviewCommand = () => {
+    void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
   };
 
   const hidePaletteWindow = (event: ReactMouseEvent<HTMLButtonElement> | PointerEvent<HTMLButtonElement>) => {
@@ -403,12 +418,21 @@ export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string 
         showMainStyleControls={toolset.id === "core.main"}
         showTextStyleControls={toolset.id === "core.text"}
         showArtStyleControls={toolset.id === "core.art"}
+        showRingInspectorControls={toolset.id === "core.ringInspector"}
+        showMoleculeInspectorControls={toolset.id === "core.moleculeInspector"}
         currentObjectColor={currentTextStyle.color}
         currentArtStyle={currentArtStyle}
         currentArtStyleTarget={currentArtStyleTarget}
+        currentMoleculeInspector={currentMoleculeInspector}
         currentTextStyle={currentTextStyle}
         currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}
+        onArtStylePreview={previewCommand}
+        onArtStyleCommit={commitPreviewCommand}
+        onArtStyleCancel={cancelPreviewCommand}
+        onMoleculeInspectorPreview={previewCommand}
+        onMoleculeInspectorCommit={commitPreviewCommand}
+        onMoleculeInspectorCancel={cancelPreviewCommand}
         onInvoke={invokeCommand}
       />
     </main>

@@ -1,8 +1,9 @@
 use std::io::Cursor;
-use std::sync::{Arc, OnceLock};
 
 use image::{codecs::jpeg::JpegEncoder, ColorType, DynamicImage, ImageEncoder, ImageFormat};
 use resvg::{tiny_skia, usvg};
+
+use crate::fonts::shared_fontdb;
 
 const DEFAULT_RASTER_SCALE: f64 = 1.0;
 const DEFAULT_MAX_DIMENSION_PX: u32 = 8192;
@@ -49,21 +50,6 @@ pub(crate) struct RasterExportResponse {
 #[tauri::command]
 pub(crate) fn rasterize_svg(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
     rasterize_svg_impl(request)
-}
-
-/// System fonts are scanned from disk once and shared across raster exports.
-/// `load_system_fonts` walks every OS font directory (hundreds of ms, and over a
-/// second on Windows installs with many fonts), so doing it per request would block
-/// the Tauri backend on every export.
-fn shared_fontdb() -> Arc<usvg::fontdb::Database> {
-    static FONTDB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
-    FONTDB
-        .get_or_init(|| {
-            let mut db = usvg::fontdb::Database::new();
-            db.load_system_fonts();
-            Arc::new(db)
-        })
-        .clone()
 }
 
 fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
@@ -387,7 +373,10 @@ mod tests {
             parse_background(Some("#1A2b3C")).expect("full hex parses"),
             Some([0x1a, 0x2b, 0x3c])
         );
-        assert_eq!(parse_background(Some("transparent")).expect("transparent parses"), None);
+        assert_eq!(
+            parse_background(Some("transparent")).expect("transparent parses"),
+            None
+        );
         // A multi-byte char reaches the 3-length arm by byte count; it must return an
         // error rather than panic on a non-char-boundary slice.
         assert!(parse_background(Some("#\u{2603}")).is_err());

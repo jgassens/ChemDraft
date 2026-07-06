@@ -401,6 +401,10 @@ textarea:focus-visible,
   grid-template-rows: minmax(0, 1fr);
 }
 
+.app-shell.dev-browser-menu-shell {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .menu-bar,
 .command-bar,
 .statusbar {
@@ -448,6 +452,87 @@ textarea:focus-visible,
   background: var(--cd-bg-hover);
 }
 
+.dev-browser-menu-bar {
+  position: relative;
+  z-index: 1300;
+  min-height: 28px;
+  user-select: none;
+}
+
+.dev-browser-menu-list {
+  overflow: visible;
+}
+
+.dev-browser-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.dev-browser-menu-button[aria-expanded="true"] {
+  background: var(--cd-bg-hover);
+}
+
+.dev-browser-menu-popover {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  display: grid;
+  min-width: 230px;
+  max-height: min(72vh, 640px);
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+  box-shadow: var(--cd-shadow-panel);
+}
+
+.dev-browser-menu-group {
+  display: grid;
+  gap: 2px;
+}
+
+.dev-browser-menu-group + .dev-browser-menu-group {
+  margin-top: 4px;
+}
+
+.dev-browser-menu-group-label {
+  padding: 5px 8px 2px;
+  color: var(--cd-text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.dev-browser-menu-group-items {
+  display: grid;
+  gap: 1px;
+}
+
+.dev-browser-menu-separator {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--line-soft);
+}
+
+.dev-browser-menu-item {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 9px 0 4px;
+  border: 0;
+  border-radius: var(--cd-radius-control);
+  background: transparent;
+  color: var(--cd-text-primary);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+}
+
 /* In-viewport application menu bar (browser build; the desktop build uses the native OS menu). */
 .app-shell.has-app-menu-bar {
   grid-template-rows: auto minmax(0, 1fr);
@@ -474,6 +559,37 @@ textarea:focus-visible,
   background: transparent;
   color: var(--cd-text-primary);
   font-size: 12px;
+  line-height: 1;
+  cursor: default;
+}
+
+.dev-browser-menu-item:hover:not(:disabled),
+.dev-browser-menu-item:focus-visible {
+  background: var(--cd-bg-hover);
+}
+
+.dev-browser-menu-item:disabled {
+  color: var(--cd-text-disabled);
+  cursor: default;
+}
+
+.dev-browser-menu-item-state {
+  color: var(--cd-accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.dev-browser-menu-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-browser-menu-item-shortcut {
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
   line-height: 1;
   cursor: default;
 }
@@ -751,6 +867,287 @@ textarea:focus-visible,
 
 .tool-palette.floating.horizontal.art-style-palette {
   grid-template-columns: 12px minmax(0, 1fr);
+}
+
+.tool-palette.horizontal.molecule-inspector-palette,
+.tool-palette.floating.horizontal.molecule-inspector-palette,
+.tool-palette.horizontal.ring-inspector-palette,
+.tool-palette.floating.horizontal.ring-inspector-palette {
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: 8px;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel);
+  box-shadow: var(--cd-shadow-panel);
+}
+
+.tool-palette.floating.horizontal.molecule-inspector-palette,
+.tool-palette.floating.horizontal.ring-inspector-palette {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: start;
+}
+
+.tool-palette.floating.horizontal.molecule-inspector-palette .palette-content-drag-grip,
+.tool-palette.floating.horizontal.ring-inspector-palette .palette-content-drag-grip {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.molecule-inspector-controls {
+  display: grid;
+  grid-column: 2;
+  grid-template-columns: 126px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  max-height: min(580px, calc(100vh - 132px));
+  color: var(--cd-text);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.ring-inspector-controls {
+  grid-template-columns: minmax(0, 1fr);
+  max-height: min(320px, calc(100vh - 132px));
+}
+
+.molecule-inspector-tab-rail {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 6px;
+  border-right: 1px solid var(--cd-border-subtle);
+}
+
+.molecule-inspector-tab {
+  display: grid;
+  width: 100%;
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cd-text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.1;
+  text-align: left;
+}
+
+.molecule-inspector-tab.active {
+  border-color: rgb(29 127 104 / 42%);
+  background: rgb(29 127 104 / 12%);
+  color: var(--cd-text);
+}
+
+.molecule-inspector-tab-panel,
+.molecule-inspector-panel-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.molecule-inspector-tab-panel {
+  overflow: hidden;
+}
+
+.molecule-inspector-panel-body {
+  align-content: start;
+  max-height: min(560px, calc(100vh - 148px));
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.molecule-inspector-target-row,
+.molecule-inspector-section,
+.molecule-inspector-effect-controls {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.molecule-inspector-target-row {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  min-height: 22px;
+}
+
+.molecule-inspector-target-label {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.molecule-inspector-target-key {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cd-text-muted);
+  font-family: var(--cd-font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.molecule-inspector-empty-message {
+  margin: 0;
+  color: var(--cd-text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.molecule-inspector-field {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.molecule-inspector-field > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--cd-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.molecule-inspector-field input,
+.molecule-inspector-field select {
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--cd-border);
+  border-radius: 4px;
+  background: var(--cd-bg);
+  color: var(--cd-text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.molecule-inspector-number-field {
+  grid-template-columns: 132px 72px minmax(0, 1fr);
+}
+
+.molecule-inspector-number-field input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.molecule-inspector-color-field {
+  grid-template-columns: 132px 34px;
+  justify-content: start;
+}
+
+.molecule-inspector-background-field {
+  grid-template-columns: 132px minmax(0, 1fr) 34px;
+}
+
+.molecule-inspector-check-group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--cd-bg) 72%, transparent);
+}
+
+.molecule-inspector-check-group-title {
+  color: var(--cd-text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.15;
+}
+
+.molecule-inspector-template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.molecule-inspector-template-button {
+  width: auto;
+  min-width: 70px;
+  height: 26px;
+  justify-content: center;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.molecule-inspector-checkbox-field {
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.molecule-inspector-checkbox-field > span {
+  color: var(--cd-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.molecule-inspector-swatch-grid,
+.molecule-inspector-effect-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.molecule-inspector-effect-row .toolbar-text-button {
+  width: auto;
+  min-width: 44px;
+  height: 24px;
+  padding: 0 6px;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.molecule-inspector-none-button {
+  width: auto;
+  min-width: 44px;
+  height: 24px;
+  padding-inline: 7px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.molecule-inspector-color-input {
+  position: relative;
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+}
+
+.molecule-inspector-color-input input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.molecule-inspector-slider {
+  display: grid;
+  gap: 3px;
+}
+
+.molecule-inspector-slider input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
 }
 
 .tool-palette.horizontal.art-style-palette .palette-content-drag-grip,
@@ -3243,6 +3640,20 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+.native-molecule-ring-hit-target {
+  fill: transparent;
+  stroke: none;
+  /* Ring interiors are only selectable while the Rings toolbar is open. The catcher lives in
+     the render plan (shared stacking layer with the atom/bond catchers), so gate the hit surface
+     here instead: pointer-events: none also drops it from elementFromPoint, so a closed-toolbar
+     click in an empty ring center passes through as empty space rather than a molecule hit. */
+  pointer-events: none;
+}
+
+[data-ring-inspector-open="true"] .native-molecule-ring-hit-target {
+  pointer-events: fill;
+}
+
 .native-bond-line {
   pointer-events: none;
 }
@@ -3272,6 +3683,15 @@ textarea:focus-visible,
 .native-molecule-selection-blob {
   color: var(--cd-accent);
   opacity: 0.34;
+}
+
+.native-molecule-selected-ring {
+  fill: var(--cd-accent);
+  fill-opacity: 0.18;
+  stroke: var(--cd-accent-strong);
+  stroke-width: 2;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
 }
 
 .native-bond-selection-connector {
@@ -4422,6 +4842,17 @@ textarea:focus-visible,
     flex-wrap: wrap;
     height: auto;
     min-height: 30px;
+  }
+
+  .menu {
+    order: 3;
+    width: 100%;
+    overflow: auto;
+    padding-bottom: 4px;
+  }
+
+  .dev-browser-menu-list {
+    overflow: visible;
   }
 
   .command-bar {

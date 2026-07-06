@@ -50,10 +50,12 @@
     "allow-engine3d-sidecar-poll-session",
     "allow-engine3d-sidecar-stop-session",
     "allow-rasterize-svg",
+    "allow-list-system-fonts",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-confirm",
     "fs:allow-read-text-file",
+    "fs:allow-read-file",
     "fs:allow-write-text-file",
     "fs:allow-write-file",
     {

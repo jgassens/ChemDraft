@@ -2,17 +2,21 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { applyPatches } from "@chemdraft/chem-core";
+import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette } from "./ToolPalette";
+import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import {
   objectEffectDisableCommandId,
   objectEffectOpacityCommandId,
   objectEffectSizeCommandId,
   objectCustomColorCommandId,
   objectGradientStopOffsetCommandId,
+  moleculeInspectorTemplateExportCommandId,
+  moleculeInspectorTemplateImportCommandId,
+  moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
 import { getToolsetCommandGroups } from "./toolsets";
@@ -452,6 +456,231 @@ describe("ToolPalette art color popover", () => {
     expect(onCommit).toHaveBeenCalledWith(objectGradientStopOffsetCommandId(0, 0.37));
   });
 });
+
+describe("ToolPalette molecule inspector font controls", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("loads Atom Labels font options lazily while preserving unavailable stored fonts", async () => {
+    const onInvoke = vi.fn();
+    const model = createMoleculeInspectorModel(moleculeInspectorDocument(), {
+      selectedObjectIds: ["mol_font"]
+    });
+
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showMoleculeInspectorControls: true,
+        currentMoleculeInspector: model,
+        onInvoke
+      }));
+    });
+
+    const atomLabelsTab = container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-atom-labels");
+    if (!atomLabelsTab) {
+      throw new Error("Expected Atom Labels tab.");
+    }
+
+    await act(async () => {
+      atomLabelsTab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const familySelect = container.querySelector<HTMLSelectElement>('[aria-label="Atom label font family"]');
+    const faceSelect = container.querySelector<HTMLSelectElement>('[aria-label="Atom label font face"]');
+    expect([...familySelect?.options ?? []].map((option) => option.value)).toContain("Unavailable Lab Font");
+    expect([...familySelect?.options ?? []].map((option) => option.value)).toContain("Arial");
+    expect(familySelect?.value).toBe("Unavailable Lab Font");
+    expect([...faceSelect?.options ?? []].map((option) => option.value)).toContain("650:italic");
+  });
+
+  it("does not commit 0 when a numeric structure field is cleared to empty", async () => {
+    const onInvoke = vi.fn();
+    const model = createMoleculeInspectorModel(moleculeInspectorDocument(), {
+      selectedObjectIds: ["mol_font"]
+    });
+
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showMoleculeInspectorControls: true,
+        currentMoleculeInspector: model,
+        onInvoke
+      }));
+    });
+
+    // Ensure the Structure tab (which owns the numeric fields) is active.
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>("#molecule-inspector-tab-structure")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const bondLengthInput = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length"]');
+    if (!bondLengthInput) {
+      throw new Error("Expected the Target bond length field on the Structure tab.");
+    }
+    expect(bondLengthInput.disabled).toBe(false);
+
+    // Clearing the field and committing must leave the value untouched, not stamp 0.
+    act(() => {
+      bondLengthInput.value = "";
+      bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
+
+    // A real numeric edit still commits.
+    act(() => {
+      bondLengthInput.value = "20";
+      bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith(moleculeStructureBondLengthCommandId(20));
+  });
+
+  it("renders a Templates tab that routes import and export commands", async () => {
+    const onInvoke = vi.fn();
+    const model = createMoleculeInspectorModel(moleculeInspectorDocument(), {
+      selectedObjectIds: ["mol_font"]
+    });
+
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showMoleculeInspectorControls: true,
+        currentMoleculeInspector: model,
+        onInvoke
+      }));
+    });
+
+    const templatesTab = container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-templates");
+    if (!templatesTab) {
+      throw new Error("Expected Templates tab.");
+    }
+
+    act(() => {
+      templatesTab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-molecule-inspector-section="templates"]')?.textContent).toContain("1 molecule");
+    const importButton = container.querySelector<HTMLButtonElement>(
+      `[data-command-id="${moleculeInspectorTemplateImportCommandId}"]`
+    );
+    const exportButton = container.querySelector<HTMLButtonElement>(
+      `[data-command-id="${moleculeInspectorTemplateExportCommandId}"]`
+    );
+    expect(importButton?.disabled).toBe(false);
+    expect(exportButton?.disabled).toBe(false);
+
+    act(() => {
+      importButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      exportButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onInvoke).toHaveBeenCalledWith(moleculeInspectorTemplateImportCommandId);
+    expect(onInvoke).toHaveBeenCalledWith(moleculeInspectorTemplateExportCommandId);
+  });
+
+  it("keeps template loading available when no molecule is selected", async () => {
+    const onInvoke = vi.fn();
+    const model = createMoleculeInspectorModel(moleculeInspectorDocument(), {
+      selectedObjectIds: []
+    });
+
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: [],
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showMoleculeInspectorControls: true,
+        currentMoleculeInspector: model,
+        onInvoke
+      }));
+    });
+
+    const templatesTab = container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-templates");
+    if (!templatesTab) {
+      throw new Error("Expected Templates tab.");
+    }
+
+    act(() => {
+      templatesTab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-molecule-inspector-section="templates"]')?.textContent).toContain("No molecule");
+    const loadButton = container.querySelector<HTMLButtonElement>(
+      `[data-command-id="${moleculeInspectorTemplateImportCommandId}"]`
+    );
+    const exportButton = container.querySelector<HTMLButtonElement>(
+      `[data-command-id="${moleculeInspectorTemplateExportCommandId}"]`
+    );
+    expect(loadButton?.textContent).toBe("Load");
+    expect(loadButton?.disabled).toBe(false);
+    expect(exportButton?.disabled).toBe(true);
+
+    act(() => {
+      loadButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onInvoke).toHaveBeenCalledWith(moleculeInspectorTemplateImportCommandId);
+  });
+});
+
+function moleculeInspectorDocument() {
+  const document = createEmptyDocument({
+    id: "doc_molecule_inspector_fonts",
+    pageId: "page_molecule_inspector_fonts",
+    title: "Molecule Inspector Fonts"
+  });
+  const molecule: MoleculeObject = {
+    id: "mol_font",
+    type: "molecule",
+    x: 120,
+    y: 120,
+    width: 80,
+    height: 40,
+    rotation: 0,
+    style: {
+      atomLabelFontFamily: "Unavailable Lab Font",
+      atomLabelFontWeight: 650,
+      atomLabelFontStyle: "italic"
+    },
+    structureFormat: "smiles",
+    structure: "CO",
+    atoms: [
+      { id: "atom_001", element: "C", x: 140, y: 160, formalCharge: 0 },
+      { id: "atom_002", element: "O", x: 200, y: 160, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }
+    ],
+    superatoms: [],
+    rGroups: []
+  };
+  return applyPatches(document, [
+    { op: "addObject", pageId: document.pages[0].id, object: molecule },
+    { op: "setSelection", pageId: document.pages[0].id, objectIds: [molecule.id] }
+  ]);
+}
 
 describe("ToolPalette arrange flyouts", () => {
   let container: HTMLDivElement;

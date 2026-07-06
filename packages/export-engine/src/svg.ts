@@ -124,7 +124,8 @@ function shouldSkipExportFragment(fragment: PageSvgFragment): boolean {
   return className === "native-bond-hit-target" ||
     className === "native-bond-hover-decorator" ||
     className === "native-atom-hit-target" ||
-    className === "native-crossing-hit-target";
+    className === "native-crossing-hit-target" ||
+    className === "native-molecule-ring-hit-target";
 }
 
 function svgAttributeValue(value: Exclude<PageSvgAttributeValue, undefined>): string {

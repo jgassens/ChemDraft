@@ -1,206 +1,421 @@
-# Spin 3D Handoff / Rotation Parity Fix
+# Rings Toolbar and Molecule Inspector Tabs
 
-## Context
+## Objective
 
-Spinning a molecule in 3D then committing it (overlay release, or a later 3D-backed X/Y
-rotation) makes the committed drawing **balloon and change proportions** on edge-on views,
-and **jump** when the Spin 3D overlay is reopened. It's a projection-parity bug, not a
-chemistry-engine or zoom bug.
+Split ring appearance out of the Molecule Inspector. The existing hidden-by-default ring appearance work becomes its own compact `core.ringInspector` toolbar, while `core.moleculeInspector` remains hidden by default and contains three tabs:
 
-Two different projection contracts are in play:
+1. `Structure`
+2. `Atom Labels`
+3. `Templates`
 
-- The live overlay uses `projectSpin(coords3d, bondPairs, quat, placement)` with a **fixed**
-  `ScreenPlacement.scale` ([spinOverlay.ts:239](apps/desktop/src/interaction/spinOverlay.ts:239)),
-  so an edge-on molecule foreshortens *inside the same box*.
-- `flattenSpunMolecule` instead **rescales the projection back to the molecule's current
-  median 2D bond length** ([documentWorkflow.ts:9757-9777](apps/desktop/src/documentWorkflow.ts:9757)):
-  `scale = medianOriginal / medianProjected`. Edge-on -> `medianProjected -> 0` -> scale blows
-  up -> the molecule inflates. Every commit and every modeled X/Y drag frame goes through
-  this path, so the drawing diverges from the overlay and drifts across rotations.
+The slice is complete when users can select one or more molecule targets, inspect mixed values, edit base molecule drawing and atom-label appearance, edit only selected atom labels through sparse per-atom overrides, import ChemDraw `.cds` style-sheet inputs through the style compatibility boundary, export Molecule Inspector settings as `.template` files, undo and redo those edits as single operations, save and reopen them, and obtain matching canvas, Spin 3D, editor-overlay, and SVG output without changing chemical identity.
 
-Fix: make every modeled Spin 3D path share **one fixed `ScreenPlacement` contract** -- initial
-overlay, optimized-coordinate hot-swap, overlay release/flatten, overlay reopen, drag X/Y,
-typed X/Y, drag Z, typed Z -- with **zero** change to chemical identity, stereo validation,
-wedges, crossings, depth cues, or CDXML/CDX behavior.
+The existing Rings functionality remains operational throughout the work as its own toolbar. Ring interior selection is available only while the Rings toolbar is open.
 
-This plan reconciles codex's redo with the verified code. Two correctness facts make it
-robust (and are why this is safe to do per-keystroke / per-frame):
-- **Preview re-derives from a frozen base.** `rotationInputDocumentFromDraft`
-  ([6537](apps/desktop/src/MainWindow.tsx:6537)) always recomputes from `input.startDocument`;
-  drag flattens from `drag.startDocument` ([6244](apps/desktop/src/MainWindow.tsx:6244)). So
-  folding the updated orientation into the preview document is **idempotent** -- typing/dragging
-  never accumulates scale or rotation drift.
-- **Commit promotes the preview.** `handleRotationInputKeep`
-  ([6670](apps/desktop/src/MainWindow.tsx:6670)) -> `commitLiveInputPreview`, and drag commit is
-  `commitProjectedPlaneTilt` ([6492](apps/desktop/src/MainWindow.tsx:6492)). The folded model
-  is already in the previewed doc, so nothing special is needed at commit.
+## Completed Rings Slice
 
-## Exact code changes
+- Ring identity is topology-derived from sorted bond IDs and owned by `packages/layout-engine`.
+- Per-ring fill/effect appearance is stored in `style.ringStyles`.
+- Ring fills render below bonds and atom labels, flow through SVG export, and preserve whole-molecule fill fallback.
+- Ring selection is gated by the Rings toolbar being open; atom hits beat bond hits, and bond hits beat ring-interior hits.
+- Whole-molecule Art edits must not silently clear `style.ringStyles`.
 
-### 1. Reuse projection primitives; add one scale helper
-File: [spinOverlay.ts](apps/desktop/src/interaction/spinOverlay.ts)
+## Preparation Before Implementation
 
-Do **not** add a `SpinProjectionPlacement` type or a `projectConformerToPlacement` projector --
-reuse the existing `ScreenPlacement`, `projectSpin`, `projectPoint`, `conformerCentroid`,
-`medianBondLength2d`. Add one helper next to `overlayScale`:
+Before implementation code, update:
+
+- `PLANS.md`: this active implementation plan replaces the Rings-first plan.
+- `AGENTS.md`: branch state is active implementation; scope is Rings, Structure, and Atom Labels; Structure and Atom Labels are no longer deferred.
+- `apps/desktop/src/MainWindow.tsx`: update the `Build` string when implementation starts and again at closeout.
+
+Preserve chemical-identity, sparse-override, shared-layout, command-ID, and verification constraints. Per-bond width, per-bond opacity, per-bond effects, label underline, label outline, and label shadow remain outside this slice.
+
+## Existing Systems to Reuse
+
+Do not introduce `NativeMoleculeDrawingSettings`, `NativeAtomLabelSettings`, or another parallel molecule-style object.
+
+Continue using `MoleculeObject.style` and `nativeDrawingStyleFromObjectStyle()`.
+
+Reuse existing style fields:
 
 ```ts
-export function orientedOverlayScale(
-  drawn2dPoints: readonly { x: number; y: number }[],
-  coords3d: ArrayLike<number>,
-  bondPairs: readonly BondPair[],
-  viewMatrix: ViewMatrix
-): number
+bondLengthPx
+bondStrokeWidthPx
+bondColor
+bondLineCap
+multipleBondGapPx
+doubleBondInsetPx
+bondOverlapClearancePx
+
+atomLabelFontFamily
+atomLabelFontSizePx
+atomLabelFontWeight
+atomLabelColor
+atomLabelBackgroundColor
+atomLabelPaddingPx
+atomLabelBondClearancePx
 ```
 
-- `centroid = conformerCentroid(coords3d)`.
-- For each atom: subtract centroid, `projectPoint(viewMatrix, centered)`, push `{ x: px, y: -py }`.
-- `drawn = medianBondLength2d(drawn2dPoints, bondPairs)`,
-  `projected = medianBondLength2d(projectedPoints, bondPairs)`.
-- Return `drawn / projected` when both > 0, else `1` (never `Infinity`/`NaN`).
+Add only:
 
-This scales the current 2D drawing against the conformer **projected at a given orientation**
-(not the raw 3D median), so `projectSpin` lands exactly on a tilted committed molecule. Used
-only for reopen/rotation of an already-modeled molecule; fresh embed keeps `overlayScale`.
+```ts
+atomLabelFontStyle
+atomLabelAlignment
+atomLabelPlacement
+atomLabelShowTerminalCarbons
+atomLabelHideImplicitHydrogens
+```
 
-### 2. `flattenSpunMolecule` -- optional placement (core fix)
-File: [documentWorkflow.ts:9700](apps/desktop/src/documentWorkflow.ts:9700)
+Continue using:
 
-- Add `import type { ScreenPlacement } from "./interaction/spinOverlay";` (type-only; no
-  runtime cycle -- spinOverlay never imports documentWorkflow).
-- New signature: `flattenSpunMolecule(document, objectId, coords3d, viewMatrix, options: { placement?: ScreenPlacement } = {})`.
-- Replace **only** the median-rescale block
-  ([9757-9777](apps/desktop/src/documentWorkflow.ts:9757)). Keep `projectedById`,
-  `projectedInOrder`, `projectedCentroid`.
-  - **With `placement`:** affine-transform the coords `flattenPerspectiveFrom3D` already
-    produced (provably identical to `projectSpin`, but consistent with the wedge/crossing
-    geometry -- do not re-project):
-    ```ts
-    x: placement.centerX + (p.x - projectedCentroid.x) * placement.scale
-    y: placement.centerY + (p.y - projectedCentroid.y) * placement.scale
-    ```
-  - **Without `placement`:** keep the existing median-rescale/recenter logic exactly
-    (back-compat for the current test suite).
-- Leave untouched: `flattenPerspectiveFrom3D`, stereo refusal, wedge/hash assignment, graph
-  identity diff, crossing computation/patching, `display.depthWeight`, `defaultDoubleBondSide`,
-  molfile rewrite, page-bound clamping, selection preservation.
+- `style.ringStyles` for per-ring appearance.
+- `style.bondColors` for per-bond color overrides.
+- `style.atomLabelColors` for per-atom label color overrides.
+- Sparse per-atom atom-label style maps for selected atom-label edits.
+- `bond.display.bondStyle` for per-bond style identity.
+- Existing Art-control preview, commit, and cancel patterns.
+- `planPageSvgRender` as the shared SVG planning route.
+- The cached native system-font database already used by raster export.
 
-### 3. `MainWindow` -- thread placement everywhere
-File: [MainWindow.tsx](apps/desktop/src/MainWindow.tsx)
+No document schema-version increment is required merely for these style metadata keys. Old documents resolve new fields through defaults.
 
-- Import: add `orientedOverlayScale` to the existing `spinOverlay` import
-  ([398](apps/desktop/src/MainWindow.tsx:398)).
-- `spinPlacementFor` ([2478](apps/desktop/src/MainWindow.tsx:2478)): add optional
-  `orientation?: Quaternion`. Keep `centerX/centerY` (mean of drawn atoms) and `bondPairs`.
-  Scale = `orientedOverlayScale(points2d, coords3d, bondPairs, quatToViewMatrix(orientation))`
-  when `orientation` is given, else `overlayScale(...)`.
-  - Fresh embed ([2697](apps/desktop/src/MainWindow.tsx:2697)) and refined hot-swap
-    ([2728](apps/desktop/src/MainWindow.tsx:2728)): unchanged (naive scale).
-  - Reopen ([2610](apps/desktop/src/MainWindow.tsx:2610)): pass `reopen.quat`.
-- `commitSpinFlatten` ([2386](apps/desktop/src/MainWindow.tsx:2386)): pass
-  `{ placement: state.placement }`.
+## Explicit Non-Goals
 
-### 4. `Spin3dRotateSnapshot` + drag start
-File: [MainWindow.tsx:629](apps/desktop/src/MainWindow.tsx:629)
+This slice does not include:
 
-- Add **`placement: ScreenPlacement`** to `Spin3dRotateSnapshot`. (Do not add `bondPairs` to
-  the snapshot -- nothing consumes it during drag; keep the snapshot minimal.)
-- `spin3dRotateSnapshotFor` ([6186](apps/desktop/src/MainWindow.tsx:6186)): compute the fixed
-  placement via `spinPlacementFor(molecule, coords3d, model.orientation)` and store it. Both
-  drag-state builders ([9171](apps/desktop/src/MainWindow.tsx:9171),
-  [9332](apps/desktop/src/MainWindow.tsx:9332)) go through this one function, so they inherit it.
+- Per-bond stroke width.
+- Per-bond opacity.
+- Per-bond effects.
+- Label underline, outline, or shadow.
+- Font embedding in native documents or SVG.
+- A font-management preference screen.
+- Modification of atom elements, formal charges, bond orders, stereochemistry, atom IDs, bond IDs, or molecule identity.
+- Replacing the existing ring-detection or ring-key algorithm.
+- Clearing sparse overrides as a side effect of base-style editing.
 
-### 5. Modeled drag X/Y
-Function `projectedPlaneTiltFromDrag`, 3D branch
-([6231-6263](apps/desktop/src/MainWindow.tsx:6231)).
-- Keep the delta-quaternion order and `nextQuat` composition exactly as today.
-- Change the flatten call to pass `{ placement: model.placement }` (fixed snapshot placement)
-  on every preview frame.
-- Keep the "last valid preview" handling for stereo-refused frames; commit
-  ([6492](apps/desktop/src/MainWindow.tsx:6492)) attaches `lastValidOrientation` as today.
+The Structure tab's existing indicator controls are in scope as render overlays. They must be driven by existing native or compatibility metadata only:
 
-### 6. Modeled typed X/Y -- delta semantics
-Function `rotationInputDocumentFromDraft`, `kind: "xy"`
-([6561](apps/desktop/src/MainWindow.tsx:6561)).
-- Only when the whole molecule has `validSpin3dModelFor(object)` (read off `input.startDocument`).
-  Read `coords3d` via `spin3dModelCoordsForMolecule`; build `placement` from the molecule at
-  `model.orientation` (`spinPlacementFor(object, coords3d, model.orientation)`).
-- Treat typed degrees as a **nudge**: `deltaQuat = quatMultiply(quatFromAxisAngle(SPIN_AXIS_Y, yRad), quatFromAxisAngle(SPIN_AXIS_X, xRad))`,
-  `nextQuat = quatNormalize(quatMultiply(deltaQuat, model.orientation))`.
-- `flattenSpunMolecule(input.startDocument, objectId, coords3d, quatToViewMatrix(nextQuat), { placement })`;
-  if committed, `document = attachSpin3dModelFromConformer(outcome.document, objectId, { coords3d, orientation: nextQuat, engine: model.engine })`.
-  (Idempotent: base is always `startDocument`.)
-- Return `{ kind: "xy", document, tiltXRad: xRad, tiltYRad: yRad, clamped: false }`.
-- Seed the typed X/Y drafts to `0` for modeled molecules when the rotation input opens (delta
-  baseline), so reopening after a commit starts from 0 rather than a stale absolute tilt.
-- Non-modeled molecules, selected fragments, and art objects keep the legacy
-  `tiltNativeMoleculeProjectedPlane` / `applyDocumentObjectProjectedPlaneTilt` path untouched.
+- Atom numbers come from stable atom order.
+- Atom and bond stereochemistry indicators come from wedge/hash/dashed display or imported stereo metadata.
+- Query indicators appear only for native unknown/query atoms or bonds, R-group query anchors, or explicit compatibility metadata.
+- Reaction indicators appear only for reaction/RXN compatibility metadata.
+- Ordinary SMILES must not receive fake query or reaction annotations.
 
-### 7. Modeled typed Z
-Function `rotationInputDocumentFromDraft`, `kind: "z"`
-([6543](apps/desktop/src/MainWindow.tsx:6543)).
-- Keep the visible 2D path (`rotateDocumentObject` with the existing absolute-Z delta).
-- When `validSpin3dModelFor(object)`: fold the **applied** Z delta into the stored model,
-  mirroring drag Z's sign ([6460-6481](apps/desktop/src/MainWindow.tsx:6460)):
-  `nextQuat = quatNormalize(quatMultiply(quatFromAxisAngle(SPIN_AXIS_Z, -deltaDegrees * Math.PI/180), model.orientation))`,
-  then `attachSpin3dModelFromConformer(rotatedDocument, objectId, { coords3d, orientation: nextQuat, engine: model.engine })`.
-  (Idempotent via the frozen-base property.) Non-modeled/art unchanged.
+## Delivery Sequence
 
-### 8. Build stamp + guardrail note
-- Bump `CURRENT_BUILD_STAMP` ([MainWindow.tsx:962](apps/desktop/src/MainWindow.tsx:962)) and
-  `**Current Build**` ([AGENTS.md:3](AGENTS.md:3)) to the current date/time per the `M.D.x`
-  convention.
-- Add a Spin 3D note to AGENTS.md: `ScreenPlacement` is the shared visual contract (overlay,
-  flatten, reopen, drag, typed); `flattenSpunMolecule(..., { placement })` must match
-  `projectSpin`; do not add duplicate projection helpers (consistent with section 5.26 -- no
-  rendering math added; projection/scale live in `interaction/`, flatten in `documentWorkflow`).
+Implement as three independently testable commits. Documentation changes may be committed separately or included in the first implementation commit, but must happen before code changes begin.
 
-## Tests
+### Commit 1: Inspector Targets, Tabs, and Structure
 
-- **spinOverlay.test.ts** -- `orientedOverlayScale`: tilted current 2D + stored orientation
-  yields a scale where `projectSpin` reproduces the current median 2D bond length; `overlayScale`
-  unchanged for fresh embed; edge-on returns finite (never `Infinity`/`NaN`).
-- **spinFlatten.test.ts** -- with `placement`, flattened atom coords match `projectSpin` for the
-  same coords/orientation/placement (parity linchpin); edge-on/oblique stays inside the placement
-  envelope instead of inflating; `display.depthWeight` still equals `bondDepthWeights`; existing
-  no-placement median-rescale tests stay green.
-- **flattenRoundTrip.test.ts** -- existing IDENTITY/tilted round-trips stay green; add a placement
-  round-trip.
-- **spin3dModel.test.ts** -- initial flatten+attach then modeled X/Y keeps median size bounded;
-  repeated X/Y rotations don't drift in width/height; drag Z and typed Z fold the same-sign
-  stored orientation; modeled typed X/Y updates the stored orientation and writes no legacy
-  `tiltXDegrees/tiltYDegrees`.
-- **spin3dSession.test.ts** -- start spin -> commit flatten -> reopen; overlay exists and object
-  bounds before/after reopen do not jump (mocked conformer callbacks; no real OCL).
-- **App.test.ts** -- modeled typed X/Y calls `flattenSpunMolecule` with placement; non-modeled
-  typed X/Y stays on the legacy tilt path.
+Files:
 
-Run:
+- `apps/desktop/src/moleculeInspectorModel.ts`
+- `apps/desktop/src/moleculeInspectorModel.test.ts`
+- `apps/desktop/src/artInspectorModel.ts`
+- `apps/desktop/src/MainWindow.tsx`
+- `apps/desktop/src/ToolPalette.tsx`
+- `apps/desktop/src/App.css`
+- `apps/desktop/src/PaletteWindow.tsx`
+- `apps/desktop/src/window-manager/index.ts`
+- `apps/desktop/src/toolsets/desktop-toolsets.json`
+- relevant command, workflow, UI, and palette transport tests
+
+Replace the flat ring-only model with nested tab models:
+
+```ts
+export type MoleculeInspectorTabId = "structure" | "atom-labels";
+export type MoleculeInspectorContext = "none" | "molecule" | "ring" | "bond" | "atom";
+
+export interface MoleculeInspectorTargets {
+  moleculeObjectIds: readonly string[];
+  ringTargets: readonly MoleculeInspectorRingSelection[];
+  context: MoleculeInspectorContext;
+}
+
+export interface MoleculeInspectorModel {
+  targets: MoleculeInspectorTargets;
+  suggestedTab: MoleculeInspectorTabId;
+  rings: MoleculeInspectorRingsModel;
+  structure: MoleculeInspectorStructureModel;
+  atomLabels: MoleculeInspectorAtomLabelsModel;
+}
+```
+
+The target resolver must include selected molecule objects, include the parent molecule for selected atoms/bonds/rings, dedupe by molecule ID, ignore selected non-molecules, return molecule IDs in stable document order, keep ring targets separate, and validate ring keys against `nativeMoleculeRings(object)`.
+
+Suggested tab:
+
+- `ring` -> `rings`
+- `atom` -> `atom-labels`
+- `bond`, `molecule`, `none` -> `structure`
+
+Mixed-value resolution must use `nativeDrawingStyleFromObjectStyle(object.style)`. A field is mixed only when at least two targeted molecules have non-equal resolved values. Mixed fields return `{ value: null, mixed: true }`.
+
+For `bondLengthPx`, the model shows the representative bond length used by the scaling workflow, not merely stale metadata. A molecule with no usable bonds falls back to resolved `style.bondLengthPx`.
+
+Structure controls:
+
+| Control | Style key | UI | Limits |
+| --- | --- | --- | --- |
+| Target bond length | `bondLengthPx` | numeric field plus slider | 8-120 px, step 0.5 |
+| Stroke width | `bondStrokeWidthPx` | numeric field plus slider | 0.25-12 px, step 0.25 |
+| Bond color | `bondColor` | swatch and color picker | normalized CSS hex |
+| Line cap | `bondLineCap` | select | butt, round, square |
+| Multiple-bond gap | `multipleBondGapPx` | numeric field plus slider | 0.5-24 px, step 0.25 |
+| Double-bond inset | `doubleBondInsetPx` | numeric field plus slider | 0-24 px, step 0.25 |
+| Overlap clearance | `bondOverlapClearancePx` | numeric field plus slider | 0-32 px, step 0.5 |
+
+Keep range definitions in one exported module or in `commands.ts`; UI, parser, and tests consume the same bounds.
+
+Add explicit Structure command factory/parser pairs:
+
+```text
+molecule.structure.bondLength:<number>
+molecule.structure.bondStrokeWidth:<number>
+molecule.structure.bondColor:<normalized-color>
+molecule.structure.bondLineCap:<butt|round|square>
+molecule.structure.multipleBondGap:<number>
+molecule.structure.doubleBondInset:<number>
+molecule.structure.overlapClearance:<number>
+```
+
+Numbers must be finite, in range, canonicalized to at most three decimals, and reject malformed suffixes. Colors reuse existing normalization and reject `"none"`. Enums require exact allowed values.
+
+Add:
+
+```ts
+applyMoleculeBaseStylePatch(document, moleculeObjectIds, patch): ChemDraftDocument
+applyMoleculeTargetBondLength(document, moleculeObjectIds, targetBondLengthPx): ChemDraftDocument
+```
+
+`applyMoleculeBaseStylePatch` dedupes IDs, ignores invalid and non-molecule targets, preserves page order and selection, shallow-copies only affected molecule styles, preserves unknown metadata and sparse maps, returns the original document for no-ops, and does not materialize defaults.
+
+`applyMoleculeTargetBondLength` is not a style-only patch. It calculates each molecule's representative median valid 2D bond length, prefers heavy-atom bonds, scales atom `x` and `y` plus explicit `atom.labelOffset` around that molecule's center, updates `style.bondLengthPx`, preserves atom/bond IDs and display objects, keeps `z`, does not prune ring styles, and returns the original document for no-ops. If safe scaling cannot be preserved, remove Target bond length from this slice.
+
+The Molecule Inspector UI must use a left-side vertical tablist with proper ARIA, keyboard navigation, local active-tab state, session initialization from `model.suggestedTab`, and preview cancellation when tabs/targets/close state change. Tabs remain selectable with no targets; panel controls disable instead.
+
+Native `PaletteWindow` preview/commit/cancel must use a dedicated Molecule Inspector interaction event, not ordinary committed command routing. Preview and commit remain distinguishable even when command IDs match, cancel carries no command ID, and DOM fallback and Tauri transport behave the same.
+
+### Commit 2: Atom Label Style and Display Policy
+
+Files:
+
+- `packages/chem-core/src/styles.ts`
+- `packages/chem-core/src/index.ts`
+- `packages/chem-core/src/styles.test.ts`
+- `packages/layout-engine/src/index.ts`
+- `packages/layout-engine/src/index.test.ts`
+- `packages/export-engine/src/svg.test.ts`
+- `apps/desktop/src/documentWorkflow.ts`
+- `apps/desktop/src/ToolPalette.tsx`
+- `apps/desktop/src/MainWindow.tsx`
+- relevant render and workflow tests
+
+Add:
+
+```ts
+export type NativeAtomLabelAlignment = "automatic" | "left" | "center" | "right";
+export type NativeAtomLabelPlacement = "automatic" | "above" | "below";
+```
+
+Extend `NativeDrawingStyle` with:
+
+```ts
+atomLabelFontStyle: NativeTextFontStyle;
+atomLabelAlignment: NativeAtomLabelAlignment;
+atomLabelPlacement: NativeAtomLabelPlacement;
+atomLabelShowTerminalCarbons: boolean;
+atomLabelHideImplicitHydrogens: boolean;
+```
+
+Defaults:
+
+```ts
+atomLabelFontStyle: "normal";
+atomLabelAlignment: "automatic";
+atomLabelPlacement: "automatic";
+atomLabelShowTerminalCarbons: false;
+atomLabelHideImplicitHydrogens: false;
+```
+
+Atom Label controls:
+
+| Control | Style key | UI | Limits |
+| --- | --- | --- | --- |
+| Font family | `atomLabelFontFamily` | searchable select/editable combo | validated nonempty string |
+| Font face | weight + style | select | catalog/default faces |
+| Size | `atomLabelFontSizePx` | numeric field plus slider | 6-96 px, step 0.5 |
+| Label color | `atomLabelColor` | swatch/color picker | normalized hex |
+| Background | `atomLabelBackgroundColor` | Transparent/Solid plus swatch | transparent or normalized hex |
+| Padding | `atomLabelPaddingPx` | numeric field plus slider | 0-16 px, step 0.25 |
+| Bond clearance | `atomLabelBondClearancePx` | numeric field plus slider | 0-32 px, step 0.5 |
+| Alignment | `atomLabelAlignment` | select/segmented control | automatic, left, center, right |
+| Placement | `atomLabelPlacement` | select | automatic, above, below |
+| Terminal carbon labels | boolean | checkbox | explicit true/false |
+| Hide implicit hydrogens | boolean | checkbox | explicit true/false |
+
+Transparent background stores `atomLabelBackgroundColor: "transparent"`, omits the fill rectangle, and still uses padded bounds and bond clearance.
+
+Add explicit Atom Label command factory/parser pairs:
+
+```text
+molecule.atomLabel.fontFamily:<uri-encoded-family>
+molecule.atomLabel.fontFace:<weight>:<normal|italic>
+molecule.atomLabel.fontSize:<number>
+molecule.atomLabel.color:<normalized-color>
+molecule.atomLabel.backgroundColor:<normalized-color|transparent>
+molecule.atomLabel.padding:<number>
+molecule.atomLabel.bondClearance:<number>
+molecule.atomLabel.alignment:<automatic|left|center|right>
+molecule.atomLabel.placement:<automatic|above|below>
+molecule.atomLabel.showTerminalCarbons:<true|false>
+molecule.atomLabel.hideImplicitHydrogens:<true|false>
+```
+
+Boolean commands require literal lowercase `true` or `false`; no toggle commands.
+
+Create shared atom-label semantic and geometry planning in `packages/layout-engine`. Visibility precedence:
+
+1. Required by chemistry remains visible.
+2. `atom.labelVisible === true` makes optional carbon visible.
+3. `atom.labelVisible === false` hides optional carbon but cannot erase required chemistry.
+4. Terminal-carbon setting applies.
+5. Otherwise skeletal carbon is hidden.
+
+Terminal carbon means carbon with exactly one neighboring non-hydrogen atom, not an isolated carbon. Hidden implicit hydrogens removes generated hydrogen runs only; explicit hydrogen atoms remain visible. `atom.labelOffset` wins over automatic placement.
+
+Effective color precedence:
+
+```ts
+style.bondColors?.[bondId] ?? style.bondColor ?? defaultStyle.bondColor
+style.atomLabelColors?.[atomId] ?? style.atomLabelColor ?? defaultStyle.atomLabelColor
+```
+
+Canvas, Spin 3D, atom-label editor overlay, and SVG export consume shared plans for visibility, runs, typography, bounds, background, placement, and bond exclusion. Font weight/style affect conservative label bounds.
+
+### Commit 3: Shared Font Catalog
+
+Files:
+
+- `apps/desktop/src-tauri/src/fonts.rs`
+- `apps/desktop/src-tauri/src/export.rs`
+- `apps/desktop/src-tauri/src/lib.rs`
+- `apps/desktop/src/systemFonts.ts`
+- `apps/desktop/src/systemFonts.test.ts`
+- `apps/desktop/src/ToolPalette.tsx`
+- Rust tests
+
+Move cached font database ownership out of `export.rs`:
+
+```rust
+pub(crate) fn shared_fontdb() -> Arc<usvg::fontdb::Database>;
+```
+
+Use one process-wide `OnceLock<Arc<usvg::fontdb::Database>>`. Both raster export and `list_system_fonts` use it; no second `load_system_fonts()` scan.
+
+Expose:
+
+```rust
+#[tauri::command]
+pub(crate) async fn list_system_fonts() -> Result<Vec<SystemFontFamily>, String>
+```
+
+Return only:
+
+```ts
+interface SystemFontFamily {
+  family: string;
+  faces: Array<{ weight: number; style: "normal" | "italic" }>;
+}
+```
+
+Never return paths, file names, face indices, or PostScript identifiers. Deduplicate by `(family, weight, style)`, sort faces and families deterministically, map oblique to italic, and run initial scan in Tauri's blocking task facility.
+
+Frontend font loading:
+
+- Load only when Atom Labels becomes active.
+- Cache the promise.
+- Validate native data.
+- Fall back in web/tests or on malformed native data.
+- Include fallback families plus the currently stored family.
+- Preserve unavailable stored families through UI, save/reopen, SVG, and raster export.
+
+Family selection writes only `atomLabelFontFamily`. Face selection writes one `fontFace` command that updates weight and style atomically.
+
+## Testing Matrix
+
+Model tests cover no selection, molecule/multi-molecule selections, parent atom/bond/ring targets, invalid/deleted targets, non-molecule ignored, document-order targets, suggested tabs, uniform/mixed Structure and Atom Label values, atomic font-face comparison, and defaults.
+
+Command tests cover valid round trips, min/max values, below/above range rejection, malformed numbers, canonical decimals, enum validity, URI font family parsing, font face parsing, and boolean parsing.
+
+Workflow tests cover every base-style field, multi-molecule updates, invalid targets, no-ops, selection preservation, unchanged atom/bond arrays, sparse map preservation, chemical identity stability, atomic font-face patches, target bond-length scaling, and visible sparse override precedence.
+
+UI tests cover Molecule Inspector tab order and ARIA, keyboard navigation, suggested initial tabs, user tab persistence, close/reopen reset, disabled no-target panels, dedicated Rings toolbar regressions, mixed placeholders, indeterminate checkboxes, preview cancellation, one undo for drags, numeric Enter/Escape behavior, font catalog lazy loading, unavailable current fonts, native palette interaction round trips, and color-picker open sizing.
+
+Layout/render/export/save tests cover default automatic layout, forced alignment and placement, explicit label offsets, transparent backgrounds, padding/clearance, bold/italic bounds, terminal carbon rules, hidden implicit hydrogens, explicit hydrogens, heteroatoms, charged carbons, per-atom/per-bond color precedence, SVG attributes, unknown font families, serialization round trips, and old-document defaults.
+
+Regression tests cover closed/open Rings toolbar ring-interior hit-testing, Structure and Atom Labels staying separate from ring appearance controls, hit priority, ring commands editing only `style.ringStyles`, existing Art toolbar molecule behavior, whole-molecule fill fallback, and ring undo/redo.
+
+## Manual Stress Pass
+
+Run these in the real browser/app surface:
+
+1. Open the Rings toolbar, select a ring, and confirm the ring controls target that ring.
+2. Open Molecule Inspector and confirm it offers only Structure and Atom Labels.
+3. Close/reopen Molecule Inspector with a selected atom and confirm Atom Labels initializes.
+4. Select two molecules with different stroke widths and verify mixed state.
+5. Set stroke width and undo once.
+6. Change Target bond length for two differently scaled molecules and confirm independent centers.
+7. Apply base bond color with one bond override and confirm override remains visible.
+8. Apply base atom-label color with one atom override and confirm override remains visible.
+9. Show terminal carbon labels, hide implicit hydrogens, and confirm explicit hydrogens remain.
+10. Change family and face, including unavailable/current family preservation.
+11. Save/reopen; undo/redo font, color, toggle, and geometry changes.
+12. Compare Spin 3D label behavior and atom-label editor placement.
+13. Export SVG and inspect labels, colors, and font attributes.
+14. Reconfirm ring interior selection after tab switching and after inspector close.
+
+## Verification and Closeout
+
+Run focused suites for every touched area:
+
 ```bash
-pnpm vitest run apps/desktop/src/interaction/spinOverlay.test.ts apps/desktop/src/spinFlatten.test.ts apps/desktop/src/flattenRoundTrip.test.ts apps/desktop/src/spin3dModel.test.ts apps/desktop/src/spin3dSession.test.ts apps/desktop/src/App.test.ts
-pnpm vitest run apps/desktop/src/agentBridge.test.ts apps/desktop/src/drawingTools.test.ts
-pnpm lint
-cargo test agent_bridge
-git diff --check
+pnpm vitest run \
+  packages/chem-core/src/styles.test.ts \
+  packages/layout-engine/src/index.test.ts \
+  packages/export-engine/src/svg.test.ts \
+  apps/desktop/src/moleculeInspectorModel.test.ts \
+  apps/desktop/src/commands.test.ts \
+  apps/desktop/src/documentWorkflow.test.ts \
+  apps/desktop/src/window-manager/index.test.ts \
+  apps/desktop/src/App.test.ts
 ```
 
-## Manual verification (browser)
-Per the chemdraft browser-verification workflow (launch.json swap, dev port 5174,
-agent-bridge fire-and-forget):
-1. Spin a non-planar molecule; let optimized/refined coords hot-swap in.
-2. Tilt to near edge-on, release -> committed drawing matches the overlay footprint (no balloon).
-3. Reopen Spin 3D -> overlay lands on the drawing (no jump).
-4. Drag X/Y repeatedly -> bounded envelope, foreshorten only, no cumulative drift; bond color +
-   thickness keep updating from depth.
-5. Typed X/Y on the modeled molecule -> same behavior as a drag nudge; fields reset to 0 after apply.
-6. Typed Z on the modeled molecule -> visible Z rotation, stored orientation stays in sync.
-7. Non-modeled molecule X/Y tilt and art-object tilt -> visually unchanged.
+Adjust paths only where the repository already has an equivalent focused test file.
 
-## Acceptance
-- Overlay, initial flatten, reopen, drag X/Y, typed X/Y, drag Z, typed Z share one visual
-  placement contract for modeled molecules.
-- Edge-on modeled rotations foreshorten; they never inflate; repeated rotations don't drift.
-- Depth color/stroke width keep updating on every modeled X/Y rotation.
-- Stereo validation, chemical identity, bond order, charge, wedges, crossings, molfile rewrite,
-  and CDXML/CDX behavior unchanged; legacy non-modeled/art tilt unchanged.
-- No duplicate projection math introduced.
+Then run:
+
+```bash
+pnpm lint
+pnpm build
+git diff --check
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+```
+
+Run additional agent-bridge, hit-test, and drawing-tool suites because ring hit-testing and palette interaction remain part of this slice.
+
+Definition of done:
+
+- `AGENTS.md` and `PLANS.md` describe the active slice accurately.
+- Rings, Structure, and Atom Labels all work in one palette.
+- Multi-molecule targeting and mixed values work.
+- Target bond length has visible, tested semantics or is explicitly removed.
+- Sparse overrides remain present and visually effective.
+- All label surfaces consume shared semantic and layout planning.
+- Font catalog shares the raster-export database.
+- Native and in-document palette interactions preserve preview semantics.
+- Save/reopen and SVG export preserve new styles.
+- Chemical identity tests remain unchanged.
+- Required tests, lint, build, Rust tests, formatting checks, and `git diff --check` pass.
+- Build stamps are updated in `AGENTS.md` and `apps/desktop/src/MainWindow.tsx`.

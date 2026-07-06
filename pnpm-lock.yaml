@@ -65,6 +65,9 @@ importers:
       '@chemdraft/shortcut-engine':
         specifier: workspace:*
         version: link:../../packages/shortcut-engine
+      '@chemdraft/style-compat':
+        specifier: workspace:*
+        version: link:../../packages/style-compat
       '@chemdraft/toolset-registry':
         specifier: workspace:*
         version: link:../../packages/toolset-registry

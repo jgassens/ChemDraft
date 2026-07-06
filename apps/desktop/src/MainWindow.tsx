@@ -74,6 +74,7 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
+  atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
   atomLabelLayout,
   atomLabelRunFontSize,
@@ -85,6 +86,9 @@ import {
   depthCuedLabelScale,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
+  nativeMoleculeRings,
+  nativeMultipleBondGapPx,
+  planMoleculeAtomLabels,
   planPageSvgRender,
   planNativeArtVisual,
   sameBondRef,
@@ -145,6 +149,50 @@ import {
   objectGradientStopOpacityForCommand,
   objectStyleSwapCommand,
   objectStyleTargetCommands,
+  ringInspectorToolsetId,
+  moleculeInspectorToolsetId,
+  toggleRingInspectorCommandId,
+  moleculeInspectorTemplateExportCommandId,
+  moleculeInspectorTemplateImportCommandId,
+  moleculeRingEffectColorForCommand,
+  moleculeRingEffectDisableForCommand,
+  moleculeRingEffectForCommand,
+  moleculeRingEffectOpacityForCommand,
+  moleculeRingEffectSizeForCommand,
+  moleculeRingFillColorForCommand,
+  moleculeRingFillNoneForCommand,
+  moleculeRingFillOpacityForCommand,
+  moleculeStructureChainAngleForCommand,
+  moleculeStructureBondLengthForCommand,
+  moleculeStructureBondStrokeWidthForCommand,
+  moleculeStructureBondBoldWidthForCommand,
+  moleculeStructureBondColorForCommand,
+  moleculeStructureBondLineCapForCommand,
+  moleculeStructureBondSpacingModeForCommand,
+  moleculeStructureBondSpacingPercentForCommand,
+  moleculeStructureMultipleBondGapForCommand,
+  moleculeStructureDoubleBondInsetForCommand,
+  moleculeStructureBondMarginWidthForCommand,
+  moleculeStructureBondHashSpacingForCommand,
+  moleculeStructureOverlapClearanceForCommand,
+  moleculeStructureAtomQueryIndicatorsForCommand,
+  moleculeStructureAtomStereochemistryForCommand,
+  moleculeStructureAtomEnhancedStereochemistryForCommand,
+  moleculeStructureAtomNumbersForCommand,
+  moleculeStructureBondQueryIndicatorsForCommand,
+  moleculeStructureBondStereochemistryForCommand,
+  moleculeStructureBondReactionIndicatorsForCommand,
+  moleculeAtomLabelFontFamilyForCommand,
+  moleculeAtomLabelFontFaceForCommand,
+  moleculeAtomLabelFontSizeForCommand,
+  moleculeAtomLabelColorForCommand,
+  moleculeAtomLabelBackgroundColorForCommand,
+  moleculeAtomLabelPaddingForCommand,
+  moleculeAtomLabelBondClearanceForCommand,
+  moleculeAtomLabelAlignmentForCommand,
+  moleculeAtomLabelPlacementForCommand,
+  moleculeAtomLabelShowTerminalCarbonsForCommand,
+  moleculeAtomLabelHideImplicitHydrogensForCommand,
   pageOrientationActions,
   pageSizeActions,
   structureCleanup3dCommandId,
@@ -159,6 +207,8 @@ import {
   pageCustomSizeAction,
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
+  toggleMoleculeInspectorCommandId,
+  moleculeStructureNumberRanges,
   type CommandSpec
 } from "./commands";
 import {
@@ -230,6 +280,15 @@ import {
   applyMoleculeObjectNoneToSelection,
   applyMoleculeObjectOpacityToSelection,
   applyMoleculeObjectPaintTypeToSelection,
+  applyMoleculeRingEffect,
+  applyMoleculeRingEffectColor,
+  applyMoleculeRingEffectOpacity,
+  applyMoleculeRingEffectSize,
+  applyMoleculeRingFillColor,
+  applyMoleculeRingFillNone,
+  applyMoleculeRingFillOpacity,
+  clearMoleculeRingStyles,
+  deactivateMoleculeRingEffect,
   createNativeSavePayload,
   createPhase4Document,
   createSelectionClipboardPayload,
@@ -336,6 +395,12 @@ import {
   updateNativeGraphicRadialGradientHandle,
   deleteNativeGraphicPathSegment,
   addGraphicObjectGradientStopForSelection,
+  applyMoleculeBaseStylePatch,
+  applyMoleculeAtomIndicatorStylePatch,
+  applyMoleculeAtomLabelStylePatch,
+  applyMoleculeBondStylePatch,
+  applyMoleculeTargetBondLength,
+  applyMoleculeTargetBondLengthToBonds,
   applyGraphicObjectGradientStopColorForSelection,
   applyGraphicObjectGradientStopOffsetForSelection,
   applyGraphicObjectGradientStopOpacityForSelection,
@@ -364,6 +429,7 @@ import {
   type NativeBondOrderTarget,
   type NativeBondOrderValue,
   type NativeChargeValue,
+  type NativeMoleculeRingTarget,
   type NativeSingleLetterElement,
   type DocumentAlignMode,
   type DocumentDistributeAxis,
@@ -381,11 +447,15 @@ import {
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
+  listenForPaletteCommandCancels,
+  listenForPaletteCommandCommits,
+  listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  PREFERENCES_WINDOW_KIND,
   listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
   togglePreferencesWindow,
@@ -430,6 +500,7 @@ import {
 } from "./spin3dSettings";
 import {
   SPIN3D_DEBUGGER_COMMAND_ID,
+  SPIN3D_DEBUGGER_WINDOW_KIND,
   broadcastSpin3dTraceEvent,
   createSpin3dTraceEvent,
   createSpin3dTraceEventFromOcl,
@@ -447,6 +518,22 @@ import {
   type TemplateHoverSample
 } from "./interaction/hitTest";
 import { createArtInspectorModel, selectedVisualObjectsForArtInspector } from "./artInspectorModel";
+import { createMoleculeInspectorModel, representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
+import {
+  moleculeInspectorTemplateFilename,
+  moleculeInspectorTemplateMimeType,
+  moleculeInspectorTemplatePatchFromDrawingStyle,
+  parseMoleculeInspectorTemplate,
+  serializeMoleculeInspectorTemplate
+} from "./moleculeInspectorTemplates";
+import {
+  applySelection,
+  fromSelectionItems,
+  selectionModeFromEvent,
+  toSelectionItems,
+  toSelectionItemsMulti,
+  type SelectionItem
+} from "./selection/selectionPolicy";
 import {
   AGENT_BRIDGE_GLOBAL_NAME,
   createChemDraftAgentBridge,
@@ -485,6 +572,28 @@ type WebKitGestureEvent = Event & {
   clientX?: number;
   clientY?: number;
   scale?: number;
+};
+type DevBrowserMenuCommandItem = {
+  kind: "command";
+  commandId: string;
+  label: string;
+  shortcut?: string;
+  checked?: boolean;
+  disabled?: boolean;
+};
+type DevBrowserMenuSeparatorItem = {
+  kind: "separator";
+};
+type DevBrowserMenuGroupItem = {
+  kind: "group";
+  label: string;
+  items: DevBrowserMenuEntry[];
+};
+type DevBrowserMenuEntry = DevBrowserMenuCommandItem | DevBrowserMenuSeparatorItem | DevBrowserMenuGroupItem;
+type DevBrowserMenuDefinition = {
+  id: string;
+  label: string;
+  items: DevBrowserMenuEntry[];
 };
 type RulerFrame = {
   horizontalScrollPx: number;
@@ -665,7 +774,7 @@ type Spin3dRotateSnapshot = {
 type ObjectRotateDragState = {
   pointerId: number;
   objectId: string;
-  target?: NativeMoleculeSelectionPart;
+  target?: NativeMoleculeTransformableSelectionPart;
   startDocument: ChemDraftDocument;
   centerPoint: ClientPoint;
   startPoint: ClientPoint;
@@ -682,7 +791,7 @@ type ObjectRotateReadoutState = {
 type ProjectedPlaneTiltDragState = {
   pointerId: number;
   objectId: string;
-  target?: NativeMoleculeSelectionPart;
+  target?: NativeMoleculeTransformableSelectionPart;
   startDocument: ChemDraftDocument;
   centerPoint: ClientPoint;
   axisAngleRad: number;
@@ -708,7 +817,7 @@ type ProjectedPlaneTiltReadoutState = {
 };
 type RotationInputBase = {
   objectId: string;
-  target?: NativeMoleculeSelectionPart;
+  target?: NativeMoleculeTransformableSelectionPart;
   targetLabel: string;
   startDocument: ChemDraftDocument;
 };
@@ -742,7 +851,7 @@ type RotationInputDraftDocumentResult =
     };
 type ObjectResizeInputState = {
   objectId: string;
-  target?: NativeMoleculeSelectionPart;
+  target?: NativeMoleculeTransformableSelectionPart;
   targetLabel: string;
   corner: ObjectResizeCorner;
   startDocument: ChemDraftDocument;
@@ -755,7 +864,7 @@ type ObjectResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-rig
 type ObjectResizeDragState = {
   pointerId: number;
   objectId: string;
-  target?: NativeMoleculeSelectionPart;
+  target?: NativeMoleculeTransformableSelectionPart;
   corner: ObjectResizeCorner;
   startDocument: ChemDraftDocument;
   centerPoint: ClientPoint;
@@ -847,12 +956,18 @@ type ResolvedOpenDocument = {
 export type NativeMoleculeSelectionPart =
   | { objectId: string; kind: "atom"; atomId: string }
   | { objectId: string; kind: "bond"; bondId: string }
+  | { objectId: string; kind: "ring"; ringKey: string; atomIds: readonly string[]; bondIds: readonly string[] }
+  | { objectId: string; kind: "rings"; rings: readonly NativeMoleculeRingSelectionItem[] }
   | { objectId: string; kind: "parts"; atomIds: readonly string[]; bondIds: readonly string[] };
+type NativeMoleculeRingSelectionItem = { ringKey: string; atomIds: readonly string[]; bondIds: readonly string[] };
+type NativeMoleculeTransformableSelectionPart = Exclude<NativeMoleculeSelectionPart, { kind: "ring" | "rings" }>;
+export type NativeMoleculeRingSelectionPart = Extract<NativeMoleculeSelectionPart, { kind: "ring" }>;
+type NativeMoleculeRingSetSelectionPart = Extract<NativeMoleculeSelectionPart, { kind: "rings" }>;
 type ToolbarStyleTargetSnapshot = ToolbarColorSelection;
 type NativePartDragState = {
   pointerId: number;
   objectId: string;
-  target: NativeMoleculeSelectionPart;
+  target: NativeMoleculeTransformableSelectionPart;
   startDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
@@ -860,7 +975,7 @@ type NativePartDragState = {
 };
 export type NativeMoleculeSelectionDragIntent =
   | { kind: "whole-object" }
-  | { kind: "native-part"; target: NativeMoleculeSelectionPart }
+  | { kind: "native-part"; target: NativeMoleculeTransformableSelectionPart }
   | { kind: "none" };
 type AtomLabelEditState = {
   objectId: string;
@@ -957,6 +1072,22 @@ type CustomPageSizeDialogState = {
   height: string;
   unit: PageSizeUnit;
 };
+type ObjectStyleRingOverrideMode = "prompt" | "keep" | "clear";
+type ObjectStyleCommandApplyResult = {
+  document: ChemDraftDocument;
+  handled: boolean;
+  targeted: boolean;
+  message: string;
+  needsRingOverrideChoice?: boolean;
+  ringOverrideObjectIds?: string[];
+};
+type MoleculeStyleOverridePromptState = {
+  commandId: string;
+  target: GraphicStylePaintTarget;
+  startDocument: ChemDraftDocument;
+  objectIds: string[];
+};
+
 type Interactive3dWorkspaceState = {
   openId: number;
   objectId: string;
@@ -1073,7 +1204,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.14.35-codex";
+const CURRENT_BUILD_STAMP = "7.5.18.24-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1102,6 +1233,130 @@ const ART_TRANSFORM_DRAG_PREVIEW_BOUNDS_ONLY = false;
 const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
+
+function createDevBrowserCommandMap(commands: readonly CommandSpec[]): ReadonlyMap<string, CommandSpec> {
+  const byId = new Map<string, CommandSpec>();
+  commands.forEach((command) => {
+    if (!byId.has(command.id)) {
+      byId.set(command.id, command);
+    }
+  });
+  return byId;
+}
+
+function createDevBrowserMenuCommand(
+  commandsById: ReadonlyMap<string, CommandSpec>,
+  commandId: string,
+  label: string,
+  options: Pick<DevBrowserMenuCommandItem, "checked" | "disabled" | "shortcut"> = {}
+): DevBrowserMenuCommandItem {
+  const command = commandsById.get(commandId);
+  return {
+    kind: "command",
+    commandId,
+    label,
+    shortcut: options.shortcut ?? command?.shortcutLabel ?? command?.shortcut,
+    checked: options.checked,
+    disabled: options.disabled ?? (command ? command.enabled === false : true)
+  };
+}
+
+function createDevBrowserMenuModel(
+  commandsById: ReadonlyMap<string, CommandSpec>,
+  toolsetRegistry: DesktopToolsetRegistry,
+  visibleToolsetIds: ReadonlySet<string>,
+  rulersVisible: boolean,
+  crosshairsVisible: boolean
+): DevBrowserMenuDefinition[] {
+  const command = (
+    commandId: string,
+    label: string,
+    options?: Pick<DevBrowserMenuCommandItem, "checked" | "disabled" | "shortcut">
+  ) => createDevBrowserMenuCommand(commandsById, commandId, label, options);
+  const separator = (): DevBrowserMenuSeparatorItem => ({ kind: "separator" });
+  const group = (label: string, items: DevBrowserMenuEntry[]): DevBrowserMenuGroupItem => ({
+    kind: "group",
+    label,
+    items
+  });
+  const pageSizeItems = pageSizeActions.map((action) =>
+    command(action.id, action.title.replace(/^Set Page Size: /, ""))
+  );
+  const toolbarItems = getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry).map((item) =>
+    command(item.commandId, item.title, { checked: item.checked })
+  );
+
+  return [
+    {
+      id: "file",
+      label: "File",
+      items: [
+        command("document.new", "New", { shortcut: "Cmd+N" }),
+        command("document.open", "Open...", { shortcut: "Cmd+O" }),
+        command("document.save", "Save", { shortcut: "Cmd+S" }),
+        command("document.saveAs", "Save As...", { shortcut: "Shift+Cmd+S" }),
+        separator(),
+        group("Paper Size", [
+          ...pageSizeItems,
+          command(PAGE_CUSTOM_SIZE_COMMAND_ID, "Custom Size...")
+        ]),
+        group("Orientation", [
+          command("page.setOrientation.portrait", "Portrait"),
+          command("page.setOrientation.landscape", "Landscape")
+        ]),
+        separator(),
+        command("export.open", "Export...", { shortcut: "Shift+Cmd+E" })
+      ]
+    },
+    {
+      id: "edit",
+      label: "Edit",
+      items: [
+        command("edit.undo", "Undo", { shortcut: "Cmd+Z" }),
+        command("edit.redo", "Redo", { shortcut: "Shift+Cmd+Z" }),
+        separator(),
+        command("clipboard.cut", "Cut", { shortcut: "Cmd+X" }),
+        command("clipboard.copy", "Copy", { shortcut: "Cmd+C" }),
+        command("clipboard.paste", "Paste", { shortcut: "Cmd+V" }),
+        separator(),
+        command("layout.group", "Group", { shortcut: "Cmd+G" }),
+        command("layout.ungroup", "Ungroup", { shortcut: "Shift+Cmd+G" })
+      ]
+    },
+    {
+      id: "view",
+      label: "View",
+      items: [
+        command(PREFERENCES_COMMAND_ID, "Preferences...", { shortcut: "Cmd+," }),
+        separator(),
+        command("view.toggleRulers", "Show Rulers", { checked: rulersVisible, shortcut: "Cmd+R" }),
+        command("view.toggleCrosshairs", "Show Crosshairs", {
+          checked: crosshairsVisible,
+          shortcut: "Shift+Cmd+R"
+        }),
+        separator(),
+        command(SPIN3D_DEBUGGER_COMMAND_ID, "3D Debugger"),
+        separator(),
+        group("Toolbars", toolbarItems),
+        command("view.customizeToolbars", "Customize Toolbars...")
+      ]
+    },
+    {
+      id: "structure",
+      label: "Structure",
+      items: [
+        command(structureCleanupCommandId, "Clean up Structure 2D", { shortcut: "Shift+Cmd+K" })
+      ]
+    },
+    {
+      id: "analyze",
+      label: "Analyze",
+      items: [
+        command("chemistry.validateSelection", "Validate Selected Structure")
+      ]
+    }
+  ];
+}
 
 // Spin 3D speculative-work cap. RDKit ETKDG embeds even large polycyclics in ~1-2 s, so
 // prefetching them on selection (to make the Spin 3D click instant) is cheap. The worker
@@ -1166,6 +1421,12 @@ export interface SelectionPressSample {
   y: number;
   /** The document object resolved under the press, if any. */
   objectId?: string;
+  /**
+   * The molecule sub-part the press resolved to (atom/bond/ring), if any. Two presses on the same
+   * molecule but different parts are NOT a double-press: clicking ring A then ring B selects ring
+   * B rather than drilling into the whole molecule.
+   */
+  partKey?: string;
 }
 
 type TransformHandlePressKind =
@@ -1267,6 +1528,7 @@ export function MainWindow({
   nativePalette = false
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
@@ -1296,6 +1558,16 @@ export function MainWindow({
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
   const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
+  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
+  const palettePreviewHandlersRef = useRef<{
+    preview: (commandId: string) => void;
+    commit: (commandId: string) => void;
+    cancel: () => void;
+  }>({
+    preview: () => undefined,
+    commit: () => undefined,
+    cancel: () => undefined
+  });
   const selectionClipboardPayloadRef = useRef<ReturnType<typeof createSelectionClipboardPayload>>(undefined);
   const selectionClipboardPasteStateRef = useRef<SelectionClipboardPasteState | undefined>(undefined);
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
@@ -1361,6 +1633,7 @@ export function MainWindow({
   );
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
+  const [devBrowserMenuOpenId, setDevBrowserMenuOpenId] = useState<string | null>(null);
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
@@ -1371,7 +1644,35 @@ export function MainWindow({
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
-  const [selectedNativeMoleculePart, setSelectedNativeMoleculePart] = useState<NativeMoleculeSelectionPart | undefined>();
+  // Phase 7: native-part selection is stored as one legacy slot per molecule (recency-ordered, so
+  // the last entry is the "primary"). This lets shift/marquee/lasso accumulate atoms/bonds/rings
+  // across *different* molecules. `selectedNativeMoleculePart` (the primary) still drives every
+  // single-molecule operation — drag, spin, delete, the inspector, dependency arrays — unchanged.
+  const [selectedNativeMoleculeParts, setSelectedNativeMoleculeParts] = useState<NativeMoleculeSelectionPart[]>([]);
+  const selectedNativeMoleculePart = selectedNativeMoleculeParts.length > 0
+    ? selectedNativeMoleculeParts[selectedNativeMoleculeParts.length - 1]
+    : undefined;
+  // Back-compat single-slot setter: most call sites replace the whole native-part selection with a
+  // single part or clear it (drag start, plain click, tool change, delete). Those keep working
+  // verbatim; only the additive handlers call `setSelectedNativeMoleculeParts` to retain the parts
+  // of other molecules.
+  const setSelectedNativeMoleculePart = useCallback(
+    (
+      next:
+        | NativeMoleculeSelectionPart
+        | undefined
+        | ((current: NativeMoleculeSelectionPart | undefined) => NativeMoleculeSelectionPart | undefined)
+    ) => {
+      setSelectedNativeMoleculeParts((currentParts) => {
+        const currentPrimary = currentParts.length > 0 ? currentParts[currentParts.length - 1] : undefined;
+        const resolved = typeof next === "function"
+          ? (next as (current: NativeMoleculeSelectionPart | undefined) => NativeMoleculeSelectionPart | undefined)(currentPrimary)
+          : next;
+        return resolved ? [resolved] : [];
+      });
+    },
+    []
+  );
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
   const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
   const [tapeMeasure, setTapeMeasure] = useState<TapeMeasureOverlayState | undefined>();
@@ -1406,6 +1707,8 @@ export function MainWindow({
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
+  const [moleculeStyleOverridePrompt, setMoleculeStyleOverridePrompt] =
+    useState<MoleculeStyleOverridePromptState | undefined>();
   const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
@@ -1454,6 +1757,12 @@ export function MainWindow({
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
+  const selectedNativeMoleculePartsRef = useRef<NativeMoleculeSelectionPart[]>([]);
+  // Latest visible-toolset set, read synchronously in toggleToolset to decide whether a toggle is
+  // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
+  // on a possibly-stale render closure.
+  const visibleToolsetIdsRef = useRef(visibleToolsetIds);
+  const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
@@ -1483,6 +1792,8 @@ export function MainWindow({
   nativePaletteRef.current = nativePalette;
   hoveredNativeDeleteTargetRef.current = hoveredNativeDeleteTarget;
   selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
+  selectedNativeMoleculePartsRef.current = selectedNativeMoleculeParts;
+  visibleToolsetIdsRef.current = visibleToolsetIds;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -1506,6 +1817,9 @@ export function MainWindow({
   const selectedToolbarObject = document.selection.objectIds.length === 1
     ? findDocumentObject(document, document.selection.objectIds[0])
     : undefined;
+  useEffect(() => {
+    prewarmNativeDialogModule();
+  }, []);
   useEffect(() => {
     if (!selectedGraphicPathNode) {
       return;
@@ -1577,17 +1891,25 @@ export function MainWindow({
     selectedToolbarObject,
     textStyleDefaults.color
   ]);
+  const currentMoleculeInspector = useMemo(
+    () => createMoleculeInspectorModel(document, {
+      selectedObjectIds: document.selection.objectIds,
+      selectedPart: selectedNativeMoleculePart,
+      selectedParts: selectedNativeMoleculeParts
+    }),
+    [document, document.selection.objectIds, selectedNativeMoleculePart, selectedNativeMoleculeParts]
+  );
   const currentArtStyle = useMemo(() => {
     const model = createArtInspectorModel({
       document,
       selectedGraphicObjects: [],
       selectedVisualObjects: selectedVisualObjectsForArtInspector(document, {
-        excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
+        excludeMoleculeObjectIds: new Set(selectedNativeMoleculeParts.map((part) => part.objectId))
       }),
       requestedPaintTarget: activeArtPaintTarget
     });
     return model.selectedCount > 0 ? model : undefined;
-  }, [activeArtPaintTarget, document, selectedNativeMoleculePart]);
+  }, [activeArtPaintTarget, document, selectedNativeMoleculeParts]);
   const effectiveArtPaintTarget = currentArtStyle?.activePaintTarget ?? activeArtPaintTarget;
   const currentEyedropperStatus = currentArtStyle
     ? eyedropperStatusLabel(effectiveArtPaintTarget)
@@ -1601,13 +1923,20 @@ export function MainWindow({
   }, [activeToolState.activeCommandId, currentEyedropperStatus]);
 
   const currentToolbarTextStateRef = useRef(
-    createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
+    createToolsetTextStylePayload(
+      currentToolbarTextStyle,
+      currentToolbarTextScript,
+      currentArtStyle,
+      activeArtPaintTarget,
+      currentMoleculeInspector
+    )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
     currentToolbarTextStyle,
     currentToolbarTextScript,
     currentArtStyle,
-    activeArtPaintTarget
+    activeArtPaintTarget,
+    currentMoleculeInspector
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -1690,6 +2019,7 @@ export function MainWindow({
     () => toolsetRegistry.listToolsets().filter((toolset) => visibleToolsetIds.has(toolset.id)),
     [toolsetRegistry, visibleToolsetIds]
   );
+  const ringInspectorOpen = visibleToolsetIds.has(ringInspectorToolsetId);
   const chargeResolutionByMoleculeId = useMemo(() => {
     const byMoleculeId = new Map<string, ReadonlyMap<string, number>>();
     activePage.objects.forEach((object) => {
@@ -1714,6 +2044,35 @@ export function MainWindow({
     () => withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
     [toolsetRegistry]
   );
+  const shellCommandSpecs = useMemo(
+    () => [
+      ...quickActions,
+      ...layerActions,
+      ...toolCommandSpecs,
+      ...viewActions,
+      ...pageSizeActions,
+      pageCustomSizeAction,
+      ...pageOrientationActions,
+      ...toolbarCustomizationActions,
+      ...getToolsetToggleActions(toolsetRegistry)
+    ],
+    [layerActions, quickActions, toolCommandSpecs, toolsetRegistry]
+  );
+  const shellCommandsById = useMemo(
+    () => createDevBrowserCommandMap(shellCommandSpecs),
+    [shellCommandSpecs]
+  );
+  const devBrowserMenus = useMemo(
+    () => createDevBrowserMenuModel(
+      shellCommandsById,
+      toolsetRegistry,
+      visibleToolsetIds,
+      rulersVisible,
+      crosshairsVisible
+    ),
+    [crosshairsVisible, rulersVisible, shellCommandsById, toolsetRegistry, visibleToolsetIds]
+  );
+  const showDevBrowserMenuBar = import.meta.env.DEV && !effectiveNativePalette && !isDesktopRuntime();
   const shortcutCommands = useMemo(
     () => [
       ...quickActions,
@@ -1762,13 +2121,14 @@ export function MainWindow({
   ) => {
     const objectIds = [...nextDocument.selection.objectIds];
     const textRange = activeTextSelectionRef.current;
-    if (objectIds.length === 0 && !moleculePart && !textRange) {
+    const colorMoleculePart = nativeSelectionColorTarget(moleculePart);
+    if (objectIds.length === 0 && !colorMoleculePart && !textRange) {
       return;
     }
 
     toolbarStyleTargetRef.current = {
       objectIds,
-      moleculePart,
+      moleculePart: colorMoleculePart,
       textRange
     };
   }, [selectedNativeMoleculePart]);
@@ -1957,9 +2317,15 @@ export function MainWindow({
 
   useEffect(() => {
     void broadcastToolsetTextStyle(
-      createToolsetTextStylePayload(currentToolbarTextStyle, currentToolbarTextScript, currentArtStyle, activeArtPaintTarget)
+      createToolsetTextStylePayload(
+        currentToolbarTextStyle,
+        currentToolbarTextScript,
+        currentArtStyle,
+        activeArtPaintTarget,
+        currentMoleculeInspector
+      )
     ).catch(() => undefined);
-  }, [activeArtPaintTarget, currentArtStyle, currentToolbarTextScript, currentToolbarTextStyle]);
+  }, [activeArtPaintTarget, currentArtStyle, currentMoleculeInspector, currentToolbarTextScript, currentToolbarTextStyle]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -1970,29 +2336,18 @@ export function MainWindow({
   }, [bondToolActive]);
 
   useEffect(() => {
-    setSelectedNativeMoleculePart((current) => {
-      if (!current) {
+    setSelectedNativeMoleculeParts((current) => {
+      if (current.length === 0) {
         return current;
       }
-
-      const object = findDocumentObject(document, current.objectId);
-      if (object?.type !== "molecule") {
-        return undefined;
-      }
-
-      if (current.kind === "atom") {
-        return object.atoms.some((atom) => atom.id === current.atomId) ? current : undefined;
-      }
-
-      if (current.kind === "bond") {
-        return object.bonds.some((bond) => bond.id === current.bondId) ? current : undefined;
-      }
-
-      const atomIds = current.atomIds.filter((atomId) => object.atoms.some((atom) => atom.id === atomId));
-      const bondIds = current.bondIds.filter((bondId) => object.bonds.some((bond) => bond.id === bondId));
-      return atomIds.length > 0 || bondIds.length > 0
-        ? { ...current, atomIds, bondIds }
-        : undefined;
+      const pruned = current.flatMap((part) => {
+        const next = pruneNativeMoleculePart(document, part);
+        return next ? [next] : [];
+      });
+      // Preserve the identity when nothing dropped and each entry is unchanged, so an unrelated
+      // document mutation doesn't churn the selection (atom/bond entries return the same ref).
+      const unchanged = pruned.length === current.length && pruned.every((part, index) => part === current[index]);
+      return unchanged ? current : pruned;
     });
   }, [document]);
 
@@ -2195,6 +2550,13 @@ export function MainWindow({
     };
   }, [zoomCanvasAtClientPoint, zoomCanvasFromWheelEvent]);
 
+  const clearNativeRingParts = useCallback(() => {
+    setSelectedNativeMoleculeParts((current) => {
+      const next = current.filter((part) => part.kind !== "ring" && part.kind !== "rings");
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
   const toggleToolset = useCallback(async (toolsetId: string) => {
     if (!toolsetRegistry.get(toolsetId)) {
       setStatus(`Unknown toolbar ${toolsetId}`);
@@ -2204,34 +2566,54 @@ export function MainWindow({
     if (effectiveNativePalette) {
       const nextState = await toggleToolsetWindow(toolsetId);
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
+      // Deliberately closing the Rings toolbar clears the ring selection. The pruning effect no
+      // longer does this off `ringInspectorOpen`, so a spurious async "closed" window event can
+      // no longer clobber a live selection — only an explicit toggle does.
+      if (toolsetId === ringInspectorToolsetId && !nextState.open) {
+        clearNativeRingParts();
+      }
       setStatus(nextState.open ? `${toolsetRegistry.require(toolsetId).title} open` : `${toolsetRegistry.require(toolsetId).title} closed`);
       return;
     }
 
+    const wasOpen = visibleToolsetIdsRef.current.has(toolsetId);
     setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
+    if (toolsetId === ringInspectorToolsetId && wasOpen) {
+      clearNativeRingParts();
+    }
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
-  }, [effectiveNativePalette, toolsetRegistry]);
+  }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
     // A lasso fragment selection ("parts") takes precedence over a hovered atom/bond:
     // delete every selected atom and bond in one step. A non-fragment selected part
     // (single atom/bond) still routes through the same part-delete path.
-    const selectedFragmentTarget = selectedNativeMoleculePart?.kind === "parts"
-      ? selectedNativeMoleculePart
-      : undefined;
-    const target = selectedFragmentTarget ? undefined : hoveredNativeDeleteTargetRef.current;
-    const selectedPartTarget = selectedFragmentTarget ?? selectedNativeMoleculePart;
-    if (!target && selectedPartTarget) {
-      const nextDocument = applyNativeMoleculePartDeleteTarget(currentDocument, selectedPartTarget);
+    // Delete EVERY selected native part, across molecules (Phase 7 cross-molecule selection), not
+    // just the primary slot — otherwise selecting a bond on A then Shift-selecting a bond on B and
+    // pressing Delete would remove only B. Ring parts aren't deletable (excluded here). A lasso
+    // "parts" fragment or a genuine multi-molecule selection takes precedence over a hovered
+    // atom/bond; a lone atom/bond part still defers to the hovered target (single-select feel).
+    const selectedDeleteTargets = selectedNativeMoleculeParts
+      .map((part) => nativeTransformableSelectionPart(part))
+      .filter((part): part is NativeMoleculeTransformableSelectionPart => part !== undefined);
+    const selectionTakesPrecedence = selectedDeleteTargets.length > 1
+      || selectedDeleteTargets.some((part) => part.kind === "parts");
+    const target = selectionTakesPrecedence ? undefined : hoveredNativeDeleteTargetRef.current;
+    if (!target && selectedDeleteTargets.length > 0) {
+      let nextDocument = currentDocument;
+      for (const deleteTarget of selectedDeleteTargets) {
+        nextDocument = applyNativeMoleculePartDeleteTarget(nextDocument, deleteTarget);
+      }
       if (nextDocument === currentDocument) {
         setStatus("No selected atom, bond, or fragment");
         return;
       }
 
+      const deletedObjectIds = new Set(selectedDeleteTargets.map((part) => part.objectId));
       commitDocumentChange(nextDocument);
       toolbarStyleTargetRef.current = undefined;
-      setActiveEditorObjectId((current) => current === selectedPartTarget.objectId ? undefined : current);
+      setActiveEditorObjectId((current) => current && deletedObjectIds.has(current) ? undefined : current);
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
@@ -2240,9 +2622,11 @@ export function MainWindow({
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
       setObjectContextMenu(undefined);
-      setStatus(selectedPartTarget.kind === "parts"
-        ? "Deleted selected molecule fragment"
-        : selectedPartTarget.kind === "atom" ? "Deleted carbon atom" : "Deleted carbon bond");
+      setStatus(selectedDeleteTargets.length > 1
+        ? `Deleted ${selectedDeleteTargets.length} selected fragments`
+        : selectedDeleteTargets[0]!.kind === "parts"
+          ? "Deleted selected molecule fragment"
+          : selectedDeleteTargets[0]!.kind === "atom" ? "Deleted carbon atom" : "Deleted carbon bond");
       return;
     }
 
@@ -2782,6 +3166,7 @@ export function MainWindow({
     bondPairs: [number, number][];
     bondRender: SpinBondRenderInfo[];
     atomLabels: (string | undefined)[];
+    atomLabelStyles: (NativeDrawingStyle | undefined)[];
     atoms: readonly MoleculeAtom[];
     placement: ScreenPlacement;
   } => {
@@ -2822,6 +3207,7 @@ export function MainWindow({
         // (bondLineSegments) only draws inner lines for double/triple, so matching it here
         // keeps the spin overlay identical to the drawing it replaces (and to the flatten).
         order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
+        bold: bond.display?.bondStyle === "bold",
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
           isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
         neighborIndices,
@@ -2830,14 +3216,16 @@ export function MainWindow({
     }
     // The exact labels the 2D drawing shows (element + implicit H + charge; plain
     // bonded carbons stay unlabeled) so the spinning structure reads as the SAME one.
-    const atomLabels = molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds));
+    const atomLabelPlanByAtomId = new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan]));
+    const atomLabels = molecule.atoms.map((atom) => atomLabelPlanByAtomId.get(atom.id)?.label);
+    const atomLabelStyles = molecule.atoms.map((atom) => atomLabelPlanByAtomId.get(atom.id)?.drawingStyle);
     const points2d = molecule.atoms.map((atom) => ({ x: atom.x, y: atom.y }));
     const centerX = points2d.reduce((sum, p) => sum + p.x, 0) / points2d.length;
     const centerY = points2d.reduce((sum, p) => sum + p.y, 0) / points2d.length;
     const scale = orientation
       ? orientedOverlayScale(points2d, coords3d, bondPairs, quatToViewMatrix(orientation))
       : overlayScale(points2d, coords3d, bondPairs);
-    return { bondPairs, bondRender, atomLabels, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
+    return { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
   }, []);
 
   const startSpin3d = useCallback(async () => {
@@ -2922,7 +3310,7 @@ export function MainWindow({
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
+      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
       applySpin({
         objectId,
         quat: reopen.quat,
@@ -2930,6 +3318,7 @@ export function MainWindow({
         bondPairs,
         bondRender,
         atomLabels,
+        atomLabelStyles,
         atoms,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
@@ -3018,7 +3407,7 @@ export function MainWindow({
         return;
       }
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, bondRender, atomLabels, atoms, placement } = spinPlacementFor(molecule, coords3d);
+      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         objectId,
         // Open at a readable angle (principal plane toward the viewer + gentle tilt),
@@ -3028,6 +3417,7 @@ export function MainWindow({
         bondPairs,
         bondRender,
         atomLabels,
+        atomLabelStyles,
         atoms,
         placement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
@@ -4479,7 +4869,7 @@ export function MainWindow({
           ...currentDocument.selection.objectIds,
           ...(activeTextEditObjectId ? [activeTextEditObjectId] : [])
         ],
-        moleculePart: selectedNativeMoleculePart,
+        moleculePart: nativeSelectionColorTarget(selectedNativeMoleculePart),
         textRange: hasSelectedTextRange && selected && selectedTextRange
           ? { objectId: selected.id, range: selectedTextRange }
           : undefined
@@ -4513,22 +4903,43 @@ export function MainWindow({
     return true;
   }, [activeTextEditObjectId, commitDocumentChange, selectedNativeMoleculePart, textStyleDefaults]);
 
+  const selectedMoleculeRingTargets = useCallback((): NativeMoleculeRingTarget[] => {
+    return currentMoleculeInspector.rings.selectedRings.map((ring) => ({
+      objectId: ring.objectId,
+      kind: "ring" as const,
+      ringKey: ring.ringKey
+    }));
+  }, [currentMoleculeInspector.rings.selectedRings]);
+
   const applyObjectStyleCommandToDocument = useCallback((
     currentDocument: ChemDraftDocument,
     commandId: string,
-    target: GraphicStylePaintTarget
-  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string } => {
+    target: GraphicStylePaintTarget,
+    ringOverrideMode: ObjectStyleRingOverrideMode = "prompt"
+  ): ObjectStyleCommandApplyResult => {
     const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);
     if (targetCommand) {
       return { document: currentDocument, handled: true, targeted: true, message: `Targeting ${targetCommand.target}` };
     }
 
+    const ringTargets = selectedMoleculeRingTargets();
+    if (ringTargets.length > 0) {
+      const ringResult = applyObjectStyleCommandToMoleculeRings(currentDocument, commandId, target, ringTargets);
+      if (ringResult.handled) {
+        return ringResult;
+      }
+    }
+
     const graphicObjectIds = selectedGraphicObjectIds(currentDocument);
+    // Any molecule with a selected PART is styled through the part path, so exclude EVERY part-host
+    // molecule from whole-molecule styling — not just the primary slot. Otherwise a non-primary
+    // selected-part molecule (e.g. A while B is primary) would be styled as a whole object.
+    const nativePartHostObjectIds = new Set(selectedNativeMoleculeParts.map((part) => part.objectId));
     const moleculeObjectIds = selectedMoleculeObjectIds(currentDocument).filter((objectId) =>
-      objectId !== selectedNativeMoleculePart?.objectId
+      !nativePartHostObjectIds.has(objectId)
     );
     const visualEffectObjectIds = selectedVisualEffectObjectIds(currentDocument, {
-      excludeMoleculeObjectId: selectedNativeMoleculePart?.objectId
+      excludeMoleculeObjectIds: nativePartHostObjectIds
     });
     const gradientObjectIds = target === "fill"
       ? [...graphicObjectIds, ...moleculeObjectIds]
@@ -4538,12 +4949,12 @@ export function MainWindow({
     if (noneCommand) {
       let nextDocument = applyGraphicObjectNoneToSelection(currentDocument, noneCommand.target, graphicObjectIds);
       nextDocument = applyMoleculeObjectNoneToSelection(nextDocument, noneCommand.target, moleculeObjectIds);
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: nextDocument,
         handled: true,
         targeted: graphicObjectIds.length > 0 || (noneCommand.target === "fill" && moleculeObjectIds.length > 0),
         message: noneCommand.target === "fill" ? "Removed selected fill" : "Removed selected graphic stroke"
-      };
+      }, noneCommand.target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     if (commandId === objectStyleSwapCommand.id) {
@@ -4556,35 +4967,35 @@ export function MainWindow({
     }
 
     if (commandId === objectGradientReverseCommand.id) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: reverseGraphicObjectGradientStopsForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Reversed selected fill gradient" : "Reversed selected graphic stroke gradient"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     if (commandId === objectGradientRotateCommand.id) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: rotateGraphicObjectGradientStopsForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Rotated selected fill gradient stops" : "Rotated selected graphic stroke gradient stops"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     if (commandId === objectGradientAddStopCommand.id) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: addGraphicObjectGradientStopForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Added selected fill gradient stop" : "Added selected graphic stroke gradient stop"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     const gradientStopColor = objectGradientStopColorForCommand(commandId);
     if (gradientStopColor) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyGraphicObjectGradientStopColorForSelection(
           currentDocument,
           target,
@@ -4595,12 +5006,12 @@ export function MainWindow({
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Updated selected fill gradient stop color" : "Updated selected graphic stroke gradient stop color"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     const gradientStopOpacity = objectGradientStopOpacityForCommand(commandId);
     if (gradientStopOpacity) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyGraphicObjectGradientStopOpacityForSelection(
           currentDocument,
           target,
@@ -4611,12 +5022,12 @@ export function MainWindow({
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Updated selected fill gradient stop opacity" : "Updated selected graphic stroke gradient stop opacity"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     const gradientStopOffset = objectGradientStopOffsetForCommand(commandId);
     if (gradientStopOffset) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyGraphicObjectGradientStopOffsetForSelection(
           currentDocument,
           target,
@@ -4627,12 +5038,12 @@ export function MainWindow({
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Updated selected fill gradient stop position" : "Updated selected graphic stroke gradient stop position"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     const gradientStopDeleteIndex = objectGradientDeleteStopIndexForCommand(commandId);
     if (gradientStopDeleteIndex !== undefined) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: deleteGraphicObjectGradientStopAtIndexForSelection(
           currentDocument,
           target,
@@ -4642,94 +5053,94 @@ export function MainWindow({
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Deleted selected fill gradient stop" : "Deleted selected graphic stroke gradient stop"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     if (commandId === objectGradientDeleteStopCommand.id) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: deleteGraphicObjectGradientStopForSelection(currentDocument, target, gradientObjectIds),
         handled: true,
         targeted: gradientObjectIds.length > 0,
         message: target === "fill" ? "Deleted selected fill gradient stop" : "Deleted selected graphic stroke gradient stop"
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     const paintType = objectPaintTypeForCommand(commandId);
     if (paintType) {
       let nextDocument = applyGraphicObjectPaintTypeToSelection(currentDocument, target, paintType, graphicObjectIds);
       nextDocument = applyMoleculeObjectPaintTypeToSelection(nextDocument, target, paintType, moleculeObjectIds);
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: nextDocument,
         handled: true,
         targeted: graphicObjectIds.length > 0 || (target === "fill" && moleculeObjectIds.length > 0),
         message: paintType === "gloss"
           ? "Applied selected gloss fill"
           : `Updated selected ${target} paint`
-      };
+      }, target === "fill" ? moleculeObjectIds : [], ringOverrideMode);
     }
 
     const opacity = objectOpacityForCommand(commandId);
     if (opacity) {
       let nextDocument = applyGraphicObjectOpacityToSelection(currentDocument, opacity.key, opacity.value, graphicObjectIds);
       nextDocument = applyMoleculeObjectOpacityToSelection(nextDocument, opacity.key, opacity.value, moleculeObjectIds);
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: nextDocument,
         handled: true,
         targeted: graphicObjectIds.length > 0 || moleculeObjectIds.length > 0,
         message: "Updated selected object opacity"
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const disabledEffectKind = objectEffectDisableForCommand(commandId);
     if (disabledEffectKind) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: deactivateVisualEffectForSelection(currentDocument, disabledEffectKind, visualEffectObjectIds),
         handled: true,
         targeted: visualEffectObjectIds.length > 0,
         message: `Disabled selected visual ${disabledEffectKind} effect`
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const effectKind = objectEffectForCommand(commandId);
     if (effectKind) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyVisualEffectToSelection(currentDocument, effectKind, visualEffectObjectIds),
         handled: true,
         targeted: visualEffectObjectIds.length > 0,
         message: effectKind === "none"
           ? "Cleared selected visual effects"
           : `Applied selected visual ${effectKind} effect`
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const effectColor = objectEffectColorForCommand(commandId);
     if (effectColor) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyVisualEffectColorToSelection(currentDocument, effectColor.effectKind, effectColor.color, visualEffectObjectIds),
         handled: true,
         targeted: visualEffectObjectIds.length > 0,
         message: `Updated selected visual ${effectColor.effectKind} color`
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const effectOpacity = objectEffectOpacityForCommand(commandId);
     if (effectOpacity) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyVisualEffectOpacityToSelection(currentDocument, effectOpacity.effectKind, effectOpacity.opacity, visualEffectObjectIds),
         handled: true,
         targeted: visualEffectObjectIds.length > 0,
         message: `Updated selected visual ${effectOpacity.effectKind} opacity`
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const effectSize = objectEffectSizeForCommand(commandId);
     if (effectSize) {
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: applyVisualEffectSizeToSelection(currentDocument, effectSize.effectKind, effectSize.size, visualEffectObjectIds),
         handled: true,
         targeted: visualEffectObjectIds.length > 0,
         message: `Updated selected visual ${effectSize.effectKind} size`
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const strokeWidth = objectStrokeWidthCommands.find((command) => command.id === commandId);
@@ -4784,12 +5195,12 @@ export function MainWindow({
     if (graphicObjectIds.length > 0 || moleculeObjectIds.length > 0) {
       let nextDocument = applyGraphicObjectColorToSelection(currentDocument, target, selectedColor, graphicObjectIds);
       nextDocument = applyMoleculeObjectColorToSelection(nextDocument, target, selectedColor, moleculeObjectIds);
-      return {
+      return objectStyleResultWithRingOverrideChoice(currentDocument, {
         document: nextDocument,
         handled: true,
         targeted: true,
         message: target === "fill" ? "Updated selected fill" : "Updated selected stroke"
-      };
+      }, moleculeObjectIds, ringOverrideMode);
     }
 
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
@@ -4806,7 +5217,7 @@ export function MainWindow({
       : undefined;
     const liveColorSelection: ToolbarColorSelection = {
       objectIds: objectStyleObjectIds,
-      moleculePart: selectedNativeMoleculePart
+      moleculePart: nativeSelectionColorTarget(selectedNativeMoleculePart)
     };
     const colorSelection = resolveToolbarColorSelection(currentDocument, liveColorSelection, objectStyleTarget);
     const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
@@ -4816,7 +5227,7 @@ export function MainWindow({
       targeted: colorResult.targetedSelection,
       message: colorResult.changed ? "Updated selected object color" : "Selected object color unchanged"
     };
-  }, [selectedNativeMoleculePart]);
+  }, [selectedMoleculeRingTargets, selectedNativeMoleculeParts]);
 
   const applyObjectStyleCommand = useCallback((commandId: string): boolean => {
     const targetCommand = objectStyleTargetCommands.find((command) => command.id === commandId);
@@ -4846,6 +5257,17 @@ export function MainWindow({
       return true;
     }
 
+    if (result.needsRingOverrideChoice) {
+      setMoleculeStyleOverridePrompt({
+        commandId,
+        target: effectiveArtPaintTarget,
+        startDocument: documentRef.current,
+        objectIds: result.ringOverrideObjectIds ?? []
+      });
+      setStatus("Choose how to handle per-ring attributes");
+      return true;
+    }
+
     const changed = commitDocumentChange(result.document);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
@@ -4853,19 +5275,20 @@ export function MainWindow({
   }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
 
   const previewObjectStyleCommand = useCallback((commandId: string) => {
-    const session = artStylePreviewRef.current ?? { startDocument: documentRef.current };
-    artStylePreviewRef.current = session;
-    const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, effectiveArtPaintTarget);
+    const session = artStylePreviewRef.current;
+    const startDocument = session?.startDocument ?? documentRef.current;
+    const result = applyObjectStyleCommandToDocument(startDocument, commandId, effectiveArtPaintTarget, "keep");
     if (!result.handled || !result.targeted) {
       return;
     }
 
+    artStylePreviewRef.current = session ?? { startDocument };
     const selectedColor = objectColorForCommand(commandId);
-    const graphicObjectIds = selectedColor ? selectedGraphicObjectIds(session.startDocument) : [];
+    const graphicObjectIds = selectedColor ? selectedGraphicObjectIds(startDocument) : [];
     if (
       selectedColor &&
-      canPreviewGraphicObjectColorOnDom(session.startDocument, graphicObjectIds, effectiveArtPaintTarget) &&
-      previewGraphicObjectColorOnDom(pageRef.current, session.startDocument, graphicObjectIds, effectiveArtPaintTarget, selectedColor)
+      canPreviewGraphicObjectColorOnDom(startDocument, graphicObjectIds, effectiveArtPaintTarget) &&
+      previewGraphicObjectColorOnDom(pageRef.current, startDocument, graphicObjectIds, effectiveArtPaintTarget, selectedColor)
     ) {
       return;
     }
@@ -4890,6 +5313,17 @@ export function MainWindow({
       return;
     }
 
+    if (result.needsRingOverrideChoice) {
+      setMoleculeStyleOverridePrompt({
+        commandId,
+        target: effectiveArtPaintTarget,
+        startDocument: session.startDocument,
+        objectIds: result.ringOverrideObjectIds ?? []
+      });
+      setStatus("Choose how to handle per-ring attributes");
+      return;
+    }
+
     const changed = commitDocumentChange(result.document);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
@@ -4906,6 +5340,609 @@ export function MainWindow({
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
+
+  const applyPendingMoleculeStyleOverrideChoice = useCallback((choice: "keep" | "clear" | "cancel") => {
+    const prompt = moleculeStyleOverridePrompt;
+    if (!prompt) {
+      return;
+    }
+
+    setMoleculeStyleOverridePrompt(undefined);
+    if (choice === "cancel") {
+      setStatus("Canceled molecule style edit");
+      return;
+    }
+
+    const result = applyObjectStyleCommandToDocument(
+      prompt.startDocument,
+      prompt.commandId,
+      prompt.target,
+      choice
+    );
+    if (!result.handled || !result.targeted) {
+      setStatus("Select a molecule before changing object style");
+      return;
+    }
+
+    const changed = commitDocumentChange(result.document);
+    setActiveEditorObjectId(undefined);
+    setStatus(changed ? result.message : "Selected object style unchanged");
+  }, [applyObjectStyleCommandToDocument, commitDocumentChange, moleculeStyleOverridePrompt]);
+
+  const selectedMoleculeRingTargetsForCommand = useCallback((ringKey: string): NativeMoleculeRingTarget[] => {
+    return selectedMoleculeRingTargets().some((target) => target.ringKey === ringKey)
+      ? selectedMoleculeRingTargets()
+      : [];
+  }, [selectedMoleculeRingTargets]);
+
+  const applyMoleculeInspectorCommandToDocument = useCallback((
+    currentDocument: ChemDraftDocument,
+    commandId: string
+  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string } => {
+    const fillColor = moleculeRingFillColorForCommand(commandId);
+    if (fillColor) {
+      const targets = selectedMoleculeRingTargetsForCommand(fillColor.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingFillColor(nextDocument, target, fillColor.color),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1 ? "Updated selected ring fill" : `Updated ${targets.length} selected ring fills`
+      };
+    }
+
+    const fillNone = moleculeRingFillNoneForCommand(commandId);
+    if (fillNone) {
+      const targets = selectedMoleculeRingTargetsForCommand(fillNone.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingFillNone(nextDocument, target),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1 ? "Removed selected ring fill" : `Removed ${targets.length} selected ring fills`
+      };
+    }
+
+    const fillOpacity = moleculeRingFillOpacityForCommand(commandId);
+    if (fillOpacity) {
+      const targets = selectedMoleculeRingTargetsForCommand(fillOpacity.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingFillOpacity(nextDocument, target, fillOpacity.opacity),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1 ? "Updated selected ring fill opacity" : `Updated ${targets.length} selected ring fill opacities`
+      };
+    }
+
+    const effect = moleculeRingEffectForCommand(commandId);
+    if (effect) {
+      const targets = selectedMoleculeRingTargetsForCommand(effect.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingEffect(nextDocument, target, effect.effectKind),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: effect.effectKind === "none"
+          ? targets.length === 1 ? "Cleared selected ring effects" : `Cleared ${targets.length} selected ring effects`
+          : targets.length === 1 ? `Applied selected ring ${effect.effectKind} effect` : `Applied ${targets.length} selected ring ${effect.effectKind} effects`
+      };
+    }
+
+    const disabledEffect = moleculeRingEffectDisableForCommand(commandId);
+    if (disabledEffect) {
+      const targets = selectedMoleculeRingTargetsForCommand(disabledEffect.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => deactivateMoleculeRingEffect(nextDocument, target, disabledEffect.effectKind),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1
+          ? `Disabled selected ring ${disabledEffect.effectKind} effect`
+          : `Disabled ${targets.length} selected ring ${disabledEffect.effectKind} effects`
+      };
+    }
+
+    const effectColor = moleculeRingEffectColorForCommand(commandId);
+    if (effectColor) {
+      const targets = selectedMoleculeRingTargetsForCommand(effectColor.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingEffectColor(nextDocument, target, effectColor.effectKind, effectColor.color),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1
+          ? `Updated selected ring ${effectColor.effectKind} color`
+          : `Updated ${targets.length} selected ring ${effectColor.effectKind} colors`
+      };
+    }
+
+    const effectOpacity = moleculeRingEffectOpacityForCommand(commandId);
+    if (effectOpacity) {
+      const targets = selectedMoleculeRingTargetsForCommand(effectOpacity.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingEffectOpacity(nextDocument, target, effectOpacity.effectKind, effectOpacity.opacity),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1
+          ? `Updated selected ring ${effectOpacity.effectKind} opacity`
+          : `Updated ${targets.length} selected ring ${effectOpacity.effectKind} opacities`
+      };
+    }
+
+    const effectSize = moleculeRingEffectSizeForCommand(commandId);
+    if (effectSize) {
+      const targets = selectedMoleculeRingTargetsForCommand(effectSize.ringKey);
+      return {
+        document: targets.reduce(
+          (nextDocument, target) => applyMoleculeRingEffectSize(nextDocument, target, effectSize.effectKind, effectSize.size),
+          currentDocument
+        ),
+        handled: true,
+        targeted: targets.length > 0,
+        message: targets.length === 1
+          ? `Updated selected ring ${effectSize.effectKind} size`
+          : `Updated ${targets.length} selected ring ${effectSize.effectKind} sizes`
+      };
+    }
+
+    const moleculeObjectIds = currentMoleculeInspector.targets.moleculeObjectIds;
+    const moleculeTargetCount = moleculeObjectIds.length;
+    const baseStyleResult = (patch: Parameters<typeof applyMoleculeBaseStylePatch>[2], field: string) => ({
+      document: applyMoleculeBaseStylePatch(currentDocument, moleculeObjectIds, patch),
+      handled: true,
+      targeted: moleculeTargetCount > 0,
+      message: moleculeTargetCount === 1
+        ? `Updated ${field} for 1 molecule`
+        : `Updated ${field} for ${moleculeTargetCount} molecules`
+    });
+    const atomLabelTargets = currentMoleculeInspector.targets.atomLabelTargets;
+    const atomLabelTargetCount = atomLabelTargets.length;
+    const atomLabelStyleResult = (patch: Parameters<typeof applyMoleculeAtomLabelStylePatch>[2], field: string) => {
+      if (atomLabelTargetCount > 0) {
+        return {
+          document: applyMoleculeAtomLabelStylePatch(currentDocument, atomLabelTargets, patch),
+          handled: true,
+          targeted: true,
+          message: atomLabelTargetCount === 1
+            ? `Updated ${field} for 1 atom label`
+            : `Updated ${field} for ${atomLabelTargetCount} atom labels`
+        };
+      }
+      return baseStyleResult(patch, field);
+    };
+    const atomTargets = currentMoleculeInspector.targets.atomTargets;
+    const atomTargetCount = atomTargets.length;
+    const atomIndicatorStyleResult = (patch: Parameters<typeof applyMoleculeAtomIndicatorStylePatch>[2], field: string) => {
+      if (atomTargetCount > 0) {
+        return {
+          document: applyMoleculeAtomIndicatorStylePatch(currentDocument, atomTargets, patch),
+          handled: true,
+          targeted: true,
+          message: atomTargetCount === 1
+            ? `Updated ${field} for 1 atom`
+            : `Updated ${field} for ${atomTargetCount} atoms`
+        };
+      }
+      return baseStyleResult(patch, field);
+    };
+    const bondTargets = currentMoleculeInspector.targets.bondTargets;
+    const bondTargetCount = bondTargets.length;
+    const bondStyleResult = (patch: Parameters<typeof applyMoleculeBondStylePatch>[2], field: string) => {
+      if (bondTargetCount > 0) {
+        return {
+          document: applyMoleculeBondStylePatch(currentDocument, bondTargets, patch),
+          handled: true,
+          targeted: true,
+          message: bondTargetCount === 1
+            ? `Updated ${field} for 1 bond`
+            : `Updated ${field} for ${bondTargetCount} bonds`
+        };
+      }
+      return baseStyleResult(patch, field);
+    };
+
+    const chainAngle = moleculeStructureChainAngleForCommand(commandId);
+    if (chainAngle) {
+      return baseStyleResult({ chainAngleDegrees: chainAngle.value }, "chain angle");
+    }
+
+    const bondLength = moleculeStructureBondLengthForCommand(commandId);
+    if (bondLength) {
+      if (bondTargetCount > 0) {
+        return {
+          document: applyMoleculeTargetBondLengthToBonds(currentDocument, bondTargets, bondLength.value),
+          handled: true,
+          targeted: true,
+          message: bondTargetCount === 1
+            ? "Updated target bond length for 1 bond"
+            : `Updated target bond length for ${bondTargetCount} bonds`
+        };
+      }
+      return {
+        document: applyMoleculeTargetBondLength(currentDocument, moleculeObjectIds, bondLength.value),
+        handled: true,
+        targeted: moleculeTargetCount > 0,
+        message: moleculeTargetCount === 1
+          ? "Updated target bond length for 1 molecule"
+          : `Updated target bond length for ${moleculeTargetCount} molecules`
+      };
+    }
+
+    const bondStrokeWidth = moleculeStructureBondStrokeWidthForCommand(commandId);
+    if (bondStrokeWidth) {
+      return bondStyleResult({ bondStrokeWidthPx: bondStrokeWidth.value }, "bond stroke width");
+    }
+
+    const bondBoldWidth = moleculeStructureBondBoldWidthForCommand(commandId);
+    if (bondBoldWidth) {
+      return bondStyleResult({ bondBoldWidthPx: bondBoldWidth.value }, "bond bold width");
+    }
+
+    const bondColor = moleculeStructureBondColorForCommand(commandId);
+    if (bondColor) {
+      return bondStyleResult({ bondColor: bondColor.color }, "bond color");
+    }
+
+    const bondLineCap = moleculeStructureBondLineCapForCommand(commandId);
+    if (bondLineCap) {
+      return bondStyleResult({ bondLineCap: bondLineCap.value }, "bond line cap");
+    }
+
+    const bondSpacingMode = moleculeStructureBondSpacingModeForCommand(commandId);
+    if (bondSpacingMode) {
+      return bondStyleResult({ bondSpacingMode: bondSpacingMode.value }, "bond spacing mode");
+    }
+
+    const bondSpacingPercent = moleculeStructureBondSpacingPercentForCommand(commandId);
+    if (bondSpacingPercent) {
+      return bondStyleResult({ bondSpacingPercent: bondSpacingPercent.value }, "bond spacing percent");
+    }
+
+    const multipleBondGap = moleculeStructureMultipleBondGapForCommand(commandId);
+    if (multipleBondGap) {
+      return bondStyleResult({ multipleBondGapPx: multipleBondGap.value }, "multiple-bond gap");
+    }
+
+    const doubleBondInset = moleculeStructureDoubleBondInsetForCommand(commandId);
+    if (doubleBondInset) {
+      return bondStyleResult({ doubleBondInsetPx: doubleBondInset.value }, "double-bond inset");
+    }
+
+    const bondMarginWidth = moleculeStructureBondMarginWidthForCommand(commandId);
+    if (bondMarginWidth) {
+      return bondStyleResult({ bondMarginWidthPx: bondMarginWidth.value }, "bond margin width");
+    }
+
+    const bondHashSpacing = moleculeStructureBondHashSpacingForCommand(commandId);
+    if (bondHashSpacing) {
+      return bondStyleResult({ bondHashSpacingPx: bondHashSpacing.value }, "bond hash spacing");
+    }
+
+    const overlapClearance = moleculeStructureOverlapClearanceForCommand(commandId);
+    if (overlapClearance) {
+      return bondStyleResult({ bondOverlapClearancePx: overlapClearance.value }, "overlap clearance");
+    }
+
+    const atomQueryIndicators = moleculeStructureAtomQueryIndicatorsForCommand(commandId);
+    if (atomQueryIndicators) {
+      return atomIndicatorStyleResult({ atomIndicatorShowQuery: atomQueryIndicators.value }, "atom query indicators");
+    }
+
+    const atomStereochemistry = moleculeStructureAtomStereochemistryForCommand(commandId);
+    if (atomStereochemistry) {
+      return atomIndicatorStyleResult({ atomIndicatorShowStereochemistry: atomStereochemistry.value }, "atom stereochemistry indicators");
+    }
+
+    const atomEnhancedStereochemistry = moleculeStructureAtomEnhancedStereochemistryForCommand(commandId);
+    if (atomEnhancedStereochemistry) {
+      return atomIndicatorStyleResult({
+        atomIndicatorShowEnhancedStereochemistry: atomEnhancedStereochemistry.value
+      }, "enhanced atom stereochemistry indicators");
+    }
+
+    const atomNumbers = moleculeStructureAtomNumbersForCommand(commandId);
+    if (atomNumbers) {
+      return atomIndicatorStyleResult({ atomIndicatorShowAtomNumbers: atomNumbers.value }, "atom numbers");
+    }
+
+    const bondQueryIndicators = moleculeStructureBondQueryIndicatorsForCommand(commandId);
+    if (bondQueryIndicators) {
+      return bondStyleResult({ bondIndicatorShowQuery: bondQueryIndicators.value }, "bond query indicators");
+    }
+
+    const bondStereochemistry = moleculeStructureBondStereochemistryForCommand(commandId);
+    if (bondStereochemistry) {
+      return bondStyleResult({ bondIndicatorShowStereochemistry: bondStereochemistry.value }, "bond stereochemistry indicators");
+    }
+
+    const bondReactionIndicators = moleculeStructureBondReactionIndicatorsForCommand(commandId);
+    if (bondReactionIndicators) {
+      return bondStyleResult({ bondIndicatorShowReaction: bondReactionIndicators.value }, "bond reaction indicators");
+    }
+
+    const fontFamily = moleculeAtomLabelFontFamilyForCommand(commandId);
+    if (fontFamily) {
+      return atomLabelStyleResult({ atomLabelFontFamily: fontFamily.fontFamily }, "atom label font family");
+    }
+
+    const fontFace = moleculeAtomLabelFontFaceForCommand(commandId);
+    if (fontFace) {
+      return atomLabelStyleResult({
+        atomLabelFontWeight: fontFace.weight,
+        atomLabelFontStyle: fontFace.style
+      }, "atom label font face");
+    }
+
+    const fontSize = moleculeAtomLabelFontSizeForCommand(commandId);
+    if (fontSize) {
+      return atomLabelStyleResult({ atomLabelFontSizePx: fontSize.value }, "atom label size");
+    }
+
+    const labelColor = moleculeAtomLabelColorForCommand(commandId);
+    if (labelColor) {
+      return atomLabelStyleResult({ atomLabelColor: labelColor.color }, "atom label color");
+    }
+
+    const labelBackground = moleculeAtomLabelBackgroundColorForCommand(commandId);
+    if (labelBackground) {
+      return atomLabelStyleResult({ atomLabelBackgroundColor: labelBackground.color }, "atom label background");
+    }
+
+    const labelPadding = moleculeAtomLabelPaddingForCommand(commandId);
+    if (labelPadding) {
+      return atomLabelStyleResult({ atomLabelPaddingPx: labelPadding.value }, "atom label padding");
+    }
+
+    const labelBondClearance = moleculeAtomLabelBondClearanceForCommand(commandId);
+    if (labelBondClearance) {
+      return atomLabelStyleResult({ atomLabelBondClearancePx: labelBondClearance.value }, "atom label bond clearance");
+    }
+
+    const labelAlignment = moleculeAtomLabelAlignmentForCommand(commandId);
+    if (labelAlignment) {
+      return atomLabelStyleResult({ atomLabelAlignment: labelAlignment.value }, "atom label alignment");
+    }
+
+    const labelPlacement = moleculeAtomLabelPlacementForCommand(commandId);
+    if (labelPlacement) {
+      return atomLabelStyleResult({ atomLabelPlacement: labelPlacement.value }, "atom label placement");
+    }
+
+    const showTerminalCarbons = moleculeAtomLabelShowTerminalCarbonsForCommand(commandId);
+    if (showTerminalCarbons) {
+      return atomLabelStyleResult({ atomLabelShowTerminalCarbons: showTerminalCarbons.value }, "terminal carbon labels");
+    }
+
+    const hideImplicitHydrogens = moleculeAtomLabelHideImplicitHydrogensForCommand(commandId);
+    if (hideImplicitHydrogens) {
+      return atomLabelStyleResult({ atomLabelHideImplicitHydrogens: hideImplicitHydrogens.value }, "implicit hydrogen visibility");
+    }
+
+    return { document: currentDocument, handled: false, targeted: false, message: "" };
+  }, [
+    currentMoleculeInspector.targets.atomTargets,
+    currentMoleculeInspector.targets.atomLabelTargets,
+    currentMoleculeInspector.targets.bondTargets,
+    currentMoleculeInspector.targets.moleculeObjectIds,
+    selectedMoleculeRingTargetsForCommand
+  ]);
+
+  const applyMoleculeInspectorCommand = useCallback((commandId: string): boolean => {
+    const result = applyMoleculeInspectorCommandToDocument(documentRef.current, commandId);
+    if (!result.handled) {
+      return false;
+    }
+
+    if (!result.targeted) {
+      setStatus("Select a molecule before changing Molecule Inspector style");
+      return true;
+    }
+
+    const changed = commitDocumentChange(result.document);
+    setActiveEditorObjectId(undefined);
+    setStatus(changed ? result.message : "Selected molecule style unchanged");
+    return true;
+  }, [applyMoleculeInspectorCommandToDocument, commitDocumentChange]);
+
+  const previewMoleculeInspectorCommand = useCallback((commandId: string) => {
+    const session = moleculeInspectorPreviewRef.current;
+    const startDocument = session?.startDocument ?? documentRef.current;
+    const result = applyMoleculeInspectorCommandToDocument(startDocument, commandId);
+    if (!result.handled || !result.targeted) {
+      return;
+    }
+
+    moleculeInspectorPreviewRef.current = session ?? { startDocument };
+    replacePresentDocument(result.document);
+  }, [applyMoleculeInspectorCommandToDocument, replacePresentDocument]);
+
+  const commitMoleculeInspectorPreview = useCallback((commandId: string) => {
+    const session = moleculeInspectorPreviewRef.current;
+    if (!session) {
+      applyMoleculeInspectorCommand(commandId);
+      return;
+    }
+
+    const result = applyMoleculeInspectorCommandToDocument(session.startDocument, commandId);
+    moleculeInspectorPreviewRef.current = null;
+    replacePresentDocument(session.startDocument);
+    if (!result.handled || !result.targeted) {
+      setStatus("Select a molecule before changing Molecule Inspector style");
+      return;
+    }
+
+    const changed = commitDocumentChange(result.document);
+    setActiveEditorObjectId(undefined);
+    setStatus(changed ? result.message : "Selected molecule style unchanged");
+  }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentChange, replacePresentDocument]);
+
+  const cancelMoleculeInspectorPreview = useCallback(() => {
+    const session = moleculeInspectorPreviewRef.current;
+    if (!session) {
+      return;
+    }
+
+    moleculeInspectorPreviewRef.current = null;
+    replacePresentDocument(session.startDocument);
+    setStatus("Canceled molecule inspector edit");
+  }, [replacePresentDocument]);
+
+  const applyMoleculeInspectorTemplateBytes = useCallback((
+    bytes: Uint8Array,
+    sourceName: string
+  ) => {
+    const moleculeObjectIds = currentMoleculeInspector.targets.moleculeObjectIds;
+    let imported: ReturnType<typeof parseMoleculeInspectorTemplate>;
+    try {
+      imported = parseMoleculeInspectorTemplate(bytes, sourceName);
+    } catch (error) {
+      setStatus(`Template import failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    if (moleculeObjectIds.length === 0) {
+      setStatus(`Loaded ${imported.name}; select a molecule before applying it`);
+      return;
+    }
+
+    cancelMoleculeInspectorPreview();
+    const { bondLengthPx, ...baseStylePatch } = moleculeInspectorTemplatePatchFromDrawingStyle(imported.drawing);
+    // A template's bond length rescales the selected molecule's geometry. Clamp it to the same
+    // range the Structure field enforces so a malformed / out-of-range template can't explode or
+    // collapse the drawing. (The interactive edit path clamps via numberCommandValue; this one
+    // fed the raw value straight into the scaler.)
+    const bondLengthRange = moleculeStructureNumberRanges.bondLengthPx;
+    const targetBondLengthPx = typeof bondLengthPx === "number" && Number.isFinite(bondLengthPx)
+      ? Math.min(bondLengthRange.max, Math.max(bondLengthRange.min, bondLengthPx))
+      : bondLengthPx;
+    const startDocument = documentRef.current;
+    const resizedDocument = applyMoleculeTargetBondLength(startDocument, moleculeObjectIds, targetBondLengthPx);
+    const styledDocument = applyMoleculeBaseStylePatch(resizedDocument, moleculeObjectIds, baseStylePatch);
+    const changed = commitDocumentChange(styledDocument);
+    setActiveEditorObjectId(undefined);
+    setStatus(
+      changed
+        ? `Imported ${imported.name} for ${moleculeObjectIds.length} molecule${moleculeObjectIds.length === 1 ? "" : "s"}${imported.warnings.length > 0 ? ` with ${imported.warnings.length} warning(s)` : ""}`
+        : `Molecule Inspector template already matches selected molecule${moleculeObjectIds.length === 1 ? "" : "s"}`
+    );
+  }, [
+    cancelMoleculeInspectorPreview,
+    commitDocumentChange,
+    currentMoleculeInspector.targets.moleculeObjectIds
+  ]);
+
+  const importMoleculeInspectorTemplate = useCallback(async () => {
+    if (!isDesktopRuntime()) {
+      moleculeTemplateInputRef.current?.click();
+      return;
+    }
+
+    const path = await pickNativeMoleculeTemplateOpenPath();
+    if (!path) {
+      setStatus("Template import canceled");
+      return;
+    }
+
+    try {
+      const bytes = await readNativeBinaryFile(path);
+      applyMoleculeInspectorTemplateBytes(bytes, nativePathBasename(path));
+    } catch (error) {
+      setStatus(`Template import failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [applyMoleculeInspectorTemplateBytes]);
+
+  const exportMoleculeInspectorTemplate = useCallback(async () => {
+    const moleculeObjectIds = currentMoleculeInspector.targets.moleculeObjectIds;
+    if (moleculeObjectIds.length === 0) {
+      setStatus("Select a molecule before exporting a Molecule Inspector template");
+      return;
+    }
+
+    cancelMoleculeInspectorPreview();
+    const currentDocument = documentRef.current;
+    const firstTarget = moleculeObjectIds
+      .map((objectId) => findDocumentObject(currentDocument, objectId))
+      .find((object): object is MoleculeObject => object?.type === "molecule");
+    if (!firstTarget) {
+      setStatus("Template export failed: selected molecule was not found");
+      return;
+    }
+
+    const templateName = `${currentDocument.title.replace(/\.(chemdraft|template)$/i, "") || "Molecule Inspector"} Style`;
+    const filename = moleculeInspectorTemplateFilename(templateName);
+    const buildTemplateContents = () => {
+      const drawing = {
+        ...nativeDrawingStyleFromObjectStyle(firstTarget.style),
+        bondLengthPx: representativeMoleculeBondLengthPx(firstTarget)
+      };
+      return serializeMoleculeInspectorTemplate(templateName, drawing);
+    };
+
+    if (!isDesktopRuntime()) {
+      const contents = buildTemplateContents();
+      downloadText(filename, contents, moleculeInspectorTemplateMimeType);
+      setStatus(`Exported ${filename}`);
+      return;
+    }
+
+    const defaultPath = nativePathWithBasename(fileStateRef.current.path, filename) ?? filename;
+    const path = await pickNativeMoleculeTemplateSavePath(defaultPath);
+    if (!path) {
+      setStatus("Template export canceled");
+      return;
+    }
+
+    try {
+      const contents = buildTemplateContents();
+      await writeNativeTextFile(path, contents);
+      setStatus(`Exported ${nativePathBasename(path)}`);
+    } catch (error) {
+      setStatus(`Template export failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [
+    cancelMoleculeInspectorPreview,
+    currentMoleculeInspector.targets.moleculeObjectIds
+  ]);
+
+  useEffect(() => {
+    palettePreviewHandlersRef.current = {
+      preview: (commandId) => {
+        previewObjectStyleCommand(commandId);
+        previewMoleculeInspectorCommand(commandId);
+      },
+      commit: (commandId) => {
+        commitObjectStylePreview(commandId);
+        commitMoleculeInspectorPreview(commandId);
+      },
+      cancel: () => {
+        cancelObjectStylePreview();
+        cancelMoleculeInspectorPreview();
+      }
+    };
+  }, [
+    cancelMoleculeInspectorPreview,
+    cancelObjectStylePreview,
+    commitMoleculeInspectorPreview,
+    commitObjectStylePreview,
+    previewMoleculeInspectorCommand,
+    previewObjectStyleCommand
+  ]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
     if (cancelSpin3dSession("Spin cancelled")) {
@@ -5487,7 +6524,12 @@ export function MainWindow({
     const objectStyleCommandIds = new Set(objectStyleActions.map((action) => action.id));
 
     toolCommandSpecs.forEach((tool) => {
-      if (isLayerCommandId(tool.id) || objectStyleCommandIds.has(tool.id)) {
+      if (
+        isLayerCommandId(tool.id) ||
+        objectStyleCommandIds.has(tool.id) ||
+        tool.id === toggleRingInspectorCommandId ||
+        tool.id === toggleMoleculeInspectorCommandId
+      ) {
         return;
       }
 
@@ -5597,6 +6639,12 @@ export function MainWindow({
     viewActions.forEach((action) => {
       register(action, () => {
         if (action.id === PREFERENCES_COMMAND_ID) {
+          if (!isDesktopRuntime()) {
+            setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND)
+              ? "Preferences opened in browser"
+              : "Preferences pop-up blocked");
+            return;
+          }
           void togglePreferencesWindow().catch(() => {
             setStatus("Preferences unavailable");
           });
@@ -5604,9 +6652,25 @@ export function MainWindow({
         }
 
         if (action.id === SPIN3D_DEBUGGER_COMMAND_ID) {
+          if (!isDesktopRuntime()) {
+            setStatus(openBrowserUtilityWindow(SPIN3D_DEBUGGER_WINDOW_KIND)
+              ? "3D debugger opened in browser"
+              : "3D debugger pop-up blocked");
+            return;
+          }
           void toggleSpin3dDebuggerWindow().catch(() => {
             setStatus("3D debugger unavailable");
           });
+          return;
+        }
+
+        if (action.id === toggleRingInspectorCommandId) {
+          void toggleToolset(ringInspectorToolsetId);
+          return;
+        }
+
+        if (action.id === toggleMoleculeInspectorCommandId) {
+          void toggleToolset(moleculeInspectorToolsetId);
           return;
         }
 
@@ -5654,6 +6718,7 @@ export function MainWindow({
     addCarbonylToHoveredNativeAtom,
     addSingleBondToHoveredNativeAtom,
     applyObjectStyleCommand,
+    applyMoleculeInspectorCommand,
     applyTextStyleCommand,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
@@ -5691,6 +6756,16 @@ export function MainWindow({
   ]);
 
   const invoke = useCallback(async (commandId: string) => {
+    if (commandId === moleculeInspectorTemplateImportCommandId) {
+      await importMoleculeInspectorTemplate();
+      return;
+    }
+
+    if (commandId === moleculeInspectorTemplateExportCommandId) {
+      await exportMoleculeInspectorTemplate();
+      return;
+    }
+
     if (applyTextStyleCommand(commandId)) {
       return;
     }
@@ -5699,13 +6774,56 @@ export function MainWindow({
       return;
     }
 
+    if (applyMoleculeInspectorCommand(commandId)) {
+      return;
+    }
+
     void registry.invoke(commandId).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Command failed: ${message}`);
     });
-  }, [applyObjectStyleCommand, applyTextStyleCommand, registry]);
+  }, [
+    applyMoleculeInspectorCommand,
+    applyObjectStyleCommand,
+    applyTextStyleCommand,
+    exportMoleculeInspectorTemplate,
+    importMoleculeInspectorTemplate,
+    registry
+  ]);
 
   invokeCommandRef.current = invoke;
+
+  useEffect(() => {
+    if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
+      setDevBrowserMenuOpenId(null);
+    }
+  }, [devBrowserMenuOpenId, showDevBrowserMenuBar]);
+
+  useEffect(() => {
+    if (devBrowserMenuOpenId === null) {
+      return;
+    }
+
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-dev-browser-menu-bar]")) {
+        return;
+      }
+      setDevBrowserMenuOpenId(null);
+    };
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDevBrowserMenuOpenId(null);
+      }
+    };
+
+    globalThis.document.addEventListener("pointerdown", handlePointerDown);
+    globalThis.document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      globalThis.document.removeEventListener("pointerdown", handlePointerDown);
+      globalThis.document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [devBrowserMenuOpenId]);
 
   useEffect(() => {
     if (!activeTextEditObjectId) {
@@ -5726,7 +6844,7 @@ export function MainWindow({
 
     toolbarStyleTargetRef.current = {
       objectIds,
-      moleculePart: selectedNativeMoleculePart,
+      moleculePart: nativeSelectionColorTarget(selectedNativeMoleculePart),
       textRange
     };
   }, [activeTextSelection, document.selection.objectIds, selectedNativeMoleculePart]);
@@ -6344,32 +7462,35 @@ export function MainWindow({
   ]);
 
   useEffect(() => {
-    const showRotationHandles = () => setTransformRotationHandlesVisible(true);
-    const hideRotationHandles = () => setTransformRotationHandlesVisible(false);
+    const setShiftPressed = (pressed: boolean) => {
+      shiftKeyPressedRef.current = pressed;
+      setTransformRotationHandlesVisible(pressed);
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Shift" || event.shiftKey) {
-        showRotationHandles();
+        setShiftPressed(true);
       }
     };
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key === "Shift" || !event.shiftKey) {
-        hideRotationHandles();
+        setShiftPressed(false);
       }
     };
     const handleVisibilityChange = () => {
       if (window.document.visibilityState !== "visible") {
-        hideRotationHandles();
+        setShiftPressed(false);
       }
     };
+    const handleBlur = () => setShiftPressed(false);
 
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
-    window.addEventListener("blur", hideRotationHandles);
+    window.addEventListener("blur", handleBlur);
     window.document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
-      window.removeEventListener("blur", hideRotationHandles);
+      window.removeEventListener("blur", handleBlur);
       window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
@@ -6426,14 +7547,22 @@ export function MainWindow({
   }, [effectiveNativePalette, toolsetRegistry]);
 
   useEffect(() => {
+    let active = true;
     let unlisten: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
     let unlistenActiveToolRequest: (() => void) | undefined;
     let unlistenTextStyleRequest: (() => void) | undefined;
+    let unlistenPreview: (() => void) | undefined;
+    let unlistenCommit: (() => void) | undefined;
+    let unlistenCancel: (() => void) | undefined;
     void listenForToolsetCommands((commandId) => {
       invokeCommandRef.current(commandId);
     })
       .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
         unlisten = cleanup;
       })
       .catch(() => {
@@ -6443,6 +7572,10 @@ export function MainWindow({
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, state.toolsetId, state.open));
     })
       .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
         unlistenState = cleanup;
       })
       .catch(() => {
@@ -6452,6 +7585,10 @@ export function MainWindow({
       void broadcastToolsetActiveTool(activeToolCommandIdRef.current).catch(() => undefined);
     })
       .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
         unlistenActiveToolRequest = cleanup;
       })
       .catch(() => undefined);
@@ -6459,15 +7596,56 @@ export function MainWindow({
       void broadcastToolsetTextStyle(currentToolbarTextStateRef.current).catch(() => undefined);
     })
       .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
         unlistenTextStyleRequest = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForPaletteCommandPreviews((commandId) => {
+      palettePreviewHandlersRef.current.preview(commandId);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenPreview = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForPaletteCommandCommits((commandId) => {
+      palettePreviewHandlersRef.current.commit(commandId);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenCommit = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForPaletteCommandCancels(() => {
+      palettePreviewHandlersRef.current.cancel();
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenCancel = cleanup;
       })
       .catch(() => undefined);
 
     return () => {
+      active = false;
       unlisten?.();
       unlistenState?.();
       unlistenActiveToolRequest?.();
       unlistenTextStyleRequest?.();
+      unlistenPreview?.();
+      unlistenCommit?.();
+      unlistenCancel?.();
     };
   }, []);
 
@@ -6486,6 +7664,24 @@ export function MainWindow({
       })
       .catch((error: unknown) => {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+  };
+
+  const handleMoleculeTemplateFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    void file
+      .arrayBuffer()
+      .then((contents) => {
+        applyMoleculeInspectorTemplateBytes(new Uint8Array(contents), file.name);
+      })
+      .catch((error: unknown) => {
+        setStatus(`Template import failed: ${error instanceof Error ? error.message : String(error)}`);
       });
   };
 
@@ -9132,33 +10328,38 @@ export function MainWindow({
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? lasso.latestPoint;
       const wasDragging = lassoMachineRef.current.phase === "dragging";
-      const subtracting = lasso.subtracting || event.altKey;
       const lassoPoints = lassoPointsForSelection(lasso, point);
-      const selection = wasDragging
+      const region = wasDragging
         ? selectionInSelectionLasso(document.pages[0].objects, lassoPoints)
         : { objectIds: [], nativeSelection: undefined };
-      replacePresentDocument((current) => {
-        const pageId = current.pages[0].id;
-        if (!subtracting) {
-          return selectDocumentObjects(current, pageId, selection.objectIds);
-        }
-        const removed = new Set(selection.objectIds);
-        return selectDocumentObjects(
-          current,
-          pageId,
-          current.selection.objectIds.filter((objectId) => !removed.has(objectId))
-        );
-      });
-      setSelectedNativeMoleculePart(subtracting ? undefined : selection.nativeSelection);
+      // Alt held at any point during the drag subtracts; otherwise the shared policy decides
+      // add (Shift) vs replace. Regions stay object/atom/bond-only (no ring interiors, D3).
+      const mode = lasso.subtracting
+        ? "subtract"
+        : selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
+      const next = fromSelectionItems(
+        applySelection(
+          toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+          toSelectionItems(region.objectIds, region.nativeSelection),
+          mode
+        ),
+        { includeNativePartHost: false, scope: "multi" }
+      );
+      replacePresentDocument((current) =>
+        selectDocumentObjects(current, current.pages[0].id, next.objectIds)
+      );
+      setSelectedNativeMoleculeParts(next.nativeMoleculeParts);
       setActiveGraphicTransformObjectId(undefined);
       clearTransientInteractionChrome();
-      if (!subtracting && selection.objectIds.length === 0 && !selection.nativeSelection) {
+      if (next.objectIds.length === 0 && !next.nativeMoleculePart) {
         toolbarStyleTargetRef.current = undefined;
       }
       setSelectionLasso(undefined);
       selectionLassoRef.current = null;
       lassoMachineRef.current = initialInteractionState();
-      setStatus(subtracting ? selectionSubtractStatusLabel(selection) : selectionStatusLabel(selection));
+      setStatus(mode === "subtract"
+        ? selectionSubtractStatusLabel(region)
+        : selectionStatusLabel({ objectIds: next.objectIds, nativeSelection: next.nativeMoleculePart, nativeSelections: next.nativeMoleculeParts }));
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -9199,19 +10400,32 @@ export function MainWindow({
       return;
     }
 
-    const selection = wasDragging
+    const region = wasDragging
       ? selectionInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
       : { objectIds: [], nativeSelection: undefined };
-    replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, selection.objectIds));
-    setSelectedNativeMoleculePart(selection.nativeSelection);
+    // Shift adds to the existing selection, Alt subtracts, otherwise replace — the same policy
+    // as clicks. Regions stay object/atom/bond-only (no ring interiors, D3).
+    const mode = selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
+    const next = fromSelectionItems(
+      applySelection(
+        toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+        toSelectionItems(region.objectIds, region.nativeSelection),
+        mode
+      ),
+      { includeNativePartHost: false, scope: "multi" }
+    );
+    replacePresentDocument((current) => selectDocumentObjects(current, current.pages[0].id, next.objectIds));
+    setSelectedNativeMoleculeParts(next.nativeMoleculeParts);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    if (selection.objectIds.length === 0 && !selection.nativeSelection) {
+    if (next.objectIds.length === 0 && !next.nativeMoleculePart) {
       toolbarStyleTargetRef.current = undefined;
     }
     setSelectionMarquee(undefined);
     selectionMarqueeRef.current = null;
-    setStatus(selectionStatusLabel(selection));
+    setStatus(mode === "subtract"
+      ? selectionSubtractStatusLabel(region)
+      : selectionStatusLabel({ objectIds: next.objectIds, nativeSelection: next.nativeMoleculePart, nativeSelections: next.nativeMoleculeParts }));
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -9446,6 +10660,10 @@ export function MainWindow({
           hitToleranceForScale(viewportRef.current.scale)
         )
       : undefined;
+    const nativeMoleculeRingHit = ringInspectorOpen && object?.type === "molecule" && point && !nativeMoleculeHit
+      ? nativeMoleculeRingSelectionFromPointerTarget(object, event.target, point)
+      : undefined;
+    const selectionShiftActive = event.shiftKey || event.getModifierState("Shift") || shiftKeyPressedRef.current;
 
     if (activeToolState.activeCommandId === "tool.art.measure" && point) {
       startTapeMeasureDrag(event, point);
@@ -9717,71 +10935,113 @@ export function MainWindow({
 
     if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
       event.preventDefault();
-      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
-      const doublePress = event.detail >= 2 || isSelectionDoublePress(lastSelectionPressRef.current, press);
+      const pressPartKey = nativeMoleculeHit
+        ? `${nativeMoleculeHit.kind}:${nativeMoleculeHit.kind === "atom" ? nativeMoleculeHit.atomId : nativeMoleculeHit.bondId}`
+        : nativeMoleculeRingHit
+          ? `ring:${nativeMoleculeRingHit.ringKey}`
+          : undefined;
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId, partKey: pressPartKey };
+      const selectionMode = selectionModeFromEvent(event, {
+        gesture: "click",
+        shiftFallback: shiftKeyPressedRef.current
+      });
+      // A double-press selects the WHOLE molecule (or drills into a grouped child). A plain
+      // (replace) double-press requires the SAME part as the previous press, so rapid ring A → ring
+      // B picks ring B instead of drilling. A Shift double-press JOINS the whole molecule to the
+      // current selection; it additionally accepts a spatially-tight pair so part jitter between
+      // the two presses can't drop it onto the toggle path (which would cancel itself out).
+      const previousPress = lastSelectionPressRef.current;
+      const samePartAsPreviousPress = previousPress?.partKey === pressPartKey;
+      const rawDoublePress = event.detail >= 2 || isSelectionDoublePress(previousPress, press);
+      const tightDoublePress = previousPress !== undefined
+        && Math.hypot(press.x - previousPress.x, press.y - previousPress.y) <= DOUBLE_PRESS_SCREEN_PX;
+      const doublePress = rawDoublePress && selectionMode !== "subtract" && (
+        selectionMode === "replace" ? samePartAsPreviousPress : (samePartAsPreviousPress || tightDoublePress)
+      );
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();
         const drillIntoGroupedChild = selectableObjectId !== objectId;
-        replacePresentDocument((current) => drillIntoGroupedChild
-          ? selectDocumentObjectWithinGroup(current, objectId)
-          : selectDocumentObject(current, selectableObjectId));
+        // Shift keeps the existing selection and unions this molecule in; a plain double-press
+        // replaces. The union runs inside the updater so it survives the re-render between the two
+        // presses (reading current committed state, not a possibly-stale ref).
+        const joinSelection = selectionMode === "toggle";
+        replacePresentDocument((current) => {
+          if (drillIntoGroupedChild) {
+            return selectDocumentObjectWithinGroup(current, objectId);
+          }
+          if (joinSelection) {
+            return selectDocumentObjects(current, current.pages[0].id, [
+              ...new Set([...current.selection.objectIds, selectableObjectId])
+            ]);
+          }
+          return selectDocumentObject(current, selectableObjectId);
+        });
         clearTransientInteractionChrome();
         setActiveGraphicTransformObjectId(undefined);
         hoveredNativeAtomPointRef.current = undefined;
-        setSelectedNativeMoleculePart(undefined);
+        // The double-clicked molecule is now selected whole, so drop any native part(s) it held
+        // (e.g. the bond the first press toggled on) while leaving other molecules' parts intact.
+        setSelectedNativeMoleculeParts((current) =>
+          current.filter((part) => part.objectId !== selectableObjectId && part.objectId !== objectId)
+        );
         setStatus(drillIntoGroupedChild
           ? "Selected grouped molecule"
-          : selectableObjectId === objectId ? "Selected molecule" : "Selected group");
+          : joinSelection
+            ? "Added molecule to selection"
+            : selectableObjectId === objectId ? "Selected molecule" : "Selected group");
         return;
       }
 
-      if (event.shiftKey && selectableObjectId !== objectId) {
+      if (selectionMode !== "replace") {
+        // One additive path for every molecule pick. The press is reduced to a single selection
+        // item — a grouped child resolves to its group object, otherwise the atom/bond/ring hit,
+        // otherwise the whole molecule — and the shared policy decides toggle/add/subtract. Ring
+        // interiors only resolve when the Rings toolbar is open (see nativeMoleculeRingHit).
         event.stopPropagation();
-        const nextDocument = toggleDocumentObjectSelection(document, document.pages[0].id, selectableObjectId);
-        replacePresentDocument(nextDocument);
-        clearTransientInteractionChrome();
-        setSelectedNativeMoleculePart(undefined);
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveGraphicTransformObjectId(undefined);
-        setSelectedGraphicPathNode(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
-        setStatus(selectionStatusLabel({ objectIds: nextDocument.selection.objectIds }));
-        return;
-      }
-
-      if (event.shiftKey && nativeMoleculeHit) {
-        event.stopPropagation();
-        const nextSelectedNativePart = nativeSelectionWithHitToggled(
-          selectedNativeMoleculePart?.objectId === objectId ? selectedNativeMoleculePart : undefined,
-          objectId,
-          nativeMoleculeHit
+        // Phase 7: native parts are stored per molecule, so a part on a *different* molecule is
+        // added as a part (not downgraded to a whole object). A grouped child still resolves to its
+        // group object; otherwise the atom/bond/ring hit; otherwise the whole molecule. The shared
+        // policy decides toggle/add/subtract over the full cross-molecule item set.
+        const additiveItem: SelectionItem =
+          selectableObjectId !== objectId
+            ? { kind: "object", objectId: selectableObjectId }
+            : nativeMoleculeHit?.kind === "atom"
+              ? { kind: "atom", objectId, atomId: nativeMoleculeHit.atomId }
+              : nativeMoleculeHit?.kind === "bond"
+                ? { kind: "bond", objectId, bondId: nativeMoleculeHit.bondId }
+                : nativeMoleculeRingHit
+                  ? {
+                      kind: "ring",
+                      objectId,
+                      ringKey: nativeMoleculeRingHit.ringKey,
+                      atomIds: nativeMoleculeRingHit.atomIds,
+                      bondIds: nativeMoleculeRingHit.bondIds
+                    }
+                  : { kind: "object", objectId: selectableObjectId };
+        const nextSelection = fromSelectionItems(
+          applySelection(
+            toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+            additiveItem,
+            selectionMode
+          ),
+          { scope: "multi" }
         );
-        let nextDocument = selectDocumentObjects(document, document.pages[0].id, []);
-        if (nextSelectedNativePart) {
-          nextDocument = document.selection.objectIds.includes(objectId)
-            ? document
-            : selectDocumentObject(document, objectId);
+        replacePresentDocument((current) =>
+          selectDocumentObjects(current, current.pages[0].id, nextSelection.objectIds)
+        );
+        clearTransientInteractionChrome();
+        if (nativeMoleculeHit && additiveItem.kind !== "object") {
+          assignHoveredNativeDeleteTarget({ objectId, ...nativeMoleculeHit });
+          hoveredNativeAtomPointRef.current = nativeMoleculeHit.kind === "atom" ? { objectId, point } : undefined;
+        } else {
+          hoveredNativeAtomPointRef.current = undefined;
         }
-        replacePresentDocument(nextDocument);
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveGraphicTransformObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget({ objectId, ...nativeMoleculeHit });
-        hoveredNativeAtomPointRef.current = nativeMoleculeHit.kind === "atom" ? { objectId, point } : undefined;
-        setSelectedNativeMoleculePart(nextSelectedNativePart);
+        setSelectedNativeMoleculeParts(nextSelection.nativeMoleculeParts);
         setStatus(selectionStatusLabel({
-          objectIds: nextSelectedNativePart ? [objectId] : [],
-          nativeSelection: nextSelectedNativePart
+          objectIds: nextSelection.objectIds,
+          nativeSelection: nextSelection.nativeMoleculePart,
+          nativeSelections: nextSelection.nativeMoleculeParts
         }));
         return;
       }
@@ -9856,6 +11116,23 @@ export function MainWindow({
         return;
       }
 
+      if (nativeMoleculeRingHit) {
+        event.stopPropagation();
+        replacePresentDocument((current) => selectDocumentObject(current, objectId));
+        setActiveEditorObjectId(undefined);
+        setActiveTextEditObjectId(undefined);
+        setActiveGraphicTransformObjectId(undefined);
+        setActiveAtomLabelEdit(undefined);
+        setHoveredNativeAtom(undefined);
+        setFreeformNativeBond(undefined);
+        setNativeDoubleBondSidePreview(undefined);
+        assignHoveredNativeDeleteTarget(undefined);
+        hoveredNativeAtomPointRef.current = undefined;
+        setSelectedNativeMoleculePart(nativeMoleculeRingHit);
+        setStatus("Selected ring");
+        return;
+      }
+
       return;
     }
 
@@ -9865,7 +11142,7 @@ export function MainWindow({
 
     if (
       activeToolState.activeKind === "selection" &&
-      event.shiftKey &&
+      selectionShiftActive &&
       object &&
       shouldActivateDocumentObject(object, "selection")
     ) {
@@ -10061,6 +11338,7 @@ export function MainWindow({
     effectiveArtPaintTarget,
     flashArtPaintTargetControls,
     eraseDocumentObjectTarget,
+    ringInspectorOpen,
     pagePointFromPointerEvent,
     replacePresentDocument,
     restoreToolAfterTextPlacement,
@@ -10099,7 +11377,7 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     const selectedFragmentTarget = object?.type === "molecule" && selectedNativeMoleculePart?.objectId === objectId
-      ? selectedNativeMoleculePart
+      ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
@@ -10158,7 +11436,7 @@ export function MainWindow({
     }
     const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = object?.type === "molecule" && selectedNativeMoleculePart?.objectId === objectId
-      ? selectedNativeMoleculePart
+      ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
@@ -10246,7 +11524,7 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
-      ? selectedNativeMoleculePart
+      ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
@@ -10322,7 +11600,7 @@ export function MainWindow({
     }
     const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
-      ? selectedNativeMoleculePart
+      ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
@@ -10436,7 +11714,7 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
-      ? selectedNativeMoleculePart
+      ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
@@ -10827,7 +12105,7 @@ export function MainWindow({
     }
     const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
-      ? selectedNativeMoleculePart
+      ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
     const selectedFragmentBounds = object?.type === "molecule" && selectedFragmentTarget
       ? nativeMoleculePartBounds(object, selectedFragmentTarget)
@@ -11807,9 +13085,12 @@ export function MainWindow({
 
   return (
     <main
-      className={["app-shell", effectiveNativePalette ? "native-shell" : "web-shell", showAppMenuBar ? "has-app-menu-bar" : ""]
-        .filter(Boolean)
-        .join(" ")}
+      className={[
+        "app-shell",
+        effectiveNativePalette ? "native-shell" : "web-shell",
+        showAppMenuBar ? "has-app-menu-bar" : "",
+        showDevBrowserMenuBar ? "dev-browser-menu-shell" : ""
+      ].filter(Boolean).join(" ")}
       aria-label="ChemDraft desktop workspace"
       data-active-tool={activeToolState.activeCommandId}
       data-active-tool-kind={activeToolState.activeKind}
@@ -11825,6 +13106,26 @@ export function MainWindow({
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
       />
+      <input
+        ref={moleculeTemplateInputRef}
+        type="file"
+        accept=".template,.cds,application/json,application/octet-stream"
+        className="native-file-input"
+        aria-label="Import Molecule Inspector template"
+        onChange={handleMoleculeTemplateFile}
+      />
+
+      {showDevBrowserMenuBar ? (
+        <DevBrowserMenuBar
+          menus={devBrowserMenus}
+          openMenuId={devBrowserMenuOpenId}
+          onOpenMenuIdChange={setDevBrowserMenuOpenId}
+          onInvoke={(commandId) => {
+            setDevBrowserMenuOpenId(null);
+            invoke(commandId);
+          }}
+        />
+      ) : null}
 
       {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
@@ -11874,14 +13175,20 @@ export function MainWindow({
                   showMainStyleControls={toolset.id === "core.main"}
                   showTextStyleControls={toolset.id === "core.text"}
                   showArtStyleControls={toolset.id === "core.art"}
+                  showRingInspectorControls={toolset.id === ringInspectorToolsetId}
+                  showMoleculeInspectorControls={toolset.id === moleculeInspectorToolsetId}
                   currentObjectColor={currentToolbarObjectColor}
                   currentArtStyle={currentArtStyle}
                   currentArtStyleTarget={activeArtPaintTarget}
+                  currentMoleculeInspector={currentMoleculeInspector}
                   currentTextStyle={currentToolbarTextStyle}
                   currentTextScript={currentToolbarTextScript}
                   onArtStylePreview={previewObjectStyleCommand}
                   onArtStyleCommit={commitObjectStylePreview}
                   onArtStyleCancel={cancelObjectStylePreview}
+                  onMoleculeInspectorPreview={previewMoleculeInspectorCommand}
+                  onMoleculeInspectorCommit={commitMoleculeInspectorPreview}
+                  onMoleculeInspectorCancel={cancelMoleculeInspectorPreview}
                   onInvoke={invoke}
                 />
               </section>
@@ -11895,6 +13202,9 @@ export function MainWindow({
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           data-zoom-surface="document"
+          // Gates the ring interior hit surface (see .native-molecule-ring-hit-target): ring
+          // centers only become selectable while the Rings toolbar is open.
+          data-ring-inspector-open={ringInspectorOpen ? "true" : "false"}
         >
           {rulersVisible ? (
             <DocumentRulers
@@ -12056,8 +13366,10 @@ export function MainWindow({
                   <>
                 {document.pages[0].objects.map((object, layerIndex) => {
                   const selectionChromeActive = activeToolState.activeKind === "selection";
-                  const selectedPart = selectionChromeActive && selectedNativeMoleculePart?.objectId === object.id
-                    ? selectedNativeMoleculePart
+                  // Phase 7: each selected molecule renders its own part highlight, so shift/marquee
+                  // selections that span several molecules all light up (not just the primary).
+                  const selectedPart = selectionChromeActive
+                    ? selectedNativeMoleculeParts.find((part) => part.objectId === object.id)
                     : undefined;
                   const selected = selectionChromeActive &&
                     document.selection.objectIds.includes(object.id) &&
@@ -12297,6 +13609,14 @@ export function MainWindow({
             onApply={applyCustomPageSize}
           />
         ) : null}
+        {moleculeStyleOverridePrompt ? (
+          <MoleculeStyleOverridePrompt
+            objectCount={moleculeStyleOverridePrompt.objectIds.length}
+            onKeep={() => applyPendingMoleculeStyleOverrideChoice("keep")}
+            onClear={() => applyPendingMoleculeStyleOverrideChoice("clear")}
+            onCancel={() => applyPendingMoleculeStyleOverrideChoice("cancel")}
+          />
+        ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>
@@ -12353,6 +13673,437 @@ export function MainWindow({
   );
 }
 
+interface DevBrowserMenuBarProps {
+  menus: readonly DevBrowserMenuDefinition[];
+  openMenuId: string | null;
+  onOpenMenuIdChange(openMenuId: string | null): void;
+  onInvoke(commandId: string): void;
+}
+
+function DevBrowserMenuBar({
+  menus,
+  openMenuId,
+  onOpenMenuIdChange,
+  onInvoke
+}: DevBrowserMenuBarProps) {
+  const openMenuIndex = menus.findIndex((menu) => menu.id === openMenuId);
+
+  const handleTopLevelKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    menuIndex: number
+  ) => {
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpenMenuIdChange(menus[menuIndex]?.id ?? null);
+      return;
+    }
+    if (event.key === "Escape") {
+      onOpenMenuIdChange(null);
+      return;
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const nextIndex = (menuIndex + direction + menus.length) % menus.length;
+    onOpenMenuIdChange(menus[nextIndex]?.id ?? null);
+  };
+
+  return (
+    <nav
+      className="menu-bar dev-browser-menu-bar"
+      aria-label="Dev browser menu bar"
+      data-dev-browser-menu-bar="true"
+    >
+      <div className="brand">ChemDraft</div>
+      <div className="menu dev-browser-menu-list" role="menubar">
+        {menus.map((menu, index) => {
+          const open = menu.id === openMenuId;
+          const menuElementId = `dev-browser-menu-${menu.id}`;
+          return (
+            <div
+              className="dev-browser-menu"
+              key={menu.id}
+              onMouseEnter={() => {
+                if (openMenuIndex !== -1) {
+                  onOpenMenuIdChange(menu.id);
+                }
+              }}
+            >
+              <button
+                type="button"
+                className="dev-browser-menu-button"
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                aria-controls={menuElementId}
+                data-dev-browser-menu-button={menu.id}
+                onClick={() => onOpenMenuIdChange(open ? null : menu.id)}
+                onKeyDown={(event) => handleTopLevelKeyDown(event, index)}
+              >
+                {menu.label}
+              </button>
+              {open ? (
+                <div
+                  id={menuElementId}
+                  className="dev-browser-menu-popover"
+                  role="menu"
+                  aria-label={menu.label}
+                >
+                  {menu.items.map((item, itemIndex) =>
+                    renderDevBrowserMenuEntry(item, `${menu.id}-${itemIndex}`, onInvoke)
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+function renderDevBrowserMenuEntry(
+  entry: DevBrowserMenuEntry,
+  key: string,
+  onInvoke: (commandId: string) => void
+) {
+  if (entry.kind === "separator") {
+    return <div className="dev-browser-menu-separator" role="separator" key={key} />;
+  }
+
+  if (entry.kind === "group") {
+    return (
+      <div className="dev-browser-menu-group" role="presentation" key={key}>
+        <div className="dev-browser-menu-group-label">{entry.label}</div>
+        <div className="dev-browser-menu-group-items">
+          {entry.items.map((item, index) => renderDevBrowserMenuEntry(item, `${key}-${index}`, onInvoke))}
+        </div>
+      </div>
+    );
+  }
+
+  const checkboxRole = entry.checked === undefined ? "menuitem" : "menuitemcheckbox";
+  return (
+    <button
+      type="button"
+      role={checkboxRole}
+      aria-checked={entry.checked === undefined ? undefined : entry.checked}
+      className="dev-browser-menu-item"
+      data-command-id={entry.commandId}
+      disabled={entry.disabled}
+      key={key}
+      onClick={() => {
+        if (!entry.disabled) {
+          onInvoke(entry.commandId);
+        }
+      }}
+    >
+      <span className="dev-browser-menu-item-state" aria-hidden="true">
+        {entry.checked ? "On" : ""}
+      </span>
+      <span className="dev-browser-menu-item-label">{entry.label}</span>
+      {entry.shortcut ? (
+        <span className="dev-browser-menu-item-shortcut">{entry.shortcut}</span>
+      ) : null}
+    </button>
+  );
+}
+
+function applyObjectStyleCommandToMoleculeRings(
+  currentDocument: ChemDraftDocument,
+  commandId: string,
+  target: GraphicStylePaintTarget,
+  ringTargets: readonly NativeMoleculeRingTarget[]
+): ObjectStyleCommandApplyResult {
+  const unsupportedRingResult = (message: string): ObjectStyleCommandApplyResult => ({
+    document: currentDocument,
+    handled: true,
+    targeted: false,
+    message
+  });
+
+  const applyToRings = (
+    update: (document: ChemDraftDocument, target: NativeMoleculeRingTarget) => ChemDraftDocument,
+    singularMessage: string,
+    pluralMessage: string
+  ): ObjectStyleCommandApplyResult => ({
+    document: ringTargets.reduce(update, currentDocument),
+    handled: true,
+    targeted: ringTargets.length > 0,
+    message: ringTargets.length === 1 ? singularMessage : pluralMessage
+  });
+
+  const noneCommand = objectStyleNoneCommands.find((command) => command.id === commandId);
+  if (noneCommand) {
+    return noneCommand.target === "fill"
+      ? applyToRings(
+          (nextDocument, ringTarget) => applyMoleculeRingFillNone(nextDocument, ringTarget),
+          "Removed selected ring fill",
+          `Removed ${ringTargets.length} selected ring fills`
+        )
+      : unsupportedRingResult("Selected rings do not have an Art stroke");
+  }
+
+  const paintType = objectPaintTypeForCommand(commandId);
+  if (paintType) {
+    if (target !== "fill") {
+      return unsupportedRingResult("Selected rings do not have an Art stroke");
+    }
+    if (paintType === "none") {
+      return applyToRings(
+        (nextDocument, ringTarget) => applyMoleculeRingFillNone(nextDocument, ringTarget),
+        "Removed selected ring fill",
+        `Removed ${ringTargets.length} selected ring fills`
+      );
+    }
+    if (paintType === "solid") {
+      return applyToRings(
+        (nextDocument, ringTarget) => applyMoleculeRingFillColor(
+          nextDocument,
+          ringTarget,
+          moleculeRingSolidFallbackColor(currentDocument, ringTarget)
+        ),
+        "Updated selected ring fill paint",
+        `Updated ${ringTargets.length} selected ring fill paints`
+      );
+    }
+    return unsupportedRingResult("Selected rings support solid fill only");
+  }
+
+  const opacity = objectOpacityForCommand(commandId);
+  if (opacity) {
+    return opacity.key === "fillOpacity"
+      ? applyToRings(
+          (nextDocument, ringTarget) => applyMoleculeRingFillOpacity(nextDocument, ringTarget, opacity.value),
+          "Updated selected ring fill opacity",
+          `Updated ${ringTargets.length} selected ring fill opacities`
+        )
+      : unsupportedRingResult("Selected rings do not have object opacity");
+  }
+
+  const disabledEffectKind = objectEffectDisableForCommand(commandId);
+  if (disabledEffectKind) {
+    return applyToRings(
+      (nextDocument, ringTarget) => deactivateMoleculeRingEffect(nextDocument, ringTarget, disabledEffectKind),
+      `Disabled selected ring ${disabledEffectKind} effect`,
+      `Disabled ${ringTargets.length} selected ring ${disabledEffectKind} effects`
+    );
+  }
+
+  const effectKind = objectEffectForCommand(commandId);
+  if (effectKind) {
+    return applyToRings(
+      (nextDocument, ringTarget) => applyMoleculeRingEffect(nextDocument, ringTarget, effectKind),
+      effectKind === "none" ? "Cleared selected ring effects" : `Applied selected ring ${effectKind} effect`,
+      effectKind === "none"
+        ? `Cleared ${ringTargets.length} selected ring effects`
+        : `Applied ${ringTargets.length} selected ring ${effectKind} effects`
+    );
+  }
+
+  const effectColor = objectEffectColorForCommand(commandId);
+  if (effectColor) {
+    return applyToRings(
+      (nextDocument, ringTarget) =>
+        applyMoleculeRingEffectColor(nextDocument, ringTarget, effectColor.effectKind, effectColor.color),
+      `Updated selected ring ${effectColor.effectKind} color`,
+      `Updated ${ringTargets.length} selected ring ${effectColor.effectKind} colors`
+    );
+  }
+
+  const effectOpacity = objectEffectOpacityForCommand(commandId);
+  if (effectOpacity) {
+    return applyToRings(
+      (nextDocument, ringTarget) =>
+        applyMoleculeRingEffectOpacity(nextDocument, ringTarget, effectOpacity.effectKind, effectOpacity.opacity),
+      `Updated selected ring ${effectOpacity.effectKind} opacity`,
+      `Updated ${ringTargets.length} selected ring ${effectOpacity.effectKind} opacities`
+    );
+  }
+
+  const effectSize = objectEffectSizeForCommand(commandId);
+  if (effectSize) {
+    return applyToRings(
+      (nextDocument, ringTarget) =>
+        applyMoleculeRingEffectSize(nextDocument, ringTarget, effectSize.effectKind, effectSize.size),
+      `Updated selected ring ${effectSize.effectKind} size`,
+      `Updated ${ringTargets.length} selected ring ${effectSize.effectKind} sizes`
+    );
+  }
+
+  const selectedColor = objectColorForCommand(commandId);
+  if (selectedColor) {
+    return target === "fill"
+      ? applyToRings(
+          (nextDocument, ringTarget) => applyMoleculeRingFillColor(nextDocument, ringTarget, selectedColor),
+          "Updated selected ring fill",
+          `Updated ${ringTargets.length} selected ring fills`
+        )
+      : unsupportedRingResult("Selected rings do not have an Art stroke");
+  }
+
+  return { document: currentDocument, handled: false, targeted: false, message: "" };
+}
+
+function objectStyleResultWithRingOverrideChoice(
+  currentDocument: ChemDraftDocument,
+  result: ObjectStyleCommandApplyResult,
+  moleculeObjectIds: readonly string[],
+  mode: ObjectStyleRingOverrideMode
+): ObjectStyleCommandApplyResult {
+  if (!result.handled || !result.targeted) {
+    return result;
+  }
+
+  const objectIdsWithRingOverrides = moleculeObjectIdsWithRingOverrides(currentDocument, moleculeObjectIds);
+  if (objectIdsWithRingOverrides.length === 0) {
+    return result;
+  }
+
+  if (mode === "clear") {
+    return {
+      ...result,
+      document: clearMoleculeRingStyles(result.document, objectIdsWithRingOverrides),
+      message: `${result.message}; cleared ring overrides`
+    };
+  }
+
+  if (mode === "keep") {
+    return result;
+  }
+
+  return {
+    ...result,
+    document: currentDocument,
+    needsRingOverrideChoice: true,
+    ringOverrideObjectIds: objectIdsWithRingOverrides
+  };
+}
+
+function moleculeObjectIdsWithRingOverrides(
+  document: ChemDraftDocument,
+  objectIds: readonly string[]
+): string[] {
+  return objectIds.filter((objectId) => {
+    const object = findDocumentObject(document, objectId);
+    if (object?.type !== "molecule") {
+      return false;
+    }
+
+    const ringStyles = object.style.ringStyles;
+    return Boolean(
+      ringStyles &&
+      typeof ringStyles === "object" &&
+      !Array.isArray(ringStyles) &&
+      Object.keys(ringStyles).length > 0
+    );
+  });
+}
+
+function moleculeRingSolidFallbackColor(
+  document: ChemDraftDocument,
+  target: NativeMoleculeRingTarget
+): string {
+  const object = findDocumentObject(document, target.objectId);
+  if (object?.type !== "molecule") {
+    return "#111111";
+  }
+
+  const ringStyle = moleculeRingStyleRecord(object.style.ringStyles, target.ringKey);
+  const ringPaint = graphicPaintRecordColor(ringStyle.fillPaint);
+  if (ringPaint) {
+    return ringPaint;
+  }
+
+  const ringFillColor = metadataStyleString(ringStyle.fillColor);
+  if (ringFillColor && ringFillColor.toLowerCase() !== "none") {
+    return ringFillColor;
+  }
+
+  const objectPaint = graphicPaintRecordColor(object.style.fillPaint);
+  if (objectPaint) {
+    return objectPaint;
+  }
+
+  const objectFillColor = metadataStyleString(object.style.fillColor);
+  return objectFillColor && objectFillColor.toLowerCase() !== "none"
+    ? objectFillColor
+    : "#111111";
+}
+
+function moleculeRingStyleRecord(value: unknown, ringKey: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const style = (value as Record<string, unknown>)[ringKey];
+  return style && typeof style === "object" && !Array.isArray(style)
+    ? style as Record<string, unknown>
+    : {};
+}
+
+function graphicPaintRecordColor(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const paint = value as Record<string, unknown>;
+  return paint.kind === "solid" ? metadataStyleString(paint.color) : undefined;
+}
+
+function metadataStyleString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+interface MoleculeStyleOverridePromptProps {
+  objectCount: number;
+  onKeep: () => void;
+  onClear: () => void;
+  onCancel: () => void;
+}
+
+function MoleculeStyleOverridePrompt({
+  objectCount,
+  onKeep,
+  onClear,
+  onCancel
+}: MoleculeStyleOverridePromptProps) {
+  const moleculeLabel = objectCount === 1 ? "This molecule has" : "These molecules have";
+  return (
+    <div
+      aria-label="Per-ring appearance attributes"
+      aria-modal="true"
+      role="dialog"
+      style={exportDialogBackdropStyle}
+    >
+      <section style={exportDialogPanelStyle}>
+        <div style={exportDialogHeaderStyle}>
+          <h2 style={exportDialogTitleStyle}>Per-Ring Attributes</h2>
+        </div>
+        <p style={exportDialogHintStyle}>
+          {moleculeLabel} per-ring attributes from the Molecule Inspector. Whole-molecule appearance changes can either keep those ring overrides or clear them for a uniform molecule.
+        </p>
+        <p style={exportDialogWarningStyle}>
+          Clearing per-ring attributes removes them from the whole selected molecule. Use Undo to restore them.
+        </p>
+        <div style={exportDialogFooterStyle}>
+          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" style={exportDialogButtonStyle} onClick={onKeep}>
+            Keep Overrides
+          </button>
+          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={onClear}>
+            Clear Overrides
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 interface ImportedPageFitPromptProps {
   recommendation: ImportedPageFitPromptState;
@@ -14747,6 +16498,7 @@ function CrosshairOverlay({
 /** How one bond draws in the spin overlay — mirrors the 2D renderer's conventions. */
 interface SpinBondRenderInfo {
   order: 1 | 2 | 3;
+  bold: boolean;
   /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
    *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
   symmetric: boolean;
@@ -14768,6 +16520,8 @@ interface Spin3dState {
   bondRender: SpinBondRenderInfo[];
   /** Per atom: the exact label the 2D drawing shows (undefined = unlabeled carbon). */
   atomLabels: (string | undefined)[];
+  /** Per atom: resolved label drawing style, including sparse atom-specific overrides. */
+  atomLabelStyles: (NativeDrawingStyle | undefined)[];
   /** The source 2D atoms (same order as atomLabels/projection) — used for label-offset
    *  aware bond-end trimming, matching the committed 2D drawing. */
   atoms: readonly MoleculeAtom[];
@@ -14853,15 +16607,32 @@ function SpinOverlay({
     atomIncidentWeights[from]?.push(weight);
     atomIncidentWeights[to]?.push(weight);
   });
-  const labelHaloWidth = atomLabelHaloWidthPx(drawingStyle);
   // Labeled atoms painted far → near so a nearer heteroatom's glyph sits over a farther one where
-  // the projection stacks them; halo and fill passes share this order.
+  // the projection stacks them; halo and fill passes share this order. Each label resolves its
+  // per-atom Inspector style (font, color, halo color/width, anchor placement) exactly as the
+  // committed 2D render does, so styled labels look identical live and on flatten.
   const spinLabels = projection.atoms
     .flatMap((atom) => {
       const label = state.atomLabels[atom.index];
       if (!label) return [];
+      const labelStyle = state.atomLabelStyles[atom.index] ?? drawingStyle;
+      const layout = atomLabelLayout(label, labelStyle);
+      const sourceAtom = state.atoms[atom.index];
+      const anchorOffset = sourceAtom
+        ? atomLabelAnchorOffset(sourceAtom, label, labelStyle, layout)
+        : { x: 0, y: 0 };
       const weight = averageDefinedDepthWeights(atomIncidentWeights[atom.index] ?? []);
-      return [{ atom, label, weight, scale: depthCuedLabelScale(weight), runs: atomLabelLayout(label, drawingStyle).runs }];
+      return [{
+        atom,
+        label,
+        labelStyle,
+        anchorOffset,
+        weight,
+        scale: depthCuedLabelScale(weight),
+        runs: layout.runs,
+        haloColor: labelStyle.atomLabelBackgroundColor !== "transparent" ? labelStyle.atomLabelBackgroundColor : undefined,
+        haloWidth: atomLabelHaloWidthPx(labelStyle)
+      }];
     })
     .sort((a, b) => (a.weight ?? 0.5) - (b.weight ?? 0.5));
   return (
@@ -14889,9 +16660,10 @@ function SpinOverlay({
         // (flatten bakes the identical weight into display.depthWeight) — releasing changes
         // nothing visually. undefined ⇒ no cue, exactly as the commit leaves a planar view.
         const weight = depthWeights[bond.index];
+        const render = state.bondRender[bond.index] ?? { order: 1, bold: false, symmetric: false, neighborIndices: [] };
         const stroke = depthCuedBondColor(drawingStyle.bondColor, weight);
-        const width = depthCuedBondStrokeWidth(drawingStyle.bondStrokeWidthPx, weight);
-        const render = state.bondRender[bond.index] ?? { order: 1, symmetric: false, neighborIndices: [] };
+        const baseWidth = render.bold ? drawingStyle.bondBoldWidthPx : drawingStyle.bondStrokeWidthPx;
+        const width = depthCuedBondStrokeWidth(baseWidth, weight);
         const rawDx = b.sx - a.sx;
         const rawDy = b.sy - a.sy;
         const rawLength = Math.hypot(rawDx, rawDy) || 1;
@@ -14906,12 +16678,14 @@ function SpinOverlay({
           state.atomLabels[bond.to],
           drawingStyle,
           rawLength,
-          { x: ux, y: uy }
+          { x: ux, y: uy },
+          state.atomLabelStyles[bond.from],
+          state.atomLabelStyles[bond.to]
         );
         const ax = a.sx + ux * clearance.from, ay = a.sy + uy * clearance.from;
         const bx = b.sx - ux * clearance.to, by = b.sy - uy * clearance.to;
         const length = Math.hypot(bx - ax, by - ay) || 1;
-        const gap = drawingStyle.multipleBondGapPx;
+        const gap = nativeMultipleBondGapPx(drawingStyle);
         const key = (suffix: string) => `${bond.from}-${bond.to}-${index}-${suffix}`;
         const line = (sx1: number, sy1: number, sx2: number, sy2: number, suffix: string) => (
           <line key={key(suffix)} x1={sx1} y1={sy1} x2={sx2} y2={sy2}
@@ -14970,24 +16744,27 @@ function SpinOverlay({
         return line(ax, ay, bx, by, "p");
       })}
       {/* Labels, painted far → near, depth-cued to match the bonds: far labels fade lighter and
-          shrink slightly, near labels stay dark and full-size. The paper-coloured knockout is a
-          glyph-hugging halo (paint-order stroke, painted UNDER the fill) instead of an opaque box,
-          so bonds behind a label vanish right at the letters; because it rides on the same element
-          and paints far → near, a nearer label's halo also clears a farther one it overlaps. */}
-      {spinLabels.map(({ atom, label, weight, scale, runs }) => (
+          shrink slightly, near labels stay dark and full-size. The knockout is a glyph-hugging
+          halo (paint-order stroke, painted UNDER the fill) instead of an opaque box, so bonds
+          behind a label vanish right at the letters; a nearer label's halo also clears a farther
+          one it overlaps. Per-atom Inspector styles feed the SAME halo: the per-atom background
+          color IS the halo stroke ("transparent" opts out), and the anchor honors per-atom
+          placement/offsets so the live overlay matches the flatten commit exactly. */}
+      {spinLabels.map(({ atom, label, labelStyle, anchorOffset, weight, scale, runs, haloColor, haloWidth }) => (
         <g
           key={`label-${atom.index}`}
           data-atom-label={label}
-          transform={`translate(${atom.sx} ${atom.sy})${scale === 1 ? "" : ` scale(${scale})`}`}
-          fill={depthCuedLabelColor(drawingStyle.atomLabelColor, weight)}
-          stroke={drawingStyle.atomLabelBackgroundColor}
-          strokeWidth={labelHaloWidth}
+          transform={`translate(${atom.sx + anchorOffset.x} ${atom.sy + anchorOffset.y})${scale === 1 ? "" : ` scale(${scale})`}`}
+          fill={depthCuedLabelColor(labelStyle.atomLabelColor, weight)}
+          stroke={haloColor}
+          strokeWidth={haloColor === undefined ? undefined : haloWidth}
           strokeLinejoin="round"
           strokeLinecap="round"
           paintOrder="stroke"
-          fontFamily={drawingStyle.atomLabelFontFamily}
-          fontSize={drawingStyle.atomLabelFontSizePx}
-          fontWeight={drawingStyle.atomLabelFontWeight}
+          fontFamily={labelStyle.atomLabelFontFamily}
+          fontSize={labelStyle.atomLabelFontSizePx}
+          fontWeight={labelStyle.atomLabelFontWeight}
+          fontStyle={labelStyle.atomLabelFontStyle}
           style={{ pointerEvents: "none", userSelect: "none" }}
         >
           {runs.map((run, runIndex) => (
@@ -14997,7 +16774,7 @@ function SpinOverlay({
               y={run.y}
               textAnchor={run.textAnchor}
               dominantBaseline="central"
-              fontSize={atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx}
+              fontSize={atomLabelRunFontSize(run.script, labelStyle) ?? labelStyle.atomLabelFontSizePx}
             >
               {run.text}
             </text>
@@ -15156,19 +16933,23 @@ function GroupSelectionOverlay({
         }}
         onResizeStart={onResizeStart}
       />
-      {rotationHandlesVisible ? (
-        <button
-          type="button"
-          className="object-rotate-handle"
-          aria-label="Rotate selected group"
-          data-selection-rotate-handle="true"
-          data-group-rotate-handle="true"
-          title="Rotate selected group"
-          onPointerDown={onRotateStart}
-        >
-          <RotateSelectionIcon />
-        </button>
-      ) : null}
+      {/*
+        The 2D rotate handle is a privileged control of the group frame: like the always-on
+        resize handles above, it stays visible whenever a group is selected and does not wait
+        for the shift-key reveal (rotationHandlesVisible) that gates the per-object handles.
+        The heavier 3D-tilt handle below stays shift-gated.
+      */}
+      <button
+        type="button"
+        className="object-rotate-handle"
+        aria-label="Rotate selected group"
+        data-selection-rotate-handle="true"
+        data-group-rotate-handle="true"
+        title="Rotate selected group"
+        onPointerDown={onRotateStart}
+      >
+        <RotateSelectionIcon />
+      </button>
       {canProjectedPlaneTilt && rotationHandlesVisible ? (
         <button
           type="button"
@@ -15743,6 +17524,10 @@ function nativeMoleculeSelectionCoversWholeObject(
     return object.atoms.length === 0 && object.bonds.length === 1;
   }
 
+  if (selection.kind === "ring" || selection.kind === "rings") {
+    return false;
+  }
+
   return (
     selection.atomIds.length === object.atoms.length &&
     selection.bondIds.length === object.bonds.length
@@ -16087,6 +17872,139 @@ function pointInPolygon(point: ClientPoint, polygon: readonly ClientPoint[]): bo
   return inside;
 }
 
+export function nativeMoleculeRingSelectionFromPoint(
+  object: MoleculeObject,
+  point: ClientPoint
+): NativeMoleculeRingSelectionPart | undefined {
+  const ring = nativeMoleculeRings(object)
+    .filter((candidate) => pointInPolygon(point, candidate.points))
+    .sort((a, b) => a.area - b.area || a.ringKey.localeCompare(b.ringKey))[0];
+  return ring
+    ? {
+        objectId: object.id,
+        kind: "ring",
+        ringKey: ring.ringKey,
+        atomIds: ring.atomIds,
+        bondIds: ring.bondIds
+      }
+    : undefined;
+}
+
+function nativeMoleculeRingSelectionFromPointerTarget(
+  object: MoleculeObject,
+  target: EventTarget | null,
+  point: ClientPoint
+): NativeMoleculeRingSelectionPart | undefined {
+  const targetRingKey = nativeMoleculeRingKeyFromPointerTarget(target);
+  if (targetRingKey) {
+    const ring = nativeMoleculeRings(object).find((candidate) => candidate.ringKey === targetRingKey);
+    if (ring) {
+      return {
+        objectId: object.id,
+        kind: "ring",
+        ringKey: ring.ringKey,
+        atomIds: ring.atomIds,
+        bondIds: ring.bondIds
+      };
+    }
+  }
+
+  return nativeMoleculeRingSelectionFromPoint(object, point);
+}
+
+function nativeMoleculeRingKeyFromPointerTarget(target: EventTarget | null): string | undefined {
+  if (!(target instanceof Element)) {
+    return undefined;
+  }
+
+  return target.closest("[data-ring-hit-key]")?.getAttribute("data-ring-hit-key") ?? undefined;
+}
+
+function nativeRingSelectionItems(part: NativeMoleculeSelectionPart | undefined): NativeMoleculeRingSelectionItem[] {
+  if (part?.kind === "ring") {
+    return [{
+      ringKey: part.ringKey,
+      atomIds: part.atomIds,
+      bondIds: part.bondIds
+    }];
+  }
+
+  return part?.kind === "rings" ? [...part.rings] : [];
+}
+
+function nativeRingSelectionFromItems(
+  objectId: string,
+  rings: readonly NativeMoleculeRingSelectionItem[]
+): NativeMoleculeRingSelectionPart | NativeMoleculeRingSetSelectionPart | undefined {
+  const unique = rings.filter((ring, index) =>
+    rings.findIndex((candidate) => candidate.ringKey === ring.ringKey) === index
+  );
+  if (unique.length === 0) {
+    return undefined;
+  }
+
+  if (unique.length === 1) {
+    const ring = unique[0];
+    return {
+      objectId,
+      kind: "ring",
+      ringKey: ring.ringKey,
+      atomIds: ring.atomIds,
+      bondIds: ring.bondIds
+    };
+  }
+
+  return { objectId, kind: "rings", rings: unique };
+}
+
+/**
+ * Validate one molecule's selected part against the current document (atoms/bonds/rings may have
+ * been deleted, or the Rings toolbar closed) and return the still-valid part, or undefined to drop it.
+ * Shared by the post-mutation prune effect so every selected molecule stays consistent (Phase 7
+ * keeps a part per molecule, so this runs once per entry instead of once for a single slot).
+ */
+// Prunes a stored native part against the current document, dropping only parts whose
+// atoms/bonds/rings no longer exist. It deliberately does NOT clear ring parts based on
+// whether the Rings toolbar is open: that state is synced from asynchronous native
+// window events and can momentarily read "closed" while the toolbar is genuinely open,
+// which used to clobber a just-made ring selection on the next document change. Clearing a
+// ring selection when the toolbar is *deliberately* closed is handled in `toggleToolset`.
+export function pruneNativeMoleculePart(
+  document: ChemDraftDocument,
+  part: NativeMoleculeSelectionPart
+): NativeMoleculeSelectionPart | undefined {
+  const object = findDocumentObject(document, part.objectId);
+  if (object?.type !== "molecule") {
+    return undefined;
+  }
+
+  if (part.kind === "atom") {
+    return object.atoms.some((atom) => atom.id === part.atomId) ? part : undefined;
+  }
+
+  if (part.kind === "bond") {
+    return object.bonds.some((bond) => bond.id === part.bondId) ? part : undefined;
+  }
+
+  if (part.kind === "ring") {
+    const ring = nativeMoleculeRings(object).find((candidate) => candidate.ringKey === part.ringKey);
+    return ring ? { ...part, atomIds: ring.atomIds, bondIds: ring.bondIds } : undefined;
+  }
+
+  if (part.kind === "rings") {
+    const objectRings = nativeMoleculeRings(object);
+    const rings = part.rings.flatMap((selectedRing) => {
+      const ring = objectRings.find((candidate) => candidate.ringKey === selectedRing.ringKey);
+      return ring ? [{ ringKey: ring.ringKey, atomIds: ring.atomIds, bondIds: ring.bondIds }] : [];
+    });
+    return nativeRingSelectionFromItems(part.objectId, rings);
+  }
+
+  const atomIds = part.atomIds.filter((atomId) => object.atoms.some((atom) => atom.id === atomId));
+  const bondIds = part.bondIds.filter((bondId) => object.bonds.some((bond) => bond.id === bondId));
+  return atomIds.length > 0 || bondIds.length > 0 ? { ...part, atomIds, bondIds } : undefined;
+}
+
 function lineIntersectsPolygon(
   start: ClientPoint,
   end: ClientPoint,
@@ -16203,7 +18121,7 @@ function pointOnSegment(point: ClientPoint, start: ClientPoint, end: ClientPoint
 export function nativeSelectionFromHit(
   objectId: string,
   hit: NativeMoleculeDeleteHit
-): NativeMoleculeSelectionPart {
+): NativeMoleculeTransformableSelectionPart {
   return hit.kind === "atom"
     ? { objectId, kind: "atom", atomId: hit.atomId }
     : { objectId, kind: "bond", bondId: hit.bondId };
@@ -16268,6 +18186,18 @@ function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): 
   }
 
   return part?.kind === "parts" ? [...part.bondIds] : [];
+}
+
+function nativeSelectionColorTarget(
+  part: NativeMoleculeSelectionPart | undefined
+): ToolbarColorSelection["moleculePart"] {
+  return part?.kind === "ring" || part?.kind === "rings" ? undefined : part;
+}
+
+function nativeTransformableSelectionPart(
+  part: NativeMoleculeSelectionPart | undefined
+): NativeMoleculeTransformableSelectionPart | undefined {
+  return part?.kind === "ring" || part?.kind === "rings" ? undefined : part;
 }
 
 export function bondDepthRefsFromNativeSelection(
@@ -16630,7 +18560,7 @@ export function nativeMoleculeSelectionDragIntent(
       ? nativeSelectionContextContainsHit(molecule, currentPart, hit)
       : nativeSelectionContainsHit(currentPart, hit)
   );
-  if (withinSelection && currentPart) {
+  if (withinSelection && currentPart && currentPart.kind !== "ring" && currentPart.kind !== "rings") {
     return { kind: "native-part", target: currentPart };
   }
 
@@ -16668,6 +18598,14 @@ function nativeSelectionRenderKey(part: NativeMoleculeSelectionPart | undefined)
 
   if (part.kind === "bond") {
     return `bond:${part.bondId}`;
+  }
+
+  if (part.kind === "ring") {
+    return `ring:${part.ringKey}`;
+  }
+
+  if (part.kind === "rings") {
+    return `rings:${part.rings.map((ring) => ring.ringKey).join(",")}`;
   }
 
   return `parts:a=${part.atomIds.join(",")};b=${part.bondIds.join(",")}`;
@@ -16752,13 +18690,50 @@ function isWholeNativeMoleculeSelected(
 function selectionStatusLabel(selection: {
   objectIds: readonly string[];
   nativeSelection?: NativeMoleculeSelectionPart;
+  /** Phase 7: when a selection spans several molecules, the aggregate drives the label. */
+  nativeSelections?: readonly NativeMoleculeSelectionPart[];
 }): string {
+  if (selection.nativeSelections && selection.nativeSelections.length > 1) {
+    let atoms = 0;
+    let bonds = 0;
+    let rings = 0;
+    for (const part of selection.nativeSelections) {
+      if (part.kind === "atom") {
+        atoms += 1;
+      } else if (part.kind === "bond") {
+        bonds += 1;
+      } else if (part.kind === "ring") {
+        rings += 1;
+      } else if (part.kind === "rings") {
+        rings += part.rings.length;
+      } else {
+        atoms += part.atomIds.length;
+        bonds += part.bondIds.length;
+      }
+    }
+    if (rings > 0 && atoms === 0 && bonds === 0) {
+      return `Selected ${rings} rings`;
+    }
+    if (rings === 0) {
+      return `Selected ${atoms + bonds} molecule parts`;
+    }
+    return `Selected ${atoms + bonds + rings} molecule parts`;
+  }
+
   if (selection.nativeSelection?.kind === "atom") {
     return "Selected atom";
   }
 
   if (selection.nativeSelection?.kind === "bond") {
     return "Selected bond";
+  }
+
+  if (selection.nativeSelection?.kind === "ring") {
+    return "Selected ring";
+  }
+
+  if (selection.nativeSelection?.kind === "rings") {
+    return `Selected ${selection.nativeSelection.rings.length} rings`;
   }
 
   if (selection.nativeSelection?.kind === "parts") {
@@ -17358,6 +19333,7 @@ function DocumentObjectView({
   if (object.type === "molecule") {
     if (isNativeMoleculeGraph(object)) {
       const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
+      const atomLabelPlanByAtomId = new Map(planMoleculeAtomLabels(object).map((plan) => [plan.atom.id, plan]));
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object, chargeByAtomId);
       const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
       const resolvedChargeAtomIds = [...(chargeByAtomId?.entries() ?? [])]
@@ -17384,9 +19360,18 @@ function DocumentObjectView({
           selectedAtomIds.add(bond.fromAtomId);
           selectedAtomIds.add(bond.toAtomId);
         });
-      const hasVisibleSelectionTargets = nativeMoleculeSelectionHasVisibleTargets(object, selected, selectedPart);
-      const selectedFragmentBounds = selectedPart && hasVisibleSelectionTargets
-        ? nativeMoleculePartBounds(object, selectedPart)
+      const transformableSelectedPart = nativeTransformableSelectionPart(
+        selectedPart?.objectId === object.id ? selectedPart : undefined
+      );
+      const hasVisibleSelectionTargets = nativeMoleculeSelectionHasVisibleTargets(object, selected, transformableSelectedPart);
+      const moleculeRings = nativeMoleculeRings(object);
+      const selectedRingKeys = selectedPart?.objectId === object.id
+        ? nativeRingSelectionItems(selectedPart).map((ring) => ring.ringKey)
+        : [];
+      const selectedRingKeySet = new Set(selectedRingKeys);
+      const selectedRings = moleculeRings.filter((ring) => selectedRingKeySet.has(ring.ringKey));
+      const selectedFragmentBounds = transformableSelectedPart && hasVisibleSelectionTargets
+        ? nativeMoleculePartBounds(object, transformableSelectedPart)
         : undefined;
       const transformFrame = transformHandlesEnabled && !showGraphicGradientHandles && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
         ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
@@ -17451,9 +19436,18 @@ function DocumentObjectView({
                 key={`selection-blob-atom-${atom.id}`}
                 r="8.8"
               />
-            ))}
+          ))}
         </g>
       ) : null;
+      const selectedRingBlobs = selectedRings.map((ring) => (
+        <path
+          className="native-molecule-selected-ring"
+          data-selected-ring-key={ring.ringKey}
+          d={ring.pathD}
+          key={`selected-ring-${ring.ringKey}`}
+          transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}
+        />
+      ));
       const moleculeGradientHandles = showGraphicGradientHandles ? (
         <>
           <GraphicLinearGradientHandles
@@ -17496,6 +19490,8 @@ function DocumentObjectView({
           data-selected-native-kind={selectedPart?.kind}
           data-selected-native-atom-id={selectedPart?.kind === "atom" ? selectedPart.atomId : undefined}
           data-selected-native-bond-id={selectedPart?.kind === "bond" ? selectedPart.bondId : undefined}
+          data-selected-native-ring-key={selectedPart?.kind === "ring" ? selectedPart.ringKey : undefined}
+          data-selected-native-ring-keys={selectedRingKeys.length > 0 ? selectedRingKeys.join(",") : undefined}
           data-freeform-preview-atom-id={freeformPreview?.atomId}
           data-freeform-preview-target-atom-id={freeformPreview?.targetAtomId}
           data-freeform-preview-custom-length={freeformPreview?.customLength}
@@ -17529,6 +19525,7 @@ function DocumentObjectView({
               </g>
             ) : null}
             {selectionBlob}
+            {selectedRingBlobs}
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
@@ -17682,34 +19679,40 @@ function DocumentObjectView({
           ) : null}
           {editingAtomLabel ? object.atoms
             .filter((atom) => atom.id === editingAtomLabel.atomId)
-            .map((atom) => (
-              <input
-                aria-label="Atom label"
-                autoCapitalize="none"
-                autoComplete="off"
-                autoCorrect="off"
-                autoFocus
-                className="native-atom-label-editor"
-                data-atom-label-editor="true"
-                data-atom-label-draft-empty={editingAtomLabel.draft.length === 0 ? "true" : undefined}
-                data-atom-id={atom.id}
-                key={`atom-label-editor-${atom.id}`}
-                spellCheck={false}
-                style={{
-                  left: `calc(${atom.x - object.x}px * var(--page-scale))`,
-                  top: `calc(${atom.y - object.y}px * var(--page-scale))`,
-                  width: `${Math.max(1, editingAtomLabel.draft.length + 0.6)}ch`,
-                  fontFamily: drawingStyle.atomLabelFontFamily,
-                  fontSize: `calc(${drawingStyle.atomLabelFontSizePx}px * var(--page-scale))`,
-                  fontWeight: drawingStyle.atomLabelFontWeight
-                }}
-                value={editingAtomLabel.draft}
-                onBlur={onAtomLabelFinish}
-                onChange={(event) => onAtomLabelChange(editingAtomLabel, event.currentTarget.value)}
-                onKeyDown={(event) => handleAtomLabelKeyDown(editingAtomLabel, event)}
-                onPointerDown={(event) => event.stopPropagation()}
-              />
-            )) : null}
+            .map((atom) => {
+              const editorLabel = editingAtomLabel.draft.trim() || atom.element || "C";
+              const labelStyle = atomLabelPlanByAtomId.get(atom.id)?.drawingStyle ?? drawingStyle;
+              const anchorOffset = atomLabelAnchorOffset(atom, editorLabel, labelStyle);
+              return (
+                <input
+                  aria-label="Atom label"
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoFocus
+                  className="native-atom-label-editor"
+                  data-atom-label-editor="true"
+                  data-atom-label-draft-empty={editingAtomLabel.draft.length === 0 ? "true" : undefined}
+                  data-atom-id={atom.id}
+                  key={`atom-label-editor-${atom.id}`}
+                  spellCheck={false}
+                  style={{
+                    left: `calc(${atom.x + anchorOffset.x - object.x}px * var(--page-scale))`,
+                    top: `calc(${atom.y + anchorOffset.y - object.y}px * var(--page-scale))`,
+                    width: `${Math.max(1, editingAtomLabel.draft.length + 0.6)}ch`,
+                    fontFamily: labelStyle.atomLabelFontFamily,
+                    fontSize: `calc(${labelStyle.atomLabelFontSizePx}px * var(--page-scale))`,
+                    fontWeight: labelStyle.atomLabelFontWeight,
+                    fontStyle: labelStyle.atomLabelFontStyle
+                  }}
+                  value={editingAtomLabel.draft}
+                  onBlur={onAtomLabelFinish}
+                  onChange={(event) => onAtomLabelChange(editingAtomLabel, event.currentTarget.value)}
+                  onKeyDown={(event) => handleAtomLabelKeyDown(editingAtomLabel, event)}
+                  onPointerDown={(event) => event.stopPropagation()}
+                />
+              );
+            }) : null}
         </div>
       );
     }
@@ -20638,6 +22641,10 @@ function nativeMoleculeSelectionColor(
     return nativeMoleculeBaseBondColor(object, part.bondId, drawingStyle);
   }
 
+  if (part.kind === "ring" || part.kind === "rings") {
+    return drawingStyle.bondColor;
+  }
+
   const firstBondId = part.bondIds[0];
   if (firstBondId) {
     return nativeMoleculeBaseBondColor(object, firstBondId, drawingStyle);
@@ -21200,6 +23207,22 @@ function shouldEnableArtStyleQaLayer(): boolean {
   }
 }
 
+function openBrowserUtilityWindow(windowKind: string): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("window", windowKind);
+  url.hash = "";
+  const opened = window.open(
+    url.toString(),
+    `chemdraft-${windowKind}`,
+    "popup,width=960,height=720"
+  );
+  return opened !== null;
+}
+
 function agentBridgeDocumentPayloadFromHash(): { contents: string; displayName: string; path?: string } | undefined {
   if (typeof window === "undefined" || window.location.hash.length <= 1) {
     return undefined;
@@ -21360,7 +23383,7 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
 }
 
 async function pickNativeOpenPath(): Promise<string | undefined> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await loadTauriDialogModule();
   const selected = await open({
     title: "Open ChemDraft or CDXML Document",
     multiple: false,
@@ -21370,7 +23393,7 @@ async function pickNativeOpenPath(): Promise<string | undefined> {
 }
 
 async function pickNativeSavePath(defaultPath: string): Promise<string | undefined> {
-  const { save } = await import("@tauri-apps/plugin-dialog");
+  const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: "Save ChemDraft Document",
     defaultPath,
@@ -21384,7 +23407,7 @@ async function pickNativeExportPath(
   formatLabel: string,
   extensions: readonly string[]
 ): Promise<string | undefined> {
-  const { save } = await import("@tauri-apps/plugin-dialog");
+  const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
     defaultPath,
@@ -21393,9 +23416,57 @@ async function pickNativeExportPath(
   return selected ? ensureExportFileExtension(selected, extensions) : undefined;
 }
 
+async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
+  const { open } = await loadTauriDialogModule();
+  const selected = await open({
+    title: "Import Molecule Inspector Template",
+    multiple: false,
+    fileAccessMode: "scoped",
+    filters: [
+      { name: "Molecule Inspector Templates", extensions: ["template", "cds"] },
+      { name: "ChemDraw Style Sheets", extensions: ["cds"] },
+      { name: "ChemDraft Templates", extensions: ["template"] }
+    ]
+  });
+  return typeof selected === "string" ? selected : undefined;
+}
+
+async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<string | undefined> {
+  const { save } = await loadTauriDialogModule();
+  const selected = await save({
+    title: "Export Molecule Inspector Template",
+    defaultPath,
+    filters: [{ name: "Molecule Inspector Template", extensions: ["template"] }]
+  });
+  return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
+}
+
+type TauriDialogModule = typeof import("@tauri-apps/plugin-dialog");
+let tauriDialogModulePromise: Promise<TauriDialogModule> | undefined;
+
+function loadTauriDialogModule(): Promise<TauriDialogModule> {
+  tauriDialogModulePromise ??= import("@tauri-apps/plugin-dialog");
+  return tauriDialogModulePromise;
+}
+
+function prewarmNativeDialogModule(): void {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  void loadTauriDialogModule().catch(() => {
+    tauriDialogModulePromise = undefined;
+  });
+}
+
 async function readNativeTextFile(path: string): Promise<string> {
   const { readTextFile } = await import("@tauri-apps/plugin-fs");
   return readTextFile(path);
+}
+
+async function readNativeBinaryFile(path: string): Promise<Uint8Array> {
+  const { readFile } = await import("@tauri-apps/plugin-fs");
+  return readFile(path);
 }
 
 async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayload | undefined> {

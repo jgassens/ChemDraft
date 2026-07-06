@@ -1,8 +1,12 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
+import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
+export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
+export const PALETTE_COMMAND_COMMIT_EVENT = "chemdraft://palette-command-commit";
+export const PALETTE_COMMAND_CANCEL_EVENT = "chemdraft://palette-command-cancel";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
 export const TOOLSET_WINDOW_STATE_EVENT = "chemdraft://toolset-window-state";
 export const TOOLSET_ACTIVE_TOOL_EVENT = "chemdraft://toolset-active-tool";
@@ -42,10 +46,12 @@ export interface ToolsetTextStylePayload {
   currentTextScript: TextSpan["script"];
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
 }
 
 export type ToolsetArtPaintTarget = ArtInspectorPaintTarget;
 export type ToolsetArtStylePayload = ArtInspectorModel;
+export type ToolsetMoleculeInspectorPayload = MoleculeInspectorModel;
 
 type Unlisten = () => void;
 
@@ -74,11 +80,15 @@ export function createToolsetTextStylePayload(
   currentTextStyle: NativeTextStyle,
   currentTextScript: TextSpan["script"] = "normal",
   currentArtStyle?: ToolsetArtStylePayload,
-  currentArtStyleTarget: ToolsetArtPaintTarget = "fill"
+  currentArtStyleTarget: ToolsetArtPaintTarget = "fill",
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload
 ): ToolsetTextStylePayload {
-  return currentArtStyle
-    ? { currentTextStyle, currentTextScript, currentArtStyle, currentArtStyleTarget }
-    : { currentTextStyle, currentTextScript };
+  return {
+    currentTextStyle,
+    currentTextScript,
+    ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
+    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {})
+  };
 }
 
 export function createToolsetWindowStatePayload(
@@ -207,6 +217,18 @@ export async function sendPaletteCommand(commandId: string): Promise<void> {
   return routeToolsetCommand(commandId);
 }
 
+export async function sendPaletteCommandPreview(commandId: string): Promise<void> {
+  return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId);
+}
+
+export async function sendPaletteCommandCommit(commandId: string): Promise<void> {
+  return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId);
+}
+
+export async function sendPaletteCommandCancel(commandId: string): Promise<void> {
+  return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
+}
+
 export async function routeToolsetCommand(commandId: string): Promise<void> {
   const payload = createToolsetCommandPayload(commandId);
   const [{ invoke }, { emit }] = await Promise.all([
@@ -215,6 +237,17 @@ export async function routeToolsetCommand(commandId: string): Promise<void> {
   ]);
   await emit<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, payload).catch(() => undefined);
   await invoke("route_toolset_command", payload as unknown as Record<string, unknown>);
+}
+
+async function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
+  const payload = createToolsetCommandPayload(commandId);
+  dispatchDomToolsetEvent(eventName, payload);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetCommandPayload>(eventName, payload);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
@@ -349,6 +382,18 @@ export async function listenForToolsetCommands(handler: (commandId: string) => v
     unlistenWebview();
     unlistenGlobal();
   };
+}
+
+export async function listenForPaletteCommandPreviews(handler: (commandId: string) => void): Promise<Unlisten> {
+  return listenForToolsetCommandPayload(PALETTE_COMMAND_PREVIEW_EVENT, handler);
+}
+
+export async function listenForPaletteCommandCommits(handler: (commandId: string) => void): Promise<Unlisten> {
+  return listenForToolsetCommandPayload(PALETTE_COMMAND_COMMIT_EVENT, handler);
+}
+
+export async function listenForPaletteCommandCancels(handler: (commandId: string) => void): Promise<Unlisten> {
+  return listenForToolsetCommandPayload(PALETTE_COMMAND_CANCEL_EVENT, handler);
 }
 
 export async function listenForToolsetActiveTool(handler: (commandId: string) => void): Promise<Unlisten> {

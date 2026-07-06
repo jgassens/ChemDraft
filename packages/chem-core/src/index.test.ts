@@ -462,10 +462,20 @@ describe("native drawing styles", () => {
       id: "chemdraft.synthetic",
       source: "core",
       drawing: {
+        chainAngleDegrees: 120,
         bondLengthPx: 22,
         bondStrokeWidthPx: 2,
+        bondBoldWidthPx: 4.8,
+        bondSpacingMode: "absolute",
+        bondSpacingPercent: 18,
         doubleBondInsetPx: 4.5,
+        bondMarginWidthPx: 6,
+        bondHashSpacingPx: 9,
         bondOverlapClearancePx: 6,
+        atomIndicatorShowQuery: true,
+        atomIndicatorShowEnhancedStereochemistry: true,
+        bondIndicatorShowQuery: true,
+        bondIndicatorShowReaction: true,
         atomLabelFontFamily: expect.stringContaining("Arial")
       }
     });
@@ -476,8 +486,25 @@ describe("native drawing styles", () => {
     const resolved = nativeDrawingStyleFromObjectStyle({
       ...objectStyle,
       bondStrokeWidthPx: 2.4,
+      bondBoldWidthPx: 5.2,
       bondLineCap: "round",
-      atomLabelPaddingPx: 3
+      bondSpacingMode: "percent",
+      bondSpacingPercent: 21,
+      bondMarginWidthPx: 1.5,
+      bondHashSpacingPx: 2.5,
+      atomIndicatorShowQuery: false,
+      atomIndicatorShowStereochemistry: true,
+      atomIndicatorShowEnhancedStereochemistry: false,
+      atomIndicatorShowAtomNumbers: true,
+      bondIndicatorShowQuery: false,
+      bondIndicatorShowStereochemistry: true,
+      bondIndicatorShowReaction: false,
+      atomLabelPaddingPx: 3,
+      atomLabelFontStyle: "italic",
+      atomLabelAlignment: "right",
+      atomLabelPlacement: "above",
+      atomLabelShowTerminalCarbons: true,
+      atomLabelHideImplicitHydrogens: true
     });
 
     expect(objectStyle).toMatchObject({
@@ -488,14 +515,46 @@ describe("native drawing styles", () => {
       stylePresetId: "chemdraft.synthetic",
       bondLengthPx: DefaultNativeDrawingStyle.bondLengthPx,
       bondStrokeWidthPx: 2.4,
+      bondBoldWidthPx: 5.2,
       bondLineCap: "round",
+      bondSpacingMode: "percent",
+      bondSpacingPercent: 21,
       doubleBondInsetPx: DefaultNativeDrawingStyle.doubleBondInsetPx,
+      bondMarginWidthPx: 1.5,
+      bondHashSpacingPx: 2.5,
       bondOverlapClearancePx: DefaultNativeDrawingStyle.bondOverlapClearancePx,
-      atomLabelPaddingPx: 3
+      atomIndicatorShowQuery: false,
+      atomIndicatorShowStereochemistry: true,
+      atomIndicatorShowEnhancedStereochemistry: false,
+      atomIndicatorShowAtomNumbers: true,
+      bondIndicatorShowQuery: false,
+      bondIndicatorShowStereochemistry: true,
+      bondIndicatorShowReaction: false,
+      atomLabelPaddingPx: 3,
+      atomLabelFontStyle: "italic",
+      atomLabelAlignment: "right",
+      atomLabelPlacement: "above",
+      atomLabelShowTerminalCarbons: true,
+      atomLabelHideImplicitHydrogens: true
     });
-    expect(nativeDrawingStyleFromObjectStyle({ bondLengthPx: -1, atomLabelFontFamily: "" })).toMatchObject({
+    expect(nativeDrawingStyleFromObjectStyle({
+      bondLengthPx: -1,
+      chainAngleDegrees: 0,
+      bondSpacingMode: "relative",
+      bondSpacingPercent: -10,
+      bondHashSpacingPx: 0,
+      atomLabelFontFamily: "",
+      atomLabelAlignment: "flush-left",
+      atomLabelPlacement: "best-initial-position"
+    })).toMatchObject({
       bondLengthPx: DefaultNativeDrawingStyle.bondLengthPx,
-      atomLabelFontFamily: DefaultNativeDrawingStyle.atomLabelFontFamily
+      chainAngleDegrees: DefaultNativeDrawingStyle.chainAngleDegrees,
+      bondSpacingMode: DefaultNativeDrawingStyle.bondSpacingMode,
+      bondSpacingPercent: DefaultNativeDrawingStyle.bondSpacingPercent,
+      bondHashSpacingPx: DefaultNativeDrawingStyle.bondHashSpacingPx,
+      atomLabelFontFamily: DefaultNativeDrawingStyle.atomLabelFontFamily,
+      atomLabelAlignment: DefaultNativeDrawingStyle.atomLabelAlignment,
+      atomLabelPlacement: DefaultNativeDrawingStyle.atomLabelPlacement
     });
   });
 
@@ -548,7 +607,17 @@ describe("native document validation and serialization", () => {
       {
         op: "addObject",
         pageId: "page_001",
-        object: moleculeObject()
+        object: {
+          ...moleculeObject(),
+          style: {
+            ...moleculeObject().style,
+            atomLabelFontStyle: "italic",
+            atomLabelAlignment: "center",
+            atomLabelPlacement: "below",
+            atomLabelShowTerminalCarbons: true,
+            atomLabelHideImplicitHydrogens: true
+          }
+        }
       },
       { now: timestamp }
     );

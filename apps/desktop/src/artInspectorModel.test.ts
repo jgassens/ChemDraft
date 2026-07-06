@@ -10,9 +10,11 @@ import {
 } from "@chemdraft/chem-core";
 import {
   createArtInspectorModel,
+  createMoleculeRingArtInspectorModel,
   selectedGraphicObjectsForArtInspector,
   selectedVisualObjectsForArtInspector
 } from "./artInspectorModel";
+import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 const baseGraphic = {
   type: "graphic",
@@ -528,6 +530,89 @@ describe("ArtInspectorModel", () => {
       stops: []
     });
   });
+
+  it("projects selected molecule rings into the Art toolbar target model", () => {
+    const moleculeInspector: MoleculeInspectorRingsModel = {
+      enabled: true,
+      selectedCount: 2,
+      selectedRing: {
+        objectId: "mol_ring",
+        kind: "ring",
+        ringKey: "bond_001|bond_002",
+        atomIds: ["atom_001", "atom_002"],
+        bondIds: ["bond_001", "bond_002"]
+      },
+      selectedRings: [
+        {
+          objectId: "mol_ring",
+          kind: "ring",
+          ringKey: "bond_001|bond_002",
+          atomIds: ["atom_001", "atom_002"],
+          bondIds: ["bond_001", "bond_002"]
+        },
+        {
+          objectId: "mol_ring",
+          kind: "ring",
+          ringKey: "bond_003|bond_004",
+          atomIds: ["atom_003", "atom_004"],
+          bondIds: ["bond_003", "bond_004"]
+        }
+      ],
+      effectKinds: ["glow"],
+      values: {
+        fillPaintType: { value: "solid", mixed: false },
+        fillColor: { value: "#1d7f68", mixed: false },
+        fillOpacity: { value: 0.42, mixed: false },
+        effect: { value: "glow", mixed: false }
+      },
+      effectControls: {
+        shadow: moleculeInspectorEffect("shadow"),
+        glow: {
+          ...moleculeInspectorEffect("glow"),
+          presentCount: 2,
+          presentAll: true,
+          color: { value: "#ffee66", mixed: false },
+          opacity: { value: 0.7, mixed: false },
+          size: { value: 0.5, mixed: false }
+        },
+        sketch: moleculeInspectorEffect("sketch")
+      }
+    };
+
+    const model = createMoleculeRingArtInspectorModel(moleculeInspector, "stroke");
+
+    expect(model).toMatchObject({
+      selectedCount: 2,
+      selectedObjectIds: ["mol_ring:bond_001|bond_002", "mol_ring:bond_003|bond_004"],
+      selectedGraphicIds: [],
+      appearanceTarget: {
+        kind: "molecule-rings",
+        rings: [
+          { objectId: "mol_ring", ringKey: "bond_001|bond_002" },
+          { objectId: "mol_ring", ringKey: "bond_003|bond_004" }
+        ]
+      },
+      requestedPaintTarget: "stroke",
+      activePaintTarget: "fill",
+      supportsFillAny: true,
+      supportsStrokeAny: false,
+      fillSupportedCount: 2,
+      strokeSupportedCount: 0,
+      values: {
+        fillPaintType: { value: "solid", mixed: false },
+        fillColor: { value: "#1d7f68", mixed: false },
+        fillOpacity: { value: 0.42, mixed: false },
+        effect: { value: "glow", mixed: false }
+      },
+      effectKinds: ["glow"],
+      activeGradient: {
+        paintType: null,
+        editable: false,
+        stops: []
+      }
+    });
+    expect(JSON.parse(JSON.stringify(model))).toEqual(model);
+  });
 });
 
 function documentWithSelectedGraphics(
@@ -652,5 +737,18 @@ function moleculeObject(id: string, overrides: Partial<MoleculeObject> = {}): Mo
     superatoms: [],
     rGroups: [],
     ...overrides
+  };
+}
+
+function moleculeInspectorEffect(
+  kind: "shadow" | "glow" | "sketch"
+): MoleculeInspectorRingsModel["effectControls"]["shadow"] {
+  return {
+    kind,
+    presentCount: 0,
+    presentAll: false,
+    color: { value: "#52616b", mixed: false },
+    opacity: { value: 1, mixed: false },
+    size: { value: 0.25, mixed: false }
   };
 }

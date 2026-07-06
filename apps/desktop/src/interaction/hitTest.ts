@@ -13,6 +13,7 @@
  */
 
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { nativeMoleculeRingAtPoint } from "@chemdraft/layout-engine";
 import {
   findNativeMoleculeDeleteHit,
   findNativeMoleculeTemplateHit,
@@ -298,4 +299,63 @@ export function hitTestDocument(
   tolerance?: NativeMoleculeHitTolerance
 ): InteractionTarget | undefined {
   return nativeMoleculeCanvasHoverTarget(document, point, eventTarget, tolerance);
+}
+
+/** A resolved ring interior pick. Carries atom/bond ids so selection re-encoding stays lossless. */
+export type SelectionRingHit = {
+  objectId: string;
+  kind: "ring";
+  ringKey: string;
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+};
+
+/** What a selection press resolves to: an atom/bond part, or (inspector-only) a ring interior. */
+export type SelectionHit = InteractionTarget | SelectionRingHit;
+
+/**
+ * The single selection hit resolver. Precedence is atom → bond → ring, and the ring tier is only
+ * consulted when the caller opts in (`includeRings`, wired to "Molecule Inspector open"). Atom/bond
+ * reuse the shared hover pick so click and highlight can never disagree; ring identity is resolved
+ * geometrically across every molecule (smallest containing interior, then top layer, then a stable
+ * object id), so a ring press never depends on which SVG node the browser made `event.target`.
+ */
+export function resolveSelectionHit(
+  document: ChemDraftDocument,
+  point: Point,
+  options: {
+    eventTarget?: EventTarget | null;
+    tolerance?: NativeMoleculeHitTolerance;
+    includeRings: boolean;
+  }
+): SelectionHit | undefined {
+  const partHit = nativeMoleculeCanvasHoverTarget(document, point, options.eventTarget, options.tolerance);
+  if (partHit || !options.includeRings) {
+    return partHit;
+  }
+
+  const page = document.pages[0];
+  const candidates = page.objects
+    .flatMap((object, layerIndex) => {
+      if (object.type !== "molecule") {
+        return [];
+      }
+      const ring = nativeMoleculeRingAtPoint(object, point);
+      return ring ? [{ objectId: object.id, ring, layerIndex }] : [];
+    })
+    .sort((left, right) =>
+      left.ring.area - right.ring.area ||
+      right.layerIndex - left.layerIndex ||
+      left.objectId.localeCompare(right.objectId)
+    );
+  const best = candidates[0];
+  return best
+    ? {
+        objectId: best.objectId,
+        kind: "ring",
+        ringKey: best.ring.ringKey,
+        atomIds: best.ring.atomIds,
+        bondIds: best.ring.bondIds
+      }
+    : undefined;
 }

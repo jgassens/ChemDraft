@@ -4,7 +4,12 @@ import {
   type ChemDraftDocument,
   type GraphicEffect,
   type MoleculeObject,
+  type NativeAtomLabelAlignment,
+  type NativeAtomLabelPlacement,
+  type NativeBondLineCap,
+  type NativeBondSpacingMode,
   type NativeTextStyle,
+  type NativeTextFontStyle,
   type TextSpan
 } from "@chemdraft/chem-core";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
@@ -75,6 +80,12 @@ export const structureSpin3dCommandId = "structure.spin3d";
 export const structureInteractive3dCommandId = "structure.openInteractive3d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
+export const ringInspectorToolsetId = "core.ringInspector";
+export const toggleRingInspectorCommandId = "view.toggleRingInspector";
+export const moleculeInspectorToolsetId = "core.moleculeInspector";
+export const toggleMoleculeInspectorCommandId = "view.toggleMoleculeInspector";
+export const moleculeInspectorTemplateImportCommandId = "moleculeInspector.template.import";
+export const moleculeInspectorTemplateExportCommandId = "moleculeInspector.template.export";
 export const artBooleanOperationCommandIds = {
   union: "art.boolean.union",
   subtract: "art.boolean.subtract",
@@ -196,6 +207,22 @@ export const viewActions: CommandSpec[] = [
     source: "core",
     category: "view",
     description: "Open or close the 3D spin debugger window"
+  },
+  {
+    id: toggleRingInspectorCommandId,
+    title: "Toggle Rings Toolbar",
+    icon: "inspector",
+    source: "core",
+    category: "view",
+    description: "Open or close the Rings toolbar"
+  },
+  {
+    id: toggleMoleculeInspectorCommandId,
+    title: "Toggle Molecule Inspector",
+    icon: "inspector",
+    source: "core",
+    category: "view",
+    description: "Open or close the Molecule Inspector"
   },
   {
     id: "view.toggleRulers",
@@ -424,6 +451,67 @@ export const customObjectEffectColorCommandPrefix = "object.effect.color.";
 export const customObjectEffectOpacityCommandPrefix = "object.effect.opacity.";
 export const customObjectEffectSizeCommandPrefix = "object.effect.size.";
 export const customObjectEffectDisableCommandPrefix = "object.effect.disable.";
+export const customMoleculeRingFillColorCommandPrefix = "molecule.ring.fill.color:";
+export const customMoleculeRingFillNoneCommandPrefix = "molecule.ring.fill.none:";
+export const customMoleculeRingFillOpacityCommandPrefix = "molecule.ring.fill.opacity:";
+export const customMoleculeRingEffectCommandPrefix = "molecule.ring.effect:";
+export const customMoleculeRingEffectColorCommandPrefix = "molecule.ring.effect.color:";
+export const customMoleculeRingEffectOpacityCommandPrefix = "molecule.ring.effect.opacity:";
+export const customMoleculeRingEffectSizeCommandPrefix = "molecule.ring.effect.size:";
+export const customMoleculeRingEffectDisableCommandPrefix = "molecule.ring.effect.disable:";
+export const customMoleculeStructureChainAngleCommandPrefix = "molecule.structure.chainAngle:";
+export const customMoleculeStructureBondLengthCommandPrefix = "molecule.structure.bondLength:";
+export const customMoleculeStructureBondStrokeWidthCommandPrefix = "molecule.structure.bondStrokeWidth:";
+export const customMoleculeStructureBondBoldWidthCommandPrefix = "molecule.structure.bondBoldWidth:";
+export const customMoleculeStructureBondColorCommandPrefix = "molecule.structure.bondColor:";
+export const customMoleculeStructureBondLineCapCommandPrefix = "molecule.structure.bondLineCap:";
+export const customMoleculeStructureBondSpacingModeCommandPrefix = "molecule.structure.bondSpacingMode:";
+export const customMoleculeStructureBondSpacingPercentCommandPrefix = "molecule.structure.bondSpacingPercent:";
+export const customMoleculeStructureMultipleBondGapCommandPrefix = "molecule.structure.multipleBondGap:";
+export const customMoleculeStructureDoubleBondInsetCommandPrefix = "molecule.structure.doubleBondInset:";
+export const customMoleculeStructureBondMarginWidthCommandPrefix = "molecule.structure.bondMarginWidth:";
+export const customMoleculeStructureBondHashSpacingCommandPrefix = "molecule.structure.bondHashSpacing:";
+export const customMoleculeStructureOverlapClearanceCommandPrefix = "molecule.structure.overlapClearance:";
+export const customMoleculeStructureAtomQueryIndicatorsCommandPrefix = "molecule.structure.atomIndicators.query:";
+export const customMoleculeStructureAtomStereochemistryCommandPrefix = "molecule.structure.atomIndicators.stereochemistry:";
+export const customMoleculeStructureAtomEnhancedStereochemistryCommandPrefix = "molecule.structure.atomIndicators.enhancedStereochemistry:";
+export const customMoleculeStructureAtomNumbersCommandPrefix = "molecule.structure.atomIndicators.atomNumbers:";
+export const customMoleculeStructureBondQueryIndicatorsCommandPrefix = "molecule.structure.bondIndicators.query:";
+export const customMoleculeStructureBondStereochemistryCommandPrefix = "molecule.structure.bondIndicators.stereochemistry:";
+export const customMoleculeStructureBondReactionIndicatorsCommandPrefix = "molecule.structure.bondIndicators.reaction:";
+export const customMoleculeAtomLabelFontFamilyCommandPrefix = "molecule.atomLabel.fontFamily:";
+export const customMoleculeAtomLabelFontFaceCommandPrefix = "molecule.atomLabel.fontFace:";
+export const customMoleculeAtomLabelFontSizeCommandPrefix = "molecule.atomLabel.fontSize:";
+export const customMoleculeAtomLabelColorCommandPrefix = "molecule.atomLabel.color:";
+// Text objects can be set to any installed system font family, carried as a dynamic
+// command id (family name percent-encoded) rather than one of the fixed presets.
+export const customTextFontFamilyCommandPrefix = "text.font.family:";
+export const customMoleculeAtomLabelBackgroundColorCommandPrefix = "molecule.atomLabel.backgroundColor:";
+export const customMoleculeAtomLabelPaddingCommandPrefix = "molecule.atomLabel.padding:";
+export const customMoleculeAtomLabelBondClearanceCommandPrefix = "molecule.atomLabel.bondClearance:";
+export const customMoleculeAtomLabelAlignmentCommandPrefix = "molecule.atomLabel.alignment:";
+export const customMoleculeAtomLabelPlacementCommandPrefix = "molecule.atomLabel.placement:";
+export const customMoleculeAtomLabelShowTerminalCarbonsCommandPrefix = "molecule.atomLabel.showTerminalCarbons:";
+export const customMoleculeAtomLabelHideImplicitHydrogensCommandPrefix = "molecule.atomLabel.hideImplicitHydrogens:";
+
+export const moleculeStructureNumberRanges = {
+  chainAngleDegrees: { min: 1, max: 179, step: 1 },
+  bondLengthPx: { min: 8, max: 120, step: 0.5 },
+  bondStrokeWidthPx: { min: 0.25, max: 12, step: 0.25 },
+  bondBoldWidthPx: { min: 0.25, max: 32, step: 0.25 },
+  bondSpacingPercent: { min: 1, max: 100, step: 1 },
+  multipleBondGapPx: { min: 0.5, max: 24, step: 0.25 },
+  doubleBondInsetPx: { min: 0, max: 24, step: 0.25 },
+  bondMarginWidthPx: { min: 0, max: 32, step: 0.25 },
+  bondHashSpacingPx: { min: 2, max: 32, step: 0.25 },
+  bondOverlapClearancePx: { min: 0, max: 32, step: 0.5 }
+} as const;
+
+export const moleculeAtomLabelNumberRanges = {
+  fontSizePx: { min: 6, max: 96, step: 0.5 },
+  paddingPx: { min: 0, max: 16, step: 0.25 },
+  bondClearancePx: { min: 0, max: 32, step: 0.5 }
+} as const;
 
 export function textCustomColorCommandId(color: string): string {
   return `${customTextColorCommandPrefix}${normalizeHexColor(color)?.slice(1) ?? "111111"}`;
@@ -477,6 +565,513 @@ export function objectEffectSizeCommandId(effectKind: ObjectAdjustableEffectKind
 
 export function objectEffectDisableCommandId(effectKind: ObjectAdjustableEffectKind): string {
   return `${customObjectEffectDisableCommandPrefix}${effectKind}`;
+}
+
+export function moleculeRingFillColorCommandId(ringKey: string, color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customMoleculeRingFillColorCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${normalized.slice(1)}`;
+}
+
+export function moleculeRingFillNoneCommandId(ringKey: string): string {
+  return `${customMoleculeRingFillNoneCommandPrefix}${encodeMoleculeRingKey(ringKey)}`;
+}
+
+export function moleculeRingFillOpacityCommandId(ringKey: string, opacity: number): string {
+  return `${customMoleculeRingFillOpacityCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${opacityPercent(opacity)}`;
+}
+
+export function moleculeRingEffectCommandId(ringKey: string, effectKind: ObjectEffectKind): string {
+  return `${customMoleculeRingEffectCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}`;
+}
+
+export function moleculeRingEffectColorCommandId(
+  ringKey: string,
+  effectKind: ObjectAdjustableEffectKind,
+  color: string
+): string {
+  const normalized = normalizeHexColor(color) ?? "#111111";
+  return `${customMoleculeRingEffectColorCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}:${normalized.slice(1)}`;
+}
+
+export function moleculeRingEffectOpacityCommandId(
+  ringKey: string,
+  effectKind: ObjectAdjustableEffectKind,
+  opacity: number
+): string {
+  return `${customMoleculeRingEffectOpacityCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}:${opacityPercent(opacity)}`;
+}
+
+export function moleculeRingEffectSizeCommandId(
+  ringKey: string,
+  effectKind: ObjectAdjustableEffectKind,
+  size: number
+): string {
+  return `${customMoleculeRingEffectSizeCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}:${unitPercent(size)}`;
+}
+
+export function moleculeRingEffectDisableCommandId(ringKey: string, effectKind: ObjectAdjustableEffectKind): string {
+  return `${customMoleculeRingEffectDisableCommandPrefix}${encodeMoleculeRingKey(ringKey)}:${effectKind}`;
+}
+
+export function moleculeStructureChainAngleCommandId(value: number): string {
+  return `${customMoleculeStructureChainAngleCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureBondLengthCommandId(value: number): string {
+  return `${customMoleculeStructureBondLengthCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureBondStrokeWidthCommandId(value: number): string {
+  return `${customMoleculeStructureBondStrokeWidthCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureBondBoldWidthCommandId(value: number): string {
+  return `${customMoleculeStructureBondBoldWidthCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureBondColorCommandId(color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#000000";
+  return `${customMoleculeStructureBondColorCommandPrefix}${normalized.slice(1)}`;
+}
+
+export function moleculeStructureBondLineCapCommandId(value: NativeBondLineCap): string {
+  return `${customMoleculeStructureBondLineCapCommandPrefix}${value}`;
+}
+
+export function moleculeStructureBondSpacingModeCommandId(value: NativeBondSpacingMode): string {
+  return `${customMoleculeStructureBondSpacingModeCommandPrefix}${value}`;
+}
+
+export function moleculeStructureBondSpacingPercentCommandId(value: number): string {
+  return `${customMoleculeStructureBondSpacingPercentCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureMultipleBondGapCommandId(value: number): string {
+  return `${customMoleculeStructureMultipleBondGapCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureDoubleBondInsetCommandId(value: number): string {
+  return `${customMoleculeStructureDoubleBondInsetCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureBondMarginWidthCommandId(value: number): string {
+  return `${customMoleculeStructureBondMarginWidthCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureBondHashSpacingCommandId(value: number): string {
+  return `${customMoleculeStructureBondHashSpacingCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureOverlapClearanceCommandId(value: number): string {
+  return `${customMoleculeStructureOverlapClearanceCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeStructureAtomQueryIndicatorsCommandId(value: boolean): string {
+  return `${customMoleculeStructureAtomQueryIndicatorsCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeStructureAtomStereochemistryCommandId(value: boolean): string {
+  return `${customMoleculeStructureAtomStereochemistryCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeStructureAtomEnhancedStereochemistryCommandId(value: boolean): string {
+  return `${customMoleculeStructureAtomEnhancedStereochemistryCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeStructureAtomNumbersCommandId(value: boolean): string {
+  return `${customMoleculeStructureAtomNumbersCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeStructureBondQueryIndicatorsCommandId(value: boolean): string {
+  return `${customMoleculeStructureBondQueryIndicatorsCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeStructureBondStereochemistryCommandId(value: boolean): string {
+  return `${customMoleculeStructureBondStereochemistryCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeStructureBondReactionIndicatorsCommandId(value: boolean): string {
+  return `${customMoleculeStructureBondReactionIndicatorsCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeAtomLabelFontFamilyCommandId(fontFamily: string): string {
+  return `${customMoleculeAtomLabelFontFamilyCommandPrefix}${encodeURIComponent(fontFamily.trim())}`;
+}
+
+export function textFontFamilyCommandId(fontFamily: string): string {
+  return `${customTextFontFamilyCommandPrefix}${encodeURIComponent(fontFamily.trim())}`;
+}
+
+export function moleculeAtomLabelFontFaceCommandId(weight: number, style: NativeTextFontStyle): string {
+  return `${customMoleculeAtomLabelFontFaceCommandPrefix}${Math.round(weight)}:${style}`;
+}
+
+export function moleculeAtomLabelFontSizeCommandId(value: number): string {
+  return `${customMoleculeAtomLabelFontSizeCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeAtomLabelColorCommandId(color: string): string {
+  const normalized = normalizeHexColor(color) ?? "#000000";
+  return `${customMoleculeAtomLabelColorCommandPrefix}${normalized.slice(1)}`;
+}
+
+export function moleculeAtomLabelBackgroundColorCommandId(color: string): string {
+  const normalized = color === "transparent" ? "transparent" : normalizeHexColor(color)?.slice(1) ?? "ffffff";
+  return `${customMoleculeAtomLabelBackgroundColorCommandPrefix}${normalized}`;
+}
+
+// Resolves the command for the atom-label Background mode select. Selecting
+// "solid" must never leave the value transparent (the old one-way trap), so it
+// restores the current color, else the last solid color seen, else white.
+export function moleculeAtomLabelBackgroundCommandId(
+  mode: string,
+  currentValue: string | null | undefined,
+  lastSolidColor: string | null | undefined
+): string {
+  if (mode === "transparent") {
+    return moleculeAtomLabelBackgroundColorCommandId("transparent");
+  }
+  const solid =
+    normalizeHexColor(currentValue ?? undefined) ??
+    normalizeHexColor(lastSolidColor ?? undefined) ??
+    "#ffffff";
+  return moleculeAtomLabelBackgroundColorCommandId(solid);
+}
+
+export function moleculeAtomLabelPaddingCommandId(value: number): string {
+  return `${customMoleculeAtomLabelPaddingCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeAtomLabelBondClearanceCommandId(value: number): string {
+  return `${customMoleculeAtomLabelBondClearanceCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function moleculeAtomLabelAlignmentCommandId(value: NativeAtomLabelAlignment): string {
+  return `${customMoleculeAtomLabelAlignmentCommandPrefix}${value}`;
+}
+
+export function moleculeAtomLabelPlacementCommandId(value: NativeAtomLabelPlacement): string {
+  return `${customMoleculeAtomLabelPlacementCommandPrefix}${value}`;
+}
+
+export function moleculeAtomLabelShowTerminalCarbonsCommandId(value: boolean): string {
+  return `${customMoleculeAtomLabelShowTerminalCarbonsCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeAtomLabelHideImplicitHydrogensCommandId(value: boolean): string {
+  return `${customMoleculeAtomLabelHideImplicitHydrogensCommandPrefix}${value ? "true" : "false"}`;
+}
+
+export function moleculeRingFillColorForCommand(commandId: string): { ringKey: string; color: string } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingFillColorCommandPrefix, 2);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const color = normalizeHexColor(parsed.parts[1] ? `#${parsed.parts[1]}` : undefined);
+  return color ? { ringKey: parsed.ringKey, color } : undefined;
+}
+
+export function moleculeRingFillNoneForCommand(commandId: string): { ringKey: string } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingFillNoneCommandPrefix, 1);
+  return parsed ? { ringKey: parsed.ringKey } : undefined;
+}
+
+export function moleculeRingFillOpacityForCommand(commandId: string): { ringKey: string; opacity: number } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingFillOpacityCommandPrefix, 2);
+  return parsed
+    ? { ringKey: parsed.ringKey, opacity: opacityFromCommandSuffix(parsed.parts[1] ?? "100") }
+    : undefined;
+}
+
+export function moleculeRingEffectForCommand(commandId: string): { ringKey: string; effectKind: ObjectEffectKind } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectCommandPrefix, 2);
+  const effectKind = objectEffectKind(parsed?.parts[1]);
+  return parsed && effectKind ? { ringKey: parsed.ringKey, effectKind } : undefined;
+}
+
+export function moleculeRingEffectColorForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind; color: string } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectColorCommandPrefix, 3);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  const color = normalizeHexColor(parsed?.parts[2] ? `#${parsed.parts[2]}` : undefined);
+  return parsed && effectKind && color
+    ? { ringKey: parsed.ringKey, effectKind, color }
+    : undefined;
+}
+
+export function moleculeRingEffectOpacityForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind; opacity: number } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectOpacityCommandPrefix, 3);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  return parsed && effectKind
+    ? { ringKey: parsed.ringKey, effectKind, opacity: opacityFromCommandSuffix(parsed.parts[2] ?? "100") }
+    : undefined;
+}
+
+export function moleculeRingEffectSizeForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind; size: number } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectSizeCommandPrefix, 3);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  return parsed && effectKind
+    ? { ringKey: parsed.ringKey, effectKind, size: unitFromCommandSuffix(parsed.parts[2] ?? "0", 0) }
+    : undefined;
+}
+
+export function moleculeRingEffectDisableForCommand(
+  commandId: string
+): { ringKey: string; effectKind: ObjectAdjustableEffectKind } | undefined {
+  const parsed = parseMoleculeRingCommand(commandId, customMoleculeRingEffectDisableCommandPrefix, 2);
+  const effectKind = objectAdjustableEffectKind(parsed?.parts[1]);
+  return parsed && effectKind ? { ringKey: parsed.ringKey, effectKind } : undefined;
+}
+
+export function moleculeStructureChainAngleForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureChainAngleCommandPrefix, moleculeStructureNumberRanges.chainAngleDegrees);
+}
+
+export function moleculeStructureBondLengthForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureBondLengthCommandPrefix, moleculeStructureNumberRanges.bondLengthPx);
+}
+
+export function moleculeStructureBondStrokeWidthForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureBondStrokeWidthCommandPrefix, moleculeStructureNumberRanges.bondStrokeWidthPx);
+}
+
+export function moleculeStructureBondBoldWidthForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureBondBoldWidthCommandPrefix, moleculeStructureNumberRanges.bondBoldWidthPx);
+}
+
+export function moleculeStructureBondColorForCommand(commandId: string): { color: string } | undefined {
+  const color = colorCommandValue(commandId, customMoleculeStructureBondColorCommandPrefix);
+  return color ? { color } : undefined;
+}
+
+export function moleculeStructureBondLineCapForCommand(commandId: string): { value: NativeBondLineCap } | undefined {
+  if (!commandId.startsWith(customMoleculeStructureBondLineCapCommandPrefix)) {
+    return undefined;
+  }
+  const value = commandId.slice(customMoleculeStructureBondLineCapCommandPrefix.length);
+  return value === "butt" || value === "round" || value === "square" ? { value } : undefined;
+}
+
+export function moleculeStructureBondSpacingModeForCommand(commandId: string): { value: NativeBondSpacingMode } | undefined {
+  if (!commandId.startsWith(customMoleculeStructureBondSpacingModeCommandPrefix)) {
+    return undefined;
+  }
+  const value = commandId.slice(customMoleculeStructureBondSpacingModeCommandPrefix.length);
+  return value === "absolute" || value === "percent" ? { value } : undefined;
+}
+
+export function moleculeStructureBondSpacingPercentForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(
+    commandId,
+    customMoleculeStructureBondSpacingPercentCommandPrefix,
+    moleculeStructureNumberRanges.bondSpacingPercent
+  );
+}
+
+export function moleculeStructureMultipleBondGapForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureMultipleBondGapCommandPrefix, moleculeStructureNumberRanges.multipleBondGapPx);
+}
+
+export function moleculeStructureDoubleBondInsetForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureDoubleBondInsetCommandPrefix, moleculeStructureNumberRanges.doubleBondInsetPx);
+}
+
+export function moleculeStructureBondMarginWidthForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureBondMarginWidthCommandPrefix, moleculeStructureNumberRanges.bondMarginWidthPx);
+}
+
+export function moleculeStructureBondHashSpacingForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureBondHashSpacingCommandPrefix, moleculeStructureNumberRanges.bondHashSpacingPx);
+}
+
+export function moleculeStructureOverlapClearanceForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeStructureOverlapClearanceCommandPrefix, moleculeStructureNumberRanges.bondOverlapClearancePx);
+}
+
+export function moleculeStructureAtomQueryIndicatorsForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureAtomQueryIndicatorsCommandPrefix);
+}
+
+export function moleculeStructureAtomStereochemistryForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureAtomStereochemistryCommandPrefix);
+}
+
+export function moleculeStructureAtomEnhancedStereochemistryForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureAtomEnhancedStereochemistryCommandPrefix);
+}
+
+export function moleculeStructureAtomNumbersForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureAtomNumbersCommandPrefix);
+}
+
+export function moleculeStructureBondQueryIndicatorsForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureBondQueryIndicatorsCommandPrefix);
+}
+
+export function moleculeStructureBondStereochemistryForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureBondStereochemistryCommandPrefix);
+}
+
+export function moleculeStructureBondReactionIndicatorsForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeStructureBondReactionIndicatorsCommandPrefix);
+}
+
+export function moleculeAtomLabelFontFamilyForCommand(commandId: string): { fontFamily: string } | undefined {
+  if (!commandId.startsWith(customMoleculeAtomLabelFontFamilyCommandPrefix)) {
+    return undefined;
+  }
+  const encoded = commandId.slice(customMoleculeAtomLabelFontFamilyCommandPrefix.length);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encoded).trim();
+  } catch {
+    return undefined;
+  }
+  return decoded.length > 0 && decoded.length <= 256 && !/[\u0000-\u001f\u007f]/.test(decoded)
+    ? { fontFamily: decoded }
+    : undefined;
+}
+
+export function textFontFamilyForCommand(commandId: string): { fontFamily: string } | undefined {
+  if (!commandId.startsWith(customTextFontFamilyCommandPrefix)) {
+    return undefined;
+  }
+  const encoded = commandId.slice(customTextFontFamilyCommandPrefix.length);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encoded).trim();
+  } catch {
+    return undefined;
+  }
+  const hasControlCharacter = [...decoded].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f;
+  });
+  return decoded.length > 0 && decoded.length <= 256 && !hasControlCharacter
+    ? { fontFamily: decoded }
+    : undefined;
+}
+
+export function moleculeAtomLabelFontFaceForCommand(commandId: string): { weight: number; style: NativeTextFontStyle } | undefined {
+  if (!commandId.startsWith(customMoleculeAtomLabelFontFaceCommandPrefix)) {
+    return undefined;
+  }
+  const parts = commandId.slice(customMoleculeAtomLabelFontFaceCommandPrefix.length).split(":");
+  if (parts.length !== 2) {
+    return undefined;
+  }
+  const weight = Number(parts[0]);
+  const style = parts[1];
+  return Number.isInteger(weight) && weight >= 1 && weight <= 1000 && (style === "normal" || style === "italic")
+    ? { weight, style }
+    : undefined;
+}
+
+export function moleculeAtomLabelFontSizeForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeAtomLabelFontSizeCommandPrefix, moleculeAtomLabelNumberRanges.fontSizePx);
+}
+
+export function moleculeAtomLabelColorForCommand(commandId: string): { color: string } | undefined {
+  const color = colorCommandValue(commandId, customMoleculeAtomLabelColorCommandPrefix);
+  return color ? { color } : undefined;
+}
+
+export function moleculeAtomLabelBackgroundColorForCommand(commandId: string): { color: string } | undefined {
+  if (!commandId.startsWith(customMoleculeAtomLabelBackgroundColorCommandPrefix)) {
+    return undefined;
+  }
+  const value = commandId.slice(customMoleculeAtomLabelBackgroundColorCommandPrefix.length);
+  if (value === "transparent") {
+    return { color: "transparent" };
+  }
+  const color = normalizeHexColor(value ? `#${value}` : undefined);
+  return color ? { color } : undefined;
+}
+
+export function moleculeAtomLabelPaddingForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeAtomLabelPaddingCommandPrefix, moleculeAtomLabelNumberRanges.paddingPx);
+}
+
+export function moleculeAtomLabelBondClearanceForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customMoleculeAtomLabelBondClearanceCommandPrefix, moleculeAtomLabelNumberRanges.bondClearancePx);
+}
+
+export function moleculeAtomLabelAlignmentForCommand(commandId: string): { value: NativeAtomLabelAlignment } | undefined {
+  if (!commandId.startsWith(customMoleculeAtomLabelAlignmentCommandPrefix)) {
+    return undefined;
+  }
+  const value = commandId.slice(customMoleculeAtomLabelAlignmentCommandPrefix.length);
+  return value === "automatic" || value === "left" || value === "center" || value === "right" ? { value } : undefined;
+}
+
+export function moleculeAtomLabelPlacementForCommand(commandId: string): { value: NativeAtomLabelPlacement } | undefined {
+  if (!commandId.startsWith(customMoleculeAtomLabelPlacementCommandPrefix)) {
+    return undefined;
+  }
+  const value = commandId.slice(customMoleculeAtomLabelPlacementCommandPrefix.length);
+  return value === "automatic" || value === "above" || value === "below" ? { value } : undefined;
+}
+
+export function moleculeAtomLabelShowTerminalCarbonsForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeAtomLabelShowTerminalCarbonsCommandPrefix);
+}
+
+export function moleculeAtomLabelHideImplicitHydrogensForCommand(commandId: string): { value: boolean } | undefined {
+  return booleanCommandValue(commandId, customMoleculeAtomLabelHideImplicitHydrogensCommandPrefix);
+}
+
+function numberCommandValue(
+  commandId: string,
+  prefix: string,
+  range: { min: number; max: number }
+): { value: number } | undefined {
+  if (!commandId.startsWith(prefix)) {
+    return undefined;
+  }
+  const suffix = commandId.slice(prefix.length);
+  if (!/^-?(?:\d+|\d*\.\d+)$/.test(suffix)) {
+    return undefined;
+  }
+  const value = Number(suffix);
+  if (!Number.isFinite(value) || Object.is(value, -0) || value < range.min || value > range.max) {
+    return undefined;
+  }
+  return { value };
+}
+
+function colorCommandValue(commandId: string, prefix: string): string | undefined {
+  if (!commandId.startsWith(prefix)) {
+    return undefined;
+  }
+  const suffix = commandId.slice(prefix.length);
+  return normalizeHexColor(suffix ? `#${suffix}` : undefined);
+}
+
+function booleanCommandValue(commandId: string, prefix: string): { value: boolean } | undefined {
+  if (!commandId.startsWith(prefix)) {
+    return undefined;
+  }
+  const suffix = commandId.slice(prefix.length);
+  if (suffix === "true") {
+    return { value: true };
+  }
+  if (suffix === "false") {
+    return { value: false };
+  }
+  return undefined;
+}
+
+function canonicalCommandNumber(value: number): string {
+  const normalized = Object.is(value, -0) ? 0 : value;
+  return Number.isFinite(normalized)
+    ? Number(normalized.toFixed(3)).toString()
+    : "0";
 }
 
 export function objectOpacityForCommand(commandId: string): { key: "opacity" | "fillOpacity" | "strokeOpacity"; value: number } | undefined {
@@ -614,6 +1209,44 @@ export function objectEffectForCommand(commandId: string): ObjectEffectKind | un
 
 function objectAdjustableEffectKind(value: string | undefined): ObjectAdjustableEffectKind | undefined {
   return value === "shadow" || value === "glow" || value === "sketch" ? value : undefined;
+}
+
+function objectEffectKind(value: string | undefined): ObjectEffectKind | undefined {
+  return value === "none" || value === "shadow" || value === "glow" || value === "sketch" ? value : undefined;
+}
+
+function encodeMoleculeRingKey(ringKey: string): string {
+  return encodeURIComponent(ringKey);
+}
+
+function decodeMoleculeRingKey(encodedRingKey: string | undefined): string | undefined {
+  if (!encodedRingKey) {
+    return undefined;
+  }
+
+  try {
+    return decodeURIComponent(encodedRingKey);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseMoleculeRingCommand(
+  commandId: string,
+  prefix: string,
+  minParts: number
+): { ringKey: string; parts: string[] } | undefined {
+  if (!commandId.startsWith(prefix)) {
+    return undefined;
+  }
+
+  const parts = commandId.slice(prefix.length).split(":");
+  if (parts.length < minParts) {
+    return undefined;
+  }
+
+  const ringKey = decodeMoleculeRingKey(parts[0]);
+  return ringKey ? { ringKey, parts } : undefined;
 }
 
 export function objectPaintTypeCommandId(paintType: ObjectPaintType): string {
@@ -812,6 +1445,11 @@ export function textStylePatchForCommand(
   const font = textFontCommands.find((command) => command.id === commandId);
   if (font) {
     return { fontFamily: font.fontFamily };
+  }
+
+  const customFont = textFontFamilyForCommand(commandId);
+  if (customFont) {
+    return { fontFamily: customFont.fontFamily };
   }
 
   const size = textSizeCommands.find((command) => command.id === commandId);

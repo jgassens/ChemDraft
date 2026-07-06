@@ -1,24 +1,45 @@
 export type NativeBondLineCap = "butt" | "round" | "square";
+export type NativeBondSpacingMode = "absolute" | "percent";
 export type NativeTextAlignment = "left" | "center" | "right" | "justify";
 export type NativeTextFontStyle = "normal" | "italic";
 export type NativeTextDecoration = "none" | "underline";
+export type NativeAtomLabelAlignment = "automatic" | "left" | "center" | "right";
+export type NativeAtomLabelPlacement = "automatic" | "above" | "below";
 
 export interface NativeDrawingStyle {
   stylePresetId: string;
+  chainAngleDegrees: number;
   bondLengthPx: number;
   bondStrokeWidthPx: number;
+  bondBoldWidthPx: number;
   bondColor: string;
   bondLineCap: NativeBondLineCap;
+  bondSpacingMode: NativeBondSpacingMode;
+  bondSpacingPercent: number;
   multipleBondGapPx: number;
   doubleBondInsetPx: number;
+  bondMarginWidthPx: number;
+  bondHashSpacingPx: number;
   bondOverlapClearancePx: number;
+  atomIndicatorShowQuery: boolean;
+  atomIndicatorShowStereochemistry: boolean;
+  atomIndicatorShowEnhancedStereochemistry: boolean;
+  atomIndicatorShowAtomNumbers: boolean;
+  bondIndicatorShowQuery: boolean;
+  bondIndicatorShowStereochemistry: boolean;
+  bondIndicatorShowReaction: boolean;
   atomLabelFontFamily: string;
   atomLabelFontSizePx: number;
   atomLabelFontWeight: number;
+  atomLabelFontStyle: NativeTextFontStyle;
   atomLabelColor: string;
   atomLabelBackgroundColor: string;
   atomLabelPaddingPx: number;
   atomLabelBondClearancePx: number;
+  atomLabelAlignment: NativeAtomLabelAlignment;
+  atomLabelPlacement: NativeAtomLabelPlacement;
+  atomLabelShowTerminalCarbons: boolean;
+  atomLabelHideImplicitHydrogens: boolean;
 }
 
 export interface ChemDraftStylePreset {
@@ -50,20 +71,38 @@ export const ChemDraftSyntheticStylePreset = {
   source: "core",
   drawing: {
     stylePresetId: "chemdraft.synthetic",
+    chainAngleDegrees: 120,
     bondLengthPx: 22,
     bondStrokeWidthPx: 2,
+    bondBoldWidthPx: 4.8,
     bondColor: "#000000",
     bondLineCap: "butt",
+    bondSpacingMode: "absolute",
+    bondSpacingPercent: 18,
     multipleBondGapPx: 4.8,
     doubleBondInsetPx: 4.5,
+    bondMarginWidthPx: 6,
+    bondHashSpacingPx: 9,
     bondOverlapClearancePx: 6,
+    atomIndicatorShowQuery: true,
+    atomIndicatorShowStereochemistry: false,
+    atomIndicatorShowEnhancedStereochemistry: true,
+    atomIndicatorShowAtomNumbers: false,
+    bondIndicatorShowQuery: true,
+    bondIndicatorShowStereochemistry: false,
+    bondIndicatorShowReaction: true,
     atomLabelFontFamily: "Arial, Helvetica, sans-serif",
     atomLabelFontSizePx: 15,
     atomLabelFontWeight: 400,
+    atomLabelFontStyle: "normal",
     atomLabelColor: "#000000",
     atomLabelBackgroundColor: "#ffffff",
     atomLabelPaddingPx: 2,
-    atomLabelBondClearancePx: 7
+    atomLabelBondClearancePx: 7,
+    atomLabelAlignment: "automatic",
+    atomLabelPlacement: "automatic",
+    atomLabelShowTerminalCarbons: false,
+    atomLabelHideImplicitHydrogens: false
   }
 } as const satisfies ChemDraftStylePreset;
 
@@ -97,25 +136,61 @@ export function nativeDrawingStyleFromObjectStyle(style: Record<string, unknown>
 
   return {
     stylePresetId: stringValue(style.stylePresetId, fallback.stylePresetId),
+    chainAngleDegrees: positiveNumber(style.chainAngleDegrees, fallback.chainAngleDegrees),
     bondLengthPx: positiveNumber(style.bondLengthPx, fallback.bondLengthPx),
     bondStrokeWidthPx: positiveNumber(style.bondStrokeWidthPx, fallback.bondStrokeWidthPx),
+    bondBoldWidthPx: positiveNumber(style.bondBoldWidthPx, fallback.bondBoldWidthPx),
     bondColor: stringValue(style.bondColor, fallback.bondColor),
     bondLineCap: bondLineCapValue(style.bondLineCap, fallback.bondLineCap),
+    bondSpacingMode: bondSpacingModeValue(style.bondSpacingMode, fallback.bondSpacingMode),
+    bondSpacingPercent: positiveNumber(style.bondSpacingPercent, fallback.bondSpacingPercent),
     multipleBondGapPx: positiveNumber(style.multipleBondGapPx, fallback.multipleBondGapPx),
     doubleBondInsetPx: nonnegativeNumber(style.doubleBondInsetPx, fallback.doubleBondInsetPx),
+    bondMarginWidthPx: nonnegativeNumber(style.bondMarginWidthPx, fallback.bondMarginWidthPx),
+    bondHashSpacingPx: positiveNumber(style.bondHashSpacingPx, fallback.bondHashSpacingPx),
     bondOverlapClearancePx: nonnegativeNumber(
       style.bondOverlapClearancePx,
       fallback.bondOverlapClearancePx
     ),
+    atomIndicatorShowQuery: booleanValue(style.atomIndicatorShowQuery, fallback.atomIndicatorShowQuery),
+    atomIndicatorShowStereochemistry: booleanValue(
+      style.atomIndicatorShowStereochemistry,
+      fallback.atomIndicatorShowStereochemistry
+    ),
+    atomIndicatorShowEnhancedStereochemistry: booleanValue(
+      style.atomIndicatorShowEnhancedStereochemistry,
+      fallback.atomIndicatorShowEnhancedStereochemistry
+    ),
+    atomIndicatorShowAtomNumbers: booleanValue(
+      style.atomIndicatorShowAtomNumbers,
+      fallback.atomIndicatorShowAtomNumbers
+    ),
+    bondIndicatorShowQuery: booleanValue(style.bondIndicatorShowQuery, fallback.bondIndicatorShowQuery),
+    bondIndicatorShowStereochemistry: booleanValue(
+      style.bondIndicatorShowStereochemistry,
+      fallback.bondIndicatorShowStereochemistry
+    ),
+    bondIndicatorShowReaction: booleanValue(style.bondIndicatorShowReaction, fallback.bondIndicatorShowReaction),
     atomLabelFontFamily: stringValue(style.atomLabelFontFamily, fallback.atomLabelFontFamily),
     atomLabelFontSizePx: positiveNumber(style.atomLabelFontSizePx, fallback.atomLabelFontSizePx),
     atomLabelFontWeight: positiveNumber(style.atomLabelFontWeight, fallback.atomLabelFontWeight),
+    atomLabelFontStyle: fontStyleValue(style.atomLabelFontStyle, fallback.atomLabelFontStyle),
     atomLabelColor: stringValue(style.atomLabelColor, fallback.atomLabelColor),
     atomLabelBackgroundColor: stringValue(style.atomLabelBackgroundColor, fallback.atomLabelBackgroundColor),
     atomLabelPaddingPx: nonnegativeNumber(style.atomLabelPaddingPx, fallback.atomLabelPaddingPx),
     atomLabelBondClearancePx: nonnegativeNumber(
       style.atomLabelBondClearancePx,
       fallback.atomLabelBondClearancePx
+    ),
+    atomLabelAlignment: atomLabelAlignmentValue(style.atomLabelAlignment, fallback.atomLabelAlignment),
+    atomLabelPlacement: atomLabelPlacementValue(style.atomLabelPlacement, fallback.atomLabelPlacement),
+    atomLabelShowTerminalCarbons: booleanValue(
+      style.atomLabelShowTerminalCarbons,
+      fallback.atomLabelShowTerminalCarbons
+    ),
+    atomLabelHideImplicitHydrogens: booleanValue(
+      style.atomLabelHideImplicitHydrogens,
+      fallback.atomLabelHideImplicitHydrogens
     )
   };
 }
@@ -175,6 +250,10 @@ function bondLineCapValue(value: unknown, fallback: NativeBondLineCap): NativeBo
   return value === "butt" || value === "round" || value === "square" ? value : fallback;
 }
 
+function bondSpacingModeValue(value: unknown, fallback: NativeBondSpacingMode): NativeBondSpacingMode {
+  return value === "absolute" || value === "percent" ? value : fallback;
+}
+
 function textAlignValue(value: unknown, fallback: NativeTextAlignment): NativeTextAlignment {
   return value === "left" || value === "center" || value === "right" || value === "justify"
     ? value
@@ -183,6 +262,20 @@ function textAlignValue(value: unknown, fallback: NativeTextAlignment): NativeTe
 
 function fontStyleValue(value: unknown, fallback: NativeTextFontStyle): NativeTextFontStyle {
   return value === "normal" || value === "italic" ? value : fallback;
+}
+
+function atomLabelAlignmentValue(value: unknown, fallback: NativeAtomLabelAlignment): NativeAtomLabelAlignment {
+  return value === "automatic" || value === "left" || value === "center" || value === "right"
+    ? value
+    : fallback;
+}
+
+function atomLabelPlacementValue(value: unknown, fallback: NativeAtomLabelPlacement): NativeAtomLabelPlacement {
+  return value === "automatic" || value === "above" || value === "below" ? value : fallback;
+}
+
+function booleanValue(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function textDecorationValue(value: unknown, fallback: NativeTextDecoration): NativeTextDecoration {
