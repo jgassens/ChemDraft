@@ -524,6 +524,15 @@ textarea:focus-visible,
   width: 100%;
   min-height: 26px;
   padding: 0 9px 0 4px;
+  border: 0;
+  border-radius: var(--cd-radius-control);
+  background: transparent;
+  color: var(--cd-text-primary);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+}
+
 /* In-viewport application menu bar (browser build; the desktop build uses the native OS menu). */
 .app-shell.has-app-menu-bar {
   grid-template-rows: auto minmax(0, 1fr);
@@ -550,8 +559,8 @@ textarea:focus-visible,
   background: transparent;
   color: var(--cd-text-primary);
   font-size: 12px;
-  line-height: 1.2;
-  text-align: left;
+  line-height: 1;
+  cursor: default;
 }
 
 .dev-browser-menu-item:hover:not(:disabled),

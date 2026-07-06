@@ -1,8 +1,12 @@
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
 
-const workspacePackage = (path: string) => new URL(path, import.meta.url).pathname;
+// fileURLToPath (not URL.pathname) so a checkout path containing spaces — e.g. a git worktree at
+// ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one
+// that ENOENTs at build time.
+const workspacePackage = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 const gitStampCommandOptions = {
   encoding: "utf8",
   stdio: ["ignore", "pipe", "ignore"],
