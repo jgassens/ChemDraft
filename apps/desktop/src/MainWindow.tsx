@@ -55,7 +55,7 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
-import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
+import { createToolsetToggleCommandId, parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import {
   buildCrosshairTicks,
   centimeterRulerUnit,
@@ -455,6 +455,7 @@ import {
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  setMenuChecked,
   PREFERENCES_WINDOW_KIND,
   listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
@@ -2583,6 +2584,15 @@ export function MainWindow({
     }
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
   }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry]);
+
+  // JS owns toolset visibility, so it also owns the native menu's checkmarks. Mirror the
+  // current visible set onto every toggle item after each change (no-op in the browser).
+  // This is what keeps View > Toolbars accurate now that Rust no longer toggles windows.
+  useEffect(() => {
+    for (const toolset of toolsetRegistry.listToolsets()) {
+      void setMenuChecked(createToolsetToggleCommandId(toolset.id), visibleToolsetIds.has(toolset.id));
+    }
+  }, [toolsetRegistry, visibleToolsetIds]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;

@@ -39,8 +39,6 @@ const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 const DEFAULT_TOOLSET_ID: &str = "core.main";
-const MOLECULE_INSPECTOR_TOOLSET_ID: &str = "core.moleculeInspector";
-const MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID: &str = "view.toggleMoleculeInspector";
 const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
@@ -280,21 +278,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
         .on_menu_event(|app, event| {
+            // Single brain: every menu click (toolset toggles included) routes to the JS
+            // command dispatcher, which owns visibility and pushes checkmarks back via
+            // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
             let command_id = event.id().as_ref();
-            if let Some(toolset_id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
-                if toolset_id == MOLECULE_INSPECTOR_TOOLSET_ID {
-                    if let Err(error) =
-                        emit_command_to_main(app, MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID)
-                    {
-                        eprintln!("Could not route ChemDraft Molecule Inspector command: {error}");
-                    }
-                    return;
-                }
-                if let Err(error) = toggle_toolset_window(app.clone(), toolset_id.to_string()) {
-                    eprintln!("Could not toggle ChemDraft toolbar {toolset_id}: {error}");
-                }
-                return;
-            }
             if is_routed_menu_command(command_id) {
                 if let Err(error) = emit_command_to_main(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
@@ -410,6 +397,7 @@ pub fn run() {
             list_toolset_window_states,
             load_toolset_customization_state,
             focus_main_document_window,
+            set_menu_checked,
             route_toolset_command,
             read_clipboard_payload,
             write_clipboard_text_items,
@@ -639,6 +627,18 @@ fn load_toolset_customization_state(
 #[tauri::command]
 fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
     focus_main_document_window_impl(&app).map(|_| ())
+}
+
+/// JS owns menu check state now: after the main window changes toolset visibility it
+/// pushes each toggle's checkmark here. Takes the full menu command id
+/// (e.g. `view.toolset.toggle.core.main`) so it works for any check menu item.
+#[tauri::command]
+fn set_menu_checked(app: tauri::AppHandle, command_id: String, checked: bool) -> Result<(), String> {
+    let command_id = command_id.trim();
+    if command_id.is_empty() {
+        return Err("Menu command id cannot be empty.".to_string());
+    }
+    set_check_menu_item_checked(&app, command_id, checked)
 }
 
 #[tauri::command]

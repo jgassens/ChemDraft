@@ -188,6 +188,20 @@ export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
   return invoke<unknown | null>("load_toolset_customization_state").then((state) => state ?? undefined);
 }
 
+/**
+ * Pushes a native menu item's check state from JS. The main window owns toolset
+ * visibility now, so it mirrors each toggle's checkmark here after every change.
+ * No-op in the browser build (there is no native menu).
+ */
+export async function setMenuChecked(commandId: string, checked: boolean): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_menu_checked", { commandId, checked }).catch(() => undefined);
+}
+
 export async function openToolPalette(): Promise<PaletteWindowState> {
   return openToolsetWindow(DEFAULT_TOOLSET_ID);
 }

@@ -33,6 +33,7 @@
     "allow-list-toolset-window-states",
     "allow-load-toolset-customization-state",
     "allow-focus-main-document-window",
+    "allow-set-menu-checked",
     "allow-route-toolset-command",
     "allow-read-clipboard-payload",
     "allow-write-clipboard-text-items",

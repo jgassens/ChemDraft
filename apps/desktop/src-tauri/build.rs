@@ -6,6 +6,7 @@ fn main() {
             "focus_toolset_window",
             "toggle_toolset_window",
             "list_toolset_window_states",
+            "set_menu_checked",
             "route_toolset_command",
             "read_clipboard_payload",
             "write_clipboard_text_items",
