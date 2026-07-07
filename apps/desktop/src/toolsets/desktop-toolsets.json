@@ -399,23 +399,6 @@
           ]
         }
       ]
-    },
-    {
-      "id": "plugin.fixture",
-      "title": "Fixture Plugin Toolbar",
-      "source": "plugin",
-      "defaultVisible": false,
-      "defaultMode": "floating",
-      "preferredWindowSize": { "width": 112, "height": 58, "minWidth": 112, "minHeight": 58 },
-      "category": "plugin",
-      "groups": [
-        {
-          "id": "plugin.fixture.tools",
-          "items": [
-            { "commandId": "plugin.fixture.toolset.ping", "title": "Fixture Toolset Command", "icon": "plugin", "category": "plugin" }
-          ]
-        }
-      ]
     }
   ]
 }

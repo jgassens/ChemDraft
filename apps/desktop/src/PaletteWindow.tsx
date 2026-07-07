@@ -4,7 +4,12 @@ import { ToolPalette } from "./ToolPalette";
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
-import { createDesktopToolsetRegistry, desktopToolsetRegistry, getToolsetCommandGroups } from "./toolsets";
+import {
+  createDesktopToolsetRegistry,
+  desktopToolsetRegistry,
+  getToolsetCommandGroups,
+  type DesktopToolsetRegistry
+} from "./toolsets";
 import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
@@ -37,13 +42,21 @@ type PaletteWindowDrag = {
   startY?: number;
 };
 
-export function PaletteWindow({ toolsetId = "core.main" }: { toolsetId?: string }) {
+export function PaletteWindow({
+  toolsetId = "core.main",
+  // Interim seam so tests (and, until Phase 4's definition-push, callers) can supply a
+  // registry that already includes plugin toolsets. Defaults to the core registry.
+  initialRegistry
+}: {
+  toolsetId?: string;
+  initialRegistry?: DesktopToolsetRegistry;
+}) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
   const animationFrameRef = useRef<number | undefined>(undefined);
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
-  const [toolsetRegistry, setToolsetRegistry] = useState(() => desktopToolsetRegistry);
+  const [toolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
   const [activeTool, setActiveTool] = useState("tool.select");
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);

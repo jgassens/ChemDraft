@@ -154,6 +154,16 @@ import {
   shouldUseViewportWheelZoom
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
+import { CommandRegistry } from "@chemdraft/plugin-host";
+import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
+import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import {
+  FIXTURE_PLUGIN_PING_COMMAND_ID,
+  FIXTURE_PLUGIN_TOOLSET_ID,
+  createFixturePluginOptions,
+  fixturePluginManifest
+} from "./plugins/fixturePlugin";
+import type { DesktopToolsetRegistry } from "./toolsets";
 import { ToolPalette, cmykToRgbColor, hexToRgbColor, rgbToCmykColor, rgbToHexColor } from "./ToolPalette";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
@@ -233,6 +243,20 @@ const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
     </fragment>
   </page>
 </CDXML>`;
+
+// The fixture toolset is contributed by a real plugin now (not baked into the core
+// manifest), so tests that assert on it compose it through the runtime + catalog exactly
+// like MainWindow does.
+function buildRegistryWithFixture(): DesktopToolsetRegistry {
+  const runtime = createDesktopPluginRuntime({
+    commandRegistry: new CommandRegistry(),
+    getActiveDocument: () => undefined
+  });
+  runtime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
+  const catalog = createToolbarCatalog();
+  catalog.setPluginToolsets(runtime.listPluginToolsets());
+  return catalog.registry();
+}
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
@@ -2654,10 +2678,10 @@ describe("ChemDraft desktop shell", () => {
         "core.style",
         "core.text",
         "core.ringInspector",
-        "core.moleculeInspector",
-        "plugin.fixture"
+        "core.moleculeInspector"
       ])
     );
+    expect(ids).not.toContain(FIXTURE_PLUGIN_TOOLSET_ID);
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
       width: 420,
@@ -2667,7 +2691,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.art.pencil",
       "tool.art.brush"
     ]);
-    expect(desktopToolsetRegistry.require("plugin.fixture").source).toBe("plugin");
+    // The fixture toolset comes from the plugin runtime, not the core manifest.
+    expect(buildRegistryWithFixture().require(FIXTURE_PLUGIN_TOOLSET_ID).source).toBe("plugin");
   });
 
   it("keeps duplicated toolbar commands on a shared material-style asset", () => {
@@ -2714,7 +2739,6 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps sparse floating toolsets compact", () => {
     const mainToolset = desktopToolsetRegistry.require("core.main");
-    const fixtureSize = desktopToolsetRegistry.require("plugin.fixture").preferredWindowSize;
     const textToolset = desktopToolsetRegistry.require("core.text");
     const verticalSizes = desktopToolsetRegistry
       .listToolsets()
@@ -2722,7 +2746,6 @@ describe("ChemDraft desktop shell", () => {
       .map((toolset) => toolset.preferredWindowSize?.height ?? 0);
 
     expect(mainToolset.preferredWindowSize).toMatchObject({ width: 1138, height: 128, minWidth: 860, minHeight: 124 });
-    expect(fixtureSize).toMatchObject({ width: 112, height: 58, minWidth: 112, minHeight: 58 });
     expect(textToolset.gridLayout).toMatchObject({ orientation: "horizontal" });
     expect(textToolset.preferredWindowSize).toMatchObject({ width: 590, height: 112, minWidth: 520, minHeight: 104 });
     expect(Math.max(...verticalSizes)).toBeLessThanOrEqual(224);
@@ -2753,7 +2776,7 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("builds View > Toolbars menu items from registered toolsets", () => {
-    const menu = getToolbarsMenuModel(new Set(["core.main"]));
+    const menu = getToolbarsMenuModel(new Set(["core.main"]), buildRegistryWithFixture());
 
     expect(menu).toEqual(
       expect.arrayContaining([
@@ -2785,7 +2808,7 @@ describe("ChemDraft desktop shell", () => {
   it("applies persisted toolbar layout state to startup registry and menu models", () => {
     const registry = createDesktopToolsetRegistry({
       version: 1,
-      toolsetOrder: ["user.quick", "plugin.fixture", "core.main"],
+      toolsetOrder: ["user.quick", "core.text", "core.main"],
       toolsetOverrides: [
         {
           toolsetId: "core.main",
@@ -2809,7 +2832,7 @@ describe("ChemDraft desktop shell", () => {
               id: "user.quick.tools",
               items: [
                 { commandId: "tool.select", title: "Selection Tool" },
-                { commandId: "plugin.fixture.toolset.ping", title: "Fixture Toolset Command" }
+                { commandId: "tool.eraser", title: "Eraser Tool" }
               ]
             }
           ]
@@ -2820,7 +2843,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(registry.listToolsets().map((toolset) => toolset.id).slice(0, 3)).toEqual([
       "user.quick",
-      "plugin.fixture",
+      "core.text",
       "core.main"
     ]);
     expect(registry.require("core.main").title).toBe("My Main Toolbar");
@@ -2839,7 +2862,7 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("creates toggle commands for every registered toolset", () => {
-    const toggles = getToolsetToggleActions();
+    const toggles = getToolsetToggleActions(buildRegistryWithFixture());
 
     expect(toggles.map((command) => command.id)).toEqual(
       expect.arrayContaining(["view.toolset.toggle.core.structure", "view.toolset.toggle.plugin.fixture"])
@@ -2848,11 +2871,16 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("renders an independent plugin fixture toolset surface", () => {
-    const markup = renderToStaticMarkup(createElement(PaletteWindow, { toolsetId: "plugin.fixture" }));
+    const markup = renderToStaticMarkup(
+      createElement(PaletteWindow, {
+        toolsetId: FIXTURE_PLUGIN_TOOLSET_ID,
+        initialRegistry: buildRegistryWithFixture()
+      })
+    );
 
-    expect(markup).toContain('data-toolset-id="plugin.fixture"');
-    expect(markup).toContain('data-command-id="plugin.fixture.toolset.ping"');
-    expect(markup).toContain("Fixture");
+    expect(markup).toContain(`data-toolset-id="${FIXTURE_PLUGIN_TOOLSET_ID}"`);
+    expect(markup).toContain(`data-command-id="${FIXTURE_PLUGIN_PING_COMMAND_ID}"`);
+    expect(markup).toContain("Ping");
     expect(markup).not.toContain("canvas-region");
   });
 

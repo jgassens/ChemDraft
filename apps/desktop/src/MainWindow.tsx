@@ -72,6 +72,9 @@ import {
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
+import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
+import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
+import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
@@ -466,7 +469,6 @@ import {
 } from "./window-manager";
 import {
   createDefaultVisibleToolsetIds,
-  createDesktopToolsetRegistry,
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
   getToolbarsMenuModel,
@@ -1630,6 +1632,16 @@ export function MainWindow({
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
+
+  // The toolbar catalog is the single data brain: it composes the core manifest with live
+  // plugin toolsets and the user's saved layout, and hands out immutable registry snapshots.
+  // `toolsetRegistry` simply follows it.
+  const toolbarCatalog = useMemo(() => createToolbarCatalog(), []);
+  useEffect(() => {
+    const applyRegistry = () => setToolsetRegistry(toolbarCatalog.registry());
+    applyRegistry();
+    return toolbarCatalog.onDidChange(applyRegistry);
+  }, [toolbarCatalog]);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
@@ -2273,8 +2285,8 @@ export function MainWindow({
           return;
         }
 
-        const nextRegistry = createDesktopToolsetRegistry(layoutState);
-        setToolsetRegistry(nextRegistry);
+        toolbarCatalog.setLayoutState(layoutState);
+        const nextRegistry = toolbarCatalog.registry();
         setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
         setVisibleToolsetIds((current) => {
           const knownVisibleIds = [...current].filter((toolsetId) => nextRegistry.get(toolsetId));
@@ -2295,7 +2307,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [nativePalette]);
+  }, [nativePalette, toolbarCatalog]);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -6549,7 +6561,11 @@ export function MainWindow({
         isLayerCommandId(tool.id) ||
         objectStyleCommandIds.has(tool.id) ||
         tool.id === toggleRingInspectorCommandId ||
-        tool.id === toggleMoleculeInspectorCommandId
+        tool.id === toggleMoleculeInspectorCommandId ||
+        // Plugin commands are owned by PluginHost, which registers them into the same
+        // registry with their permission context. Registering a core binding here too
+        // would collide (duplicate id) and strip the plugin's permission checks.
+        tool.source === "plugin"
       ) {
         return;
       }
@@ -6557,10 +6573,6 @@ export function MainWindow({
       register(tool, () => {
         if (isDisabledPlaceholderCommand(tool)) {
           setStatus(tool.disabledReason ?? "Tool unavailable");
-          return;
-        }
-        if (tool.id === "plugin.fixture.toolset.ping") {
-          setStatus("Fixture plugin toolset command routed");
           return;
         }
 
@@ -6793,6 +6805,37 @@ export function MainWindow({
     syncCoreCommands(coreCommandBindings);
   }, [syncCoreCommands, coreCommandBindings]);
 
+  // Plugins register their commands into the same stable registry; the host is created once.
+  const pluginRuntime = useMemo(
+    () => createDesktopPluginRuntime({ commandRegistry: registry, getActiveDocument: () => documentRef.current }),
+    [registry]
+  );
+
+  // Keep the catalog's plugin toolsets in sync with the runtime, and register the dev-only
+  // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development.
+  useEffect(() => {
+    const syncPluginToolsets = () => toolbarCatalog.setPluginToolsets(pluginRuntime.listPluginToolsets());
+    const unsubscribe = pluginRuntime.onDidChange(syncPluginToolsets);
+    if (import.meta.env.DEV) {
+      try {
+        pluginRuntime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
+      } catch (error) {
+        console.warn("Fixture plugin registration failed", error);
+      }
+    }
+    syncPluginToolsets();
+    return () => {
+      unsubscribe();
+      if (import.meta.env.DEV) {
+        try {
+          pluginRuntime.unregisterPlugin(FIXTURE_PLUGIN_ID);
+        } catch {
+          // Already unregistered; nothing to clean up.
+        }
+      }
+    };
+  }, [pluginRuntime, toolbarCatalog]);
+
   const invoke = useCallback(async (commandId: string) => {
     if (commandId === moleculeInspectorTemplateImportCommandId) {
       await importMoleculeInspectorTemplate();
@@ -6816,7 +6859,9 @@ export function MainWindow({
       return;
     }
 
-    void registry.invoke(commandId).catch((error: unknown) => {
+    // Route through the host so plugin commands run with their permission context; core
+    // commands (no pluginId) dispatch straight through the shared registry as before.
+    void pluginRuntime.host.invokeCommand(commandId).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Command failed: ${message}`);
     });
@@ -6826,7 +6871,7 @@ export function MainWindow({
     applyTextStyleCommand,
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
-    registry
+    pluginRuntime
   ]);
 
   invokeCommandRef.current = invoke;
