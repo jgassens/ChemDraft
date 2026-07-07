@@ -75,6 +75,7 @@ import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { PatchReviewTray } from "./plugins/PatchReviewTray";
 import {
@@ -7716,44 +7717,29 @@ export function MainWindow({
     }
 
     let cancelled = false;
-    void (async () => {
-      try {
-        const existing = await listToolsetWindowStates();
-        const alreadyOpen = new Set(
-          existing.filter((state) => state.open && toolsetRegistry.get(state.toolsetId)).map((state) => state.toolsetId)
-        );
-        const desired = [...visibleToolsetIdsRef.current].filter((toolsetId) => toolsetRegistry.get(toolsetId));
-        const target = desired.length > 0 ? desired : [...createDefaultVisibleToolsetIds(toolsetRegistry)];
-
-        const opened = new Set(alreadyOpen);
-        for (const toolsetId of target) {
-          if (opened.has(toolsetId)) {
-            continue;
-          }
-          const state = await openToolsetWindow(toolsetId);
-          if (state.open) {
-            opened.add(toolsetId);
-          }
-        }
-        if (cancelled) {
-          return;
-        }
-        if (opened.size === 0) {
-          setWebPaletteFallback(true);
-          setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
-          setStatus("Native toolset windows unavailable; using in-window toolbars");
-          return;
-        }
-        setVisibleToolsetIds(new Set(opened));
-      } catch {
-        if (cancelled) {
-          return;
-        }
-        setWebPaletteFallback(true);
-        setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
-        setStatus("Native toolset windows unavailable; using in-window toolbars");
+    void reconcileNativePaletteWindows({
+      listToolsetWindowStates,
+      openToolsetWindow,
+      isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
+      desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
+      defaultVisibleToolsetIds: () => [...createDefaultVisibleToolsetIds(toolsetRegistry)],
+      isCancelled: () => cancelled
+    }).then((result) => {
+      if (cancelled || result.outcome === "cancelled") {
+        return;
       }
-    })();
+      if (result.outcome === "native") {
+        setVisibleToolsetIds(new Set(result.openedToolsetIds));
+        return;
+      }
+      // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars
+      // rather than leaving the app with no toolbars at all. (A transient startup miss no longer
+      // lands here; reconcileNativePaletteWindows retries first so it can't permanently trap the
+      // palettes in the viewport.)
+      setWebPaletteFallback(true);
+      setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
+      setStatus("Native toolset windows unavailable; using in-window toolbars");
+    });
 
     return () => {
       cancelled = true;
