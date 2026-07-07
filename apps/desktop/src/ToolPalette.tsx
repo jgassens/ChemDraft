@@ -317,6 +317,7 @@ export function ToolPalette({
       distributeMode={currentDistributeMode}
       onTooltipEnter={() => requestTooltip(tooltipId)}
       onTooltipLeave={() => clearTooltip(tooltipId)}
+      onRequestFlyout={onRequestFlyout}
       onInvoke={onInvoke}
     />
   );
@@ -3680,6 +3681,7 @@ export function CommandIconButton({
   onTooltipEnter,
   onTooltipLeave,
   separated = false,
+  onRequestFlyout,
   onInvoke
 }: {
   command: CommandSpec;
@@ -3690,6 +3692,7 @@ export function CommandIconButton({
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
   separated?: boolean;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
   const disabled = command.enabled === false;
@@ -3704,6 +3707,7 @@ export function CommandIconButton({
         tooltipId={tooltipId}
         tooltipVisible={tooltipVisible}
         onInvoke={onInvoke}
+        onRequestFlyout={onRequestFlyout}
         onTooltipEnter={onTooltipEnter}
         onTooltipLeave={onTooltipLeave}
       />
@@ -4166,6 +4170,7 @@ function DistributeCommandIconButton({
   onTooltipEnter,
   onTooltipLeave,
   separated,
+  onRequestFlyout,
   onInvoke
 }: {
   command: CommandSpec;
@@ -4177,6 +4182,7 @@ function DistributeCommandIconButton({
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
   separated?: boolean;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -4201,9 +4207,38 @@ function DistributeCommandIconButton({
 
   const openMenu = useCallback(() => {
     holdOpenedRef.current = true;
-    setMenuOpen(true);
     onTooltipLeave?.();
-  }, [onTooltipLeave]);
+    // Native palettes open the mode chooser in its own floating window (overflows the palette).
+    if (onRequestFlyout) {
+      const rect = shellRef.current?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      onRequestFlyout({
+        anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+        flyout: {
+          flyoutId: `distribute.${command.id}`,
+          title: command.title,
+          commands: [
+            {
+              id: distributeModeCommandIds.centers,
+              title: "Centers",
+              enabled: true,
+              active: distributeMode === "centers"
+            },
+            {
+              id: distributeModeCommandIds.spacing,
+              title: "Equal gaps",
+              enabled: true,
+              active: distributeMode === "spacing"
+            }
+          ]
+        }
+      });
+      return;
+    }
+    setMenuOpen(true);
+  }, [onRequestFlyout, onTooltipLeave, command.id, command.title, distributeMode]);
 
   const chooseMode = useCallback((commandId: string) => {
     onInvoke(commandId);

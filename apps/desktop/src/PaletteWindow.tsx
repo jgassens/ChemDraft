@@ -292,7 +292,7 @@ export function PaletteWindow({
   useEffect(() => {
     const handlePointerDown = (event: globalThis.PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button")) {
+      if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button")) {
         return;
       }
       void dismissToolsetPopovers().catch(() => undefined);
