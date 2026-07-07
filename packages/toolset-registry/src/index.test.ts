@@ -521,6 +521,53 @@ describe("toolset registry", () => {
     ).toThrow(/unregistered command/);
   });
 
+  it("prunes only the unknown submenu command and keeps the parent button", () => {
+    const warnings: string[] = [];
+    const result = applyToolsetLayoutState(
+      [fixtureToolset],
+      {
+        version: 1,
+        userToolsets: [
+          {
+            id: "user.submenu",
+            title: "Submenu",
+            source: "user",
+            defaultVisible: false,
+            defaultMode: "floating",
+            groups: [
+              {
+                id: "user.submenu.tools",
+                items: [
+                  {
+                    commandId: "tool.bond",
+                    submenu: {
+                      type: "command-grid",
+                      items: [{ commandId: "tool.bond" }, { commandId: "tool.stale" }]
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      { registeredCommandIds: ["tool.bond"], onUnknownCommand: "prune", onWarning: (message) => warnings.push(message) }
+    );
+
+    const item = result.find((toolset) => toolset.id === "user.submenu")?.groups[0]?.items[0];
+    // The button survives because its own command is registered…
+    expect(item?.commandId).toBe("tool.bond");
+    // …with only the unknown submenu entry pruned, not the whole button.
+    expect(item?.submenu?.items.map((sub) => sub.commandId)).toEqual(["tool.bond"]);
+    expect(warnings.join("\n")).toMatch(/tool\.stale/);
+  });
+
+  it("normalizes a separator with no group id instead of throwing", () => {
+    const separator = normalizeToolsetItem({ kind: "separator" }, { toolsetId: "core.sep", itemIndex: 2 });
+    expect(separator).toMatchObject({ kind: "separator", primary: { type: "none" } });
+    expect(separator.id).toBe("core.sep.group.separator.2");
+  });
+
   it("generates toolbar menu models from built-in, plugin, and user toolsets", () => {
     const customized = applyToolsetLayoutState([fixtureToolset, pluginToolset], {
       version: 1,

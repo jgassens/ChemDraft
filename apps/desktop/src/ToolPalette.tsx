@@ -98,7 +98,7 @@ import {
 } from "./commands";
 import { Icon } from "./icons";
 import { toolbarAsset } from "./toolbarAssets";
-import type { ToolbarPaletteItemModel } from "./toolsets";
+import { PALETTE_GRID_METRIC_DEFAULTS, type ToolbarPaletteItemModel } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type {
@@ -418,10 +418,10 @@ function toolPaletteGridStyle(gridLayout: ToolsetGridLayout | undefined): CSSPro
     return undefined;
   }
 
-  const cellWidth = gridLayout.cellWidth ?? 28;
-  const cellHeight = gridLayout.cellHeight ?? 28;
-  const gap = gridLayout.gap ?? 2;
-  const padding = gridLayout.padding ?? 4;
+  const cellWidth = gridLayout.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
+  const cellHeight = gridLayout.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
+  const gap = gridLayout.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
+  const padding = gridLayout.padding ?? PALETTE_GRID_METRIC_DEFAULTS.padding;
 
   return {
     "--toolbar-cell-width": `${cellWidth}px`,
@@ -3678,7 +3678,11 @@ function ToolbarPaletteItem({
     || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
   );
   const tooltipText = toolbarTooltipText(item, primaryCommand);
-  const menuId = hasSubmenu ? `toolbar-submenu-${item.id.replace(/[^A-Za-z0-9_-]/g, "-")}` : undefined;
+  // Injective sanitization: encode each disallowed char by code point so ids differing only in
+  // punctuation (e.g. "plugin.foo:bar" vs "plugin.foo.bar") don't collapse to the same DOM id.
+  const menuId = hasSubmenu
+    ? `toolbar-submenu-${item.id.replace(/[^A-Za-z0-9_-]/g, (char) => `_${char.charCodeAt(0)}_`)}`
+    : undefined;
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current !== undefined) {
@@ -3831,7 +3835,7 @@ function ToolbarPaletteItem({
         data-toolbar-layout-row-span={item.layout.rowSpan}
       >
         <button type="button" className="icon-button" disabled aria-label={`${item.label} control unavailable`}>
-          <Icon name="palette" />
+          <ToolbarItemIcon item={item} />
         </button>
       </span>
     );
@@ -3949,6 +3953,10 @@ function ToolbarPaletteItem({
           }
           if ((event.key === "Enter" || event.key === " ") && !primaryDisabled) {
             event.preventDefault();
+            // Claim the invoke so the synthesized click (Space activates on keyup; preventDefault on
+            // keydown doesn't reliably cancel it in WKWebView) is suppressed by onClick's guard
+            // instead of firing the command a second time.
+            pointerInvokedRef.current = true;
             invokePrimary();
           }
         }}
@@ -4017,7 +4025,7 @@ function ToolbarPaletteItem({
   );
 }
 
-function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
+export function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
   if (columns === undefined || columns <= 1) {
     return undefined;
   }
@@ -4061,8 +4069,11 @@ function ToolbarItemIcon({
   if (item.iconDataUri) {
     return <img className="tool-icon-image" src={item.iconDataUri} alt="" aria-hidden="true" />;
   }
-  if (item.assetName) {
-    return <img className="tool-icon-image" src={toolbarAsset(item.assetName)} alt="" aria-hidden="true" />;
+  // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
+  // only render the image when it resolves, otherwise fall through to a real icon.
+  const assetSrc = item.assetName ? toolbarAsset(item.assetName) : undefined;
+  if (assetSrc) {
+    return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
   }
   if (command) {
     return <ToolbarCommandIcon command={command} />;
@@ -4074,8 +4085,9 @@ function ToolbarItemIcon({
 }
 
 function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
-  if (command.assetName) {
-    return <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />;
+  const assetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
+  if (assetSrc) {
+    return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
   }
   if (command.id.startsWith("tool.art.")) {
     return <ArtToolIcon commandId={command.id} />;
@@ -4084,13 +4096,19 @@ function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
 }
 
 function toolbarTooltipText(item: ToolbarPaletteItemModel, primaryCommand: CommandSpec | undefined): string {
+  const hasSubmenuChoices = Boolean(item.submenu && item.submenu.items.length > 0);
   if (primaryCommand?.enabled === false) {
-    return `${item.tooltip.title}: ${primaryCommand.disabledReason ?? "unavailable"}`;
+    // The disabled reason replaces the description, so re-add the long-press affordance for flyouts.
+    const holdHint = hasSubmenuChoices ? "; hold for choices" : "";
+    return `${item.tooltip.title}: ${primaryCommand.disabledReason ?? "unavailable"}${holdHint}`;
   }
   const shortcut = item.tooltip.shortcutLabel ?? item.tooltip.shortcut ?? primaryCommand?.shortcutLabel ?? primaryCommand?.shortcut;
   const shortcutText = !shortcut ? "" : ` (${shortcut})`;
   const description = item.tooltip.description ? `: ${item.tooltip.description}` : "";
-  return `${item.tooltip.title}${description}${shortcutText}`;
+  // A flyout with no manifest description of its own (e.g. a plugin item) still needs to signal it
+  // is long-pressable; a hand-written description is assumed to cover it already.
+  const holdHint = hasSubmenuChoices && !item.tooltip.description ? "; hold for choices" : "";
+  return `${item.tooltip.title}${description}${holdHint}${shortcutText}`;
 }
 
 export function CommandIconButton({

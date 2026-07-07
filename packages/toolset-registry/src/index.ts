@@ -398,11 +398,13 @@ export function normalizeToolsetItem<TIcon extends string = string, TAssetName e
   const id = item.id
     ?? item.commandId
     ?? (primary.type === "control" ? primary.controlId : undefined)
-    ?? (primary.type === "none" && context.groupId !== undefined && context.itemIndex !== undefined
-      ? `${context.toolsetId ?? "toolset"}.${context.groupId}.separator.${context.itemIndex}`
+    // A separator has no command/control id, so synthesize a stable one from its position. Never
+    // require context.groupId here — a schema-valid separator in an id-less group must not crash.
+    ?? (primary.type === "none"
+      ? `${context.toolsetId ?? "toolset"}.${context.groupId ?? "group"}.separator.${context.itemIndex ?? 0}`
       : undefined);
   if (!id) {
-    throw new Error("Toolset item requires an id, commandId, control primary, or separator context.");
+    throw new Error("Toolset item requires an id, commandId, or a control/separator primary.");
   }
 
   const kind: ToolsetItemKind = item.kind
@@ -463,7 +465,9 @@ export function normalizeToolsetDefinition<TIcon extends string = string, TAsset
 ): NormalizedToolsetDefinition {
   return {
     ...toolset,
-    groups: toolset.groups.map((group) => normalizeToolsetGroup(group, { toolsetId: toolset.id, groupId: group.id }))
+    groups: toolset.groups.map((group, groupIndex) =>
+      normalizeToolsetGroup(group, { toolsetId: toolset.id, groupId: group.id ?? `group-${groupIndex}` })
+    )
   };
 }
 
@@ -533,16 +537,19 @@ function pruneUnknownToolsetCommands<TIcon extends string, TAssetName extends st
 	  .map((group) => ({
 	    ...group,
 	    items: group.items.flatMap((item) => {
-	      const commandIds = toolsetItemCommandIds(item);
-	      const unknownCommandIds = commandIds.filter((commandId) => !registeredCommandIds.has(commandId));
-	      if (unknownCommandIds.length === 0) {
-	        const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
-	        return [{ ...item, submenu }];
+	      const unknownPrimaryIds = toolsetItemPrimaryCommandIds(item).filter(
+	        (commandId) => !registeredCommandIds.has(commandId)
+	      );
+	      if (unknownPrimaryIds.length > 0) {
+	        // The item's own command is gone — drop the whole item.
+	        unknownPrimaryIds.forEach((commandId) => {
+	          warn(`User toolset "${toolset.id}" dropped unknown command "${commandId}".`);
+	        });
+	        return [];
 	      }
-	      unknownCommandIds.forEach((commandId) => {
-	        warn(`User toolset "${toolset.id}" dropped unknown command "${commandId}".`);
-	      });
-	      return [];
+	      // Primary is registered — keep the button and prune only unknown submenu entries.
+	      const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
+	      return [{ ...item, submenu }];
 	    })
 	  }))
     .filter((group) => group.items.length > 0);
@@ -655,10 +662,14 @@ function applyUserToolsetOverride<TIcon extends string, TAssetName extends strin
   });
 
   const groups = reorderById(toolset.groups, override.groupOrder ?? [], (group) => group.id).map((group) => {
-    const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], (item) => item.commandId)
-      .filter((item) => item.commandId === undefined || !hiddenCommandIds.has(item.commandId))
+    const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], toolsetItemCustomizationId)
+      .filter((item) => {
+        const commandId = toolsetItemCustomizationId(item);
+        return commandId === undefined || !hiddenCommandIds.has(commandId);
+      })
       .map((item) => {
-        const itemOverride = item.commandId === undefined ? undefined : itemOverrides.get(item.commandId);
+        const commandId = toolsetItemCustomizationId(item);
+        const itemOverride = commandId === undefined ? undefined : itemOverrides.get(commandId);
         if (!itemOverride) {
           return item;
         }
@@ -838,4 +849,26 @@ function toolsetItemCommandIds<TIcon extends string, TAssetName extends string>(
   }
   item.submenu?.items.forEach((submenuItem) => ids.push(submenuItem.commandId));
   return [...new Set(ids)];
+}
+
+/** The item's OWN command id(s) (top-level + primary), excluding submenu commands. */
+function toolsetItemPrimaryCommandIds<TIcon extends string, TAssetName extends string>(
+  item: ToolsetItemDefinition<TIcon, TAssetName>
+): string[] {
+  const ids = item.commandId ? [item.commandId] : [];
+  if (item.primary?.type === "command") {
+    ids.push(item.primary.commandId);
+  }
+  return [...new Set(ids)];
+}
+
+/**
+ * The command id used to match an item against command-keyed user customizations (reorder / hide /
+ * overrides). Falls back from the legacy top-level `commandId` to `primary.commandId`, so items
+ * authored in the new primary-only form are still reorderable/hideable.
+ */
+function toolsetItemCustomizationId<TIcon extends string, TAssetName extends string>(
+  item: ToolsetItemDefinition<TIcon, TAssetName>
+): string | undefined {
+  return item.commandId ?? (item.primary?.type === "command" ? item.primary.commandId : undefined);
 }

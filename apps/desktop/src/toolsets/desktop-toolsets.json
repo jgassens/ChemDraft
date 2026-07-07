@@ -1217,34 +1217,7 @@
                 "type": "command",
                 "commandId": "layout.distributeHorizontal"
               },
-              "submenu": {
-                "type": "command-grid",
-                "title": "Distribute",
-                "columns": 2,
-                "items": [
-                  {
-                    "commandId": "layout.distributeHorizontal",
-                    "label": "Distribute Horizontally",
-                    "icon": "align",
-                    "assetName": "Custom_Horizontal",
-                    "tooltip": {
-                      "title": "Distribute Horizontally",
-                      "shortcut": "Option+Shift+Cmd+H"
-                    }
-                  },
-                  {
-                    "commandId": "layout.distributeVertical",
-                    "label": "Distribute Vertically",
-                    "icon": "align",
-                    "assetName": "Custom_Vertical",
-                    "tooltip": {
-                      "title": "Distribute Vertically",
-                      "shortcut": "Option+Shift+Cmd+V"
-                    }
-                  }
-                ],
-                "id": "distribute"
-              },
+              "submenu": null,
               "tooltip": {
                 "title": "Distribute Horizontally",
                 "shortcut": "Option+Shift+Cmd+H",
@@ -3489,34 +3462,7 @@
                 "type": "command",
                 "commandId": "layout.distributeHorizontal"
               },
-              "submenu": {
-                "type": "command-grid",
-                "title": "Distribute",
-                "columns": 2,
-                "items": [
-                  {
-                    "commandId": "layout.distributeHorizontal",
-                    "label": "Distribute Horizontally",
-                    "icon": "align",
-                    "assetName": "Custom_Horizontal",
-                    "tooltip": {
-                      "title": "Distribute Horizontally",
-                      "shortcut": "Option+Shift+Cmd+H"
-                    }
-                  },
-                  {
-                    "commandId": "layout.distributeVertical",
-                    "label": "Distribute Vertically",
-                    "icon": "align",
-                    "assetName": "Custom_Vertical",
-                    "tooltip": {
-                      "title": "Distribute Vertically",
-                      "shortcut": "Option+Shift+Cmd+V"
-                    }
-                  }
-                ],
-                "id": "distribute"
-              },
+              "submenu": null,
               "tooltip": {
                 "title": "Distribute Horizontally",
                 "shortcut": "Option+Shift+Cmd+H",
@@ -4360,34 +4306,7 @@
                 "type": "command",
                 "commandId": "layout.distributeHorizontal"
               },
-              "submenu": {
-                "type": "command-grid",
-                "title": "Distribute",
-                "columns": 2,
-                "items": [
-                  {
-                    "commandId": "layout.distributeHorizontal",
-                    "label": "Distribute Horizontally",
-                    "icon": "align",
-                    "assetName": "Custom_Horizontal",
-                    "tooltip": {
-                      "title": "Distribute Horizontally",
-                      "shortcut": "Option+Shift+Cmd+H"
-                    }
-                  },
-                  {
-                    "commandId": "layout.distributeVertical",
-                    "label": "Distribute Vertically",
-                    "icon": "align",
-                    "assetName": "Custom_Vertical",
-                    "tooltip": {
-                      "title": "Distribute Vertically",
-                      "shortcut": "Option+Shift+Cmd+V"
-                    }
-                  }
-                ],
-                "id": "distribute"
-              },
+              "submenu": null,
               "tooltip": {
                 "title": "Distribute Horizontally",
                 "shortcut": "Option+Shift+Cmd+H",

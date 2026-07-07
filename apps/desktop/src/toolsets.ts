@@ -77,8 +77,19 @@ export function getToolsetCommandGroups(
   registry: DesktopToolsetRegistry = desktopToolsetRegistry,
   commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
 ): CommandSpec[][] {
-  return getToolsetItemGroups(toolsetId, registry, commandOverrides).map((group) =>
-    group.flatMap((item) => item.primary.type === "command" ? [item.primary.command] : [])
+  return paletteCommandGroupsFromItemGroups(getToolsetItemGroups(toolsetId, registry, commandOverrides));
+}
+
+/**
+ * Project palette item-groups down to their primary command specs. Callers that already hold
+ * `itemGroups` should use this instead of calling `getToolsetCommandGroups`, which would normalize
+ * the whole toolset a second time.
+ */
+export function paletteCommandGroupsFromItemGroups(
+  itemGroups: readonly (readonly ToolbarPaletteItemModel[])[]
+): CommandSpec[][] {
+  return itemGroups.map((group) =>
+    group.flatMap((item) => (item.primary.type === "command" ? [item.primary.command] : []))
   );
 }
 
@@ -92,6 +103,18 @@ export function getToolsetItemGroups(
   );
 }
 
+/**
+ * Default cell/gap/padding metrics for a grid toolset, shared by the CSS grid style
+ * (`toolPaletteGridStyle`) and the window auto-sizer (`computePaletteGridSize`) so the two can't
+ * drift apart and mis-size the window against the rendered grid.
+ */
+export const PALETTE_GRID_METRIC_DEFAULTS = {
+  cellWidth: 28,
+  cellHeight: 28,
+  gap: 2,
+  padding: 4
+} as const;
+
 export function computePaletteGridSize(
   gridLayout: DesktopToolsetDefinition["gridLayout"] | undefined,
   itemGroups: readonly (readonly ToolbarPaletteItemModel[])[]
@@ -100,10 +123,10 @@ export function computePaletteGridSize(
     return undefined;
   }
 
-  const cellWidth = gridLayout.cellWidth ?? 28;
-  const cellHeight = gridLayout.cellHeight ?? 28;
-  const gap = gridLayout.gap ?? 2;
-  const padding = gridLayout.padding ?? 4;
+  const cellWidth = gridLayout.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
+  const cellHeight = gridLayout.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
+  const gap = gridLayout.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
+  const padding = gridLayout.padding ?? PALETTE_GRID_METRIC_DEFAULTS.padding;
   const placedItems = itemGroups.flat();
   const placedColumnCount = Math.max(
     0,
@@ -111,11 +134,6 @@ export function computePaletteGridSize(
       .filter((item) => item.layout.column !== undefined)
       .map((item) => (item.layout.column ?? 0) + item.layout.colSpan)
   );
-  const columns = gridLayout.columns ?? placedColumnCount;
-  if (columns <= 0) {
-    return undefined;
-  }
-
   const placedRowCount = Math.max(
     0,
     ...placedItems
@@ -125,6 +143,20 @@ export function computePaletteGridSize(
   const autoFlowCellCount = placedItems
     .filter((item) => item.layout.row === undefined || item.layout.column === undefined)
     .reduce((total, item) => total + item.layout.colSpan * item.layout.rowSpan, 0);
+
+  // Columns: explicit, else derived from per-item placements, else derived from a fixed row count +
+  // the auto-flow item count. That last case is what shipped toolsets use (rows set, no columns) —
+  // without it this returned undefined and never sized anything.
+  const columns = gridLayout.columns
+    ?? (placedColumnCount > 0
+      ? placedColumnCount
+      : gridLayout.rows && autoFlowCellCount > 0
+        ? Math.ceil(autoFlowCellCount / gridLayout.rows)
+        : 0);
+  if (columns <= 0) {
+    return undefined;
+  }
+
   const autoFlowRows = autoFlowCellCount > 0 ? Math.ceil(autoFlowCellCount / columns) : 0;
   const rows = gridLayout.rows ?? Math.max(placedRowCount, autoFlowRows);
   if (rows <= 0) {
@@ -140,21 +172,24 @@ export function computePaletteGridSize(
 export function getToolsetCommandSpecs(
   registry: DesktopToolsetRegistry = desktopToolsetRegistry
 ): CommandSpec[] {
-  return dedupeCommands(
-    registry
-      .listToolsets()
-      .flatMap((toolset) =>
-        normalizeToolsetDefinition(toolset).groups.flatMap((group) =>
-          group.items.flatMap((item) => {
-            const paletteItem = toolsetItemToPaletteItem(item);
-            return [
-              ...(paletteItem.primary.type === "command" ? [paletteItem.primary.command] : []),
-              ...(paletteItem.submenu?.items ?? [])
-            ];
-          })
-        )
-      )
-  );
+  const primaryCommands: CommandSpec[] = [];
+  const submenuCommands: CommandSpec[] = [];
+  for (const toolset of registry.listToolsets()) {
+    for (const group of normalizeToolsetDefinition(toolset).groups) {
+      for (const item of group.items) {
+        const paletteItem = toolsetItemToPaletteItem(item);
+        if (paletteItem.primary.type === "command") {
+          primaryCommands.push(paletteItem.primary.command);
+        }
+        if (paletteItem.submenu) {
+          submenuCommands.push(...paletteItem.submenu.items);
+        }
+      }
+    }
+  }
+  // Primary specs first: under first-wins dedupe this stops a command's submenu occurrence (which
+  // carries no category and no disabledReason/enabled=false) from shadowing its richer primary spec.
+  return dedupeCommands([...primaryCommands, ...submenuCommands]);
 }
 
 export function getToolsetToggleActions(

@@ -485,7 +485,6 @@ import {
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
   getToolbarsMenuModel,
-  getToolsetCommandGroups,
   getToolsetCommandSpecs,
   getToolsetItemGroups,
   getToolsetToggleActions,
@@ -13382,7 +13381,6 @@ export function MainWindow({
                   <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
                 </div>
                 <ToolPalette
-                  groups={getToolsetCommandGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
                   itemGroups={getToolsetItemGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
                   gridLayout={toolset.gridLayout}
                   activeTool={activeTool}

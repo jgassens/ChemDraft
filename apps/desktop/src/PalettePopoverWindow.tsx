@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { ColorPickerPopoverBody } from "./ToolPalette";
+import { useEffect, useRef, useState } from "react";
+import { ColorPickerPopoverBody, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
@@ -259,13 +259,4 @@ export function PalettePopoverWindow({
       )}
     </div>
   );
-}
-
-function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
-  if (columns === undefined || columns <= 1) {
-    return undefined;
-  }
-  return {
-    "--toolbar-command-flyout-columns": String(columns)
-  } as CSSProperties;
 }

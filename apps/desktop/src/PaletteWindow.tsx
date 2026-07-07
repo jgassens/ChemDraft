@@ -8,8 +8,8 @@ import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
   computePaletteGridSize,
-  getToolsetCommandGroups,
   getToolsetItemGroups,
+  paletteCommandGroupsFromItemGroups,
   type DesktopToolsetRegistry
 } from "./toolsets";
 import {
@@ -74,8 +74,9 @@ export function PaletteWindow({
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
-  const groups = useMemo(() => getToolsetCommandGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
   const itemGroups = useMemo(() => getToolsetItemGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
+  // Derive command groups from the already-normalized itemGroups instead of normalizing the toolset a second time.
+  const groups = useMemo(() => paletteCommandGroupsFromItemGroups(itemGroups), [itemGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }),
