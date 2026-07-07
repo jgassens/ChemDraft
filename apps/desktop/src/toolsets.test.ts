@@ -40,6 +40,60 @@ describe("desktop toolset mapping", () => {
       tooltip: { title: "Single Bond", shortcut: "M", shortcutLabel: "M" },
       layout: { colSpan: 1, rowSpan: 1 }
     });
+    if (item.primary.type !== "command") {
+      throw new Error("Expected legacy item to map to a command primary.");
+    }
+    expect(item.primary.command.description).toBeUndefined();
+  });
+
+  it("preserves explicit tooltip descriptions without inventing fallback descriptions", () => {
+    const describedToolset: ToolsetDefinition = {
+      id: "core.described",
+      title: "Described",
+      source: "core",
+      defaultVisible: true,
+      defaultMode: "floating",
+      groups: [
+        {
+          id: "described.tools",
+          items: [
+            {
+              commandId: "tool.bond",
+              title: "Single Bond",
+              icon: "bond",
+              primary: { type: "command", commandId: "tool.bond" },
+              tooltip: { title: "Single Bond", description: "Draw a single bond.", shortcut: "M" },
+              submenu: {
+                type: "command-grid",
+                title: "Bond tools",
+                items: [
+                  {
+                    commandId: "tool.wedgeBond",
+                    label: "Solid Wedge Bond",
+                    tooltip: { description: "Draw a wedge bond." }
+                  },
+                  { commandId: "tool.boldBond", label: "Bold Bond" }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+    const item = getToolsetItemGroups("core.described", registry([describedToolset]))[0][0];
+    if (item.primary.type !== "command") {
+      throw new Error("Expected described item to map to a command primary.");
+    }
+
+    expect(item.primary.command.description).toBe("Draw a single bond.");
+    expect(item.submenu?.items.find((command) => command.id === "tool.wedgeBond")?.description).toBe("Draw a wedge bond.");
+    expect(item.submenu?.items.find((command) => command.id === "tool.boldBond")?.description).toBeUndefined();
+    expect(getToolsetCommandGroups("core.legacy", registry([legacyToolset]))[0][0].description).toBeUndefined();
+    expect(
+      [item.primary.command, ...(item.submenu?.items ?? [])].some((command) =>
+        command.description?.includes("toolset action")
+      )
+    ).toBe(false);
   });
 
   it("maps schema submenus to command specs while preserving command override state", () => {

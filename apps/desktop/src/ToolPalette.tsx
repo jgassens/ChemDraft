@@ -3671,7 +3671,8 @@ function ToolbarPaletteItem({
   const hasSubmenu = submenu !== null && submenuCommands.length > 0;
   const hasEnabledSubmenuCommand = submenuCommands.some((command) => command.enabled !== false);
   const primaryDisabled = primaryCommand ? primaryCommand.enabled === false : true;
-  const buttonDisabled = !hasSubmenu && primaryDisabled;
+  const buttonDisabled = primaryDisabled && (!hasSubmenu || !hasEnabledSubmenuCommand);
+  const usesNativeFlyout = hasSubmenu && Boolean(onRequestFlyout);
   const activeState = primaryCommand?.enabled !== false && (
     primaryCommand?.id === activeTool
     || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
@@ -3869,16 +3870,16 @@ function ToolbarPaletteItem({
     >
       <button
         type="button"
-	        className={[
-	          "icon-button",
-	          hasSubmenu ? "command-flyout-button" : "",
-	          activeState ? "active" : "",
-	          primaryCommand?.id === structureCleanupCommandId ? "structure-cleanup-button" : ""
-	        ].filter(Boolean).join(" ")}
-        aria-controls={menuOpen ? menuId : undefined}
+        className={[
+          "icon-button",
+          hasSubmenu ? "command-flyout-button" : "",
+          activeState ? "active" : "",
+          primaryCommand?.id === structureCleanupCommandId ? "structure-cleanup-button" : ""
+        ].filter(Boolean).join(" ")}
+        aria-controls={hasSubmenu && !usesNativeFlyout && menuOpen ? menuId : undefined}
         aria-describedby={tooltipVisible ? tooltipId : undefined}
         aria-disabled={primaryDisabled && hasEnabledSubmenuCommand ? "true" : undefined}
-        aria-expanded={hasSubmenu ? menuOpen : undefined}
+        aria-expanded={hasSubmenu && !usesNativeFlyout ? menuOpen : undefined}
         aria-haspopup={hasSubmenu ? "menu" : undefined}
         aria-label={tooltipText}
         aria-pressed={activeState || undefined}
@@ -3896,10 +3897,10 @@ function ToolbarPaletteItem({
           event.stopPropagation();
           if (event.button !== 0) {
             return;
-	          }
-	          holdOpenedRef.current = false;
-	          pointerInvokedRef.current = false;
-	          if (hasSubmenu) {
+          }
+          holdOpenedRef.current = false;
+          pointerInvokedRef.current = false;
+          if (hasSubmenu) {
             event.currentTarget.setPointerCapture?.(event.pointerId);
             clearHoldTimer();
             holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
@@ -3909,13 +3910,13 @@ function ToolbarPaletteItem({
           event.stopPropagation();
           clearHoldTimer();
           event.currentTarget.releasePointerCapture?.(event.pointerId);
-	          if (holdOpenedRef.current || menuOpen) {
-	            return;
-	          }
-	          if (!primaryDisabled) {
-	            pointerInvokedRef.current = true;
-	          }
-	          invokePrimary();
+          if (holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          if (!primaryDisabled) {
+            pointerInvokedRef.current = true;
+          }
+          invokePrimary();
         }}
         onPointerCancel={(event) => {
           event.stopPropagation();
@@ -3923,18 +3924,18 @@ function ToolbarPaletteItem({
           event.currentTarget.releasePointerCapture?.(event.pointerId);
         }}
         onMouseDown={(event) => event.stopPropagation()}
-	        onClick={(event) => {
-	          event.preventDefault();
-	          event.stopPropagation();
-	          if (pointerInvokedRef.current) {
-	            pointerInvokedRef.current = false;
-	            return;
-	          }
-	          if (holdOpenedRef.current || menuOpen) {
-	            return;
-	          }
-	          invokePrimary();
-	        }}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (pointerInvokedRef.current) {
+            pointerInvokedRef.current = false;
+            return;
+          }
+          if (holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          invokePrimary();
+        }}
         onKeyDown={(event) => {
           if (event.key === "Escape" && menuOpen) {
             event.preventDefault();
@@ -3961,19 +3962,19 @@ function ToolbarPaletteItem({
           text={tooltipText}
         />
       </button>
-	      {hasSubmenu ? (
-	        <div
-	          className="toolbar-command-flyout-menu"
-	          role="menu"
-	          aria-label={`${submenu?.title ?? item.label} commands`}
-	          data-command-flyout-menu={submenu?.id}
-	          data-toolbar-command-grid-columns={submenu?.columns && submenu.columns > 1 ? submenu.columns : undefined}
-	          data-toolbar-submenu="true"
-	          data-toolbar-submenu-owner-id={item.id}
-	          hidden={!menuOpen}
-	          id={menuId}
-	          style={toolbarCommandFlyoutGridStyle(submenu?.columns)}
-	        >
+      {hasSubmenu ? (
+        <div
+          className="toolbar-command-flyout-menu"
+          role="menu"
+          aria-label={submenu?.title ?? item.label}
+          data-command-flyout-menu={submenu?.id}
+          data-toolbar-command-grid-columns={submenu?.columns && submenu.columns > 1 ? submenu.columns : undefined}
+          data-toolbar-submenu="true"
+          data-toolbar-submenu-owner-id={item.id}
+          hidden={!menuOpen}
+          id={menuId}
+          style={toolbarCommandFlyoutGridStyle(submenu?.columns)}
+        >
           {submenuCommands.map((command) => {
             const disabled = command.enabled === false;
             const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
@@ -3985,21 +3986,19 @@ function ToolbarPaletteItem({
                 type="button"
                 role="menuitem"
                 disabled={disabled}
+                aria-disabled={disabled ? "true" : undefined}
                 data-command-id={command.id}
+                data-disabled={disabled ? "true" : undefined}
                 data-shortcut-label={itemShortcut ?? "No shortcut"}
-	                data-toolbar-asset={command.assetName}
-	                data-tooltip={itemText}
-	                key={command.id}
-	                title={itemText}
+                data-toolbar-asset={command.assetName}
+                data-tooltip={itemText}
+                key={command.id}
+                title={itemText}
                 onPointerDown={(event) => {
-                  event.preventDefault();
                   event.stopPropagation();
-                  chooseCommand(command);
                 }}
                 onMouseDown={(event) => {
-                  event.preventDefault();
                   event.stopPropagation();
-                  chooseCommand(command);
                 }}
                 onClick={(event) => {
                   event.preventDefault();

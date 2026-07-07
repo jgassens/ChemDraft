@@ -233,7 +233,8 @@ export function submenuItemToCommandSpec(
     title: item.label,
     icon: item.icon,
     assetName: item.assetName,
-    shortcut: item.tooltip?.shortcut ?? undefined
+    shortcut: item.tooltip?.shortcut ?? undefined,
+    description: item.tooltip?.description ?? undefined
   });
   return mergeToolsetCommandSpec(base, commandOverrides.get(item.commandId));
 }
@@ -251,6 +252,7 @@ function commandSpecForNormalizedItem(
     icon: item.icon,
     assetName: item.assetName,
     shortcut: item.shortcutDisplay ?? item.tooltip.shortcut ?? undefined,
+    description: item.tooltip.description ?? undefined,
     disabledReason: item.disabledReason,
     category: item.category
   });
@@ -263,6 +265,7 @@ function commandSpecFromManifest({
   icon,
   assetName,
   shortcut,
+  description,
   disabledReason,
   category
 }: {
@@ -271,6 +274,7 @@ function commandSpecFromManifest({
   icon?: string;
   assetName?: string;
   shortcut?: string | null;
+  description?: string | null;
   disabledReason?: string;
   category?: string;
 }): CommandSpec {
@@ -285,7 +289,7 @@ function commandSpecFromManifest({
     defaultShortcut: shortcutText,
     disabledReason,
     category,
-    description: `${title} toolset action`,
+    description: description ?? undefined,
     source: commandId.startsWith("plugin.") ? "plugin" : "core",
     enabled: disabledReason ? false : true
   };

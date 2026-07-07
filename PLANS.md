@@ -16,6 +16,13 @@ The durable schema notes live in:
 - `docs/architecture/toolbars-and-toolsets.md`
 - `packages/toolset-registry/README.md`
 
+## Toolbar Stabilization Gate
+
+Before starting the Rings Toolbar / Molecule Inspector delivery sequence, complete
+one cleanup commit that stabilizes schema-backed toolbar button invocation, inline
+submenu ARIA, generated tooltip descriptions, and branch docs. This gate must not
+change Molecule Inspector behavior.
+
 ## Objective
 
 Split ring appearance out of the Molecule Inspector. The existing hidden-by-default ring appearance work becomes its own compact `core.ringInspector` toolbar, while `core.moleculeInspector` remains hidden by default and contains three tabs:

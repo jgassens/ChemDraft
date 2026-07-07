@@ -1,16 +1,18 @@
-# Agent Instructions for ChemDraft Structure Inspector Branch
+# Agent Instructions for ChemDraft `refactor/toolbars`
 
-**Current Build**: 7.5.18.24-fable
+This worktree is for stabilizing schema-backed toolbar buttons before the next
+Rings Toolbar / Molecule Inspector work in `PLANS.md`.
 
-> [!IMPORTANT]
-> When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`.
-
-This branch is for the active Structure Inspector worktree: a dedicated Rings toolbar plus Molecule Inspector tabs for Structure, Atom Labels, and Templates.
-
-- Worktree: `/Users/jeremiahgassensmith/Documents/programming/chemdraw-structure inspector`
-- Branch: `codex/structure-inspector`
+- Worktree: `/Users/jeremiahgassensmith/Documents/programming/chemdraw-toolbars`
+- Branch: `refactor/toolbars`
 - Planning source: `PLANS.md`
-- Current state: active implementation. The user has explicitly requested implementation of the Molecule Inspector tabs plan.
+- Current state: toolbar schema stabilization gate. Do not start Structure Inspector,
+  Molecule Inspector, Ring Inspector, Atom Labels, Templates, or shared-font work
+  until this cleanup is committed.
+
+For this stabilization cleanup, do not update the app build stamp or the `Build`
+string in `apps/desktop/src/MainWindow.tsx` unless the implementation changes
+runtime build identity or a maintainer explicitly requests it.
 
 ## Required Reading Before Coding
 
@@ -28,72 +30,63 @@ pnpm-workspace.yaml
 If the work touches a package, also read that package's README or local documentation before editing.
 
 When `PLANS.md` exists, treat it as the active scoped implementation plan unless the user gives
-newer instructions. Keep edits focused on the files, behaviors, and verification listed there;
-do not broaden the slice into adjacent chemistry, rendering, UI polish, or format work.
+newer instructions. For the current branch, the immediate `PLANS.md` gate is toolbar
+button schema stabilization; keep edits focused on that gate and do not broaden the slice
+into inspector, chemistry, rendering, UI polish, or format work.
 
 Notary and app-signing instructions live at `/Users/jeremiahgassensmith/Documents/programming/.notary`.
 Read that directory before signing, notarizing, packaging, or changing release automation.
 
-## 2. Core priorities
+## 2. Current Stabilization Gate
 
-Ship the compact hidden-by-default inspector palettes with:
+Complete one cleanup commit for the schema-backed toolbar button contract:
 
-- `core.ringInspector`: a Rings toolbar preserving existing ring identity, per-ring fill/effect rendering, ring interior hit-testing, and ring appearance controls.
-- `core.moleculeInspector`: a Molecule Inspector with `Structure`, `Atom Labels`, and `Templates` tabs.
-- `Structure`: molecule bond drawing controls for selected molecule targets. If one or more bonds or atoms are selected, Structure controls apply only to those parts through sparse per-bond / per-atom overrides, mirroring the Atom Labels behavior below.
-- `Atom Labels`: base molecule atom-label typography, display policy, and font-family/face controls. If one or more atom labels are selected, Atom Labels controls must apply only to those labels through sparse per-atom overrides.
-- `Templates`: import ChemDraw `.cds` style-sheet inputs through `packages/style-compat`, apply supported Molecule Inspector settings to selected molecule targets, and export ChemDraft Molecule Inspector presets as `.template` files.
+- inline schema submenu commands must invoke exactly once from click;
+- disabled submenu commands must not invoke;
+- items with disabled primary commands but enabled submenu commands must still open the submenu;
+- items with no enabled primary command and no enabled submenu commands must be disabled;
+- inline schema submenus need owner/menu/menuitem ARIA coverage;
+- native palette flyout transport must remain unchanged;
+- generated toolbar command specs must not invent generic tooltip descriptions.
 
-Structure drawing controls (stroke and bold width, spacing, line caps, margins, hashing, overlap, chain angle, and indicator toggles) apply per bond and per atom via sparse maps when specific bonds/atoms are selected, and to the whole molecule otherwise.
-
-Outside this slice:
-
-- Per-bond fill opacity and per-bond visual effects (opacity and effects stay whole-molecule / ring-level through the Rings and Art inspectors).
-- Atom-label underline, outline, and shadow.
-- Font embedding, a font-management preference screen, general CDXML/CDX document import, clipboard, OCSR, or broad toolbar customization.
-
-Do not add `NativeMoleculeDrawingSettings`, `NativeAtomLabelSettings`, or `NativeMoleculeIndicatorSettings`.
+Do not convert the remaining Art toolbar hardcoded arrays in this cleanup commit.
+Do not add, remove, rename, or redesign toolbar buttons.
+Do not change command IDs, chemistry behavior, inspector behavior, package dependencies,
+or app build identity unless a test or build process forces a narrow, explained fix.
 
 ## Reuse Existing Systems
 
 Verify existing code before adding new code.
 
-- Whole-molecule fill/stroke color, paint type, opacity, none, and visual effects already apply to molecule objects through `documentWorkflow.ts` and `artInspectorModel.ts`. Reuse those paths where applicable.
-- Per-bond color already exists through `applyColorToNativeMoleculePart`, writing `style.bondColors` and `style.atomLabelColors`.
-- Per-bond style identity already lives on `bond.display.bondStyle`. Do not add a duplicate `style.bondStyles` map.
-- The live inspector pattern already exists in `ArtToolbarStyleControls`. Mirror its model, payload, controls, and preview/commit/cancel behavior.
+- `packages/toolset-registry` owns manifest schemas, normalization, command enumeration, and layout/customization validation.
+- `apps/desktop/src/toolsets.ts` maps normalized registry items into desktop palette item models and command specs.
+- `apps/desktop/src/ToolPalette.tsx` renders the inline web fallback and hands native flyout requests to the window transport.
+- `apps/desktop/src/PalettePopoverWindow.tsx` renders native flyout snapshots. Preserve this transport unless a focused test proves a bug in that path.
 - Commands use value-encoded IDs and factory helpers. Do not introduce generic `*.set` commands with hidden value parameters.
-- `exportDocumentToSvg` already reuses `planPageSvgRender`; per-ring render-plan paths should flow to export through that existing route.
-- Use `MoleculeObject.style` and `nativeDrawingStyleFromObjectStyle()` for Structure and Atom Labels. Do not introduce a parallel molecule-style object.
-- Keep Structure and Atom Labels state on the shared `NativeDrawingStyle` (never a parallel molecule-style object). Beyond reusing existing bond/label fields, this slice adds base bond-drawing fields (`chainAngleDegrees`, `bondBoldWidthPx`, `bondSpacingMode`, `bondSpacingPercent`, `bondMarginWidthPx`, `bondHashSpacingPx`), the atom/bond structure-indicator toggles (`atomIndicatorShow*`, `bondIndicatorShow*`), and the atom-label fields (`atomLabelFontStyle`, `atomLabelAlignment`, `atomLabelPlacement`, `atomLabelShowTerminalCarbons`, `atomLabelHideImplicitHydrogens`). Each is sparse-overridable per bond/atom via the `documentWorkflow.ts` maps and round-trips through templates/imports.
-- The native system-font database already used by raster export must be shared with the Molecule Inspector font catalog; do not scan system fonts twice.
 
 ## Hard Boundaries
 
 - Do not change the main checkout. Work only in this worktree for this branch.
 - Do not copy proprietary assets, icons, dialog art, help text, sample files, command IDs, trade dress, or branded UI.
-- Keep chemical identity stable. Ring styling must not mutate atoms, bonds, bond order, charges, stereochemistry, reactions, or molecule metadata.
-- Ring geometry and key logic must live in `packages/layout-engine`; app code imports helpers and does not duplicate ring math.
-- Ring appearance storage remains `style.ringStyles`, keyed by topology-derived ring keys.
-- Ring keys must derive from sorted bond IDs, never coordinates.
-- The Rings toolbar and Molecule Inspector must be hidden by default, compact, dense, and floating. Do not create a permanent right inspector or card/dashboard UI.
-- Keep `core.ringInspector` / `view.toggleRingInspector` for ring appearance and `core.moleculeInspector` / `view.toggleMoleculeInspector` for Structure, Atom Labels, and Templates. Be aware that `view.toggleInspector` and disabled `tool.settings` already exist; do not add additional inspector concepts.
-- Ring interiors are selectable only while the Rings toolbar is open.
-- Keep chemical identity stable. Structure and Atom Label styling must not mutate atom elements, formal charges, bond orders, stereochemistry, atom IDs, bond IDs, or molecule identity.
-- Sparse overrides must remain sparse and visually effective. Base style edits must not clear `style.ringStyles`, `style.bondColors`, `style.atomLabelColors`, sparse per-atom label style maps, or the sparse per-bond/per-atom Structure and indicator style maps.
-- Target bond length must visibly scale selected molecule atom coordinates about each molecule's own center and update `style.bondLengthPx` in one undoable operation, or it must be removed from this slice.
-- Structure indicators must be honest render overlays: atom numbers from atom order; atom/bond stereo from native wedge/hash/dashed display or imported stereo metadata; query indicators only from unknown/query atom or bond metadata; reaction indicators only from reaction/RXN metadata. Do not invent query or reaction chemistry for ordinary SMILES.
+- Keep chemical identity stable. Toolbar schema cleanup must not mutate atoms, bonds, bond order, charges, stereochemistry, reactions, or molecule metadata.
+- Native flyouts must keep using the existing request/snapshot/window-manager path.
+- Inline submenu ARIA must describe real inline DOM menus only; native flyout owner buttons may advertise `aria-haspopup="menu"` but must not point `aria-controls` at nonexistent DOM.
+- Generated toolbar commands may preserve explicit tooltip descriptions and command overrides, but must not synthesize filler text such as `toolset action`.
+- The remaining Art toolbar hardcoded arrays are a bridge; do not migrate them in this stabilization commit.
 
 ## Verification
 
 Run focused suites for touched files, including:
 
 ```bash
-pnpm vitest run packages/chem-core/src/styles.test.ts packages/layout-engine/src/index.test.ts packages/export-engine/src/svg.test.ts apps/desktop/src/moleculeInspectorModel.test.ts apps/desktop/src/commands.test.ts apps/desktop/src/documentWorkflow.test.ts apps/desktop/src/window-manager/index.test.ts apps/desktop/src/App.test.ts
+pnpm vitest run packages/toolset-registry/src/index.test.ts apps/desktop/src/toolsets.test.ts apps/desktop/src/ToolPalette.test.ts apps/desktop/src/ToolPalette.dom.test.ts apps/desktop/src/App.test.ts
 pnpm lint
-cargo test agent_bridge
+pnpm test
+pnpm build
 git diff --check
 ```
+
+Also smoke `./run-app --dev` long enough to confirm startup, then stop the dev server.
 
 ### 5.26 Do not duplicate layout-engine rendering math
 

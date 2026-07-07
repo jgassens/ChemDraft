@@ -808,6 +808,9 @@ describe("ToolPalette arrange flyouts", () => {
     if (!transformButton) {
       throw new Error("Expected transform flyout button.");
     }
+    expect(transformButton.getAttribute("aria-haspopup")).toBe("menu");
+    expect(transformButton.getAttribute("aria-controls")).toBeNull();
+    expect(transformButton.getAttribute("aria-expanded")).toBeNull();
 
     act(() => {
       transformButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -816,6 +819,8 @@ describe("ToolPalette arrange flyouts", () => {
     // The inline (clipping) menu must NOT open — a floating window hosts the flyout instead.
     const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
     expect(transformMenu?.hidden).toBe(true);
+    expect(transformButton.getAttribute("aria-controls")).toBeNull();
+    expect(transformButton.getAttribute("aria-expanded")).toBeNull();
 
     // …and the palette hands up the flyout's id + a command snapshot to open in that window.
     expect(onRequestFlyout).toHaveBeenCalledTimes(1);

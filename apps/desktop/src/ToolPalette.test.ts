@@ -157,13 +157,40 @@ describe("ToolPalette schema-backed items", () => {
       dispatchPointerButton(button, "pointerup");
     });
 
-	    const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="bond-tools"]');
-	    expect(menu?.hidden).toBe(false);
-	    expect(menu?.getAttribute("data-toolbar-command-grid-columns")).toBe("2");
-	    expect(menu?.style.getPropertyValue("--toolbar-command-flyout-columns")).toBe("2");
-	    expect(onInvoke).not.toHaveBeenCalled();
-	    await act(async () => root.unmount());
-	  });
+    const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="bond-tools"]');
+    expect(menu?.hidden).toBe(false);
+    expect(menu?.getAttribute("data-toolbar-command-grid-columns")).toBe("2");
+    expect(menu?.style.getPropertyValue("--toolbar-command-flyout-columns")).toBe("2");
+    expect(onInvoke).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("exposes inline submenu menu semantics only while the DOM menu is open", async () => {
+    vi.useFakeTimers();
+    const { button, host, root } = await renderSchemaPalette(schemaBondItem);
+
+    expect(button.getAttribute("aria-haspopup")).toBe("menu");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.getAttribute("aria-controls")).toBeNull();
+
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+
+    const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="bond-tools"]');
+    const wedge = host.querySelector<HTMLButtonElement>('[data-command-flyout-menu="bond-tools"] [data-command-id="tool.wedgeBond"]');
+    if (!menu || !wedge) {
+      throw new Error("Expected inline bond submenu.");
+    }
+
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(button.getAttribute("aria-controls")).toBe(menu.id);
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.getAttribute("aria-label")).toBe("Bond tools");
+    expect(menu.getAttribute("data-toolbar-submenu-owner-id")).toBe("tool.bond");
+    expect(wedge.getAttribute("role")).toBe("menuitem");
+    await act(async () => root.unmount());
+  });
 
   it("does not open a submenu for null-submenu items during long-press", async () => {
     vi.useFakeTimers();
@@ -196,11 +223,80 @@ describe("ToolPalette schema-backed items", () => {
       throw new Error("Expected wedge submenu item.");
     }
     await act(async () => {
+      wedge.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      wedge.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
       wedge.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onInvoke).toHaveBeenCalledWith("tool.wedgeBond");
+    expect(onInvoke).toHaveBeenCalledTimes(1);
     expect(menu?.hidden).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it("does not invoke disabled submenu commands", async () => {
+    vi.useFakeTimers();
+    const onInvoke = vi.fn();
+    const disabledSubmenuItem: ToolbarPaletteItemModel = {
+      ...schemaBondItem,
+      submenu: {
+        ...schemaBondItem.submenu!,
+        items: [
+          bondCommand,
+          {
+            id: "tool.wedgeBond",
+            title: "Solid Wedge Bond",
+            icon: "bond",
+            source: "core",
+            enabled: false,
+            disabledReason: "Selection cannot accept wedge bonds"
+          }
+        ]
+      }
+    };
+    const { button, host, root } = await renderSchemaPalette(disabledSubmenuItem, onInvoke);
+
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    const wedge = host.querySelector<HTMLButtonElement>('[data-command-flyout-menu="bond-tools"] [data-command-id="tool.wedgeBond"]');
+    if (!wedge) {
+      throw new Error("Expected disabled wedge submenu item.");
+    }
+
+    expect(wedge.disabled).toBe(true);
+    expect(wedge.getAttribute("aria-disabled")).toBe("true");
+    expect(wedge.getAttribute("data-disabled")).toBe("true");
+    await act(async () => {
+      wedge.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      wedge.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      wedge.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onInvoke).not.toHaveBeenCalledWith("tool.wedgeBond");
+    await act(async () => root.unmount());
+  });
+
+  it("disables owner buttons when no primary or submenu command can run", async () => {
+    vi.useFakeTimers();
+    const disabledItem: ToolbarPaletteItemModel = {
+      ...schemaBondItem,
+      primary: {
+        type: "command",
+        command: { ...bondCommand, enabled: false, disabledReason: "Select a molecule" }
+      },
+      submenu: {
+        ...schemaBondItem.submenu!,
+        items: schemaBondItem.submenu!.items.map((command) => ({
+          ...command,
+          enabled: false,
+          disabledReason: "Select a molecule"
+        }))
+      }
+    };
+    const { button, root } = await renderSchemaPalette(disabledItem);
+
+    expect(button.disabled).toBe(true);
     await act(async () => root.unmount());
   });
 

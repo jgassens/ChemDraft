@@ -2960,14 +2960,16 @@ describe("ChemDraft desktop shell", () => {
 
     expect(bondMarkup).toContain('data-command-id="tool.bond"');
     expect(bondMarkup).toContain('data-shortcut-label="M"');
-    expect(bondMarkup).toContain('data-tooltip="Single Bond: Single Bond toolset action (M)"');
+    expect(bondMarkup).toContain('data-tooltip="Single Bond: Draw a bond. Long-press for bond variants. (M)"');
     expect(bondMarkup).toContain('class="tool-tooltip"');
     expect(bondMarkup).toContain(">Single Bond</span>");
-    expect(bondMarkup).toContain(">Single Bond toolset action</span>");
+    expect(bondMarkup).toContain(">Draw a bond. Long-press for bond variants.</span>");
+    expect(bondMarkup).toContain(">M</span>");
+    expect(bondMarkup).not.toContain("toolset action");
     expect(wedgeMarkup).toContain('data-shortcut-label="No shortcut"');
-    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond: Solid Wedge Bond toolset action"');
+    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond"');
     expect(wedgeMarkup).toContain(">Solid Wedge Bond</span>");
-    expect(wedgeMarkup).toContain(">Solid Wedge Bond toolset action</span>");
+    expect(wedgeMarkup).not.toContain("toolset action");
     expect(pOrbitalMarkup).toContain('data-shortcut-label="No shortcut"');
     expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool: Requires an active structure editor"');
     expect(pOrbitalMarkup).toContain(">Requires an active structure editor</span>");
@@ -2982,8 +2984,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-tooltip-owner-id="');
     expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
-    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D: Clean up Structure 2D toolset action (⇧⌘K)"');
-    expect(cleanupMarkup).toContain(">Clean up Structure 2D toolset action</span>");
+    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⇧⌘K)"');
+    expect(cleanupMarkup).toContain(">Clean up Structure 2D</span>");
+    expect(cleanupMarkup).toContain(">⇧⌘K</span>");
+    expect(cleanupMarkup).not.toContain("toolset action");
     expect(appCss).toContain(".tool-tooltip");
     expect(appCss).not.toContain("@keyframes cd-tooltip-auto-hide");
     expect(appCss).not.toContain(".icon-button-shell:hover .tool-tooltip");
@@ -3016,7 +3020,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(assetCommands.length).toBeGreaterThanOrEqual(50);
     expect(assetCommands.every((command) => command.category)).toBe(true);
-    expect(assetCommands.every((command) => command.description)).toBe(true);
+    expect(assetCommands.some((command) => command.description?.includes("toolset action"))).toBe(false);
     expect(eyedropperCommand).toMatchObject({
       id: "tool.art.eyedropper",
       title: "Eyedropper",
