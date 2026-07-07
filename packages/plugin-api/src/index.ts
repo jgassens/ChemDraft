@@ -383,10 +383,25 @@ export interface PluginDocumentAPI {
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
 }
 
+export const PluginStructureFormatSchema = z.enum(["smiles", "molfile-v2000", "molfile-v3000", "unknown"]);
+
+/** Structure serialization a selection snapshot may carry. Mirrors the document model's structure
+ *  formats; a consumer (e.g. the NMR request) rejects "unknown" before use. */
+export type PluginStructureFormat = z.infer<typeof PluginStructureFormatSchema>;
+
 export interface PluginSelectedMolecule {
   objectId: string;
-  structureFormat: string;
+  /** ChemDraft document/page identity, when the provider has page context. */
+  documentId?: string;
+  pageId?: string;
+  structureFormat: PluginStructureFormat;
   structure: string;
+  /**
+   * Change detector for the source payload — NOT a canonical chemical identity or molecular hash.
+   * A redraw or reserialization of an equivalent molecule may change it (safe over-invalidation).
+   * Produced by {@link createStructureSourceFingerprint}.
+   */
+  sourceFingerprint: string;
 }
 
 export interface PluginSelectionSnapshot {
@@ -396,6 +411,98 @@ export interface PluginSelectionSnapshot {
 
 export interface PluginSelectionAPI {
   getSelection(): Promise<PluginSelectionSnapshot>;
+}
+
+/**
+ * Deterministic, synchronous, NON-cryptographic fingerprint of a selected structure's source
+ * payload, used to detect when a stored analysis no longer matches the current selection. It is a
+ * change detector, not a molecular identity: equivalent molecules with different serializations can
+ * hash differently. FNV-1a (64-bit) over the joined identity + trimmed payload — dependency-free and
+ * platform-stable (deliberately not `crypto.subtle`, which is async and absent in some worker/webview
+ * contexts).
+ */
+export function createStructureSourceFingerprint(input: {
+  documentId: string;
+  pageId: string;
+  objectId: string;
+  structureFormat: string;
+  structure: string;
+}): string {
+  const material = [
+    input.documentId,
+    input.pageId,
+    input.objectId,
+    input.structureFormat,
+    input.structure.trim()
+  ].join("\u001f");
+
+  const OFFSET_BASIS = 0xcbf29ce484222325n;
+  const PRIME = 0x100000001b3n;
+  const MASK_64 = 0xffffffffffffffffn;
+  let hash = OFFSET_BASIS;
+  for (const byte of new TextEncoder().encode(material)) {
+    hash ^= BigInt(byte);
+    hash = (hash * PRIME) & MASK_64;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+/** Generic, framework- and domain-neutral derived-analysis records. The host owns id/plugin/time;
+ *  the payload is opaque (`unknown`) and interpreted only by the plugin and desktop that share its
+ *  `analysisType`/`schemaVersion`. No NMR (or any domain) concepts appear here. */
+export interface PluginAnalysisSource {
+  documentId: string;
+  pageId: string;
+  objectId: string;
+  /** The selection fingerprint the analysis was computed against; see createStructureSourceFingerprint. */
+  sourceFingerprint: string;
+}
+
+export interface PluginAnalysisProvenance {
+  engineId: string;
+  engineVersion?: string;
+  dataVersion?: string;
+  method: string;
+}
+
+export interface PluginAnalysisWarning {
+  code: string;
+  message: string;
+  severity: "info" | "warning" | "error";
+  details?: Readonly<Record<string, unknown>>;
+}
+
+export interface PluginAnalysisRecordInput<TPayload = unknown> {
+  analysisType: string;
+  schemaVersion: string;
+  source: PluginAnalysisSource;
+  status: "complete" | "partial" | "failed";
+  payload: TPayload;
+  warnings?: readonly PluginAnalysisWarning[];
+  provenance: PluginAnalysisProvenance;
+}
+
+export interface PluginAnalysisRecord<TPayload = unknown> extends PluginAnalysisRecordInput<TPayload> {
+  /** Host-generated. */
+  id: string;
+  /** Host-stamped from the invoking plugin. */
+  pluginId: string;
+  /** Host-stamped from the injectable clock. */
+  createdAt: string;
+}
+
+export interface PluginAnalysisQuery {
+  pluginId?: string;
+  analysisType?: string;
+  documentId?: string;
+  pageId?: string;
+  objectId?: string;
+}
+
+export interface PluginAnalysisAPI {
+  write<TPayload>(input: PluginAnalysisRecordInput<TPayload>): Promise<PluginAnalysisRecord<TPayload>>;
+  list<TPayload = unknown>(query?: PluginAnalysisQuery): Promise<readonly PluginAnalysisRecord<TPayload>[]>;
+  getLatest<TPayload = unknown>(query: PluginAnalysisQuery): Promise<PluginAnalysisRecord<TPayload> | undefined>;
 }
 
 export interface PluginRuntimeIdentity {
@@ -413,6 +520,8 @@ export interface PluginCommandContext {
   selection?: PluginSelectionAPI;
   /** Present only when the plugin declares "ui.panel" and the host renders panels. */
   panels?: PluginPanelAPI;
+  /** Present only when the plugin declares "analysis.write". */
+  analysis?: PluginAnalysisAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

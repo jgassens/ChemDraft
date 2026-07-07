@@ -1,11 +1,18 @@
 import type { ApplyPatchOptions, ChemDraftDocument } from "@chemdraft/chem-core";
 import { applyPatch } from "@chemdraft/chem-core";
 import type {
+  PluginAnalysisAPI,
+  PluginAnalysisQuery,
+  PluginAnalysisRecord,
+  PluginAnalyzerContribution,
   PluginCommandContext,
+  PluginCommandContribution,
   PluginCommandHandler,
+  PluginMenuContribution,
   NormalizedProposedDocumentPatch,
   PluginManifest,
   PluginPanelAPI,
+  PluginPanelContribution,
   PluginPanelReport,
   PluginPermission,
   PluginSelectionAPI,
@@ -15,6 +22,10 @@ import type {
   ProposedPatchReceipt,
   ProposedPatchStatus
 } from "@chemdraft/plugin-api";
+import { AnalysisStore } from "./analysisStore";
+
+export { AnalysisStore } from "./analysisStore";
+export type { AnalysisStoreOptions } from "./analysisStore";
 import { PluginPanelReportSchema, ProposedDocumentPatchSchema, parsePluginManifest } from "@chemdraft/plugin-api";
 
 export interface CommandDefinition {
@@ -121,6 +132,13 @@ export interface RegisteredPlugin {
   permissions: ReadonlySet<PluginPermission>;
 }
 
+/** A single manifest contribution paired with the id of the plugin that declared it. The desktop
+ *  uses these to build UI (menus, panels, diagnostics) without reaching into manifest internals. */
+export interface RegisteredContribution<T> {
+  pluginId: string;
+  contribution: T;
+}
+
 export interface QueuedProposedPatch extends ProposedPatchReceipt {
   proposal: NormalizedProposedDocumentPatch;
 }
@@ -137,6 +155,8 @@ export interface PluginHostOptions {
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   now?: () => Date | string;
+  /** Generates analysis-record ids; defaults to `crypto.randomUUID`. Injectable for deterministic tests. */
+  createId?: () => string;
 }
 
 export class PluginHost {
@@ -152,7 +172,10 @@ export class PluginHost {
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
   private readonly now: () => Date | string;
+  private readonly createId: () => string;
+  private readonly analysisStore: AnalysisStore;
   private nextProposalId = 1;
+  private readonly subscribers = new Set<() => void>();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
@@ -162,6 +185,12 @@ export class PluginHost {
     this.showPanelReport = options.showPanelReport;
     this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
+    this.createId = options.createId ?? (() => globalThis.crypto.randomUUID());
+    this.analysisStore = new AnalysisStore({
+      now: () => this.timestamp(),
+      createId: () => this.createId(),
+      onChange: () => this.notifySubscribers()
+    });
   }
 
   registerPlugin(candidate: unknown, options: RegisterPluginOptions = {}): RegisteredPlugin {
@@ -171,6 +200,7 @@ export class PluginHost {
     }
 
     this.assertContributionPermissions(manifest);
+    this.assertContributionCommands(manifest);
 
     const registered: RegisteredPlugin = {
       manifest,
@@ -178,6 +208,7 @@ export class PluginHost {
     };
     this.plugins.set(manifest.id, registered);
     this.registerManifestCommands(manifest, options.commandHandlers ?? {});
+    this.notifySubscribers();
     return registered;
   }
 
@@ -189,6 +220,7 @@ export class PluginHost {
       this.commands.unregister(command.id);
     }
     this.plugins.delete(pluginId);
+    this.notifySubscribers();
   }
 
   async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
@@ -216,6 +248,49 @@ export class PluginHost {
     return this.plugins.get(pluginId);
   }
 
+  /** Notified when the registered-plugin set changes (register/unregister). The desktop uses this
+   *  to keep menu, panel, and diagnostics UI in sync without polling. Returns an unsubscribe fn. */
+  subscribe(listener: () => void): () => void {
+    this.subscribers.add(listener);
+    return () => {
+      this.subscribers.delete(listener);
+    };
+  }
+
+  listCommandContributions(): RegisteredContribution<PluginCommandContribution>[] {
+    return this.collectContributions((manifest) => manifest.contributes.commands);
+  }
+
+  listMenuContributions(
+    location?: PluginMenuContribution["location"]
+  ): RegisteredContribution<PluginMenuContribution>[] {
+    return this.collectContributions((manifest) =>
+      location
+        ? manifest.contributes.menus.filter((menu) => menu.location === location)
+        : manifest.contributes.menus
+    );
+  }
+
+  listPanelContributions(): RegisteredContribution<PluginPanelContribution>[] {
+    return this.collectContributions((manifest) => manifest.contributes.panels);
+  }
+
+  listAnalyzerContributions(): RegisteredContribution<PluginAnalyzerContribution>[] {
+    return this.collectContributions((manifest) => manifest.contributes.analyzers);
+  }
+
+  private collectContributions<T>(
+    select: (manifest: PluginManifest) => readonly T[]
+  ): RegisteredContribution<T>[] {
+    const out: RegisteredContribution<T>[] = [];
+    for (const plugin of this.plugins.values()) {
+      for (const contribution of select(plugin.manifest)) {
+        out.push({ pluginId: plugin.manifest.id, contribution });
+      }
+    }
+    return out;
+  }
+
   hasPermission(pluginId: string, permission: PluginPermission): boolean {
     return this.plugins.get(pluginId)?.permissions.has(permission) ?? false;
   }
@@ -238,7 +313,10 @@ export class PluginHost {
       ? {
           getSelection: async () => {
             this.requirePermission(pluginId, "selection.read");
-            return (await this.getSelectionSnapshot?.()) ?? { objectIds: [], molecules: [] };
+            const snapshot = (await this.getSelectionSnapshot?.()) ?? { objectIds: [], molecules: [] };
+            // Hand plugins an independent, immutable copy — never a live document reference, and
+            // never an object a later caller could observe being mutated.
+            return freezeSelectionSnapshot(snapshot);
           }
         }
       : undefined;
@@ -256,6 +334,18 @@ export class PluginHost {
             }
           }
         : undefined;
+    const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
+      ? {
+          write: async (input) => {
+            this.requirePermission(pluginId, "analysis.write");
+            return this.analysisStore.write(pluginId, input);
+          },
+          // Read policy (ADR-0005): a plugin reads only its own records. Force the plugin scope onto
+          // every query so it cannot read another plugin's derived data.
+          list: async (query) => this.analysisStore.list({ ...query, pluginId }),
+          getLatest: async (query) => this.analysisStore.getLatest({ ...query, pluginId })
+        }
+      : undefined;
 
     return {
       plugin: {
@@ -274,9 +364,20 @@ export class PluginHost {
       storage,
       selection,
       panels,
+      analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
     };
+  }
+
+  /** Trusted desktop read access: unscoped analysis records for rendering (ADR-0005). Plugins get
+   *  the plugin-scoped view through `context.analysis`; this bypasses that scope for the app itself. */
+  listAnalysis(query?: PluginAnalysisQuery): readonly PluginAnalysisRecord[] {
+    return this.analysisStore.list(query);
+  }
+
+  getLatestAnalysis(query?: PluginAnalysisQuery): PluginAnalysisRecord | undefined {
+    return this.analysisStore.getLatest(query);
   }
 
   proposePatch(pluginId: string, proposal: ProposedDocumentPatch): QueuedProposedPatch {
@@ -390,6 +491,36 @@ export class PluginHost {
     }
   }
 
+  /** Menu/analyzer/panel contributions dispatch a command; that command must be one the same plugin
+   *  contributes, or the entry would be an inert (or misrouted) UI element. The manifest schema
+   *  already enforces this for toolset items; this covers the remaining command-bearing kinds so an
+   *  unknown-command reference is rejected at registration rather than surfacing as a dead menu item. */
+  private assertContributionCommands(manifest: PluginManifest): void {
+    const contributed = new Set(manifest.contributes.commands.map((command) => command.id));
+    const check = (commandId: string | undefined, describe: string): void => {
+      if (commandId !== undefined && !contributed.has(commandId)) {
+        throw new PluginHostError(
+          `Plugin "${manifest.id}" ${describe} references command "${commandId}" that it does not contribute.`
+        );
+      }
+    };
+    for (const menu of manifest.contributes.menus) {
+      check(menu.commandId, `menu "${menu.id}"`);
+    }
+    for (const analyzer of manifest.contributes.analyzers) {
+      check(analyzer.commandId, `analyzer "${analyzer.id}"`);
+    }
+    for (const panel of manifest.contributes.panels) {
+      check(panel.commandId, `panel "${panel.id}"`);
+    }
+  }
+
+  private notifySubscribers(): void {
+    for (const listener of this.subscribers) {
+      listener();
+    }
+  }
+
   private requireRegisteredPlugin(pluginId: string): RegisteredPlugin {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
@@ -464,4 +595,20 @@ function assertStorageKey(key: string): void {
   if (key.length === 0) {
     throw new PluginHostError("Plugin storage keys must be non-empty strings.");
   }
+}
+
+/** Return a deep-cloned, deeply frozen copy of a selection snapshot: independent per caller and
+ *  immutable, so a plugin can neither mutate the host's state nor another caller's result. */
+function freezeSelectionSnapshot(snapshot: PluginSelectionSnapshot): PluginSelectionSnapshot {
+  return deepFreeze(structuredClone(snapshot));
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      deepFreeze((value as Record<string, unknown>)[key]);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }

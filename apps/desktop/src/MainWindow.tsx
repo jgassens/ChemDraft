@@ -476,6 +476,10 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel } from "./appMenu";
+import { usePluginRuntime } from "./plugins/usePluginRuntime";
+import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
+import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
+import { buildPluginSelectionSnapshot } from "./plugins/selectionSnapshot";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
@@ -1204,7 +1208,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.18.24-fable";
+const CURRENT_BUILD_STAMP = "7.7.9.53-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1796,6 +1800,16 @@ export function MainWindow({
   visibleToolsetIdsRef.current = visibleToolsetIds;
 
   const selectedMolecule = getSelectedMolecule(document);
+
+  // Persistent plugin runtime. Providers read refs, so the host is created once and never rebuilt
+  // when the document or selection changes (see usePluginRuntime).
+  const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
+  const pluginRuntime = usePluginRuntime({
+    getActiveDocument: () => documentRef.current,
+    getSelection: () => buildPluginSelectionSnapshot(documentRef.current)
+  });
+  const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -6778,6 +6792,19 @@ export function MainWindow({
       return;
     }
 
+    if (commandId === PLUGIN_DIAGNOSTICS_COMMAND_ID) {
+      setPluginDiagnosticsOpen((open) => !open);
+      return;
+    }
+
+    if (pluginCommandExists(commandId)) {
+      void invokePluginCommand(commandId).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(`Plugin command failed: ${message}`);
+      });
+      return;
+    }
+
     void registry.invoke(commandId).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Command failed: ${message}`);
@@ -6788,6 +6815,8 @@ export function MainWindow({
     applyTextStyleCommand,
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
+    invokePluginCommand,
+    pluginCommandExists,
     registry
   ]);
 
@@ -13069,7 +13098,8 @@ export function MainWindow({
         canRedo,
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
-        toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry)
+        toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
+        pluginMenuItems: pluginRuntime.pluginMenuItems
       }),
     [
       rulersVisible,
@@ -13079,7 +13109,8 @@ export function MainWindow({
       document.selection.objectIds.length,
       selectedMolecule,
       visibleToolsetIds,
-      toolsetRegistry
+      toolsetRegistry,
+      pluginRuntime.pluginMenuItems
     ]
   );
 
@@ -13128,6 +13159,16 @@ export function MainWindow({
       ) : null}
 
       {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+
+      <PluginPanelSurface
+        openPanel={pluginRuntime.openPanel}
+        diagnosticsOpen={pluginDiagnosticsOpen}
+        plugins={pluginRuntime.plugins}
+        diagnostics={pluginRuntime.diagnostics}
+        onClose={pluginRuntime.closePanel}
+        onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
+        onRunAgain={(commandId) => invoke(commandId)}
+      />
 
       {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {

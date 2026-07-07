@@ -1,822 +1,470 @@
-# Agent Instructions for ChemDraft Structure Inspector Branch
+# Agent Instructions for the ChemDraft NMR Plugin Branch
 
-**Current Build**: 7.5.18.24-fable
+**Current Build**: 7.7.9.53-opus
 
 > [!IMPORTANT]
-> When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`.
+> When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`. This is an established repository convention — see the structure-inspector branch's AGENTS.md.
 
-This branch is for the active Structure Inspector worktree: a dedicated Rings toolbar plus Molecule Inspector tabs for Structure, Atom Labels, and Templates.
+- Worktree: `/Users/jeremiahgassensmith/Documents/programming/chemdraw-nmr`
+- Branch: `codex/nmr-plugin`
+- Planning source: `PLANS.md` (this branch's active plan)
+- Planning workspace (prompts, status ledger, decisions, reports): `~/Documents/programming/Chemdraw-NMRplugin`
+- Notary and app-signing instructions live at `~/Documents/programming/.notary`. Read that directory before signing, notarizing, packaging, or changing release automation.
 
-- Worktree: `/Users/jeremiahgassensmith/Documents/programming/chemdraw-structure inspector`
-- Branch: `codex/structure-inspector`
-- Planning source: `PLANS.md`
-- Current state: active implementation. The user has explicitly requested implementation of the Molecule Inspector tabs plan.
+## Purpose
 
-## Required Reading Before Coding
+This branch implements the first live bundled-plugin runtime for ChemDraft and then a Phase 1 structure-to-NMR-prediction plugin.
 
-Before editing implementation files, read:
+`PLANS.md` is the authoritative technical plan for this effort. Read it — including its "Repository verification (2026-07-07)" section — before changing code. Work is issued as one bounded assignment prompt per milestone (the first is `prompts/01-runtime-bringup.md` in the planning workspace; `FIRSTPROMPT.md` is its legacy name). Existing repository documentation, tests, and source code remain authoritative when they contradict an assumption in these files: report the discrepancy, adapt, and keep the intended boundary.
+
+Do not treat the entire plan as one undifferentiated task. Work milestone by milestone and keep runtime bring-up separate from NMR chemistry.
+
+## Required reading before editing
+
+Read, in this order:
+
+1. `AGENTS.md`
+2. `PLANS.md`
+3. the active assignment prompt for the current milestone
+4. `README.md`
+5. `PLAN.md` (the overall project plan — it exists)
+6. root `package.json`
+7. `pnpm-workspace.yaml`
+8. `packages/plugin-api` (all of it — the selection, panel-report, and manifest contracts live here)
+9. `packages/plugin-host` (including `selectionStorage.test.ts`)
+10. `packages/chem-core/src/schemas.ts`
+11. `packages/ocl-adapter`
+12. `apps/desktop/src/MainWindow.tsx` — targeted regions only; it is ~23,500 lines. At minimum: the `CommandRegistry` `useMemo` (~line 6306), `invokeCommandRef` (~line 1714), and current selection state handling
+13. `apps/desktop/src/appMenu.ts` and `apps/desktop/src/appMenu.test.ts` (the native-menu drift test)
+14. `apps/desktop/src/toolsets.ts` (plugin-vs-core command sourcing)
+15. `apps/desktop/src/documentWorkflow.ts`
+16. `apps/desktop/src/conformerWorker.ts` and `apps/desktop/src/conformerClient.ts`
+17. `examples/plugins/molscribe-ocsr` (the ID-naming and manifest conventions to copy)
+18. `PLANS-selection-policy.md` (pending selection refactor the selection provider must not fight)
+19. tests and package manifests adjacent to every file you expect to modify
+
+Search the repository before asserting that a capability does not exist. Verify actual types, imports, construction sites, and tests.
+
+## Execution order
+
+Milestone numbering is canonical in `PLANS.md` → "Implementation sequence".
+This list mirrors it exactly; if they ever disagree, `PLANS.md` wins and this
+file must be fixed.
+
+Use this order unless the user explicitly changes it:
+
+1. **M1** — Inventory and characterize the current plugin/runtime behavior.
+2. **M2** — Create the persistent desktop plugin runtime: `PluginHost`, panel-report renderer, Analyze-menu adaptation, diagnostics view.
+3. **M3** — Mount `molscribe-ocsr` as the runtime canary.
+4. **M4** — Extend the existing selection API (fingerprint, immutability, format enum, document/page identity).
+5. **M5** — Add the generic analysis API and store.
+6. **M6** — Create the NMR plugin package with the fixture-backed provider.
+7. **M7** — Add the NMR worker and client.
+8. **M8** — Add the NMR command and analysis integration.
+9. **M9** — Add the NMR panel report.
+10. **M10** — Investigate an OCL-native predictor.
+11. **M11** — Investigate `nmr-predictor` only as an optional, bounded compatibility spike.
+12. **M12** — Documentation and provenance.
+
+Do not begin NMR implementation until the canary path works:
 
 ```text
-PLAN.md
-PLANS.md
-AGENTS.md
-README.md
-package.json
-pnpm-workspace.yaml
+manifest -> host -> menu -> command -> panel
 ```
 
-If the work touches a package, also read that package's README or local documentation before editing.
+Do not make `nmr-predictor` a prerequisite for any earlier milestone.
 
-When `PLANS.md` exists, treat it as the active scoped implementation plan unless the user gives
-newer instructions. Keep edits focused on the files, behaviors, and verification listed there;
-do not broaden the slice into adjacent chemistry, rendering, UI polish, or format work.
+## Scope discipline
 
-Notary and app-signing instructions live at `/Users/jeremiahgassensmith/Documents/programming/.notary`.
-Read that directory before signing, notarizing, packaging, or changing release automation.
+For the initial implementation, do not add:
 
-## 2. Core priorities
+- experimental spectrum import;
+- JCAMP parsing;
+- spectrum-to-structure inference;
+- structure/spectrum matching;
+- candidate ranking;
+- dynamic loading of arbitrary third-party JavaScript;
+- plugin sandboxing;
+- Python;
+- PyTorch;
+- TensorFlow;
+- native model services;
+- remote prediction;
+- model downloads;
+- DFT calculations;
+- viewport atom highlighting;
+- multiplicity prediction;
+- coupling constants;
+- synthetic line-shape simulation;
+- persistent analysis data in the ChemDraft document.
 
-Ship the compact hidden-by-default inspector palettes with:
+Do not expand the assignment merely because a nearby refactor looks attractive. Make the smallest coherent change that advances the current milestone and leaves the documented extension points intact.
 
-- `core.ringInspector`: a Rings toolbar preserving existing ring identity, per-ring fill/effect rendering, ring interior hit-testing, and ring appearance controls.
-- `core.moleculeInspector`: a Molecule Inspector with `Structure`, `Atom Labels`, and `Templates` tabs.
-- `Structure`: molecule bond drawing controls for selected molecule targets. If one or more bonds or atoms are selected, Structure controls apply only to those parts through sparse per-bond / per-atom overrides, mirroring the Atom Labels behavior below.
-- `Atom Labels`: base molecule atom-label typography, display policy, and font-family/face controls. If one or more atom labels are selected, Atom Labels controls must apply only to those labels through sparse per-atom overrides.
-- `Templates`: import ChemDraw `.cds` style-sheet inputs through `packages/style-compat`, apply supported Molecule Inspector settings to selected molecule targets, and export ChemDraft Molecule Inspector presets as `.template` files.
+## Repository architecture boundaries
 
-Structure drawing controls (stroke and bold width, spacing, line caps, margins, hashing, overlap, chain angle, and indicator toggles) apply per bond and per atom via sparse maps when specific bonds/atoms are selected, and to the whole molecule otherwise.
+### `packages/plugin-api`
 
-Outside this slice:
+Owns generic, framework-independent contracts only.
 
-- Per-bond fill opacity and per-bond visual effects (opacity and effects stay whole-molecule / ring-level through the Rings and Art inspectors).
-- Atom-label underline, outline, and shadow.
-- Font embedding, a font-management preference screen, general CDXML/CDX document import, clipboard, OCSR, or broad toolbar customization.
+Allowed examples:
 
-Do not add `NativeMoleculeDrawingSettings`, `NativeAtomLabelSettings`, or `NativeMoleculeIndicatorSettings`.
+- plugin manifests;
+- plugin permissions;
+- selected-structure snapshots;
+- generic analysis records;
+- generic provenance;
+- generic warnings;
+- command context interfaces.
 
-## Reuse Existing Systems
+Not allowed:
 
-Verify existing code before adding new code.
+- React types;
+- NMR nuclei or shifts;
+- OpenChemLib objects;
+- Cheminfo result types;
+- desktop panel components;
+- Tauri-specific types.
 
-- Whole-molecule fill/stroke color, paint type, opacity, none, and visual effects already apply to molecule objects through `documentWorkflow.ts` and `artInspectorModel.ts`. Reuse those paths where applicable.
-- Per-bond color already exists through `applyColorToNativeMoleculePart`, writing `style.bondColors` and `style.atomLabelColors`.
-- Per-bond style identity already lives on `bond.display.bondStyle`. Do not add a duplicate `style.bondStyles` map.
-- The live inspector pattern already exists in `ArtToolbarStyleControls`. Mirror its model, payload, controls, and preview/commit/cancel behavior.
-- Commands use value-encoded IDs and factory helpers. Do not introduce generic `*.set` commands with hidden value parameters.
-- `exportDocumentToSvg` already reuses `planPageSvgRender`; per-ring render-plan paths should flow to export through that existing route.
-- Use `MoleculeObject.style` and `nativeDrawingStyleFromObjectStyle()` for Structure and Atom Labels. Do not introduce a parallel molecule-style object.
-- Keep Structure and Atom Labels state on the shared `NativeDrawingStyle` (never a parallel molecule-style object). Beyond reusing existing bond/label fields, this slice adds base bond-drawing fields (`chainAngleDegrees`, `bondBoldWidthPx`, `bondSpacingMode`, `bondSpacingPercent`, `bondMarginWidthPx`, `bondHashSpacingPx`), the atom/bond structure-indicator toggles (`atomIndicatorShow*`, `bondIndicatorShow*`), and the atom-label fields (`atomLabelFontStyle`, `atomLabelAlignment`, `atomLabelPlacement`, `atomLabelShowTerminalCarbons`, `atomLabelHideImplicitHydrogens`). Each is sparse-overridable per bond/atom via the `documentWorkflow.ts` maps and round-trips through templates/imports.
-- The native system-font database already used by raster export must be shared with the Molecule Inspector font catalog; do not scan system fonts twice.
+### `packages/plugin-host`
 
-## Hard Boundaries
+Owns generic runtime behavior and policy enforcement.
 
-- Do not change the main checkout. Work only in this worktree for this branch.
-- Do not copy proprietary assets, icons, dialog art, help text, sample files, command IDs, trade dress, or branded UI.
-- Keep chemical identity stable. Ring styling must not mutate atoms, bonds, bond order, charges, stereochemistry, reactions, or molecule metadata.
-- Ring geometry and key logic must live in `packages/layout-engine`; app code imports helpers and does not duplicate ring math.
-- Ring appearance storage remains `style.ringStyles`, keyed by topology-derived ring keys.
-- Ring keys must derive from sorted bond IDs, never coordinates.
-- The Rings toolbar and Molecule Inspector must be hidden by default, compact, dense, and floating. Do not create a permanent right inspector or card/dashboard UI.
-- Keep `core.ringInspector` / `view.toggleRingInspector` for ring appearance and `core.moleculeInspector` / `view.toggleMoleculeInspector` for Structure, Atom Labels, and Templates. Be aware that `view.toggleInspector` and disabled `tool.settings` already exist; do not add additional inspector concepts.
-- Ring interiors are selectable only while the Rings toolbar is open.
-- Keep chemical identity stable. Structure and Atom Label styling must not mutate atom elements, formal charges, bond orders, stereochemistry, atom IDs, bond IDs, or molecule identity.
-- Sparse overrides must remain sparse and visually effective. Base style edits must not clear `style.ringStyles`, `style.bondColors`, `style.atomLabelColors`, sparse per-atom label style maps, or the sparse per-bond/per-atom Structure and indicator style maps.
-- Target bond length must visibly scale selected molecule atom coordinates about each molecule's own center and update `style.bondLengthPx` in one undoable operation, or it must be removed from this slice.
-- Structure indicators must be honest render overlays: atom numbers from atom order; atom/bond stereo from native wedge/hash/dashed display or imported stereo metadata; query indicators only from unknown/query atom or bond metadata; reaction indicators only from reaction/RXN metadata. Do not invent query or reaction chemistry for ordinary SMILES.
+Allowed examples:
 
-## Verification
+- plugin registration;
+- permission checks;
+- command-context construction;
+- selected-structure snapshot access;
+- generic analysis storage;
+- contribution enumeration;
+- subscriptions;
+- host-generated IDs and timestamps.
 
-Run focused suites for touched files, including:
+Not allowed:
+
+- React rendering;
+- NMR interpretation;
+- direct knowledge of ChemDraft panels;
+- third-party prediction dependencies.
+
+### `apps/desktop`
+
+Owns application and React integration.
+
+Allowed examples:
+
+- persistent host lifecycle;
+- current-document and current-selection providers;
+- bundled-plugin registration;
+- menu-model adaptation;
+- panel component registry;
+- panel open/close state;
+- plugin diagnostics UI.
+
+Do not move React component types into generic packages to simplify imports.
+
+### NMR plugin package
+
+Owns all spectroscopy-specific contracts and behavior.
+
+Allowed examples:
+
+- nuclei;
+- shifts;
+- resonances;
+- assignments;
+- predictor capabilities;
+- scientific warnings;
+- result normalization;
+- fixture provider;
+- SVG stick spectrum;
+- future matching contracts.
+
+### Provider adapters
+
+Own dependency-specific code.
+
+Only adapter code may import or expose knowledge of:
+
+- OpenChemLib prediction methods;
+- `nmr-predictor` functions;
+- Cheminfo data structures;
+- dependency-specific atom identifiers;
+- provider-specific errors;
+- provider-specific environment-code conventions.
+
+Do not let dependency types escape into the application service, worker protocol, React panel, generic plugin API, or analysis store.
+
+## Naming and manifest conventions
+
+These are verified repository conventions; follow them exactly:
+
+- command IDs: `plugin.<pluginName>.<action>` (e.g. `plugin.nmrPredictor.predictSelectedStructure`). The desktop's toolset layer distinguishes plugin commands from core commands by the `plugin.` prefix, and toolset contribution IDs are schema-enforced to start with `plugin.`;
+- menu IDs: `menu.<pluginName>.<action>`; panel IDs: `panel.<pluginName>.<name>`; analyzer IDs: `analyzer.<pluginName>.<name>`; recognizer IDs: `recognizer.<pluginName>.<name>` — mirroring `examples/plugins/molscribe-ocsr`;
+- manifest `apiVersion`: `"^0.1.0"` (caret), matching the molscribe example; the host exports `PluginApiVersion = "0.1.0"` and does not enforce semantic compatibility — do not claim otherwise;
+- the contributions object has twelve keys, all defaulting to `[]`; declare the full shape explicitly when annotating with `PluginManifest` (see molscribe);
+- register bundled manifests through `validateTrustedPluginManifest` / `PluginHost.registerPlugin` so schema and permission validation run at registration;
+- new-dependency versioning follows existing repository convention (caret ranges); exact-pin only the `nmr-predictor` spike package.
+
+## Runtime rules
+
+Create one persistent desktop plugin runtime. It must not be recreated because the document, selection, page, viewport, or undo state changes.
+
+Use refs or provider callbacks to give the host current state. Reuse existing repository patterns such as the command invocation ref and the conformer worker/client protocol.
+
+The first runtime milestone does not require migrating every core command into `PluginHost`. Preserve existing core command behavior and converge toward one command system incrementally.
+
+Panels are declarative: plugins push `PluginPanelReport` data (text, keyValue, table, svg sections) through `context.panels.showReport`; the desktop owns the one renderer that displays validated reports plus the panel chrome (title, close, run-again). Plugins never provide UI components, and SVG renders in a script-inert context. Do not build a React panel-component registry; that design was superseded after repository verification (see `PLANS.md`).
+
+Unknown plugin, command, menu, or panel identifiers must produce controlled errors or diagnostics rather than crashes or silent no-ops.
+
+Do not imply that the diagnostics view is a general plugin installer. It lists bundled plugins registered by the application.
+
+## Selection API rules
+
+A selection API already exists: `PluginSelectionAPI.getSelection()` returning `PluginSelectionSnapshot` (`objectIds` + `molecules`), exposed as a permission-gated optional context property with tested behavior (`selectionStorage.test.ts`). Extend it in place; do not rename it, do not add a parallel `getSelectedStructures()` contract, and do not change the optional-property convention inside an NMR milestone (ADR-0008).
+
+The extended selected-molecule snapshot may include:
+
+- `objectId`;
+- structure format (narrowed to the document-model enum);
+- structure payload;
+- `sourceFingerprint`;
+- `documentId` and `pageId` where the document model provides them.
+
+Supported snapshot formats are:
+
+- `smiles`;
+- `molfile-v2000`;
+- `molfile-v3000`;
+- `unknown`.
+
+The NMR prediction request must reject `unknown` before invoking a worker.
+
+Selection snapshots must be copied or immutable. Never expose live document object references to a plugin.
+
+The initial fingerprint is a change detector, not a canonical chemical identity. Do not rename or document it as a molecular hash.
+
+## Analysis API rules
+
+Analysis records are derived session data in Phase 1.
+
+Do not:
+
+- place them in the native document;
+- create document patches for them;
+- grant the NMR plugin document-write permissions;
+- mutate an older analysis record when rerunning a prediction.
+
+The host owns:
+
+- record ID;
+- plugin ID;
+- creation timestamp.
+
+Deep-copy data entering and leaving the store. Tests must prove that callers cannot mutate stored records through retained references.
+
+Define analysis-read visibility explicitly. The initial preferred policy is:
+
+- a plugin reads its own records;
+- trusted desktop code can render all records;
+- cross-plugin reading is not exposed without a deliberate permission model.
+
+## Worker rules
+
+Follow the existing conformer worker/client style unless repository inspection shows a better established pattern.
+
+Required worker properties:
+
+- request IDs;
+- typed request and response unions;
+- lazy provider initialization;
+- deterministic error normalization;
+- cancellation or supersession;
+- late-result suppression;
+- explicit disposal;
+- serializable plain-data results.
+
+The fixture provider must work when `fetch` and `XMLHttpRequest` throw. Do not add network access, remote imports, or filesystem access.
+
+Do not introduce an RPC framework merely to avoid a small amount of repeated worker code.
+
+## Chemistry and scientific-claim rules
+
+The Phase 1 predictor is an architecture test, not a validated scientific product.
+
+The required working backend is a ChemDraft-owned deterministic fixture-fragment provider.
+
+Required labeling:
+
+- ¹³C is enabled by default;
+- ¹H is disabled by default or visibly marked experimental;
+- fixture values are identified as synthetic architecture-test data;
+- stick height is identified as predicted equivalent nuclei, not integration;
+- unsupported atom environments produce warnings and omitted resonances.
+
+Do not claim or display:
+
+- experimental accuracy that has not been benchmarked;
+- multiplicity;
+- J coupling;
+- line width;
+- realistic multiplets;
+- experimental integration;
+- solvent correction;
+- conformational averaging;
+- calibrated confidence percentages;
+- stable ChemDraft atom identity from provider atom indices.
+
+Never fabricate a chemical shift for an unmatched environment. Do not silently substitute zero, a molecule average, or an undisclosed generic atom average.
+
+A partially supported structure should return a partial result with warnings.
+
+## Structure normalization rules
+
+Use ChemDraft’s existing OpenChemLib dependency for parsing and normalization where possible.
+
+The NMR application boundary must handle:
+
+- SMILES;
+- V2000 molfile;
+- V3000 molfile.
+
+It must reject:
+
+- `unknown` format;
+- empty structures;
+- parse failures.
+
+Preserve or warn about:
+
+- formal charge;
+- isotopes;
+- radicals;
+- stereochemistry.
+
+Do not claim atom-index stability until it is demonstrated by tests across supported formats and hydrogen handling.
+
+## Dependency rules
+
+Do not add a new dependency without first checking whether the repository already provides the required capability.
+
+Use exact versions for new direct dependencies unless existing repository policy requires another convention.
+
+Before evaluating `nmr-predictor`, run and record:
 
 ```bash
-pnpm vitest run packages/chem-core/src/styles.test.ts packages/layout-engine/src/index.test.ts packages/export-engine/src/svg.test.ts apps/desktop/src/moleculeInspectorModel.test.ts apps/desktop/src/commands.test.ts apps/desktop/src/documentWorkflow.test.ts apps/desktop/src/window-manager/index.test.ts apps/desktop/src/App.test.ts
-pnpm lint
-cargo test agent_bridge
-git diff --check
+pnpm view nmr-predictor version license dependencies peerDependencies optionalDependencies dist-tags --json
+pnpm why openchemlib
+pnpm why openchemlib-extended
 ```
 
-### 5.26 Do not duplicate layout-engine rendering math
+Treat `nmr-predictor` as an optional compatibility investigation. Reject it as the planned provider if it requires:
 
-Native-molecule rendering math — bond line/segment geometry, double/triple-bond gap and
-inset conventions, wedge/hash geometry, atom-label content (`atomDisplayLabel`) and layout
-(`atomLabelLayout`, `labelEndpointClearance`), stroke widths, and the perspective depth
-cues (`depthCuedBondStrokeWidth`, `depthCuedBondColor`) — lives ONLY in
-`packages/layout-engine`. App code (including the 3D spin overlay in `MainWindow.tsx`)
-must import these helpers; it must NEVER carry its own copy, even temporarily.
+- broad Node polyfills;
+- replacement of ChemDraft’s current OpenChemLib version;
+- unsafe global mutation;
+- remote data access;
+- main-thread prediction;
+- weakened bundler checks;
+- undocumented database redistribution.
 
-This rule exists because two agents working the same branch in parallel each edited a
-different copy of the same formula, and the live spin overlay silently diverged from the
-committed drawing. If a helper you need is package-internal, add an `export` keyword in
-layout-engine rather than copying the function. If the app needs *different* behavior
-(e.g. the toolbar wants base colors without the depth tint), give the app-side function a
-distinct name that states the difference (`nativeMoleculeBaseBondColor`) — never reuse a
-layout-engine name for different behavior.
+A failed compatibility investigation is a valid result. Record the exact reason and retain the fixture-backed provider.
 
-### 5.27 Spin 3D rotation parity is scoped to `ScreenPlacement`
+Code licensing and data licensing are separate. Do not assume an MIT package license covers an included or downloaded NMR database.
 
-For the current Spin 3D rotation-parity work, follow `PLANS.md`. The shared visual contract is
-`ScreenPlacement`: live overlay, flatten/release, reopen, modeled X/Y drag, modeled typed X/Y,
-drag Z, and typed Z must all preserve one placement contract for modeled molecules.
+## Coding practices
 
-`flattenSpunMolecule(..., { placement })` must match `projectSpin` for the same conformer,
-orientation, and placement. Keep projection and scale helpers in `apps/desktop/src/interaction/`
-and keep flattening in `documentWorkflow`; do not add duplicate projectors or one-off rendering
-math in `MainWindow.tsx`.
+Follow existing repository formatting, linting, naming, test, and module conventions.
 
-This fix must not change chemical identity, stereo validation, wedge/hash assignment, crossing
-behavior, depth cues, molfile rewrite behavior, CDXML/CDX behavior, legacy non-modeled X/Y tilt,
-or art-object tilt. If a change touches those surfaces, prove it with the focused tests in
-`PLANS.md` or narrow the edit back to the placement/parity path.
+Prefer focused modules over adding more unrelated logic to `MainWindow.tsx`.
 
-## 6. Package-specific rules
+Avoid speculative abstraction. Generalize an existing pattern only when at least two real consumers benefit without losing clarity.
 
-### 6.1 `chem-core`
+Do not create empty implementation files or placeholder interfaces solely to match a future directory diagram.
 
-Allowed:
+Use stable error and warning codes. Keep human-readable messages separate from programmatic codes.
 
-- TypeScript types
-- Zod schemas
-- Document creation helpers
-- Patch application
-- Serialization
-- Migrations
-- Validation
-- Native object definitions for molecules, reactions, mechanism annotations, text, arrows, brackets, groups, graphics, superatoms/abbreviations, basic R-group display, and unknown compatibility objects
-- Native page layout, paper-size presets, orientation, margins, and page-size migrations
-- Native style preset definitions and selected document style preset references
+Keep worker messages and stored analysis payloads serializable.
 
-Not allowed:
+Avoid `any`. When an external package lacks adequate types, contain the unsafe boundary in its adapter and normalize immediately.
 
-- UI rendering
-- Ketcher imports
-- Tauri imports
-- Direct filesystem access
-- Plugin loading
-- MolScribe OCSR imports
+Do not edit generated artifacts, lockfiles, or snapshots unless the change requires it. Do not overwrite unrelated user work.
 
-### 6.2 `editor-adapter`
+Do not commit, push, rewrite history, or open a pull request unless explicitly requested.
 
-Allowed:
+## Testing requirements
 
-- Abstract editor interfaces
-- Editor event types
-- Editor capability types
-- Molecule/reaction editor load/save methods
+Add tests with the implementation, not afterward.
 
-Not allowed:
-
-- Concrete editor implementation
-- Native document mutation
-- App UI layout
-- Page-level document ownership
-
-### 6.3 `ketcher-adapter`
-
-Allowed:
-
-- Ketcher loading
-- Ketcher call wrappers
-- Ketcher-specific error handling
-- Feature detection
-- Wrapping a real Ketcher runtime object behind `EditorAdapter`
-
-Not allowed:
-
-- Exporting Ketcher internals as public app API
-- Owning document state
-- Owning plugin state
-- Pretending Ketcher can represent unsupported ChemDraft objects
-
-### 6.4 `plugin-api`
-
-Allowed:
-
-- Public plugin types
-- Manifest types
-- Permission names
-- Context interfaces
-- Command/result types
-- Recognized-structure result types
-
-Not allowed:
-
-- App-specific implementation code
-- Direct document mutation
-- Concrete UI framework dependencies unless unavoidable
-
-### 6.5 `plugin-host`
-
-Allowed:
-
-- Manifest validation
-- Permission enforcement
-- Command registration
-- Local plugin loading
-- Plugin storage scoping
-- Plugin lifecycle
-- Proposed-patch review and application
-
-Not allowed:
-
-- Granting undeclared permissions
-- Running native plugins without explicit approval
-- Allowing plugins to mutate live document objects
-- Downloading models or running native services silently
-
-### 6.6 `cdx-compat`
-
-Allowed:
-
-- CDXML parser/writer
-- Best-effort CDX reader/paste support
-- CDX binary writer later
-- CDXML/CDX intermediate model
-- Unknown object preservation
-- Compatibility warnings
-- Compatibility fixture tests
-
-Not allowed:
-
-- Becoming the native document model
-- Depending on GPL code
-- Pretending compatibility is perfect when unsupported objects are approximated
-
-### 6.7 `clipboard-adapter`
-
-Allowed:
-
-- Platform clipboard format detection
-- CDXML/CDX/MOL/RXN/SMILES/SVG/PNG/plain-text clipboard handling
-- Warnings for lossy paste/copy behavior
-
-Not allowed:
-
-- Silent lossy conversion
-- Platform-specific behavior hidden from tests/docs
-
-### 6.8 `layout-engine`
-
-Allowed:
-
-- Group/ungroup
-- Align/distribute
-- Rotate/flip
-- Z-order
-- Page size/margins
-- Snap/guides
-- Bond-length normalization
-
-Not allowed:
-
-- Changing chemical identity during cleanup or layout
-
-### 6.9 `shortcut-engine`
-
-Allowed:
-
-- Command-bound shortcut registry
-- Type-to-build behavior
-- Shortcut conflict detection
-
-Not allowed:
-
-- Hard-coding important drawing actions only inside button click handlers
-- Copying proprietary shortcut documentation verbatim
-
-### 6.10 `mechanism-tools`
-
-Allowed:
-
-- Curved arrows
-- Half-headed arrows
-- Lone-pair marks
-- Radical-electron marks
-- Editable mechanism annotation geometry
-
-Not allowed:
-
-- Storing editable mechanism annotations only as opaque SVG
-
-### 6.11 `template-library`
-
-Allowed:
-
-- Original templates
-- Common rings
-- Common abbreviations/superatoms
-- Original amino acid and sugar templates
-- Basic R-group/generic-atom display helpers
-- Style presets
-- Template metadata tests
-
-Not allowed:
-
-- Copying proprietary templates or sample files
-- Treating abbreviations/superatoms as plain labels when chemical metadata exists
-
-### 6.12 `style-compat`
-
-Allowed:
-
-- External style-sheet parsing/import, including ChemDraw `.cds`
-- Conversion of supported style settings into native ChemDraft style presets
-- Source metadata and unknown-field preservation where practical
-- Warning generation for unsupported or lossy settings
-- Synthetic/legal fixture tests
-
-Not allowed:
-
-- Becoming the native style source of truth
-- Treating `.cds` as molecule, reaction, page, or document import
-- Parsing `.cds` ad hoc inside random UI components
-- Committing user-provided `.cds` files or derived proprietary fixtures without clear redistribution rights
-- Pretending a failed or partial import fully succeeded
-
-### 6.13 `examples/plugins/molscribe-ocsr`
-
-Allowed:
-
-- Plugin manifest and README scaffold
-- Image-to-structure command stub
-- Recognized-structure result type usage
-- Fake recognition output for UI and permission testing
-- Source-image preservation
-- Proposed-patch acceptance flow
-- Clear instructions for later local-service integration
-- License and citation notice for external MolScribe when real integration is added
-
-Not allowed:
-
-- Installing PyTorch, OpenCV, transformers, Hugging Face tooling, or model checkpoints in foundation tasks
-- Running native code without explicit `native.execute` permission
-- Downloading model weights without explicit user action
-- Silently inserting recognized structures without user review
-- Deleting or replacing the source image without user action
-
-### 6.14 `ui-kit`
-
-Allowed:
-
-- Original icons
-- Buttons
-- Panels
-- Menus
-- Dialogs
-- Theme tokens
-
-Not allowed:
-
-- Proprietary icon copies
-- Proprietary UI assets
-- Chemistry logic
-
-### 6.15 `toolset-registry`
-
-Allowed:
-
-- Manifest schemas
-- Layout/customization schemas
-- User toolsets
-- User overrides
-- Menu model generation
-- Toggle command generation
-- Command-ID validation
-
-Not allowed:
-
-- Chemistry behavior
-- Plugin permission grants
-- Direct Tauri window creation
-- Direct React rendering
-- Copying ChemDraw toolbar XML, schema, or assets
-
-### 6.16 `viewport-engine`
-
-Allowed:
-
-- Scale/origin state
-- Coordinate conversion
-- Focal zoom math
-- Ruler render state
-- Pan/pinch helper math
-
-Not allowed:
-
-- Document mutation
-- Chemistry object ownership
-- Direct renderer ownership
-- Dependency-specific black-box state
-
-## 7. Plugin API rules
-
-Plugins must declare a manifest.
-
-Required manifest fields:
-
-```text
-id
-name
-version
-apiVersion
-entry
-permissions
-```
-
-Plugins may contribute:
-
-```text
-commands
-menus
-panels
-toolbar buttons
-inspectors
-templates
-importers
-exporters
-analyzers
-transformers
-recognizers
-```
-
-Plugins must not receive capabilities they did not declare.
-
-Plugin permissions include:
-
-```text
-document.read
-document.write
-document.proposePatch
-selection.read
-selection.write
-analysis.write
-ui.panel
-ui.toolbar
-ui.menu
-chemistry.compute
-clipboard.read
-clipboard.write
-image.read
-ml.inference
-model.load
-model.download
-filesystem.read
-filesystem.write
-network.fetch
-native.execute
-plugin.storage
-```
-
-Dangerous permissions:
-
-```text
-filesystem.write
-network.fetch
-native.execute
-model.load
-model.download
-clipboard.read
-document.write
-image.read when not limited to a user-selected image/crop
-```
-
-Image-to-structure recognizer plugins should return typed recognition results, not mutate the document directly. The result should include, where available:
-
-```text
-source image reference
-proposed SMILES
-proposed molfile
-overall confidence
-atom-level confidence
-bond-level confidence
-recognition warnings
-proposed insertion patch
-```
-
-The user must approve insertion. The plugin host applies accepted patches through the normal document patch API.
-
-## 8. MolScribe OCSR plugin rules
-
-The MolScribe OCSR plugin is the preferred first serious plugin after the command registry, plugin API, permission system, and proposed-patch workflow exist.
-
-Required behavior:
-
-```text
-input: selected image, pasted image, or image file chosen by the user
-output: recognition result containing SMILES, MOL block, confidence, atom/bond candidates, and warnings
-mutation: proposed patch only; user must accept before insertion
-validation: run through available chemistry adapters before insertion where possible
-retention: source image remains available unless user explicitly deletes or replaces it
-```
-
-Required warnings:
-
-```text
-low confidence
-missing confidence data
-stereochemistry uncertainty
-charge/radical uncertainty
-abbreviation/superatom uncertainty
-invalid or unsanitized SMILES/MOL
-network inference used
-local model/checkpoint missing
-```
-
-Allowed implementation path:
-
-```text
-Phase A: plugin scaffold with mocked fixture output
-Phase B: native-service/Python sidecar contract
-Phase C: local model inference with user-supplied checkpoint
-Phase D: optional checkpoint download with explicit approval
-Phase E: confidence overlay and fixture-based accuracy tests
-```
-
-Do not vendor large checkpoints into the repository. Do not present recognized structures as guaranteed correct.
-
-## 9. Command registry rules
-
-Built-in tools and plugin tools should use the same command system whenever practical.
-
-Visible menu, quick-action toolbar, floating/dockable palette, keyboard shortcut, command-palette, and plugin menu/toolbar/panel actions must be backed by command definitions where practical.
-
-Do not wire major behavior only through button-local handlers. Placeholder tools may exist as disabled command definitions, but they must not pretend to perform chemistry.
-
-Examples of commands:
-
-```text
-document.new
-document.open
-document.save
-export.svg
-export.png
-export.pdf
-export.rxn
-clipboard.copy
-clipboard.paste
-style.importStyleSheet
-style.applyPreset
-style.setDefaultPreset
-style.managePresets
-chemistry.validateSelection
-chemistry.calculateFormula
-chemistry.calculateMass
-chemistry.showCharge
-structure.clean
-structure.calculateMass
-mechanism.curvedArrow
-mechanism.lonePair
-mechanism.radicalDot
-layout.group
-layout.ungroup
-layout.align
-layout.distribute
-layout.rotate
-layout.flip
-template.insert
-plugin.massspec.predictFragments
-plugin.molscribeOcsr.recognizeImage
-```
-
-A command should be invokable from menu, quick-action toolbar, floating/dockable tool palette, keyboard shortcut, command palette later, and plugin call where appropriate.
-
-Do not hard-code important actions only inside button click handlers.
-
-## 10. Chemistry invariants
-
-Every chemistry conversion path should preserve these unless explicitly warned:
-
-```text
-atom identity
-bond order
-formal charge
-isotope labels
-radicals
-stereochemistry
-abbreviations/superatoms where represented
-basic R-group/generic-atom display where represented
-reaction roles
-reaction components
-coordinates where applicable
-mechanism annotations where applicable
-```
-
-Style preset import or application must not change chemical identity. If geometry or appearance changes in a way that could affect interpretation, it must be explicit, warning-producing when needed, and undoable where practical.
-
-Tests should compare, when possible:
-
-```text
-canonical SMILES
-formula
-total charge
-stereochemistry annotations
-atom count
-bond count
-reaction component count
-coordinates within tolerance
-recognition result warnings
-```
-
-## 11. CDXML/CDX compatibility rules
-
-Compatibility support should be fixture-driven.
-
-Tier A supported objects:
-
-```text
-atoms
-bonds
-fragments
-coordinates
-charges
-isotopes
-radicals
-wedge/dash stereochemistry
-E/Z geometry where represented
-abbreviations/superatoms
-basic R-group/generic-atom display
-text
-simple arrows
-plus signs
-basic brackets
-basic styles
-```
-
-Unknown CDXML/CDX objects should be preserved where practical. If they cannot be preserved, produce a warning.
-
-Never claim full compatibility unless fixture coverage supports it.
-
-Prioritize CDXML writing/import and best-effort CDX reading/paste before broad CDX writing.
-
-## 12. UI rules
-
-The UI should feel familiar to chemistry drawing users but use original assets and implementation. Functional familiarity is acceptable. Do not copy proprietary visual assets, proprietary templates, proprietary menu/help text, or proprietary trade dress.
-
-Default layout:
-
-```text
-Top:      native or native-feeling menu plus dense quick-action toolbar
-Center:   dominant document/page workspace with optional rulers, guides, and grid
-Palette:  compact icon-first floating or dockable drawing tools
-Panels:   inspector and plugin panels hidden by default, opened only when needed
-Bottom:   compact status bar
-```
-
-Tool buttons should be icon-first with original SVG/icon glyphs, tooltips, accessible labels, and shortcut support. Text labels may appear in tooltips, menus, command palettes, and accessibility labels; they should not become a large text-button chemistry toolbar.
-
-Native floating utility palettes are allowed in the desktop app. They should be associated with the active document window where possible, avoid global always-on-top by default, and route every action through command IDs. Browser/web builds may use in-window floating palettes as a fallback.
-
-Do not show fake chemistry placeholders. Molecule, reaction, arrow, product, mechanism, and similar objects shown in the workspace must be real `chem-core` document objects, or explicitly disabled development placeholders. Prefer an honest "EditorAdapter not connected" state over fake chemistry.
-
-Do not copy proprietary UI artwork.
-
-## 13. Testing requirements
-
-For every meaningful change, add or update tests.
-
-Required test types by area:
-
-```text
-chem-core:        schema, patch, serialization, migration tests
-plugin-api:       manifest schema, permission, result type tests
-plugin-host:      permission, command, lifecycle, proposed-patch tests
-chemistry:        validation, formula, mass, charge, and stereochemistry-warning fixture tests
-cdx-compat:       parser, writer, best-effort CDX read, round-trip fixture tests
-style-compat:     synthetic/legal .cds import, unsupported-field warnings, malformed-input failures
-clipboard:        format detection and lossy/warning behavior where testable
-export-engine:    export output and warning tests
-adapters:         adapter contract tests
-ui:               command wiring, floating/docked palette routing, and smoke tests
-toolsets:         customization state, persisted layout application, plugin/user toolsets, unregistered command rejection, native menu/window alignment where practical
-viewport:         coordinate conversion, focal-point zoom, ruler/zoom sync, gesture/pinch behavior where practical
-recognizers:      mocked output, confidence/warning display, source-image preservation, proposed patch flow
-```
-
-If a test cannot be written yet, explain why in the final agent report and add a specific TODO only if it is actionable.
-
-Bad TODO:
-
-```text
-TODO: fix later
-```
-
-Good TODO:
-
-```text
-TODO(cdx-compat): preserve CDXML graphic object rotation once GraphicObject.rotation is added to chem-core.
-```
-
-## 14. Error handling rules
-
-Errors should be explicit.
-
-Bad:
-
-```text
-Import failed.
-```
-
-Better:
-
-```text
-CDXML import failed: unsupported bond display type "WedgeHashBegin" in object b42.
-```
-
-For user-facing messages, keep them concise. For logs, include technical details.
-
-Recognition-specific errors should report missing model, missing checkpoint, low confidence, invalid predicted structure, unavailable local service, or unauthorized network/native execution distinctly.
-
-## 15. Performance rules
-
-Do not load heavy chemistry or recognition engines at startup unless required.
-
-Prefer:
-
-- Lazy loading RDKit/WASM.
-- Lazy loading plugin panels.
-- Lazy loading optional import/export tools.
-- Lazy loading MolScribe OCSR only when the plugin command is invoked.
-- Small package boundaries.
-- Avoiding heavy dependencies for trivial operations.
-
-## 16. Security rules
-
-Do not implement features that allow arbitrary code execution without explicit plugin permissions.
-
-Do not allow plugins to:
-
-- Access arbitrary files unless granted.
-- Write arbitrary files unless granted.
-- Access the network unless granted.
-- Run native code unless granted.
-- Download model weights unless granted and user-initiated.
-- Send images to remote recognition services unless `network.fetch` is granted and clearly disclosed.
-- Read clipboard unless granted.
-- Mutate documents except through patch/proposed-patch APIs.
-
-Sanitize imported files. Malformed imports should fail safely.
-
-## 17. Codex working style
-
-When using Codex or another coding agent:
-
-1. Keep the task narrow.
-2. Modify the smallest reasonable set of files.
-3. Preserve package boundaries.
-4. Add tests.
-5. Run relevant tests.
-6. Report changed files.
-7. Report commands run.
-8. Report failures honestly.
-9. Do not hide uncertainty.
-10. Do not invent dependency capabilities.
-
-## 18. Expected agent report format
-
-At the end of a coding task, report:
-
-```text
-Summary:
-- What changed
-
-Files changed:
-- path/to/file
-
-Tests run:
-- command
-
-Results:
-- pass/fail details
-
-Known limitations:
-- Specific limitations, if any
-
-Recommended next task:
-- One concrete next step
-```
-
-## 19. Initial commands
-
-Use the actual repository scripts once they exist. Initial expected commands:
+At minimum, run the most targeted tests after each meaningful change. Before reporting completion, run as much of the following as the environment supports:
 
 ```bash
-pnpm install
 pnpm lint
 pnpm test
 pnpm build
-git diff --check
-cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-If hit-testing, pointer behavior, or the agent bridge changes, also run the relevant DOM/agent bridge/drawing-tool suites.
+Also run package-specific and desktop-specific tests relevant to modified files.
 
-Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring selection after tab switching/closing.
+When a command cannot run because the environment lacks Rust, Tauri, a browser runtime, or another local toolchain, report that clearly. Do not state that a build passed when it was not run.
 
-## Closeout Requirements
+Key properties to test include:
 
-At implementation closeout:
+- persistent host identity across document changes;
+- canary plugin registration;
+- menu and panel contribution rendering;
+- permission enforcement;
+- immutable selection snapshots;
+- deterministic fingerprints;
+- deep-copy analysis storage;
+- deterministic latest-record selection;
+- no document mutation from NMR prediction;
+- fixture prediction determinism;
+- partial-result warnings;
+- no-network operation;
+- worker cancellation and late-result suppression;
+- reversed NMR axes;
+- stale-result detection.
 
-- Update the build stamp in this file.
-- Update the `Build` string in `apps/desktop/src/MainWindow.tsx`.
-- Report tests run and any skipped verification.
-- Keep the final answer focused on the branch and the specific slice completed.
+## Handling discrepancies
+
+The plan contains repository-state assumptions. Verify them.
+
+When an assumption is wrong:
+
+1. identify the exact discrepancy;
+2. cite the relevant file and symbol in the implementation report;
+3. adapt the implementation while preserving the intended boundary;
+4. do not silently reshape the task;
+5. do not stop merely because the repository differs from the plan.
+
+Prefer working code and tests over preserving an illustrative filename or pseudocode signature verbatim.
+
+## Completion reporting
+
+Every implementation response must include:
+
+- milestone completed;
+- files changed;
+- architecture decisions made;
+- deviations from `PLANS.md` and why;
+- dependencies added or removed, with exact versions;
+- tests and builds actually run;
+- commands that failed and the relevant failure summary;
+- unresolved risks;
+- the next milestone, without implementing it unless requested.
+
+For NMR work, also report:
+
+- active predictor ID and version;
+- data version and provenance;
+- whether values are synthetic fixtures;
+- supported nuclei;
+- unsupported chemistry;
+- whether `nmr-predictor` was evaluated;
+- any duplicate-OpenChemLib or bundling issue.
+
+Do not claim scientific validation, full plugin sandboxing, dynamic plugin installation, or production readiness unless those claims are supported by completed tests and documented evidence.
+
+Structure the final report so it can be archived verbatim: the operator files it under `reports/` in the planning workspace and updates `STATUS.md` (milestone table, assumption ledger, open decisions) from it. Include an explicit "assumption discrepancies" section, even when it is empty.

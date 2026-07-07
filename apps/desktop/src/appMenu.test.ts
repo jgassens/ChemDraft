@@ -8,6 +8,7 @@ import {
   flattenAppMenuCommands,
   formatMenuShortcut,
   nativeRoutedCommandIds,
+  type AppMenuCommand,
   type AppMenuContext
 } from "./appMenu";
 
@@ -128,5 +129,56 @@ describe("app menu model", () => {
       "Structure",
       "Analyze"
     ]);
+  });
+
+  it("appends plugin menu items to their target section without disturbing the native routed set", () => {
+    const pluginItem: AppMenuCommand = {
+      kind: "command",
+      id: "menu.nmrPredictor.predict",
+      commandId: "plugin.nmrPredictor.predict",
+      label: "Predict NMR Spectrum",
+      enabled: true,
+      pluginContributed: true
+    };
+
+    const model = buildAppMenuModel({
+      ...EMPTY_CONTEXT,
+      pluginMenuItems: [{ location: "analyze", command: pluginItem }]
+    });
+
+    // Item lands in Analyze; no new top-level section appears for a known location.
+    expect(model.map((section) => section.label)).toEqual(["File", "Edit", "View", "Structure", "Analyze"]);
+    const analyze = model.find((section) => section.id === "analyze");
+    const analyzeCommandIds = flattenAppMenuCommands(analyze ? [analyze] : []).map((item) => item.commandId);
+    expect(analyzeCommandIds).toContain("plugin.nmrPredictor.predict");
+
+    // Plugin items are excluded from the native-routed set (native menu does not route them yet),
+    // so the routed set is identical to the pure core menu — the drift test stays meaningful.
+    expect(nativeRoutedCommandIds(model)).not.toContain("plugin.nmrPredictor.predict");
+    expect(nativeRoutedCommandIds(model).sort()).toEqual(
+      nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT)).sort()
+    );
+  });
+
+  it("creates a trailing section for a plugin item whose location has no core section", () => {
+    const model = buildAppMenuModel({
+      ...EMPTY_CONTEXT,
+      pluginMenuItems: [
+        {
+          location: "plugins",
+          command: {
+            kind: "command",
+            id: "menu.demo.open",
+            commandId: "plugin.demo.open",
+            label: "Open Demo",
+            enabled: true,
+            pluginContributed: true
+          }
+        }
+      ]
+    });
+
+    expect(model.map((section) => section.label)).toEqual(["File", "Edit", "View", "Structure", "Analyze", "Plugins"]);
+    expect(nativeRoutedCommandIds(model)).not.toContain("plugin.demo.open");
   });
 });

@@ -53,9 +53,15 @@ importers:
       '@chemdraft/layout-engine':
         specifier: workspace:*
         version: link:../../packages/layout-engine
+      '@chemdraft/molscribe-ocsr-plugin':
+        specifier: workspace:*
+        version: link:../../examples/plugins/molscribe-ocsr
       '@chemdraft/ocl-adapter':
         specifier: workspace:*
         version: link:../../packages/ocl-adapter
+      '@chemdraft/plugin-api':
+        specifier: workspace:*
+        version: link:../../packages/plugin-api
       '@chemdraft/plugin-host':
         specifier: workspace:*
         version: link:../../packages/plugin-host

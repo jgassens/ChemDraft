@@ -1,5 +1,6 @@
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { describe, expect, it } from "vitest";
+import type { PluginManifest, PluginPanelReport } from "@chemdraft/plugin-api";
+import { describe, expect, it, vi } from "vitest";
 import {
   CommandRegistry,
   CommandRegistryError,
@@ -226,6 +227,164 @@ describe("PluginHost", () => {
 
     expect(host.commands.get("plugin.disabled.command")).toMatchObject({ enabled: false });
     await expect(host.invokeCommand("plugin.disabled.command")).rejects.toThrow(CommandRegistryError);
+  });
+});
+
+function minimalManifest(id: string): PluginManifest {
+  return {
+    id,
+    name: `Plugin ${id}`,
+    version: "0.0.1",
+    apiVersion: "^0.1.0",
+    entry: "dist/plugin.js",
+    permissions: [],
+    contributes: {
+      commands: [],
+      menus: [],
+      panels: [],
+      toolbarButtons: [],
+      toolsets: [],
+      inspectors: [],
+      templates: [],
+      importers: [],
+      exporters: [],
+      analyzers: [],
+      transformers: [],
+      recognizers: []
+    }
+  };
+}
+
+describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
+  it("rejects duplicate plugin registration", () => {
+    const host = new PluginHost();
+    host.registerPlugin(minimalManifest("org.test.dup"));
+    expect(() => host.registerPlugin(minimalManifest("org.test.dup"))).toThrow(PluginHostError);
+  });
+
+  it("notifies subscribers when plugins register and unregister, and stops after unsubscribe", () => {
+    const host = new PluginHost();
+    const listener = vi.fn();
+    const unsubscribe = host.subscribe(listener);
+
+    host.registerPlugin(minimalManifest("org.test.sub.a"));
+    host.unregisterPlugin("org.test.sub.a");
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    host.registerPlugin(minimalManifest("org.test.sub.b"));
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a menu contribution that references a command the plugin does not contribute", () => {
+    const host = new PluginHost();
+    expect(() =>
+      host.registerPlugin({
+        id: "org.test.badmenu",
+        name: "Bad Menu",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: ["ui.menu"],
+        contributes: {
+          commands: [{ id: "plugin.badMenu.run", title: "Run" }],
+          menus: [
+            {
+              id: "menu.badMenu.open",
+              title: "Open",
+              commandId: "plugin.badMenu.missing",
+              location: "analyze",
+              requiredPermissions: ["ui.menu"]
+            }
+          ]
+        }
+      })
+    ).toThrow(PluginHostError);
+  });
+
+  it("enumerates contributions with their plugin id and filters menus by location", () => {
+    const host = new PluginHost();
+    host.registerPlugin({
+      id: "org.test.analyze",
+      name: "Analyze Plugin",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions: ["ui.menu", "ui.panel"],
+      contributes: {
+        commands: [{ id: "plugin.analyze.run", title: "Run" }],
+        menus: [
+          {
+            id: "menu.analyze.run",
+            title: "Analyze",
+            commandId: "plugin.analyze.run",
+            location: "analyze",
+            requiredPermissions: ["ui.menu"]
+          }
+        ],
+        panels: [{ id: "panel.analyze.main", title: "Main", commandId: "plugin.analyze.run" }],
+        analyzers: [{ id: "analyzer.analyze.main", title: "Analysis", commandId: "plugin.analyze.run" }]
+      }
+    });
+
+    expect(host.listMenuContributions("analyze").map((entry) => entry.pluginId)).toEqual(["org.test.analyze"]);
+    expect(host.listMenuContributions("file")).toHaveLength(0);
+    expect(host.listPanelContributions()[0]).toMatchObject({
+      pluginId: "org.test.analyze",
+      contribution: { id: "panel.analyze.main" }
+    });
+    expect(host.listAnalyzerContributions()[0]?.contribution.id).toBe("analyzer.analyze.main");
+    expect(host.listCommandContributions()[0]?.contribution.id).toBe("plugin.analyze.run");
+  });
+
+  it("routes a schema-validated panel report through showPanelReport for declared panels only", async () => {
+    const showPanelReport = vi.fn();
+    const host = new PluginHost({ showPanelReport });
+    host.registerPlugin(
+      {
+        id: "org.test.panel",
+        name: "Panel Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: {
+          commands: [
+            { id: "plugin.panel.show", title: "Show", requiredPermissions: ["ui.panel"] },
+            { id: "plugin.panel.showUndeclared", title: "Show Undeclared", requiredPermissions: ["ui.panel"] }
+          ],
+          panels: [{ id: "panel.panel.main", title: "Main", commandId: "plugin.panel.show" }]
+        }
+      },
+      {
+        commandHandlers: {
+          "plugin.panel.show": async (context) => {
+            const report: PluginPanelReport = {
+              title: "Result",
+              sections: [{ kind: "text", body: "hello" }]
+            };
+            await context.panels?.showReport("panel.panel.main", report);
+          },
+          "plugin.panel.showUndeclared": async (context) => {
+            await context.panels?.showReport("panel.panel.undeclared", {
+              title: "Nope",
+              sections: []
+            });
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.panel.show");
+    expect(showPanelReport).toHaveBeenCalledTimes(1);
+    expect(showPanelReport).toHaveBeenCalledWith(
+      "org.test.panel",
+      "panel.panel.main",
+      expect.objectContaining({ title: "Result" })
+    );
+
+    await expect(host.invokeCommand("plugin.panel.showUndeclared")).rejects.toThrow(PluginHostError);
+    expect(showPanelReport).toHaveBeenCalledTimes(1);
   });
 });
 

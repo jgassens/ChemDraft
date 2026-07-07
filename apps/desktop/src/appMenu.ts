@@ -35,6 +35,13 @@ export interface AppMenuCommand {
    * instead, so the native-sync test excludes these from its `MENU_COMMAND_IDS` comparison.
    */
   nativePredefined?: boolean;
+  /**
+   * True when the item was contributed by the plugin runtime (a bundled plugin's manifest, or a
+   * desktop plugin-runtime affordance) rather than the core native menu. The native menu does not
+   * (yet) route these, so like {@link nativePredefined} they are excluded from the `MENU_COMMAND_IDS`
+   * drift comparison and dispatched through the plugin host instead of the core registry.
+   */
+  pluginContributed?: boolean;
 }
 
 export interface AppMenuSubmenu {
@@ -65,6 +72,12 @@ export interface AppMenuToolbarToggle {
   checked: boolean;
 }
 
+/** A plugin-runtime menu item plus the section it belongs in (e.g. `location: "analyze"`). */
+export interface PluginAppMenuItem {
+  location: string;
+  command: AppMenuCommand;
+}
+
 export interface AppMenuContext {
   rulersVisible: boolean;
   crosshairsVisible: boolean;
@@ -74,6 +87,11 @@ export interface AppMenuContext {
   hasSelectedMolecule: boolean;
   /** Dynamic View ▸ Toolbars entries, e.g. from `getToolbarsMenuModel(visibleToolsetIds, registry)`. */
   toolbars: readonly AppMenuToolbarToggle[];
+  /**
+   * Plugin-runtime menu items appended to their target section (see `pluginMenuModel`). Absent/empty
+   * for the pure core menu, so the native-sync test's base model is unaffected.
+   */
+  pluginMenuItems?: readonly PluginAppMenuItem[];
 }
 
 /** Prefix of the dynamic toolset-toggle command ids (see toolset-registry `createToolsetToggleCommandId`). */
@@ -181,7 +199,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     )
   };
 
-  return [
+  const sections: AppMenuSection[] = [
     {
       id: "file",
       label: "File",
@@ -243,6 +261,47 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       items: [command("chemistry.validateSelection", "Validate Selected Structure", { enabled: context.hasSelectedMolecule })]
     }
   ];
+
+  appendPluginMenuItems(sections, context.pluginMenuItems ?? []);
+
+  return sections;
+}
+
+const SECTION_LABELS: Readonly<Record<string, string>> = {
+  file: "File",
+  edit: "Edit",
+  view: "View",
+  structure: "Structure",
+  tools: "Tools",
+  analyze: "Analyze",
+  plugins: "Plugins"
+};
+
+function sectionLabelFor(location: string): string {
+  return SECTION_LABELS[location] ?? location.charAt(0).toUpperCase() + location.slice(1);
+}
+
+/**
+ * Append plugin-runtime items to their target sections. A single separator divides existing core
+ * items from the plugin block; a location with no core section (e.g. "plugins") gets a new trailing
+ * section. No-op when there are no plugin items, keeping the pure core menu identical.
+ */
+function appendPluginMenuItems(sections: AppMenuSection[], items: readonly PluginAppMenuItem[]): void {
+  for (const { location, command: pluginCommand } of items) {
+    let section = sections.find((candidate) => candidate.id === location);
+    if (!section) {
+      section = { id: location, label: sectionLabelFor(location), items: [] };
+      sections.push(section);
+    }
+
+    const alreadyHasPluginItem = section.items.some(
+      (item) => item.kind === "command" && item.pluginContributed
+    );
+    if (section.items.length > 0 && !alreadyHasPluginItem) {
+      section.items.push(separator());
+    }
+    section.items.push({ ...pluginCommand, pluginContributed: true });
+  }
 }
 
 /** Depth-first list of every command item in a menu model (skips submenus' own headers + separators). */
@@ -268,6 +327,11 @@ export function flattenAppMenuCommands(sections: readonly AppMenuSection[]): App
  */
 export function nativeRoutedCommandIds(sections: readonly AppMenuSection[]): string[] {
   return flattenAppMenuCommands(sections)
-    .filter((item) => !item.nativePredefined && !item.commandId.startsWith(TOOLSET_TOGGLE_COMMAND_PREFIX))
+    .filter(
+      (item) =>
+        !item.nativePredefined &&
+        !item.pluginContributed &&
+        !item.commandId.startsWith(TOOLSET_TOGGLE_COMMAND_PREFIX)
+    )
     .map((item) => item.commandId);
 }

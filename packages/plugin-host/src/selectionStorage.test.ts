@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PluginStorage } from "@chemdraft/plugin-api";
+import type { PluginSelectionSnapshot, PluginStorage } from "@chemdraft/plugin-api";
 import { PluginHost } from "./index";
 
 const manifestWith = (id: string, permissions: string[]) => ({
@@ -18,7 +18,9 @@ describe("plugin host selection + storage backends", () => {
   it("exposes the selection API only with selection.read", async () => {
     const snapshot = {
       objectIds: ["m1"],
-      molecules: [{ objectId: "m1", structureFormat: "smiles", structure: "c1ccccc1" }]
+      molecules: [
+        { objectId: "m1", structureFormat: "smiles" as const, structure: "c1ccccc1", sourceFingerprint: "fp-m1" }
+      ]
     };
 
     const granted = new PluginHost({ getSelection: () => snapshot });
@@ -35,6 +37,31 @@ describe("plugin host selection + storage backends", () => {
       commandHandlers: { "org.test.denied.run": async (context) => context.selection }
     });
     await expect(denied.invokeCommand("org.test.denied.run")).resolves.toBeUndefined();
+  });
+
+  it("hands plugins a deeply frozen, independent copy of the selection snapshot", async () => {
+    const source: PluginSelectionSnapshot = {
+      objectIds: ["m1"],
+      molecules: [{ objectId: "m1", structureFormat: "smiles", structure: "c1ccccc1", sourceFingerprint: "fp" }]
+    };
+    const host = new PluginHost({ getSelection: () => source });
+    host.registerPlugin(manifestWith("org.test.frozen", ["selection.read"]), {
+      commandHandlers: { "org.test.frozen.run": async (context) => context.selection?.getSelection() }
+    });
+
+    const first = await host.invokeCommand<PluginSelectionSnapshot>("org.test.frozen.run");
+    const second = await host.invokeCommand<PluginSelectionSnapshot>("org.test.frozen.run");
+
+    // Immutable: the returned snapshot and its nested objects are frozen.
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.molecules)).toBe(true);
+    expect(Object.isFrozen(first.molecules[0])).toBe(true);
+
+    // Independent: not the live provider object, and a fresh copy each call.
+    expect(first).not.toBe(source);
+    expect(first.molecules[0]).not.toBe(source.molecules[0]);
+    expect(first).not.toBe(second);
+    expect(first).toEqual(second);
   });
 
   it("uses the injected storage factory and caches one backend per plugin", async () => {

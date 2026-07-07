@@ -2,10 +2,46 @@ import { describe, expect, it } from "vitest";
 import type { RecognizedStructureResult } from "./index";
 import {
   RecognizedStructureResultSchema,
+  createStructureSourceFingerprint,
   dangerousPluginPermissions,
   parsePluginManifest,
   validatePluginManifest
 } from "./index";
+
+describe("createStructureSourceFingerprint", () => {
+  const base = {
+    documentId: "doc1",
+    pageId: "page1",
+    objectId: "mol1",
+    structureFormat: "smiles",
+    structure: "c1ccccc1"
+  };
+
+  it("is deterministic and returns a fixed-width hex digest", () => {
+    const a = createStructureSourceFingerprint(base);
+    const b = createStructureSourceFingerprint({ ...base });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("changes when any identity or payload field changes", () => {
+    const original = createStructureSourceFingerprint(base);
+    expect(createStructureSourceFingerprint({ ...base, structure: "CCO" })).not.toBe(original);
+    expect(createStructureSourceFingerprint({ ...base, objectId: "mol2" })).not.toBe(original);
+    expect(createStructureSourceFingerprint({ ...base, pageId: "page2" })).not.toBe(original);
+    expect(createStructureSourceFingerprint({ ...base, structureFormat: "molfile-v2000" })).not.toBe(original);
+  });
+
+  it("ignores surrounding whitespace in the payload but distinguishes field boundaries", () => {
+    expect(createStructureSourceFingerprint({ ...base, structure: "  c1ccccc1  " })).toBe(
+      createStructureSourceFingerprint(base)
+    );
+    // Field-boundary safety: shifting a character across the id/format boundary changes the hash.
+    const left = createStructureSourceFingerprint({ ...base, objectId: "molX", structureFormat: "smiles" });
+    const right = createStructureSourceFingerprint({ ...base, objectId: "mol", structureFormat: "Xsmiles" });
+    expect(left).not.toBe(right);
+  });
+});
 
 describe("validatePluginManifest", () => {
   it("accepts a manifest with command, menu, panel, toolbar, and recognizer contributions", () => {
