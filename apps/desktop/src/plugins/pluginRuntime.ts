@@ -1,5 +1,11 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import type { PluginManifest, PluginToolsetContribution } from "@chemdraft/plugin-api";
+import type {
+  PluginManifest,
+  PluginPanelReport,
+  PluginSelectionSnapshot,
+  PluginStorage,
+  PluginToolsetContribution
+} from "@chemdraft/plugin-api";
 import { PluginHost, type CommandRegistry, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import type { DesktopToolsetDefinition } from "../toolsets";
 
@@ -23,10 +29,18 @@ export interface DesktopPluginRuntime {
 export function createDesktopPluginRuntime(options: {
   commandRegistry: CommandRegistry;
   getActiveDocument(): ChemDraftDocument | undefined;
+  getSelection?(): PluginSelectionSnapshot | undefined;
+  createStorage?(pluginId: string): PluginStorage;
+  showPanelReport?(pluginId: string, panelId: string, report: PluginPanelReport): void | Promise<void>;
+  onProposedPatchesChanged?(): void;
 }): DesktopPluginRuntime {
   const host = new PluginHost({
     commandRegistry: options.commandRegistry,
-    getActiveDocument: options.getActiveDocument
+    getActiveDocument: options.getActiveDocument,
+    getSelection: options.getSelection,
+    createStorage: options.createStorage,
+    showPanelReport: options.showPanelReport,
+    onProposedPatchesChanged: options.onProposedPatchesChanged
   });
   const toolsetsByPluginId = new Map<string, DesktopToolsetDefinition[]>();
   const pluginIdByToolsetId = new Map<string, string>();

@@ -398,6 +398,9 @@ pub fn run() {
             load_toolset_customization_state,
             focus_main_document_window,
             set_menu_checked,
+            plugin_storage_read,
+            plugin_storage_write,
+            open_plugin_panel_window,
             route_toolset_command,
             read_clipboard_payload,
             write_clipboard_text_items,
@@ -639,6 +642,133 @@ fn set_menu_checked(app: tauri::AppHandle, command_id: String, checked: bool) ->
         return Err("Menu command id cannot be empty.".to_string());
     }
     set_check_menu_item_checked(&app, command_id, checked)
+}
+
+/// Guards the storage path against traversal: plugin ids become directory names, so the
+/// charset is restricted and dot-leading names (".", "..", hidden dirs) are rejected.
+fn is_valid_plugin_storage_id(plugin_id: &str) -> bool {
+    !plugin_id.is_empty()
+        && !plugin_id.starts_with('.')
+        && plugin_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+#[cfg(test)]
+mod plugin_storage_id_tests {
+    use super::is_valid_plugin_storage_id;
+
+    #[test]
+    fn accepts_reverse_domain_plugin_ids() {
+        assert!(is_valid_plugin_storage_id("org.chemdraft.fixture"));
+        assert!(is_valid_plugin_storage_id("nmr-predictor_v2"));
+    }
+
+    #[test]
+    fn rejects_path_traversal_shapes() {
+        assert!(!is_valid_plugin_storage_id(""));
+        assert!(!is_valid_plugin_storage_id(".."));
+        assert!(!is_valid_plugin_storage_id(".hidden"));
+        assert!(!is_valid_plugin_storage_id("a/b"));
+        assert!(!is_valid_plugin_storage_id("a\\b"));
+        assert!(!is_valid_plugin_storage_id("a b"));
+    }
+}
+
+const PLUGIN_STORAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+fn plugin_storage_path<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    plugin_id: &str,
+) -> Result<PathBuf, String> {
+    if !is_valid_plugin_storage_id(plugin_id) {
+        return Err(format!("Invalid plugin id \"{plugin_id}\"."));
+    }
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("plugins")
+        .join(plugin_id)
+        .join("storage.json"))
+}
+
+#[tauri::command]
+fn plugin_storage_read(app: tauri::AppHandle, plugin_id: String) -> Result<Option<String>, String> {
+    let path = plugin_storage_path(&app, &plugin_id)?;
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn plugin_storage_write(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    contents: String,
+) -> Result<(), String> {
+    if contents.len() > PLUGIN_STORAGE_MAX_BYTES {
+        return Err(format!(
+            "Plugin storage payload exceeds {PLUGIN_STORAGE_MAX_BYTES} bytes."
+        ));
+    }
+    let path = plugin_storage_path(&app, &plugin_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(&path, contents).map_err(|error| error.to_string())
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenPluginPanelRequest {
+    panel_id: String,
+    title: String,
+    width: Option<f64>,
+    height: Option<f64>,
+}
+
+/// Plugin panel windows get the same floating-utility treatment as toolset palettes: they
+/// float above the document while the app is active and hide with it on deactivate.
+#[tauri::command]
+fn open_plugin_panel_window(
+    app: tauri::AppHandle,
+    request: OpenPluginPanelRequest,
+) -> Result<(), String> {
+    if !is_valid_plugin_storage_id(&request.panel_id) {
+        return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
+    }
+
+    let label = format!("plugin-panel-{}", request.panel_id.replace('.', "-"));
+    if let Some(window) = app.get_webview_window(&label) {
+        window.show().map_err(|error| error.to_string())?;
+        configure_toolset_utility_window(&window)?;
+        return Ok(());
+    }
+
+    let width = request.width.unwrap_or(380.0);
+    let height = request.height.unwrap_or(520.0);
+    let window = WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("/?window=pluginPanel&panelId={}", request.panel_id).into()),
+    )
+    .title(format!("ChemDraft {}", request.title))
+    .inner_size(width, height)
+    .min_inner_size(280.0, 200.0)
+    .accept_first_mouse(true)
+    .focusable(toolset_window_focusable())
+    .resizable(true)
+    .decorations(false)
+    .shadow(false)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_utility_window(&window)?;
+    Ok(())
 }
 
 #[tauri::command]

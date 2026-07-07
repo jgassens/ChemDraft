@@ -75,6 +75,15 @@ import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { createPersistentPluginStorage } from "./plugins/pluginStorage";
+import { PatchReviewTray } from "./plugins/PatchReviewTray";
+import {
+  broadcastPluginPanelReport,
+  listenForPluginPanelRequests,
+  openPluginPanelWindow,
+  type PluginPanelReportPayload
+} from "./plugins/panelBridge";
+import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
@@ -313,6 +322,7 @@ import {
   exportPhase4Pdf,
   exportPhase4Svg,
   getSelectedMolecule,
+  getSelectedMolecules,
   getSelectedTextObject,
   insertNativeTextObject,
   insertNativeArtGraphicObject,
@@ -6805,9 +6815,42 @@ export function MainWindow({
     syncCoreCommands(coreCommandBindings);
   }, [syncCoreCommands, coreCommandBindings]);
 
-  // Plugins register their commands into the same stable registry; the host is created once.
+  const [patchQueueVersion, setPatchQueueVersion] = useState(0);
+  const pluginPanelReportsRef = useRef(new Map<string, PluginPanelReportPayload>());
+  const pluginPanelRevisionRef = useRef(0);
+
+  // Plugins register their commands into the same stable registry; the host is created once,
+  // wired to live selection, disk-backed storage, panel windows, and the patch-review queue.
   const pluginRuntime = useMemo(
-    () => createDesktopPluginRuntime({ commandRegistry: registry, getActiveDocument: () => documentRef.current }),
+    () =>
+      createDesktopPluginRuntime({
+        commandRegistry: registry,
+        getActiveDocument: () => documentRef.current,
+        getSelection: () => {
+          const currentDocument = documentRef.current;
+          return {
+            objectIds: [...currentDocument.selection.objectIds],
+            molecules: getSelectedMolecules(currentDocument).map((molecule) => ({
+              objectId: molecule.id,
+              structureFormat: molecule.structureFormat,
+              structure: molecule.structure
+            }))
+          };
+        },
+        createStorage: createPersistentPluginStorage,
+        showPanelReport: async (pluginId, panelId, report) => {
+          const payload: PluginPanelReportPayload = {
+            pluginId,
+            panelId,
+            report,
+            revision: ++pluginPanelRevisionRef.current
+          };
+          pluginPanelReportsRef.current.set(panelId, payload);
+          await openPluginPanelWindow({ panelId, title: report.title }).catch(() => undefined);
+          await broadcastPluginPanelReport(payload).catch(() => undefined);
+        },
+        onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
+      }),
     [registry]
   );
 
@@ -6835,6 +6878,50 @@ export function MainWindow({
       }
     };
   }, [pluginRuntime, toolbarCatalog]);
+
+  // Panel windows request their content on mount; the main window re-serves the latest
+  // report so a reopened or slow-loading panel is never blank.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForPluginPanelRequests((panelId) => {
+      const payload = pluginPanelReportsRef.current.get(panelId);
+      if (payload) {
+        void broadcastPluginPanelReport(payload).catch(() => undefined);
+      }
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const acceptPluginProposal = useCallback(
+    (proposal: QueuedProposedPatch) => {
+      try {
+        const updated = pluginRuntime.host.acceptProposedPatch(proposal.id, documentRef.current);
+        commitDocumentChange(updated);
+        setStatus("Applied plugin proposal");
+      } catch (error) {
+        setStatus(`Plugin proposal failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    [commitDocumentChange, pluginRuntime]
+  );
+
+  const rejectPluginProposal = useCallback(
+    (proposal: QueuedProposedPatch) => {
+      try {
+        pluginRuntime.host.rejectProposedPatch(proposal.id);
+        setStatus("Rejected plugin proposal");
+      } catch {
+        setStatus("Plugin proposal was already resolved");
+      }
+    },
+    [pluginRuntime]
+  );
 
   const invoke = useCallback(async (commandId: string) => {
     if (commandId === moleculeInspectorTemplateImportCommandId) {
@@ -13700,6 +13787,12 @@ export function MainWindow({
             onCancel={() => applyPendingMoleculeStyleOverrideChoice("cancel")}
           />
         ) : null}
+        <PatchReviewTray
+          host={pluginRuntime.host}
+          queueVersion={patchQueueVersion}
+          onAccept={acceptPluginProposal}
+          onReject={rejectPluginProposal}
+        />
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>

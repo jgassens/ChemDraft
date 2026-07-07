@@ -62,6 +62,60 @@ describe("desktop plugin runtime + toolbar catalog", () => {
     expect(catalog.registry().get("core.main")).toBeDefined();
   });
 
+  it("forwards selection and panel wiring to plugin command handlers", async () => {
+    const shownPanels: string[] = [];
+    const runtime = createDesktopPluginRuntime({
+      commandRegistry: new CommandRegistry(),
+      getActiveDocument: () => undefined,
+      getSelection: () => ({
+        objectIds: ["m1"],
+        molecules: [{ objectId: "m1", structureFormat: "smiles", structure: "c1ccccc1" }]
+      }),
+      showPanelReport: (_pluginId, panelId) => {
+        shownPanels.push(panelId);
+      }
+    });
+
+    const manifest = {
+      id: "org.chemdraft.surfaces",
+      name: "Surfaces",
+      version: "0.0.0",
+      apiVersion: "^0.1.0",
+      entry: "dev",
+      permissions: ["selection.read", "ui.panel"],
+      contributes: {
+        commands: [
+          {
+            id: "plugin.surfaces.run",
+            title: "Run",
+            requiredPermissions: ["selection.read", "ui.panel"],
+            enabled: true
+          }
+        ],
+        panels: [{ id: "surfaces.result", title: "Result" }]
+      }
+    };
+
+    let seenStructure = "";
+    runtime.registerPlugin(manifest, {
+      commandHandlers: {
+        "plugin.surfaces.run": async (context) => {
+          const selection = await context.selection?.getSelection();
+          seenStructure = selection?.molecules[0]?.structure ?? "";
+          await context.panels?.showReport("surfaces.result", {
+            title: "Result",
+            sections: [{ kind: "text", body: "ok" }]
+          });
+          return { ok: true };
+        }
+      }
+    });
+
+    await runtime.host.invokeCommand("plugin.surfaces.run");
+    expect(seenStructure).toBe("c1ccccc1");
+    expect(shownPanels).toEqual(["surfaces.result"]);
+  });
+
   it("notifies listeners when plugin toolsets change", () => {
     const runtime = makeRuntime();
     const catalog = createToolbarCatalog();

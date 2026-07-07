@@ -14,6 +14,7 @@
     "toolset-core-layout",
     "toolset-core-style",
     "toolset-plugin-fixture",
+    "plugin-panel-*",
     "spin3d-debugger",
     "preferences"
   ],
@@ -34,6 +35,10 @@
     "allow-load-toolset-customization-state",
     "allow-focus-main-document-window",
     "allow-set-menu-checked",
+    "allow-plugin-storage-read",
+    "allow-plugin-storage-write",
+    "allow-open-plugin-panel-window",
+    "core:window:allow-hide",
     "allow-route-toolset-command",
     "allow-read-clipboard-payload",
     "allow-write-clipboard-text-items",

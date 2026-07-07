@@ -1,5 +1,6 @@
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
+import { PluginPanelWindow } from "./plugins/PluginPanelWindow";
 import { Spin3dDebuggerWindow } from "./Spin3dDebuggerWindow";
 import { PreferencesWindow } from "./PreferencesWindow";
 import { SPIN3D_DEBUGGER_WINDOW_KIND } from "./conformerDebug";
@@ -19,7 +20,25 @@ export function App() {
     return <PaletteWindow toolsetId={toolsetId} />;
   }
 
+  const pluginPanelId = pluginPanelRouteId();
+  if (pluginPanelId) {
+    return <PluginPanelWindow panelId={pluginPanelId} />;
+  }
+
   return <MainWindow />;
+}
+
+function pluginPanelRouteId(): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("window") !== "pluginPanel") {
+    return undefined;
+  }
+
+  return params.get("panelId") ?? undefined;
 }
 
 export function isSpin3dDebuggerRoute(): boolean {
