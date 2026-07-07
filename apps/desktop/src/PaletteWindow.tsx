@@ -118,8 +118,8 @@ export function PaletteWindow({
       const contentWidth = rect ? Math.ceil(rect.width) : 0;
       const contentHeight = rect ? Math.ceil(rect.height) : 0;
       void setCurrentWindowLogicalSize({
-        width: contentWidth > 0 ? Math.max(preferredSize.minWidth ?? 0, contentWidth) : preferredSize.width,
-        height: Math.max(preferredSize.height, colorPickerOpen ? 292 : 0, contentHeight)
+        width: contentWidth > 0 ? contentWidth : preferredSize.width,
+        height: Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height)
       }).catch(() => undefined);
     };
 

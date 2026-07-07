@@ -113,7 +113,11 @@ struct ToolsetDefinition {
 struct ToolsetWindowSize {
     width: f64,
     height: f64,
+    // Retained so the manifest still deserializes, but no longer used for the native window
+    // min size — JS now fits each palette window to its content (see ensure_toolset_window).
+    #[allow(dead_code)]
     min_width: Option<f64>,
+    #[allow(dead_code)]
     min_height: Option<f64>,
 }
 
@@ -2025,10 +2029,11 @@ fn ensure_toolset_window<R: Runtime>(
     )
     .title(format!("ChemDraft {}", toolset.title))
     .inner_size(size.width, size.height)
-    .min_inner_size(
-        size.min_width.unwrap_or(size.width),
-        size.min_height.unwrap_or(size.height),
-    )
+    // The window is sized to its actual palette content by the JS side (PaletteWindow
+    // applySize). The manifest's min_width/min_height were tuned for the old docked/web
+    // layout and are far too large for a content-fit floating window (e.g. Art's 760),
+    // which left a big blank area beside the tools — so keep only a tiny hard floor here.
+    .min_inner_size(96.0, 56.0)
     .accept_first_mouse(true)
     .focusable(toolset_window_focusable())
     .resizable(true)
