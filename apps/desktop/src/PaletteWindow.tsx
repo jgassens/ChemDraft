@@ -53,6 +53,7 @@ export function PaletteWindow({
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const lastLoggedSizeRef = useRef<string>("");
   const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
   const animationFrameRef = useRef<number | undefined>(undefined);
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
@@ -110,17 +111,24 @@ export function PaletteWindow({
     const shell = shellRef.current;
     const applySize = () => {
       // Fit the window to the palette's own content in BOTH dimensions. The shell is
-      // width:max-content (see CSS), so its measured width is the natural content width —
-      // shrinking the window when the manifest size is too wide (the blank gap on the Main
-      // bar) and growing it when content is wider than the manifest (crowded rows). Height
-      // still floors at the manifest height so a sparse palette isn't clipped.
+      // width/height:max-content (see CSS), so its measured box is the natural content size:
+      // the window shrinks when the manifest size is too big (blank gaps) and grows when
+      // content is larger (crowded rows). colorPickerOpen reserves room for the open swatch.
       const rect = shell?.getBoundingClientRect();
       const contentWidth = rect ? Math.ceil(rect.width) : 0;
       const contentHeight = rect ? Math.ceil(rect.height) : 0;
-      void setCurrentWindowLogicalSize({
-        width: contentWidth > 0 ? contentWidth : preferredSize.width,
-        height: Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height)
-      }).catch(() => undefined);
+      const width = contentWidth > 0 ? contentWidth : preferredSize.width;
+      const height = Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height);
+      // Dev-only size probe: open the palette window's devtools console to read exact
+      // content-vs-window numbers for any palette that still looks wrong.
+      if (import.meta.env.DEV) {
+        const key = `${contentWidth}x${contentHeight}->${width}x${height}`;
+        if (lastLoggedSizeRef.current !== key) {
+          lastLoggedSizeRef.current = key;
+          console.log(`[palette-size] ${toolset.id}: content ${contentWidth}x${contentHeight} -> window ${width}x${height}`);
+        }
+      }
+      void setCurrentWindowLogicalSize({ width, height }).catch(() => undefined);
     };
 
     applySize();

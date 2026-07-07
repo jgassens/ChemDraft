@@ -2161,12 +2161,14 @@ textarea:focus-visible,
   gap: 0;
   align-content: start;
   justify-items: stretch;
-  /* Hug the palette's natural content width so the floating window can be sized to fit it
-     (see PaletteWindow applySize) — this collapses the Main bar's blank gap and lets a
-     crowded row grow the window instead of overlapping. */
+  /* Hug the palette's natural content in BOTH dimensions so the floating window can be sized
+     to fit it (see PaletteWindow applySize). Critically, height must NOT be 100vh — that
+     stretches the shell to the window and makes the measured height circular, leaving a
+     blank strip below short palettes (e.g. Rings). Let it be content height instead. */
   width: max-content;
+  height: max-content;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
   padding: 0;
   border: 0;
   border-radius: var(--cd-radius-window);
