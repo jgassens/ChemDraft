@@ -7,8 +7,8 @@ Toolsets describe toolbar windows and palettes. They do not own chemistry behavi
 ## Toolbar Item Contract
 
 The registry accepts legacy command-backed items and normalizes them into a richer item
-model. Current production items still include `commandId`, but explicit schema fields now
-describe how the item should render:
+model. Command-backed items still include `commandId`, while commandless controls and
+separators may omit it. Explicit schema fields describe how the item should render:
 
 ```json
 {
@@ -29,7 +29,8 @@ Supported item metadata:
 - `primary`: `command`, `control`, or `none`. If `primary.commandId` is present, it must
   match the compatibility `commandId`.
 - `submenu`: `null` or a non-empty `command-grid` submenu. Submenu commands are included in
-  registry command enumeration and unknown-command validation.
+  registry command enumeration and unknown-command validation. `columns` controls compact
+  icon-grid rendering in the palette flyout renderers.
 - `tooltip`: title, optional description, and optional shortcut text.
 - `layout`: item span metadata (`colSpan`, `rowSpan`).
 - `placement`: group, row, column, and order metadata for customization.

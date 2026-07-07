@@ -2570,6 +2570,12 @@ textarea:focus-visible,
   gap: 2px;
 }
 
+.toolbar-command-flyout-menu[data-toolbar-command-grid-columns] {
+  grid-template-columns: repeat(var(--toolbar-command-flyout-columns), 26px);
+  min-width: max-content;
+  max-width: none;
+}
+
 .toolbar-command-flyout-menu[hidden] {
   display: none;
 }
@@ -2610,9 +2616,27 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+.toolbar-command-flyout-menu[data-toolbar-command-grid-columns] button {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  width: 26px;
+  min-height: 26px;
+  padding: 3px;
+}
+
 .toolbar-command-flyout-menu button .tool-icon-image {
   width: 18px;
   height: 18px;
+}
+
+.toolbar-command-flyout-menu[data-toolbar-command-grid-columns] button span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .toolbar-command-flyout-menu button span {

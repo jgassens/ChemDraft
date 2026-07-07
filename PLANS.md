@@ -7,7 +7,9 @@ The `refactor/toolbars` branch now has a schema-backed toolbar item contract in
 Toolbar items explicitly carry `id`, `kind`, `label`, `primary`, `submenu`, `tooltip`,
 and `layout` metadata, while preserving the legacy command-backed item shape through
 normalization. The desktop palette now consumes normalized item models so manifest-defined
-submenus and grid spans are available to both native palette windows and the web fallback.
+submenus, submenu column counts, and grid spans are available to both native palette
+windows and the web fallback. Command-backed items still use real command IDs; commandless
+control and separator items are legal for future toolbar customization work.
 
 The durable schema notes live in:
 

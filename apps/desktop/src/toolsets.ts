@@ -181,18 +181,6 @@ export function isDisabledPlaceholderCommand(command: CommandSpec): boolean {
   return command.enabled === false && Boolean(command.disabledReason);
 }
 
-function toolsetItemToCommandSpec(item: DesktopToolsetDefinition["groups"][number]["items"][number]): CommandSpec {
-  return commandSpecFromManifest({
-    commandId: item.commandId,
-    title: item.title ?? item.label ?? item.commandId,
-    icon: item.icon,
-    assetName: item.assetName,
-    shortcut: item.shortcutDisplay,
-    disabledReason: item.disabledReason,
-    category: item.category
-  });
-}
-
 export function toolsetItemToPaletteItem(
   item: NormalizedToolsetItem,
   commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()

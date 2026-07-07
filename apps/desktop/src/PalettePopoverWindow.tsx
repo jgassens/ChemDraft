@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ColorPickerPopoverBody } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
@@ -185,8 +185,8 @@ export function PalettePopoverWindow({
     hidePopoverWindow();
   };
 
-  return (
-    <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
+	return (
+	  <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
       {content.kind === "flyout" && content.flyout.variant === "distribute" ? (
         // Plain-text radio choice (Centers / Equal gaps) — icon-less, so it must NOT use the
         // icon+label grid layout below: with no icon element that grid places the lone label in
@@ -216,6 +216,8 @@ export function PalettePopoverWindow({
           role="menu"
           aria-label={`${content.flyout.title} commands`}
           data-command-flyout-menu={content.flyout.flyoutId}
+          data-toolbar-command-grid-columns={content.flyout.columns && content.flyout.columns > 1 ? content.flyout.columns : undefined}
+          style={toolbarCommandFlyoutGridStyle(content.flyout.columns)}
         >
           {content.flyout.commands.map((command) => (
             <button
@@ -257,4 +259,13 @@ export function PalettePopoverWindow({
       )}
     </div>
   );
+}
+
+function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
+  if (columns === undefined || columns <= 1) {
+    return undefined;
+  }
+  return {
+    "--toolbar-command-flyout-columns": String(columns)
+  } as CSSProperties;
 }

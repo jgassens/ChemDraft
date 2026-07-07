@@ -767,8 +767,10 @@ describe("ToolPalette arrange flyouts", () => {
     if (!transformButton) {
       throw new Error("Expected transform flyout button.");
     }
-    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
-    expect(transformMenu?.hidden).toBe(true);
+	    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
+	    expect(transformMenu?.hidden).toBe(true);
+	    expect(transformMenu?.getAttribute("data-toolbar-command-grid-columns")).toBe("2");
+	    expect(transformMenu?.style.getPropertyValue("--toolbar-command-flyout-columns")).toBe("2");
 
     act(() => {
       transformButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -817,11 +819,12 @@ describe("ToolPalette arrange flyouts", () => {
 
     // …and the palette hands up the flyout's id + a command snapshot to open in that window.
     expect(onRequestFlyout).toHaveBeenCalledTimes(1);
-    const request = onRequestFlyout.mock.calls[0][0] as {
-      flyout: { flyoutId: string; commands: Array<{ id: string }> };
-    };
-    expect(request.flyout.flyoutId).toBe("transform");
-    expect(request.flyout.commands.map((command) => command.id)).toContain("layout.flipVertical");
+	    const request = onRequestFlyout.mock.calls[0][0] as {
+	      flyout: { flyoutId: string; columns?: number; commands: Array<{ id: string }> };
+	    };
+	    expect(request.flyout.flyoutId).toBe("transform");
+	    expect(request.flyout.columns).toBe(2);
+	    expect(request.flyout.commands.map((command) => command.id)).toContain("layout.flipVertical");
   });
 
   // Regression guard for the "C…" / "E…" truncation bug: distribute-mode commands are icon-less

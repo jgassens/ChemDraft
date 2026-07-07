@@ -3961,17 +3961,19 @@ function ToolbarPaletteItem({
           text={tooltipText}
         />
       </button>
-      {hasSubmenu ? (
-        <div
-          className="toolbar-command-flyout-menu"
-          role="menu"
-          aria-label={`${submenu?.title ?? item.label} commands`}
-          data-command-flyout-menu={submenu?.id}
-          data-toolbar-submenu="true"
-          data-toolbar-submenu-owner-id={item.id}
-          hidden={!menuOpen}
-          id={menuId}
-        >
+	      {hasSubmenu ? (
+	        <div
+	          className="toolbar-command-flyout-menu"
+	          role="menu"
+	          aria-label={`${submenu?.title ?? item.label} commands`}
+	          data-command-flyout-menu={submenu?.id}
+	          data-toolbar-command-grid-columns={submenu?.columns && submenu.columns > 1 ? submenu.columns : undefined}
+	          data-toolbar-submenu="true"
+	          data-toolbar-submenu-owner-id={item.id}
+	          hidden={!menuOpen}
+	          id={menuId}
+	          style={toolbarCommandFlyoutGridStyle(submenu?.columns)}
+	        >
           {submenuCommands.map((command) => {
             const disabled = command.enabled === false;
             const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
@@ -3985,9 +3987,10 @@ function ToolbarPaletteItem({
                 disabled={disabled}
                 data-command-id={command.id}
                 data-shortcut-label={itemShortcut ?? "No shortcut"}
-                data-toolbar-asset={command.assetName}
-                data-tooltip={itemText}
-                key={command.id}
+	                data-toolbar-asset={command.assetName}
+	                data-tooltip={itemText}
+	                key={command.id}
+	                title={itemText}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -4013,6 +4016,15 @@ function ToolbarPaletteItem({
       ) : null}
     </span>
   );
+}
+
+function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
+  if (columns === undefined || columns <= 1) {
+    return undefined;
+  }
+  return {
+    "--toolbar-command-flyout-columns": String(columns)
+  } as CSSProperties;
 }
 
 function ToolbarItemTooltip({

@@ -2700,7 +2700,7 @@ describe("ChemDraft desktop shell", () => {
     desktopToolsetRegistry.listToolsets().forEach((toolset) => {
       toolset.groups.forEach((group) => {
         group.items.forEach((item) => {
-          if (!item.assetName) {
+          if (!item.assetName || !item.commandId) {
             return;
           }
           const assetNames = assetNamesByCommandId.get(item.commandId) ?? new Set<string>();

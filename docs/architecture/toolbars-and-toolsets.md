@@ -20,7 +20,8 @@ tooltips, and later customization do not have to infer intent from a bare comman
 
 Item fields:
 
-- `commandId`: required compatibility anchor for the command-backed item model.
+- `commandId`: compatibility anchor for command-backed items. Non-command controls and
+  separators may omit it.
 - `id`: stable item identity for customization and DOM metadata. Defaults to `commandId`
   when omitted.
 - `kind`: `button`, `toggle`, `control`, or `separator`. Defaults to `button`.
@@ -29,17 +30,20 @@ Item fields:
   `{ "type": "command", "commandId": "..." }`; `control` and `none` are reserved for
   non-command UI items.
 - `submenu`: either `null` or a `{ "type": "command-grid", ... }` submenu with command
-  items. Empty submenus are invalid.
+  items. Empty submenus are invalid. `columns` controls compact icon-grid rendering for
+  both inline flyouts and native popover flyout windows.
 - `tooltip`: display metadata with `title`, optional `description`, and optional shortcut
   text. Disabled-state reasons still come from the command spec.
 - `layout`: item-span metadata such as `colSpan` and `rowSpan`.
 - `placement`: customization placement metadata such as group, row, column, and order.
 
-If an item declares both `commandId` and `primary.commandId`, they must match. This keeps
-the old command-ID contract honest while giving the renderer a richer item model. The
-registry normalizes legacy items and explicit schema items into `NormalizedToolsetItem`,
-and command enumeration includes primary commands plus submenu commands so validation and
-plugin/user layout state can reject unknown commands consistently.
+If a command-backed item declares both `commandId` and `primary.commandId`, they must
+match. This keeps the old command-ID contract honest while giving the renderer a richer
+item model. Items with `primary: { "type": "control" }`, `primary: { "type": "none" }`,
+or `kind: "separator"` may be commandless. The registry normalizes legacy items and
+explicit schema items into `NormalizedToolsetItem`, and command enumeration includes
+primary commands plus submenu commands so validation and plugin/user layout state can
+reject unknown commands consistently.
 
 Toolset-level `gridLayout` also supports `gap` and `padding`, and item overrides may carry
 `layout` span overrides. Source manifests remain the canonical contribution format; user

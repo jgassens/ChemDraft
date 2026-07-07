@@ -157,11 +157,13 @@ describe("ToolPalette schema-backed items", () => {
       dispatchPointerButton(button, "pointerup");
     });
 
-    const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="bond-tools"]');
-    expect(menu?.hidden).toBe(false);
-    expect(onInvoke).not.toHaveBeenCalled();
-    await act(async () => root.unmount());
-  });
+	    const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="bond-tools"]');
+	    expect(menu?.hidden).toBe(false);
+	    expect(menu?.getAttribute("data-toolbar-command-grid-columns")).toBe("2");
+	    expect(menu?.style.getPropertyValue("--toolbar-command-flyout-columns")).toBe("2");
+	    expect(onInvoke).not.toHaveBeenCalled();
+	    await act(async () => root.unmount());
+	  });
 
   it("does not open a submenu for null-submenu items during long-press", async () => {
     vi.useFakeTimers();

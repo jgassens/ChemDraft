@@ -91,7 +91,7 @@ export const ToolsetItemLayoutSchema = z
 
 export const ToolsetItemSchema = z
   .object({
-    commandId: CommandIdSchema,
+    commandId: CommandIdSchema.optional(),
     id: NonEmptyStringSchema.optional(),
     kind: ToolsetItemKindSchema.optional(),
     label: NonEmptyStringSchema.optional(),
@@ -109,7 +109,21 @@ export const ToolsetItemSchema = z
     tooltip: ToolsetTooltipSchema.optional(),
     layout: ToolsetItemLayoutSchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((item, context) => {
+    if (item.primary === undefined && item.commandId === undefined && item.kind !== "separator") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Toolset items require commandId, primary, or separator kind."
+      });
+    }
+    if (item.primary?.type === "command" && item.commandId !== undefined && item.primary.commandId !== item.commandId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Toolset item commandId must match primary.commandId."
+      });
+    }
+  });
 
 export const ToolsetGroupSchema = z
   .object({
@@ -378,7 +392,9 @@ export function normalizeToolsetItem<TIcon extends string = string, TAssetName e
     );
   }
 
-  const primary: ToolsetPrimaryAction = item.primary ?? { type: "command", commandId: item.commandId };
+  const primary: ToolsetPrimaryAction = item.primary ?? (item.commandId
+    ? { type: "command", commandId: item.commandId }
+    : { type: "none" });
   const id = item.id
     ?? item.commandId
     ?? (primary.type === "control" ? primary.controlId : undefined)
@@ -513,18 +529,22 @@ function pruneUnknownToolsetCommands<TIcon extends string, TAssetName extends st
   registeredCommandIds: ReadonlySet<string>,
   warn: (warning: string) => void
 ): ToolsetDefinition<TIcon, TAssetName> | undefined {
-  const groups = toolset.groups
-    .map((group) => ({
-      ...group,
-      items: group.items.flatMap((item) => {
-        if (registeredCommandIds.has(item.commandId)) {
-          const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
-          return [{ ...item, submenu }];
-        }
-        warn(`User toolset "${toolset.id}" dropped unknown command "${item.commandId}".`);
-        return [];
-      })
-    }))
+	const groups = toolset.groups
+	  .map((group) => ({
+	    ...group,
+	    items: group.items.flatMap((item) => {
+	      const commandIds = toolsetItemCommandIds(item);
+	      const unknownCommandIds = commandIds.filter((commandId) => !registeredCommandIds.has(commandId));
+	      if (unknownCommandIds.length === 0) {
+	        const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
+	        return [{ ...item, submenu }];
+	      }
+	      unknownCommandIds.forEach((commandId) => {
+	        warn(`User toolset "${toolset.id}" dropped unknown command "${commandId}".`);
+	      });
+	      return [];
+	    })
+	  }))
     .filter((group) => group.items.length > 0);
 
   if (groups.length === 0) {
@@ -636,9 +656,9 @@ function applyUserToolsetOverride<TIcon extends string, TAssetName extends strin
 
   const groups = reorderById(toolset.groups, override.groupOrder ?? [], (group) => group.id).map((group) => {
     const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], (item) => item.commandId)
-      .filter((item) => !hiddenCommandIds.has(item.commandId))
+      .filter((item) => item.commandId === undefined || !hiddenCommandIds.has(item.commandId))
       .map((item) => {
-        const itemOverride = itemOverrides.get(item.commandId);
+        const itemOverride = item.commandId === undefined ? undefined : itemOverrides.get(item.commandId);
         if (!itemOverride) {
           return item;
         }
@@ -812,7 +832,7 @@ function toolsetCommandIds<TIcon extends string, TAssetName extends string>(
 function toolsetItemCommandIds<TIcon extends string, TAssetName extends string>(
   item: ToolsetItemDefinition<TIcon, TAssetName>
 ): string[] {
-  const ids = [item.commandId];
+  const ids = item.commandId ? [item.commandId] : [];
   if (item.primary?.type === "command") {
     ids.push(item.primary.commandId);
   }

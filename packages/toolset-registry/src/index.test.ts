@@ -173,6 +173,41 @@ describe("toolset registry", () => {
     });
   });
 
+  it("normalizes control and separator items without requiring fake command ids", () => {
+    const control = normalizeToolsetItem({
+      id: "style.color.control",
+      kind: "control",
+      label: "Color",
+      primary: { type: "control", controlId: "style.color" },
+      layout: { colSpan: 2 }
+    });
+    const separator = normalizeToolsetItem(
+      { kind: "separator" },
+      { toolsetId: "core.fixture", groupId: "fixture.tools", itemIndex: 1 }
+    );
+
+    expect(control).toMatchObject({
+      id: "style.color.control",
+      kind: "control",
+      label: "Color",
+      primary: { type: "control", controlId: "style.color" },
+      commandId: undefined,
+      layout: { colSpan: 2, rowSpan: 1 }
+    });
+    expect(separator).toMatchObject({
+      id: "core.fixture.fixture.tools.separator.1",
+      kind: "separator",
+      primary: { type: "none" },
+      commandId: undefined
+    });
+    expect(ToolsetItemSchema.parse({
+      primary: { type: "control", controlId: "style.color" },
+      label: "Color"
+    }).commandId).toBeUndefined();
+    expect(ToolsetItemSchema.parse({ kind: "separator" }).commandId).toBeUndefined();
+    expect(() => ToolsetItemSchema.parse({ label: "No action" })).toThrow(/commandId, primary, or separator/);
+  });
+
   it("rejects empty submenu objects but accepts null or missing submenus", () => {
     expect(() => ToolsetItemSchema.parse({ commandId: "tool.bond", submenu: { type: "command-grid", items: [] } })).toThrow();
     expect(ToolsetItemSchema.parse({ commandId: "tool.bond", submenu: null }).submenu).toBeNull();
@@ -357,6 +392,42 @@ describe("toolset registry", () => {
       source: "user",
       clonedFromToolsetId: "core.fixture"
     });
+  });
+
+  it("keeps non-command user toolset items while validating real command ids", () => {
+    const customized = applyToolsetLayoutState(
+      [],
+      {
+        version: 1,
+        userToolsets: [
+          {
+            id: "user.controls",
+            title: "Controls",
+            source: "user",
+            defaultVisible: true,
+            defaultMode: "floating",
+            groups: [
+              {
+                id: "user.controls.tools",
+                items: [
+                  { commandId: "tool.select", title: "Selection Tool" },
+                  { id: "style.color.control", label: "Color", primary: { type: "control", controlId: "style.color" } },
+                  { id: "divider", kind: "separator", primary: { type: "none" } }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      { registeredCommandIds: ["tool.select"] }
+    );
+
+    expect(customized[0].groups[0].items.map((item) => item.id ?? item.commandId)).toEqual([
+      "tool.select",
+      "style.color.control",
+      "divider"
+    ]);
+    expect(new ToolsetRegistry(customized).listCommandIds()).toEqual(["tool.select"]);
   });
 
   it("rejects duplicate user toolset ids and invalid command ids", () => {
