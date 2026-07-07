@@ -805,6 +805,50 @@ describe("ToolPalette arrange flyouts", () => {
     expect(request.flyout.commands.map((command) => command.id)).toContain("layout.flipVertical");
   });
 
+  // Regression guard for the "C…" / "E…" truncation bug: distribute-mode commands are icon-less
+  // plain-text choices, so PalettePopoverWindow must render them via the flex-based
+  // toolbar-distribute-menu layout — NOT the icon+label grid the other flyouts use, which places a
+  // lone icon-less label in its narrow 20px icon column and ellipsizes it. The palette's job is
+  // just to tag the snapshot so the popover window picks the right layout.
+  it("tags the distribute-mode flyout snapshot so the popover renders full labels, not icons", () => {
+    const onRequestFlyout = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showArtStyleControls: true,
+        onRequestFlyout,
+        onInvoke: vi.fn()
+      }));
+    });
+
+    const distributeButton = container.querySelector<HTMLButtonElement>(".distribute-mode-button");
+    if (!distributeButton) {
+      throw new Error("Expected distribute-mode button.");
+    }
+
+    act(() => {
+      distributeButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+
+    expect(onRequestFlyout).toHaveBeenCalledTimes(1);
+    const request = onRequestFlyout.mock.calls[0][0] as {
+      flyout: {
+        variant?: string;
+        commands: Array<{ id: string; title: string; assetName?: string; icon?: string }>;
+      };
+    };
+    expect(request.flyout.variant).toBe("distribute");
+    expect(request.flyout.commands.map((command) => command.title)).toEqual(["Centers", "Equal gaps"]);
+    // Confirms these really are icon-less — the exact condition that trips the grid-column bug if
+    // the popover window ever renders a "distribute" flyout through the icon+label layout again.
+    for (const command of request.flyout.commands) {
+      expect(command.assetName).toBeUndefined();
+      expect(command.icon).toBeUndefined();
+    }
+  });
+
   it("uses ungroup as the group flyout primary action when a group is selected", () => {
     const onInvoke = vi.fn();
     act(() => {

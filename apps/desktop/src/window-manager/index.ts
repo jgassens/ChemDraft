@@ -191,6 +191,13 @@ export interface ToolsetFlyoutSnapshot {
   flyoutId: string;
   title: string;
   commands: ToolsetFlyoutCommandSnapshot[];
+  /**
+   * "menu" (default): icon + label command list (shape/align/layer/…). "distribute": a plain-text
+   * radio choice (Centers / Equal gaps) with no icon gutter — matches the icon-less layout the
+   * inline toolbar-distribute-menu always used; without this the grid in the icon+label layout
+   * places a lone icon-less label into the narrow icon column and it gets ellipsized.
+   */
+  variant?: "menu" | "distribute";
 }
 
 /**

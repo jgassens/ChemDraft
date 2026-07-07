@@ -187,7 +187,30 @@ export function PalettePopoverWindow({
 
   return (
     <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
-      {content.kind === "flyout" ? (
+      {content.kind === "flyout" && content.flyout.variant === "distribute" ? (
+        // Plain-text radio choice (Centers / Equal gaps) — icon-less, so it must NOT use the
+        // icon+label grid layout below: with no icon element that grid places the lone label in
+        // its narrow icon column and ellipsizes it (the "C…" / "E…" bug).
+        <div
+          className="toolbar-distribute-menu"
+          role="menu"
+          aria-label={content.flyout.title}
+          data-command-flyout-menu={content.flyout.flyoutId}
+        >
+          {content.flyout.commands.map((command) => (
+            <button
+              key={command.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={command.active}
+              data-command-id={command.id}
+              onClick={() => chooseFlyoutCommand(command)}
+            >
+              {command.title}
+            </button>
+          ))}
+        </div>
+      ) : content.kind === "flyout" ? (
         <div
           className="toolbar-command-flyout-menu"
           role="menu"

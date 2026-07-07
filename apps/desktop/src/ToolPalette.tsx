@@ -4219,6 +4219,7 @@ function DistributeCommandIconButton({
         flyout: {
           flyoutId: `distribute.${command.id}`,
           title: command.title,
+          variant: "distribute",
           commands: [
             {
               id: distributeModeCommandIds.centers,

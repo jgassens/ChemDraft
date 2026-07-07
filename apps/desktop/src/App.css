@@ -146,6 +146,17 @@ body.palette-popover-window-body #root {
   box-shadow: none;
 }
 
+/* The distribute-mode chooser (Centers / Equal gaps) hosted in the popover window. */
+.palette-popover-shell .toolbar-distribute-menu {
+  position: static;
+  top: auto;
+  left: auto;
+  z-index: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 html.spin3d-debugger-window-html {
   min-width: 0;
   background: var(--cd-bg-panel-raised);
