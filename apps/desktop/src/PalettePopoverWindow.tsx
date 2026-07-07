@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ColorPickerPopoverBody } from "./ToolPalette";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
 import {
+  listenForToolsetPopoverDismiss,
   listenForToolsetTextStyle,
   requestToolsetTextStyle,
   sendPaletteCommandCancel,
@@ -104,6 +105,23 @@ export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Click-away dismissal: the document window and palettes broadcast a dismiss on any pointer-down
+  // that isn't this popover (this popover is its own window, so its own clicks never reach those
+  // emitters). Hide on that signal, so the picker persists only while you interact with it.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetPopoverDismiss(() => {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().hide())
+        .catch(() => undefined);
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
   }, []);
 
   const previewColor = (color: string) => {

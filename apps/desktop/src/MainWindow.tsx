@@ -459,6 +459,7 @@ import {
   broadcastToolsetActiveTool,
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
+  dismissToolsetPopovers,
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
@@ -7745,6 +7746,20 @@ export function MainWindow({
       cancelled = true;
     };
   }, [effectiveNativePalette, toolsetRegistry]);
+
+  // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
+  // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the
+  // in-window fallback there is no separate popover window to dismiss.
+  useEffect(() => {
+    if (!effectiveNativePalette) {
+      return;
+    }
+    const handlePointerDown = () => {
+      void dismissToolsetPopovers().catch(() => undefined);
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [effectiveNativePalette]);
 
   useEffect(() => {
     let active = true;

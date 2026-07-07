@@ -148,6 +148,33 @@ export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void
 /** Route param identifying a palette popover webview (see App.tsx / PalettePopoverWindow). */
 export const TOOLSET_POPOVER_WINDOW_KIND = "toolsetPopover";
 
+/** Broadcast that any open palette popover (e.g. the colour picker) should dismiss itself. */
+export const TOOLSET_POPOVER_DISMISS_EVENT = "chemdraft://dismiss-toolset-popovers";
+
+/**
+ * Ask any open palette popover window to close. The document window and the palettes fire this on
+ * a pointer-down anywhere that isn't the popover itself (a popover lives in its own window, so its
+ * own clicks never reach these emitters) — giving the popover "stays while you click inside it,
+ * closes when you click anything else" behaviour without depending on macOS key-window semantics.
+ */
+export async function dismissToolsetPopovers(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_POPOVER_DISMISS_EVENT).catch(() => undefined);
+}
+
+export async function listenForToolsetPopoverDismiss(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(TOOLSET_POPOVER_DISMISS_EVENT, () => handler());
+}
+
 export async function toggleSpin3dDebuggerWindow(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;

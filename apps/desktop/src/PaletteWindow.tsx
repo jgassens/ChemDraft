@@ -15,6 +15,7 @@ import {
   closeToolsetWindow,
   closeToolsetPopoverWindow,
   currentWindowLogicalPosition,
+  dismissToolsetPopovers,
   openToolsetPopoverWindow,
   listenForToolsetActiveTool,
   listenForToolsetTextStyle,
@@ -249,6 +250,22 @@ export function PaletteWindow({
       void closeToolsetPopoverWindow(toolset.id).catch(() => undefined);
     };
   }, [toolset.id]);
+
+  // A pointer-down anywhere in this palette that isn't a colour swatch dismisses any open popover
+  // ("click elsewhere closes it"). The swatch is excluded so re-clicking it repositions its popover
+  // rather than close-then-reopen. The popover lives in its own window, so its own clicks never
+  // reach this listener.
+  useEffect(() => {
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".toolbar-color-trigger")) {
+        return;
+      }
+      void dismissToolsetPopovers().catch(() => undefined);
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, []);
 
   const hidePaletteWindow = (event: ReactMouseEvent<HTMLButtonElement> | PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
