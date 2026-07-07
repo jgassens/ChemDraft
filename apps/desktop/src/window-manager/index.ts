@@ -175,6 +175,84 @@ export async function listenForToolsetPopoverDismiss(handler: () => void): Promi
   return listen(TOOLSET_POPOVER_DISMISS_EVENT, () => handler());
 }
 
+/** One command in a flyout dropdown, snapshotted at open time so the popover window can render it. */
+export interface ToolsetFlyoutCommandSnapshot {
+  id: string;
+  title: string;
+  assetName?: string;
+  icon?: string;
+  enabled: boolean;
+  active: boolean;
+  disabledReason?: string;
+  shortcutLabel?: string;
+}
+
+export interface ToolsetFlyoutSnapshot {
+  flyoutId: string;
+  title: string;
+  commands: ToolsetFlyoutCommandSnapshot[];
+}
+
+/**
+ * What a palette popover window should show. The window is content-agnostic (one per palette),
+ * so opening the colour picker vs a flyout dropdown just swaps the content in the same window —
+ * no per-kind windows to keep in sync, and no way for a stale kind to coexist.
+ */
+export type ToolsetPopoverContent =
+  | { kind: "artColor" }
+  | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot };
+
+export type ToolsetPopoverContentPayload = { toolsetId: string } & ToolsetPopoverContent;
+
+const TOOLSET_POPOVER_CONTENT_EVENT = "chemdraft://toolset-popover-content";
+const TOOLSET_POPOVER_CONTENT_REQUEST_EVENT = "chemdraft://toolset-popover-content-request";
+
+/** Palette → popover: set what the popover window renders (its owner sends this on every open). */
+export async function setToolsetPopoverContent(toolsetId: string, content: ToolsetPopoverContent): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, ...content }).catch(
+    () => undefined
+  );
+}
+
+export async function listenForToolsetPopoverContent(
+  handler: (payload: ToolsetPopoverContentPayload) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, (event) => handler(event.payload));
+}
+
+/** Popover → palette: "I just mounted, resend my content" — closes the create-vs-emit startup race. */
+export async function requestToolsetPopoverContent(toolsetId: string): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, { toolsetId }).catch(() => undefined);
+}
+
+export async function listenForToolsetPopoverContentRequests(
+  handler: (toolsetId: string) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ toolsetId: string }>(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, (event) =>
+    handler(event.payload.toolsetId)
+  );
+}
+
 export async function toggleSpin3dDebuggerWindow(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;

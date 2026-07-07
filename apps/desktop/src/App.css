@@ -134,6 +134,18 @@ body.palette-popover-window-body #root {
   box-shadow: none;
 }
 
+/* A flyout dropdown (shape / align / …) hosted in the popover window: fill it instead of being an
+   absolutely-positioned overlay clipped by the palette. The window provides the panel + shadow. */
+.palette-popover-shell .toolbar-command-flyout-menu {
+  position: static;
+  top: auto;
+  left: auto;
+  z-index: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 html.spin3d-debugger-window-html {
   min-width: 0;
   background: var(--cd-bg-panel-raised);

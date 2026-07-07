@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
-import { ToolPalette, type ToolbarPopoverAnchor } from "./ToolPalette";
+import { ToolPalette, type ToolbarFlyoutRequest, type ToolbarPopoverAnchor } from "./ToolPalette";
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
@@ -18,10 +18,12 @@ import {
   dismissToolsetPopovers,
   openToolsetPopoverWindow,
   listenForToolsetActiveTool,
+  listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
+  setToolsetPopoverContent,
   sendPaletteCommand,
   sendPaletteCommandCancel,
   sendPaletteCommandCommit,
@@ -32,6 +34,7 @@ import {
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetMoleculeInspectorPayload,
+  type ToolsetPopoverContent,
   type ToolsetWindowPosition
 } from "./window-manager";
 
@@ -227,21 +230,35 @@ export function PaletteWindow({
     void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
   };
 
-  // Open the colour picker in its own floating window at the swatch, so it overflows this little
-  // palette and floats over the document. `anchor` is the swatch's client rect inside this webview;
-  // add our own window position to get screen coords. Clicking the swatch always (re)opens and
-  // repositions — deliberately NOT a toggle: the panel hides itself on app-deactivate
-  // (hidesOnDeactivate), which a local "is it open?" flag can't observe, so a toggle would go stale
-  // and eat the next click. Dismissal is Escape (in the popover) or app-deactivate.
-  const openArtColorPopover = (anchor: ToolbarPopoverAnchor) => {
+  // The colour picker and the flyout dropdowns open in this palette's own floating popover window
+  // (they overflow the little palette and float over the document). The window is content-agnostic,
+  // so opening one after another just swaps its content — no second window to keep in sync. `anchor`
+  // is a client rect inside this webview; add our window position to get screen coords. We remember
+  // the last content so the window can re-request it after it mounts (the create-vs-emit race).
+  const lastPopoverContentRef = useRef<ToolsetPopoverContent>({ kind: "artColor" });
+
+  const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
+    lastPopoverContentRef.current = content;
     void (async () => {
       const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
       const screenX = (windowPosition?.x ?? 0) + anchor.left;
       const screenY = (windowPosition?.y ?? 0) + anchor.bottom + 4;
-      await openToolsetPopoverWindow(toolset.id, "artColor", screenX, screenY);
-      // Make sure the freshly shown picker reflects the current object's colour.
-      await requestToolsetTextStyle().catch(() => undefined);
+      await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
+      await setToolsetPopoverContent(toolset.id, content);
     })();
+  };
+
+  // Clicking the swatch always (re)opens + repositions — deliberately NOT a toggle: the panel hides
+  // itself on app-deactivate (hidesOnDeactivate), which a local "is it open?" flag can't observe, so
+  // a toggle would go stale and eat the next click. Dismissal is Escape / click-away / app-deactivate.
+  const openArtColorPopover = (anchor: ToolbarPopoverAnchor) => {
+    openPopover(anchor, "artColor", { kind: "artColor" });
+    // Make sure the freshly shown picker reflects the current object's colour.
+    void requestToolsetTextStyle().catch(() => undefined);
+  };
+
+  const openFlyoutPopover = (request: ToolbarFlyoutRequest) => {
+    openPopover(request.anchor, "flyout", { kind: "flyout", flyout: request.flyout });
   };
 
   // If this palette goes away, don't leave its popover window orphaned on screen.
@@ -251,14 +268,31 @@ export function PaletteWindow({
     };
   }, [toolset.id]);
 
-  // A pointer-down anywhere in this palette that isn't a colour swatch dismisses any open popover
-  // ("click elsewhere closes it"). The swatch is excluded so re-clicking it repositions its popover
-  // rather than close-then-reopen. The popover lives in its own window, so its own clicks never
-  // reach this listener.
+  // The popover window re-requests its content once it mounts (create-vs-emit race); answer with
+  // whatever we last opened for this palette.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetPopoverContentRequests((requestedToolsetId) => {
+      if (requestedToolsetId !== toolset.id) {
+        return;
+      }
+      void setToolsetPopoverContent(toolset.id, lastPopoverContentRef.current).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
+  }, [toolset.id]);
+
+  // A pointer-down anywhere in this palette that isn't a popover trigger dismisses any open popover
+  // ("click elsewhere closes it"). The colour swatch and flyout buttons are excluded so re-clicking
+  // one repositions/swaps its popover rather than close-then-reopen. The popover lives in its own
+  // window, so its own clicks never reach this listener.
   useEffect(() => {
     const handlePointerDown = (event: globalThis.PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest(".toolbar-color-trigger")) {
+      if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button")) {
         return;
       }
       void dismissToolsetPopovers().catch(() => undefined);
@@ -491,6 +525,7 @@ export function PaletteWindow({
         currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}
         onRequestColorPopover={openArtColorPopover}
+        onRequestFlyout={openFlyoutPopover}
         onArtStylePreview={previewCommand}
         onArtStyleCommit={commitPreviewCommand}
         onArtStyleCancel={cancelPreviewCommand}

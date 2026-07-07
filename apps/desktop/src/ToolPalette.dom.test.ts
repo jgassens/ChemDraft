@@ -769,6 +769,42 @@ describe("ToolPalette arrange flyouts", () => {
     expect(transformMenu?.hidden).toBe(true);
   });
 
+  it("redirects arrange flyouts to their own window when onRequestFlyout is provided", () => {
+    const onRequestFlyout = vi.fn();
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        showArtStyleControls: true,
+        onRequestFlyout,
+        onInvoke
+      }));
+    });
+
+    const transformButton = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="transform"]');
+    if (!transformButton) {
+      throw new Error("Expected transform flyout button.");
+    }
+
+    act(() => {
+      transformButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+
+    // The inline (clipping) menu must NOT open — a floating window hosts the flyout instead.
+    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
+    expect(transformMenu?.hidden).toBe(true);
+
+    // …and the palette hands up the flyout's id + a command snapshot to open in that window.
+    expect(onRequestFlyout).toHaveBeenCalledTimes(1);
+    const request = onRequestFlyout.mock.calls[0][0] as {
+      flyout: { flyoutId: string; commands: Array<{ id: string }> };
+    };
+    expect(request.flyout.flyoutId).toBe("transform");
+    expect(request.flyout.commands.map((command) => command.id)).toContain("layout.flipVertical");
+  });
+
   it("uses ungroup as the group flyout primary action when a group is selected", () => {
     const onInvoke = vi.fn();
     act(() => {

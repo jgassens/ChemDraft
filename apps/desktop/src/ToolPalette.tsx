@@ -98,7 +98,12 @@ import { Icon } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import type { ToolsetArtPaintTarget, ToolsetArtStylePayload, ToolsetMoleculeInspectorPayload } from "./window-manager";
+import type {
+  ToolsetArtPaintTarget,
+  ToolsetArtStylePayload,
+  ToolsetFlyoutSnapshot,
+  ToolsetMoleculeInspectorPayload
+} from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -115,6 +120,12 @@ export type ToolbarPopoverAnchor = {
   top: number;
   right: number;
   bottom: number;
+};
+
+/** A flyout dropdown asking to open in its own floating window: where to anchor + what to render. */
+export type ToolbarFlyoutRequest = {
+  anchor: ToolbarPopoverAnchor;
+  flyout: ToolsetFlyoutSnapshot;
 };
 
 const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
@@ -249,6 +260,7 @@ export function ToolPalette({
   currentTextScript,
   onColorPickerOpenChange,
   onRequestColorPopover,
+  onRequestFlyout,
   onArtStylePreview,
   onArtStyleCommit,
   onArtStyleCancel,
@@ -276,6 +288,7 @@ export function ToolPalette({
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
   onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onArtStylePreview?: (commandId: string) => void;
   onArtStyleCommit?: (commandId: string) => void;
   onArtStyleCancel?: () => void;
@@ -334,6 +347,7 @@ export function ToolPalette({
       tooltipId={tooltipId}
       tooltipVisible={visibleTooltipId === tooltipId}
       onInvoke={onInvoke}
+      onRequestFlyout={onRequestFlyout}
       onTooltipEnter={() => requestTooltip(tooltipId)}
       onTooltipLeave={() => clearTooltip(tooltipId)}
     />
@@ -3889,6 +3903,7 @@ function CommandFlyoutButton({
   tooltipVisible,
   onTooltipEnter,
   onTooltipLeave,
+  onRequestFlyout,
   onInvoke
 }: {
   commands: CommandSpec[];
@@ -3901,6 +3916,7 @@ function CommandFlyoutButton({
   tooltipVisible?: boolean;
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -3930,9 +3946,35 @@ function CommandFlyoutButton({
 
   const openMenu = useCallback(() => {
     holdOpenedRef.current = true;
-    setMenuOpen(true);
     onTooltipLeave?.();
-  }, [onTooltipLeave]);
+    // Native palettes hand the flyout up so it opens in its own floating window (overflows the
+    // little palette instead of clipping). Web / docked palettes fall through to the inline menu.
+    if (onRequestFlyout) {
+      const rect = shellRef.current?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      onRequestFlyout({
+        anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+        flyout: {
+          flyoutId,
+          title,
+          commands: commands.map((command) => ({
+            id: command.id,
+            title: command.title,
+            assetName: command.assetName,
+            icon: command.icon,
+            enabled: command.enabled !== false,
+            active: command.id === activeCommandId,
+            disabledReason: command.disabledReason,
+            shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut
+          }))
+        }
+      });
+      return;
+    }
+    setMenuOpen(true);
+  }, [onRequestFlyout, onTooltipLeave, flyoutId, title, commands, activeCommandId]);
 
   const chooseCommand = useCallback((command: CommandSpec) => {
     if (command.enabled === false) {

@@ -1,31 +1,55 @@
 import { useEffect, useRef, useState } from "react";
 import { ColorPickerPopoverBody } from "./ToolPalette";
+import { Icon, type IconName } from "./icons";
+import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
 import {
+  listenForToolsetPopoverContent,
   listenForToolsetPopoverDismiss,
   listenForToolsetTextStyle,
+  requestToolsetPopoverContent,
   requestToolsetTextStyle,
+  sendPaletteCommand,
   sendPaletteCommandCancel,
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
   setCurrentWindowLogicalSize,
   type ToolsetArtPaintTarget,
-  type ToolsetArtStylePayload
+  type ToolsetArtStylePayload,
+  type ToolsetFlyoutCommandSnapshot,
+  type ToolsetPopoverContent
 } from "./window-manager";
 
 /**
- * A palette popover (currently the Art fill/stroke color picker) rendered in its OWN small
- * floating window so it overflows the little palette and floats over the document — the native
- * way (a webview can't paint outside its window). It reuses the exact same `ColorPickerPopoverBody`
- * the inline/web palette uses, fed by the shared toolset-text-style broadcast and routing colour
- * changes through the same preview/commit transport the palette already uses.
+ * A palette popover rendered in its OWN small floating window so it overflows the little palette
+ * and floats over the document — the native way (a webview can't paint outside its window). It's
+ * content-agnostic: one window per palette, and its owner (PaletteWindow) pushes what to show —
+ * the Art colour picker or a flyout dropdown (shape/align/etc.) — so opening one after the other
+ * just swaps the content in place; there's never a stale second window to keep in sync.
  *
- * Dismissal: Escape here, re-clicking the swatch (the palette toggles it closed), or the app
- * deactivating (the panel hides on deactivate). It deliberately does NOT close on every commit —
- * the picker commits on each RGB/hex keystroke, which would make the window vanish mid-edit.
+ * Dismissal (both kinds): Escape, a click anywhere outside (the dismiss broadcast), or the app
+ * deactivating (hidesOnDeactivate). The colour picker deliberately does NOT close on every commit
+ * (it commits per RGB/hex keystroke); a flyout closes the moment you pick a command.
  */
-export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string; kind?: string }) {
+function hidePopoverWindow() {
+  void import("@tauri-apps/api/window")
+    .then(({ getCurrentWindow }) => getCurrentWindow().hide())
+    .catch(() => undefined);
+}
+
+export function PalettePopoverWindow({
+  toolsetId = "core.art",
+  kind = "artColor"
+}: {
+  toolsetId?: string;
+  kind?: string;
+}) {
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const [content, setContent] = useState<ToolsetPopoverContent>(() =>
+    kind === "flyout"
+      ? { kind: "flyout", flyout: { flyoutId: "", title: "", commands: [] } }
+      : { kind: "artColor" }
+  );
   const [artStyle, setArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [artStyleTarget, setArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [fallbackColor, setFallbackColor] = useState<string | undefined>();
@@ -47,7 +71,25 @@ export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string
     };
   }, []);
 
-  // Follow the shared broadcast so the picker always opens on the current object's colour.
+  // The owning palette pushes what this window should show. Request it on mount too — the palette
+  // may have emitted the content before this window finished subscribing (first open).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetPopoverContent((payload) => {
+      if (payload.toolsetId !== toolsetId) {
+        return;
+      }
+      setContent(payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" });
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+        void requestToolsetPopoverContent(toolsetId).catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
+  }, [toolsetId]);
+
+  // Follow the shared broadcast so the colour picker always opens on the current object's colour.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listenForToolsetTextStyle((payload) => {
@@ -63,13 +105,13 @@ export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string
     return () => unlisten?.();
   }, []);
 
-  // Once the live colour arrives (or changes because the selection changed), stop showing a stale
-  // local draft — the picker should reflect whatever the current object actually is.
+  // Once the live colour arrives (or changes because the selection changed), drop any stale local
+  // draft — the picker should reflect whatever the current object actually is.
   useEffect(() => {
     setDraft(undefined);
   }, [currentColor]);
 
-  // Fit the window to the picker's natural size in both dimensions.
+  // Fit the window to whatever content it's showing, in both dimensions.
   useEffect(() => {
     const shell = shellRef.current;
     const applySize = () => {
@@ -91,7 +133,7 @@ export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string
     return () => observer.disconnect();
   }, []);
 
-  // Escape dismisses (and cancels any in-flight preview).
+  // Escape dismisses (and cancels any in-flight colour preview).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
@@ -99,24 +141,17 @@ export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string
       }
       event.preventDefault();
       void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
-      void import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => getCurrentWindow().hide())
-        .catch(() => undefined);
+      hidePopoverWindow();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   // Click-away dismissal: the document window and palettes broadcast a dismiss on any pointer-down
-  // that isn't this popover (this popover is its own window, so its own clicks never reach those
-  // emitters). Hide on that signal, so the picker persists only while you interact with it.
+  // that isn't this popover. Hide on that signal, so a popover persists only while you use it.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listenForToolsetPopoverDismiss(() => {
-      void import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => getCurrentWindow().hide())
-        .catch(() => undefined);
-    })
+    void listenForToolsetPopoverDismiss(() => hidePopoverWindow())
       .then((cleanup) => {
         unlisten = cleanup;
       })
@@ -142,16 +177,61 @@ export function PalettePopoverWindow({ kind = "artColor" }: { toolsetId?: string
     void sendPaletteCommandCommit(objectCustomColorCommandId(normalized)).catch(() => undefined);
   };
 
+  const chooseFlyoutCommand = (command: ToolsetFlyoutCommandSnapshot) => {
+    if (!command.enabled) {
+      return;
+    }
+    void sendPaletteCommand(command.id).catch(() => undefined);
+    hidePopoverWindow();
+  };
+
   return (
-    <div ref={shellRef} className="palette-popover-shell" data-popover-kind={kind}>
-      <div className="art-color-popover" role="dialog" aria-label="Art color picker">
-        <ColorPickerPopoverBody
-          activeColor={currentColor}
-          value={value}
-          onPreviewColor={previewColor}
-          onCommitColor={commitColor}
-        />
-      </div>
+    <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
+      {content.kind === "flyout" ? (
+        <div
+          className="toolbar-command-flyout-menu"
+          role="menu"
+          aria-label={`${content.flyout.title} commands`}
+          data-command-flyout-menu={content.flyout.flyoutId}
+        >
+          {content.flyout.commands.map((command) => (
+            <button
+              key={command.id}
+              type="button"
+              role="menuitem"
+              disabled={!command.enabled}
+              data-command-id={command.id}
+              data-shortcut-label={command.shortcutLabel ?? "No shortcut"}
+              data-toolbar-asset={command.assetName}
+              className={command.active ? "active" : undefined}
+              aria-pressed={command.active || undefined}
+              title={command.enabled ? command.title : `${command.title}: ${command.disabledReason ?? "unavailable"}`}
+              onClick={() => chooseFlyoutCommand(command)}
+            >
+              {command.assetName ? (
+                <img
+                  className="tool-icon-image"
+                  src={toolbarAsset(command.assetName as ToolbarAssetName)}
+                  alt=""
+                  aria-hidden="true"
+                />
+              ) : command.icon ? (
+                <Icon name={command.icon as IconName} />
+              ) : null}
+              <span>{command.title}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="art-color-popover" role="dialog" aria-label="Art color picker">
+          <ColorPickerPopoverBody
+            activeColor={currentColor}
+            value={value}
+            onPreviewColor={previewColor}
+            onCommitColor={commitColor}
+          />
+        </div>
+      )}
     </div>
   );
 }
