@@ -2161,7 +2161,10 @@ textarea:focus-visible,
   gap: 0;
   align-content: start;
   justify-items: stretch;
-  width: 100%;
+  /* Hug the palette's natural content width so the floating window can be sized to fit it
+     (see PaletteWindow applySize) — this collapses the Main bar's blank gap and lets a
+     crowded row grow the window instead of overlapping. */
+  width: max-content;
   min-width: 0;
   min-height: 100vh;
   padding: 0;

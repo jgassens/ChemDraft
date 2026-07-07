@@ -109,9 +109,16 @@ export function PaletteWindow({
 
     const shell = shellRef.current;
     const applySize = () => {
-      const contentHeight = shell ? Math.ceil(shell.getBoundingClientRect().height) : 0;
+      // Fit the window to the palette's own content in BOTH dimensions. The shell is
+      // width:max-content (see CSS), so its measured width is the natural content width —
+      // shrinking the window when the manifest size is too wide (the blank gap on the Main
+      // bar) and growing it when content is wider than the manifest (crowded rows). Height
+      // still floors at the manifest height so a sparse palette isn't clipped.
+      const rect = shell?.getBoundingClientRect();
+      const contentWidth = rect ? Math.ceil(rect.width) : 0;
+      const contentHeight = rect ? Math.ceil(rect.height) : 0;
       void setCurrentWindowLogicalSize({
-        width: preferredSize.width,
+        width: contentWidth > 0 ? Math.max(preferredSize.minWidth ?? 0, contentWidth) : preferredSize.width,
         height: Math.max(preferredSize.height, colorPickerOpen ? 292 : 0, contentHeight)
       }).catch(() => undefined);
     };
@@ -272,6 +279,11 @@ export function PaletteWindow({
   };
 
   const beginPaletteWindowDrag = (screenX: number, screenY: number, pointerId?: number) => {
+    // The OS owns the drag: startDragging() (and the title bar's data-tauri-drag-region)
+    // move the window natively and smoothly. We deliberately do NOT also set the window
+    // position from pointer deltas — doing both made the OS and JS fight over the position
+    // every frame, which is the jitter/skipping seen while dragging. Window geometry is
+    // persisted by the Rust WindowEvent::Moved handler, so nothing here needs to write it.
     void startPaletteWindowDrag().catch(() => undefined);
 
     dragRef.current = {
@@ -281,19 +293,6 @@ export function PaletteWindow({
       currentX: screenX,
       currentY: screenY
     };
-
-    void currentWindowLogicalPosition()
-      .then((position) => {
-        const drag = dragRef.current;
-        if (!position || !drag || drag.pointerId !== pointerId) {
-          return;
-        }
-
-        drag.startX = position.x;
-        drag.startY = position.y;
-        movePaletteWindowToCurrentPointer(drag);
-      })
-      .catch(() => undefined);
   };
 
   const movePaletteWindow = (event: PointerEvent<HTMLElement>) => {
