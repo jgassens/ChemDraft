@@ -12,6 +12,39 @@ ChemDraft toolbars are declarative toolsets backed by command IDs. A toolbar but
 
 User customization references command IDs. It must not copy command implementations, mutate plugin manifests, grant plugin permissions, or bypass command registration.
 
+## Item Schema
+
+Toolbar manifests are schema-backed at the item level. Each item is still command-backed
+today, but the manifest now carries explicit UI metadata so toolbar rendering, flyouts,
+tooltips, and later customization do not have to infer intent from a bare command ID.
+
+Item fields:
+
+- `commandId`: required compatibility anchor for the command-backed item model.
+- `id`: stable item identity for customization and DOM metadata. Defaults to `commandId`
+  when omitted.
+- `kind`: `button`, `toggle`, `control`, or `separator`. Defaults to `button`.
+- `label`: user-facing item label. Defaults to `title` or `commandId`.
+- `primary`: primary action descriptor. Current production items use
+  `{ "type": "command", "commandId": "..." }`; `control` and `none` are reserved for
+  non-command UI items.
+- `submenu`: either `null` or a `{ "type": "command-grid", ... }` submenu with command
+  items. Empty submenus are invalid.
+- `tooltip`: display metadata with `title`, optional `description`, and optional shortcut
+  text. Disabled-state reasons still come from the command spec.
+- `layout`: item-span metadata such as `colSpan` and `rowSpan`.
+- `placement`: customization placement metadata such as group, row, column, and order.
+
+If an item declares both `commandId` and `primary.commandId`, they must match. This keeps
+the old command-ID contract honest while giving the renderer a richer item model. The
+registry normalizes legacy items and explicit schema items into `NormalizedToolsetItem`,
+and command enumeration includes primary commands plus submenu commands so validation and
+plugin/user layout state can reject unknown commands consistently.
+
+Toolset-level `gridLayout` also supports `gap` and `padding`, and item overrides may carry
+`layout` span overrides. Source manifests remain the canonical contribution format; user
+customization state should store overrides, not rewrite built-in or plugin manifests.
+
 ## Customization State
 
 The native ChemDraft customization model lives in `packages/toolset-registry`.
