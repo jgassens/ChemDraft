@@ -600,7 +600,7 @@ describe("graphic path direct editing interactions", () => {
       pageId: withSource.pages[0].id,
       objectIds: [targetId]
     });
-    await renderMainWindow(selectedTarget);
+    await renderMainWindow(selectedTarget, { initialPaletteMode: "floating", nativePalette: false });
 
     const eyedropperButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.art.eyedropper"]');
     if (!eyedropperButton) {

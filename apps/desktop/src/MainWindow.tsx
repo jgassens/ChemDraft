@@ -487,6 +487,7 @@ import {
   getToolbarsMenuModel,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
+  getToolsetItemGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry
@@ -13382,6 +13383,8 @@ export function MainWindow({
                 </div>
                 <ToolPalette
                   groups={getToolsetCommandGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
+                  itemGroups={getToolsetItemGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
+                  gridLayout={toolset.gridLayout}
                   activeTool={activeTool}
                   currentDistributeMode={distributeMode}
                   mode="floating"

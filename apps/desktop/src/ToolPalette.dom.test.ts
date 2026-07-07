@@ -19,7 +19,7 @@ import {
   moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
-import { getToolsetCommandGroups } from "./toolsets";
+import { getToolsetCommandGroups, getToolsetItemGroups } from "./toolsets";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -81,6 +81,23 @@ function artToolsetGroupsWith(overrides: Record<string, Partial<CommandSpec>>) {
       overrides[command.id] ? { ...command, ...overrides[command.id] } : command
     ))
   ));
+}
+
+function artToolsetItemGroupsWith(overrides: Record<string, Partial<CommandSpec>>) {
+  return getToolsetItemGroups(
+    "core.art",
+    undefined,
+    new Map(Object.entries(overrides).map(([commandId, override]) => [
+      commandId,
+      {
+        id: commandId,
+        title: override.title ?? commandId,
+        icon: override.icon ?? "palette",
+        source: override.source ?? "core",
+        ...override
+      } as CommandSpec
+    ]))
+  );
 }
 
 function effectArtInspectorModel() {
@@ -738,6 +755,7 @@ describe("ToolPalette arrange flyouts", () => {
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         showArtStyleControls: true,
@@ -775,6 +793,7 @@ describe("ToolPalette arrange flyouts", () => {
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         showArtStyleControls: true,
@@ -815,6 +834,7 @@ describe("ToolPalette arrange flyouts", () => {
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         showArtStyleControls: true,
@@ -849,11 +869,22 @@ describe("ToolPalette arrange flyouts", () => {
     }
   });
 
-  it("uses ungroup as the group flyout primary action when a group is selected", () => {
+  it("keeps the declared group primary action while allowing enabled submenu commands", () => {
     const onInvoke = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: artToolsetGroupsWith({
+          "layout.group": {
+            enabled: false,
+            disabledReason: "Select at least two objects"
+          },
+          "layout.ungroup": {
+            enabled: true,
+            shortcut: "Shift+Cmd+G",
+            shortcutLabel: "⇧⌘G"
+          }
+        }),
+        itemGroups: artToolsetItemGroupsWith({
           "layout.group": {
             enabled: false,
             disabledReason: "Select at least two objects"
@@ -876,14 +907,25 @@ describe("ToolPalette arrange flyouts", () => {
       throw new Error("Expected group flyout button.");
     }
 
-    expect(groupButton.getAttribute("data-command-id")).toBe("layout.ungroup");
-    expect(groupButton.getAttribute("data-toolbar-asset")).toBe("Custom_Ungroup");
-    expect(groupButton.getAttribute("data-shortcut-label")).toBe("⇧⌘G");
-    expect(groupButton.getAttribute("data-disabled")).toBeNull();
-    expect(groupButton.getAttribute("aria-label")).toContain("Ungroup");
+    expect(groupButton.getAttribute("data-command-id")).toBe("layout.group");
+    expect(groupButton.getAttribute("data-toolbar-asset")).toBe("Custom_Group");
+    expect(groupButton.getAttribute("data-disabled")).toBe("true");
+    expect(groupButton.getAttribute("aria-label")).toContain("Select at least two objects");
 
     act(() => {
       groupButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
+
+    act(() => {
+      groupButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    const ungroup = container.querySelector<HTMLButtonElement>('[data-command-flyout-menu="group"] [data-command-id="layout.ungroup"]');
+    if (!ungroup) {
+      throw new Error("Expected ungroup submenu command.");
+    }
+    act(() => {
+      ungroup.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onInvoke).toHaveBeenCalledWith("layout.ungroup");
   });
@@ -893,6 +935,7 @@ describe("ToolPalette arrange flyouts", () => {
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.art.circle",
         orientation: "horizontal",
         showArtStyleControls: true,

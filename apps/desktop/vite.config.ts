@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
@@ -7,6 +8,17 @@ import { defineConfig } from "vite";
 // ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one
 // that ENOENTs at build time.
 const workspacePackage = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+const optionalRealpath = (path: string): string | undefined => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+};
+const workspaceRoot = workspacePackage("../..");
+const dependencyRoots = [
+  optionalRealpath(workspacePackage("../../node_modules"))
+].filter((path): path is string => path !== undefined && path !== workspaceRoot);
 const gitStampCommandOptions = {
   encoding: "utf8",
   stdio: ["ignore", "pipe", "ignore"],
@@ -54,6 +66,14 @@ export default defineConfig({
       "@chemdraft/toolset-registry": workspacePackage("../../packages/toolset-registry/src/index.ts"),
       "@chemdraft/shortcut-engine": workspacePackage("../../packages/shortcut-engine/src/index.ts"),
       "@chemdraft/viewport-engine": workspacePackage("../../packages/viewport-engine/src/index.ts")
+    }
+  },
+  server: {
+    fs: {
+      allow: [
+        workspaceRoot,
+        ...dependencyRoots
+      ]
     }
   }
 });

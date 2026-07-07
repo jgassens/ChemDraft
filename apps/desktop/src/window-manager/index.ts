@@ -188,8 +188,11 @@ export interface ToolsetFlyoutCommandSnapshot {
 }
 
 export interface ToolsetFlyoutSnapshot {
+  id?: string;
   flyoutId: string;
+  type?: "command-grid";
   title: string;
+  columns?: number;
   commands: ToolsetFlyoutCommandSnapshot[];
   /**
    * "menu" (default): icon + label command list (shape/align/layer/…). "distribute": a plain-text

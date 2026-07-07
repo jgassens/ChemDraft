@@ -2300,6 +2300,11 @@ textarea:focus-visible,
   border-bottom: 1px solid var(--line-soft);
 }
 
+.tool-group-grid {
+  gap: var(--toolbar-grid-gap, var(--cd-space-2));
+  padding: var(--toolbar-grid-padding, 0) var(--toolbar-grid-padding, 0) var(--cd-space-2);
+}
+
 .tool-group:last-child {
   padding-bottom: 0;
   border-bottom: 0;
@@ -2317,6 +2322,17 @@ textarea:focus-visible,
 .tool-palette .icon-button-shell {
   width: 24px;
   height: 24px;
+}
+
+.tool-palette .toolbar-item-grid-slot {
+  width: 100%;
+  min-width: 24px;
+  height: 100%;
+  min-height: 24px;
+}
+
+.toolbar-item-separator {
+  border-top: 1px solid var(--line-soft);
 }
 
 .icon-button {
@@ -2660,6 +2676,14 @@ textarea:focus-visible,
   transition: opacity 90ms ease, transform 90ms ease, visibility 0s linear 90ms;
   visibility: hidden;
   white-space: normal;
+}
+
+.tool-tooltip-description,
+.tool-tooltip-shortcut {
+  display: block;
+  margin-top: 3px;
+  color: var(--cd-text-secondary);
+  font-weight: 500;
 }
 
 .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip {

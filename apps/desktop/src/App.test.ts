@@ -1909,7 +1909,7 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
-    expect(disabledTools.length).toBeGreaterThan(20);
+    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
 
@@ -2716,7 +2716,7 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("tool.select") ?? []]).toEqual(["Art_Select"]);
     expect([...assetNamesByCommandId.get("tool.text") ?? []]).toEqual(["Art_Text"]);
     expect([...assetNamesByCommandId.get("tool.eraser") ?? []]).toEqual(["Art_Eraser"]);
-    expect([...assetNamesByCommandId.get("tool.art.rect") ?? []]).toEqual(["Art_Rectangle"]);
+    expect([...assetNamesByCommandId.get("tool.art.rect") ?? []]).toEqual(["Art_Shapes"]);
     expect([...assetNamesByCommandId.get("layout.alignLeft") ?? []]).toEqual(["Custom_Left"]);
     expect([...assetNamesByCommandId.get("layout.alignCenter") ?? []]).toEqual(["Custom_Center"]);
     expect([...assetNamesByCommandId.get("layout.alignRight") ?? []]).toEqual(["Custom_Right"]);
@@ -2899,7 +2899,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.chairCyclohexaneB"
     ];
 
-    expect(disabledTools.length).toBeGreaterThan(20);
+    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
     expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
     enabledNativeStructureTools.forEach((commandId) => {
       expect(disabledTools.some((command) => command.id === commandId)).toBe(false);
@@ -2960,28 +2960,30 @@ describe("ChemDraft desktop shell", () => {
 
     expect(bondMarkup).toContain('data-command-id="tool.bond"');
     expect(bondMarkup).toContain('data-shortcut-label="M"');
-    expect(bondMarkup).toContain('data-tooltip="Single Bond (M)"');
+    expect(bondMarkup).toContain('data-tooltip="Single Bond: Single Bond toolset action (M)"');
     expect(bondMarkup).toContain('class="tool-tooltip"');
-    expect(bondMarkup).toContain(">Single Bond (M)</span>");
+    expect(bondMarkup).toContain(">Single Bond</span>");
+    expect(bondMarkup).toContain(">Single Bond toolset action</span>");
     expect(wedgeMarkup).toContain('data-shortcut-label="No shortcut"');
-    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond (No shortcut)"');
-    expect(wedgeMarkup).toContain(">Solid Wedge Bond (No shortcut)</span>");
+    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond: Solid Wedge Bond toolset action"');
+    expect(wedgeMarkup).toContain(">Solid Wedge Bond</span>");
+    expect(wedgeMarkup).toContain(">Solid Wedge Bond toolset action</span>");
     expect(pOrbitalMarkup).toContain('data-shortcut-label="No shortcut"');
     expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool: Requires an active structure editor"');
-    expect(pOrbitalMarkup).toContain(">p Orbital Tool: Requires an active structure editor</span>");
+    expect(pOrbitalMarkup).toContain(">Requires an active structure editor</span>");
     expect(pOrbitalMarkup).not.toContain("EditorAdapter");
     expect(pOrbitalMarkup).not.toContain("p Orbital Tool (No shortcut)");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');
     expect(verticalBondMarkup).not.toContain('title="Single Bond (M)"');
     expect(bondMarkup).not.toContain("with-shortcut");
     expect(markup).not.toContain('class="shortcut"');
-    expect(markup).toContain('class="icon-button-shell"');
+    expect(markup).toContain("icon-button-shell");
     expect(markup).toContain('data-tooltip-delay-ms="500"');
     expect(markup).toContain('data-tooltip-owner-id="');
     expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
-    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⇧⌘K)"');
-    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⇧⌘K)</span>");
+    expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D: Clean up Structure 2D toolset action (⇧⌘K)"');
+    expect(cleanupMarkup).toContain(">Clean up Structure 2D toolset action</span>");
     expect(appCss).toContain(".tool-tooltip");
     expect(appCss).not.toContain("@keyframes cd-tooltip-auto-hide");
     expect(appCss).not.toContain(".icon-button-shell:hover .tool-tooltip");

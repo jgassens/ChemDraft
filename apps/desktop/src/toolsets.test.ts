@@ -1,0 +1,123 @@
+import { describe, expect, it } from "vitest";
+import { ToolsetRegistry, type ToolsetDefinition } from "@chemdraft/toolset-registry";
+import type { CommandSpec } from "./commands";
+import {
+  computePaletteGridSize,
+  desktopToolsets,
+  getToolsetCommandGroups,
+  getToolsetItemGroups,
+  type DesktopToolsetRegistry
+} from "./toolsets";
+
+const legacyToolset: ToolsetDefinition = {
+  id: "core.legacy",
+  title: "Legacy",
+  source: "core",
+  defaultVisible: true,
+  defaultMode: "floating",
+  groups: [
+    {
+      id: "legacy.tools",
+      items: [{ commandId: "tool.bond", title: "Single Bond", icon: "bond", shortcutDisplay: "M" }]
+    }
+  ]
+};
+
+function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
+  return new ToolsetRegistry(toolsets);
+}
+
+describe("desktop toolset mapping", () => {
+  it("maps legacy command items to schema-backed palette items", () => {
+    const item = getToolsetItemGroups("core.legacy", registry([legacyToolset]))[0][0];
+
+    expect(item).toMatchObject({
+      id: "tool.bond",
+      kind: "button",
+      label: "Single Bond",
+      primary: { type: "command", command: { id: "tool.bond", title: "Single Bond" } },
+      submenu: null,
+      tooltip: { title: "Single Bond", shortcut: "M", shortcutLabel: "M" },
+      layout: { colSpan: 1, rowSpan: 1 }
+    });
+  });
+
+  it("maps schema submenus to command specs while preserving command override state", () => {
+    const overrides = new Map<string, CommandSpec>([
+      [
+        "tool.wedgeBond",
+        {
+          id: "tool.wedgeBond",
+          title: "Live Wedge",
+          icon: "bond",
+          source: "core",
+          enabled: false,
+          disabledReason: "Selection cannot accept wedge bonds"
+        }
+      ]
+    ]);
+    const item = getToolsetItemGroups("core.main", undefined, overrides)
+      .flat()
+      .find((candidate) => candidate.id === "tool.bond");
+
+    expect(item?.submenu?.items.map((command) => command.id)).toEqual([
+      "tool.bond",
+      "tool.wedgeBond",
+      "tool.hashedBond",
+      "tool.dashedBond",
+      "tool.boldBond"
+    ]);
+    const wedge = item?.submenu?.items.find((command) => command.id === "tool.wedgeBond");
+    expect(wedge).toMatchObject({
+      title: "Solid Wedge Bond",
+      assetName: "Custom_Bond_Wedge",
+      enabled: false,
+      disabledReason: "Selection cannot accept wedge bonds"
+    });
+  });
+
+  it("keeps command-group callers compatible by exposing primary command specs", () => {
+    expect(getToolsetCommandGroups("core.legacy", registry([legacyToolset]))).toEqual([
+      [expect.objectContaining({ id: "tool.bond", title: "Single Bond" })]
+    ]);
+  });
+
+  it("keeps every core desktop manifest item explicit about primary, submenu, tooltip, and layout", () => {
+    for (const toolset of desktopToolsets) {
+      for (const group of toolset.groups) {
+        for (const item of group.items) {
+          expect(item.id, `${toolset.id}/${group.id}/${item.commandId} id`).toBe(item.commandId);
+          expect(item.kind, `${toolset.id}/${group.id}/${item.commandId} kind`).toBe("button");
+          expect(item.label, `${toolset.id}/${group.id}/${item.commandId} label`).toBeTruthy();
+          expect(item.primary, `${toolset.id}/${group.id}/${item.commandId} primary`).toEqual({
+            type: "command",
+            commandId: item.commandId
+          });
+          expect("submenu" in item, `${toolset.id}/${group.id}/${item.commandId} submenu key`).toBe(true);
+          expect(item.tooltip?.title, `${toolset.id}/${group.id}/${item.commandId} tooltip`).toBeTruthy();
+          expect(item.layout?.colSpan, `${toolset.id}/${group.id}/${item.commandId} colSpan`).toBeGreaterThanOrEqual(1);
+          expect(item.layout?.rowSpan, `${toolset.id}/${group.id}/${item.commandId} rowSpan`).toBeGreaterThanOrEqual(1);
+        }
+      }
+    }
+  });
+
+  it("computes grid size from cell metrics and item spans when no preferred size is present", () => {
+    const size = computePaletteGridSize(
+      { columns: 4, cellWidth: 24, cellHeight: 24, gap: 2, padding: 4 },
+      [[
+        {
+          id: "control.width",
+          kind: "control",
+          label: "Width",
+          primary: { type: "control", controlId: "width" },
+          submenu: null,
+          tooltip: { title: "Width" },
+          layout: { colSpan: 4, rowSpan: 1 }
+        }
+      ]]
+    );
+
+    expect(size).toEqual({ width: 110, height: 32 });
+  });
+});

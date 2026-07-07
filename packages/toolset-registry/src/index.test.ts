@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   ToolsetDefinitionSchema,
+  ToolsetItemSchema,
   ToolsetLayoutStateSchema,
   ToolsetRegistry,
   applyToolsetLayoutState,
   createToolbarsMenuModel,
   createToolsetToggleCommandDefinitions,
   createToolsetToggleCommandId,
+  normalizeToolsetItem,
   parseToolsetLayoutState,
   parseToolsetManifest,
   type ToolsetDefinition,
@@ -59,11 +61,131 @@ describe("toolset registry", () => {
     expect(() => registry.register(fixtureToolset)).toThrow(/already registered/);
   });
 
+  it("enumerates command ids from legacy fields, primary actions, and submenu items", () => {
+    const registry = new ToolsetRegistry([
+      {
+        ...fixtureToolset,
+        groups: [
+          {
+            id: "fixture.tools",
+            items: [
+              {
+                commandId: "tool.bond",
+                primary: { type: "command", commandId: "tool.bond" },
+                submenu: {
+                  type: "command-grid",
+                  items: [
+                    { commandId: "tool.bond", label: "Single Bond" },
+                    { commandId: "tool.wedgeBond", label: "Wedge" }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]);
+
+    expect(registry.listCommandIds()).toEqual(["tool.bond", "tool.wedgeBond"]);
+  });
+
   it("parses manifest-style toolset contributions", () => {
     const toolsets = parseToolsetManifest({ toolsets: [fixtureToolset] });
 
     expect(toolsets).toHaveLength(1);
     expect(toolsets[0].groups[0].items[0].commandId).toBe("tool.select");
+  });
+
+  it("normalizes legacy command items to the explicit toolbar item contract", () => {
+    const normalized = normalizeToolsetItem({
+      commandId: "tool.bond",
+      title: "Single Bond",
+      shortcutDisplay: "M",
+      placement: { row: 0, column: 1, order: 2 }
+    });
+
+    expect(normalized).toMatchObject({
+      id: "tool.bond",
+      kind: "button",
+      label: "Single Bond",
+      primary: { type: "command", commandId: "tool.bond" },
+      submenu: null,
+      tooltip: { title: "Single Bond", description: null, shortcut: "M" },
+      layout: { row: 0, column: 1, order: 2, colSpan: 1, rowSpan: 1 }
+    });
+  });
+
+  it("normalizes explicit schema-backed command items without dropping submenu or layout fields", () => {
+    const normalized = normalizeToolsetItem({
+      commandId: "tool.bond",
+      id: "bond-main",
+      kind: "toggle",
+      label: "Bond",
+      title: "Single Bond",
+      icon: "bond",
+      assetName: "Custom_Bond",
+      primary: { type: "command", commandId: "tool.bond" },
+      submenu: {
+        type: "command-grid",
+        id: "bond-tools",
+        title: "Bond tools",
+        columns: 3,
+        items: [
+          {
+            commandId: "tool.bond",
+            label: "Single Bond",
+            icon: "bond",
+            tooltip: { title: "Single Bond", description: "Draw a bond.", shortcut: "M" }
+          },
+          { commandId: "tool.wedgeBond", title: "Solid Wedge Bond", assetName: "Custom_Bond_Wedge" }
+        ]
+      },
+      tooltip: { title: "Bond", description: "Long-press for variants.", shortcut: "M" },
+      layout: { colSpan: 2, rowSpan: 1 },
+      placement: { groupId: "structure", row: 1, column: 0, order: 4 },
+      category: "structure"
+    });
+
+    expect(normalized).toMatchObject({
+      id: "bond-main",
+      kind: "toggle",
+      label: "Bond",
+      icon: "bond",
+      assetName: "Custom_Bond",
+      primary: { type: "command", commandId: "tool.bond" },
+      submenu: {
+        type: "command-grid",
+        id: "bond-tools",
+        title: "Bond tools",
+        columns: 3,
+        items: [
+          {
+            commandId: "tool.bond",
+            label: "Single Bond",
+            icon: "bond",
+            tooltip: { title: "Single Bond", description: "Draw a bond.", shortcut: "M" }
+          },
+          { commandId: "tool.wedgeBond", label: "Solid Wedge Bond", assetName: "Custom_Bond_Wedge" }
+        ]
+      },
+      tooltip: { title: "Bond", description: "Long-press for variants.", shortcut: "M" },
+      layout: { groupId: "structure", row: 1, column: 0, order: 4, colSpan: 2, rowSpan: 1 }
+    });
+  });
+
+  it("rejects empty submenu objects but accepts null or missing submenus", () => {
+    expect(() => ToolsetItemSchema.parse({ commandId: "tool.bond", submenu: { type: "command-grid", items: [] } })).toThrow();
+    expect(ToolsetItemSchema.parse({ commandId: "tool.bond", submenu: null }).submenu).toBeNull();
+    expect(normalizeToolsetItem(ToolsetItemSchema.parse({ commandId: "tool.bond" })).submenu).toBeNull();
+  });
+
+  it("rejects conflicting legacy and primary command ids during normalization", () => {
+    expect(() =>
+      normalizeToolsetItem({
+        commandId: "tool.bond",
+        primary: { type: "command", commandId: "tool.wedgeBond" }
+      })
+    ).toThrow(/primary command/);
   });
 
   it("creates menu and toggle command models from registered toolsets", () => {
@@ -135,6 +257,56 @@ describe("toolset registry", () => {
     });
     expect(JSON.stringify(fixtureToolset)).toBe(before);
     expect(customized[0].groups[0].items[1]).not.toBe(fixtureToolset.groups[0].items[1]);
+  });
+
+  it("preserves schema-backed item fields when applying layout state", () => {
+    const schemaToolset: ToolsetDefinition = {
+      ...fixtureToolset,
+      groups: [
+        {
+          id: "fixture.tools",
+          items: [
+            {
+              commandId: "tool.bond",
+              id: "tool.bond",
+              kind: "button",
+              label: "Single Bond",
+              title: "Single Bond",
+              primary: { type: "command", commandId: "tool.bond" },
+              submenu: {
+                type: "command-grid",
+                items: [{ commandId: "tool.wedgeBond", label: "Wedge Bond" }]
+              },
+              tooltip: { title: "Single Bond", shortcut: "M" },
+              layout: { colSpan: 2, rowSpan: 1 }
+            }
+          ]
+        }
+      ]
+    };
+    const customized = applyToolsetLayoutState([schemaToolset], {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.fixture",
+          itemOverrides: [
+            {
+              commandId: "tool.bond",
+              placement: { row: 1, column: 2 },
+              layout: { rowSpan: 2 }
+            }
+          ]
+        }
+      ]
+    }, { registeredCommandIds: ["tool.bond", "tool.wedgeBond"] });
+    const item = customized[0].groups[0].items[0];
+
+    expect(item.primary).toEqual({ type: "command", commandId: "tool.bond" });
+    expect(item.submenu).toEqual({ type: "command-grid", items: [{ commandId: "tool.wedgeBond", label: "Wedge Bond" }] });
+    expect(item.tooltip).toEqual({ title: "Single Bond", shortcut: "M" });
+    expect(item.layout).toEqual({ colSpan: 2, rowSpan: 2 });
+    expect(item.placement).toEqual({ row: 1, column: 2 });
+    expect(schemaToolset.groups[0].items[0].layout).toEqual({ colSpan: 2, rowSpan: 1 });
   });
 
   it("hides and reorders command ids through user overrides", () => {
@@ -243,6 +415,38 @@ describe("toolset registry", () => {
           }
         ]
       })
+    ).toThrow(/unregistered command/);
+  });
+
+  it("rejects submenu commands that are not registered", () => {
+    expect(() =>
+      applyToolsetLayoutState(
+        [fixtureToolset],
+        {
+          version: 1,
+          userToolsets: [
+            {
+              id: "user.submenu",
+              title: "Submenu",
+              source: "user",
+              defaultVisible: false,
+              defaultMode: "floating",
+              groups: [
+                {
+                  id: "user.submenu.tools",
+                  items: [
+                    {
+                      commandId: "tool.bond",
+                      submenu: { type: "command-grid", items: [{ commandId: "tool.unknown" }] }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        { registeredCommandIds: ["tool.bond"] }
+      )
     ).toThrow(/unregistered command/);
   });
 

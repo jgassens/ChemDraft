@@ -7,7 +7,9 @@ import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
+  computePaletteGridSize,
   getToolsetCommandGroups,
+  getToolsetItemGroups,
   type DesktopToolsetRegistry
 } from "./toolsets";
 import {
@@ -72,7 +74,9 @@ export function PaletteWindow({
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
-  const groups = getToolsetCommandGroups(toolset.id, toolsetRegistry);
+  const groups = useMemo(() => getToolsetCommandGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
+  const itemGroups = useMemo(() => getToolsetItemGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
+  const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }),
     []
@@ -109,7 +113,7 @@ export function PaletteWindow({
   }, []);
 
   useEffect(() => {
-    const preferredSize = toolset.preferredWindowSize;
+    const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
     if (!preferredSize) {
       return;
     }
@@ -162,7 +166,7 @@ export function PaletteWindow({
         sizeAnimationFrameRef.current = undefined;
       }
     };
-  }, [colorPickerOpen, toolset.preferredWindowSize]);
+  }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -508,6 +512,8 @@ export function PaletteWindow({
       </div>
       <ToolPalette
         groups={groups}
+        itemGroups={itemGroups}
+        gridLayout={toolset.gridLayout}
         activeTool={activeTool}
         mode="floating"
         orientation={toolset.gridLayout?.orientation ?? "vertical"}
