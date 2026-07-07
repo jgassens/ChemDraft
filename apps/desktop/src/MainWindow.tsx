@@ -469,6 +469,7 @@ import {
   loadToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  openToolsetWindow,
   setMenuChecked,
   PREFERENCES_WINDOW_KIND,
   listenForSpin3dSettings,
@@ -1533,13 +1534,27 @@ export interface MainWindowProps {
   nativePalette?: boolean;
 }
 
+// Native floating NSPanel palettes are the desktop renderer; the browser build always uses
+// in-window web palettes. `localStorage["chemdraft.forceWebPalettes"] = "1"` is a runtime
+// escape hatch (no rebuild) if native palettes misbehave on a given machine.
+function shouldDefaultToNativePalettes(): boolean {
+  if (!isDesktopRuntime()) {
+    return false;
+  }
+  try {
+    return globalThis.localStorage?.getItem("chemdraft.forceWebPalettes") !== "1";
+  } catch {
+    return true;
+  }
+}
+
 export function MainWindow({
   initialPaletteMode = "floating",
   initialRulersVisible = true,
   initialCrosshairsVisible = true,
   initialDocument,
   initialActiveToolCommandId,
-  nativePalette = false
+  nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
@@ -7691,29 +7706,58 @@ export function MainWindow({
   // above (cancelSpin3dSession) and the detach effect tears the sidecar session down when the
   // overlay ends. No separate Esc listener is needed.
 
+  // Native mode: JS is the sole initiator. On startup it opens the toolsets that should be
+  // visible as floating NSPanels (reusing any the OS already restored), then tracks the real
+  // window state. If none can be opened, fall back to in-window web palettes so the app is
+  // never left with no toolbars.
   useEffect(() => {
     if (!effectiveNativePalette) {
       return;
     }
 
-    void listToolsetWindowStates()
-      .then((states) => {
-        const openToolsetIds = states
-          .filter((state) => state.open && toolsetRegistry.get(state.toolsetId))
-          .map((state) => state.toolsetId);
-        if (openToolsetIds.length === 0) {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const existing = await listToolsetWindowStates();
+        const alreadyOpen = new Set(
+          existing.filter((state) => state.open && toolsetRegistry.get(state.toolsetId)).map((state) => state.toolsetId)
+        );
+        const desired = [...visibleToolsetIdsRef.current].filter((toolsetId) => toolsetRegistry.get(toolsetId));
+        const target = desired.length > 0 ? desired : [...createDefaultVisibleToolsetIds(toolsetRegistry)];
+
+        const opened = new Set(alreadyOpen);
+        for (const toolsetId of target) {
+          if (opened.has(toolsetId)) {
+            continue;
+          }
+          const state = await openToolsetWindow(toolsetId);
+          if (state.open) {
+            opened.add(toolsetId);
+          }
+        }
+        if (cancelled) {
+          return;
+        }
+        if (opened.size === 0) {
           setWebPaletteFallback(true);
           setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
           setStatus("Native toolset windows unavailable; using in-window toolbars");
           return;
         }
-        setVisibleToolsetIds(new Set(openToolsetIds));
-      })
-      .catch(() => {
+        setVisibleToolsetIds(new Set(opened));
+      } catch {
+        if (cancelled) {
+          return;
+        }
         setWebPaletteFallback(true);
         setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
         setStatus("Native toolset windows unavailable; using in-window toolbars");
-      });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [effectiveNativePalette, toolsetRegistry]);
 
   useEffect(() => {

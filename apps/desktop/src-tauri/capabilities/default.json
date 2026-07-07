@@ -5,15 +5,7 @@
   "windows": [
     "main",
     "tool-palette",
-    "toolset-core-main",
-    "toolset-core-structure",
-    "toolset-core-arrows",
-    "toolset-core-annotations",
-    "toolset-core-text",
-    "toolset-core-orbitals",
-    "toolset-core-layout",
-    "toolset-core-style",
-    "toolset-plugin-fixture",
+    "toolset-*",
     "plugin-panel-*",
     "spin3d-debugger",
     "preferences"
