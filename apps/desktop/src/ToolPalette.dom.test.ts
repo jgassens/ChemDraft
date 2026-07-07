@@ -129,11 +129,13 @@ describe("ToolPalette art color popover", () => {
   function renderPalette({
     commandId = "tool.art.rect",
     currentArtStyle = artInspectorModelFor(commandId),
-    onCancel = vi.fn()
+    onCancel = vi.fn(),
+    onRequestColorPopover
   }: {
     commandId?: string;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
+    onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
   } = {}) {
     const onInvoke = vi.fn();
     const onPreview = vi.fn();
@@ -150,6 +152,7 @@ describe("ToolPalette art color popover", () => {
         onArtStylePreview: onPreview,
         onArtStyleCommit: onCommit,
         onArtStyleCancel: onCancel,
+        onRequestColorPopover,
         onInvoke
       }));
     });
@@ -245,6 +248,37 @@ describe("ToolPalette art color popover", () => {
     act(() => {
       colorTrigger().dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it("redirects the art color picker to its own window when onRequestColorPopover is provided", () => {
+    const onRequestColorPopover = vi.fn();
+    renderPalette({ onRequestColorPopover });
+
+    const trigger = colorTrigger();
+    Object.defineProperty(trigger, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 12,
+        top: 34,
+        right: 60,
+        bottom: 58,
+        x: 12,
+        y: 34,
+        width: 48,
+        height: 24,
+        toJSON: () => undefined
+      })
+    });
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The swatch hands its screen anchor up so a floating popover window can open there…
+    expect(onRequestColorPopover).toHaveBeenCalledTimes(1);
+    expect(onRequestColorPopover).toHaveBeenCalledWith({ left: 12, top: 34, right: 60, bottom: 58 });
+    // …and the inline (clipped) popover must NOT render — the window hosts it instead.
     expect(container.querySelector(".art-color-popover")).toBeNull();
   });
 

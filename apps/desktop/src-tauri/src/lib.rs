@@ -405,6 +405,8 @@ pub fn run() {
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
+            open_toolset_popover,
+            close_toolset_popover,
             route_toolset_command,
             read_clipboard_payload,
             write_clipboard_text_items,
@@ -773,6 +775,83 @@ fn open_plugin_panel_window(
 
     configure_toolset_utility_window(&window)?;
     Ok(())
+}
+
+/// Opens (or repositions + reshows) a small floating popover window for a palette — e.g. the
+/// Art color picker. A webview can't paint outside its own window, so palette popovers that are
+/// taller/wider than the little palette window clip at its edge; giving the popover its OWN
+/// floating window lets it overflow and float over the document, the native macOS way. The
+/// window is opaque (a transparent one gets re-clipped to the main window on macOS) with a real
+/// drop shadow so it reads as a panel drawn over the palette. `x`/`y` are logical screen
+/// coordinates of the anchor (the palette computes them from its own window position + the
+/// swatch's client rect).
+#[tauri::command]
+fn open_toolset_popover(
+    app: tauri::AppHandle,
+    toolset_id: String,
+    kind: String,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let label = toolset_popover_window_label(&toolset_id);
+    if let Some(window) = app.get_webview_window(&label) {
+        window
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        configure_toolset_popover_window(&window)?;
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(
+            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}").into(),
+        ),
+    )
+    .title("ChemDraft color picker")
+    // The JS side sizes this to the popover content (setCurrentWindowLogicalSize); start with a
+    // sensible color-picker footprint so the first paint isn't jarringly wrong.
+    .inner_size(320.0, 300.0)
+    .min_inner_size(96.0, 56.0)
+    .accept_first_mouse(true)
+    // Unlike the button-only palettes, the color picker has hex/RGB text inputs, so its window
+    // must be able to take keyboard focus. It stays a NonactivatingPanel (see below), so
+    // becoming key doesn't yank the app's activation away from the document.
+    .focusable(true)
+    .resizable(false)
+    .decorations(false)
+    .skip_taskbar(true)
+    .position(x, y)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_popover_window(&window)?;
+    Ok(())
+}
+
+/// Same floating NonactivatingPanel treatment as the palettes, but focusable so the color
+/// picker's text inputs work. `configure_toolset_utility_window` force-sets focusable(false),
+/// so re-assert focusable(true) afterwards.
+fn configure_toolset_popover_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    configure_toolset_utility_window(window)?;
+    window.set_focusable(true).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn toolset_popover_window_label(toolset_id: &str) -> String {
+    format!("toolset-popover-{}", toolset_id.replace('.', "-"))
 }
 
 #[tauri::command]

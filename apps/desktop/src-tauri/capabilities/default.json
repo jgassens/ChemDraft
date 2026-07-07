@@ -30,6 +30,8 @@
     "allow-plugin-storage-read",
     "allow-plugin-storage-write",
     "allow-open-plugin-panel-window",
+    "allow-open-toolset-popover",
+    "allow-close-toolset-popover",
     "core:window:allow-hide",
     "allow-route-toolset-command",
     "allow-read-clipboard-payload",

@@ -10,6 +10,8 @@ fn main() {
             "plugin_storage_read",
             "plugin_storage_write",
             "open_plugin_panel_window",
+            "open_toolset_popover",
+            "close_toolset_popover",
             "route_toolset_command",
             "read_clipboard_payload",
             "write_clipboard_text_items",

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
-import { ToolPalette } from "./ToolPalette";
+import { ToolPalette, type ToolbarPopoverAnchor } from "./ToolPalette";
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
@@ -13,7 +13,9 @@ import {
 import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
+  closeToolsetPopoverWindow,
   currentWindowLogicalPosition,
+  openToolsetPopoverWindow,
   listenForToolsetActiveTool,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
@@ -223,6 +225,30 @@ export function PaletteWindow({
   const cancelPreviewCommand = () => {
     void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
   };
+
+  // Open the colour picker in its own floating window at the swatch, so it overflows this little
+  // palette and floats over the document. `anchor` is the swatch's client rect inside this webview;
+  // add our own window position to get screen coords. Clicking the swatch always (re)opens and
+  // repositions — deliberately NOT a toggle: the panel hides itself on app-deactivate
+  // (hidesOnDeactivate), which a local "is it open?" flag can't observe, so a toggle would go stale
+  // and eat the next click. Dismissal is Escape (in the popover) or app-deactivate.
+  const openArtColorPopover = (anchor: ToolbarPopoverAnchor) => {
+    void (async () => {
+      const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
+      const screenX = (windowPosition?.x ?? 0) + anchor.left;
+      const screenY = (windowPosition?.y ?? 0) + anchor.bottom + 4;
+      await openToolsetPopoverWindow(toolset.id, "artColor", screenX, screenY);
+      // Make sure the freshly shown picker reflects the current object's colour.
+      await requestToolsetTextStyle().catch(() => undefined);
+    })();
+  };
+
+  // If this palette goes away, don't leave its popover window orphaned on screen.
+  useEffect(() => {
+    return () => {
+      void closeToolsetPopoverWindow(toolset.id).catch(() => undefined);
+    };
+  }, [toolset.id]);
 
   const hidePaletteWindow = (event: ReactMouseEvent<HTMLButtonElement> | PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -447,6 +473,7 @@ export function PaletteWindow({
         currentTextStyle={currentTextStyle}
         currentTextScript={currentTextScript}
         onColorPickerOpenChange={setColorPickerOpen}
+        onRequestColorPopover={openArtColorPopover}
         onArtStylePreview={previewCommand}
         onArtStyleCommit={commitPreviewCommand}
         onArtStyleCancel={cancelPreviewCommand}

@@ -116,6 +116,38 @@ export async function toggleToolsetWindow(toolsetId: string): Promise<ToolsetWin
   return invokeToolsetWindow("toggle_toolset_window", toolsetId);
 }
 
+/**
+ * Opens (or repositions) a palette's popover in its own little floating window so it can
+ * overflow the palette and float over the document — the native way (a webview can't paint
+ * outside its own window). `x`/`y` are logical screen coordinates for the popover's top-left,
+ * computed by the palette from its own window position + the trigger's client rect.
+ */
+export async function openToolsetPopoverWindow(
+  toolsetId: string,
+  kind: string,
+  x: number,
+  y: number
+): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_toolset_popover", { toolsetId, kind, x, y });
+}
+
+export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("close_toolset_popover", { toolsetId }).catch(() => undefined);
+}
+
+/** Route param identifying a palette popover webview (see App.tsx / PalettePopoverWindow). */
+export const TOOLSET_POPOVER_WINDOW_KIND = "toolsetPopover";
+
 export async function toggleSpin3dDebuggerWindow(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;

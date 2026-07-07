@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-toolset-popover"
+description = "Enables the close_toolset_popover command without any pre-configured scope."
+commands.allow = ["close_toolset_popover"]
+
+[[permission]]
+identifier = "deny-close-toolset-popover"
+description = "Denies the close_toolset_popover command without any pre-configured scope."
+commands.deny = ["close_toolset_popover"]

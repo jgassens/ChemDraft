@@ -104,6 +104,19 @@ export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
 export type ToolPaletteDistributeMode = "centers" | "spacing";
 
+/**
+ * Client-rect of a popover trigger (relative to the palette webview's viewport), handed up so
+ * the native palette can open the popover in its own floating window at the anchor. When a
+ * consumer supplies `onRequestColorPopover`, the color picker opens as a separate window instead
+ * of an inline (clipped) popover.
+ */
+export type ToolbarPopoverAnchor = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
 const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   command.id === "text.color.black"
   || command.id === "text.color.white"
@@ -235,6 +248,7 @@ export function ToolPalette({
   currentTextStyle,
   currentTextScript,
   onColorPickerOpenChange,
+  onRequestColorPopover,
   onArtStylePreview,
   onArtStyleCommit,
   onArtStyleCancel,
@@ -261,6 +275,7 @@ export function ToolPalette({
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   onColorPickerOpenChange?: (open: boolean) => void;
+  onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
   onArtStylePreview?: (commandId: string) => void;
   onArtStyleCommit?: (commandId: string) => void;
   onArtStyleCancel?: () => void;
@@ -417,6 +432,7 @@ export function ToolPalette({
           currentArtStyle={currentArtStyle}
           currentArtStyleTarget={currentArtStyleTarget}
           onColorPickerOpenChange={onColorPickerOpenChange}
+          onRequestColorPopover={onRequestColorPopover}
           onPreview={onArtStylePreview}
           onCommit={onArtStyleCommit}
           onCancel={onArtStyleCancel}
@@ -1784,6 +1800,7 @@ function ArtToolbarStyleControls({
   currentArtStyle,
   currentArtStyleTarget,
   onColorPickerOpenChange,
+  onRequestColorPopover,
   onPreview,
   onCommit,
   onCancel,
@@ -1793,6 +1810,7 @@ function ArtToolbarStyleControls({
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget: ToolsetArtPaintTarget;
   onColorPickerOpenChange?: (open: boolean) => void;
+  onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
   onPreview?: (commandId: string) => void;
   onCommit?: (commandId: string) => void;
   onCancel?: () => void;
@@ -2382,7 +2400,20 @@ function ArtToolbarStyleControls({
               effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
             )} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
-            onClick={() => {
+            onClick={(event) => {
+              // Native palettes hand the swatch's client rect up so the picker opens in its own
+              // floating window (overflows the little palette, floats over the document). Web /
+              // docked palettes fall through to the inline popover.
+              if (onRequestColorPopover) {
+                const rect = event.currentTarget.getBoundingClientRect();
+                onRequestColorPopover({
+                  left: rect.left,
+                  top: rect.top,
+                  right: rect.right,
+                  bottom: rect.bottom
+                });
+                return;
+              }
               setEffectColorOpen(false);
               setGradientStopColorOpen(false);
               setColorOpen((open) => !open);
@@ -2391,7 +2422,7 @@ function ArtToolbarStyleControls({
             <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
             <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
           </button>
-          {colorOpen ? (
+          {colorOpen && !onRequestColorPopover ? (
             <div className="art-color-popover" role="dialog" aria-label="Art color picker">
               <ColorPickerPopoverBody
                 activeColor={currentColor}
@@ -3058,7 +3089,7 @@ function ColorPickerControl({
   );
 }
 
-function ColorPickerPopoverBody({
+export function ColorPickerPopoverBody({
   activeColor,
   value,
   onCommitColor,

@@ -106,6 +106,34 @@ body.palette-window-body #root {
   background: var(--cd-bg-panel);
 }
 
+/* A palette popover (e.g. the Art colour picker) hosted in its OWN floating window. The window is
+   opaque with a native drop shadow, sized to the picker; the picker fills it instead of being an
+   absolutely-positioned overlay clipped by the palette. */
+html.palette-popover-window-html,
+body.palette-popover-window-body,
+body.palette-popover-window-body #root {
+  min-width: 0;
+  width: max-content;
+  height: max-content;
+  background: var(--cd-bg-panel);
+}
+
+.palette-popover-shell {
+  box-sizing: border-box;
+  width: max-content;
+  height: max-content;
+}
+
+.palette-popover-shell .art-color-popover {
+  position: static;
+  top: auto;
+  left: auto;
+  z-index: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 html.spin3d-debugger-window-html {
   min-width: 0;
   background: var(--cd-bg-panel-raised);
