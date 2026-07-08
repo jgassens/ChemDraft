@@ -102,7 +102,9 @@ export function CustomizeToolsetDetail({
 }: CustomizeToolsetDetailProps) {
   const [search, setSearch] = useState("");
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    // See CustomizeToolbarsDialog: a 5px activation distance separates click from drag so the native
+    // WKWebView doesn't start-then-cancel drags on a plain click's micro-movement.
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 

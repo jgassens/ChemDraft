@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -88,6 +88,9 @@ export interface CustomizeToolbarsDialogProps {
   /** All commands available to add to a user toolset (from the command registry). */
   availableCommands?: readonly CommandOption[];
   onApply: (next: LayoutState) => void;
+  /** Applied immediately on each edit (visibility toggles, hides, reorders) for live preview —
+   *  palettes appear/disappear as you click instead of only on Apply. */
+  onLiveApply?: (next: LayoutState) => void;
   onClose: () => void;
 }
 
@@ -194,15 +197,32 @@ export function CustomizeToolbarsDialog({
   layoutState,
   availableCommands = [],
   onApply,
+  onLiveApply,
   onClose
 }: CustomizeToolbarsDialogProps) {
   const [draft, setDraft] = useState<LayoutState>(layoutState);
+  // Live preview: every edit applies immediately (palettes appear/disappear as you click), instead of
+  // only on Apply. Keep the open-time state so Cancel can revert. Refs avoid re-firing on prop identity.
+  const initialLayoutRef = useRef(layoutState);
+  const onLiveApplyRef = useRef(onLiveApply);
+  onLiveApplyRef.current = onLiveApply;
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    onLiveApplyRef.current?.(draft);
+  }, [draft]);
   const { toolsets: effective, error: draftError } = useEffectiveToolsets(baseToolsets, draft);
   const [selectedToolsetId, setSelectedToolsetId] = useState<string | undefined>(effective[0]?.id);
   const [newToolbarName, setNewToolbarName] = useState("");
 
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    // A small activation distance makes dragging robust: without it dnd-kit starts a drag on the
+    // tiniest pointer move, so a plain click's micro-movement can start-then-instantly-cancel a drag
+    // (which read as "drag does nothing" in the native WKWebView). 5px cleanly separates click vs drag.
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
@@ -405,7 +425,15 @@ export function CustomizeToolbarsDialog({
               This customization can’t be applied. Cancel to keep your current toolbars.
             </span>
           ) : null}
-          <button type="button" className="customize-toolbars-cancel" onClick={onClose}>
+          <button
+            type="button"
+            className="customize-toolbars-cancel"
+            onClick={() => {
+              // Edits applied live, so Cancel must roll back to the state the dialog opened with.
+              onLiveApply?.(initialLayoutRef.current);
+              onClose();
+            }}
+          >
             Cancel
           </button>
           <button

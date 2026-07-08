@@ -1684,7 +1684,11 @@ export function MainWindow({
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
-  const [customizeToolbarsOpen, setCustomizeToolbarsOpen] = useState(false);
+  const [customizeToolbarsOpen, setCustomizeToolbarsOpen] = useState(
+    // Dev/test seam: open the Customize dialog directly in the browser (where the menu item is not
+    // wired) with ?forceCustomize=1, so its drag/hide behavior can be exercised without the native app.
+    () => import.meta.env.DEV && new URLSearchParams(globalThis.location?.search ?? "").get("forceCustomize") === "1"
+  );
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [devBrowserMenuOpenId, setDevBrowserMenuOpenId] = useState<string | null>(null);
@@ -7107,10 +7111,25 @@ export function MainWindow({
   // Apply the Customize Toolbars dialog's edited layout: feed it to the catalog (which rebuilds the
   // registry + fires onDidChange -> setToolsetRegistry), re-derive visibility, and persist. Mirrors
   // the startup load path so the palettes + menu refresh live.
-  const applyCustomizeToolbars = useCallback((next: ToolsetLayoutState) => {
+  // Commit a toolbar layout state: rebuild the registry, reconcile which palettes are open, and
+  // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
+  // applies immediately — no draft that can drift out of sync) from a final close.
+  const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
     toolbarCatalog.setLayoutState(next);
     const nextRegistry = toolbarCatalog.registry();
-    setVisibleToolsetIds(createDefaultVisibleToolsetIds(nextRegistry));
+    const nextVisible = createDefaultVisibleToolsetIds(nextRegistry);
+    // The native reconciler only OPENS desired windows; it never closes. So a toolset hidden in the
+    // Customize dialog must be closed explicitly here (mirrors toggleToolset), or its floating window
+    // lingers. Web palettes just re-render from visibleToolsetIds, so no close is needed.
+    if (effectiveNativePalette) {
+      const stillVisible = new Set(nextVisible);
+      for (const toolsetId of visibleToolsetIdsRef.current) {
+        if (!stillVisible.has(toolsetId)) {
+          void closeToolsetWindow(toolsetId).catch(() => undefined);
+        }
+      }
+    }
+    setVisibleToolsetIds(nextVisible);
     try {
       layoutStateRef.current = parseToolsetLayoutState(next);
     } catch {
@@ -7121,8 +7140,22 @@ export function MainWindow({
     layoutSaveChainRef.current = layoutSaveChainRef.current
       .then(() => saveToolsetLayoutState(next))
       .catch(() => undefined);
-    setCustomizeToolbarsOpen(false);
-  }, [toolbarCatalog]);
+    if (closeDialog) {
+      setCustomizeToolbarsOpen(false);
+    }
+  }, [toolbarCatalog, effectiveNativePalette]);
+
+  // Live edits from the Customize dialog (visibility toggles, hides, reorders) apply immediately so
+  // palettes appear/disappear as you click — no Apply-then-reopen round trip, and no long-lived draft
+  // that can revert a hidden toolset back to visible.
+  const liveApplyCustomizeToolbars = useCallback(
+    (next: ToolsetLayoutState) => commitToolbarLayout(next, false),
+    [commitToolbarLayout]
+  );
+  const applyCustomizeToolbars = useCallback(
+    (next: ToolsetLayoutState) => commitToolbarLayout(next, true),
+    [commitToolbarLayout]
+  );
 
   // Command catalog (id + title, deduped) offered by the Customize dialog's "add command" palette.
   // The set of commands is static, so this is computed once.
@@ -14004,6 +14037,7 @@ export function MainWindow({
             layoutState={layoutStateRef.current ?? emptyLayoutState()}
             availableCommands={customizeCommandOptions}
             onApply={applyCustomizeToolbars}
+            onLiveApply={liveApplyCustomizeToolbars}
             onClose={() => setCustomizeToolbarsOpen(false)}
           />
         ) : null}

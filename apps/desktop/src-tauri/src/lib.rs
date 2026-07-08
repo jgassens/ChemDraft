@@ -701,7 +701,7 @@ fn open_plugin_panel_window(
     let label = format!("plugin-panel-{}", request.panel_id.replace('.', "-"));
     if let Some(window) = app.get_webview_window(&label) {
         window.show().map_err(|error| error.to_string())?;
-        configure_toolset_utility_window(&window)?;
+        configure_toolset_utility_window(&window, true)?;
         return Ok(());
     }
 
@@ -724,7 +724,7 @@ fn open_plugin_panel_window(
     .build()
     .map_err(|error| error.to_string())?;
 
-    configure_toolset_utility_window(&window)?;
+    configure_toolset_utility_window(&window, true)?;
     Ok(())
 }
 
@@ -746,11 +746,12 @@ fn open_toolset_popover(
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
     if let Some(window) = app.get_webview_window(&label) {
+        // Warm reuse: the webview already has content, so position + show immediately.
         window
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
-        configure_toolset_popover_window(&window)?;
+        configure_toolset_popover_window(&window, true)?;
         return Ok(());
     }
 
@@ -774,11 +775,15 @@ fn open_toolset_popover(
     .resizable(false)
     .decorations(false)
     .skip_taskbar(true)
+    // Build hidden on the FIRST open so the cold webview doesn't flash a blank 320x300 window while
+    // it loads. The popover reveals itself (getCurrentWindow().show()) once it has painted its real
+    // content at the right size — see PalettePopoverWindow.
+    .visible(false)
     .position(x, y)
     .build()
     .map_err(|error| error.to_string())?;
 
-    configure_toolset_popover_window(&window)?;
+    configure_toolset_popover_window(&window, false)?;
     Ok(())
 }
 
@@ -787,8 +792,9 @@ fn open_toolset_popover(
 /// so re-assert focusable(true) afterwards.
 fn configure_toolset_popover_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
+    order_front: bool,
 ) -> Result<(), String> {
-    configure_toolset_utility_window(window)?;
+    configure_toolset_utility_window(window, order_front)?;
     window.set_focusable(true).map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -2020,7 +2026,7 @@ fn ensure_toolset_window<R: Runtime>(
 
     if let Some(window) = app.get_webview_window(&label) {
         window.show().map_err(|error| error.to_string())?;
-        configure_toolset_utility_window(&window)?;
+        configure_toolset_utility_window(&window, true)?;
         return Ok(());
     }
 
@@ -2083,13 +2089,14 @@ fn ensure_toolset_window<R: Runtime>(
         }
     };
 
-    configure_toolset_utility_window(&window)?;
+    configure_toolset_utility_window(&window, true)?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn configure_toolset_utility_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
+    order_front: bool,
 ) -> Result<(), String> {
     let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
@@ -2119,7 +2126,12 @@ fn configure_toolset_utility_window<R: Runtime>(
     window
         .set_focusable(toolset_window_focusable())
         .map_err(|error| error.to_string())?;
-    ns_window.orderFront(None);
+    // A hidden pre-warm build (the popover's first creation) sets its NSPanel traits here but must
+    // NOT be ordered front yet — it reveals itself once its webview has painted real content, so the
+    // user never sees a blank window loading. Every other caller shows immediately.
+    if order_front {
+        ns_window.orderFront(None);
+    }
 
     Ok(())
 }
@@ -2141,6 +2153,7 @@ fn toolset_window_hides_on_deactivate() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn configure_toolset_utility_window<R: Runtime>(
     _window: &tauri::WebviewWindow<R>,
+    _order_front: bool,
 ) -> Result<(), String> {
     Ok(())
 }

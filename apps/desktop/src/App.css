@@ -867,7 +867,10 @@ textarea:focus-visible,
   position: static;
   box-sizing: border-box;
   width: 100%;
-  max-height: calc(100vh - 28px);
+  /* No vh-based max-height here: in a native palette window this element's height feeds the
+     content-fit window sizing, so calc(100vh - …) collapses tall palettes (same trap as
+     .palette-window-shell / .molecule-inspector-controls). The web in-window variant keeps its own
+     clamp via the higher-specificity `.web-floating-palette .tool-palette.floating` rule. */
   gap: var(--cd-space-2);
   justify-items: center;
   align-content: start;
@@ -953,7 +956,11 @@ textarea:focus-visible,
   grid-template-columns: 126px minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
-  max-height: min(580px, calc(100vh - 132px));
+  /* Fixed cap, NOT calc(100vh - …): in a native palette window 100vh IS this window's height, and
+     the window is sized to its content (PaletteWindow applySize), so a vh-based max-height feeds back
+     on itself — each resize shrinks the cap, which shrinks the content, which shrinks the window —
+     collapsing the inspector to a blank strip. Same lesson as .palette-window-shell. */
+  max-height: 580px;
   color: var(--cd-text);
   font-size: 12px;
   line-height: 1.2;
@@ -961,7 +968,7 @@ textarea:focus-visible,
 
 .ring-inspector-controls {
   grid-template-columns: minmax(0, 1fr);
-  max-height: min(320px, calc(100vh - 132px));
+  max-height: 320px;
 }
 
 .molecule-inspector-tab-rail {
@@ -1009,7 +1016,9 @@ textarea:focus-visible,
 
 .molecule-inspector-panel-body {
   align-content: start;
-  max-height: min(560px, calc(100vh - 148px));
+  /* Fixed cap, not vh-based — see .molecule-inspector-controls. The panel scrolls internally when
+     content exceeds this; the native window is then sized to a stable height with no feedback loop. */
+  max-height: 560px;
   overflow: auto;
   padding-right: 4px;
 }
