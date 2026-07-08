@@ -57,36 +57,37 @@ function selectedMoleculeDocument() {
 }
 
 describe("PaletteWindow molecule inspector bridge", () => {
-  // Every command the palette routes back to the main window, across all three palette channels
-  // (plain invoke, preview-during-edit, and commit-on-enter). A numeric field commits via the
-  // commit channel; capturing the union keeps the test about "did the edit route back out" rather
-  // than which sub-channel carries it.
   const PALETTE_CHANNELS = [PALETTE_COMMAND_EVENT, PALETTE_COMMAND_PREVIEW_EVENT, PALETTE_COMMAND_COMMIT_EVENT];
 
   let container: HTMLDivElement;
   let root: Root;
-  let routedCommands: string[];
-  let captureCommand: (event: Event) => void;
+  // Commands routed back to the main window, bucketed by channel. Asserting on the specific channel
+  // matters: a numeric edit must COMMIT (persist to the document). If a regression rewired Enter to
+  // preview-only, the command would still appear on the preview channel but the user's edit would be
+  // silently dropped — so a union assertion would pass green. We assert on the commit channel.
+  let commandsByChannel: Map<string, string[]>;
+  let listeners: Array<[string, (event: Event) => void]>;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    routedCommands = [];
-    captureCommand = (event: Event) => {
-      const detail = (event as CustomEvent<{ commandId?: string }>).detail;
-      if (detail?.commandId) {
-        routedCommands.push(detail.commandId);
-      }
-    };
-    for (const channel of PALETTE_CHANNELS) {
-      window.addEventListener(channel, captureCommand);
-    }
+    commandsByChannel = new Map(PALETTE_CHANNELS.map((channel) => [channel, []]));
+    listeners = PALETTE_CHANNELS.map((channel) => {
+      const handler = (event: Event) => {
+        const detail = (event as CustomEvent<{ commandId?: string }>).detail;
+        if (detail?.commandId) {
+          commandsByChannel.get(channel)?.push(detail.commandId);
+        }
+      };
+      window.addEventListener(channel, handler);
+      return [channel, handler];
+    });
   });
 
   afterEach(() => {
-    for (const channel of PALETTE_CHANNELS) {
-      window.removeEventListener(channel, captureCommand);
+    for (const [channel, handler] of listeners) {
+      window.removeEventListener(channel, handler);
     }
     act(() => {
       root.unmount();
@@ -94,7 +95,7 @@ describe("PaletteWindow molecule inspector bridge", () => {
     container.remove();
   });
 
-  it("renders the broadcast inspector model and routes an edit back to the main window", async () => {
+  it("renders the broadcast inspector model and commits an edit back to the main window", async () => {
     await act(async () => {
       root.render(createElement(PaletteWindow, { toolsetId: "core.moleculeInspector" }));
     });
@@ -126,13 +127,21 @@ describe("PaletteWindow molecule inspector bridge", () => {
       throw new Error("Expected the Target bond length field to render from the broadcast model.");
     }
     expect(bondLengthInput.disabled).toBe(false);
+    // Value fidelity: the field shows the broadcast model's bond length, not a static fallback — so
+    // the model's values, not just its shape, survived the bridge.
+    const expectedBondLength = model.structure.values.bondLengthPx.value;
+    if (expectedBondLength === null) {
+      throw new Error("Fixture should yield a single (non-mixed) bond length.");
+    }
+    expect(Math.round(Number(bondLengthInput.value))).toBe(Math.round(expectedBondLength));
 
-    // Forward path: editing the field routes the corresponding command out through the palette
-    // bridge so the main window applies it to the document.
+    // Forward path: editing the field COMMITS the command out through the palette bridge (Enter ->
+    // onMoleculeInspectorCommit -> sendPaletteCommandCommit -> COMMIT channel) so the main window
+    // applies it to the document. A preview-only regression would leave this channel empty.
     act(() => {
       bondLengthInput.value = "20";
       bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
-    expect(routedCommands).toContain(moleculeStructureBondLengthCommandId(20));
+    expect(commandsByChannel.get(PALETTE_COMMAND_COMMIT_EVENT)).toContain(moleculeStructureBondLengthCommandId(20));
   });
 });

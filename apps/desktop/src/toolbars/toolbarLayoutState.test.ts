@@ -28,7 +28,25 @@ describe("mergeVisibilityIntoLayoutState", () => {
     });
   });
 
-  it("preserves overrides for toolsets that aren't currently loaded", () => {
+  it("hides a customized toolset while preserving its other customization", () => {
+    const existing: ToolsetLayoutState = {
+      version: 1,
+      toolsetOverrides: [{ toolsetId: "core.main", visible: true, title: "Renamed", hiddenCommandIds: ["tool.bond"] }],
+      userToolsets: []
+    };
+    const merged = mergeVisibilityIntoLayoutState(existing, ["core.main"], new Set());
+    expect(merged.toolsetOverrides[0]).toEqual({
+      toolsetId: "core.main",
+      visible: false,
+      title: "Renamed",
+      hiddenCommandIds: ["tool.bond"]
+    });
+  });
+
+  it("preserves overrides for toolsets that aren't in the passed id list (unloaded or unresolved plugins)", () => {
+    // This is the mechanism the MainWindow visibility save relies on to avoid clobbering a
+    // just-appeared plugin toolset's saved visible:true: exclude it from the id list and its
+    // override is carried through untouched.
     const existing: ToolsetLayoutState = {
       version: 1,
       toolsetOverrides: [{ toolsetId: "plugin.absent", visible: true }],

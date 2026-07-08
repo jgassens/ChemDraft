@@ -1812,12 +1812,26 @@ export function MainWindow({
   // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
   // on a possibly-stale render closure.
   const visibleToolsetIdsRef = useRef(visibleToolsetIds);
+  // Current View-toggle state, read (not depended on) by the menu-structure push so a full menu
+  // rebuild preserves the Show Rulers / Show Crosshairs checkmarks without the push re-firing on
+  // every ruler/crosshair toggle.
+  const rulersVisibleRef = useRef(rulersVisible);
+  const crosshairsVisibleRef = useRef(crosshairsVisible);
   // Last layout/customization state loaded from (or saved to) disk, so a visibility save merges onto
   // any other customization instead of clobbering it. `layoutHydratedRef` gates the visibility save
   // effect until the initial load has run, so the first render's default set can't overwrite the
   // saved file before we've read it.
   const layoutStateRef = useRef<ToolsetLayoutState | undefined>(undefined);
   const layoutHydratedRef = useRef(false);
+  // Only persist visibility once we've SUCCESSFULLY read the existing layout file. If the load
+  // failed (unreadable file, or a newer build's file that fails our strict schema), overwriting it
+  // with defaults would silently destroy the user's saved customization — so we leave it untouched.
+  const layoutSaveEnabledRef = useRef(false);
+  // The toolsets whose visibility `visibleToolsetIds` is authoritative for: everything present at
+  // load, plus anything the user has since toggled. A toolset that appears LATER (e.g. a plugin
+  // contribution) is excluded until it's resolved, so a visibility save can't clobber its saved
+  // `visible: true` down to `false` just because it isn't in the current visible set yet.
+  const resolvedToolsetIdsRef = useRef<Set<string>>(new Set());
   const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
@@ -1850,6 +1864,8 @@ export function MainWindow({
   selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
   selectedNativeMoleculePartsRef.current = selectedNativeMoleculeParts;
   visibleToolsetIdsRef.current = visibleToolsetIds;
+  rulersVisibleRef.current = rulersVisible;
+  crosshairsVisibleRef.current = crosshairsVisible;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -2341,7 +2357,11 @@ export function MainWindow({
           }
         }
 
-        // Initial load finished (saved state found or not) — visibility saves may now persist.
+        // Initial load finished and the file read cleanly. Record which toolsets we've resolved
+        // visibility for, and allow saves to persist — a save now merges onto the file we just read
+        // rather than replacing it.
+        resolvedToolsetIdsRef.current = new Set(toolbarCatalog.registry().listToolsets().map((toolset) => toolset.id));
+        layoutSaveEnabledRef.current = true;
         layoutHydratedRef.current = true;
       })
       .catch((error: unknown) => {
@@ -2351,6 +2371,10 @@ export function MainWindow({
         setWebPaletteFallback(true);
         setVisibleToolsetIds(createDefaultVisibleToolsetIds(desktopToolsetRegistry));
         setStatus(`Native toolbar layout unavailable; using in-window toolbars (${error instanceof Error ? error.message : String(error)})`);
+        resolvedToolsetIdsRef.current = new Set(desktopToolsetRegistry.listToolsets().map((toolset) => toolset.id));
+        // layoutSaveEnabledRef stays FALSE on purpose: the existing file didn't read/parse cleanly
+        // (unreadable, or a newer build's schema), so persisting defaults over it would destroy the
+        // user's saved customization. Leave the file untouched until a launch reads it successfully.
         layoutHydratedRef.current = true;
       });
 
@@ -2364,11 +2388,17 @@ export function MainWindow({
   // file before the load above has read it; merges onto the last known layout state so other
   // customization isn't clobbered.
   useEffect(() => {
-    if (!nativePalette || !layoutHydratedRef.current) {
+    if (!nativePalette || !layoutHydratedRef.current || !layoutSaveEnabledRef.current) {
       return;
     }
-    const allToolsetIds = toolsetRegistry.listToolsets().map((toolset) => toolset.id);
-    const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, allToolsetIds, visibleToolsetIds);
+    // Only record visibility for toolsets we've actually resolved (present at load or user-toggled).
+    // A just-appeared toolset (e.g. a plugin contribution not yet reflected in visibleToolsetIds) is
+    // left to `preserved` in the merge, so its saved `visible: true` isn't clobbered to `false`.
+    const resolvedToolsetIds = toolsetRegistry
+      .listToolsets()
+      .map((toolset) => toolset.id)
+      .filter((id) => resolvedToolsetIdsRef.current.has(id));
+    const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
     layoutStateRef.current = nextState;
     void saveToolsetLayoutState(nextState).catch(() => undefined);
   }, [visibleToolsetIds, nativePalette, toolsetRegistry]);
@@ -2662,6 +2692,9 @@ export function MainWindow({
       setStatus(`Unknown toolbar ${toolsetId}`);
       return;
     }
+    // An explicit toggle makes this toolset's visibility authoritative (see resolvedToolsetIdsRef),
+    // so a later-appearing plugin toolset the user opens is persisted normally from here on.
+    resolvedToolsetIdsRef.current.add(toolsetId);
 
     if (effectiveNativePalette) {
       // JS owns visibility, so JS decides open vs close (and passes the window geometry on open)
@@ -2710,7 +2743,7 @@ export function MainWindow({
       title: toolset.title,
       visible: visibleToolsetIdsRef.current.has(toolset.id)
     }));
-    void setToolbarsMenu(entries).catch(() => undefined);
+    void setToolbarsMenu(entries, rulersVisibleRef.current, crosshairsVisibleRef.current).catch(() => undefined);
   }, [toolsetRegistry, nativePalette]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
@@ -7809,7 +7842,11 @@ export function MainWindow({
         return;
       }
       if (result.outcome === "native") {
-        setVisibleToolsetIds(new Set(result.openedToolsetIds));
+        // Do NOT narrow visibleToolsetIds to the set that actually opened. If one palette missed its
+        // creating frame (is_visible() briefly false) while others opened, the reconciler returns a
+        // partial openedToolsetIds; overwriting the desired set with it — and then persisting that —
+        // would permanently drop that palette. The desired set stays authoritative; a later
+        // reconcile pass reopens anything that missed.
         return;
       }
       // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars

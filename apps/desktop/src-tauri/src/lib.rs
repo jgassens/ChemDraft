@@ -201,8 +201,9 @@ struct Engine3dSidecarSessionOutput {
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedToolsetState {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    visible: Option<bool>,
+    // Window geometry only. Palette *visibility* is owned by the TypeScript side and persisted to
+    // toolbar-layout-state.json (toolsetOverrides[].visible); Rust must not write a second, stale
+    // copy here. Old files may still carry a `visible` key — serde ignores it on read.
     #[serde(skip_serializing_if = "Option::is_none")]
     x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -496,7 +497,6 @@ fn open_toolset_window(
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
     ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
-    persist_toolset_visibility(&app, &toolset_id, true)?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
     let state = toolset_state(&app, &toolset_id)?;
@@ -599,10 +599,21 @@ fn save_toolset_customization_state(
 /// toolbar registry, not Rust's manifest copy. Runs on the main thread; per-toggle checkmark flips
 /// still go through set_menu_checked (in place, no rebuild).
 #[tauri::command]
-fn set_toolbars_menu(app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>) -> Result<(), String> {
+fn set_toolbars_menu(
+    app: tauri::AppHandle,
+    entries: Vec<ToolbarMenuEntry>,
+    rulers_visible: bool,
+    crosshairs_visible: bool,
+) -> Result<(), String> {
+    // JS carries the current View-toggle state so the whole-menu rebuild preserves the Show Rulers /
+    // Show Crosshairs checkmarks (they aren't re-mirrored by set_menu_checked like toolset toggles).
+    let view_state = ViewMenuState {
+        rulers_visible,
+        crosshairs_visible,
+    };
     app.clone()
         .run_on_main_thread(move || {
-            match create_app_menu_for_toolsets(&app, &entries).and_then(|menu| app.set_menu(menu).map(|_| ())) {
+            match create_app_menu_for_toolsets(&app, &entries, view_state).and_then(|menu| app.set_menu(menu).map(|_| ())) {
                 Ok(()) => {}
                 Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
             }
@@ -1735,19 +1746,40 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
+/// The checkable View-menu toggle states that must survive a full menu rebuild. `set_toolbars_menu`
+/// rebuilds the whole bar via `set_menu`, which recreates the Show Rulers / Show Crosshairs items;
+/// carrying their real state here keeps them from snapping back to a hardcoded default (the checkmark
+/// would otherwise desync and then invert on the next click). JS is the source of truth and passes
+/// the current values; the startup menu uses the defaults, which match the app's initial state.
+#[derive(Clone, Copy)]
+struct ViewMenuState {
+    rulers_visible: bool,
+    crosshairs_visible: bool,
+}
+
+impl Default for ViewMenuState {
+    fn default() -> Self {
+        Self {
+            rulers_visible: true,
+            crosshairs_visible: true,
+        }
+    }
+}
+
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     // Empty Toolbars submenu; JS pushes the real rows via set_toolbars_menu once it loads.
-    create_app_menu_for_toolsets(app, &[])
+    create_app_menu_for_toolsets(app, &[], ViewMenuState::default())
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
     app: &tauri::AppHandle<R>,
     entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
 ) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
-    let view_menu = create_view_menu(app, entries)?;
+    let view_menu = create_view_menu(app, entries, view_state)?;
 
     Menu::with_items(
         app,
@@ -1949,6 +1981,7 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
 fn create_view_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
 ) -> tauri::Result<Submenu<R>> {
     let preferences = MenuItem::with_id(
         app,
@@ -1958,12 +1991,14 @@ fn create_view_menu<R: Runtime>(
         Some("CmdOrCtrl+,"),
     )?;
     let preferences_separator = PredefinedMenuItem::separator(app)?;
+    // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
+    // re-check these while the feature is off, desyncing the menu from the document.
     let show_rulers = CheckMenuItem::with_id(
         app,
         "view.toggleRulers",
         "Show Rulers",
         true,
-        true,
+        view_state.rulers_visible,
         Some("CmdOrCtrl+R"),
     )?;
     let show_crosshairs = CheckMenuItem::with_id(
@@ -1971,7 +2006,7 @@ fn create_view_menu<R: Runtime>(
         "view.toggleCrosshairs",
         "Show Crosshairs",
         true,
-        true,
+        view_state.crosshairs_visible,
         Some("CmdOrCtrl+Shift+R"),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -2278,20 +2313,6 @@ fn logical_toolset_position_from_physical(
     }
 }
 
-fn persist_toolset_visibility<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-    visible: bool,
-) -> Result<(), String> {
-    update_toolset_layout_state(app, |layout_state| {
-        layout_state
-            .toolsets
-            .entry(toolset_id.to_string())
-            .or_default()
-            .visible = Some(visible);
-    })
-}
-
 fn persist_toolset_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
@@ -2312,7 +2333,6 @@ fn mark_toolset_window_closed<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
 ) -> Result<ToolsetWindowState, String> {
-    persist_toolset_visibility(app, toolset_id, false)?;
     set_toolset_menu_checked(app, toolset_id, false)?;
 
     let state = ToolsetWindowState {

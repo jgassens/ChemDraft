@@ -381,13 +381,19 @@ export interface ToolbarMenuEntry {
  * rather than Rust's manifest copy. Use for structure (which toolsets exist / their titles); the
  * per-toggle checkmark still flips in place via setMenuChecked.
  */
-export async function setToolbarsMenu(entries: readonly ToolbarMenuEntry[]): Promise<void> {
+export async function setToolbarsMenu(
+  entries: readonly ToolbarMenuEntry[],
+  // Rust rebuilds the whole menu bar here, which recreates the Show Rulers / Show Crosshairs check
+  // items; pass their current state so the rebuild preserves the checkmarks instead of forcing them on.
+  rulersVisible: boolean,
+  crosshairsVisible: boolean
+): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries }).catch(() => undefined);
+  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible }).catch(() => undefined);
 }
 
 /**
