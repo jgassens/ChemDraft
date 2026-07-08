@@ -160,6 +160,14 @@ struct Engine3dSidecarSessions {
     sessions: Mutex<HashMap<String, Arc<Mutex<Engine3dManagedSession>>>>,
 }
 
+#[derive(Default)]
+struct ToolsetWindowDirectory {
+    // Palette window LABEL -> real toolset id. The label is lossy (non-alphanumerics collapse to
+    // '-'), so it can't be reversed by parsing — we record the mapping when the window is created.
+    // This lets label->id resolution and window enumeration stop scanning the manifest.
+    labels: Mutex<HashMap<String, String>>,
+}
+
 struct Engine3dManagedSession {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -274,6 +282,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
+        .manage(ToolsetWindowDirectory::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
@@ -606,11 +615,17 @@ fn toggle_toolset_window(
 
 #[tauri::command]
 fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindowState>, String> {
-    Ok(toolset_manifest_for_startup(&app)
-        .toolsets
-        .into_iter()
-        .map(|toolset| toolset_state(&app, &toolset.id))
-        .collect::<Result<Vec<_>, _>>()?)
+    // Report the state of every palette window we've opened this session (from the directory),
+    // rather than scanning the manifest. The JS reconciler only cares about which are open.
+    let toolset_ids: Vec<String> = {
+        let directory = app.state::<ToolsetWindowDirectory>();
+        let labels = directory.labels.lock().map_err(|error| error.to_string())?;
+        labels.values().cloned().collect()
+    };
+    toolset_ids
+        .iter()
+        .map(|toolset_id| toolset_state(&app, toolset_id))
+        .collect()
 }
 
 #[tauri::command]
@@ -2161,6 +2176,12 @@ fn ensure_toolset_window<R: Runtime>(
     };
     let position = preferred_toolset_position(app, toolset_id);
 
+    // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
+    // without the manifest (the label itself is lossy).
+    if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+        labels.insert(label.clone(), toolset_id.to_string());
+    }
+
     let window = WebviewWindowBuilder::new(
         app,
         label,
@@ -2378,9 +2399,16 @@ fn toolset_id_for_window_label<R: Runtime>(
     app: &tauri::AppHandle<R>,
     label: &str,
 ) -> Option<String> {
-    toolset_id_for_window_label_from_toolsets(&toolset_manifest_for_startup(app).toolsets, label)
+    app.state::<ToolsetWindowDirectory>()
+        .labels
+        .lock()
+        .ok()?
+        .get(label)
+        .cloned()
 }
 
+// Retained for the label-format round-trip tests; the app resolves labels via the window directory.
+#[cfg_attr(not(test), allow(dead_code))]
 fn toolset_id_for_window_label_from_toolsets(
     toolsets: &[ToolsetDefinition],
     label: &str,
