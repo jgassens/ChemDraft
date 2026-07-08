@@ -11,6 +11,7 @@ import {
   type ToolsetDefinition
 } from "@chemdraft/toolset-registry";
 import manifest from "./toolsets/desktop-toolsets.json";
+import { WIDGET_CONTROL_ID_PREFIX } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
@@ -132,7 +133,7 @@ export function computePaletteGridSize(
   // filter). Inline controls (other `control` items) DO occupy a slot and are sized normally.
   const placedItems = itemGroups
     .flat()
-    .filter((item) => !(item.primary.type === "control" && item.primary.controlId.startsWith("widget.")));
+    .filter((item) => !(item.primary.type === "control" && item.primary.controlId.startsWith(WIDGET_CONTROL_ID_PREFIX)));
   const placedColumnCount = Math.max(
     0,
     ...placedItems

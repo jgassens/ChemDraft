@@ -193,7 +193,7 @@ export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
 export const viewActions: CommandSpec[] = [
   {
     id: PREFERENCES_COMMAND_ID,
-    title: "Preferences…",
+    title: "Preferencesâ¦",
     icon: "inspector",
     source: "core",
     shortcut: "Cmd+,",
@@ -256,12 +256,12 @@ export const pageSizeActions: CommandSpec[] = MinimalPageSizePresetIds.map((pres
   };
 });
 
-/** Opens the custom page-size dialog (File ▸ Page Setup ▸ Custom Size…). */
+/** Opens the custom page-size dialog (File â¸ Page Setup â¸ Custom Sizeâ¦). */
 export const PAGE_CUSTOM_SIZE_COMMAND_ID = "page.setSizeCustom";
 
 export const pageCustomSizeAction: CommandSpec = {
   id: PAGE_CUSTOM_SIZE_COMMAND_ID,
-  title: "Set Page Size: Custom…",
+  title: "Set Page Size: Customâ¦",
   icon: "grid",
   source: "core",
   category: "page",
@@ -1510,7 +1510,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Left",
       shortcut: "Option+Shift+Cmd+L",
-      shortcutLabel: "⌥⇧⌘L",
+      shortcutLabel: "â¥â§âL",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1523,7 +1523,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Center",
       shortcut: "Option+Shift+Cmd+C",
-      shortcutLabel: "⌥⇧⌘C",
+      shortcutLabel: "â¥â§âC",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1536,7 +1536,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Right",
       shortcut: "Option+Shift+Cmd+R",
-      shortcutLabel: "⌥⇧⌘R",
+      shortcutLabel: "â¥â§âR",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1549,7 +1549,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Top",
       shortcut: "Option+Shift+Cmd+T",
-      shortcutLabel: "⌥⇧⌘T",
+      shortcutLabel: "â¥â§âT",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1562,7 +1562,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Middle",
       shortcut: "Option+Shift+Cmd+M",
-      shortcutLabel: "⌥⇧⌘M",
+      shortcutLabel: "â¥â§âM",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1575,7 +1575,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Bottom",
       shortcut: "Option+Shift+Cmd+B",
-      shortcutLabel: "⌥⇧⌘B",
+      shortcutLabel: "â¥â§âB",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1588,7 +1588,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Horizontal",
       shortcut: "Option+Shift+Cmd+H",
-      shortcutLabel: "⌥⇧⌘H",
+      shortcutLabel: "â¥â§âH",
       source: "core",
       category: "layout",
       enabled: hasDistributableSelection,
@@ -1601,7 +1601,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Vertical",
       shortcut: "Option+Shift+Cmd+V",
-      shortcutLabel: "⌥⇧⌘V",
+      shortcutLabel: "â¥â§âV",
       source: "core",
       category: "layout",
       enabled: hasDistributableSelection,
@@ -1630,7 +1630,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Group",
       shortcut: "Cmd+G",
-      shortcutLabel: "⌘G",
+      shortcutLabel: "âG",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1643,7 +1643,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Ungroup",
       shortcut: "Shift+Cmd+G",
-      shortcutLabel: "⇧⌘G",
+      shortcutLabel: "â§âG",
       source: "core",
       category: "layout",
       enabled: hasSelectedGroup,
@@ -1656,7 +1656,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Front",
       shortcut: "Shift+Cmd+]",
-      shortcutLabel: "⇧⌘]",
+      shortcutLabel: "â§â]",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1668,7 +1668,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Front",
       shortcut: "Cmd+]",
-      shortcutLabel: "⌘]",
+      shortcutLabel: "â]",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1680,7 +1680,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Back",
       shortcut: "Cmd+[",
-      shortcutLabel: "⌘[",
+      shortcutLabel: "â[",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1692,7 +1692,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Back",
       shortcut: "Shift+Cmd+[",
-      shortcutLabel: "⇧⌘[",
+      shortcutLabel: "â§â[",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1798,8 +1798,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Reset the selected toolbar layout after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Reset the selected toolbar layout (also available in the Customize Toolbars dialog)"
   },
   {
     id: "view.toolset.resetAllLayouts",
@@ -1808,8 +1808,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Reset all toolbar customization state after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Reset all toolbar customization (also available in the Customize Toolbars dialog)"
   },
   {
     id: "view.toolset.createUserToolset",
@@ -1818,8 +1818,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Create a user toolbar after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Create a user toolbar (also available in the Customize Toolbars dialog)"
   },
   {
     id: "view.toolset.cloneToolset",
@@ -1828,8 +1828,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Clone a built-in or plugin toolbar after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Clone a built-in or plugin toolbar (also available in the Customize Toolbars dialog)"
   }
 ];
 

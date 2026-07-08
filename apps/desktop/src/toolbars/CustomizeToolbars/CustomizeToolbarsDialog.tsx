@@ -18,11 +18,13 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   applyToolsetLayoutState,
+  toolsetItemCustomizationId,
   type ToolsetGroupDefinition,
   type ToolsetItemDefinition,
   type ToolsetLayoutState
 } from "@chemdraft/toolset-registry";
 import type { DesktopToolsetDefinition } from "../../toolsets";
+import { WIDGET_CONTROL_ID_PREFIX } from "../toolbarWidgets";
 import {
   USER_TOOLSET_ID_PREFIX,
   cloneToolset,
@@ -39,22 +41,15 @@ import {
 import { CustomizeToolsetDetail, type CommandOption, type CustomizeGroupModel } from "./CustomizeToolsetDetail";
 import "./CustomizeToolbars.css";
 
-/** The id an item is customized by: its command id, or a `widget.*` control id. */
+// Delegate to the registry's customization-id logic so the dialog and applyUserToolsetOverride key
+// items IDENTICALLY (a divergence would silently drop the user's reorder/hide). Empty string = an
+// item with no customization key (e.g. a separator), which the detail model filters out.
 function itemCustomizationId(item: ToolsetItemDefinition<string, string>): string {
-  if (item.commandId) {
-    return item.commandId;
-  }
-  if (item.primary?.type === "command") {
-    return item.primary.commandId;
-  }
-  if (item.primary?.type === "control") {
-    return item.primary.controlId;
-  }
-  return item.id ?? "";
+  return toolsetItemCustomizationId(item) ?? "";
 }
 
 function isWidgetItem(item: ToolsetItemDefinition<string, string>): boolean {
-  return item.primary?.type === "control" && item.primary.controlId.startsWith("widget.");
+  return item.primary?.type === "control" && item.primary.controlId.startsWith(WIDGET_CONTROL_ID_PREFIX);
 }
 
 /** Order items by a preferred id list (matching applyUserToolsetOverride), unlisted items kept last. */
@@ -96,13 +91,15 @@ export interface CustomizeToolbarsDialogProps {
   onClose: () => void;
 }
 
-/** Apply the draft to the base toolsets so the list reflects order, visibility, and renames live. */
+/** Apply the draft to the base toolsets so the list reflects order, visibility, and renames live.
+ *  `error` is true when the draft can't be applied (e.g. a corrupt loaded state) — the preview falls
+ *  back to the base set, and the dialog blocks Apply so a broken draft is never committed. */
 function useEffectiveToolsets(baseToolsets: readonly DesktopToolsetDefinition[], draft: LayoutState) {
   return useMemo(() => {
     try {
-      return applyToolsetLayoutState<string, string>([...baseToolsets], draft, { onUnknownCommand: "prune" });
+      return { toolsets: applyToolsetLayoutState<string, string>([...baseToolsets], draft, { onUnknownCommand: "prune" }), error: false };
     } catch {
-      return [...baseToolsets];
+      return { toolsets: [...baseToolsets], error: true };
     }
   }, [baseToolsets, draft]);
 }
@@ -200,7 +197,7 @@ export function CustomizeToolbarsDialog({
   onClose
 }: CustomizeToolbarsDialogProps) {
   const [draft, setDraft] = useState<LayoutState>(layoutState);
-  const effective = useEffectiveToolsets(baseToolsets, draft);
+  const { toolsets: effective, error: draftError } = useEffectiveToolsets(baseToolsets, draft);
   const [selectedToolsetId, setSelectedToolsetId] = useState<string | undefined>(effective[0]?.id);
   const [newToolbarName, setNewToolbarName] = useState("");
 
@@ -226,24 +223,23 @@ export function CustomizeToolbarsDialog({
   };
 
   const handleClone = (toolsetId: string) => {
-    const source = baseById.get(toolsetId) ?? effective.find((toolset) => toolset.id === toolsetId);
+    // Clone the EFFECTIVE (post-override) toolset so the copy matches what's on screen — the user's
+    // hides/reorders/renames are included; fall back to the base only if it isn't in the list.
+    const source = effective.find((toolset) => toolset.id === toolsetId) ?? baseById.get(toolsetId);
     if (!source) {
       return;
     }
-    setDraft((current) => {
-      const result = cloneToolset(current, source);
-      setSelectedToolsetId(result.toolsetId);
-      return result.state;
-    });
+    // Compute then set — keeping setState updaters pure (no setSelectedToolsetId inside setDraft).
+    const result = cloneToolset(draft, source);
+    setDraft(result.state);
+    setSelectedToolsetId(result.toolsetId);
   };
 
   const handleCreate = () => {
     const title = newToolbarName.trim() || "New Toolbar";
-    setDraft((current) => {
-      const result = createUserToolset(current, { title });
-      setSelectedToolsetId(result.toolsetId);
-      return result.state;
-    });
+    const result = createUserToolset(draft, { title });
+    setDraft(result.state);
+    setSelectedToolsetId(result.toolsetId);
     setNewToolbarName("");
   };
 
@@ -366,12 +362,16 @@ export function CustomizeToolbarsDialog({
                 isUser={selectedIsUser}
                 groups={detailGroups}
                 availableCommands={availableForToolset}
-                onReorderItems={(groupId, orderedItemIds) =>
-                  setDraft((current) => reorderItems(current, selectedToolsetId ?? "", groupId, orderedItemIds))
-                }
-                onToggleItemHidden={(itemId, hidden) =>
-                  setDraft((current) => setItemHidden(current, selectedToolsetId ?? "", itemId, hidden))
-                }
+                onReorderItems={(groupId, orderedItemIds) => {
+                  if (selectedToolsetId) {
+                    setDraft((current) => reorderItems(current, selectedToolsetId, groupId, orderedItemIds));
+                  }
+                }}
+                onToggleItemHidden={(itemId, hidden) => {
+                  if (selectedToolsetId) {
+                    setDraft((current) => setItemHidden(current, selectedToolsetId, itemId, hidden));
+                  }
+                }}
                 onRemoveItem={removeItemFromUserToolset}
                 onAddCommand={addCommandToUserToolset}
               />
@@ -400,10 +400,20 @@ export function CustomizeToolbarsDialog({
         </div>
 
         <footer className="customize-toolbars-footer">
+          {draftError ? (
+            <span className="customize-toolbars-error" role="alert">
+              This customization can’t be applied. Cancel to keep your current toolbars.
+            </span>
+          ) : null}
           <button type="button" className="customize-toolbars-cancel" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="customize-toolbars-apply" onClick={() => onApply(draft)}>
+          <button
+            type="button"
+            className="customize-toolbars-apply"
+            disabled={draftError}
+            onClick={() => onApply(draft)}
+          >
             Apply
           </button>
         </footer>

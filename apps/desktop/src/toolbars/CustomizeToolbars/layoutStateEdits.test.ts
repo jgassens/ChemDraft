@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyToolsetLayoutState, type ToolsetDefinition, type ToolsetLayoutState } from "@chemdraft/toolset-registry";
+import {
+  ToolsetRegistry,
+  applyToolsetLayoutState,
+  type ToolsetDefinition,
+  type ToolsetLayoutState
+} from "@chemdraft/toolset-registry";
 import {
   cloneToolset,
   createUserToolset,
@@ -202,5 +207,28 @@ describe("layoutStateEdits — round-trips through applyToolsetLayoutState", () 
     // The unknown id is dropped (not applied) and reported, without crashing startup.
     expect(itemIds(toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual(["tool.a", "tool.b", "widget.core.demo"]);
     expect(warnings.length).toBeGreaterThan(0);
+  });
+});
+
+// The Customize dialog previews via applyToolsetLayoutState, but the app commits by feeding that
+// result into `new ToolsetRegistry(...)`. These guard the case where customization empties a group
+// or a whole toolset — which used to crash register()'s strict re-validation.
+describe("layoutStateEdits — derived empties register without crashing", () => {
+  function register(state: ToolsetLayoutState) {
+    const applied = applyToolsetLayoutState([baseToolset], state, { onUnknownCommand: "prune" });
+    return () => new ToolsetRegistry(applied);
+  }
+
+  it("registers a freshly-created empty user toolset", () => {
+    const { state } = createUserToolset(emptyLayoutState(), { title: "My Tools" });
+    expect(register(state)).not.toThrow();
+    expect(new ToolsetRegistry(applyToolsetLayoutState([baseToolset], state, { onUnknownCommand: "prune" })).get("user.my-tools")).toBeDefined();
+  });
+
+  it("registers a toolset whose items were all hidden (empty group)", () => {
+    let state = setItemHidden(emptyLayoutState(), "core.demo", "tool.a", true);
+    state = setItemHidden(state, "core.demo", "tool.b", true);
+    state = setItemHidden(state, "core.demo", "widget.core.demo", true);
+    expect(register(state)).not.toThrow();
   });
 });

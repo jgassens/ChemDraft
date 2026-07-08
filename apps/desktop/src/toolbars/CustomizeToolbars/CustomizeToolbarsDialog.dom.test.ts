@@ -157,4 +157,16 @@ describe("CustomizeToolbarsDialog", () => {
     const userToolset = applied().userToolsets.find((toolset) => toolset.id === "user.mine");
     expect(userToolset?.groups.some((group) => group.items.some((item) => item.id === "tool.circle"))).toBe(true);
   });
+
+  it("duplicates the on-screen (customized) toolset, not the raw manifest", () => {
+    render();
+    // Hide core.main's only item, then Duplicate core.main.
+    const visible = container.querySelector<HTMLInputElement>('[data-item-id="tool.a"] .customize-item-visible');
+    act(() => visible!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const cloneButton = container.querySelector<HTMLButtonElement>('[data-toolset-id="core.main"] .customize-toolset-action');
+    act(() => cloneButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const clone = applied().userToolsets.find((toolset) => toolset.id === "user.main-toolbar-copy");
+    // The clone mirrors what's on screen (the hidden item is gone), not the raw manifest.
+    expect(clone?.groups.every((group) => group.items.every((item) => item.id !== "tool.a"))).toBe(true);
+  });
 });

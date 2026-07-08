@@ -111,12 +111,7 @@ import { toolbarAsset } from "./toolbarAssets";
 import { PALETTE_GRID_METRIC_DEFAULTS, type ToolbarPaletteItemModel } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import type {
-  ToolsetArtPaintTarget,
-  ToolsetArtStylePayload,
-  ToolsetFlyoutSnapshot,
-  ToolsetMoleculeInspectorPayload
-} from "./window-manager";
+import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";

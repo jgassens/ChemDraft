@@ -115,6 +115,11 @@ export function reorderItems<I extends string, A extends string>(
   groupId: string,
   orderedItemIds: readonly string[]
 ): ToolsetLayoutState<I, A> {
+  // applyUserToolsetOverride only honors itemOrder for groups with an id, so persisting an order for
+  // an id-less group would write a dead, un-clearable override — no-op instead.
+  if (groupId.length === 0) {
+    return state;
+  }
   return withOverride(state, toolsetId, (draft) => {
     const itemOrder = { ...(draft.itemOrder ?? {}) };
     if (orderedItemIds.length > 0) {
@@ -213,6 +218,9 @@ export function cloneToolset<I extends string, A extends string>(
     id: group.id ?? `${id}.group.${index}`,
     items: group.items.map((item) => ({ ...item }))
   }));
+  // A user toolset must have >=1 group (UserToolsetDefinitionSchema). Cloning a fully-emptied toolset
+  // (e.g. all items hidden) would otherwise yield groups:[] and fail to parse; seed an empty group.
+  const groups = clonedGroups.length > 0 ? clonedGroups : [{ id: `${id}.group`, items: [] }];
   const toolset: UserToolsetDefinition<I, A> = {
     id,
     title,
@@ -223,7 +231,7 @@ export function cloneToolset<I extends string, A extends string>(
     gridLayout: source.gridLayout,
     category: source.category,
     clonedFromToolsetId: source.id,
-    groups: clonedGroups
+    groups
   };
   return { state: { ...state, userToolsets: [...state.userToolsets, toolset] }, toolsetId: id };
 }

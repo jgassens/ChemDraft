@@ -272,10 +272,22 @@
 
 .customize-toolbars-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 18px;
   border-top: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+}
+
+.customize-toolbars-error {
+  margin-right: auto;
+  color: var(--danger, #d14343);
+  font-size: 12px;
+}
+
+.customize-toolbars-apply:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .customize-toolbars-footer button {

@@ -188,6 +188,15 @@ export const UserToolsetDefinitionSchema = ToolsetDefinitionSchema.extend({
   groups: z.array(UserToolsetGroupSchema).min(1)
 }).strict();
 
+// Toolsets handed to a ToolsetRegistry may be DERIVED — the output of applyToolsetLayoutState, where
+// customization can legitimately empty a group (hidden items) or empty a whole toolset (every item
+// hidden, or a freshly-created user toolbar). This lenient schema validates the shape but tolerates
+// those empties. The STRICT non-empty invariant for authored manifests stays in ToolsetManifestSchema
+// (parseToolsetManifest), so registering a derived layout can never crash the way register() did.
+export const RegisteredToolsetSchema = ToolsetDefinitionSchema.extend({
+  groups: z.array(UserToolsetGroupSchema)
+}).strict();
+
 export const ToolsetLayoutStateSchema = z
   .object({
     version: z.literal(1),
@@ -342,7 +351,8 @@ export class ToolsetRegistry<TIcon extends string = string, TAssetName extends s
   }
 
   register(toolset: ToolsetDefinition<TIcon, TAssetName>): ToolsetDefinition<TIcon, TAssetName> {
-    const parsed = ToolsetDefinitionSchema.parse(toolset) as ToolsetDefinition<TIcon, TAssetName>;
+    // Lenient schema: a derived toolset (post-customization) may have empty groups/items.
+    const parsed = RegisteredToolsetSchema.parse(toolset) as ToolsetDefinition<TIcon, TAssetName>;
     if (this.#toolsets.has(parsed.id)) {
       throw new Error(`Toolset "${parsed.id}" is already registered.`);
     }
@@ -777,7 +787,11 @@ function toolsetOverrideTargetIds<TIcon extends string, TAssetName extends strin
   return toolset.groups.flatMap((group) =>
     group.items.flatMap((item) => {
       const ids = toolsetItemCommandIds(item);
-      if (item.primary?.type === "control") {
+      // Only expose the control id when it IS the item's customization key — i.e. no commandId wins
+      // over it (toolsetItemCustomizationId returns commandId first). Otherwise an override could
+      // "validate" against a control id that applyUserToolsetOverride can never match, silently
+      // dropping the edit.
+      if (item.primary?.type === "control" && item.commandId === undefined) {
         ids.push(item.primary.controlId);
       }
       return ids;
@@ -891,7 +905,7 @@ function toolsetItemPrimaryCommandIds<TIcon extends string, TAssetName extends s
  * overrides). Falls back from the legacy top-level `commandId` to `primary.commandId`, so items
  * authored in the new primary-only form are still reorderable/hideable.
  */
-function toolsetItemCustomizationId<TIcon extends string, TAssetName extends string>(
+export function toolsetItemCustomizationId<TIcon extends string, TAssetName extends string>(
   item: ToolsetItemDefinition<TIcon, TAssetName>
 ): string | undefined {
   if (item.commandId !== undefined) {
