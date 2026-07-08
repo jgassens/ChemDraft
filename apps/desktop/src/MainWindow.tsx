@@ -1832,6 +1832,9 @@ export function MainWindow({
   // contribution) is excluded until it's resolved, so a visibility save can't clobber its saved
   // `visible: true` down to `false` just because it isn't in the current visible set yet.
   const resolvedToolsetIdsRef = useRef<Set<string>>(new Set());
+  // Serializes the fire-and-forget layout saves so two rapid visibility changes can't have their
+  // disk writes complete out of order and leave the file disagreeing with the in-memory state.
+  const layoutSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
@@ -2400,7 +2403,10 @@ export function MainWindow({
       .filter((id) => resolvedToolsetIdsRef.current.has(id));
     const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
     layoutStateRef.current = nextState;
-    void saveToolsetLayoutState(nextState).catch(() => undefined);
+    // Chain the writes so their completion order matches the order the states were produced.
+    layoutSaveChainRef.current = layoutSaveChainRef.current
+      .then(() => saveToolsetLayoutState(nextState))
+      .catch(() => undefined);
   }, [visibleToolsetIds, nativePalette, toolsetRegistry]);
 
   useEffect(() => {
@@ -2674,16 +2680,13 @@ export function MainWindow({
     const size = toolset.preferredWindowSize;
     // Stagger a first-ever placement by the toolset's position in the registry (Rust used to derive
     // this from the manifest order); a persisted position overrides it in Rust.
-    const index = Math.max(0, toolsetRegistry.listToolsets().findIndex((entry) => entry.id === toolsetId));
-    const offset = index * 18;
+    const offset = toolsetStaggerIndex(toolsetId, toolsetRegistry) * TOOLSET_STAGGER_STEP_PX;
     return {
       title: toolset.title,
       width: size?.width ?? 96,
       height: size?.height ?? 420,
       x: 88 + offset,
-      y: 154 + offset,
-      minWidth: size?.minWidth,
-      minHeight: size?.minHeight
+      y: 154 + offset
     };
   }, [toolsetRegistry]);
 
@@ -16551,18 +16554,27 @@ function distributeAxisForCommandId(commandId: string): DocumentDistributeAxis |
   }
 }
 
+const TOOLSET_STAGGER_STEP_PX = 18;
+
+// Registry-order index used to stagger a palette's first-ever placement. Shared by the native window
+// geometry (toolsetWindowGeometry) and the in-window web-palette default so the two can't silently
+// diverge on how they stagger (only their base anchor differs).
+function toolsetStaggerIndex(toolsetId: string, registry: DesktopToolsetRegistry): number {
+  return Math.max(0, registry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
+}
+
 function createDefaultToolsetPositions(registry: DesktopToolsetRegistry): Record<string, PalettePosition> {
   return Object.fromEntries(
     registry.listToolsets().map((toolset, index) => [
       toolset.id,
-      { x: 34 + index * 18, y: 116 + index * 18 }
+      { x: 34 + index * TOOLSET_STAGGER_STEP_PX, y: 116 + index * TOOLSET_STAGGER_STEP_PX }
     ])
   );
 }
 
 function defaultToolsetPosition(toolsetId: string, registry: DesktopToolsetRegistry): PalettePosition {
-  const index = Math.max(0, registry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
-  return { x: 34 + index * 18, y: 116 + index * 18 };
+  const offset = toolsetStaggerIndex(toolsetId, registry) * TOOLSET_STAGGER_STEP_PX;
+  return { x: 34 + offset, y: 116 + offset };
 }
 
 function clientPointFromElementCenter(element: HTMLElement): ClientPoint {

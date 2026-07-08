@@ -484,10 +484,6 @@ struct ToolsetWindowGeometry {
     // position overrides it.
     x: f64,
     y: f64,
-    #[allow(dead_code)]
-    min_width: Option<f64>,
-    #[allow(dead_code)]
-    min_height: Option<f64>,
 }
 
 #[tauri::command]
@@ -2116,17 +2112,17 @@ fn ensure_toolset_window<R: Runtime>(
         labels.insert(label.clone(), toolset_id.to_string());
     }
 
-    let window = WebviewWindowBuilder::new(
+    let window = match WebviewWindowBuilder::new(
         app,
-        label,
+        label.clone(),
         WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
     )
     .title(title)
     .inner_size(width, height)
     // The window is sized to its actual palette content by the JS side (PaletteWindow
-    // applySize). The manifest's min_width/min_height were tuned for the old docked/web
-    // layout and are far too large for a content-fit floating window (e.g. Art's 760),
-    // which left a big blank area beside the tools — so keep only a tiny hard floor here.
+    // applySize). The manifest's min sizes were tuned for the old docked/web layout and are far too
+    // large for a content-fit floating window (e.g. Art's 760), which left a big blank area beside
+    // the tools — so keep only a tiny hard floor here.
     .min_inner_size(96.0, 56.0)
     .accept_first_mouse(true)
     .focusable(toolset_window_focusable())
@@ -2136,7 +2132,18 @@ fn ensure_toolset_window<R: Runtime>(
     .skip_taskbar(true)
     .position(position.x, position.y)
     .build()
-    .map_err(|error| error.to_string())?;
+    {
+        Ok(window) => window,
+        Err(error) => {
+            // Roll back the directory entry we optimistically inserted above, so a failed build
+            // doesn't leave a phantom label -> id mapping that enumeration and label resolution
+            // would treat as a real (but nonexistent) window.
+            if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+                labels.remove(&label);
+            }
+            return Err(error.to_string());
+        }
+    };
 
     configure_toolset_utility_window(&window)?;
     Ok(())

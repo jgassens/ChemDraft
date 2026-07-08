@@ -24,5 +24,12 @@ export function mergeVisibilityIntoLayoutState(
   }));
   const preserved = base.toolsetOverrides.filter((override) => !known.has(override.toolsetId));
 
-  return { ...base, version: 1, toolsetOverrides: [...preserved, ...updated] };
+  // Copy userToolsets rather than spread `base` by reference: when `existing` is undefined, `base`
+  // is the module-level EMPTY_LAYOUT_STATE and spreading it would return its array, so a later
+  // mutation of the result would corrupt the shared constant for every subsequent merge.
+  return {
+    version: 1,
+    toolsetOverrides: [...preserved, ...updated],
+    userToolsets: [...base.userToolsets]
+  };
 }

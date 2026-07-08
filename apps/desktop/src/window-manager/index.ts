@@ -109,8 +109,6 @@ export interface ToolsetWindowGeometry {
   /** Default top-left for a first-ever placement (JS staggers by registry order). */
   x: number;
   y: number;
-  minWidth?: number;
-  minHeight?: number;
 }
 
 export async function openToolsetWindow(
