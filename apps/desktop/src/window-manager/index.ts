@@ -336,6 +336,19 @@ export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
 }
 
 /**
+ * Persist the full toolbar layout/customization state (visibility, order, user toolsets). JS owns
+ * this now; Rust just writes the opaque JSON to disk. No-op off the desktop runtime.
+ */
+export async function saveToolsetLayoutState(state: unknown): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("save_toolset_customization_state", { state }).catch(() => undefined);
+}
+
+/**
  * Pushes a native menu item's check state from JS. The main window owns toolset
  * visibility now, so it mirrors each toggle's checkmark here after every change.
  * No-op in the browser build (there is no native menu).

@@ -400,6 +400,7 @@ pub fn run() {
             toggle_toolset_window,
             list_toolset_window_states,
             load_toolset_customization_state,
+            save_toolset_customization_state,
             focus_main_document_window,
             set_menu_checked,
             plugin_storage_read,
@@ -631,6 +632,22 @@ fn load_toolset_customization_state(
     serde_json::from_str(&contents)
         .map(Some)
         .map_err(|error| format!("Toolbar customization state is invalid: {error}"))
+}
+
+/// JS owns toolbar customization now (visibility, layout, user toolsets). It serializes the whole
+/// `ToolsetLayoutState` and persists it here; Rust just writes the opaque JSON to disk.
+#[tauri::command]
+fn save_toolset_customization_state(
+    app: tauri::AppHandle,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let path = toolset_customization_state_path(&app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+    fs::write(path, contents).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
