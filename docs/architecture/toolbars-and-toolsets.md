@@ -1,8 +1,30 @@
 # Toolbars And Toolsets
 
-Status: customization-ready schema and command surface, without drag-and-drop UI.
+Status: single-brain toolbar architecture shipping — native floating palettes, manifest-declared
+widgets, and a working drag-and-drop Customize Toolbars editor.
 
 ChemDraft toolbars are declarative toolsets backed by command IDs. A toolbar button never owns behavior directly; it invokes a command registered by the app or a plugin.
+
+## Single Brain (TypeScript owns toolbar state; Rust is a dumb window host)
+
+The TypeScript main window is the single source of truth for toolbars. `toolbars/toolbarCatalog.ts`
+composes the effective toolset set from three inputs — the core manifest, live plugin contributions,
+and the user's saved layout state — into immutable `ToolsetRegistry` snapshots. Everything else
+(the palettes, the View ▸ Toolbars menu model, the Customize editor) follows that registry.
+
+On the desktop build, each visible palette is a **native floating utility window** (a macOS NSPanel:
+floats above the document while the app is active, hides on deactivate, never steals focus). Rust no
+longer reads the toolset manifest at all — the TypeScript side supplies each window's title, size, and
+staggered default position, pushes the View ▸ Toolbars menu model, and routes every menu click back to
+JS; Rust just hosts the windows and persists their geometry. The browser build renders the same
+`ToolPalette` in-window; `isDesktopRuntime()` (with a `localStorage["chemdraft.forceWebPalettes"]`
+escape hatch) picks the renderer.
+
+**Persistence split:** `toolbar-layout-state.json` holds user *intent* (visibility as
+`toolsetOverrides[].visible`, order, renames, hidden items, user toolsets) — JS reads/writes it via
+`load/save_toolset_customization_state`. `toolbar-state.json` holds window *geometry* only. A layout
+file that fails to load or parse is never overwritten with defaults (it's preserved so a transient
+error can't destroy customization).
 
 ## Sources
 
@@ -14,9 +36,14 @@ User customization references command IDs. It must not copy command implementati
 
 ## Item Schema
 
-Toolbar manifests are schema-backed at the item level. Each item is still command-backed
-today, but the manifest now carries explicit UI metadata so toolbar rendering, flyouts,
-tooltips, and later customization do not have to infer intent from a bare command ID.
+Toolbar manifests are schema-backed at the item level. Most items are command-backed, but the
+manifest also declares **widget items** — full sections like the text/art style controls and the
+ring/molecule inspectors — as `control` items whose `controlId` carries a `widget.` prefix (e.g.
+`widget.core.moleculeInspector`). `ToolPalette` maps each widget id to its component via an internal
+registry and feeds it live state through `ToolbarWidgetStateContext`, so which widgets a palette
+shows is data (the manifest), not a hardcoded flag. Widget items are customizable (hide/reorder) by
+their control id just like commands; they are skipped from grid slots and grid sizing. Inline
+(non-widget) `control` items still occupy a grid slot.
 
 Item fields:
 
@@ -66,7 +93,12 @@ The state is versioned and supports:
 - cloned built-in or plugin toolsets,
 - toolbar size and cell-size preferences.
 
-Future drag-and-drop customization should edit this state, not source manifests. Built-in and plugin manifests remain stable source contributions.
+The **Customize Toolbars editor** (`toolbars/CustomizeToolbars/`) edits this state — never the source
+manifests. `layoutStateEdits.ts` is a pure `ToolsetLayoutState -> ToolsetLayoutState` layer (visibility,
+rename, reorder toolsets/groups/items, hide, clone, create, delete); the dnd-kit dialog keeps a draft
+and commits (setLayoutState + save) only on Apply. Invariant: structural edits (add/remove items) apply
+only to `user.*` toolsets; core and plugin toolsets take overrides only (clone a built-in first to edit
+it structurally). Built-in and plugin manifests remain stable source contributions.
 
 ## View Menu
 
@@ -80,7 +112,10 @@ user layout state
 -> menu items with command IDs
 ```
 
-The menu item command remains `view.toolset.toggle.<toolsetId>`. Customization commands such as `view.customizeToolbars` exist as disabled placeholders until the editor UI is implemented.
+The menu item command remains `view.toolset.toggle.<toolsetId>`. `view.customizeToolbars` is enabled and
+opens the editor (routed to JS via `MENU_COMMAND_IDS`, mirrored in the web menu by `appMenu.ts`). The
+standalone `view.toolset.{resetLayout,resetAllLayouts,createUserToolset,cloneToolset}` commands remain
+disabled placeholders because those actions are performed inside the dialog.
 
 ## ChemDraw XML Boundary
 
@@ -90,18 +125,13 @@ ChemDraw XML may be studied conceptually as evidence that toolbar layouts are da
 
 If external toolbar import is ever added, it must be a compatibility/import layer. It should map known external actions into ChemDraft command IDs, warn for unmapped commands, and preserve the legal boundary.
 
-## Future Drag And Drop
+## Drag And Drop
 
-Do not add a drag-and-drop dependency until the customization UI is actually being built.
-
-Future dependency recommendation:
-
-- `dnd-kit`: preferred. It supports custom sensors, keyboard/touch/pointer input, sortable behavior, and custom layout logic for toolbar grids.
-- `@hello-pangea/dnd`: acceptable for simple lists, but less ideal for mixed grid/palette layouts.
-- `SortableJS`: good for plain sortable lists, less ideal for command-driven React tool palettes.
-- `react-beautiful-dnd`: do not use. It is archived/deprecated.
-
-Any future dependency addition must update `docs/architecture/dependency-inventory.md` with package name, purpose, license, core/optional status, and distribution impact.
+The Customize Toolbars editor uses **`dnd-kit`** (`@dnd-kit/core`, `@dnd-kit/sortable`,
+`@dnd-kit/utilities`) for sortable toolset and item lists, with the keyboard sensor for accessibility.
+It was chosen over `@hello-pangea/dnd` (weaker for mixed grid/palette layouts), `SortableJS` (not
+React-command-driven), and `react-beautiful-dnd` (archived). See
+`docs/architecture/dependency-inventory.md` for the inventory entry.
 
 ## Asset Note
 

@@ -4,7 +4,7 @@ This map preserves the functional identity of the custom toolbar glyphs without 
 
 The source files in `Custom_Toolbar/2_Images` are treated as user-provided custom assets. Runtime actions use ChemDraft command IDs, titles, categories, descriptions, tooltips, accessible labels, and disabled-state reasons.
 
-Current status: only `tool.select` is active. Other entries are disabled command definitions until the `editor-adapter`, `layout-engine`, `style` workflow, or selected-object workflow can perform the action honestly.
+Current status: the drawing, structure, arrows, art, layout, text, and style commands are active and dispatched through the shared command registry; the remaining entries stay disabled command definitions (with honest disabled-state reasons) until their workflow can perform the action. Toolbars are now data-driven end to end — see `docs/architecture/toolbars-and-toolsets.md` for the single-brain architecture, widget items, and the Customize Toolbars editor.
 
 ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a typed ChemDraft toolset manifest, currently read from `apps/desktop/src/toolsets/desktop-toolsets.json` and validated through `@chemdraft/toolset-registry`. Future user-editable XML or JSON toolbar files should be added through a compatibility/import layer, not by adopting proprietary toolbar XML as the native model.
 
