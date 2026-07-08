@@ -1767,6 +1767,16 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
+            },
+            {
+              "id": "widget.core.mainStyleControls",
+              "kind": "control",
+              "label": "Text style controls",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.mainStyleControls"
+              },
+              "submenu": null
             }
           ]
         }
@@ -3934,6 +3944,16 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
+            },
+            {
+              "id": "widget.core.artStyleControls",
+              "kind": "control",
+              "label": "Art style controls",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.artStyleControls"
+              },
+              "submenu": null
             }
           ]
         }
@@ -4877,6 +4897,16 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
+            },
+            {
+              "id": "widget.core.textStyleControls",
+              "kind": "control",
+              "label": "Text style controls",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.textStyleControls"
+              },
+              "submenu": null
             }
           ]
         }
@@ -4926,6 +4956,16 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
+            },
+            {
+              "id": "widget.core.ringInspector",
+              "kind": "control",
+              "label": "Ring inspector",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.ringInspector"
+              },
+              "submenu": null
             }
           ]
         }
@@ -4975,6 +5015,16 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
+            },
+            {
+              "id": "widget.core.moleculeInspector",
+              "kind": "control",
+              "label": "Molecule inspector",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.moleculeInspector"
+              },
+              "submenu": null
             }
           ]
         }

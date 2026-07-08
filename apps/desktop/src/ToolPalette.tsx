@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -14,6 +15,15 @@ import iro from "@jaames/iro";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
+import {
+  ToolbarWidgetStateContext,
+  TOOLBAR_WIDGET_IDS,
+  isToolbarWidgetItem,
+  toolbarWidgetIdsFromItemGroups,
+  useToolbarWidgetState,
+  type ToolbarWidgetGridMode,
+  type ToolbarWidgetState
+} from "./toolbars/toolbarWidgets";
 import {
   normalizeHexColor,
   distributeModeCommandIds,
@@ -196,28 +206,10 @@ export function ToolPalette({
   mode = "docked",
   orientation = "vertical",
   title = "Drawing tools",
-  showMainStyleControls = false,
-  showTextStyleControls = false,
-  showArtStyleControls = false,
-  showRingInspectorControls = false,
-  showMoleculeInspectorControls = false,
   currentDistributeMode = "centers",
-  currentObjectColor,
-  currentArtStyle,
-  currentArtStyleTarget = "fill",
-  currentMoleculeInspector,
-  currentTextStyle,
-  currentTextScript,
-  onColorPickerOpenChange,
-  onRequestColorPopover,
   onRequestFlyout,
-  onArtStylePreview,
-  onArtStyleCommit,
-  onArtStyleCancel,
-  onMoleculeInspectorPreview,
-  onMoleculeInspectorCommit,
-  onMoleculeInspectorCancel,
-  onInvoke
+  onInvoke,
+  widgetState
 }: {
   groups?: CommandSpec[][];
   itemGroups?: ToolbarPaletteItemModel[][];
@@ -226,28 +218,12 @@ export function ToolPalette({
   mode?: ToolPaletteMode;
   orientation?: ToolPaletteOrientation;
   title?: string;
-  showMainStyleControls?: boolean;
-  showTextStyleControls?: boolean;
-  showArtStyleControls?: boolean;
-  showRingInspectorControls?: boolean;
-  showMoleculeInspectorControls?: boolean;
   currentDistributeMode?: ToolPaletteDistributeMode;
-  currentObjectColor?: string;
-  currentArtStyle?: ToolsetArtStylePayload;
-  currentArtStyleTarget?: ToolsetArtPaintTarget;
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
-  currentTextStyle?: NativeTextStyle;
-  currentTextScript?: TextSpan["script"];
-  onColorPickerOpenChange?: (open: boolean) => void;
-  onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
-  onArtStylePreview?: (commandId: string) => void;
-  onArtStyleCommit?: (commandId: string) => void;
-  onArtStyleCancel?: () => void;
-  onMoleculeInspectorPreview?: (commandId: string) => void;
-  onMoleculeInspectorCommit?: (commandId: string) => void;
-  onMoleculeInspectorCancel?: () => void;
   onInvoke: (commandId: string) => void;
+  /** Live state + callbacks for the widget sections (style controls, inspectors), provided via
+   *  context to the widgets declared as manifest `control` items. */
+  widgetState?: ToolbarWidgetState;
 }) {
   const {
     visibleTooltipId,
@@ -276,7 +252,19 @@ export function ToolPalette({
   );
 
   const gridStyle = toolPaletteGridStyle(gridLayout);
-  const toolGroupElements = effectiveItemGroups.map((group, groupIndex) => (
+  // Widget items (manifest `control` items) don't render as grid slots — they drive the widget
+  // sections below and can replace/hide the grid. Strip them from the grid content + sizing so a
+  // widget placeholder never shows as a disabled button.
+  const gridItemGroups = effectiveItemGroups
+    .map((group) => group.filter((item) => !isToolbarWidgetItem(item)))
+    .filter((group) => group.length > 0);
+  const presentWidgets = toolbarWidgetIdsFromItemGroups(effectiveItemGroups)
+    .filter((widgetId): widgetId is keyof typeof TOOLBAR_WIDGET_REGISTRY => widgetId in TOOLBAR_WIDGET_REGISTRY)
+    .map((widgetId) => ({ widgetId, ...TOOLBAR_WIDGET_REGISTRY[widgetId] }));
+  const hidesGrid = presentWidgets.some((widget) => widget.gridMode === "hide-grid");
+  const replacesGrid = presentWidgets.some((widget) => widget.gridMode === "replace-grid");
+
+  const toolGroupElements = gridItemGroups.map((group, groupIndex) => (
     <div
       className={["tool-group", gridStyle ? "tool-group-grid" : ""].filter(Boolean).join(" ")}
       key={group.map((tool) => tool.id).join("-")}
@@ -289,8 +277,8 @@ export function ToolPalette({
     </div>
   ));
 
-  const artCommandColumnElements = showArtStyleControls
-    ? artToolbarCommandColumns(effectiveItemGroups).map((column, columnIndex) => {
+  const artCommandColumnElements = replacesGrid
+    ? artToolbarCommandColumns(gridItemGroups).map((column, columnIndex) => {
         const elements = column.items.map((item, itemIndex) => {
           const tooltipId = `art-column-${columnIndex}-${itemIndex}-${item.id}`;
           return renderPaletteItem(item, tooltipId, item.id);
@@ -311,86 +299,76 @@ export function ToolPalette({
     : [];
 
   return (
-    <aside
-      className={[
-        "tool-palette",
-        mode,
-        orientation,
-        showMainStyleControls ? "main-style-palette" : "",
-        showTextStyleControls ? "text-style-palette" : "",
-        showArtStyleControls ? "art-style-palette" : "",
-        showRingInspectorControls ? "ring-inspector-palette" : "",
-        showMoleculeInspectorControls ? "molecule-inspector-palette" : ""
-      ].filter(Boolean).join(" ")}
-      aria-label={title}
-      data-tool-palette-orientation={orientation}
-      data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
-    >
-      {mode === "floating" ? (
-        <span
-          className="palette-content-drag-grip"
-          aria-hidden="true"
-          data-palette-content-drag-grip="true"
-          data-tauri-drag-region="true"
-        />
-      ) : null}
-      {showRingInspectorControls || showMoleculeInspectorControls ? null : showArtStyleControls ? (
-        <div className="art-toolbar-command-band" data-art-command-band="true">
-          <div className="art-toolbar-command-grid" data-art-command-grid="true">
-            {artCommandColumnElements}
+    <ToolbarWidgetStateContext.Provider value={widgetState ?? { onInvoke }}>
+      <aside
+        className={[
+          "tool-palette",
+          mode,
+          orientation,
+          ...presentWidgets.map((widget) => widget.className)
+        ].filter(Boolean).join(" ")}
+        aria-label={title}
+        data-tool-palette-orientation={orientation}
+        data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
+      >
+        {mode === "floating" ? (
+          <span
+            className="palette-content-drag-grip"
+            aria-hidden="true"
+            data-palette-content-drag-grip="true"
+            data-tauri-drag-region="true"
+          />
+        ) : null}
+        {hidesGrid ? null : replacesGrid ? (
+          <div className="art-toolbar-command-band" data-art-command-band="true">
+            <div className="art-toolbar-command-grid" data-art-command-grid="true">
+              {artCommandColumnElements}
+            </div>
           </div>
-        </div>
-      ) : toolGroupElements}
-      {showMainStyleControls ? (
-        <MainToolbarStyleControls
-          currentTextStyle={currentTextStyle}
-          currentTextScript={currentTextScript}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showTextStyleControls ? (
-        <TextToolbarStyleControls
-          currentTextStyle={currentTextStyle}
-          currentTextScript={currentTextScript}
-          onColorPickerOpenChange={onColorPickerOpenChange}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showArtStyleControls ? (
-        <ArtToolbarStyleControls
-          currentObjectColor={currentObjectColor}
-          currentArtStyle={currentArtStyle}
-          currentArtStyleTarget={currentArtStyleTarget}
-          onColorPickerOpenChange={onColorPickerOpenChange}
-          onRequestColorPopover={onRequestColorPopover}
-          onPreview={onArtStylePreview}
-          onCommit={onArtStyleCommit}
-          onCancel={onArtStyleCancel}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showRingInspectorControls ? (
-        <MoleculeInspectorControls
-          currentMoleculeInspector={currentMoleculeInspector}
-          ringOnly={true}
-          onPreview={onMoleculeInspectorPreview}
-          onCommit={onMoleculeInspectorCommit}
-          onCancel={onMoleculeInspectorCancel}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showMoleculeInspectorControls ? (
-        <MoleculeInspectorControls
-          currentMoleculeInspector={currentMoleculeInspector}
-          onPreview={onMoleculeInspectorPreview}
-          onCommit={onMoleculeInspectorCommit}
-          onCancel={onMoleculeInspectorCancel}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-    </aside>
+        ) : toolGroupElements}
+        {presentWidgets.map((widget) => (
+          <Fragment key={widget.widgetId}>{widget.render()}</Fragment>
+        ))}
+      </aside>
+    </ToolbarWidgetStateContext.Provider>
   );
 }
+
+/**
+ * Maps a manifest widget id (a `control` item's `controlId`) to the component that renders it and how
+ * it sits relative to the tool grid. Components read their live state from {@link ToolbarWidgetStateContext};
+ * ring vs. molecule share MoleculeInspectorControls (ring passes `ringOnly`).
+ */
+const TOOLBAR_WIDGET_REGISTRY: Record<
+  string,
+  { gridMode: ToolbarWidgetGridMode; className: string; render: () => ReactNode }
+> = {
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: {
+    gridMode: "append",
+    className: "main-style-palette",
+    render: () => <MainToolbarStyleControls />
+  },
+  [TOOLBAR_WIDGET_IDS.textStyleControls]: {
+    gridMode: "append",
+    className: "text-style-palette",
+    render: () => <TextToolbarStyleControls />
+  },
+  [TOOLBAR_WIDGET_IDS.artStyleControls]: {
+    gridMode: "replace-grid",
+    className: "art-style-palette",
+    render: () => <ArtToolbarStyleControls />
+  },
+  [TOOLBAR_WIDGET_IDS.ringInspector]: {
+    gridMode: "hide-grid",
+    className: "ring-inspector-palette",
+    render: () => <MoleculeInspectorControls ringOnly />
+  },
+  [TOOLBAR_WIDGET_IDS.moleculeInspector]: {
+    gridMode: "hide-grid",
+    className: "molecule-inspector-palette",
+    render: () => <MoleculeInspectorControls />
+  }
+};
 
 function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPaletteItemModel[][] {
   return groups.map((group) => group.map((command) => ({
@@ -613,15 +591,8 @@ function TextFontSelect({
   );
 }
 
-function MainToolbarStyleControls({
-  currentTextStyle,
-  currentTextScript = "normal",
-  onInvoke
-}: {
-  currentTextStyle?: NativeTextStyle;
-  currentTextScript?: TextSpan["script"];
-  onInvoke: (commandId: string) => void;
-}) {
+function MainToolbarStyleControls() {
+  const { currentTextStyle, currentTextScript = "normal", onInvoke } = useToolbarWidgetState();
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
   const textAlign = currentTextStyle?.textAlign ?? "left";
   const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
@@ -720,17 +691,8 @@ function MainToolbarStyleControls({
   );
 }
 
-function TextToolbarStyleControls({
-  currentTextStyle,
-  currentTextScript = "normal",
-  onColorPickerOpenChange,
-  onInvoke
-}: {
-  currentTextStyle?: NativeTextStyle;
-  currentTextScript?: TextSpan["script"];
-  onColorPickerOpenChange?: (open: boolean) => void;
-  onInvoke: (commandId: string) => void;
-}) {
+function TextToolbarStyleControls() {
+  const { currentTextStyle, currentTextScript = "normal", onColorPickerOpenChange, onInvoke } = useToolbarWidgetState();
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
   const textAlign = currentTextStyle?.textAlign ?? "left";
   const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
@@ -869,21 +831,14 @@ function objectStrokeDashCommandId(strokeDasharray: string | undefined): string 
 
 const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;
 
-function MoleculeInspectorControls({
-  currentMoleculeInspector,
-  ringOnly = false,
-  onPreview,
-  onCommit,
-  onCancel,
-  onInvoke
-}: {
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
-  ringOnly?: boolean;
-  onPreview?: (commandId: string) => void;
-  onCommit?: (commandId: string) => void;
-  onCancel?: () => void;
-  onInvoke: (commandId: string) => void;
-}) {
+function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean }) {
+  const {
+    currentMoleculeInspector,
+    onMoleculeInspectorPreview: onPreview,
+    onMoleculeInspectorCommit: onCommit,
+    onMoleculeInspectorCancel: onCancel,
+    onInvoke
+  } = useToolbarWidgetState();
   const ringsModel = currentMoleculeInspector?.rings;
   const selectedRing = ringsModel?.selectedRing;
   const selectedRingKeys = ringsModel?.selectedRings.map((ring) => ring.ringKey) ?? [];
@@ -1777,27 +1732,18 @@ function fontFaceLabel(weight: number, style: "normal" | "italic"): string {
   return style === "italic" ? `${weightLabel} Italic` : weightLabel;
 }
 
-function ArtToolbarStyleControls({
-  currentObjectColor,
-  currentArtStyle,
-  currentArtStyleTarget,
-  onColorPickerOpenChange,
-  onRequestColorPopover,
-  onPreview,
-  onCommit,
-  onCancel,
-  onInvoke
-}: {
-  currentObjectColor?: string;
-  currentArtStyle?: ToolsetArtStylePayload;
-  currentArtStyleTarget: ToolsetArtPaintTarget;
-  onColorPickerOpenChange?: (open: boolean) => void;
-  onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
-  onPreview?: (commandId: string) => void;
-  onCommit?: (commandId: string) => void;
-  onCancel?: () => void;
-  onInvoke: (commandId: string) => void;
-}) {
+function ArtToolbarStyleControls() {
+  const {
+    currentObjectColor,
+    currentArtStyle,
+    currentArtStyleTarget = "fill",
+    onColorPickerOpenChange,
+    onRequestColorPopover,
+    onArtStylePreview: onPreview,
+    onArtStyleCommit: onCommit,
+    onArtStyleCancel: onCancel,
+    onInvoke
+  } = useToolbarWidgetState();
   const selectedCount = currentArtStyle?.selectedCount ?? 0;
   const selected = selectedCount > 0;
   const fillSupportedCount = currentArtStyle?.fillSupportedCount ?? 0;

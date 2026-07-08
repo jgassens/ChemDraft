@@ -519,27 +519,25 @@ export function PaletteWindow({
         mode="floating"
         orientation={toolset.gridLayout?.orientation ?? "vertical"}
         title={toolset.title}
-        showMainStyleControls={toolset.id === "core.main"}
-        showTextStyleControls={toolset.id === "core.text"}
-        showArtStyleControls={toolset.id === "core.art"}
-        showRingInspectorControls={toolset.id === "core.ringInspector"}
-        showMoleculeInspectorControls={toolset.id === "core.moleculeInspector"}
-        currentObjectColor={currentTextStyle.color}
-        currentArtStyle={currentArtStyle}
-        currentArtStyleTarget={currentArtStyleTarget}
-        currentMoleculeInspector={currentMoleculeInspector}
-        currentTextStyle={currentTextStyle}
-        currentTextScript={currentTextScript}
-        onColorPickerOpenChange={setColorPickerOpen}
-        onRequestColorPopover={openArtColorPopover}
         onRequestFlyout={openFlyoutPopover}
-        onArtStylePreview={previewCommand}
-        onArtStyleCommit={commitPreviewCommand}
-        onArtStyleCancel={cancelPreviewCommand}
-        onMoleculeInspectorPreview={previewCommand}
-        onMoleculeInspectorCommit={commitPreviewCommand}
-        onMoleculeInspectorCancel={cancelPreviewCommand}
         onInvoke={invokeCommand}
+        widgetState={{
+          currentObjectColor: currentTextStyle.color,
+          currentArtStyle,
+          currentArtStyleTarget,
+          currentMoleculeInspector,
+          currentTextStyle,
+          currentTextScript,
+          onColorPickerOpenChange: setColorPickerOpen,
+          onRequestColorPopover: openArtColorPopover,
+          onArtStylePreview: previewCommand,
+          onArtStyleCommit: commitPreviewCommand,
+          onArtStyleCancel: cancelPreviewCommand,
+          onMoleculeInspectorPreview: previewCommand,
+          onMoleculeInspectorCommit: commitPreviewCommand,
+          onMoleculeInspectorCancel: cancelPreviewCommand,
+          onInvoke: invokeCommand
+        }}
       />
     </main>
   );

@@ -19,9 +19,16 @@ import {
   moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
-import { getToolsetCommandGroups, getToolsetItemGroups } from "./toolsets";
+import { getToolsetCommandGroups, getToolsetItemGroups, type ToolbarPaletteItemModel } from "./toolsets";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Phase 5: widgets are declared as manifest `control` items and read their state from context. This
+// isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
+// `show*Controls` props used to render only the widget section.
+function widgetOnlyItemGroups(toolsetId: string): ToolbarPaletteItemModel[][] {
+  return [getToolsetItemGroups(toolsetId).flat().filter((item) => item.primary.type === "control")];
+}
 
 function artInspectorModelFor(commandId: string) {
   const document = insertNativeArtGraphicObject(
@@ -159,18 +166,20 @@ describe("ToolPalette art color popover", () => {
     const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
-        currentObjectColor: "#111111",
-        currentArtStyleTarget: "fill",
-        currentArtStyle,
-        onArtStylePreview: onPreview,
-        onArtStyleCommit: onCommit,
-        onArtStyleCancel: onCancel,
-        onRequestColorPopover,
-        onInvoke
+        onInvoke,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget: "fill",
+          currentArtStyle,
+          onArtStylePreview: onPreview,
+          onArtStyleCommit: onCommit,
+          onArtStyleCancel: onCancel,
+          onRequestColorPopover,
+          onInvoke
+        }
       }));
     });
     return { onCommit, onInvoke, onPreview };
@@ -347,14 +356,16 @@ describe("ToolPalette art color popover", () => {
 
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
-        currentObjectColor: "#111111",
-        currentArtStyleTarget: "stroke",
-        currentArtStyle: artInspectorModelFor("tool.art.line"),
-        onInvoke
+        onInvoke,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget: "stroke",
+          currentArtStyle: artInspectorModelFor("tool.art.line"),
+          onInvoke
+        }
       }));
     });
 
@@ -368,14 +379,16 @@ describe("ToolPalette art color popover", () => {
 
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
-        currentObjectColor: "#111111",
-        currentArtStyleTarget: "fill",
-        currentArtStyle: artInspectorModelFor("tool.art.rect"),
-        onInvoke
+        onInvoke,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget: "fill",
+          currentArtStyle: artInspectorModelFor("tool.art.rect"),
+          onInvoke
+        }
       }));
     });
 
@@ -533,12 +546,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -569,12 +581,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -614,12 +625,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -659,12 +669,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -758,7 +767,6 @@ describe("ToolPalette arrange flyouts", () => {
         itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onInvoke
       }));
     });
@@ -798,7 +806,6 @@ describe("ToolPalette arrange flyouts", () => {
         itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onRequestFlyout,
         onInvoke
       }));
@@ -845,7 +852,6 @@ describe("ToolPalette arrange flyouts", () => {
         itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onRequestFlyout,
         onInvoke: vi.fn()
       }));
@@ -905,7 +911,6 @@ describe("ToolPalette arrange flyouts", () => {
         }),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onInvoke
       }));
     });
@@ -946,7 +951,6 @@ describe("ToolPalette arrange flyouts", () => {
         itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.art.circle",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onInvoke
       }));
     });

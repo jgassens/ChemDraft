@@ -127,7 +127,12 @@ export function computePaletteGridSize(
   const cellHeight = gridLayout.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
   const gap = gridLayout.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
   const padding = gridLayout.padding ?? PALETTE_GRID_METRIC_DEFAULTS.padding;
-  const placedItems = itemGroups.flat();
+  // Section-widget items (`widget.`-prefixed `control` items) render as their own sections, not grid
+  // slots, so they must not inflate the grid's column/row count (see ToolPalette's gridItemGroups
+  // filter). Inline controls (other `control` items) DO occupy a slot and are sized normally.
+  const placedItems = itemGroups
+    .flat()
+    .filter((item) => !(item.primary.type === "control" && item.primary.controlId.startsWith("widget.")));
   const placedColumnCount = Math.max(
     0,
     ...placedItems

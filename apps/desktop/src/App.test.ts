@@ -189,8 +189,17 @@ import {
   getToolbarsMenuModel,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
-  getToolsetToggleActions
+  getToolsetItemGroups,
+  getToolsetToggleActions,
+  type ToolbarPaletteItemModel
 } from "./toolsets";
+
+// Phase 5: widgets are declared as manifest `control` items and read state from context. This
+// isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
+// `show*Controls` props rendered only the widget section.
+function widgetOnlyItemGroups(toolsetId: string): ToolbarPaletteItemModel[][] {
+  return [getToolsetItemGroups(toolsetId).flat().filter((item) => item.primary.type === "control")];
+}
 
 function svgLineNumberAttribute(lineMarkup: string, attribute: "x1" | "y1" | "x2" | "y2"): number {
   const match = lineMarkup.match(new RegExp(`${attribute}="([^"]+)"`));
@@ -1820,8 +1829,8 @@ describe("ChemDraft desktop shell", () => {
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.reverseStops")).toBe(true);
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.rotateStops")).toBe(true);
     expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
-    expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
-    expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
+    expect(mainWindowSource).toContain("currentObjectColor: currentToolbarObjectColor");
+    expect(mainWindowSource).not.toContain("currentObjectColor: currentToolbarTextStyle.color");
     expect(mainWindowSource).toContain("const objectStyleObjectIds = currentDocument.selection.objectIds.filter");
     expect(mainWindowSource).toContain("findDocumentObject(currentDocument, objectId)?.type !== \"text\"");
     expect(mainWindowSource).toContain("const objectStyleTarget = toolbarStyleTarget");
@@ -1832,17 +1841,19 @@ describe("ChemDraft desktop shell", () => {
   it("renders mutually exclusive text toolbar active states from current style", () => {
     const markup = renderToStaticMarkup(
       createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.main"),
         mode: "floating",
         orientation: "horizontal",
-        showMainStyleControls: true,
-        currentTextStyle: {
-          ...DefaultNativeTextStyle,
-          color: "#1f5fbf",
-          textAlign: "right"
-        },
-        currentTextScript: "superscript",
-        onInvoke: () => undefined
+        onInvoke: () => undefined,
+        widgetState: {
+          currentTextStyle: {
+            ...DefaultNativeTextStyle,
+            color: "#1f5fbf",
+            textAlign: "right"
+          },
+          currentTextScript: "superscript",
+          onInvoke: () => undefined
+        }
       })
     );
 
@@ -2363,72 +2374,29 @@ describe("ChemDraft desktop shell", () => {
       selectedGraphicObjects: selectedGraphicObjectsForArtInspector(effectDocument),
       requestedPaintTarget: "fill"
     });
-    const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: rectArtStyle,
-      onInvoke: () => undefined
-    }));
-    const rectStrokeInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "stroke",
-      currentArtStyle: rectStrokeArtStyle,
-      onInvoke: () => undefined
-    }));
-    const lineInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: lineArtStyle,
-      onInvoke: () => undefined
-    }));
-    const freehandInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: freehandArtStyle,
-      onInvoke: () => undefined
-    }));
-    const gradientInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: gradientArtStyle,
-      onInvoke: () => undefined
-    }));
-    const effectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: effectArtStyle,
-      onInvoke: () => undefined
-    }));
+    const artInspectorMarkup = (
+      currentArtStyle: ReturnType<typeof createArtInspectorModel>,
+      currentArtStyleTarget: "fill" | "stroke" = "fill"
+    ) =>
+      renderToStaticMarkup(createElement(ToolPalette, {
+        itemGroups: widgetOnlyItemGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        title: "ChemDraft floating Art Toolbar",
+        onInvoke: () => undefined,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget,
+          currentArtStyle,
+          onInvoke: () => undefined
+        }
+      }));
+    const rectInspectorMarkup = artInspectorMarkup(rectArtStyle, "fill");
+    const rectStrokeInspectorMarkup = artInspectorMarkup(rectStrokeArtStyle, "stroke");
+    const lineInspectorMarkup = artInspectorMarkup(lineArtStyle, "fill");
+    const freehandInspectorMarkup = artInspectorMarkup(freehandArtStyle, "fill");
+    const gradientInspectorMarkup = artInspectorMarkup(gradientArtStyle, "fill");
+    const effectInspectorMarkup = artInspectorMarkup(effectArtStyle, "fill");
 
     expect(markup).toContain('aria-label="ChemDraft floating Art Toolbar"');
     expect(markup).toContain('data-toolset-id="core.art"');

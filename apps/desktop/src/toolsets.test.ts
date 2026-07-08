@@ -140,6 +140,14 @@ describe("desktop toolset mapping", () => {
     for (const toolset of desktopToolsets) {
       for (const group of toolset.groups) {
         for (const item of group.items) {
+          if (item.primary?.type === "control") {
+            // Phase 5: section widgets (and any inline controls) declare a controlId instead of a command.
+            expect(item.kind, `${toolset.id}/${group.id}/${item.id} kind`).toBe("control");
+            expect(item.label, `${toolset.id}/${group.id}/${item.id} label`).toBeTruthy();
+            expect(item.primary.controlId, `${toolset.id}/${group.id}/${item.id} controlId`).toBeTruthy();
+            expect("submenu" in item, `${toolset.id}/${group.id}/${item.id} submenu key`).toBe(true);
+            continue;
+          }
           expect(item.id, `${toolset.id}/${group.id}/${item.commandId} id`).toBe(item.commandId);
           expect(item.kind, `${toolset.id}/${group.id}/${item.commandId} kind`).toBe("button");
           expect(item.label, `${toolset.id}/${group.id}/${item.commandId} label`).toBeTruthy();

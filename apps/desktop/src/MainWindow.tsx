@@ -13507,24 +13507,22 @@ export function MainWindow({
                   mode="floating"
                   orientation={toolset.gridLayout?.orientation ?? "vertical"}
                   title={toolset.title}
-                  showMainStyleControls={toolset.id === "core.main"}
-                  showTextStyleControls={toolset.id === "core.text"}
-                  showArtStyleControls={toolset.id === "core.art"}
-                  showRingInspectorControls={toolset.id === ringInspectorToolsetId}
-                  showMoleculeInspectorControls={toolset.id === moleculeInspectorToolsetId}
-                  currentObjectColor={currentToolbarObjectColor}
-                  currentArtStyle={currentArtStyle}
-                  currentArtStyleTarget={activeArtPaintTarget}
-                  currentMoleculeInspector={currentMoleculeInspector}
-                  currentTextStyle={currentToolbarTextStyle}
-                  currentTextScript={currentToolbarTextScript}
-                  onArtStylePreview={previewObjectStyleCommand}
-                  onArtStyleCommit={commitObjectStylePreview}
-                  onArtStyleCancel={cancelObjectStylePreview}
-                  onMoleculeInspectorPreview={previewMoleculeInspectorCommand}
-                  onMoleculeInspectorCommit={commitMoleculeInspectorPreview}
-                  onMoleculeInspectorCancel={cancelMoleculeInspectorPreview}
                   onInvoke={invoke}
+                  widgetState={{
+                    currentObjectColor: currentToolbarObjectColor,
+                    currentArtStyle,
+                    currentArtStyleTarget: activeArtPaintTarget,
+                    currentMoleculeInspector,
+                    currentTextStyle: currentToolbarTextStyle,
+                    currentTextScript: currentToolbarTextScript,
+                    onArtStylePreview: previewObjectStyleCommand,
+                    onArtStyleCommit: commitObjectStylePreview,
+                    onArtStyleCancel: cancelObjectStylePreview,
+                    onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
+                    onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
+                    onMoleculeInspectorCancel: cancelMoleculeInspectorPreview,
+                    onInvoke: invoke
+                  }}
                 />
               </section>
             );
