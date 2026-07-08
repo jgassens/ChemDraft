@@ -6,7 +6,7 @@ import {
   runMolScribeOcsrMockRecognition
 } from "@chemdraft/molscribe-ocsr-plugin";
 import {
-  createNmrCommandHandlers,
+  createNmrRegistration,
   createWorkerBackedPredictor,
   FixtureHosePredictor,
   nmrPredictorManifest,
@@ -37,8 +37,10 @@ export function registerBundledPlugins(runtime: DesktopPluginRuntime): void {
   const predictor: NmrPredictor = workerClient
     ? createWorkerBackedPredictor(workerClient)
     : new FixtureHosePredictor();
+  const nmr = createNmrRegistration({ predictor });
   runtime.host.registerPlugin(nmrPredictorManifest, {
-    commandHandlers: createNmrCommandHandlers({ predictor })
+    commandHandlers: nmr.commandHandlers,
+    onPanelClosed: nmr.onPanelClosed
   });
 }
 

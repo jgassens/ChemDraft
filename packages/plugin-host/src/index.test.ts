@@ -403,3 +403,22 @@ describe("validateTrustedPluginManifest", () => {
     expect(manifest.contributes.commands).toEqual([]);
   });
 });
+
+describe("PluginHost onPanelClosed hook", () => {
+  it("invokes the plugin's onPanelClosed and drops it on unregister (ADR-0012)", () => {
+    const host = new PluginHost();
+    const closed: string[] = [];
+    host.registerPlugin(minimalManifest("org.test.panelclose"), {
+      onPanelClosed: (panelId) => closed.push(panelId)
+    });
+
+    host.notifyPanelClosed("org.test.panelclose", "panel.test.review");
+    expect(closed).toEqual(["panel.test.review"]);
+
+    host.notifyPanelClosed("org.unknown", "panel.test.review"); // unknown plugin → no-op
+
+    host.unregisterPlugin("org.test.panelclose");
+    host.notifyPanelClosed("org.test.panelclose", "panel.test.review"); // handler removed → no-op
+    expect(closed).toEqual(["panel.test.review"]);
+  });
+});

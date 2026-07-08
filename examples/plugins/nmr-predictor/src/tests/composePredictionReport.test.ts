@@ -55,14 +55,22 @@ describe("composePredictionReport", () => {
     expect(textBodies(report)).toContain("NMR_EMPTY_STRUCTURE");
   });
 
-  it("result report includes provenance, a shift table, notices, and the synthetic-data disclaimer", () => {
+  it("result report includes an SVG spectrum, provenance, a shift table, notices, and the disclaimer", () => {
     const report = composePredictionReport(source, result);
     const kinds = report.sections.map((section) => section.kind);
+    expect(kinds).toContain("svg");
     expect(kinds).toContain("keyValue");
     expect(kinds).toContain("table");
+    const svg = report.sections.find((section) => section.kind === "svg");
+    expect(svg && svg.kind === "svg" && svg.svg.startsWith("<svg")).toBe(true);
     const table = report.sections.find((section) => section.kind === "table");
     expect(table && table.kind === "table" && table.rows[0]).toEqual(["¹³C", "128.50", "6", "0.40", "0", "Caq0h1(...)"]);
     expect(textBodies(report)).toContain("Synthetic fixture values");
     expect(textBodies(report)).toContain("NMR_NO_FRAGMENT_MATCH");
+  });
+
+  it("stamps the report source for staleness detection (D-09)", () => {
+    const report = composePredictionReport(source, result);
+    expect(report.source).toEqual({ objectId: "m1", sourceFingerprint: "fp1" });
   });
 });

@@ -288,7 +288,18 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
 export const PluginPanelReportSchema = z
   .object({
     title: NonEmptyStringSchema,
-    sections: z.array(PluginPanelSectionSchema)
+    sections: z.array(PluginPanelSectionSchema),
+    /**
+     * Optional reference to the document object this report was computed from, with the selection
+     * fingerprint at computation time. Desktop chrome compares it against the live document to flag a
+     * stale report (the structure changed since it was computed). See createStructureSourceFingerprint.
+     */
+    source: z
+      .object({
+        objectId: NonEmptyStringSchema,
+        sourceFingerprint: NonEmptyStringSchema
+      })
+      .optional()
   })
   .strict();
 

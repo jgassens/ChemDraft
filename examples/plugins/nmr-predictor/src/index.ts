@@ -75,9 +75,10 @@ export {
   type MappedStructure
 } from "./application/mapSelection";
 export { createWorkerBackedPredictor } from "./application/workerPredictor";
-export { createNmrCommandHandlers } from "./register";
+export { createNmrRegistration, createNmrCommandHandlers, type NmrPluginRegistration } from "./register";
 export {
   composePendingReport,
   composePredictionReport,
   composeErrorReport
 } from "./report/composePredictionReport";
+export { renderStickSpectrumSvg, type StickSpectrumOptions } from "./report/stickSpectrumSvg";

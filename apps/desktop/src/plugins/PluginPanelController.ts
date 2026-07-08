@@ -50,7 +50,10 @@ export class PluginPanelController {
 
   closePanel(): void {
     if (this.open) {
+      const closed = this.open;
       this.open = undefined;
+      // Tell the plugin its panel closed so it can cancel in-flight work (ADR-0012).
+      this.host.notifyPanelClosed(closed.pluginId, closed.panelId);
       this.notify();
     }
   }

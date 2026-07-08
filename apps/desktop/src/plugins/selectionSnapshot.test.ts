@@ -1,7 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
 
-import { buildPluginSelectionSnapshot } from "./selectionSnapshot";
+import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./selectionSnapshot";
 
 // Minimal document shape exercised by buildPluginSelectionSnapshot (id, pages[].id, page.objects,
 // object.type/id/structureFormat/structure, selection.objectIds). Cast to the full type for focus.
@@ -53,5 +53,20 @@ describe("buildPluginSelectionSnapshot", () => {
     const edited = documentWith(["m1"]);
     (edited.pages[0].objects[0] as { structure: string }).structure = "CCO";
     expect(buildPluginSelectionSnapshot(edited).molecules[0].sourceFingerprint).not.toBe(before);
+  });
+});
+
+describe("computeObjectFingerprint", () => {
+  it("matches the selection snapshot fingerprint for the same object (regardless of selection)", () => {
+    const selected = buildPluginSelectionSnapshot(documentWith(["m1"])).molecules[0];
+    expect(computeObjectFingerprint(documentWith([]), "m1")).toBe(selected.sourceFingerprint);
+  });
+
+  it("changes after an edit and is undefined for a missing object", () => {
+    const before = computeObjectFingerprint(documentWith([]), "m1");
+    const edited = documentWith([]);
+    (edited.pages[0].objects[0] as { structure: string }).structure = "CCO";
+    expect(computeObjectFingerprint(edited, "m1")).not.toBe(before);
+    expect(computeObjectFingerprint(documentWith([]), "does-not-exist")).toBeUndefined();
   });
 });

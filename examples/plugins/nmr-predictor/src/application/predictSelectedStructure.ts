@@ -37,7 +37,8 @@ export interface NmrCommandConfig {
 export async function predictSelectedStructure(
   context: PluginCommandContext,
   services: NmrCommandServices,
-  config: NmrCommandConfig
+  config: NmrCommandConfig,
+  signal?: AbortSignal
 ): Promise<PluginCommandResult<NmrPredictionResult>> {
   const { selection, panels, analysis } = context;
 
@@ -85,7 +86,12 @@ export async function predictSelectedStructure(
   };
 
   try {
-    const result = await services.predictor.predict(request);
+    const result = await services.predictor.predict(request, signal);
+    if (signal?.aborted) {
+      // The panel closed (or a rerun superseded) while predicting: write nothing and do not reopen
+      // the panel with a late result (ADR-0012).
+      return { ok: false, error: { code: NmrErrorCodes.PredictionCancelled, message: "Prediction was cancelled." } };
+    }
     const status = determineAnalysisStatus(result);
 
     await analysis.write<NmrPredictionResult>({

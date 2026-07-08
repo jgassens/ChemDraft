@@ -479,7 +479,7 @@ import { buildAppMenuModel } from "./appMenu";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
-import { buildPluginSelectionSnapshot } from "./plugins/selectionSnapshot";
+import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
@@ -1809,6 +1809,13 @@ export function MainWindow({
     getSelection: () => buildPluginSelectionSnapshot(documentRef.current)
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+
+  // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
+  // if the live molecule no longer matches (edited or removed), flag the panel as out of date.
+  const pluginPanelSource = pluginRuntime.openPanel?.report.source;
+  const pluginPanelStale = pluginPanelSource
+    ? computeObjectFingerprint(document, pluginPanelSource.objectId) !== pluginPanelSource.sourceFingerprint
+    : false;
 
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
@@ -13173,6 +13180,7 @@ export function MainWindow({
         diagnosticsOpen={pluginDiagnosticsOpen}
         plugins={pluginRuntime.plugins}
         diagnostics={pluginRuntime.diagnostics}
+        stale={pluginPanelStale}
         onClose={pluginRuntime.closePanel}
         onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
         onRunAgain={(commandId) => invoke(commandId)}

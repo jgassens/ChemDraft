@@ -125,6 +125,9 @@ export class CommandRegistry {
 
 export interface RegisterPluginOptions {
   commandHandlers?: Record<string, PluginCommandHandler>;
+  /** Called when the desktop closes one of the plugin's contributed panels, so the plugin can cancel
+   *  in-flight work tied to it (ADR-0012). The panel is not reopened by a late report. */
+  onPanelClosed?: (panelId: string) => void;
 }
 
 export interface RegisteredPlugin {
@@ -166,6 +169,7 @@ export class PluginHost {
   private readonly proposedPatches = new Map<string, QueuedProposedPatch>();
   private readonly storageScopes = new Map<string, Map<string, unknown>>();
   private readonly storageByPluginId = new Map<string, PluginStorage>();
+  private readonly panelClosedHandlers = new Map<string, (panelId: string) => void>();
   private readonly getActiveDocument?: PluginHostOptions["getActiveDocument"];
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
@@ -208,8 +212,17 @@ export class PluginHost {
     };
     this.plugins.set(manifest.id, registered);
     this.registerManifestCommands(manifest, options.commandHandlers ?? {});
+    if (options.onPanelClosed) {
+      this.panelClosedHandlers.set(manifest.id, options.onPanelClosed);
+    }
     this.notifySubscribers();
     return registered;
+  }
+
+  /** Invoke a plugin's `onPanelClosed` hook (ADR-0012). The desktop calls this when the user closes a
+   *  contributed panel, giving the plugin its cancellation trigger. Unknown plugin/panel is a no-op. */
+  notifyPanelClosed(pluginId: string, panelId: string): void {
+    this.panelClosedHandlers.get(pluginId)?.(panelId);
   }
 
   /** Removes a plugin and its registered commands. Storage scopes and proposal history
@@ -220,6 +233,7 @@ export class PluginHost {
       this.commands.unregister(command.id);
     }
     this.plugins.delete(pluginId);
+    this.panelClosedHandlers.delete(pluginId);
     this.notifySubscribers();
   }
 

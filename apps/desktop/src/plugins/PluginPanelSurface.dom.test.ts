@@ -118,6 +118,18 @@ describe("PluginPanelSurface", () => {
     expect(container!.textContent).toContain(`v${molscribeOcsrManifest.version}`);
   });
 
+  it("shows a stale banner only when the panel is flagged stale (D-09)", () => {
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).toBeNull();
+
+    act(() => {
+      root!.render(createElement(PluginPanelSurface, surfaceProps({ openPanel, stale: true })));
+    });
+    expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="plugin-panel"]')!.getAttribute("data-stale")).toBe("true");
+    expect(container!.textContent).toContain("out of date");
+  });
+
   it("renders nothing when neither a panel nor diagnostics is open", () => {
     mount(createElement(PluginPanelSurface, surfaceProps({ plugins: [molscribeOcsrManifest] })));
     expect(container!.querySelector('[data-testid="plugin-surface"]')).toBeNull();

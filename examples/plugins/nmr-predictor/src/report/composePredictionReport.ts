@@ -2,6 +2,7 @@ import type { PluginPanelReport, PluginPanelSection, PluginSelectedMolecule } fr
 
 import type { NmrNucleus, NmrPredictionResult, NmrResonance } from "../domain/contracts";
 import type { CommandError } from "../application/mapSelection";
+import { renderStickSpectrumSvg } from "./stickSpectrumSvg";
 
 const PANEL_TITLE = "NMR Prediction";
 const SYNTHETIC_DISCLAIMER =
@@ -72,12 +73,23 @@ export function composePredictionReport(
   ];
 
   if (result.resonances.length > 0) {
+    sections.push({
+      kind: "svg",
+      title: "Stick spectrum",
+      svg: renderStickSpectrumSvg(result),
+      caption: "Predicted shifts — synthetic fixture data, not experimental."
+    });
     sections.push(resonanceTable(result));
   }
   sections.push(...noticeSections(result));
   sections.push({ kind: "text", body: SYNTHETIC_DISCLAIMER });
 
-  return { title: PANEL_TITLE, sections };
+  return {
+    title: PANEL_TITLE,
+    // Staleness reference (D-09): desktop chrome compares this against the live document.
+    source: { objectId: source.objectId, sourceFingerprint: source.sourceFingerprint },
+    sections
+  };
 }
 
 function distinctNuclei(result: NmrPredictionResult): NmrNucleus[] {

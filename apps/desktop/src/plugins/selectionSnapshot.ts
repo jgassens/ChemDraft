@@ -48,3 +48,26 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument): Plugi
 
   return { objectIds: document.selection.objectIds, molecules };
 }
+
+/**
+ * Recompute the source fingerprint for a specific molecule in the current document (independent of
+ * selection), for staleness detection (D-09): a panel report carries the fingerprint it was computed
+ * against; if this no longer matches — or the object is gone — the report is stale. Returns undefined
+ * when the object no longer exists or is not a molecule.
+ */
+export function computeObjectFingerprint(document: ChemDraftDocument, objectId: string): string | undefined {
+  for (const page of document.pages) {
+    for (const object of page.objects) {
+      if (object.type === "molecule" && object.id === objectId) {
+        return createStructureSourceFingerprint({
+          documentId: document.id,
+          pageId: page.id,
+          objectId,
+          structureFormat: object.structureFormat,
+          structure: object.structure
+        });
+      }
+    }
+  }
+  return undefined;
+}

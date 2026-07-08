@@ -9,6 +9,8 @@ export interface PluginPanelSurfaceProps {
   diagnosticsOpen: boolean;
   plugins: readonly PluginManifest[];
   diagnostics: readonly PluginDiagnostic[];
+  /** True when the open panel's report.source no longer matches the live document (D-09). */
+  stale?: boolean;
   onClose: () => void;
   onCloseDiagnostics: () => void;
   onRunAgain: (commandId: string) => void;
@@ -29,7 +31,12 @@ export function PluginPanelSurface(props: PluginPanelSurfaceProps) {
   return (
     <div className="plugin-surface" data-testid="plugin-surface">
       {openPanel ? (
-        <OpenPanelView panel={openPanel} onClose={props.onClose} onRunAgain={props.onRunAgain} />
+        <OpenPanelView
+          panel={openPanel}
+          stale={props.stale ?? false}
+          onClose={props.onClose}
+          onRunAgain={props.onRunAgain}
+        />
       ) : null}
       {diagnosticsOpen ? (
         <section className="plugin-diagnostics-surface" data-testid="plugin-diagnostics-surface">
@@ -50,16 +57,23 @@ export function PluginPanelSurface(props: PluginPanelSurfaceProps) {
 
 function OpenPanelView({
   panel,
+  stale,
   onClose,
   onRunAgain
 }: {
   panel: OpenPluginPanel;
+  stale: boolean;
   onClose: () => void;
   onRunAgain: (commandId: string) => void;
 }) {
   const runCommandId = panel.commandId;
   return (
-    <section className="plugin-panel" data-testid="plugin-panel" data-panel-id={panel.panelId}>
+    <section
+      className={["plugin-panel", stale ? "is-stale" : ""].filter(Boolean).join(" ")}
+      data-testid="plugin-panel"
+      data-panel-id={panel.panelId}
+      data-stale={stale ? "true" : undefined}
+    >
       <header className="plugin-panel-header">
         <h3 className="plugin-panel-title">{panel.report.title || panel.title}</h3>
         <div className="plugin-panel-actions">
@@ -73,6 +87,11 @@ function OpenPanelView({
           </button>
         </div>
       </header>
+      {stale ? (
+        <div className="plugin-panel-stale" role="status" data-testid="plugin-panel-stale">
+          This result may be out of date — the structure changed since it was computed. Run again to refresh.
+        </div>
+      ) : null}
       <PluginReportRenderer report={panel.report} />
     </section>
   );
