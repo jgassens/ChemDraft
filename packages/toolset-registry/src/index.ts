@@ -758,7 +758,24 @@ function commandIdSetFromOptions<TIcon extends string, TAssetName extends string
       : new Set(options.registeredCommandIds);
   }
 
-  return new Set(toolsets.flatMap(toolsetCommandIds));
+  return new Set(toolsets.flatMap(toolsetOverrideTargetIds));
+}
+
+/** Ids an override may legitimately target: command ids PLUS `control` (widget) ids, since widgets
+ *  are customizable (hide/reorder) by their controlId. Kept separate from {@link toolsetCommandIds}
+ *  so the public `commandIds()` surface stays commands-only. */
+function toolsetOverrideTargetIds<TIcon extends string, TAssetName extends string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>
+): string[] {
+  return toolset.groups.flatMap((group) =>
+    group.items.flatMap((item) => {
+      const ids = toolsetItemCommandIds(item);
+      if (item.primary?.type === "control") {
+        ids.push(item.primary.controlId);
+      }
+      return ids;
+    })
+  );
 }
 
 function assertUniqueUserToolsets<TIcon extends string, TAssetName extends string>(
@@ -870,5 +887,16 @@ function toolsetItemPrimaryCommandIds<TIcon extends string, TAssetName extends s
 function toolsetItemCustomizationId<TIcon extends string, TAssetName extends string>(
   item: ToolsetItemDefinition<TIcon, TAssetName>
 ): string | undefined {
-  return item.commandId ?? (item.primary?.type === "command" ? item.primary.commandId : undefined);
+  if (item.commandId !== undefined) {
+    return item.commandId;
+  }
+  if (item.primary?.type === "command") {
+    return item.primary.commandId;
+  }
+  // Control (widget) items are customizable by their controlId, so the editor can hide/reorder them
+  // like commands (a `widget.*` controlId is a valid CommandId per CommandIdSchema).
+  if (item.primary?.type === "control") {
+    return item.primary.controlId;
+  }
+  return undefined;
 }
