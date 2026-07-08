@@ -43,12 +43,23 @@ describe("CustomizeToolbarsDialog", () => {
   let onApply: ReturnType<typeof vi.fn>;
   let onClose: ReturnType<typeof vi.fn>;
 
+  const availableCommands = [
+    { id: "tool.a", title: "A" },
+    { id: "tool.b", title: "B" },
+    { id: "tool.circle", title: "Circle" }
+  ];
+
   function render(state: ToolsetLayoutState = emptyState) {
     onApply = vi.fn();
     onClose = vi.fn();
     act(() => {
-      root.render(createElement(CustomizeToolbarsDialog, { baseToolsets, layoutState: state, onApply, onClose }));
+      root.render(createElement(CustomizeToolbarsDialog, { baseToolsets, layoutState: state, availableCommands, onApply, onClose }));
     });
+  }
+
+  function clickButton(predicate: (button: HTMLButtonElement) => boolean) {
+    const button = [...container.querySelectorAll("button")].find(predicate);
+    act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   }
 
   function applied(): ToolsetLayoutState {
@@ -118,5 +129,32 @@ describe("CustomizeToolbarsDialog", () => {
     const deleteButton = cloneRow!.querySelector<HTMLButtonElement>(".customize-toolset-delete");
     act(() => deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(container.querySelector('[data-toolset-id="user.main-toolbar-copy"]')).toBeNull();
+  });
+
+  it("shows the selected toolset's items and hides one", () => {
+    render();
+    // core.main is selected by default; its item tool.a shows in the detail pane, visible.
+    const item = container.querySelector('[data-item-id="tool.a"]');
+    expect(item).not.toBeNull();
+    const visible = item!.querySelector<HTMLInputElement>(".customize-item-visible");
+    expect(visible?.checked).toBe(true);
+    act(() => visible!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(applied().toolsetOverrides).toContainEqual({ toolsetId: "core.main", hiddenCommandIds: ["tool.a"] });
+  });
+
+  it("adds a command to a user toolset via the palette", () => {
+    render();
+    const nameInput = container.querySelector<HTMLInputElement>('[aria-label="New toolbar name"]');
+    act(() => setInputValue(nameInput!, "Mine"));
+    clickButton((button) => button.textContent === "Create Toolbar");
+    // The command palette appears for the (selected) user toolset; search + add.
+    const search = container.querySelector<HTMLInputElement>('[aria-label="Search commands to add"]');
+    expect(search).not.toBeNull();
+    act(() => setInputValue(search!, "Circle"));
+    const addButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.circle"]');
+    expect(addButton).not.toBeNull();
+    act(() => addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const userToolset = applied().userToolsets.find((toolset) => toolset.id === "user.mine");
+    expect(userToolset?.groups.some((group) => group.items.some((item) => item.id === "tool.circle"))).toBe(true);
   });
 });

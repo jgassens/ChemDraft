@@ -231,6 +231,7 @@ import {
   PREFERENCES_COMMAND_ID,
   toggleMoleculeInspectorCommandId,
   moleculeStructureNumberRanges,
+  allShellCommands,
   type CommandSpec
 } from "./commands";
 import {
@@ -7123,6 +7124,19 @@ export function MainWindow({
     setCustomizeToolbarsOpen(false);
   }, [toolbarCatalog]);
 
+  // Command catalog (id + title, deduped) offered by the Customize dialog's "add command" palette.
+  // The set of commands is static, so this is computed once.
+  const customizeCommandOptions = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const command of allShellCommands(documentRef.current)) {
+      if (!byId.has(command.id)) {
+        byId.set(command.id, command.title ?? command.id);
+      }
+    }
+    return [...byId].map(([id, title]) => ({ id, title }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
       setDevBrowserMenuOpenId(null);
@@ -13988,6 +14002,7 @@ export function MainWindow({
           <CustomizeToolbarsDialog
             baseToolsets={toolbarCatalog.baseToolsets()}
             layoutState={layoutStateRef.current ?? emptyLayoutState()}
+            availableCommands={customizeCommandOptions}
             onApply={applyCustomizeToolbars}
             onClose={() => setCustomizeToolbarsOpen(false)}
           />

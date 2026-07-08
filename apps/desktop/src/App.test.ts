@@ -1755,14 +1755,12 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("<CustomPageSizeDialog");
   });
 
-  it("defines disabled toolbar customization command placeholders", () => {
+  it("enables the customize-toolbars command; reset/create/clone remain dialog-driven placeholders", () => {
+    // view.customizeToolbars now opens the editor; the reset/create/clone actions are performed
+    // inside that dialog, so their standalone command entries stay disabled placeholders for now.
     expect(toolbarCustomizationActions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          id: "view.customizeToolbars",
-          enabled: false,
-          disabledReason: "Toolbar customization UI is not implemented yet"
-        }),
+        expect.objectContaining({ id: "view.customizeToolbars", enabled: true }),
         expect.objectContaining({ id: "view.toolset.resetLayout", enabled: false }),
         expect.objectContaining({ id: "view.toolset.resetAllLayouts", enabled: false }),
         expect.objectContaining({ id: "view.toolset.createUserToolset", enabled: false }),

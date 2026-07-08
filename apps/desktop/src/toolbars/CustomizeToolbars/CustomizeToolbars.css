@@ -45,8 +45,136 @@
 
 .customize-toolbars-body {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  gap: 14px;
   padding: 12px 18px;
+}
+
+.customize-toolset-pane {
+  flex: 0 0 46%;
+  overflow-y: auto;
+}
+
+.customize-detail-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  padding-left: 14px;
+}
+
+.customize-detail-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.customize-detail-empty {
+  color: var(--text-muted, rgba(0, 0, 0, 0.45));
+  font-size: 12px;
+}
+
+.customize-detail-group-title {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, rgba(0, 0, 0, 0.45));
+}
+
+.customize-item-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.customize-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: var(--surface-raised, rgba(0, 0, 0, 0.02));
+}
+
+.customize-item-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customize-item-widget-tag {
+  color: var(--accent, #3b82f6);
+  font-size: 11px;
+}
+
+.customize-item-action {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.14));
+  background: transparent;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.customize-item-remove {
+  color: var(--danger, #d14343);
+  border-color: var(--danger, #d14343);
+}
+
+.customize-command-palette {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.14));
+  padding-top: 10px;
+}
+
+.customize-command-palette input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.18));
+  border-radius: 5px;
+  font: inherit;
+}
+
+.customize-command-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.customize-command-add {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.customize-command-add:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.06));
+}
+
+.customize-command-empty {
+  color: var(--text-muted, rgba(0, 0, 0, 0.45));
+  font-size: 12px;
+  padding: 4px 6px;
 }
 
 .customize-toolset-list {
