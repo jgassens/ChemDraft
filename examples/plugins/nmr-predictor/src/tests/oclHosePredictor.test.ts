@@ -50,19 +50,20 @@ describe("OclHosePredictor", () => {
     expect(result.warnings.map((warning) => warning.code)).toContain("NMR_NO_FRAGMENT_MATCH");
   });
 
-  it("uses the bundled NMRShiftDB2 database and surfaces its provenance", async () => {
+  it("uses the bundled NMRShiftDB2 database (lazy-loaded) and surfaces its provenance", async () => {
     const predictor = new OclHosePredictor({ now: () => "t" });
-    expect(predictor.getCapabilities()).toMatchObject({ id: "chemdraft.ocl-hose", supportsUncertainty: true });
-    expect(predictor.provenance.name).toContain("NMRShiftDB2");
+    expect(await predictor.getCapabilities()).toMatchObject({ id: "chemdraft.ocl-hose", supportsUncertainty: true });
 
     const result = await predict(predictor, "CC(=O)C"); // acetone — its methyls are well represented
     expect(result.backend.method).toBe("hose-fragment");
+    expect(result.backend.dataVersion).toContain("NMRShiftDB2");
     expect(result.backend.license).toBeTruthy();
     expect(result.backend.attribution).toBeTruthy();
     expect(result.resonances.length).toBeGreaterThan(0);
-    // Every resonance carries dispersion + a matched sphere from real reference data.
     for (const resonance of result.resonances) {
-      expect(resonance.uncertainty?.standardDeviationPpm).toBeTypeOf("number");
+      // stdev is present for n>=2 reference populations and omitted for singletons; sampleCount is always real.
+      const sd = resonance.uncertainty?.standardDeviationPpm;
+      expect(sd === undefined || typeof sd === "number").toBe(true);
       expect(resonance.evidence?.sampleCount).toBeGreaterThan(0);
     }
   });

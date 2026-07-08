@@ -12,7 +12,7 @@ import { NmrError, NmrErrorCodes } from "../../domain/errors";
 import { fingerprintStructureInput } from "../../domain/fingerprint";
 import { nmrWarning, NmrWarningCodes, type NmrPredictionWarning } from "../../domain/warnings";
 import { normalizeStructure } from "../../application/normalizeStructure";
-import { atomEnvironmentCodes, environmentKey } from "./environmentCode";
+import { atomEnvironmentCodes, environmentKey, MAX_SPHERES } from "./environmentCode";
 import type { CompiledNmrDatabase, NmrDatabaseEntry, NmrDatabaseProvenance } from "./localDatabase";
 import bundledDatabase from "./nmrshiftdb2.database.json";
 
@@ -35,6 +35,10 @@ interface Match {
  * falling back from the deepest sphere to the shallowest. It reports the aggregated median shift with
  * its dispersion and sample count, groups equivalent environments, and warns (never fabricates) when
  * coverage is thin. Method label `hose-fragment`. All I/O is serializable — worker/store safe.
+ *
+ * The ~800 KB database is a static import so the worker bundles it directly (workers can't
+ * code-split). The desktop keeps it off the main thread by loading this class lazily on the in-thread
+ * fallback path only (see the desktop's `registerBundledPlugins`).
  */
 export class OclHosePredictor implements NmrPredictor {
   private readonly database: CompiledNmrDatabase;
@@ -67,6 +71,8 @@ export class OclHosePredictor implements NmrPredictor {
   async predict(request: NmrPredictionRequest, signal?: AbortSignal): Promise<NmrPredictionResult> {
     throwIfAborted(signal);
     const { molecule } = normalizeStructure(request.structure);
+    // Honor the requested HOSE depth: the deepest level requested caps generation/search.
+    const maxSpheres = Math.max(1, ...(request.options.hoseLevels.length ? request.options.hoseLevels : [MAX_SPHERES]));
 
     const warnings: NmrPredictionWarning[] = [];
     const resonances: NmrResonance[] = [];
@@ -76,8 +82,8 @@ export class OclHosePredictor implements NmrPredictor {
       throwIfAborted(signal);
       unmatched +=
         nucleus === "13C"
-          ? this.predictCarbon(molecule, resonances, warnings)
-          : this.predictProton(molecule, request, resonances, warnings);
+          ? predictCarbon(this.database, molecule, maxSpheres, resonances, warnings)
+          : predictProton(this.database, molecule, request, maxSpheres, resonances, warnings);
     }
 
     if (unmatched > 0 && resonances.length > 0) {
@@ -106,109 +112,110 @@ export class OclHosePredictor implements NmrPredictor {
       generatedAt: this.now()
     };
   }
+}
 
-  private match(nucleus: NmrNucleus, codes: readonly string[]): Match | undefined {
-    for (const code of codes) {
-      // codes are deepest-first, so the first hit is the most specific available sphere.
-      const entry = this.database.entries[environmentKey(nucleus, code)];
-      if (entry) {
-        return { code, entry };
-      }
+function match(database: CompiledNmrDatabase, nucleus: NmrNucleus, codes: readonly string[]): Match | undefined {
+  for (const code of codes) {
+    // codes are deepest-first, so the first hit is the most specific available sphere.
+    const entry = database.entries[environmentKey(nucleus, code)];
+    if (entry) {
+      return { code, entry };
     }
-    return undefined;
+  }
+  return undefined;
+}
+
+function predictCarbon(
+  database: CompiledNmrDatabase,
+  molecule: OCL.Molecule,
+  maxSpheres: number,
+  resonances: NmrResonance[],
+  warnings: NmrPredictionWarning[]
+): number {
+  const matched = new Map<string, { match: Match; atoms: number[] }>();
+  const unmatched = new Map<string, number[]>();
+
+  for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+    if (molecule.getAtomicNo(atom) !== 6) {
+      continue;
+    }
+    const codes = atomEnvironmentCodes(molecule, atom, maxSpheres);
+    const found = match(database, "13C", codes);
+    if (!found) {
+      pushGroup(unmatched, codes[codes.length - 1], atom);
+      continue;
+    }
+    const group = matched.get(found.code) ?? { match: found, atoms: [] };
+    group.atoms.push(atom);
+    matched.set(found.code, group);
   }
 
-  private predictCarbon(
-    molecule: OCL.Molecule,
-    resonances: NmrResonance[],
-    warnings: NmrPredictionWarning[]
-  ): number {
-    const matched = new Map<string, { match: Match; atoms: number[] }>();
-    const unmatched = new Map<string, number[]>();
+  for (const group of matched.values()) {
+    resonances.push(
+      buildResonance("13C", group.match, group.atoms, group.atoms.length, group.atoms.map(() => ({ element: "C", count: 1 })), warnings)
+    );
+  }
+  let unmatchedCount = 0;
+  for (const [code, atoms] of unmatched) {
+    unmatchedCount += atoms.length;
+    warnings.push(noMatchWarning("13C", code, atoms));
+  }
+  return unmatchedCount;
+}
 
-    for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
-      if (molecule.getAtomicNo(atom) !== 6) {
-        continue;
-      }
-      const codes = atomEnvironmentCodes(molecule, atom);
-      const match = this.match("13C", codes);
-      if (!match) {
-        pushGroup(unmatched, codes[codes.length - 1], atom);
-        continue;
-      }
-      const group = matched.get(match.code) ?? { match, atoms: [] };
-      group.atoms.push(atom);
-      matched.set(match.code, group);
-    }
+function predictProton(
+  database: CompiledNmrDatabase,
+  molecule: OCL.Molecule,
+  request: NmrPredictionRequest,
+  maxSpheres: number,
+  resonances: NmrResonance[],
+  warnings: NmrPredictionWarning[]
+): number {
+  const matched = new Map<string, { match: Match; atoms: number[]; protons: number[] }>();
+  const unmatched = new Map<string, number[]>();
+  let omittedLabile = 0;
 
-    for (const { match, atoms } of matched.values()) {
-      resonances.push(
-        buildResonance("13C", match, atoms, atoms.length, atoms.map(() => ({ element: "C", count: 1 })), warnings)
-      );
+  for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+    const protonCount = molecule.getAllHydrogens(atom);
+    if (protonCount === 0) {
+      continue;
     }
-    let unmatchedCount = 0;
-    for (const [code, atoms] of unmatched) {
-      unmatchedCount += atoms.length;
-      warnings.push(noMatchWarning("13C", code, atoms));
+    if (LABILE_HYDROGEN_HOSTS.has(molecule.getAtomicNo(atom)) && request.options.ignoreLabileHydrogens) {
+      omittedLabile += protonCount;
+      continue;
     }
-    return unmatchedCount;
+    const codes = atomEnvironmentCodes(molecule, atom, maxSpheres);
+    const found = match(database, "1H", codes);
+    if (!found) {
+      pushGroup(unmatched, codes[codes.length - 1], atom);
+      continue;
+    }
+    const group = matched.get(found.code) ?? { match: found, atoms: [], protons: [] };
+    group.atoms.push(atom);
+    group.protons.push(protonCount);
+    matched.set(found.code, group);
   }
 
-  private predictProton(
-    molecule: OCL.Molecule,
-    request: NmrPredictionRequest,
-    resonances: NmrResonance[],
-    warnings: NmrPredictionWarning[]
-  ): number {
-    const matched = new Map<string, { match: Match; atoms: number[]; protons: number[] }>();
-    const unmatched = new Map<string, number[]>();
-    let omittedLabile = 0;
-
-    for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
-      const protonCount = molecule.getAllHydrogens(atom);
-      if (protonCount === 0) {
-        continue;
-      }
-      if (LABILE_HYDROGEN_HOSTS.has(molecule.getAtomicNo(atom)) && request.options.ignoreLabileHydrogens) {
-        omittedLabile += protonCount;
-        continue;
-      }
-      const codes = atomEnvironmentCodes(molecule, atom);
-      const match = this.match("1H", codes);
-      if (!match) {
-        pushGroup(unmatched, codes[codes.length - 1], atom);
-        continue;
-      }
-      const group = matched.get(match.code) ?? { match, atoms: [], protons: [] };
-      group.atoms.push(atom);
-      group.protons.push(protonCount);
-      matched.set(match.code, group);
-    }
-
-    if (omittedLabile > 0) {
-      warnings.push(
-        nmrWarning(
-          NmrWarningCodes.LabileProtonOmitted,
-          `${omittedLabile} exchangeable (labile) proton(s) were omitted.`,
-          { severity: "info" }
-        )
-      );
-    }
-
-    for (const { match, atoms, protons } of matched.values()) {
-      const totalProtons = protons.reduce((sum, count) => sum + count, 0);
-      resonances.push(
-        buildResonance("1H", match, atoms, totalProtons, protons.map((count) => ({ element: "H", count })), warnings)
-      );
-    }
-    let unmatchedCount = 0;
-    for (const [code, atoms] of unmatched) {
-      const protons = atoms.reduce((sum, atom) => sum + molecule.getAllHydrogens(atom), 0);
-      unmatchedCount += protons;
-      warnings.push(noMatchWarning("1H", code, atoms));
-    }
-    return unmatchedCount;
+  if (omittedLabile > 0) {
+    warnings.push(
+      nmrWarning(NmrWarningCodes.LabileProtonOmitted, `${omittedLabile} exchangeable (labile) proton(s) were omitted.`, {
+        severity: "info"
+      })
+    );
   }
+
+  for (const group of matched.values()) {
+    const totalProtons = group.protons.reduce((sum, count) => sum + count, 0);
+    resonances.push(
+      buildResonance("1H", group.match, group.atoms, totalProtons, group.protons.map((count) => ({ element: "H", count })), warnings)
+    );
+  }
+  let unmatchedCount = 0;
+  for (const [code, atoms] of unmatched) {
+    unmatchedCount += atoms.reduce((sum, atom) => sum + molecule.getAllHydrogens(atom), 0);
+    warnings.push(noMatchWarning("1H", code, atoms));
+  }
+  return unmatchedCount;
 }
 
 function buildResonance(
@@ -249,6 +256,7 @@ function buildResonance(
       equivalentCount: refs[index].count
     })),
     equivalentNuclei,
+    // stdev is absent for single-observation environments (localDatabase omits it for n < 2).
     uncertainty: { standardDeviationPpm: entry.stdev, minimumPpm: entry.min, maximumPpm: entry.max },
     evidence: { method: "hose-fragment", matchedSphere: entry.sphere, sampleCount: entry.n, environmentCode: code },
     flags: []

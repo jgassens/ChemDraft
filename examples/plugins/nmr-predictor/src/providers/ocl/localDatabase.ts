@@ -8,7 +8,8 @@ export interface NmrDatabaseEntry {
   n: number;
   median: number;
   mean: number;
-  stdev: number;
+  /** Population standard deviation; omitted for n < 2, where "0" would falsely imply zero dispersion. */
+  stdev?: number;
   min: number;
   max: number;
 }
@@ -46,7 +47,8 @@ export function summarizeShifts(shifts: readonly number[]): Omit<NmrDatabaseEntr
     n,
     median: round(median),
     mean: round(mean),
-    stdev: round(Math.sqrt(variance)),
+    // A single observation has no meaningful dispersion — leave stdev absent rather than reporting 0.
+    ...(n >= 2 ? { stdev: round(Math.sqrt(variance)) } : {}),
     min: round(sorted[0]),
     max: round(sorted[n - 1])
   };

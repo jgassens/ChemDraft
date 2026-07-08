@@ -9,7 +9,6 @@ import {
   createNmrRegistration,
   createWorkerBackedPredictor,
   nmrPredictorManifest,
-  OclHosePredictor,
   type NmrPredictor
 } from "@chemdraft/plugin-nmr-predictor";
 import type { PluginCommandHandler, PluginPanelReport } from "@chemdraft/plugin-api";
@@ -34,14 +33,28 @@ export function registerBundledPlugins(runtime: DesktopPluginRuntime): void {
   // the generic analysis store. Where Worker is unavailable (exotic webviews, tests), fall back to
   // running the deterministic fixture provider in-thread so the feature still works.
   const workerClient = getNmrWorkerClient();
-  const predictor: NmrPredictor = workerClient
-    ? createWorkerBackedPredictor(workerClient)
-    : new OclHosePredictor();
+  const predictor: NmrPredictor = workerClient ? createWorkerBackedPredictor(workerClient) : createLazyOclPredictor();
   const nmr = createNmrRegistration({ predictor });
   runtime.host.registerPlugin(nmrPredictorManifest, {
     commandHandlers: nmr.commandHandlers,
     onPanelClosed: nmr.onPanelClosed
   });
+}
+
+/**
+ * In-thread OCL predictor for environments without a `Worker` (jsdom, exotic webviews). Loaded via
+ * dynamic import so the ~800 KB reference database is a code-split chunk fetched on first prediction,
+ * rather than statically pulled into the desktop's main bundle. The normal desktop uses the worker,
+ * where the database is bundled eagerly and this path is never taken.
+ */
+function createLazyOclPredictor(): NmrPredictor {
+  let loaded: Promise<NmrPredictor> | undefined;
+  const load = (): Promise<NmrPredictor> =>
+    (loaded ??= import("@chemdraft/plugin-nmr-predictor").then((module) => new module.OclHosePredictor()));
+  return {
+    getCapabilities: async () => (await load()).getCapabilities(),
+    predict: async (request, signal) => (await load()).predict(request, signal)
+  };
 }
 
 /**

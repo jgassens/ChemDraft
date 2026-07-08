@@ -24,7 +24,9 @@ export interface BuildDatabaseOptions {
  * statistics are emitted — never the raw structures — so the artifact is small and a separate,
  * attributed data asset.
  */
-export function buildNmrDatabase(sdContent: string, options: BuildDatabaseOptions): CompiledNmrDatabase {
+export function buildNmrDatabase(rawSdContent: string, options: BuildDatabaseOptions): CompiledNmrDatabase {
+  // Normalize line endings so the record split and tag terminators work on CRLF exports too.
+  const sdContent = rawSdContent.replace(/\r\n?/g, "\n");
   const maxSpheres = options.maxSpheres ?? MAX_SPHERES;
   const buckets = new Map<string, { nucleus: NmrNucleus; sphere: number; shifts: number[] }>();
   const nucleiSeen = new Set<NmrNucleus>();
