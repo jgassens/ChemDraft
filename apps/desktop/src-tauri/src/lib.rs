@@ -346,24 +346,8 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
-            let layout_state = load_toolset_layout_state(app);
-            let customization_state = load_toolset_customization_state_from_disk(app);
-            let startup_manifest = ToolsetManifest {
-                toolsets: apply_toolset_customization(
-                    toolset_manifest().toolsets,
-                    customization_state.as_ref(),
-                ),
-            };
-            if customization_state.is_some() {
-                if let Err(error) = schedule_customized_toolset_menu(
-                    app,
-                    startup_manifest.clone(),
-                    layout_state.clone(),
-                ) {
-                    eprintln!("Could not install customized ChemDraft toolbar menu: {error}");
-                }
-            }
-
+            // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
+            // window loads; Rust no longer parses the manifest or applies customization for it.
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
             }
@@ -1800,10 +1784,8 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
 }
 
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let manifest = toolset_manifest();
-    let layout_state = ToolsetLayoutState::default();
-    let entries = toolbar_menu_entries_from_manifest(&manifest, &layout_state);
-    create_app_menu_for_toolsets(app, &entries)
+    // Empty Toolbars submenu; JS pushes the real rows via set_toolbars_menu once it loads.
+    create_app_menu_for_toolsets(app, &[])
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
@@ -2087,21 +2069,6 @@ struct ToolbarMenuEntry {
     visible: bool,
 }
 
-fn toolbar_menu_entries_from_manifest(
-    manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
-) -> Vec<ToolbarMenuEntry> {
-    manifest
-        .toolsets
-        .iter()
-        .map(|toolset| ToolbarMenuEntry {
-            toolset_id: toolset.id.clone(),
-            title: toolset.title.clone(),
-            visible: toolset_visible(toolset, layout_state),
-        })
-        .collect()
-}
-
 fn create_toolbars_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     entries: &[ToolbarMenuEntry],
@@ -2121,24 +2088,6 @@ fn create_toolbars_menu<R: Runtime>(
     }
 
     Ok(menu)
-}
-
-fn schedule_customized_toolset_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_manifest: ToolsetManifest,
-    layout_state: ToolsetLayoutState,
-) -> Result<(), String> {
-    let app = app.clone();
-    app.clone()
-        .run_on_main_thread(move || {
-            let entries = toolbar_menu_entries_from_manifest(&toolset_manifest, &layout_state);
-            let menu = create_app_menu_for_toolsets(&app, &entries);
-            match menu.and_then(|menu| app.set_menu(menu).map(|_| ())) {
-                Ok(()) => {}
-                Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
-            }
-        })
-        .map_err(|error| error.to_string())
 }
 
 fn ensure_toolset_window<R: Runtime>(
@@ -2427,14 +2376,6 @@ fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
 }
 
-fn toolset_visible(toolset: &ToolsetDefinition, layout_state: &ToolsetLayoutState) -> bool {
-    layout_state
-        .toolsets
-        .get(&toolset.id)
-        .and_then(|state| state.visible)
-        .unwrap_or(toolset.default_visible)
-}
-
 fn preferred_toolset_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
@@ -2704,21 +2645,6 @@ mod tests {
             default_mode: "floating".to_string(),
             preferred_window_size: None,
         }
-    }
-
-    #[test]
-    fn persisted_visibility_overrides_manifest_defaults() {
-        let mut state = ToolsetLayoutState::default();
-        state.toolsets.insert(
-            "core.fixture".to_string(),
-            PersistedToolsetState {
-                visible: Some(false),
-                ..PersistedToolsetState::default()
-            },
-        );
-
-        expect_false(toolset_visible(&toolset("core.fixture", true), &state));
-        expect_true(toolset_visible(&toolset("core.other", true), &state));
     }
 
     #[test]
