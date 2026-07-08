@@ -1763,14 +1763,13 @@ unregistered or the application shuts down. Closing the panel cancels the
 active request but does not dispose the client; a superseding request cancels
 its predecessor. Do not tie worker lifetime to panel visibility.
 
-Bundling note (verify early in Milestone 7): the worker file lives in the
-plugin package but is instantiated under the desktop's Vite build. Confirm
-that `new Worker(new URL("./nmrWorker.ts", import.meta.url), { type: "module" })`
-resolves across pnpm workspace package boundaries the same way the conformer
-worker resolves inside `apps/desktop`. If it does not, the fallback is a thin
-desktop-owned worker entry file that imports the plugin package's worker
-implementation. Treat this as a risk to retire with a spike, not an
-assumption.
+Bundling note — RESOLVED in M7 (reports/0004): the spike confirmed that
+`new Worker(new URL("./nmrWorker.ts", import.meta.url), { type: "module" })` in
+the plugin package emits a dedicated `nmrWorker-*.js` chunk under the desktop's
+Vite build, exactly like the conformer worker. The one prerequisite is that
+`apps/desktop` declares `@chemdraft/plugin-nmr-predictor` as a `workspace:*`
+dependency (otherwise tsc and Rollup cannot resolve the import). The
+desktop-owned worker-entry fallback was therefore not needed.
 
 ## Manifest
 

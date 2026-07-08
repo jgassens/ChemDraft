@@ -27,6 +27,7 @@
     "@chemdraft/ocl-adapter": "workspace:*",
     "@chemdraft/plugin-api": "workspace:*",
     "@chemdraft/plugin-host": "workspace:*",
+    "@chemdraft/plugin-nmr-predictor": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
     "@chemdraft/shortcut-engine": "workspace:*",
     "@chemdraft/style-compat": "workspace:*",

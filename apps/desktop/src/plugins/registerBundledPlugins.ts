@@ -8,6 +8,7 @@ import {
 import type { PluginCommandHandler, PluginPanelReport } from "@chemdraft/plugin-api";
 
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
+import { getNmrWorkerClient } from "./nmrWorkerClient";
 
 /**
  * Register every plugin the desktop ships. Adding a plugin is one import plus one `registerPlugin`
@@ -20,6 +21,11 @@ export function registerBundledPlugins(runtime: DesktopPluginRuntime): void {
       [molscribeOcsrCommandId]: createMolscribeCanaryHandler()
     }
   });
+
+  // Create the NMR worker client now (lazy: the worker spawns on first prediction, wired in M8).
+  // This also anchors the NMR plugin's Web Worker in the desktop's Vite build graph — see
+  // nmrWorkerClient.ts and the M7 bundling spike.
+  getNmrWorkerClient();
 }
 
 /**

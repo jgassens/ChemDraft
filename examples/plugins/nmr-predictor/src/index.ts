@@ -56,3 +56,7 @@ export {
   nmrPredictorAnalyzerId,
   nmrForwardPredictionAnalysisType
 } from "./manifest";
+
+export type { NmrWorkerRequest, NmrWorkerResponse, NmrWorkerErrorPayload } from "./worker/protocol";
+export { createNmrWorkerHandler, type NmrWorkerHandlerDeps } from "./worker/nmrWorkerCore";
+export { createNmrWorkerClient, type NmrWorkerClient } from "./worker/nmrWorkerClient";
