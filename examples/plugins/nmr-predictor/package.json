@@ -1,0 +1,20 @@
+{
+  "name": "@chemdraft/plugin-nmr-predictor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chemdraft/plugin-api": "workspace:*",
+    "openchemlib": "^9.22.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@chemdraft/plugin-host": "workspace:*"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

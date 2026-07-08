@@ -1,0 +1,58 @@
+/**
+ * @chemdraft/plugin-nmr-predictor — public surface.
+ *
+ * M6 ships the provider core (domain contracts, normalization, fixture provider) and the manifest.
+ * The worker (M7), command + analysis wiring (M8), and declarative panel report (M9) attach later.
+ */
+export * from "./domain/contracts";
+export { NmrError, NmrErrorCodes, isNmrError, type NmrErrorCode } from "./domain/errors";
+export {
+  NmrWarningCodes,
+  nmrWarning,
+  type NmrWarningCode,
+  type NmrWarningSeverity,
+  type NmrPredictionWarning
+} from "./domain/warnings";
+export {
+  NmrNucleusSchema,
+  ChemicalStructureInputSchema,
+  NmrPredictionOptionsSchema,
+  NmrPredictionRequestSchema,
+  NmrPredictionResultSchema
+} from "./domain/schemas";
+export { createStructureSourceFingerprint, fingerprintStructureInput } from "./domain/fingerprint";
+
+export {
+  normalizeStructure,
+  toChemicalStructureInput,
+  type NormalizedStructure
+} from "./application/normalizeStructure";
+
+export {
+  FixtureHosePredictor,
+  type FixtureHosePredictorOptions
+} from "./providers/fixture/FixtureHosePredictor";
+export {
+  FIXTURE_DATABASE,
+  FIXTURE_DATA_VERSION,
+  type FixtureShift,
+  type FixtureEnvironmentEntry
+} from "./providers/fixture/fixtureDatabase";
+export {
+  describeAtomEnvironment,
+  collectCarbonEnvironments,
+  collectProtonEnvironments,
+  elementSymbol,
+  type AtomEnvironment,
+  type ProtonEnvironment
+} from "./providers/fixture/fixtureEnvironment";
+
+export {
+  nmrPredictorManifest,
+  nmrPredictorPluginId,
+  nmrPredictCarbonCommandId,
+  nmrPredictProtonCommandId,
+  nmrPredictorPanelId,
+  nmrPredictorAnalyzerId,
+  nmrForwardPredictionAnalysisType
+} from "./manifest";

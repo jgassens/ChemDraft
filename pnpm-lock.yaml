@@ -143,6 +143,22 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/plugin-host
 
+  examples/plugins/nmr-predictor:
+    dependencies:
+      '@chemdraft/plugin-api':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-api
+      openchemlib:
+        specifier: ^9.22.1
+        version: 9.22.1
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@chemdraft/plugin-host':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-host
+
   packages/art-engine:
     dependencies:
       '@chemdraft/chem-core':
