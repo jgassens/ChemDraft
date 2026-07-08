@@ -1,0 +1,174 @@
+.customize-toolbars-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.customize-toolbars-dialog {
+  background: var(--surface, #ffffff);
+  color: var(--text, #1a1a1a);
+  width: min(720px, 92vw);
+  max-height: 86vh;
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.customize-toolbars-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+}
+
+.customize-toolbars-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.customize-toolbars-close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+}
+
+.customize-toolbars-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 18px;
+}
+
+.customize-toolset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.customize-toolset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  border-radius: 6px;
+  background: var(--surface-raised, rgba(0, 0, 0, 0.02));
+}
+
+.customize-toolset-row.is-selected {
+  border-color: var(--accent, #3b82f6);
+  box-shadow: 0 0 0 1px var(--accent, #3b82f6) inset;
+}
+
+.customize-drag-handle {
+  border: none;
+  background: transparent;
+  cursor: grab;
+  font-size: 15px;
+  color: var(--text-muted, rgba(0, 0, 0, 0.45));
+  padding: 2px 4px;
+  touch-action: none;
+}
+
+.customize-toolset-title {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  padding: 3px 6px;
+  font: inherit;
+}
+
+.customize-toolset-title:hover,
+.customize-toolset-title:focus {
+  border-color: var(--border, rgba(0, 0, 0, 0.18));
+  background: var(--surface, #ffffff);
+  outline: none;
+}
+
+.customize-toolset-source {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, rgba(0, 0, 0, 0.45));
+}
+
+.customize-toolset-action {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.14));
+  background: transparent;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.customize-toolset-action:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.06));
+}
+
+.customize-toolset-delete {
+  color: var(--danger, #d14343);
+  border-color: var(--danger, #d14343);
+}
+
+.customize-toolbars-create {
+  display: flex;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+}
+
+.customize-toolbars-create input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.18));
+  border-radius: 5px;
+  font: inherit;
+}
+
+.customize-toolbars-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+}
+
+.customize-toolbars-footer button {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.18));
+  background: transparent;
+  color: inherit;
+}
+
+.customize-toolbars-apply {
+  background: var(--accent, #3b82f6);
+  border-color: var(--accent, #3b82f6);
+  color: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  .customize-toolbars-dialog {
+    background: var(--surface, #24262b);
+    color: var(--text, #f2f3f5);
+  }
+}

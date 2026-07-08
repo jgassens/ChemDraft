@@ -172,9 +172,20 @@ export const UserToolsetOverrideSchema = z
   })
   .strict();
 
+// User toolsets may have empty groups (a freshly created toolbar, or one being emptied mid-edit in
+// the Customize dialog). Core/plugin toolsets keep the stricter `items.min(1)` via ToolsetGroupSchema.
+export const UserToolsetGroupSchema = z
+  .object({
+    id: NonEmptyStringSchema.optional(),
+    title: NonEmptyStringSchema.optional(),
+    items: z.array(ToolsetItemSchema)
+  })
+  .strict();
+
 export const UserToolsetDefinitionSchema = ToolsetDefinitionSchema.extend({
   source: z.literal("user"),
-  clonedFromToolsetId: NonEmptyStringSchema.optional()
+  clonedFromToolsetId: NonEmptyStringSchema.optional(),
+  groups: z.array(UserToolsetGroupSchema).min(1)
 }).strict();
 
 export const ToolsetLayoutStateSchema = z
@@ -532,33 +543,29 @@ function pruneUnknownToolsetCommands<TIcon extends string, TAssetName extends st
   toolset: ToolsetDefinition<TIcon, TAssetName>,
   registeredCommandIds: ReadonlySet<string>,
   warn: (warning: string) => void
-): ToolsetDefinition<TIcon, TAssetName> | undefined {
-	const groups = toolset.groups
-	  .map((group) => ({
-	    ...group,
-	    items: group.items.flatMap((item) => {
-	      const unknownPrimaryIds = toolsetItemPrimaryCommandIds(item).filter(
-	        (commandId) => !registeredCommandIds.has(commandId)
-	      );
-	      if (unknownPrimaryIds.length > 0) {
-	        // The item's own command is gone — drop the whole item.
-	        unknownPrimaryIds.forEach((commandId) => {
-	          warn(`User toolset "${toolset.id}" dropped unknown command "${commandId}".`);
-	        });
-	        return [];
-	      }
-	      // Primary is registered — keep the button and prune only unknown submenu entries.
-	      const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
-	      return [{ ...item, submenu }];
-	    })
-	  }))
-    .filter((group) => group.items.length > 0);
+): ToolsetDefinition<TIcon, TAssetName> {
+  const groups = toolset.groups.map((group) => ({
+    ...group,
+    items: group.items.flatMap((item) => {
+      const unknownPrimaryIds = toolsetItemPrimaryCommandIds(item).filter(
+        (commandId) => !registeredCommandIds.has(commandId)
+      );
+      if (unknownPrimaryIds.length > 0) {
+        // The item's own command is gone — drop the whole item.
+        unknownPrimaryIds.forEach((commandId) => {
+          warn(`User toolset "${toolset.id}" dropped unknown command "${commandId}".`);
+        });
+        return [];
+      }
+      // Primary is registered — keep the button and prune only unknown submenu entries.
+      const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
+      return [{ ...item, submenu }];
+    })
+  }));
 
-  if (groups.length === 0) {
-    warn(`User toolset "${toolset.id}" was dropped: none of its commands are registered.`);
-    return undefined;
-  }
-
+  // Keep the toolset even when it ends up empty (freshly created in the Customize dialog, or all of
+  // its commands came from a removed plugin) — dropping it would silently delete the user's toolbar.
+  // It renders as an empty palette; the user can re-add commands.
   return { ...toolset, groups };
 }
 
