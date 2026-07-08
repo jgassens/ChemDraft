@@ -60,10 +60,6 @@ static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
-// Native (separate-window) toolset palettes are parked while the in-document toolbar chrome is the
-// shipping UI. The restore/sync plumbing is kept compiled and tested behind this flag so the feature
-// can be re-enabled without resurrecting deleted code; flip to `true` to bring the windows back.
-const RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP: bool = false;
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
@@ -295,14 +291,6 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
-                    WindowEvent::Focused(true) => {
-                        if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
-                            if let Err(error) = restore_visible_toolset_windows(window.app_handle())
-                            {
-                                eprintln!("Could not restore ChemDraft toolbar windows: {error}");
-                            }
-                        }
-                    }
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if let Err(error) = window.hide() {
@@ -373,18 +361,6 @@ pub fn run() {
 
             if let Err(error) = ensure_main_window_visible(app) {
                 eprintln!("Could not show ChemDraft main window: {error}");
-            }
-
-            if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
-                for toolset in startup_manifest.toolsets {
-                    let visible = toolset_visible(&toolset, &layout_state);
-                    if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
-                        eprintln!(
-                            "Could not initialize ChemDraft toolbar state {}: {error}",
-                            toolset.id
-                        );
-                    }
-                }
             }
 
             if let Err(error) = focus_main_document_window_impl(app) {
@@ -2186,34 +2162,6 @@ fn ensure_toolset_window<R: Runtime>(
     Ok(())
 }
 
-fn restore_visible_toolset_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let layout_state = load_toolset_layout_state(app);
-
-    for toolset in toolset_manifest_for_startup(app).toolsets {
-        let visible = toolset_visible(&toolset, &layout_state);
-        sync_toolset_window_from_layout(app, &toolset, visible)?;
-    }
-
-    Ok(())
-}
-
-fn sync_toolset_window_from_layout<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset: &ToolsetDefinition,
-    visible: bool,
-) -> Result<(), String> {
-    if visible && toolset.default_mode == "floating" {
-        ensure_toolset_window(app, &toolset.id)?;
-        let state = toolset_state(app, &toolset.id)?;
-        persist_toolset_visibility(app, &toolset.id, state.open)?;
-        set_toolset_menu_checked(app, &toolset.id, state.open)?;
-        let _ = emit_toolset_window_state_to_main(app, &state);
-        return Ok(());
-    }
-
-    set_toolset_menu_checked(app, &toolset.id, false)
-}
-
 #[cfg(target_os = "macos")]
 fn configure_toolset_utility_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -2760,11 +2708,6 @@ mod tests {
     #[test]
     fn toolset_utility_windows_hide_when_app_deactivates() {
         expect_true(toolset_window_hides_on_deactivate());
-    }
-
-    #[test]
-    fn native_toolset_windows_do_not_restore_on_startup_by_default() {
-        expect_false(RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP);
     }
 
     #[test]
