@@ -55,7 +55,12 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
-import { createToolsetToggleCommandId, parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
+import {
+  createToolsetToggleCommandId,
+  parseToolsetLayoutState,
+  parseToolsetToggleCommandId,
+  type ToolsetLayoutState
+} from "@chemdraft/toolset-registry";
 import {
   buildCrosshairTicks,
   centimeterRulerUnit,
@@ -76,6 +81,7 @@ import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
+import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { PatchReviewTray } from "./plugins/PatchReviewTray";
 import {
@@ -469,6 +475,7 @@ import {
   listenForToolsetActiveToolRequests,
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
+  saveToolsetLayoutState,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
   openToolsetWindow,
@@ -1803,6 +1810,12 @@ export function MainWindow({
   // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
   // on a possibly-stale render closure.
   const visibleToolsetIdsRef = useRef(visibleToolsetIds);
+  // Last layout/customization state loaded from (or saved to) disk, so a visibility save merges onto
+  // any other customization instead of clobbering it. `layoutHydratedRef` gates the visibility save
+  // effect until the initial load has run, so the first render's default set can't overwrite the
+  // saved file before we've read it.
+  const layoutStateRef = useRef<ToolsetLayoutState | undefined>(undefined);
+  const layoutHydratedRef = useRef(false);
   const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
@@ -2308,33 +2321,55 @@ export function MainWindow({
     let active = true;
     void loadToolsetLayoutState()
       .then((layoutState) => {
-        if (!active || layoutState === undefined) {
+        if (!active) {
           return;
         }
 
-        toolbarCatalog.setLayoutState(layoutState);
-        const nextRegistry = toolbarCatalog.registry();
-        setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
-        setVisibleToolsetIds((current) => {
-          const knownVisibleIds = [...current].filter((toolsetId) => nextRegistry.get(toolsetId));
-          if (current.size === 0) {
-            return createDefaultVisibleToolsetIds(nextRegistry);
+        if (layoutState !== undefined) {
+          toolbarCatalog.setLayoutState(layoutState);
+          const nextRegistry = toolbarCatalog.registry();
+          setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
+          // The registry's default-visible set already reflects the saved toolsetOverrides[].visible,
+          // so this restores exactly the palettes the user last had open.
+          setVisibleToolsetIds(createDefaultVisibleToolsetIds(nextRegistry));
+          try {
+            layoutStateRef.current = parseToolsetLayoutState(layoutState);
+          } catch {
+            layoutStateRef.current = undefined;
           }
-          return current.size === knownVisibleIds.length
-            ? current
-            : new Set(knownVisibleIds.length > 0 ? knownVisibleIds : createDefaultVisibleToolsetIds(nextRegistry));
-        });
+        }
+
+        // Initial load finished (saved state found or not) — visibility saves may now persist.
+        layoutHydratedRef.current = true;
       })
       .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
         setWebPaletteFallback(true);
         setVisibleToolsetIds(createDefaultVisibleToolsetIds(desktopToolsetRegistry));
         setStatus(`Native toolbar layout unavailable; using in-window toolbars (${error instanceof Error ? error.message : String(error)})`);
+        layoutHydratedRef.current = true;
       });
 
     return () => {
       active = false;
     };
   }, [nativePalette, toolbarCatalog]);
+
+  // Persist palette visibility whenever it changes so the set of open palettes is restored next
+  // launch. Gated on layoutHydratedRef so the first render's default set can't overwrite the saved
+  // file before the load above has read it; merges onto the last known layout state so other
+  // customization isn't clobbered.
+  useEffect(() => {
+    if (!nativePalette || !layoutHydratedRef.current) {
+      return;
+    }
+    const allToolsetIds = toolsetRegistry.listToolsets().map((toolset) => toolset.id);
+    const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, allToolsetIds, visibleToolsetIds);
+    layoutStateRef.current = nextState;
+    void saveToolsetLayoutState(nextState).catch(() => undefined);
+  }, [visibleToolsetIds, nativePalette, toolsetRegistry]);
 
   useEffect(() => {
     viewportRef.current = viewport;
