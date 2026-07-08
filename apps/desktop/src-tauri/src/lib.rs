@@ -57,7 +57,6 @@ const ENGINE3D_SESSION_OUTPUT_QUIET: Duration = Duration::from_millis(20);
 // timeout, so idle client polling never ties up a worker thread (or a session lock) for 250ms.
 const ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT: Duration = Duration::from_millis(30);
 static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const MENU_COMMAND_IDS: &[&str] = &[
@@ -87,35 +86,6 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "chemistry.validateSelection",
     "structure.openInteractive3d",
 ];
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetManifest {
-    toolsets: Vec<ToolsetDefinition>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetDefinition {
-    id: String,
-    title: String,
-    default_visible: bool,
-    default_mode: String,
-    preferred_window_size: Option<ToolsetWindowSize>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetWindowSize {
-    width: f64,
-    height: f64,
-    // Retained so the manifest still deserializes, but no longer used for the native window
-    // min size — JS now fits each palette window to its content (see ensure_toolset_window).
-    #[allow(dead_code)]
-    min_width: Option<f64>,
-    #[allow(dead_code)]
-    min_height: Option<f64>,
-}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -253,28 +223,6 @@ impl Default for ToolsetLayoutState {
             toolsets: HashMap::new(),
         }
     }
-}
-
-#[derive(Clone, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetCustomizationState {
-    version: u32,
-    #[serde(default)]
-    toolset_order: Vec<String>,
-    #[serde(default)]
-    toolset_overrides: Vec<ToolsetCustomizationOverride>,
-    #[serde(default)]
-    user_toolsets: Vec<ToolsetDefinition>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetCustomizationOverride {
-    toolset_id: String,
-    title: Option<String>,
-    visible: Option<bool>,
-    mode: Option<String>,
-    preferred_window_size: Option<ToolsetWindowSize>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -531,6 +479,10 @@ struct ToolsetWindowGeometry {
     title: String,
     width: f64,
     height: f64,
+    // Default top-left for a first-ever placement (JS staggers by registry order); a persisted
+    // position overrides it.
+    x: f64,
+    y: f64,
     #[allow(dead_code)]
     min_width: Option<f64>,
     #[allow(dead_code)]
@@ -2103,27 +2055,25 @@ fn ensure_toolset_window<R: Runtime>(
         return Ok(());
     }
 
-    // Prefer the JS-provided title/size; fall back to the manifest until it is removed (Phase 4b).
-    let (title, width, height) = match geometry {
+    // Title / size / default position all come from JS (which owns the toolbar registry). A None
+    // geometry means a caller that isn't a normal open (focus of a not-yet-created window, or a
+    // legacy alias); give it a generic placeholder instead of reading the manifest.
+    let (title, width, height, default_position) = match geometry {
         Some(geometry) => (
             format!("ChemDraft {}", geometry.title),
             geometry.width,
             geometry.height,
+            ToolsetWindowPosition { x: geometry.x, y: geometry.y },
         ),
-        None => {
-            let Some(toolset) = toolset_definition(app, toolset_id) else {
-                return Err(format!("Toolset {toolset_id} is not registered."));
-            };
-            let size = toolset.preferred_window_size.clone().unwrap_or(ToolsetWindowSize {
-                width: 96.0,
-                height: 420.0,
-                min_width: Some(96.0),
-                min_height: Some(240.0),
-            });
-            (format!("ChemDraft {}", toolset.title), size.width, size.height)
-        }
+        None => (
+            "ChemDraft Toolbar".to_string(),
+            200.0,
+            400.0,
+            ToolsetWindowPosition { x: 88.0, y: 154.0 },
+        ),
     };
-    let position = preferred_toolset_position(app, toolset_id);
+    // A persisted position wins (the user moved it before); otherwise the JS-supplied default.
+    let position = persisted_toolset_position(app, toolset_id).unwrap_or(default_position);
 
     // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
     // without the manifest (the label itself is lossy).
@@ -2239,96 +2189,6 @@ fn toolset_state<R: Runtime>(
     }
 }
 
-fn toolset_manifest() -> ToolsetManifest {
-    serde_json::from_str(TOOLSET_MANIFEST_JSON)
-        .expect("desktop toolset manifest should be valid JSON")
-}
-
-fn toolset_manifest_for_startup<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetManifest {
-    ToolsetManifest {
-        toolsets: apply_toolset_customization(
-            toolset_manifest().toolsets,
-            load_toolset_customization_state_from_disk(app).as_ref(),
-        ),
-    }
-}
-
-fn apply_toolset_customization(
-    mut toolsets: Vec<ToolsetDefinition>,
-    customization: Option<&ToolsetCustomizationState>,
-) -> Vec<ToolsetDefinition> {
-    let Some(customization) = customization else {
-        return toolsets;
-    };
-
-    for user_toolset in &customization.user_toolsets {
-        if !toolsets.iter().any(|toolset| toolset.id == user_toolset.id) {
-            toolsets.push(user_toolset.clone());
-        }
-    }
-
-    for override_state in &customization.toolset_overrides {
-        let Some(toolset) = toolsets
-            .iter_mut()
-            .find(|toolset| toolset.id == override_state.toolset_id)
-        else {
-            continue;
-        };
-
-        if let Some(title) = override_state.title.as_ref() {
-            toolset.title = title.clone();
-        }
-        if let Some(visible) = override_state.visible {
-            toolset.default_visible = visible;
-        }
-        if let Some(mode) = override_state.mode.as_ref() {
-            toolset.default_mode = mode.clone();
-        }
-        if let Some(size) = override_state.preferred_window_size.as_ref() {
-            toolset.preferred_window_size = Some(size.clone());
-        }
-    }
-
-    order_toolsets(toolsets, &customization.toolset_order)
-}
-
-fn order_toolsets(
-    mut toolsets: Vec<ToolsetDefinition>,
-    preferred_order: &[String],
-) -> Vec<ToolsetDefinition> {
-    if preferred_order.is_empty() {
-        return toolsets;
-    }
-
-    let mut ordered = Vec::with_capacity(toolsets.len());
-    for toolset_id in preferred_order {
-        if let Some(index) = toolsets
-            .iter()
-            .position(|toolset| &toolset.id == toolset_id)
-        {
-            ordered.push(toolsets.remove(index));
-        }
-    }
-    ordered.extend(toolsets);
-    ordered
-}
-
-fn toolset_definition<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-) -> Option<ToolsetDefinition> {
-    toolset_manifest_for_startup(app)
-        .toolsets
-        .into_iter()
-        .find(|toolset| toolset.id == toolset_id)
-}
-
-fn toolset_index<R: Runtime>(app: &tauri::AppHandle<R>, toolset_id: &str) -> Option<usize> {
-    toolset_manifest_for_startup(app)
-        .toolsets
-        .iter()
-        .position(|toolset| toolset.id == toolset_id)
-}
 
 fn toolset_window_label(toolset_id: &str) -> String {
     let suffix: String = toolset_id
@@ -2356,18 +2216,6 @@ fn toolset_id_for_window_label<R: Runtime>(
         .cloned()
 }
 
-// Retained for the label-format round-trip tests; the app resolves labels via the window directory.
-#[cfg_attr(not(test), allow(dead_code))]
-fn toolset_id_for_window_label_from_toolsets(
-    toolsets: &[ToolsetDefinition],
-    label: &str,
-) -> Option<String> {
-    toolsets
-        .iter()
-        .find(|toolset| toolset_window_label(&toolset.id) == label)
-        .map(|toolset| toolset.id.clone())
-}
-
 fn toolset_toggle_command_id(toolset_id: &str) -> String {
     format!("{TOOLSET_TOGGLE_PREFIX}{toolset_id}")
 }
@@ -2376,28 +2224,6 @@ fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
 }
 
-fn preferred_toolset_position<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-) -> ToolsetWindowPosition {
-    persisted_toolset_position(app, toolset_id)
-        .unwrap_or_else(|| default_toolset_position(app, toolset_id))
-}
-
-fn default_toolset_position<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-) -> ToolsetWindowPosition {
-    default_toolset_position_for_index(toolset_index(app, toolset_id).unwrap_or(0))
-}
-
-fn default_toolset_position_for_index(index: usize) -> ToolsetWindowPosition {
-    let offset = index as f64 * 18.0;
-    ToolsetWindowPosition {
-        x: 88.0 + offset,
-        y: 154.0 + offset,
-    }
-}
 
 fn persisted_toolset_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -2520,18 +2346,6 @@ fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLa
     serde_json::from_str(&contents).unwrap_or_default()
 }
 
-fn load_toolset_customization_state_from_disk<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Option<ToolsetCustomizationState> {
-    let path = toolset_customization_state_path(app).ok()?;
-    let contents = fs::read_to_string(path).ok()?;
-    let state: ToolsetCustomizationState = serde_json::from_str(&contents).ok()?;
-    if state.version == 1 {
-        Some(state)
-    } else {
-        None
-    }
-}
 
 fn save_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -2637,39 +2451,10 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
     use super::*;
 
-    fn toolset(id: &str, default_visible: bool) -> ToolsetDefinition {
-        ToolsetDefinition {
-            id: id.to_string(),
-            title: "Fixture Toolbar".to_string(),
-            default_visible,
-            default_mode: "floating".to_string(),
-            preferred_window_size: None,
-        }
-    }
-
     #[test]
-    fn toolset_labels_round_trip_to_ids() {
-        let toolsets = vec![toolset("core.main", true)];
+    fn toolset_window_labels_are_stable_and_sanitized() {
         expect_eq("toolset-core-main", &toolset_window_label("core.main"));
-        expect_eq(
-            Some("core.main".to_string()),
-            toolset_id_for_window_label_from_toolsets(&toolsets, "toolset-core-main"),
-        );
-        expect_eq(
-            None,
-            toolset_id_for_window_label_from_toolsets(&toolsets, "main"),
-        );
-    }
-
-    #[test]
-    fn default_positions_are_staggered_by_manifest_order() {
-        let main = default_toolset_position_for_index(0);
-        let structure = default_toolset_position_for_index(1);
-
-        expect_eq(88.0, main.x);
-        expect_eq(154.0, main.y);
-        expect_true(structure.x > main.x);
-        expect_true(structure.y > main.y);
+        expect_eq("toolset-plugin-fixture", &toolset_window_label("plugin.fixture"));
     }
 
     #[test]
@@ -2687,62 +2472,6 @@ mod tests {
     #[test]
     fn toolset_utility_windows_hide_when_app_deactivates() {
         expect_true(toolset_window_hides_on_deactivate());
-    }
-
-    #[test]
-    fn customization_state_adds_and_orders_user_toolsets() {
-        let toolsets = vec![toolset("core.main", true), toolset("plugin.fixture", false)];
-        let customization = ToolsetCustomizationState {
-            version: 1,
-            toolset_order: vec![
-                "user.quick".to_string(),
-                "plugin.fixture".to_string(),
-                "core.main".to_string(),
-            ],
-            user_toolsets: vec![toolset("user.quick", true)],
-            ..ToolsetCustomizationState::default()
-        };
-
-        let customized = apply_toolset_customization(toolsets, Some(&customization));
-
-        expect_eq("user.quick", customized[0].id.as_str());
-        expect_eq("plugin.fixture", customized[1].id.as_str());
-        expect_eq("core.main", customized[2].id.as_str());
-    }
-
-    #[test]
-    fn customization_overrides_title_visibility_mode_and_size() {
-        let toolsets = vec![toolset("core.main", true)];
-        let customization = ToolsetCustomizationState {
-            version: 1,
-            toolset_overrides: vec![ToolsetCustomizationOverride {
-                toolset_id: "core.main".to_string(),
-                title: Some("My Main Toolbar".to_string()),
-                visible: Some(false),
-                mode: Some("hidden".to_string()),
-                preferred_window_size: Some(ToolsetWindowSize {
-                    width: 120.0,
-                    height: 240.0,
-                    min_width: Some(100.0),
-                    min_height: Some(200.0),
-                }),
-            }],
-            ..ToolsetCustomizationState::default()
-        };
-
-        let customized = apply_toolset_customization(toolsets, Some(&customization));
-
-        expect_eq("My Main Toolbar", customized[0].title.as_str());
-        expect_false(customized[0].default_visible);
-        expect_eq("hidden", customized[0].default_mode.as_str());
-        expect_eq(
-            120.0,
-            customized[0]
-                .preferred_window_size
-                .as_ref()
-                .expect("size should be applied")
-                .width,
-        );
     }
 
     #[test]
@@ -2969,14 +2698,11 @@ mod tests {
 
     #[test]
     fn spin3d_debugger_window_route_is_not_a_toolset_window() {
-        let toolsets = vec![toolset("core.main", true)];
-
         expect_eq(SPIN3D_DEBUGGER_WINDOW_LABEL, spin3d_debugger_window_label());
         expect_eq(SPIN3D_DEBUGGER_WINDOW_ROUTE, spin3d_debugger_window_route());
-        expect_eq(
-            None,
-            toolset_id_for_window_label_from_toolsets(&toolsets, spin3d_debugger_window_label()),
-        );
+        // The debugger window must never be mistaken for a toolset palette window:
+        // every toolset window label carries the `toolset-` prefix (see toolset_window_label).
+        expect_false(spin3d_debugger_window_label().starts_with("toolset-"));
     }
 
     #[test]

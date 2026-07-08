@@ -106,6 +106,9 @@ export interface ToolsetWindowGeometry {
   title: string;
   width: number;
   height: number;
+  /** Default top-left for a first-ever placement (JS staggers by registry order). */
+  x: number;
+  y: number;
   minWidth?: number;
   minHeight?: number;
 }

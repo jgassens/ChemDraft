@@ -2642,10 +2642,16 @@ export function MainWindow({
       return undefined;
     }
     const size = toolset.preferredWindowSize;
+    // Stagger a first-ever placement by the toolset's position in the registry (Rust used to derive
+    // this from the manifest order); a persisted position overrides it in Rust.
+    const index = Math.max(0, toolsetRegistry.listToolsets().findIndex((entry) => entry.id === toolsetId));
+    const offset = index * 18;
     return {
       title: toolset.title,
       width: size?.width ?? 96,
       height: size?.height ?? 420,
+      x: 88 + offset,
+      y: 154 + offset,
       minWidth: size?.minWidth,
       minHeight: size?.minHeight
     };
