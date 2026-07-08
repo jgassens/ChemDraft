@@ -38,8 +38,6 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-const DEFAULT_TOOLSET_ID: &str = "core.main";
-const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
@@ -315,8 +313,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_toolset_window,
             close_toolset_window,
-            focus_toolset_window,
-            toggle_toolset_window,
             list_toolset_window_states,
             load_toolset_customization_state,
             save_toolset_customization_state,
@@ -331,12 +327,6 @@ pub fn run() {
             route_toolset_command,
             read_clipboard_payload,
             write_clipboard_text_items,
-            open_tool_palette,
-            close_tool_palette,
-            focus_tool_palette,
-            toggle_tool_palette,
-            tool_palette_state,
-            route_palette_command,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
             agent_bridge_status,
@@ -520,30 +510,6 @@ fn close_toolset_window(
     }
 
     Ok(state)
-}
-
-#[tauri::command]
-fn focus_toolset_window(
-    app: tauri::AppHandle,
-    toolset_id: String,
-) -> Result<ToolsetWindowState, String> {
-    ensure_toolset_window(&app, &toolset_id, None)?;
-
-    toolset_state(&app, &toolset_id)
-}
-
-#[tauri::command]
-fn toggle_toolset_window(
-    app: tauri::AppHandle,
-    toolset_id: String,
-) -> Result<ToolsetWindowState, String> {
-    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
-        if window.is_visible().unwrap_or(false) {
-            return close_toolset_window(app, toolset_id);
-        }
-    }
-
-    open_toolset_window(app, toolset_id, None)
 }
 
 #[tauri::command]
@@ -1063,36 +1029,6 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 #[cfg(not(target_os = "macos"))]
 fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
     Err("Native clipboard writes are only implemented for macOS.".to_string())
-}
-
-#[tauri::command]
-fn open_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    open_toolset_window(app, DEFAULT_TOOLSET_ID.to_string(), None)
-}
-
-#[tauri::command]
-fn close_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    close_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn focus_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    focus_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn toggle_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    toggle_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn tool_palette_state(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    toolset_state(&app, DEFAULT_TOOLSET_ID)
-}
-
-#[tauri::command]
-fn route_palette_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
-    route_toolset_command(app, command_id)
 }
 
 #[tauri::command]
@@ -1652,8 +1588,9 @@ fn emit_command_to_main<R: Runtime>(
         command_id: command_id.to_string(),
     };
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_COMMAND_EVENT, payload.clone())
-        .map_err(|error| error.to_string())?;
+    // Single delivery: dispatch the `native-command` DOM event straight into the main webview, which
+    // the JS `listenForToolsetCommands` DOM listener consumes exactly once. (We used to also emit over
+    // the tauri event bus, which fanned out to several listeners and required a JS-side deduper.)
     dispatch_dom_command_event(&main, &payload)
 }
 
@@ -2592,7 +2529,7 @@ mod tests {
             "allow-read-clipboard-payload",
             "allow-write-clipboard-text-items",
             "allow-open-toolset-window",
-            "allow-toggle-toolset-window",
+            "allow-close-toolset-window",
         ] {
             expect_true(permissions.iter().any(|permission| {
                 permission

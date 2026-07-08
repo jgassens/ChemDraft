@@ -32,8 +32,6 @@ export interface ToolsetWindowState {
   position?: ToolsetWindowPosition;
 }
 
-export type PaletteWindowState = ToolsetWindowState;
-
 export interface ToolsetCommandPayload {
   commandId: string;
 }
@@ -125,14 +123,6 @@ export async function openToolsetWindow(
 
 export async function closeToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
   return invokeToolsetWindow("close_toolset_window", toolsetId);
-}
-
-export async function focusToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
-  return invokeToolsetWindow("focus_toolset_window", toolsetId);
-}
-
-export async function toggleToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
-  return invokeToolsetWindow("toggle_toolset_window", toolsetId);
 }
 
 /**
@@ -408,31 +398,6 @@ export async function setMenuChecked(commandId: string, checked: boolean): Promi
   await invoke("set_menu_checked", { commandId, checked }).catch(() => undefined);
 }
 
-export async function openToolPalette(): Promise<PaletteWindowState> {
-  return openToolsetWindow(DEFAULT_TOOLSET_ID);
-}
-
-export async function closeToolPalette(): Promise<PaletteWindowState> {
-  return closeToolsetWindow(DEFAULT_TOOLSET_ID);
-}
-
-export async function focusToolPalette(): Promise<PaletteWindowState> {
-  return focusToolsetWindow(DEFAULT_TOOLSET_ID);
-}
-
-export async function toggleToolPalette(): Promise<PaletteWindowState> {
-  return toggleToolsetWindow(DEFAULT_TOOLSET_ID);
-}
-
-export async function toolPaletteState(): Promise<PaletteWindowState> {
-  const states = await listToolsetWindowStates();
-  return states.find((state) => state.toolsetId === DEFAULT_TOOLSET_ID) ?? {
-    toolsetId: DEFAULT_TOOLSET_ID,
-    open: false,
-    focused: false
-  };
-}
-
 export async function sendPaletteCommand(commandId: string): Promise<void> {
   return routeToolsetCommand(commandId);
 }
@@ -450,12 +415,12 @@ export async function sendPaletteCommandCancel(commandId: string): Promise<void>
 }
 
 export async function routeToolsetCommand(commandId: string): Promise<void> {
+  // Single delivery: the invoke routes through Rust `route_toolset_command`, which dispatches the
+  // native-command DOM event into the main window (the one listener in `listenForToolsetCommands`).
+  // No client-side `emit` — that used to also fan out over the tauri event bus, so every command
+  // arrived several times and needed `dedupeAdjacentCommands` to collapse it.
   const payload = createToolsetCommandPayload(commandId);
-  const [{ invoke }, { emit }] = await Promise.all([
-    import("@tauri-apps/api/core"),
-    import("@tauri-apps/api/event")
-  ]);
-  await emit<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, payload).catch(() => undefined);
+  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("route_toolset_command", payload as unknown as Record<string, unknown>);
 }
 
@@ -575,33 +540,10 @@ export async function listenForPaletteCommands(handler: (commandId: string) => v
 }
 
 export async function listenForToolsetCommands(handler: (commandId: string) => void): Promise<Unlisten> {
-  const routedHandler = dedupeAdjacentCommands(handler);
-  const unlistenDom = listenForDomToolsetCommands(routedHandler);
-  if (!isDesktopRuntime()) {
-    return unlistenDom;
-  }
-
-  const [{ getCurrentWindow }, { getCurrentWebview }, { listen }] = await Promise.all([
-    import("@tauri-apps/api/window"),
-    import("@tauri-apps/api/webview"),
-    import("@tauri-apps/api/event")
-  ]);
-  const onTauriCommand = (event: { payload?: Partial<ToolsetCommandPayload> }) => {
-    if (typeof event.payload?.commandId === "string") {
-      routedHandler(event.payload.commandId);
-    }
-  };
-  const [unlistenWindow, unlistenWebview, unlistenGlobal] = await Promise.all([
-    getCurrentWindow().listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand),
-    getCurrentWebview().listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand),
-    listen<ToolsetCommandPayload>(PALETTE_COMMAND_EVENT, onTauriCommand)
-  ]);
-  return () => {
-    unlistenDom();
-    unlistenWindow();
-    unlistenWebview();
-    unlistenGlobal();
-  };
+  // Native palette clicks arrive as the `native-command` DOM event that Rust `route_toolset_command`
+  // dispatches into the main window (see `routeToolsetCommand`). That is now the single delivery path,
+  // so a plain DOM listener receives each command exactly once — no tauri-bus fan-out, no dedupe.
+  return listenForDomToolsetCommands(handler);
 }
 
 export async function listenForPaletteCommandPreviews(handler: (commandId: string) => void): Promise<Unlisten> {
@@ -668,22 +610,6 @@ export async function listenForToolsetTextStyleRequests(handler: () => void): Pr
   return () => {
     unlistenDom();
     unlistenTauri();
-  };
-}
-
-function dedupeAdjacentCommands(handler: (commandId: string) => void): (commandId: string) => void {
-  let lastCommandId: string | undefined;
-  let lastCommandAt = 0;
-
-  return (commandId) => {
-    const now = Date.now();
-    if (commandId === lastCommandId && now - lastCommandAt < 100) {
-      return;
-    }
-
-    lastCommandId = commandId;
-    lastCommandAt = now;
-    handler(commandId);
   };
 }
 
