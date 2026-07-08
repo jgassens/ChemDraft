@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { NmrNucleus, NmrPredictionOptions, NmrPredictionResult } from "../domain/contracts";
+import { NmrErrorCodes, isNmrError } from "../domain/errors";
 import { NmrPredictionResultSchema } from "../domain/schemas";
 import { fingerprintStructureInput } from "../domain/fingerprint";
 import { FixtureHosePredictor } from "../providers/fixture/FixtureHosePredictor";
+
+function shiftsOf(result: NmrPredictionResult): number[] {
+  return result.resonances.map((resonance) => resonance.deltaPpm).sort((a, b) => a - b);
+}
 
 const OPTIONS: NmrPredictionOptions = { statistic: "median", hoseLevels: [2], ignoreLabileHydrogens: true };
 
@@ -88,6 +93,45 @@ describe("FixtureHosePredictor", () => {
     expect(warningCodes(result)).toContain("NMR_PARTIAL_PREDICTION");
   });
 
+  it("covers anisole ¹³C (methyl, ipso, ortho, meta, para)", async () => {
+    const result = await predict("COc1ccccc1", ["13C"]);
+    expect(result.resonances).toHaveLength(5);
+    expect(result.resonances.find((resonance) => resonance.deltaPpm === 55.1)?.nucleus).toBe("13C"); // OCH3
+    expect(result.resonances.find((resonance) => resonance.deltaPpm === 159.6)).toBeDefined(); // ipso C–O
+    expect(warningCodes(result)).not.toContain("NMR_NO_FRAGMENT_MATCH");
+  });
+
+  it("covers acetonitrile ¹³C (methyl + nitrile carbon)", async () => {
+    const result = await predict("CC#N", ["13C"]);
+    expect(shiftsOf(result)).toEqual([1.9, 118.7]);
+    expect(warningCodes(result)).not.toContain("NMR_NO_FRAGMENT_MATCH");
+  });
+
+  it("covers cyclohexane ¹³C as one six-carbon resonance", async () => {
+    const result = await predict("C1CCCCC1", ["13C"]);
+    expect(result.resonances).toHaveLength(1);
+    expect(result.resonances[0]).toMatchObject({ deltaPpm: 27.0, equivalentNuclei: 6 });
+  });
+
+  it("covers p-xylene ¹³C (methyl, ipso, ring CH)", async () => {
+    const result = await predict("Cc1ccc(C)cc1", ["13C"]);
+    expect(shiftsOf(result)).toEqual([21.3, 129.1, 137.8]);
+    expect(warningCodes(result)).not.toContain("NMR_NO_FRAGMENT_MATCH");
+  });
+
+  it("builds ¹H atomRefs whose element is H and whose counts sum to equivalentNuclei", async () => {
+    const result = await predict("CCO", ["1H"]);
+    for (const resonance of result.resonances) {
+      expect(resonance.atomRefs.every((ref) => ref.element === "H")).toBe(true);
+      const summed = resonance.atomRefs.reduce((total, ref) => total + (ref.equivalentCount ?? 0), 0);
+      expect(summed).toBe(resonance.equivalentNuclei);
+    }
+    // ethanol CH3 → one host atom, three equivalent protons.
+    const methyl = result.resonances.find((resonance) => resonance.deltaPpm === 1.19);
+    expect(methyl?.equivalentNuclei).toBe(3);
+    expect(methyl?.atomRefs).toEqual([{ sourceAtomIndex: 0, element: "H", equivalentCount: 3 }]);
+  });
+
   it("is deterministic (same input → identical result)", async () => {
     const first = await predict("Cc1ccccc1", ["13C", "1H"]);
     const second = await predict("Cc1ccccc1", ["13C", "1H"]);
@@ -108,12 +152,14 @@ describe("FixtureHosePredictor", () => {
     expect(derived.sourceFingerprint).toBe(fingerprintStructureInput({ format: "smiles", value: "c1ccccc1" }));
   });
 
-  it("rejects when the abort signal is already aborted", async () => {
-    await expect(
-      predictor().predict(
+  it("rejects an aborted signal as cancellation, not provider failure", async () => {
+    const error = await predictor()
+      .predict(
         { structure: { format: "smiles", value: "c1ccccc1" }, nuclei: ["13C"], options: OPTIONS },
         AbortSignal.abort()
       )
-    ).rejects.toThrow();
+      .catch((caught: unknown) => caught);
+    expect(isNmrError(error)).toBe(true);
+    expect(isNmrError(error) && error.code).toBe(NmrErrorCodes.PredictionCancelled);
   });
 });

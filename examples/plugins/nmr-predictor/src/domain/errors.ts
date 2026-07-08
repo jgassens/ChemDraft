@@ -8,7 +8,9 @@ export const NmrErrorCodes = {
   EmptyStructure: "NMR_EMPTY_STRUCTURE",
   StructureParseFailed: "NMR_STRUCTURE_PARSE_FAILED",
   ProviderInitializationFailed: "NMR_PROVIDER_INITIALIZATION_FAILED",
-  ProviderFailure: "NMR_PROVIDER_FAILURE"
+  ProviderFailure: "NMR_PROVIDER_FAILURE",
+  /** Cancellation is distinct from failure: a superseded/aborted request, not a crash. */
+  PredictionCancelled: "NMR_PREDICTION_CANCELLED"
 } as const;
 
 export type NmrErrorCode = (typeof NmrErrorCodes)[keyof typeof NmrErrorCodes];

@@ -1,4 +1,5 @@
 import type {
+  NmrAtomReference,
   NmrNucleus,
   NmrPredictionRequest,
   NmrPredictionResult,
@@ -116,7 +117,13 @@ export class FixtureHosePredictor implements NmrPredictor {
         warnings.push(noFragmentMatchWarning("13C", environmentCode, members));
         continue;
       }
-      resonances.push(buildResonance("13C", environmentCode, shift, members, members.length, warnings));
+      // One ¹³C nucleus per carbon; sum of equivalentCount == equivalentNuclei (members.length).
+      const atomRefs: NmrAtomReference[] = members.map((member) => ({
+        sourceAtomIndex: member.atomIndex,
+        element: member.element,
+        equivalentCount: 1
+      }));
+      resonances.push(buildResonance("13C", environmentCode, shift, members, atomRefs, members.length, warnings));
     }
     return unmatched;
   }
@@ -157,7 +164,14 @@ export class FixtureHosePredictor implements NmrPredictor {
         warnings.push(noFragmentMatchWarning("1H", environmentCode, members));
         continue;
       }
-      resonances.push(buildResonance("1H", environmentCode, shift, members, protonCount, warnings));
+      // ¹H refs describe the protons (element "H"); each host contributes its own proton count, so
+      // the per-ref equivalentCount sums to equivalentNuclei (total protons).
+      const atomRefs: NmrAtomReference[] = members.map((member) => ({
+        sourceAtomIndex: member.atomIndex,
+        element: "H",
+        equivalentCount: member.protonCount
+      }));
+      resonances.push(buildResonance("1H", environmentCode, shift, members, atomRefs, protonCount, warnings));
     }
     return unmatched;
   }
@@ -168,6 +182,7 @@ function buildResonance(
   environmentCode: string,
   shift: FixtureShift,
   members: readonly AtomEnvironment[],
+  atomRefs: readonly NmrAtomReference[],
   equivalentNuclei: number,
   warnings: NmrPredictionWarning[]
 ): NmrResonance {
@@ -186,11 +201,7 @@ function buildResonance(
     id: `${nucleus === "13C" ? "c" : "h"}-${firstAtomIndex}`,
     nucleus,
     deltaPpm: shift.shiftPpm,
-    atomRefs: members.map((member) => ({
-      sourceAtomIndex: member.atomIndex,
-      element: member.element,
-      equivalentCount: members.length
-    })),
+    atomRefs,
     equivalentNuclei,
     uncertainty: { standardDeviationPpm: shift.standardDeviationPpm },
     evidence: {
@@ -244,6 +255,7 @@ function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw new NmrError(NmrErrorCodes.ProviderFailure, "Prediction was cancelled.");
+    // Cancellation is not a provider failure — callers (M8) drop it silently rather than surfacing it.
+    throw new NmrError(NmrErrorCodes.PredictionCancelled, "Prediction was cancelled.");
   }
 }

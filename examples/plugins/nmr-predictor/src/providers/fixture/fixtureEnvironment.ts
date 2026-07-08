@@ -1,31 +1,21 @@
-import type * as OCL from "openchemlib";
+import * as OCL from "openchemlib";
 
 /**
  * Deterministic atom-centered environment code via a breadth-first walk to `spheres` depth. Each
- * sphere contributes a sorted, bracketed list of newly-reached atom descriptors
- * (`<bondOrder><element><aromatic?><hCount>`). This is a *fixture signature*, not a validated HOSE
- * code — which is exactly why the prediction method is labeled "fixture-fragment". Two atoms with the
- * same code are treated as equivalent, so symmetric atoms collapse into one resonance.
+ * sphere contributes a sorted, bracketed list of neighbor descriptors
+ * (`<bondOrder><element><aromatic?><hCount>`). Ring-closure bonds (back to an already-seen atom that
+ * is not the walk parent) are included, so a ring atom is distinguished from an equivalent-looking
+ * chain atom. This is a *fixture signature*, not a validated HOSE code — hence the "fixture-fragment"
+ * method label. Two atoms with the same code are treated as equivalent (symmetric atoms collapse
+ * into one resonance).
  */
-
-const ELEMENT_SYMBOLS: Readonly<Record<number, string>> = {
-  1: "H",
-  6: "C",
-  7: "N",
-  8: "O",
-  9: "F",
-  15: "P",
-  16: "S",
-  17: "Cl",
-  35: "Br",
-  53: "I"
-};
 
 /** Heteroatoms whose attached hydrogens are treated as labile/exchangeable for ¹H prediction. */
 const LABILE_HYDROGEN_HOSTS = new Set([7, 8, 16]); // N, O, S
 
+/** Atomic number → element symbol, via OpenChemLib's full periodic-table label table. */
 export function elementSymbol(atomicNumber: number): string {
-  return ELEMENT_SYMBOLS[atomicNumber] ?? `Z${atomicNumber}`;
+  return OCL.Molecule.cAtomLabel[atomicNumber] ?? `Z${atomicNumber}`;
 }
 
 export interface AtomEnvironment {
@@ -45,27 +35,30 @@ export function describeAtomEnvironment(molecule: OCL.Molecule, atom: number, sp
   const hydrogenCount = molecule.getAllHydrogens(atom);
 
   const visited = new Set<number>([atom]);
-  let frontier = [atom];
+  let frontier: { atom: number; parent: number }[] = [{ atom, parent: -1 }];
   const sphereStrings: string[] = [];
 
   for (let depth = 1; depth <= spheres; depth += 1) {
-    const nextFrontier: number[] = [];
+    const nextFrontier: { atom: number; parent: number }[] = [];
     const descriptors: string[] = [];
-    for (const current of frontier) {
+    for (const { atom: current, parent } of frontier) {
       const connections = molecule.getConnAtoms(current);
       for (let index = 0; index < connections; index += 1) {
         const neighbor = molecule.getConnAtom(current, index);
-        if (visited.has(neighbor)) {
+        if (neighbor === parent) {
+          // Don't walk back up the tree; but ring-closure bonds to other visited atoms below DO count.
           continue;
         }
-        visited.add(neighbor);
-        nextFrontier.push(neighbor);
         const bond = molecule.getConnBond(current, index);
         const order = molecule.isAromaticBond(bond) ? "~" : String(molecule.getConnBondOrder(current, index));
         const neighborAromatic = molecule.isAromaticAtom(neighbor) ? "a" : "";
         descriptors.push(
           `${order}${elementSymbol(molecule.getAtomicNo(neighbor))}${neighborAromatic}h${molecule.getAllHydrogens(neighbor)}`
         );
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          nextFrontier.push({ atom: neighbor, parent: current });
+        }
       }
     }
     descriptors.sort();
