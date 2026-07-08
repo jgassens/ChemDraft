@@ -100,8 +100,26 @@ export function createToolsetWindowStatePayload(
   return { toolsetId, open, focused, position };
 }
 
-export async function openToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {
-  return invokeToolsetWindow("open_toolset_window", toolsetId);
+/** Title/size for a palette window, supplied from the TS toolbar registry so Rust doesn't read the
+ *  manifest. Size is a starting point; PaletteWindow resizes to fit content. */
+export interface ToolsetWindowGeometry {
+  title: string;
+  width: number;
+  height: number;
+  minWidth?: number;
+  minHeight?: number;
+}
+
+export async function openToolsetWindow(
+  toolsetId: string,
+  geometry?: ToolsetWindowGeometry
+): Promise<ToolsetWindowState> {
+  if (!isDesktopRuntime()) {
+    return createToolsetWindowStatePayload(toolsetId, false);
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowState>("open_toolset_window", { toolsetId, window: geometry });
 }
 
 export async function closeToolsetWindow(toolsetId: string): Promise<ToolsetWindowState> {

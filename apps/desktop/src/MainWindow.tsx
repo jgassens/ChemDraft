@@ -485,7 +485,8 @@ import {
   listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
   togglePreferencesWindow,
-  toggleToolsetWindow,
+  closeToolsetWindow,
+  type ToolsetWindowGeometry,
   type ToolsetArtPaintTarget
 } from "./window-manager";
 import {
@@ -2634,6 +2635,22 @@ export function MainWindow({
     });
   }, []);
 
+  // Window title/size for a palette, from the TS registry, so Rust doesn't read the manifest to open it.
+  const toolsetWindowGeometry = useCallback((toolsetId: string): ToolsetWindowGeometry | undefined => {
+    const toolset = toolsetRegistry.get(toolsetId);
+    if (!toolset) {
+      return undefined;
+    }
+    const size = toolset.preferredWindowSize;
+    return {
+      title: toolset.title,
+      width: size?.width ?? 96,
+      height: size?.height ?? 420,
+      minWidth: size?.minWidth,
+      minHeight: size?.minHeight
+    };
+  }, [toolsetRegistry]);
+
   const toggleToolset = useCallback(async (toolsetId: string) => {
     if (!toolsetRegistry.get(toolsetId)) {
       setStatus(`Unknown toolbar ${toolsetId}`);
@@ -2641,7 +2658,11 @@ export function MainWindow({
     }
 
     if (effectiveNativePalette) {
-      const nextState = await toggleToolsetWindow(toolsetId);
+      // JS owns visibility, so JS decides open vs close (and passes the window geometry on open)
+      // rather than routing through Rust's toggle command.
+      const nextState = visibleToolsetIdsRef.current.has(toolsetId)
+        ? await closeToolsetWindow(toolsetId)
+        : await openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId));
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
       // Deliberately closing the Rings toolbar clears the ring selection. The pruning effect no
       // longer does this off `ringInspectorOpen`, so a spurious async "closed" window event can
@@ -2659,7 +2680,7 @@ export function MainWindow({
       clearNativeRingParts();
     }
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
-  }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry]);
+  }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
 
   // JS owns toolset visibility, so it also owns the native menu's checkmarks. Mirror the
   // current visible set onto every toggle item after each change (no-op in the browser).
@@ -7772,7 +7793,7 @@ export function MainWindow({
     let cancelled = false;
     void reconcileNativePaletteWindows({
       listToolsetWindowStates,
-      openToolsetWindow,
+      openToolsetWindow: (toolsetId) => openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId)),
       isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
       desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
       defaultVisibleToolsetIds: () => [...createDefaultVisibleToolsetIds(toolsetRegistry)],
@@ -7797,7 +7818,7 @@ export function MainWindow({
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, toolsetRegistry]);
+  }, [effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the

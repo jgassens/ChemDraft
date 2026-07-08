@@ -529,12 +529,28 @@ fn create_main_window<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
+/// Window geometry supplied by JS (which owns the toolbar registry) when opening a palette, so Rust
+/// doesn't have to read the manifest for the title/size. `title` is the toolset title; Rust adds the
+/// "ChemDraft " prefix. The initial size is a starting point — PaletteWindow resizes to fit content.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsetWindowGeometry {
+    title: String,
+    width: f64,
+    height: f64,
+    #[allow(dead_code)]
+    min_width: Option<f64>,
+    #[allow(dead_code)]
+    min_height: Option<f64>,
+}
+
 #[tauri::command]
 fn open_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
+    window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
-    ensure_toolset_window(&app, &toolset_id)?;
+    ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
     persist_toolset_visibility(&app, &toolset_id, true)?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
@@ -569,7 +585,7 @@ fn focus_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
-    ensure_toolset_window(&app, &toolset_id)?;
+    ensure_toolset_window(&app, &toolset_id, None)?;
 
     toolset_state(&app, &toolset_id)
 }
@@ -585,7 +601,7 @@ fn toggle_toolset_window(
         }
     }
 
-    open_toolset_window(app, toolset_id)
+    open_toolset_window(app, toolset_id, None)
 }
 
 #[tauri::command]
@@ -1092,7 +1108,7 @@ fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Resul
 
 #[tauri::command]
 fn open_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    open_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
+    open_toolset_window(app, DEFAULT_TOOLSET_ID.to_string(), None)
 }
 
 #[tauri::command]
@@ -2113,10 +2129,8 @@ fn schedule_customized_toolset_menu<R: Runtime>(
 fn ensure_toolset_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
+    geometry: Option<&ToolsetWindowGeometry>,
 ) -> Result<(), String> {
-    let Some(toolset) = toolset_definition(app, toolset_id) else {
-        return Err(format!("Toolset {toolset_id} is not registered."));
-    };
     let label = toolset_window_label(toolset_id);
 
     if let Some(window) = app.get_webview_window(&label) {
@@ -2125,15 +2139,26 @@ fn ensure_toolset_window<R: Runtime>(
         return Ok(());
     }
 
-    let size = toolset
-        .preferred_window_size
-        .clone()
-        .unwrap_or(ToolsetWindowSize {
-            width: 96.0,
-            height: 420.0,
-            min_width: Some(96.0),
-            min_height: Some(240.0),
-        });
+    // Prefer the JS-provided title/size; fall back to the manifest until it is removed (Phase 4b).
+    let (title, width, height) = match geometry {
+        Some(geometry) => (
+            format!("ChemDraft {}", geometry.title),
+            geometry.width,
+            geometry.height,
+        ),
+        None => {
+            let Some(toolset) = toolset_definition(app, toolset_id) else {
+                return Err(format!("Toolset {toolset_id} is not registered."));
+            };
+            let size = toolset.preferred_window_size.clone().unwrap_or(ToolsetWindowSize {
+                width: 96.0,
+                height: 420.0,
+                min_width: Some(96.0),
+                min_height: Some(240.0),
+            });
+            (format!("ChemDraft {}", toolset.title), size.width, size.height)
+        }
+    };
     let position = preferred_toolset_position(app, toolset_id);
 
     let window = WebviewWindowBuilder::new(
@@ -2141,8 +2166,8 @@ fn ensure_toolset_window<R: Runtime>(
         label,
         WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
     )
-    .title(format!("ChemDraft {}", toolset.title))
-    .inner_size(size.width, size.height)
+    .title(title)
+    .inner_size(width, height)
     // The window is sized to its actual palette content by the JS side (PaletteWindow
     // applySize). The manifest's min_width/min_height were tuned for the old docked/web
     // layout and are far too large for a content-fit floating window (e.g. Art's 760),
