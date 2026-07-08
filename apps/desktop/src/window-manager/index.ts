@@ -348,6 +348,27 @@ export async function saveToolsetLayoutState(state: unknown): Promise<void> {
   await invoke("save_toolset_customization_state", { state }).catch(() => undefined);
 }
 
+/** One row of the native Toolbars menu, pushed from the TS toolbar registry. */
+export interface ToolbarMenuEntry {
+  toolsetId: string;
+  title: string;
+  visible: boolean;
+}
+
+/**
+ * Push the Toolbars menu model to Rust so the native menu's toolset rows come from the TS registry
+ * rather than Rust's manifest copy. Use for structure (which toolsets exist / their titles); the
+ * per-toggle checkmark still flips in place via setMenuChecked.
+ */
+export async function setToolbarsMenu(entries: readonly ToolbarMenuEntry[]): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_toolbars_menu", { entries }).catch(() => undefined);
+}
+
 /**
  * Pushes a native menu item's check state from JS. The main window owns toolset
  * visibility now, so it mirrors each toggle's checkmark here after every change.

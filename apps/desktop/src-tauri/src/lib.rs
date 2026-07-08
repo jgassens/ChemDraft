@@ -401,6 +401,7 @@ pub fn run() {
             list_toolset_window_states,
             load_toolset_customization_state,
             save_toolset_customization_state,
+            set_toolbars_menu,
             focus_main_document_window,
             set_menu_checked,
             plugin_storage_read,
@@ -648,6 +649,22 @@ fn save_toolset_customization_state(
 
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     fs::write(path, contents).map_err(|error| error.to_string())
+}
+
+/// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
+/// Rust rebuilds the app menu with that Toolbars submenu — so the menu's source of truth is the TS
+/// toolbar registry, not Rust's manifest copy. Runs on the main thread; per-toggle checkmark flips
+/// still go through set_menu_checked (in place, no rebuild).
+#[tauri::command]
+fn set_toolbars_menu(app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>) -> Result<(), String> {
+    app.clone()
+        .run_on_main_thread(move || {
+            match create_app_menu_for_toolsets(&app, &entries).and_then(|menu| app.set_menu(menu).map(|_| ())) {
+                Ok(()) => {}
+                Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
+            }
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1778,18 +1795,18 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let manifest = toolset_manifest();
     let layout_state = ToolsetLayoutState::default();
-    create_app_menu_for_toolsets(app, &manifest, &layout_state)
+    let entries = toolbar_menu_entries_from_manifest(&manifest, &layout_state);
+    create_app_menu_for_toolsets(app, &entries)
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    toolset_manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
+    entries: &[ToolbarMenuEntry],
 ) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
-    let view_menu = create_view_menu(app, toolset_manifest, layout_state)?;
+    let view_menu = create_view_menu(app, entries)?;
 
     Menu::with_items(
         app,
@@ -1990,8 +2007,7 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
 
 fn create_view_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    toolset_manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
+    entries: &[ToolbarMenuEntry],
 ) -> tauri::Result<Submenu<R>> {
     let preferences = MenuItem::with_id(
         app,
@@ -2026,7 +2042,7 @@ fn create_view_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
-    let toolbars_menu = create_toolbars_menu(app, toolset_manifest, layout_state)?;
+    let toolbars_menu = create_toolbars_menu(app, entries)?;
     let customize_toolbars = MenuItem::with_id(
         app,
         "view.customizeToolbars",
@@ -2053,20 +2069,45 @@ fn create_view_menu<R: Runtime>(
     )
 }
 
+/// One Toolbars-menu row. JS is the source of truth for the toolset set + titles now and pushes
+/// these via `set_toolbars_menu`; the startup menu derives the same shape from the manifest until
+/// the manifest is removed from Rust.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarMenuEntry {
+    toolset_id: String,
+    title: String,
+    visible: bool,
+}
+
+fn toolbar_menu_entries_from_manifest(
+    manifest: &ToolsetManifest,
+    layout_state: &ToolsetLayoutState,
+) -> Vec<ToolbarMenuEntry> {
+    manifest
+        .toolsets
+        .iter()
+        .map(|toolset| ToolbarMenuEntry {
+            toolset_id: toolset.id.clone(),
+            title: toolset.title.clone(),
+            visible: toolset_visible(toolset, layout_state),
+        })
+        .collect()
+}
+
 fn create_toolbars_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    toolset_manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
+    entries: &[ToolbarMenuEntry],
 ) -> tauri::Result<Submenu<R>> {
     let menu = Submenu::new(app, "Toolbars", true)?;
 
-    for toolset in &toolset_manifest.toolsets {
+    for entry in entries {
         let item = CheckMenuItem::with_id(
             app,
-            toolset_toggle_command_id(&toolset.id),
-            &toolset.title,
+            toolset_toggle_command_id(&entry.toolset_id),
+            &entry.title,
             true,
-            toolset_visible(&toolset, &layout_state),
+            entry.visible,
             None::<&str>,
         )?;
         menu.append(&item)?;
@@ -2083,7 +2124,8 @@ fn schedule_customized_toolset_menu<R: Runtime>(
     let app = app.clone();
     app.clone()
         .run_on_main_thread(move || {
-            let menu = create_app_menu_for_toolsets(&app, &toolset_manifest, &layout_state);
+            let entries = toolbar_menu_entries_from_manifest(&toolset_manifest, &layout_state);
+            let menu = create_app_menu_for_toolsets(&app, &entries);
             match menu.and_then(|menu| app.set_menu(menu).map(|_| ())) {
                 Ok(()) => {}
                 Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),

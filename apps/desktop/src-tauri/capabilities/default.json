@@ -26,6 +26,7 @@
     "allow-list-toolset-window-states",
     "allow-load-toolset-customization-state",
     "allow-save-toolset-customization-state",
+    "allow-set-toolbars-menu",
     "allow-focus-main-document-window",
     "allow-set-menu-checked",
     "allow-plugin-storage-read",

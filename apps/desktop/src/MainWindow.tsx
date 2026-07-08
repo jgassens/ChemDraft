@@ -480,6 +480,7 @@ import {
   listenForToolsetWindowStates,
   openToolsetWindow,
   setMenuChecked,
+  setToolbarsMenu,
   PREFERENCES_WINDOW_KIND,
   listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
@@ -2668,6 +2669,22 @@ export function MainWindow({
       void setMenuChecked(createToolsetToggleCommandId(toolset.id), visibleToolsetIds.has(toolset.id));
     }
   }, [toolsetRegistry, visibleToolsetIds]);
+
+  // Push the Toolbars menu STRUCTURE (which toolsets + their titles) to the native menu whenever the
+  // toolset set changes, so the menu comes from the TS registry rather than Rust's manifest copy —
+  // this is what lets Rust stop parsing the manifest. Rebuilding resets checkmarks, so include the
+  // current visibility; between rebuilds the checkmark effect above keeps them in sync in place.
+  useEffect(() => {
+    if (!nativePalette) {
+      return;
+    }
+    const entries = toolsetRegistry.listToolsets().map((toolset) => ({
+      toolsetId: toolset.id,
+      title: toolset.title,
+      visible: visibleToolsetIdsRef.current.has(toolset.id)
+    }));
+    void setToolbarsMenu(entries).catch(() => undefined);
+  }, [toolsetRegistry, nativePalette]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
