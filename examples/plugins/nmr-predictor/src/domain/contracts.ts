@@ -88,6 +88,10 @@ export interface NmrPredictionBackend {
   version: string;
   dataVersion?: string;
   method: string;
+  /** Reference-database provenance, surfaced in the panel (see ADR-0014). */
+  license?: string;
+  attribution?: string;
+  source?: string;
 }
 
 export interface NmrPredictionResult {

@@ -12,11 +12,19 @@
 
 ## Prediction data
 
-The shift values in `providers/fixture/fixtureDatabase.ts` are **ChemDraft-owned
-synthetic fixtures** authored for this repository. They are not derived from, and
-must not be represented as, any experimental or third-party NMR dataset. No
-external fragment database is bundled in this milestone.
+Two providers ship, with separately-tracked data:
 
-When a real fragment database is later introduced (M10+), the provider
-implementation and the prediction data must be tracked as separate assets with
-separate provenance and licenses, and this file updated accordingly.
+- **Fixture provider** (`providers/fixture/fixtureDatabase.ts`) — **ChemDraft-owned
+  synthetic fixtures**, not derived from any experimental dataset. Used for
+  deterministic tests / offline fallback.
+- **OCL-native provider** (default) — its reference database
+  `providers/ocl/nmrshiftdb2.database.json` is a **derivative database compiled
+  from NMRShiftDB2** experimental assignments, under the **nmrshiftdb2 Database
+  License** (ODbL-derived; commercial use permitted, share-alike, attribution).
+  Provenance, license, and attribution: `providers/ocl/NMRSHIFTDB2_LICENSE.md`.
+  It contains aggregated statistics only, no structures. Rebuild via
+  `scripts/build-database.ts`.
+
+The plugin **code** is MIT/open-source; the compiled database is a **separate
+data asset** with its own license, surfaced at runtime in the panel's
+"Reference database" section (see ADR-0014).

@@ -1,7 +1,14 @@
 import type { NmrPredictor } from "../domain/contracts";
 import { NmrErrorCodes, isNmrError } from "../domain/errors";
 import { FixtureHosePredictor } from "../providers/fixture/FixtureHosePredictor";
+import { OclHosePredictor } from "../providers/ocl/OclHosePredictor";
 import type { NmrWorkerErrorPayload, NmrWorkerRequest, NmrWorkerResponse } from "./protocol";
+
+/** Default provider selection by id: the experimental OCL-native predictor unless the fixture is
+ *  explicitly requested (kept for deterministic tests). */
+function defaultPredictor(providerId: string): NmrPredictor {
+  return providerId === "chemdraft.fixture-hose" ? new FixtureHosePredictor() : new OclHosePredictor();
+}
 
 export interface NmrWorkerHandlerDeps {
   /** Provider factory, keyed by the initialize message's providerId. Defaults to the fixture provider. */
@@ -18,7 +25,7 @@ export function createNmrWorkerHandler(
   post: (response: NmrWorkerResponse) => void,
   deps: NmrWorkerHandlerDeps = {}
 ): (message: NmrWorkerRequest) => void {
-  const createPredictor = deps.createPredictor ?? (() => new FixtureHosePredictor());
+  const createPredictor = deps.createPredictor ?? defaultPredictor;
   let predictor: NmrPredictor | undefined;
   let activeController: AbortController | undefined;
   let activeRequestId: string | undefined;

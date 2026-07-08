@@ -47,6 +47,21 @@ export {
   type ProtonEnvironment
 } from "./providers/fixture/fixtureEnvironment";
 
+export { OclHosePredictor, type OclHosePredictorOptions } from "./providers/ocl/OclHosePredictor";
+export { buildNmrDatabase, type BuildDatabaseOptions } from "./providers/ocl/buildDatabase";
+export {
+  atomEnvironmentCodes,
+  environmentKey,
+  sphereDepthOf,
+  MAX_SPHERES
+} from "./providers/ocl/environmentCode";
+export {
+  summarizeShifts,
+  type CompiledNmrDatabase,
+  type NmrDatabaseEntry,
+  type NmrDatabaseProvenance
+} from "./providers/ocl/localDatabase";
+
 export {
   nmrPredictorManifest,
   nmrPredictorPluginId,

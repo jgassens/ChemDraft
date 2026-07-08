@@ -62,7 +62,10 @@ const NmrPredictionBackendSchema = z.object({
   id: z.string(),
   version: z.string(),
   dataVersion: z.string().optional(),
-  method: z.string()
+  method: z.string(),
+  license: z.string().optional(),
+  attribution: z.string().optional(),
+  source: z.string().optional()
 });
 
 const NmrPredictionWarningSchema = z.object({

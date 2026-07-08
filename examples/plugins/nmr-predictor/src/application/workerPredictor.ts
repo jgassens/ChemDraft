@@ -13,7 +13,7 @@ import type { NmrWorkerClient } from "../worker/nmrWorkerClient";
  */
 export function createWorkerBackedPredictor(
   client: NmrWorkerClient,
-  providerId = "chemdraft.fixture-hose"
+  providerId = "chemdraft.ocl-hose"
 ): NmrPredictor {
   let capabilities: Promise<NmrPredictorCapabilities> | undefined;
   return {

@@ -8,8 +8,8 @@ import {
 import {
   createNmrRegistration,
   createWorkerBackedPredictor,
-  FixtureHosePredictor,
   nmrPredictorManifest,
+  OclHosePredictor,
   type NmrPredictor
 } from "@chemdraft/plugin-nmr-predictor";
 import type { PluginCommandHandler, PluginPanelReport } from "@chemdraft/plugin-api";
@@ -36,7 +36,7 @@ export function registerBundledPlugins(runtime: DesktopPluginRuntime): void {
   const workerClient = getNmrWorkerClient();
   const predictor: NmrPredictor = workerClient
     ? createWorkerBackedPredictor(workerClient)
-    : new FixtureHosePredictor();
+    : new OclHosePredictor();
   const nmr = createNmrRegistration({ predictor });
   runtime.host.registerPlugin(nmrPredictorManifest, {
     commandHandlers: nmr.commandHandlers,

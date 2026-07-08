@@ -7,6 +7,9 @@ import { renderStickSpectrumSvg } from "./stickSpectrumSvg";
 const PANEL_TITLE = "NMR Prediction";
 const SYNTHETIC_DISCLAIMER =
   "Synthetic fixture values — a deterministic architecture demo, not experimental reference data.";
+const EXPERIMENTAL_NOTE =
+  "Statistical predictions from aggregated experimental reference shifts. Confidence is low where the " +
+  "reference population is small or only a shallow environment matched — see notices above.";
 
 function nucleusLabel(nucleus: NmrNucleus): string {
   return nucleus === "13C" ? "¹³C" : "¹H";
@@ -72,17 +75,22 @@ export function composePredictionReport(
     structureSection(source)
   ];
 
+  const experimental = result.backend.method === "hose-fragment";
+
   if (result.resonances.length > 0) {
     sections.push({
       kind: "svg",
       title: "Stick spectrum",
       svg: renderStickSpectrumSvg(result),
-      caption: "Predicted shifts — synthetic fixture data, not experimental."
+      caption: experimental
+        ? "Predicted from aggregated experimental reference shifts."
+        : "Predicted shifts — synthetic fixture data, not experimental."
     });
     sections.push(resonanceTable(result));
   }
   sections.push(...noticeSections(result));
-  sections.push({ kind: "text", body: SYNTHETIC_DISCLAIMER });
+  sections.push(...databaseSection(result));
+  sections.push({ kind: "text", body: experimental ? EXPERIMENTAL_NOTE : SYNTHETIC_DISCLAIMER });
 
   return {
     title: PANEL_TITLE,
@@ -123,6 +131,30 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
 function formatUncertainty(resonance: NmrResonance): string {
   const sigma = resonance.uncertainty?.standardDeviationPpm;
   return sigma === undefined ? "—" : sigma.toFixed(2);
+}
+
+/** Database provenance (ADR-0014): name, version, license, source + attribution, when the backend
+ *  carries it (the OCL-native predictor does; the fixture does not). */
+function databaseSection(result: NmrPredictionResult): PluginPanelSection[] {
+  const { backend } = result;
+  if (!backend.license && !backend.source) {
+    return [];
+  }
+  const rows = [
+    { label: "Database", value: backend.dataVersion ?? backend.id },
+    { label: "Version", value: backend.version }
+  ];
+  if (backend.license) {
+    rows.push({ label: "License", value: backend.license });
+  }
+  if (backend.source) {
+    rows.push({ label: "Source", value: backend.source });
+  }
+  const sections: PluginPanelSection[] = [{ kind: "keyValue", title: "Reference database", rows }];
+  if (backend.attribution) {
+    sections.push({ kind: "text", body: backend.attribution });
+  }
+  return sections;
 }
 
 function noticeSections(result: NmrPredictionResult): PluginPanelSection[] {

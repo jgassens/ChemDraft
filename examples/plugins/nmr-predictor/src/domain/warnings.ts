@@ -9,6 +9,7 @@ export const NmrWarningCodes = {
   IsotopeNotSupported: "NMR_ISOTOPE_NOT_SUPPORTED",
   LabileProtonOmitted: "NMR_LABILE_PROTON_OMITTED",
   NoFragmentMatch: "NMR_NO_FRAGMENT_MATCH",
+  LowHoseSphereMatch: "NMR_LOW_HOSE_SPHERE_MATCH",
   SmallReferencePopulation: "NMR_SMALL_REFERENCE_POPULATION",
   PartialPrediction: "NMR_PARTIAL_PREDICTION"
 } as const;
