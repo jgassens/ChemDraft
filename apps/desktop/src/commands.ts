@@ -1788,9 +1788,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     icon: "palette",
     source: "core",
     category: "view",
-    enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Open the future toolbar customization editor"
+    enabled: true,
+    description: "Open the toolbar customization editor"
   },
   {
     id: "view.toolset.resetLayout",

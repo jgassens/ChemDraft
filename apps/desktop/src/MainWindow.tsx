@@ -80,6 +80,8 @@ import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
+import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
 import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
@@ -1681,6 +1683,7 @@ export function MainWindow({
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
+  const [customizeToolbarsOpen, setCustomizeToolbarsOpen] = useState(false);
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [devBrowserMenuOpenId, setDevBrowserMenuOpenId] = useState<string | null>(null);
@@ -7056,6 +7059,11 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (commandId === "view.customizeToolbars") {
+      setCustomizeToolbarsOpen(true);
+      return;
+    }
+
     if (commandId === moleculeInspectorTemplateImportCommandId) {
       await importMoleculeInspectorTemplate();
       return;
@@ -7094,6 +7102,26 @@ export function MainWindow({
   ]);
 
   invokeCommandRef.current = invoke;
+
+  // Apply the Customize Toolbars dialog's edited layout: feed it to the catalog (which rebuilds the
+  // registry + fires onDidChange -> setToolsetRegistry), re-derive visibility, and persist. Mirrors
+  // the startup load path so the palettes + menu refresh live.
+  const applyCustomizeToolbars = useCallback((next: ToolsetLayoutState) => {
+    toolbarCatalog.setLayoutState(next);
+    const nextRegistry = toolbarCatalog.registry();
+    setVisibleToolsetIds(createDefaultVisibleToolsetIds(nextRegistry));
+    try {
+      layoutStateRef.current = parseToolsetLayoutState(next);
+    } catch {
+      layoutStateRef.current = undefined;
+    }
+    resolvedToolsetIdsRef.current = new Set(nextRegistry.listToolsets().map((toolset) => toolset.id));
+    layoutSaveEnabledRef.current = true;
+    layoutSaveChainRef.current = layoutSaveChainRef.current
+      .then(() => saveToolsetLayoutState(next))
+      .catch(() => undefined);
+    setCustomizeToolbarsOpen(false);
+  }, [toolbarCatalog]);
 
   useEffect(() => {
     if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
@@ -13956,6 +13984,14 @@ export function MainWindow({
           onAccept={acceptPluginProposal}
           onReject={rejectPluginProposal}
         />
+        {customizeToolbarsOpen ? (
+          <CustomizeToolbarsDialog
+            baseToolsets={toolbarCatalog.baseToolsets()}
+            layoutState={layoutStateRef.current ?? emptyLayoutState()}
+            onApply={applyCustomizeToolbars}
+            onClose={() => setCustomizeToolbarsOpen(false)}
+          />
+        ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>

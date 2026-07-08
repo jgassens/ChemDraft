@@ -78,6 +78,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setOrientation.landscape",
     "view.toggleRulers",
     "view.toggleCrosshairs",
+    "view.customizeToolbars",
     "layout.group",
     "layout.ungroup",
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
@@ -2019,7 +2020,7 @@ fn create_view_menu<R: Runtime>(
         app,
         "view.customizeToolbars",
         "Customize Toolbars...",
-        false,
+        true,
         None::<&str>,
     )?;
 

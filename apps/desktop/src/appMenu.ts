@@ -225,7 +225,8 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         separator(),
         command("view.toggle3dDebugger", "3D Debugger"),
         separator(),
-        toolbarsSubmenu
+        toolbarsSubmenu,
+        command("view.customizeToolbars", "Customize Toolbars…")
       ]
     },
     {

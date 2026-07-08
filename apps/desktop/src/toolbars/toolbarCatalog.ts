@@ -15,6 +15,9 @@ import type { ToolbarAssetName } from "../toolbarAssets";
  */
 export interface ToolbarCatalog {
   registry(): DesktopToolsetRegistry;
+  /** Core ∪ plugin toolsets BEFORE the user's layout state — what the Customize editor re-applies its
+   *  draft on top of. */
+  baseToolsets(): readonly DesktopToolsetDefinition[];
   setPluginToolsets(toolsets: readonly DesktopToolsetDefinition[]): void;
   setLayoutState(state: unknown): void;
   warnings(): readonly string[];
@@ -52,6 +55,7 @@ export function createToolbarCatalog(): ToolbarCatalog {
 
   return {
     registry: () => snapshot,
+    baseToolsets: () => [...desktopToolsets, ...pluginToolsets],
     setPluginToolsets(toolsets) {
       pluginToolsets = [...toolsets];
       rebuild();
