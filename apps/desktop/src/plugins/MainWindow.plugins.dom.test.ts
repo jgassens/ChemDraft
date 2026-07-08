@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
 import { molscribeOcsrCommandId, molscribeOcsrManifest } from "@chemdraft/molscribe-ocsr-plugin";
+import {
+  nmrPredictCarbonCommandId,
+  nmrPredictProtonCommandId,
+  nmrPredictorManifest
+} from "@chemdraft/plugin-nmr-predictor";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -125,5 +130,35 @@ describe("MainWindow bundled plugin integration", () => {
     expect(diagnostics).not.toBeNull();
     expect(container.querySelector(`[data-plugin-id="${molscribeOcsrManifest.id}"]`)).not.toBeNull();
     expect(container.textContent).toContain(molscribeOcsrManifest.name);
+  });
+
+  it("registers the NMR predictor: both nucleus commands in Analyze, listed in diagnostics", async () => {
+    installDomMocks();
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(
+        createElement(MainWindow, { initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: false })
+      );
+      await Promise.resolve();
+    });
+
+    await click(container.querySelector('button[data-menu-section="analyze"]')!);
+    const carbon = container.querySelector<HTMLButtonElement>(`button[data-command-id="${nmrPredictCarbonCommandId}"]`);
+    const proton = container.querySelector<HTMLButtonElement>(`button[data-command-id="${nmrPredictProtonCommandId}"]`);
+    expect(carbon?.textContent).toContain("¹³C");
+    expect(proton?.textContent).toContain("¹H");
+
+    // Invoking with nothing selected must not crash or open a panel (it returns ok:false).
+    await click(carbon!);
+    expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
+
+    // The plugin is registered and listed in the bundled-plugin diagnostics.
+    await click(container.querySelector('button[data-menu-section="analyze"]')!);
+    await click(container.querySelector<HTMLButtonElement>('button[data-command-id="plugin.runtime.showDiagnostics"]')!);
+    expect(container.querySelector(`[data-plugin-id="${nmrPredictorManifest.id}"]`)).not.toBeNull();
+    expect(container.textContent).toContain(nmrPredictorManifest.name);
   });
 });

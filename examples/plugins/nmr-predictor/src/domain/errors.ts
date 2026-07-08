@@ -10,7 +10,11 @@ export const NmrErrorCodes = {
   ProviderInitializationFailed: "NMR_PROVIDER_INITIALIZATION_FAILED",
   ProviderFailure: "NMR_PROVIDER_FAILURE",
   /** Cancellation is distinct from failure: a superseded/aborted request, not a crash. */
-  PredictionCancelled: "NMR_PREDICTION_CANCELLED"
+  PredictionCancelled: "NMR_PREDICTION_CANCELLED",
+  // Command-level preconditions (M8), surfaced to the user by the desktop.
+  PermissionUnavailable: "NMR_PERMISSION_UNAVAILABLE",
+  NoSelectedStructure: "NMR_NO_SELECTED_STRUCTURE",
+  MultipleSelectedStructures: "NMR_MULTIPLE_SELECTED_STRUCTURES"
 } as const;
 
 export type NmrErrorCode = (typeof NmrErrorCodes)[keyof typeof NmrErrorCodes];

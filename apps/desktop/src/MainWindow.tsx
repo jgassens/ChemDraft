@@ -476,7 +476,7 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel } from "./appMenu";
-import { usePluginRuntime } from "./plugins/usePluginRuntime";
+import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot } from "./plugins/selectionSnapshot";
@@ -6798,10 +6798,18 @@ export function MainWindow({
     }
 
     if (pluginCommandExists(commandId)) {
-      void invokePluginCommand(commandId).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setStatus(`Plugin command failed: ${message}`);
-      });
+      void invokePluginCommand(commandId)
+        .then((result) => {
+          // ADR-0010: a command may fail by throwing OR by returning { ok: false } — surface both.
+          const failure = pluginCommandFailure(result);
+          if (failure) {
+            setStatus(`Plugin command failed: ${failure}`);
+          }
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setStatus(`Plugin command failed: ${message}`);
+        });
       return;
     }
 

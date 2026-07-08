@@ -8,6 +8,18 @@ import { buildPluginMenuItems } from "./pluginMenuModel";
 import { registerBundledPlugins } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 
+/**
+ * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
+ * PluginCommandResult (ADR-0010). Returns undefined for success/void results.
+ */
+export function pluginCommandFailure(result: unknown): string | undefined {
+  if (result !== null && typeof result === "object" && "ok" in result && (result as { ok: unknown }).ok === false) {
+    const error = (result as { error?: { message?: string; code?: string } }).error;
+    return error?.message ?? error?.code ?? "unknown error";
+  }
+  return undefined;
+}
+
 export interface PluginRuntimeProviders {
   getActiveDocument: () => ChemDraftDocument | undefined;
   getSelection: () => PluginSelectionSnapshot;
@@ -20,7 +32,7 @@ export interface PluginRuntimeView {
   openPanel: OpenPluginPanel | undefined;
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
-  invokePluginCommand: (commandId: string) => Promise<void>;
+  invokePluginCommand: (commandId: string) => Promise<unknown>;
   closePanel: () => void;
 }
 
@@ -65,9 +77,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
 
   const isPluginCommand = useCallback((commandId: string) => runtime.host.commands.has(commandId), [runtime]);
   const invokePluginCommand = useCallback(
-    async (commandId: string) => {
-      await runtime.host.invokeCommand(commandId);
-    },
+    (commandId: string): Promise<unknown> => runtime.host.invokeCommand(commandId),
     [runtime]
   );
   const closePanel = useCallback(() => runtime.panels.closePanel(), [runtime]);

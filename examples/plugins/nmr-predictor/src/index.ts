@@ -60,3 +60,24 @@ export {
 export type { NmrWorkerRequest, NmrWorkerResponse, NmrWorkerErrorPayload } from "./worker/protocol";
 export { createNmrWorkerHandler, type NmrWorkerHandlerDeps } from "./worker/nmrWorkerCore";
 export { createNmrWorkerClient, type NmrWorkerClient } from "./worker/nmrWorkerClient";
+
+export {
+  predictSelectedStructure,
+  type NmrCommandServices,
+  type NmrCommandConfig
+} from "./application/predictSelectedStructure";
+export { determineAnalysisStatus, type NmrAnalysisStatus } from "./application/determineAnalysisStatus";
+export {
+  mapSelectedMoleculeToPredictionInput,
+  toCommandError,
+  isCancellationError,
+  type CommandError,
+  type MappedStructure
+} from "./application/mapSelection";
+export { createWorkerBackedPredictor } from "./application/workerPredictor";
+export { createNmrCommandHandlers } from "./register";
+export {
+  composePendingReport,
+  composePredictionReport,
+  composeErrorReport
+} from "./report/composePredictionReport";

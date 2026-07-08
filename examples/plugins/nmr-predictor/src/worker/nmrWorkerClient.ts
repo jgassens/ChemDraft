@@ -35,10 +35,13 @@ type Pending = PendingInitialize | PendingPredict;
  * Main-thread client for the NMR worker, in the conformer client's style: a lazily-created worker
  * (spawned on first use, so a rarely-used feature costs nothing at startup), request-id correlation,
  * and cancellation that does not rely on the provider alone — a result whose request is no longer
- * active is dropped. Pass a `workerFactory` in tests; without one and without `Worker` support, calls
- * reject cleanly rather than throwing at construction.
+ * active is dropped. Returns `null` where `Worker` is unavailable (jsdom, exotic webviews) and no
+ * factory is supplied, so callers can fall back to an in-thread predictor.
  */
-export function createNmrWorkerClient(workerFactory?: () => Worker): NmrWorkerClient {
+export function createNmrWorkerClient(workerFactory?: () => Worker): NmrWorkerClient | null {
+  if (!workerFactory && typeof Worker === "undefined") {
+    return null;
+  }
   let worker: Worker | null = null;
   let nextId = 1;
   const pending = new Map<string, Pending>();

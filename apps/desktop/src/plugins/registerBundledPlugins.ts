@@ -5,6 +5,13 @@ import {
   molscribeOcsrPanelId,
   runMolScribeOcsrMockRecognition
 } from "@chemdraft/molscribe-ocsr-plugin";
+import {
+  createNmrCommandHandlers,
+  createWorkerBackedPredictor,
+  FixtureHosePredictor,
+  nmrPredictorManifest,
+  type NmrPredictor
+} from "@chemdraft/plugin-nmr-predictor";
 import type { PluginCommandHandler, PluginPanelReport } from "@chemdraft/plugin-api";
 
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
@@ -22,10 +29,17 @@ export function registerBundledPlugins(runtime: DesktopPluginRuntime): void {
     }
   });
 
-  // Create the NMR worker client now (lazy: the worker spawns on first prediction, wired in M8).
-  // This also anchors the NMR plugin's Web Worker in the desktop's Vite build graph — see
-  // nmrWorkerClient.ts and the M7 bundling spike.
-  getNmrWorkerClient();
+  // Register the NMR predictor plugin. Its command handlers drive the deterministic fixture provider
+  // through the worker client (the worker spawns lazily on the first prediction) and write records to
+  // the generic analysis store. Where Worker is unavailable (exotic webviews, tests), fall back to
+  // running the deterministic fixture provider in-thread so the feature still works.
+  const workerClient = getNmrWorkerClient();
+  const predictor: NmrPredictor = workerClient
+    ? createWorkerBackedPredictor(workerClient)
+    : new FixtureHosePredictor();
+  runtime.host.registerPlugin(nmrPredictorManifest, {
+    commandHandlers: createNmrCommandHandlers({ predictor })
+  });
 }
 
 /**

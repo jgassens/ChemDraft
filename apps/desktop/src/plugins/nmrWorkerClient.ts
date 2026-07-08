@@ -7,10 +7,13 @@ import { createNmrWorkerClient, type NmrWorkerClient } from "@chemdraft/plugin-n
  * plugin's `new Worker(new URL("./nmrWorker.ts", import.meta.url))`, anchors that worker in the
  * desktop's Vite build graph — the bundling question this milestone had to answer).
  */
-let client: NmrWorkerClient | undefined;
+let client: NmrWorkerClient | null | undefined;
 
-export function getNmrWorkerClient(): NmrWorkerClient {
-  client ??= createNmrWorkerClient();
+/** Returns the worker client, or `null` where `Worker` is unavailable (callers fall back in-thread). */
+export function getNmrWorkerClient(): NmrWorkerClient | null {
+  if (client === undefined) {
+    client = createNmrWorkerClient();
+  }
   return client;
 }
 

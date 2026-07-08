@@ -40,6 +40,14 @@ class FakeWorker {
   }
 }
 
+function makeClient(fake: FakeWorker) {
+  const client = createNmrWorkerClient(() => fake as unknown as Worker);
+  if (!client) {
+    throw new Error("expected a client when a worker factory is provided");
+  }
+  return client;
+}
+
 const SAMPLE_RESULT: NmrPredictionResult = {
   schemaVersion: "1",
   sourceFingerprint: "fp",
@@ -73,7 +81,7 @@ function predictRequest() {
 describe("createNmrWorkerClient", () => {
   it("initializes and resolves capabilities from the worker's ready message", async () => {
     const fake = new FakeWorker();
-    const client = createNmrWorkerClient(() => fake as unknown as Worker);
+    const client = makeClient(fake);
     const promise = client.initialize("chemdraft.fixture-hose");
     fake.emit({ type: "ready", requestId: fake.lastId(), capabilities: CAPABILITIES });
     await expect(promise).resolves.toMatchObject({ id: "chemdraft.fixture-hose" });
@@ -81,7 +89,7 @@ describe("createNmrWorkerClient", () => {
 
   it("resolves a predict on the worker's result and ignores unknown request ids", async () => {
     const fake = new FakeWorker();
-    const client = createNmrWorkerClient(() => fake as unknown as Worker);
+    const client = makeClient(fake);
     const promise = client.predict(predictRequest(), "fp");
     fake.emit({ type: "result", requestId: "bogus", result: SAMPLE_RESULT }); // ignored, no throw
     fake.emit({ type: "result", requestId: fake.lastId(), result: SAMPLE_RESULT });
@@ -90,7 +98,7 @@ describe("createNmrWorkerClient", () => {
 
   it("rejects a predict on a worker error, mapping the code", async () => {
     const fake = new FakeWorker();
-    const client = createNmrWorkerClient(() => fake as unknown as Worker);
+    const client = makeClient(fake);
     const promise = client.predict(predictRequest(), "fp");
     fake.emit({ type: "error", requestId: fake.lastId(), error: { code: "NMR_STRUCTURE_PARSE_FAILED", message: "bad" } });
     const error = await promise.catch((caught: unknown) => caught);
@@ -99,7 +107,7 @@ describe("createNmrWorkerClient", () => {
 
   it("cancels the in-flight request when the abort signal fires", async () => {
     const fake = new FakeWorker();
-    const client = createNmrWorkerClient(() => fake as unknown as Worker);
+    const client = makeClient(fake);
     const controller = new AbortController();
     const promise = client.predict(predictRequest(), "fp", controller.signal);
     controller.abort();
@@ -110,7 +118,7 @@ describe("createNmrWorkerClient", () => {
 
   it("drops a superseded predict's late result as cancellation", async () => {
     const fake = new FakeWorker();
-    const client = createNmrWorkerClient(() => fake as unknown as Worker);
+    const client = makeClient(fake);
     const first = client.predict(predictRequest(), "fp");
     const firstId = fake.lastId();
     const second = client.predict(predictRequest(), "fp");
@@ -126,15 +134,14 @@ describe("createNmrWorkerClient", () => {
 
   it("rejects outstanding work when disposed and terminates the worker", async () => {
     const fake = new FakeWorker();
-    const client = createNmrWorkerClient(() => fake as unknown as Worker);
+    const client = makeClient(fake);
     const promise = client.predict(predictRequest(), "fp");
     client.dispose();
     await expect(promise).rejects.toThrow();
     expect(fake.terminated).toBe(true);
   });
 
-  it("rejects cleanly when no Worker is available and no factory is provided", async () => {
-    const client = createNmrWorkerClient(); // node test env: typeof Worker === "undefined"
-    await expect(client.initialize("x")).rejects.toThrow();
+  it("returns null when no Worker is available and no factory is provided", () => {
+    expect(createNmrWorkerClient()).toBeNull(); // node test env: typeof Worker === "undefined"
   });
 });
