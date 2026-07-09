@@ -94,14 +94,30 @@ export function paletteCommandGroupsFromItemGroups(
   );
 }
 
+/** A palette group model that keeps the group id (which `getToolsetItemGroups` drops). Customize
+ *  mode needs the id because item-reorder edits are per-group. */
+export interface ToolbarPaletteGroupModel {
+  id?: string;
+  items: ToolbarPaletteItemModel[];
+}
+
+export function getToolsetPaletteGroups(
+  toolsetId: string,
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry,
+  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
+): ToolbarPaletteGroupModel[] {
+  return normalizeToolsetDefinition(registry.require(toolsetId)).groups.map((group) => ({
+    id: group.id,
+    items: group.items.map((item) => toolsetItemToPaletteItem(item, commandOverrides))
+  }));
+}
+
 export function getToolsetItemGroups(
   toolsetId: string,
   registry: DesktopToolsetRegistry = desktopToolsetRegistry,
   commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
 ): ToolbarPaletteItemModel[][] {
-  return normalizeToolsetDefinition(registry.require(toolsetId)).groups.map((group) =>
-    group.items.map((item) => toolsetItemToPaletteItem(item, commandOverrides))
-  );
+  return getToolsetPaletteGroups(toolsetId, registry, commandOverrides).map((group) => group.items);
 }
 
 /**

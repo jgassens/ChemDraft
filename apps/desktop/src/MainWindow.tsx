@@ -83,6 +83,8 @@ import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
 import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
 import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
+import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
+import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
 import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
@@ -485,6 +487,7 @@ import {
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
   saveToolsetLayoutState,
+  sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
   openToolsetWindow,
@@ -505,6 +508,7 @@ import {
   getToolbarsMenuModel,
   getToolsetCommandSpecs,
   getToolsetItemGroups,
+  getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry
@@ -13710,6 +13714,36 @@ export function MainWindow({
       {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
+            const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides);
+            const paletteElement = (
+              <ToolPalette
+                itemGroups={paletteGroups.map((group) => group.items)}
+                gridLayout={toolset.gridLayout}
+                activeTool={activeTool}
+                currentDistributeMode={distributeMode}
+                mode="floating"
+                orientation={toolset.gridLayout?.orientation ?? "vertical"}
+                title={toolset.title}
+                onInvoke={invoke}
+                customize={customizingThis ? { groupIds: paletteGroups.map((group) => group.id) } : undefined}
+                widgetState={{
+                  currentObjectColor: currentToolbarObjectColor,
+                  currentArtStyle,
+                  currentArtStyleTarget: activeArtPaintTarget,
+                  currentMoleculeInspector,
+                  currentTextStyle: currentToolbarTextStyle,
+                  currentTextScript: currentToolbarTextScript,
+                  onArtStylePreview: previewObjectStyleCommand,
+                  onArtStyleCommit: commitObjectStylePreview,
+                  onArtStyleCancel: cancelObjectStylePreview,
+                  onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
+                  onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
+                  onMoleculeInspectorCancel: cancelMoleculeInspectorPreview,
+                  onInvoke: invoke
+                }}
+              />
+            );
             return (
               <section
                 className="web-floating-palette"
@@ -13743,31 +13777,21 @@ export function MainWindow({
                 >
                   <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
                 </div>
-                <ToolPalette
-                  itemGroups={getToolsetItemGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
-                  gridLayout={toolset.gridLayout}
-                  activeTool={activeTool}
-                  currentDistributeMode={distributeMode}
-                  mode="floating"
-                  orientation={toolset.gridLayout?.orientation ?? "vertical"}
-                  title={toolset.title}
-                  onInvoke={invoke}
-                  widgetState={{
-                    currentObjectColor: currentToolbarObjectColor,
-                    currentArtStyle,
-                    currentArtStyleTarget: activeArtPaintTarget,
-                    currentMoleculeInspector,
-                    currentTextStyle: currentToolbarTextStyle,
-                    currentTextScript: currentToolbarTextScript,
-                    onArtStylePreview: previewObjectStyleCommand,
-                    onArtStyleCommit: commitObjectStylePreview,
-                    onArtStyleCancel: cancelObjectStylePreview,
-                    onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
-                    onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
-                    onMoleculeInspectorCancel: cancelMoleculeInspectorPreview,
-                    onInvoke: invoke
-                  }}
-                />
+                {customizingThis ? (
+                  <ToolbarCustomizeController
+                    toolsetId={toolset.id}
+                    groups={paletteGroups}
+                    onEdit={(edit) => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit }).catch(() => undefined)}
+                  >
+                    {paletteElement}
+                    <CustomizeBar
+                      onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
+                      onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+                    />
+                  </ToolbarCustomizeController>
+                ) : (
+                  paletteElement
+                )}
               </section>
             );
           })

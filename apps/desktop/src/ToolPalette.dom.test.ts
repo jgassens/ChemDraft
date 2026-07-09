@@ -19,7 +19,8 @@ import {
   moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
-import { getToolsetCommandGroups, getToolsetItemGroups, type ToolbarPaletteItemModel } from "./toolsets";
+import { getToolsetCommandGroups, getToolsetItemGroups, type ToolbarPaletteGroupModel, type ToolbarPaletteItemModel } from "./toolsets";
+import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -1031,5 +1032,69 @@ describe("ToolPalette spacer items", () => {
     expect(spacerSlot?.querySelector("button")).toBeNull();
     // The command button still renders normally alongside it.
     expect(container.querySelector('button[data-command-id="tool.bond"]')).not.toBeNull();
+  });
+});
+
+describe("ToolPalette customize mode", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const button = (id: string): ToolbarPaletteItemModel => ({
+    id,
+    kind: "button",
+    label: id,
+    primary: { type: "command", command: { id, title: id, icon: "palette", source: "core", category: "tool" } as CommandSpec },
+    submenu: null,
+    tooltip: { title: id },
+    layout: { colSpan: 1, rowSpan: 1 }
+  });
+
+  it("renders sortable slots (no invoking buttons, no drag grip) and marks the palette customizing", () => {
+    const itemGroups: ToolbarPaletteItemModel[][] = [[button("tool.a"), button("tool.b")]];
+    const groups: ToolbarPaletteGroupModel[] = [{ id: "core.main.selection", items: itemGroups[0] }];
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(
+        createElement(ToolbarCustomizeController, {
+          toolsetId: "core.main",
+          groups,
+          onEdit: vi.fn(),
+          children: createElement(ToolPalette, {
+            itemGroups,
+            gridLayout: { orientation: "horizontal", rows: 2 },
+            orientation: "horizontal",
+            mode: "floating",
+            onInvoke,
+            customize: { groupIds: ["core.main.selection"] }
+          })
+        })
+      );
+    });
+
+    expect(container.querySelector(".tool-palette.customizing")).not.toBeNull();
+    expect(container.querySelector(".palette-content-drag-grip")).toBeNull();
+    const slots = container.querySelectorAll(".customize-slot[data-toolbar-item-id]");
+    expect(slots.length).toBe(2);
+    // A customize slot is not an invoking button.
+    const slot = container.querySelector<HTMLElement>('.customize-slot[data-toolbar-item-id="tool.a"]');
+    expect(slot?.getAttribute("data-palette-control")).toBe("true");
+    act(() => {
+      slot?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      slot?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
   });
 });

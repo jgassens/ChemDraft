@@ -10,11 +10,13 @@ import {
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
+import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
   computePaletteGridSize,
-  getToolsetItemGroups,
+  getToolsetPaletteGroups,
   paletteCommandGroupsFromItemGroups,
   type DesktopToolsetRegistry
 } from "./toolsets";
@@ -29,13 +31,16 @@ import {
   listenForPalettePointer,
   listenForPalettePointerLeave,
   listenForToolsetActiveTool,
+  listenForToolsetCustomizeMode,
   listenForToolsetLayoutState,
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
+  requestToolsetCustomizeMode,
   requestToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
+  sendToolsetLayoutEdit,
   setToolsetPopoverContent,
   sendPaletteCommand,
   sendPaletteCommandCancel,
@@ -86,7 +91,9 @@ export function PaletteWindow({
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
-  const itemGroups = useMemo(() => getToolsetItemGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
+  // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them.
+  const paletteGroups = useMemo(() => getToolsetPaletteGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
+  const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   // Derive command groups from the already-normalized itemGroups instead of normalizing the toolset a second time.
   const groups = useMemo(() => paletteCommandGroupsFromItemGroups(itemGroups), [itemGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
@@ -94,6 +101,15 @@ export function PaletteWindow({
     () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }),
     []
   );
+
+  // In-place customize mode (Main palette only). MainWindow broadcasts the flag; we mirror it and
+  // suppress the drag-fighting feeds (pointer-feed hover synthesis, tooltips, popover-dismiss, shell
+  // window-drag) while it's on. The ref lets the always-subscribed feed effects read it live.
+  const [customizeActive, setCustomizeActive] = useState(false);
+  const customizeThisPalette = customizeActive && toolset.id === DEFAULT_TOOLSET_ID;
+  const customizeThisPaletteRef = useRef(false);
+  customizeThisPaletteRef.current = customizeThisPalette;
+  const customizeGroupIds = useMemo(() => paletteGroups.map((group) => group.id), [paletteGroups]);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
@@ -156,6 +172,31 @@ export function PaletteWindow({
       unlisten?.();
     };
   }, []);
+
+  // Follow the customize-mode flag for THIS toolset; request the current state once subscribed so a
+  // palette that opened mid-mode picks it up (same request/response shape as layout state).
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetCustomizeMode((payload) => {
+      if (active && payload.toolsetId === toolset.id) {
+        setCustomizeActive(payload.active);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+        void requestToolsetCustomizeMode().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [toolset.id]);
 
   useEffect(() => {
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
@@ -290,6 +331,12 @@ export function PaletteWindow({
       lastElement = null;
     };
     const handleMove = (x: number, y: number) => {
+      // No synthetic hover during customize mode — a button-less pointerover mid-drag confuses
+      // dnd-kit's hit-testing and re-arms tooltip timers.
+      if (customizeThisPaletteRef.current) {
+        handleLeave();
+        return;
+      }
       const element = document.elementFromPoint(x, y);
       if (element === lastElement) {
         return;
@@ -329,6 +376,10 @@ export function PaletteWindow({
   // hidden in palette windows: this content-fit window would clip it.
   useEffect(() => {
     const handleTooltip = (event: Event) => {
+      if (customizeThisPaletteRef.current) {
+        void hidePaletteFloatingTooltip().catch(() => undefined);
+        return;
+      }
       const detail = (event as CustomEvent<PaletteTooltipDomDetail>).detail;
       if (!detail) {
         return;
@@ -451,6 +502,9 @@ export function PaletteWindow({
   // window, so its own clicks never reach this listener.
   useEffect(() => {
     const handlePointerDown = (event: globalThis.PointerEvent) => {
+      if (customizeThisPaletteRef.current) {
+        return;
+      }
       const target = event.target;
       if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button")) {
         return;
@@ -468,7 +522,7 @@ export function PaletteWindow({
   };
 
   const startDragFromPaletteSurface = (event: PointerEvent<HTMLElement>) => {
-    if (event.button !== 0) {
+    if (event.button !== 0 || customizeThisPaletteRef.current) {
       return;
     }
 
@@ -482,7 +536,7 @@ export function PaletteWindow({
   };
 
   const startMouseDragFromPaletteSurface = (event: ReactMouseEvent<HTMLElement>) => {
-    if (event.button !== 0) {
+    if (event.button !== 0 || customizeThisPaletteRef.current) {
       return;
     }
 
@@ -627,6 +681,38 @@ export function PaletteWindow({
     };
   });
 
+  const paletteElement = (
+    <ToolPalette
+      groups={groups}
+      itemGroups={itemGroups}
+      gridLayout={toolset.gridLayout}
+      activeTool={activeTool}
+      mode="floating"
+      orientation={toolset.gridLayout?.orientation ?? "vertical"}
+      title={toolset.title}
+      onRequestFlyout={openFlyoutPopover}
+      onInvoke={invokeCommand}
+      customize={customizeThisPalette ? { groupIds: customizeGroupIds } : undefined}
+      widgetState={{
+        currentObjectColor: currentTextStyle.color,
+        currentArtStyle,
+        currentArtStyleTarget,
+        currentMoleculeInspector,
+        currentTextStyle,
+        currentTextScript,
+        onColorPickerOpenChange: setColorPickerOpen,
+        onRequestColorPopover: openArtColorPopover,
+        onArtStylePreview: previewCommand,
+        onArtStyleCommit: commitPreviewCommand,
+        onArtStyleCancel: cancelPreviewCommand,
+        onMoleculeInspectorPreview: previewCommand,
+        onMoleculeInspectorCommit: commitPreviewCommand,
+        onMoleculeInspectorCancel: cancelPreviewCommand,
+        onInvoke: invokeCommand
+      }}
+    />
+  );
+
   return (
     <main
       ref={shellRef}
@@ -666,34 +752,21 @@ export function PaletteWindow({
         </button>
         <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
       </div>
-      <ToolPalette
-        groups={groups}
-        itemGroups={itemGroups}
-        gridLayout={toolset.gridLayout}
-        activeTool={activeTool}
-        mode="floating"
-        orientation={toolset.gridLayout?.orientation ?? "vertical"}
-        title={toolset.title}
-        onRequestFlyout={openFlyoutPopover}
-        onInvoke={invokeCommand}
-        widgetState={{
-          currentObjectColor: currentTextStyle.color,
-          currentArtStyle,
-          currentArtStyleTarget,
-          currentMoleculeInspector,
-          currentTextStyle,
-          currentTextScript,
-          onColorPickerOpenChange: setColorPickerOpen,
-          onRequestColorPopover: openArtColorPopover,
-          onArtStylePreview: previewCommand,
-          onArtStyleCommit: commitPreviewCommand,
-          onArtStyleCancel: cancelPreviewCommand,
-          onMoleculeInspectorPreview: previewCommand,
-          onMoleculeInspectorCommit: commitPreviewCommand,
-          onMoleculeInspectorCancel: cancelPreviewCommand,
-          onInvoke: invokeCommand
-        }}
-      />
+      {customizeThisPalette ? (
+        <ToolbarCustomizeController
+          toolsetId={toolset.id}
+          groups={paletteGroups}
+          onEdit={(edit) => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit }).catch(() => undefined)}
+        >
+          {paletteElement}
+          <CustomizeBar
+            onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
+            onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+          />
+        </ToolbarCustomizeController>
+      ) : (
+        paletteElement
+      )}
     </main>
   );
 }

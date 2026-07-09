@@ -12,6 +12,8 @@ import {
   type ReactNode
 } from "react";
 import iro from "@jaames/iro";
+import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
@@ -204,7 +206,8 @@ export function ToolPalette({
   currentDistributeMode = "centers",
   onRequestFlyout,
   onInvoke,
-  widgetState
+  widgetState,
+  customize
 }: {
   groups?: CommandSpec[][];
   itemGroups?: ToolbarPaletteItemModel[][];
@@ -219,6 +222,10 @@ export function ToolPalette({
   /** Live state + callbacks for the widget sections (style controls, inspectors), provided via
    *  context to the widgets declared as manifest `control` items. */
   widgetState?: ToolbarWidgetState;
+  /** When set, render in-place customize mode: each grid item becomes a dnd-kit sortable slot (no
+   *  invoke/flyout/tooltip handlers), grouped by these group ids (aligned with the item groups,
+   *  BEFORE the widget filter). A DndContext must wrap this component (ToolbarCustomizeController). */
+  customize?: { groupIds: readonly (string | undefined)[] };
 }) {
   const {
     visibleTooltipId,
@@ -249,28 +256,45 @@ export function ToolPalette({
   const gridStyle = toolPaletteGridStyle(gridLayout);
   // Widget items (manifest `control` items) don't render as grid slots — they drive the widget
   // sections below and can replace/hide the grid. Strip them from the grid content + sizing so a
-  // widget placeholder never shows as a disabled button.
-  const gridItemGroups = effectiveItemGroups
-    .map((group) => group.filter((item) => !isToolbarWidgetItem(item)))
-    .filter((group) => group.length > 0);
+  // widget placeholder never shows as a disabled button. Pair each group's id (from `customize`,
+  // aligned to the UNFILTERED groups) BEFORE filtering so per-group reorder edits address the right
+  // group even when a widget-only group drops out.
+  const gridGroups = effectiveItemGroups
+    .map((group, index) => ({
+      id: customize?.groupIds[index],
+      items: group.filter((item) => !isToolbarWidgetItem(item))
+    }))
+    .filter((group) => group.items.length > 0);
+  const gridItemGroups = gridGroups.map((group) => group.items);
   const presentWidgets = toolbarWidgetIdsFromItemGroups(effectiveItemGroups)
     .filter((widgetId): widgetId is keyof typeof TOOLBAR_WIDGET_REGISTRY => widgetId in TOOLBAR_WIDGET_REGISTRY)
     .map((widgetId) => ({ widgetId, ...TOOLBAR_WIDGET_REGISTRY[widgetId] }));
   const hidesGrid = presentWidgets.some((widget) => widget.gridMode === "hide-grid");
   const replacesGrid = presentWidgets.some((widget) => widget.gridMode === "replace-grid");
 
-  const toolGroupElements = gridItemGroups.map((group, groupIndex) => (
-    <div
-      className={["tool-group", gridStyle ? "tool-group-grid" : ""].filter(Boolean).join(" ")}
-      key={group.map((tool) => tool.id).join("-")}
-      style={gridStyle}
-    >
-      {group.map((tool, toolIndex) => {
-        const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
-        return renderPaletteItem(tool, tooltipId, tool.id);
-      })}
-    </div>
-  ));
+  const toolGroupElements = gridGroups.map((group, groupIndex) => {
+    const content = group.items.map((tool, toolIndex) => {
+      const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+      return customize
+        ? <CustomizeSortableSlot key={tool.id} item={tool} groupId={group.id} />
+        : renderPaletteItem(tool, tooltipId, tool.id);
+    });
+    return (
+      <div
+        className={["tool-group", gridStyle ? "tool-group-grid" : ""].filter(Boolean).join(" ")}
+        key={group.id ?? group.items.map((tool) => tool.id).join("-")}
+        style={gridStyle}
+      >
+        {customize ? (
+          <SortableContext items={group.items.map((tool) => tool.id)} strategy={rectSortingStrategy}>
+            {content}
+          </SortableContext>
+        ) : (
+          content
+        )}
+      </div>
+    );
+  });
 
   const artCommandColumnElements = replacesGrid
     ? artToolbarCommandColumns(gridItemGroups).map((column, columnIndex) => {
@@ -300,13 +324,15 @@ export function ToolPalette({
           "tool-palette",
           mode,
           orientation,
+          customize ? "customizing" : "",
           ...presentWidgets.map((widget) => widget.className)
         ].filter(Boolean).join(" ")}
         aria-label={title}
         data-tool-palette-orientation={orientation}
         data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
       >
-        {mode === "floating" ? (
+        {mode === "floating" && !customize ? (
+          // The OS-drag grip would hijack a customize drag, so it's removed in customize mode.
           <span
             className="palette-content-drag-grip"
             aria-hidden="true"
@@ -326,6 +352,50 @@ export function ToolPalette({
         ))}
       </aside>
     </ToolbarWidgetStateContext.Provider>
+  );
+}
+
+/**
+ * A grid item rendered as a dnd-kit sortable in customize mode. Deliberately a SEPARATE component
+ * from ToolbarPaletteItem: none of that component's interactive handlers (invoke-on-pointerdown,
+ * setPointerCapture, 420ms hold-to-flyout timers, tooltips) are mounted here, which is what keeps a
+ * drag from firing the tool's command. Carries `data-palette-control` so PaletteWindow's shell-drag
+ * and popover-dismiss `closest()` checks skip it (else pressing it would move the whole window).
+ */
+function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemModel; groupId?: string }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.id,
+    data: { groupId, kind: item.kind }
+  });
+  const isBlank = item.kind === "spacer" || item.kind === "separator";
+  const style: CSSProperties = {
+    ...toolbarItemGridStyle(item.layout),
+    transform: CSS.Translate.toString(transform),
+    transition,
+    touchAction: "none",
+    opacity: isDragging ? 0.4 : undefined
+  };
+  return (
+    <span
+      ref={setNodeRef}
+      className={["toolbar-item-grid-slot", "customize-slot", isBlank ? "customize-slot-blank" : ""].filter(Boolean).join(" ")}
+      style={style}
+      data-toolbar-item-id={item.id}
+      data-palette-control="true"
+      data-toolbar-layout-col-span={item.layout.colSpan}
+      data-toolbar-layout-row-span={item.layout.rowSpan}
+      title={item.label}
+      {...attributes}
+      {...listeners}
+    >
+      {isBlank ? (
+        <span className="customize-slot-placeholder" aria-hidden="true" />
+      ) : (
+        <span className="icon-button customize-slot-icon" aria-label={item.label}>
+          <ToolbarItemIcon item={item} command={item.primary.type === "command" ? item.primary.command : undefined} />
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -4093,7 +4163,7 @@ function ToolbarItemTooltip({
   );
 }
 
-function ToolbarItemIcon({
+export function ToolbarItemIcon({
   item,
   command
 }: {
