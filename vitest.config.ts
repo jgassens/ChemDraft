@@ -5,7 +5,8 @@ const workspacePackage = (path: string) => fileURLToPath(new URL(path, import.me
 
 export default defineConfig({
   define: {
-    __BUILD_STAMP__: JSON.stringify("test")
+    __BUILD_STAMP__: JSON.stringify("test"),
+    __WORKTREE_LABEL__: JSON.stringify("test")
   },
   resolve: {
     alias: {

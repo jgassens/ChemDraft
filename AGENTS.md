@@ -115,6 +115,30 @@ If the app feels like the wrong build, check active Vite ports and process worki
 before editing source. A different checkout listening on `5173` while this worktree uses
 `5174` is a stale-session problem, not proof that this branch failed to build.
 
+### Every build is labeled by its worktree (do not remove)
+
+Several ChemDraft worktrees are checked out at once, and every one builds an app literally named
+"ChemDraft" — so nothing on screen tells them apart unless we label it. Every build therefore
+carries its worktree/branch label in three places, all driven by `CHEMDRAFT_WORKTREE_LABEL`
+(exported automatically by `run-app` as `<dir> [<branch>]`):
+
+- the **window title** — `ChemDraft — <dir> [<branch>]`. `index.html` ships
+  `<title>ChemDraft</title>` and WKWebView syncs the document title onto the NSWindow title, so the
+  value that WINS is set from JS: MainWindow sets `window.document.title` from the `__WORKTREE_LABEL__`
+  vite define. Rust also sets it (`main_window_title()` via `option_env!`, applied in
+  `ensure_main_window_visible`; `build.rs` re-emits the env as `rustc-env`), which covers the brief
+  moment before the webview loads — but the webview is the one that sticks;
+- the **on-screen build stamp** — the worktree label leads the stamp (vite.config.ts `buildStamp()`
+  reads the env, or derives it from git as a fallback);
+- a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.
+
+This is automatic — there is nothing to remember and nothing to type. Do NOT strip the label out of
+`run-app`, `vite.config.ts`, `apps/desktop/src-tauri/src/lib.rs` (`main_window_title`), or
+`build.rs`; it is the thing that stops "wrong build launched" confusion. When you report launch
+verification, state the label you saw (title bar or build stamp) and confirm it matches this
+worktree. If a worktree's build still shows a bare "ChemDraft" with no label, that mechanism is
+missing there and must be ported in from the branch that has it.
+
 ### 5.26 Do not duplicate layout-engine rendering math
 
 Native-molecule rendering math — bond line/segment geometry, double/triple-bond gap and

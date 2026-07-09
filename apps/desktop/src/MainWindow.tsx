@@ -8231,6 +8231,14 @@ export function MainWindow({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [customizeMainToolbarActive, setCustomizeMode]);
 
+  // Label the main window/tab by its worktree so builds from different checkouts are distinguishable
+  // in the title bar, cmd-tab, and Mission Control. index.html ships `<title>ChemDraft</title>` and
+  // WKWebView syncs the document title to the NSWindow title — so setting it here (not Rust
+  // set_title, which the webview overrides once the page loads) is what actually wins. See AGENTS.md.
+  useEffect(() => {
+    window.document.title = __WORKTREE_LABEL__ ? `ChemDraft — ${__WORKTREE_LABEL__}` : "ChemDraft";
+  }, []);
+
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
