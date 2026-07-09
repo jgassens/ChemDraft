@@ -2,7 +2,6 @@ import {
   Fragment,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -515,50 +514,80 @@ function usePaletteTooltipState() {
   };
 }
 
+/** Tooltip visibility announcement from a shell to its hosting window. In the native palette
+ *  windows the in-DOM tooltip span is hidden (a content-fit window clips anything outside it), and
+ *  PaletteWindow relays these events into the shared floating tooltip window instead. A DOM event
+ *  keeps ToolPalette runtime-agnostic — no desktop imports in the shared component. */
+export const PALETTE_TOOLTIP_DOM_EVENT = "chemdraft:palette-tooltip";
+
+export interface PaletteTooltipDomDetail {
+  visible: boolean;
+  title?: string;
+  description?: string;
+  shortcut?: string;
+  anchor?: { left: number; top: number; right: number; bottom: number };
+}
+
+/** Pull the structured tooltip parts back out of the (hidden) in-DOM span. The span holds the
+ *  title as plain text/an unclassed span plus optional description/shortcut sub-spans AND a
+ *  visually-hidden flat copy for screen readers — flattening the whole thing with textContent
+ *  would concatenate all of them into garbage. */
+function extractTooltipParts(tooltip: Element): { title: string; description?: string; shortcut?: string } {
+  const description = tooltip.querySelector(".tool-tooltip-description")?.textContent ?? undefined;
+  const shortcut = tooltip.querySelector(".tool-tooltip-shortcut")?.textContent ?? undefined;
+  let title = "";
+  for (const node of Array.from(tooltip.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      title += node.textContent ?? "";
+    } else if (node instanceof Element && node.tagName === "SPAN" && node.classList.length === 0) {
+      title += node.textContent ?? "";
+    }
+  }
+  return { title: title.trim(), description: description || undefined, shortcut: shortcut || undefined };
+}
+
 /**
- * Pin the visible tooltip to fixed viewport coordinates, clamped inside the window. The native
- * floating palettes are content-fit windows, so the default absolutely-positioned tooltip (7px
- * below its button) lands OUTSIDE the window for bottom-row/edge items and a webview cannot paint
- * past its window — it was silently clipped. Fixed + clamped keeps it visible in the tiny palette
- * window (overlapping neighbors briefly, which is fine for a transient pointer-events:none tip)
- * and is a no-op visually in the big in-window/browser case. Inline styles are cleared when hidden
- * so the CSS enter/exit transitions keep working.
+ * Announce this shell's tooltip to the hosting native palette window. The default in-DOM span is
+ * unusable there: the content-fit palette window clips anything positioned outside it (a webview
+ * cannot paint past its window), so the span is display:none in palette windows (App.css) and the
+ * visible tooltip is the shared floating tooltip window, which can overflow the palette freely —
+ * the same reason popovers/flyouts live in their own windows. Browser and in-window palettes keep
+ * the pure-CSS span; this hook is a no-op for them.
  */
-function useClampedTooltip(shellRef: { current: HTMLElement | null }, visible: boolean) {
-  useLayoutEffect(() => {
+function useNativeFloatingTooltip(shellRef: { current: HTMLElement | null }, visible: boolean) {
+  useEffect(() => {
+    if (!document.body.classList.contains("palette-window-body")) {
+      return;
+    }
     const shell = shellRef.current;
-    const tooltip = shell?.querySelector<HTMLElement>(".tool-tooltip");
-    if (!shell || !tooltip) {
+    if (!visible || !shell) {
       return;
     }
-    if (!visible) {
-      tooltip.style.position = "";
-      tooltip.style.left = "";
-      tooltip.style.top = "";
-      tooltip.style.right = "";
-      tooltip.style.bottom = "";
-      tooltip.style.transform = "";
+    const tooltip = shell.querySelector(".tool-tooltip");
+    if (!tooltip) {
       return;
     }
-    tooltip.style.position = "fixed";
-    tooltip.style.right = "auto";
-    tooltip.style.bottom = "auto";
-    tooltip.style.transform = "none";
-    const margin = 4;
-    const anchor = shell.getBoundingClientRect();
-    const width = tooltip.offsetWidth;
-    const height = tooltip.offsetHeight;
-    let left = anchor.left + anchor.width / 2 - width / 2;
-    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
-    let top = anchor.bottom + 6;
-    if (top + height > window.innerHeight - margin) {
-      top = anchor.top - height - 6;
+    const { title, description, shortcut } = extractTooltipParts(tooltip);
+    if (!title && !description) {
+      return;
     }
-    if (top < margin) {
-      top = Math.max(margin, window.innerHeight - height - margin);
-    }
-    tooltip.style.left = `${Math.round(left)}px`;
-    tooltip.style.top = `${Math.round(top)}px`;
+    const rect = shell.getBoundingClientRect();
+    window.dispatchEvent(
+      new CustomEvent<PaletteTooltipDomDetail>(PALETTE_TOOLTIP_DOM_EVENT, {
+        detail: {
+          visible: true,
+          title,
+          description,
+          shortcut,
+          anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+        }
+      })
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent<PaletteTooltipDomDetail>(PALETTE_TOOLTIP_DOM_EVENT, { detail: { visible: false } })
+      );
+    };
   }, [shellRef, visible]);
 }
 
@@ -3652,7 +3681,7 @@ function ToolbarPaletteItem({
   const primaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
-  useClampedTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
+  useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
   const pointerInvokedRef = useRef(false);
@@ -4276,7 +4305,7 @@ function DistributeCommandIconButton({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
-  useClampedTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
+  useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
   const activeState = active && !disabled;

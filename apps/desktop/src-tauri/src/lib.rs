@@ -318,6 +318,10 @@ pub fn run() {
             // start_palette_pointer_feed's doc for why the OS won't deliver it).
             start_palette_pointer_feed(app.clone());
 
+            if let Err(error) = build_toolset_tooltip_window(app) {
+                eprintln!("Could not build the ChemDraft tooltip window: {error}");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -333,6 +337,7 @@ pub fn run() {
             plugin_storage_write,
             open_plugin_panel_window,
             open_toolset_popover,
+            show_toolset_tooltip_window,
             close_toolset_popover,
             route_toolset_command,
             read_clipboard_payload,
@@ -819,6 +824,79 @@ fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<()
 
 fn toolset_popover_window_label(toolset_id: &str) -> String {
     format!("toolset-popover-{}", toolset_id.replace('.', "-"))
+}
+
+const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
+
+/// Order the (pre-built, hidden) tooltip window front. The tooltip webview invokes this after
+/// sizing + positioning itself: palettes and popovers become visible through this same
+/// NSWindow::orderFront path, whereas Tauri's JS `show()` did not reliably display the
+/// focusable(false) panel.
+#[tauri::command]
+fn show_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        if let Some(ns_window) = unsafe { ns_window_ptr.as_ref() } {
+            ns_window.orderFront(None);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.show().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Pre-build the single shared floating tooltip window, hidden. Palettes can't paint a tooltip
+/// outside their content-fit windows (same constraint that gives popovers their own window), so
+/// all of them share this one: a palette broadcasts text + anchor, the tooltip webview sizes and
+/// positions itself, shows, and hides again on the hide broadcast (see PaletteTooltipWindow).
+/// Built at startup so the first hover doesn't pay the cold-webview load. The `toolset-` label
+/// prefix gives it the palette capability set; it is NOT in the ToolsetWindowDirectory, so the
+/// pointer feed never treats it as a hoverable palette.
+fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if app
+        .get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL)
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        TOOLSET_TOOLTIP_WINDOW_LABEL,
+        WebviewUrl::App("/?window=toolsetTooltip".into()),
+    )
+    .title("ChemDraft tooltip")
+    // The JS side sizes this to the rendered text before every show.
+    .inner_size(120.0, 26.0)
+    .min_inner_size(16.0, 14.0)
+    .accept_first_mouse(false)
+    .focusable(false)
+    .resizable(false)
+    .decorations(false)
+    .skip_taskbar(true)
+    .visible(false)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_utility_window(&window, false)?;
+    // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
+    // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
+    // palette", hide itself, and flicker.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(ns_window_ptr) = window.ns_window() {
+            if let Some(ns_window) = unsafe { (ns_window_ptr as *mut NSWindow).as_ref() } {
+                ns_window.setIgnoresMouseEvents(true);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

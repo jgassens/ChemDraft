@@ -11,6 +11,7 @@ fn main() {
             "plugin_storage_write",
             "open_plugin_panel_window",
             "open_toolset_popover",
+            "show_toolset_tooltip_window",
             "close_toolset_popover",
             "route_toolset_command",
             "read_clipboard_payload",

@@ -30,6 +30,7 @@
     "allow-plugin-storage-write",
     "allow-open-plugin-panel-window",
     "allow-open-toolset-popover",
+    "allow-show-toolset-tooltip-window",
     "allow-close-toolset-popover",
     "core:window:allow-hide",
     "allow-route-toolset-command",

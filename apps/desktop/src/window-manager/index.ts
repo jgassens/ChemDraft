@@ -17,6 +17,9 @@ export const PALETTE_POINTER_EVENT = "chemdraft://palette-pointer";
 export const PALETTE_POINTER_LEAVE_EVENT = "chemdraft://palette-pointer-leave";
 export const TOOLSET_LAYOUT_STATE_EVENT = "chemdraft://toolset-layout-state";
 export const TOOLSET_LAYOUT_STATE_REQUEST_EVENT = "chemdraft://toolset-layout-state-request";
+export const PALETTE_TOOLTIP_SHOW_EVENT = "chemdraft://palette-tooltip-show";
+export const PALETTE_TOOLTIP_HIDE_EVENT = "chemdraft://palette-tooltip-hide";
+export const TOOLSET_TOOLTIP_WINDOW_KIND = "toolsetTooltip";
 export const DEFAULT_TOOLSET_ID = "core.main";
 
 export interface ToolsetWindowPosition {
@@ -644,6 +647,58 @@ export async function listenForToolsetLayoutStateRequests(handler: () => void): 
   }
   const { listen } = await import("@tauri-apps/api/event");
   return listen(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
+}
+
+/** Content + anchor for the ONE shared floating tooltip window. Coordinates are global logical px
+ *  (top-left origin): the tooltip centers itself on `anchorCenterX` below the button (`belowY`),
+ *  flipping above (`aboveY` = the would-be bottom edge) when there's no room underneath. A palette
+ *  webview can't paint outside its content-fit window, so the tooltip gets its own window — the
+ *  same reason popovers/flyouts do. */
+export interface PaletteTooltipPayload {
+  title: string;
+  description?: string;
+  shortcut?: string;
+  anchorCenterX: number;
+  belowY: number;
+  aboveY: number;
+}
+
+export async function showPaletteFloatingTooltip(payload: PaletteTooltipPayload): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(PALETTE_TOOLTIP_SHOW_EVENT, payload);
+}
+
+export async function hidePaletteFloatingTooltip(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(PALETTE_TOOLTIP_HIDE_EVENT);
+}
+
+export async function listenForPaletteTooltipShow(
+  handler: (payload: PaletteTooltipPayload) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<PaletteTooltipPayload>(PALETTE_TOOLTIP_SHOW_EVENT, (event) => {
+    if (typeof event.payload?.title === "string" && typeof event.payload.anchorCenterX === "number") {
+      handler(event.payload);
+    }
+  });
+}
+
+export async function listenForPaletteTooltipHide(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(PALETTE_TOOLTIP_HIDE_EVENT, () => handler());
 }
 
 export async function listenForToolsetActiveToolRequests(handler: () => void): Promise<Unlisten> {

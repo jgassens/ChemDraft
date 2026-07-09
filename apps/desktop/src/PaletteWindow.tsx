@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
-import { ToolPalette, type ToolbarFlyoutRequest, type ToolbarPopoverAnchor } from "./ToolPalette";
+import {
+  PALETTE_TOOLTIP_DOM_EVENT,
+  ToolPalette,
+  type PaletteTooltipDomDetail,
+  type ToolbarFlyoutRequest,
+  type ToolbarPopoverAnchor
+} from "./ToolPalette";
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
@@ -18,6 +24,7 @@ import {
   closeToolsetPopoverWindow,
   currentWindowLogicalPosition,
   dismissToolsetPopovers,
+  hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
   listenForPalettePointer,
   listenForPalettePointerLeave,
@@ -34,6 +41,7 @@ import {
   sendPaletteCommandCancel,
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
+  showPaletteFloatingTooltip,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   startPaletteWindowDrag,
@@ -314,6 +322,43 @@ export function PaletteWindow({
       handleLeave();
     };
   }, [toolset.id]);
+
+  // Relay tooltip visibility from the shells (a DOM CustomEvent — ToolPalette stays
+  // runtime-agnostic) into the shared floating tooltip window, converting the shell's client rect
+  // to global screen coordinates the same way popovers are anchored. The in-DOM tooltip span is
+  // hidden in palette windows: this content-fit window would clip it.
+  useEffect(() => {
+    const handleTooltip = (event: Event) => {
+      const detail = (event as CustomEvent<PaletteTooltipDomDetail>).detail;
+      if (!detail) {
+        return;
+      }
+      if (!detail.visible || !detail.anchor || !(detail.title || detail.description)) {
+        void hidePaletteFloatingTooltip().catch(() => undefined);
+        return;
+      }
+      const { title, description, shortcut, anchor } = detail;
+      void (async () => {
+        const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
+        if (!windowPosition) {
+          return;
+        }
+        await showPaletteFloatingTooltip({
+          title: title ?? "",
+          description,
+          shortcut,
+          anchorCenterX: windowPosition.x + anchor.left + (anchor.right - anchor.left) / 2,
+          belowY: windowPosition.y + anchor.bottom + 6,
+          aboveY: windowPosition.y + anchor.top - 6
+        });
+      })().catch(() => undefined);
+    };
+    window.addEventListener(PALETTE_TOOLTIP_DOM_EVENT, handleTooltip);
+    return () => {
+      window.removeEventListener(PALETTE_TOOLTIP_DOM_EVENT, handleTooltip);
+      void hidePaletteFloatingTooltip().catch(() => undefined);
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

@@ -118,6 +118,42 @@ body.palette-popover-window-body #root {
   background: var(--cd-bg-panel);
 }
 
+/* Native palettes: the in-DOM tooltip span can't escape the content-fit palette window (a webview
+   cannot paint past its window), so it's hidden there — the shared floating tooltip window
+   (PaletteTooltipWindow) shows the same text instead. Browser/in-window palettes keep the span. */
+body.palette-window-body .tool-tooltip {
+  display: none;
+}
+
+/* The shared floating tooltip window: sized to the text by its own webview, opaque (a transparent
+   window gets re-clipped on macOS) with the tooltip background filling the window. */
+html.palette-tooltip-window-html,
+body.palette-tooltip-window-body,
+body.palette-tooltip-window-body #root {
+  min-width: 0;
+  width: max-content;
+  height: max-content;
+  background: var(--cd-bg-control-opaque);
+}
+
+.palette-floating-tooltip {
+  box-sizing: border-box;
+  min-height: 20px;
+  width: max-content;
+  max-width: 220px;
+  padding: 4px 7px;
+  border: 1px solid var(--cd-border-strong);
+  background: var(--cd-bg-control-opaque);
+  color: var(--cd-text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  text-align: center;
+  white-space: normal;
+}
+
 .palette-popover-shell {
   box-sizing: border-box;
   width: max-content;

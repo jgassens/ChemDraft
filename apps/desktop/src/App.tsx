@@ -1,11 +1,16 @@
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
+import { PaletteTooltipWindow } from "./PaletteTooltipWindow";
 import { PluginPanelWindow } from "./plugins/PluginPanelWindow";
 import { Spin3dDebuggerWindow } from "./Spin3dDebuggerWindow";
 import { PreferencesWindow } from "./PreferencesWindow";
 import { SPIN3D_DEBUGGER_WINDOW_KIND } from "./conformerDebug";
-import { PREFERENCES_WINDOW_KIND, TOOLSET_POPOVER_WINDOW_KIND } from "./window-manager";
+import {
+  PREFERENCES_WINDOW_KIND,
+  TOOLSET_POPOVER_WINDOW_KIND,
+  TOOLSET_TOOLTIP_WINDOW_KIND
+} from "./window-manager";
 
 export function App() {
   if (isSpin3dDebuggerRoute()) {
@@ -19,6 +24,10 @@ export function App() {
   const popoverRoute = toolsetPopoverRoute();
   if (popoverRoute) {
     return <PalettePopoverWindow toolsetId={popoverRoute.toolsetId} kind={popoverRoute.kind} />;
+  }
+
+  if (isToolsetTooltipRoute()) {
+    return <PaletteTooltipWindow />;
   }
 
   const toolsetId = toolsetRouteId();
@@ -63,6 +72,15 @@ export function isPreferencesRoute(): boolean {
 
   const params = new URLSearchParams(window.location.search);
   return params.get("window") === PREFERENCES_WINDOW_KIND;
+}
+
+function isToolsetTooltipRoute(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  return params.get("window") === TOOLSET_TOOLTIP_WINDOW_KIND;
 }
 
 function toolsetPopoverRoute(): { toolsetId: string; kind: string } | undefined {
