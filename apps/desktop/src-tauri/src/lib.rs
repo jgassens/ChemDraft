@@ -83,6 +83,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "view.toggleRulers",
     "view.toggleCrosshairs",
     "view.customizeToolbars",
+    "view.customizeMainToolbar",
     "layout.group",
     "layout.ungroup",
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
@@ -2054,6 +2055,13 @@ fn create_view_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let customize_main_toolbar = MenuItem::with_id(
+        app,
+        "view.customizeMainToolbar",
+        "Customize Main Toolbar...",
+        true,
+        None::<&str>,
+    )?;
 
     Submenu::with_items(
         app,
@@ -2069,6 +2077,7 @@ fn create_view_menu<R: Runtime>(
             &debugger_separator,
             &toolbars_menu,
             &customize_toolbars,
+            &customize_main_toolbar,
         ],
     )
 }

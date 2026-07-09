@@ -82,6 +82,7 @@ import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } 
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
 import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
+import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
 import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
@@ -466,6 +467,7 @@ import { ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
+  broadcastToolsetCustomizeMode,
   broadcastToolsetLayoutState,
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
@@ -477,6 +479,8 @@ import {
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
+  listenForToolsetCustomizeModeRequests,
+  listenForToolsetLayoutEdits,
   listenForToolsetLayoutStateRequests,
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
@@ -1369,7 +1373,8 @@ function createDevBrowserMenuModel(
         command(SPIN3D_DEBUGGER_COMMAND_ID, "3D Debugger"),
         separator(),
         group("Toolbars", toolbarItems),
-        command("view.customizeToolbars", "Customize Toolbars...")
+        command("view.customizeToolbars", "Customize Toolbars..."),
+        command("view.customizeMainToolbar", "Customize Main Toolbar...")
       ]
     },
     {
@@ -1691,6 +1696,11 @@ export function MainWindow({
     // wired) with ?forceCustomize=1, so its drag/hide behavior can be exercised without the native app.
     () => import.meta.env.DEV && new URLSearchParams(globalThis.location?.search ?? "").get("forceCustomize") === "1"
   );
+  // In-place customize mode for the Main toolbar (Safari-style). MainWindow owns the flag and
+  // broadcasts it to the palettes; the ref lets late effects read it without re-subscribing.
+  const [customizeMainToolbarActive, setCustomizeMainToolbarActive] = useState(false);
+  const customizeMainToolbarActiveRef = useRef(false);
+  customizeMainToolbarActiveRef.current = customizeMainToolbarActive;
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [devBrowserMenuOpenId, setDevBrowserMenuOpenId] = useState<string | null>(null);
@@ -1832,6 +1842,8 @@ export function MainWindow({
   // effect until the initial load has run, so the first render's default set can't overwrite the
   // saved file before we've read it.
   const layoutStateRef = useRef<ToolsetLayoutState | undefined>(undefined);
+  // Live registry, read by the customize-edit listener so it never holds a stale snapshot.
+  const toolsetRegistryRef = useRef(toolsetRegistry);
   const layoutHydratedRef = useRef(false);
   // Only persist visibility once we've SUCCESSFULLY read the existing layout file. If the load
   // failed (unreadable file, or a newer build's file that fails our strict schema), overwriting it
@@ -1879,6 +1891,7 @@ export function MainWindow({
   visibleToolsetIdsRef.current = visibleToolsetIds;
   rulersVisibleRef.current = rulersVisible;
   crosshairsVisibleRef.current = crosshairsVisible;
+  toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -2733,6 +2746,24 @@ export function MainWindow({
     }
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
   }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
+
+  // Enter/exit in-place customize mode for the Main toolbar. On enter, ensure the Main palette is
+  // open (you can't customize a hidden toolbar); broadcast the flag so the palette renders customize
+  // chrome (Phase 4). The palette echoes an `exitCustomize` edit op back to flip this off.
+  const setCustomizeMode = useCallback((active: boolean) => {
+    setCustomizeMainToolbarActive(active);
+    if (active && !visibleToolsetIdsRef.current.has(DEFAULT_TOOLSET_ID)) {
+      if (effectiveNativePalette) {
+        resolvedToolsetIdsRef.current.add(DEFAULT_TOOLSET_ID);
+        void openToolsetWindow(DEFAULT_TOOLSET_ID, toolsetWindowGeometry(DEFAULT_TOOLSET_ID))
+          .then((nextState) => setVisibleToolsetIds((current) => updateVisibleToolsets(current, DEFAULT_TOOLSET_ID, nextState.open)))
+          .catch(() => undefined);
+      } else {
+        setVisibleToolsetIds((current) => updateVisibleToolsets(current, DEFAULT_TOOLSET_ID, true));
+      }
+    }
+    void broadcastToolsetCustomizeMode({ toolsetId: DEFAULT_TOOLSET_ID, active }).catch(() => undefined);
+  }, [effectiveNativePalette, toolsetWindowGeometry]);
 
   // JS owns toolset visibility, so it also owns the native menu's checkmarks. Mirror the
   // current visible set onto every toggle item after each change (no-op in the browser).
@@ -7071,6 +7102,11 @@ export function MainWindow({
       return;
     }
 
+    if (commandId === "view.customizeMainToolbar") {
+      setCustomizeMode(!customizeMainToolbarActiveRef.current);
+      return;
+    }
+
     if (commandId === moleculeInspectorTemplateImportCommandId) {
       await importMoleculeInspectorTemplate();
       return;
@@ -7176,6 +7212,13 @@ export function MainWindow({
     return [...byId].map(([id, title]) => ({ id, title }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
+  // a no-op). Stable — customizeCommandOptions is built once.
+  const commandTitleById = useMemo(
+    () => new Map(customizeCommandOptions.map((option) => [option.id, option.title])),
+    [customizeCommandOptions]
+  );
 
   useEffect(() => {
     if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
@@ -8089,6 +8132,100 @@ export function MainWindow({
       unlistenLayoutStateRequest?.();
     };
   }, []);
+
+  // Apply in-place customize edit ops from the Main palette against the authoritative layout state.
+  // Ops (not full state) so a stale palette snapshot can't clobber; the resulting commit re-broadcasts
+  // and the palette repaints. `exitCustomize` is a mode signal, not a layout edit.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetLayoutEdits((payload) => {
+      if (payload.toolsetId !== DEFAULT_TOOLSET_ID) {
+        return;
+      }
+      if (payload.edit.kind === "exitCustomize") {
+        setCustomizeMode(false);
+        return;
+      }
+      const registry = toolsetRegistryRef.current;
+      const presentItemIds = new Set(
+        getToolsetItemGroups(DEFAULT_TOOLSET_ID, registry).flat().map((item) => item.id)
+      );
+      const current = layoutStateRef.current ?? emptyLayoutState();
+      const next = applyToolsetLayoutEdit(current, payload, {
+        presentItemIds,
+        commandTitle: (commandId) => commandTitleById.get(commandId),
+        gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
+      });
+      if (next !== current) {
+        commitToolbarLayout(next, false);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [commitToolbarLayout, setCustomizeMode, commandTitleById]);
+
+  // Answer a late-joining palette's request for the current customize-mode state (mirrors the
+  // layout-state responder above).
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetCustomizeModeRequests(() => {
+      void broadcastToolsetCustomizeMode({
+        toolsetId: DEFAULT_TOOLSET_ID,
+        active: customizeMainToolbarActiveRef.current
+      }).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Exit customize mode if the Customize Toolbars dialog opens (they'd fight over the same state) or
+  // the Main palette is closed out from under it.
+  useEffect(() => {
+    if (!customizeMainToolbarActive) {
+      return;
+    }
+    if (customizeToolbarsOpen || !visibleToolsetIds.has(DEFAULT_TOOLSET_ID)) {
+      setCustomizeMode(false);
+    }
+  }, [customizeMainToolbarActive, customizeToolbarsOpen, visibleToolsetIds, setCustomizeMode]);
+
+  // Esc exits customize mode. The palette panels are non-focusable, so the key event lands on the
+  // main window (the key window) — this is where Esc must be handled.
+  useEffect(() => {
+    if (!customizeMainToolbarActive) {
+      return;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCustomizeMode(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [customizeMainToolbarActive, setCustomizeMode]);
 
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];

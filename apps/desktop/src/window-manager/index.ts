@@ -17,6 +17,9 @@ export const PALETTE_POINTER_EVENT = "chemdraft://palette-pointer";
 export const PALETTE_POINTER_LEAVE_EVENT = "chemdraft://palette-pointer-leave";
 export const TOOLSET_LAYOUT_STATE_EVENT = "chemdraft://toolset-layout-state";
 export const TOOLSET_LAYOUT_STATE_REQUEST_EVENT = "chemdraft://toolset-layout-state-request";
+export const TOOLSET_LAYOUT_EDIT_EVENT = "chemdraft://toolset-layout-edit";
+export const TOOLSET_CUSTOMIZE_MODE_EVENT = "chemdraft://toolset-customize-mode";
+export const TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT = "chemdraft://toolset-customize-mode-request";
 export const PALETTE_TOOLTIP_SHOW_EVENT = "chemdraft://palette-tooltip-show";
 export const PALETTE_TOOLTIP_HIDE_EVENT = "chemdraft://palette-tooltip-hide";
 export const TOOLSET_TOOLTIP_WINDOW_KIND = "toolsetTooltip";
@@ -647,6 +650,143 @@ export async function listenForToolsetLayoutStateRequests(handler: () => void): 
   }
   const { listen } = await import("@tauri-apps/api/event");
   return listen(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
+}
+
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+// In-place customize mode (core.main): the palette sends single edit ops back to the main window,
+// which applies them against its authoritative layout state and re-broadcasts. Ops (not full state)
+// so a stale palette snapshot can't clobber. Both channels use DUAL dispatch (DOM CustomEvent +
+// Tauri emit) so jsdom tests and the browser build hit the identical path — in the browser the main
+// window hears its own web palette's ops through the DOM event.
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+
+/** One in-place customize edit. Applied in MainWindow via `applyToolsetLayoutEdit`; `exitCustomize`
+ *  is handled by the caller (mode state), not the layout applier. */
+export type ToolsetLayoutEdit =
+  | { kind: "reorderItems"; groupId: string; orderedItemIds: string[] }
+  | { kind: "addCommand"; groupId: string; index: number; commandId: string }
+  | { kind: "addSpacer"; groupId: string; index: number }
+  | { kind: "removeItem"; itemId: string }
+  | { kind: "resetToolset" }
+  | { kind: "exitCustomize" };
+
+export interface ToolsetLayoutEditPayload {
+  toolsetId: string;
+  edit: ToolsetLayoutEdit;
+}
+
+export interface ToolsetCustomizeModePayload {
+  toolsetId: string;
+  active: boolean;
+}
+
+function isToolsetLayoutEditPayload(value: unknown): value is ToolsetLayoutEditPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ToolsetLayoutEditPayload).toolsetId === "string" &&
+    typeof (value as ToolsetLayoutEditPayload).edit === "object" &&
+    (value as ToolsetLayoutEditPayload).edit !== null &&
+    typeof (value as { edit: { kind?: unknown } }).edit.kind === "string"
+  );
+}
+
+function isToolsetCustomizeModePayload(value: unknown): value is ToolsetCustomizeModePayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ToolsetCustomizeModePayload).toolsetId === "string" &&
+    typeof (value as ToolsetCustomizeModePayload).active === "boolean"
+  );
+}
+
+/** Palette → main: apply one customize edit. */
+export async function sendToolsetLayoutEdit(payload: ToolsetLayoutEditPayload): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, payload);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, payload);
+}
+
+export async function listenForToolsetLayoutEdits(
+  handler: (payload: ToolsetLayoutEditPayload) => void
+): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
+    if (isToolsetLayoutEditPayload(event.detail)) {
+      handler(event.detail);
+    }
+  });
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
+    if (isToolsetLayoutEditPayload(event.payload)) {
+      handler(event.payload);
+    }
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+/** Main → palettes: customize mode turned on/off for a toolset. */
+export async function broadcastToolsetCustomizeMode(payload: ToolsetCustomizeModePayload): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
+}
+
+export async function listenForToolsetCustomizeMode(
+  handler: (payload: ToolsetCustomizeModePayload) => void
+): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_EVENT, (event) => {
+    if (isToolsetCustomizeModePayload(event.detail)) {
+      handler(event.detail);
+    }
+  });
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, (event) => {
+    if (isToolsetCustomizeModePayload(event.payload)) {
+      handler(event.payload);
+    }
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+/** A palette that mounts mid-mode asks the main window for the current customize-mode state. */
+export async function requestToolsetCustomizeMode(): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, {});
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
+}
+
+export async function listenForToolsetCustomizeModeRequests(handler: () => void): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, () => handler());
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, () => handler());
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
 }
 
 /** Content + anchor for the ONE shared floating tooltip window. Coordinates are global logical px

@@ -1792,6 +1792,15 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     description: "Open the toolbar customization editor"
   },
   {
+    id: "view.customizeMainToolbar",
+    title: "Customize Main Toolbar",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: true,
+    description: "Customize the Main toolbar in place — drag to reorder, add, or remove items"
+  },
+  {
     id: "view.toolset.resetLayout",
     title: "Reset Toolbar Layout",
     icon: "palette",
