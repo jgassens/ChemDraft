@@ -2380,6 +2380,12 @@ textarea:focus-visible,
   border-top: 1px solid var(--line-soft);
 }
 
+/* A spacer paints nothing in normal use — it just reserves its grid cells. Customize mode gives it
+   a visible dashed outline (added in the customize-mode CSS) so the user can grab and move it. */
+.toolbar-item-spacer {
+  pointer-events: none;
+}
+
 .icon-button {
   display: grid;
   place-items: center;

@@ -100,7 +100,10 @@ export interface CustomizeToolbarsDialogProps {
 function useEffectiveToolsets(baseToolsets: readonly DesktopToolsetDefinition[], draft: LayoutState) {
   return useMemo(() => {
     try {
-      return { toolsets: applyToolsetLayoutState<string, string>([...baseToolsets], draft, { onUnknownCommand: "prune" }), error: false };
+      // Let the generics infer from baseToolsets (DesktopToolsetDefinition) so the result stays
+      // desktop-typed for SortableToolsetRow; a literal <string, string> is unsound here (string is
+      // not assignable to IconName) and only compiled by TS eliding a deep comparison.
+      return { toolsets: applyToolsetLayoutState([...baseToolsets], draft, { onUnknownCommand: "prune" }), error: false };
     } catch {
       return { toolsets: [...baseToolsets], error: true };
     }

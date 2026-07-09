@@ -44,7 +44,7 @@ export const ToolsetWindowSizeSchema = z
   })
   .strict();
 
-export const ToolsetItemKindSchema = z.enum(["button", "toggle", "control", "separator"]);
+export const ToolsetItemKindSchema = z.enum(["button", "toggle", "control", "separator", "spacer"]);
 
 export const ToolsetPrimaryActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("command"), commandId: CommandIdSchema }).strict(),
@@ -111,10 +111,15 @@ export const ToolsetItemSchema = z
   })
   .strict()
   .superRefine((item, context) => {
-    if (item.primary === undefined && item.commandId === undefined && item.kind !== "separator") {
+    if (
+      item.primary === undefined &&
+      item.commandId === undefined &&
+      item.kind !== "separator" &&
+      item.kind !== "spacer"
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Toolset items require commandId, primary, or separator kind."
+        message: "Toolset items require commandId, primary, or separator/spacer kind."
       });
     }
     if (item.primary?.type === "command" && item.commandId !== undefined && item.primary.commandId !== item.commandId) {
@@ -157,6 +162,28 @@ export const ToolsetItemOverrideSchema = z
   })
   .strict();
 
+// The ONE way a CORE (or plugin) toolset gains a *new* item via layout state: an explicit,
+// add-only insertion. Structural edits to core toolsets are otherwise forbidden (only user.*
+// toolsets carry their own groups); an addition never mutates a manifest item, only appends one.
+// The item must yield a customization id (command id / control id / explicit id on a spacer) so
+// itemOrder / hiddenCommandIds can address it and applyUserToolsetOverride can reorder/hide it.
+export const ToolsetItemAdditionSchema = z
+  .object({
+    groupId: NonEmptyStringSchema,
+    index: z.number().int().nonnegative().optional(),
+    item: ToolsetItemSchema
+  })
+  .strict()
+  .superRefine((addition, context) => {
+    if (toolsetItemCustomizationId(addition.item as ToolsetItemDefinition) === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Toolset item additions require a customization id (commandId, control primary, or an explicit id on a spacer/separator)."
+      });
+    }
+  });
+
 export const UserToolsetOverrideSchema = z
   .object({
     toolsetId: NonEmptyStringSchema,
@@ -167,6 +194,7 @@ export const UserToolsetOverrideSchema = z
     itemOrder: z.record(z.array(CommandIdSchema)).optional(),
     hiddenCommandIds: z.array(CommandIdSchema).optional(),
     itemOverrides: z.array(ToolsetItemOverrideSchema).optional(),
+    itemAdditions: z.array(ToolsetItemAdditionSchema).optional(),
     preferredWindowSize: ToolsetWindowSizeSchema.optional(),
     gridLayout: ToolsetGridLayoutSchema.optional()
   })
@@ -224,6 +252,10 @@ export type ToolsetTooltip = z.infer<typeof ToolsetTooltipSchema>;
 export type ToolsetItemLayout = z.infer<typeof ToolsetItemLayoutSchema>;
 export type ToolsetItemOverride = z.infer<typeof ToolsetItemOverrideSchema>;
 export type UserToolsetOverride = z.infer<typeof UserToolsetOverrideSchema>;
+export type ToolsetItemAddition<TIcon extends string = string, TAssetName extends string = string> =
+  Omit<z.infer<typeof ToolsetItemAdditionSchema>, "item"> & {
+    item: ToolsetItemDefinition<TIcon, TAssetName>;
+  };
 export type ToolsetSubmenuItem<TIcon extends string = string, TAssetName extends string = string> =
   Omit<z.infer<typeof ToolsetSubmenuItemSchema>, "icon" | "assetName"> & {
     icon?: TIcon;
@@ -605,8 +637,35 @@ function pruneUnknownOverrideCommands(
   registeredCommandIds: ReadonlySet<string>,
   warn: (warning: string) => void
 ): UserToolsetOverride {
+  // Prune additions first, by their OWN primary command id(s): a spacer has none so it always
+  // survives (same mechanism that keeps user-toolset separators), while a command addition whose
+  // command came from a removed plugin is dropped.
+  const itemAdditions = override.itemAdditions?.filter((addition) => {
+    const unknownPrimaryIds = toolsetItemPrimaryCommandIds(addition.item as ToolsetItemDefinition).filter(
+      (commandId) => !registeredCommandIds.has(commandId)
+    );
+    if (unknownPrimaryIds.length > 0) {
+      unknownPrimaryIds.forEach((commandId) => {
+        warn(`Toolbar customization for "${override.toolsetId}" dropped addition with unknown command "${commandId}".`);
+      });
+      return false;
+    }
+    return true;
+  });
+
+  // Ids introduced by surviving additions (a spacer id, a widget controlId) are legitimate override
+  // targets even though they are not registered commands — union them into the keep-set so an
+  // addition's own id in itemOrder / hiddenCommandIds / itemOverrides is not pruned as "unknown".
+  const survivingAdditionIds = new Set<string>();
+  for (const addition of itemAdditions ?? []) {
+    const id = toolsetItemCustomizationId(addition.item as ToolsetItemDefinition);
+    if (id !== undefined) {
+      survivingAdditionIds.add(id);
+    }
+  }
+
   const keep = (commandId: string, context: string): boolean => {
-    if (registeredCommandIds.has(commandId)) {
+    if (registeredCommandIds.has(commandId) || survivingAdditionIds.has(commandId)) {
       return true;
     }
     warn(`Toolbar customization for "${override.toolsetId}" dropped unknown command "${commandId}" (${context}).`);
@@ -615,6 +674,7 @@ function pruneUnknownOverrideCommands(
 
   return {
     ...override,
+    itemAdditions,
     hiddenCommandIds: override.hiddenCommandIds?.filter((commandId) => keep(commandId, "hidden command")),
     itemOverrides: override.itemOverrides?.filter((itemOverride) => keep(itemOverride.commandId, "item override")),
     itemOrder: override.itemOrder
@@ -663,6 +723,25 @@ export function createToolsetToggleCommandDefinitions(
   }));
 }
 
+/** Splice a group's item additions into a copy of its items. Additions are placed at their stored
+ *  index (clamped to the current length; a missing index appends), applied in ascending-index order
+ *  so multiple additions land predictably. */
+function insertItemAdditions<TIcon extends string, TAssetName extends string>(
+  items: readonly ToolsetItemDefinition<TIcon, TAssetName>[],
+  additions: readonly ToolsetItemAddition<TIcon, TAssetName>[] | undefined
+): ToolsetItemDefinition<TIcon, TAssetName>[] {
+  const result = [...items];
+  if (!additions || additions.length === 0) {
+    return result;
+  }
+  const sorted = [...additions].sort((a, b) => (a.index ?? Number.POSITIVE_INFINITY) - (b.index ?? Number.POSITIVE_INFINITY));
+  for (const addition of sorted) {
+    const index = Math.min(addition.index ?? result.length, result.length);
+    result.splice(index, 0, addition.item);
+  }
+  return result;
+}
+
 function applyUserToolsetOverride<TIcon extends string, TAssetName extends string>(
   toolset: ToolsetDefinition<TIcon, TAssetName>,
   override: UserToolsetOverride
@@ -678,8 +757,38 @@ function applyUserToolsetOverride<TIcon extends string, TAssetName extends strin
     }
   });
 
+  // Insert add-only item additions into their target groups BEFORE reorder/hide runs, so itemOrder
+  // can address an added id and a group that is otherwise all-hidden but holds an addition survives
+  // the empty-group filter below. Duplicate ids (vs a base item or an earlier addition, in any
+  // group) are skipped first-wins; additions naming an unknown groupId simply never match a group.
+  const additionsByGroup = new Map<string, ToolsetItemAddition<TIcon, TAssetName>[]>();
+  {
+    const takenIds = new Set<string>();
+    for (const group of toolset.groups) {
+      for (const item of group.items) {
+        const id = toolsetItemCustomizationId(item);
+        if (id !== undefined) {
+          takenIds.add(id);
+        }
+      }
+    }
+    for (const addition of override.itemAdditions ?? []) {
+      const item = addition.item as ToolsetItemDefinition<TIcon, TAssetName>;
+      const id = toolsetItemCustomizationId(item);
+      if (id === undefined || takenIds.has(id)) {
+        continue;
+      }
+      takenIds.add(id);
+      const list = additionsByGroup.get(addition.groupId) ?? [];
+      list.push({ ...addition, item } as ToolsetItemAddition<TIcon, TAssetName>);
+      additionsByGroup.set(addition.groupId, list);
+    }
+  }
+
   const groups = reorderById(toolset.groups, override.groupOrder ?? [], (group) => group.id).map((group) => {
-    const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], toolsetItemCustomizationId)
+    const groupAdditions = group.id ? additionsByGroup.get(group.id) : undefined;
+    const itemsWithAdditions = insertItemAdditions(group.items, groupAdditions);
+    const orderedItems = reorderById(itemsWithAdditions, group.id ? (override.itemOrder?.[group.id] ?? []) : [], toolsetItemCustomizationId)
       .filter((item) => {
         const commandId = toolsetItemCustomizationId(item);
         return commandId === undefined || !hiddenCommandIds.has(commandId);
@@ -827,10 +936,22 @@ function assertOverrideCommandsRegistered(
   override: UserToolsetOverride,
   registeredCommandIds: ReadonlySet<string>
 ): void {
-  override.hiddenCommandIds?.forEach((commandId) => assertCommandRegistered(commandId, registeredCommandIds));
-  override.itemOverrides?.forEach((itemOverride) => assertCommandRegistered(itemOverride.commandId, registeredCommandIds));
+  // Additions must reference registered commands (a spacer references none); their own ids then
+  // become valid targets for the command-keyed lists below, alongside the registered commands.
+  const allowed = new Set(registeredCommandIds);
+  override.itemAdditions?.forEach((addition) => {
+    toolsetItemPrimaryCommandIds(addition.item as ToolsetItemDefinition).forEach((commandId) =>
+      assertCommandRegistered(commandId, registeredCommandIds)
+    );
+    const id = toolsetItemCustomizationId(addition.item as ToolsetItemDefinition);
+    if (id !== undefined) {
+      allowed.add(id);
+    }
+  });
+  override.hiddenCommandIds?.forEach((commandId) => assertCommandRegistered(commandId, allowed));
+  override.itemOverrides?.forEach((itemOverride) => assertCommandRegistered(itemOverride.commandId, allowed));
   Object.values(override.itemOrder ?? {}).forEach((commandIds) => {
-    commandIds.forEach((commandId) => assertCommandRegistered(commandId, registeredCommandIds));
+    commandIds.forEach((commandId) => assertCommandRegistered(commandId, allowed));
   });
 }
 
@@ -918,6 +1039,12 @@ export function toolsetItemCustomizationId<TIcon extends string, TAssetName exte
   // like commands (a `widget.*` controlId is a valid CommandId per CommandIdSchema).
   if (item.primary?.type === "control") {
     return item.primary.controlId;
+  }
+  // A spacer/separator carrying an EXPLICIT id (as customize-added items always do) is addressable
+  // by that id — so it can be reordered and removed like any other item. Position-synthesized
+  // separator ids (no explicit item.id) stay unaddressable, exactly as before.
+  if ((item.kind === "spacer" || item.kind === "separator") && item.id !== undefined) {
+    return item.id;
   }
   return undefined;
 }

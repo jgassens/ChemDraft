@@ -3,7 +3,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ToolsetDefinition, ToolsetLayoutState } from "@chemdraft/toolset-registry";
+import type { ToolsetLayoutState } from "@chemdraft/toolset-registry";
+import type { DesktopToolsetDefinition } from "../../toolsets";
 import { CustomizeToolbarsDialog } from "./CustomizeToolbarsDialog";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -16,7 +17,7 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-const baseToolsets: ToolsetDefinition[] = [
+const baseToolsets: DesktopToolsetDefinition[] = [
   {
     id: "core.main",
     title: "Main Toolbar",

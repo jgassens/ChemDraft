@@ -182,4 +182,46 @@ describe("desktop toolset mapping", () => {
 
     expect(size).toEqual({ width: 110, height: 32 });
   });
+
+  it("maps a spacer item to a spacer palette model (primary none, no button)", () => {
+    const spacerToolset: ToolsetDefinition = {
+      id: "core.spaced",
+      title: "Spaced",
+      source: "core",
+      defaultVisible: true,
+      defaultMode: "floating",
+      groups: [
+        {
+          id: "g",
+          items: [
+            { commandId: "tool.bond", title: "Bond" },
+            { id: "user.spacer.1", kind: "spacer", label: "Spacer", primary: { type: "none" } }
+          ]
+        }
+      ]
+    };
+    const items = getToolsetItemGroups("core.spaced", registry([spacerToolset]))[0];
+    expect(items.map((item) => item.kind)).toEqual(["button", "spacer"]);
+    expect(items[1].id).toBe("user.spacer.1");
+    expect(items[1].primary.type).toBe("none");
+  });
+
+  it("counts a spacer's cells in the auto-flow grid size (spacers are not excluded like widgets)", () => {
+    const size = computePaletteGridSize(
+      { rows: 2, cellWidth: 24, cellHeight: 24, gap: 2, padding: 4 },
+      [[
+        {
+          id: "user.spacer.1",
+          kind: "spacer",
+          label: "Spacer",
+          primary: { type: "none" },
+          submenu: null,
+          tooltip: { title: "Spacer" },
+          layout: { colSpan: 1, rowSpan: 2 }
+        }
+      ]]
+    );
+
+    expect(size).toEqual({ width: 32, height: 58 });
+  });
 });

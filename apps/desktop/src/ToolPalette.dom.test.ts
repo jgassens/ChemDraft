@@ -984,3 +984,52 @@ describe("ToolPalette arrange flyouts", () => {
     expect(shapeMenu?.hidden).toBe(true);
   });
 });
+
+describe("ToolPalette spacer items", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("renders a spacer as an inert slot (no button) carrying its item id", () => {
+    const spacer: ToolbarPaletteItemModel = {
+      id: "user.spacer.1",
+      kind: "spacer",
+      label: "Spacer",
+      primary: { type: "none" },
+      submenu: null,
+      tooltip: { title: "Spacer" },
+      layout: { colSpan: 1, rowSpan: 2 }
+    };
+    const button: ToolbarPaletteItemModel = {
+      id: "tool.bond",
+      kind: "button",
+      label: "Bond",
+      primary: { type: "command", command: { id: "tool.bond", title: "Bond", icon: "bond", source: "core", category: "tool" } as CommandSpec },
+      submenu: null,
+      tooltip: { title: "Bond" },
+      layout: { colSpan: 1, rowSpan: 1 }
+    };
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, { itemGroups: [[button, spacer]], orientation: "horizontal", onInvoke }));
+    });
+
+    const spacerSlot = container.querySelector<HTMLElement>('.toolbar-item-spacer[data-toolbar-item-id="user.spacer.1"]');
+    expect(spacerSlot).not.toBeNull();
+    expect(spacerSlot?.querySelector("button")).toBeNull();
+    // The command button still renders normally alongside it.
+    expect(container.querySelector('button[data-command-id="tool.bond"]')).not.toBeNull();
+  });
+});

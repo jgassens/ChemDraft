@@ -21,7 +21,7 @@ export type DesktopToolsetRegistry = ToolsetRegistry<IconName, ToolbarAssetName>
 
 export interface ToolbarPaletteItemModel {
   id: string;
-  kind: "button" | "toggle" | "control" | "separator";
+  kind: "button" | "toggle" | "control" | "separator" | "spacer";
   label: string;
   icon?: IconName;
   assetName?: ToolbarAssetName;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ToolsetDefinitionSchema,
+  ToolsetItemAdditionSchema,
   ToolsetItemSchema,
   ToolsetLayoutStateSchema,
   ToolsetRegistry,
@@ -592,5 +593,171 @@ describe("toolset registry", () => {
       source: "user"
     });
     expect(menu.find((item) => item.toolsetId === "plugin.fixture")?.source).toBe("plugin");
+  });
+});
+
+describe("core toolset item additions (spacers + gallery adds)", () => {
+  const spacerItem = (id: string) => ({
+    id,
+    kind: "spacer" as const,
+    label: "Spacer",
+    primary: { type: "none" as const }
+  });
+  const commandItem = (commandId: string, label = commandId) => ({
+    id: commandId,
+    kind: "button" as const,
+    label,
+    primary: { type: "command" as const, commandId },
+    submenu: null
+  });
+  const itemIds = (toolset: ToolsetDefinition, groupId: string): (string | undefined)[] =>
+    toolset.groups.find((group) => group.id === groupId)?.items.map((item) => item.commandId ?? item.id) ?? [];
+
+  const twoGroupToolset: ToolsetDefinition = {
+    id: "core.two",
+    title: "Two Groups",
+    source: "core",
+    defaultVisible: true,
+    defaultMode: "floating",
+    groups: [
+      { id: "g1", items: [{ commandId: "tool.select", title: "Sel" }] },
+      { id: "g2", items: [{ commandId: "tool.bond", title: "Bond" }] }
+    ]
+  };
+
+  it("inserts a spacer addition at its index", () => {
+    const customized = applyToolsetLayoutState([fixtureToolset], {
+      version: 1,
+      toolsetOverrides: [
+        { toolsetId: "core.fixture", itemAdditions: [{ groupId: "fixture.tools", index: 1, item: spacerItem("user.spacer.1") }] }
+      ]
+    });
+    expect(itemIds(customized[0], "fixture.tools")).toEqual(["tool.select", "user.spacer.1", "tool.bond", "tool.text"]);
+  });
+
+  it("applies additions before itemOrder, so itemOrder can address an added command", () => {
+    const customized = applyToolsetLayoutState(
+      [fixtureToolset],
+      {
+        version: 1,
+        toolsetOverrides: [
+          {
+            toolsetId: "core.fixture",
+            itemAdditions: [{ groupId: "fixture.tools", item: commandItem("tool.extra", "Extra") }],
+            itemOrder: { "fixture.tools": ["tool.extra", "tool.select"] }
+          }
+        ]
+      },
+      { registeredCommandIds: ["tool.select", "tool.bond", "tool.text", "tool.extra"] }
+    );
+    expect(itemIds(customized[0], "fixture.tools")).toEqual(["tool.extra", "tool.select", "tool.bond", "tool.text"]);
+  });
+
+  it("prunes an addition whose command is unknown, and scrubs its itemOrder reference", () => {
+    const warnings: string[] = [];
+    const customized = applyToolsetLayoutState(
+      [fixtureToolset],
+      {
+        version: 1,
+        toolsetOverrides: [
+          {
+            toolsetId: "core.fixture",
+            itemAdditions: [{ groupId: "fixture.tools", item: commandItem("plugin.gone", "Gone") }],
+            itemOrder: { "fixture.tools": ["plugin.gone", "tool.select"] }
+          }
+        ]
+      },
+      { onUnknownCommand: "prune", onWarning: (warning) => warnings.push(warning) }
+    );
+    expect(itemIds(customized[0], "fixture.tools")).toEqual(["tool.select", "tool.bond", "tool.text"]);
+    expect(warnings.some((warning) => warning.includes("plugin.gone"))).toBe(true);
+  });
+
+  it("keeps a spacer addition through pruning (it references no command)", () => {
+    const customized = applyToolsetLayoutState(
+      [fixtureToolset],
+      {
+        version: 1,
+        toolsetOverrides: [{ toolsetId: "core.fixture", itemAdditions: [{ groupId: "fixture.tools", index: 0, item: spacerItem("user.spacer.1") }] }]
+      },
+      { onUnknownCommand: "prune" }
+    );
+    expect(itemIds(customized[0], "fixture.tools")).toEqual(["user.spacer.1", "tool.select", "tool.bond", "tool.text"]);
+  });
+
+  it("skips duplicate additions (against base items and earlier additions across groups)", () => {
+    const customized = applyToolsetLayoutState([twoGroupToolset], {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.two",
+          itemAdditions: [
+            { groupId: "g2", item: commandItem("tool.select", "Dup") },
+            { groupId: "g1", item: spacerItem("user.spacer.1") },
+            { groupId: "g2", item: spacerItem("user.spacer.1") }
+          ]
+        }
+      ]
+    });
+    expect(itemIds(customized[0], "g1")).toEqual(["tool.select", "user.spacer.1"]);
+    expect(itemIds(customized[0], "g2")).toEqual(["tool.bond"]);
+  });
+
+  it("keeps a group alive when all its base items are hidden but it holds an addition", () => {
+    const customized = applyToolsetLayoutState([twoGroupToolset], {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.two",
+          hiddenCommandIds: ["tool.bond"],
+          itemAdditions: [{ groupId: "g2", item: spacerItem("user.spacer.9") }]
+        }
+      ]
+    });
+    expect(itemIds(customized[0], "g2")).toEqual(["user.spacer.9"]);
+  });
+
+  it("reorders and hides a spacer addition by its explicit id", () => {
+    const reordered = applyToolsetLayoutState([fixtureToolset], {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.fixture",
+          itemAdditions: [{ groupId: "fixture.tools", item: spacerItem("user.spacer.1") }],
+          itemOrder: { "fixture.tools": ["user.spacer.1", "tool.select", "tool.bond", "tool.text"] }
+        }
+      ]
+    });
+    expect(itemIds(reordered[0], "fixture.tools")).toEqual(["user.spacer.1", "tool.select", "tool.bond", "tool.text"]);
+
+    const hidden = applyToolsetLayoutState([fixtureToolset], {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.fixture",
+          itemAdditions: [{ groupId: "fixture.tools", item: spacerItem("user.spacer.1") }],
+          hiddenCommandIds: ["user.spacer.1"]
+        }
+      ]
+    });
+    expect(itemIds(hidden[0], "fixture.tools")).toEqual(["tool.select", "tool.bond", "tool.text"]);
+  });
+
+  it("rejects an item addition whose item has no customization id", () => {
+    expect(() => ToolsetItemAdditionSchema.parse({ groupId: "g", item: { kind: "spacer", primary: { type: "none" } } })).toThrow();
+    // With an explicit id it validates.
+    expect(() => ToolsetItemAdditionSchema.parse({ groupId: "g", item: spacerItem("user.spacer.1") })).not.toThrow();
+  });
+
+  it("drops an addition that targets a nonexistent group", () => {
+    const customized = applyToolsetLayoutState([fixtureToolset], {
+      version: 1,
+      toolsetOverrides: [{ toolsetId: "core.fixture", itemAdditions: [{ groupId: "no.such.group", item: spacerItem("user.spacer.1") }] }]
+    });
+    expect(customized[0].groups.flatMap((group) => group.items.map((item) => item.commandId ?? item.id))).toEqual([
+      "tool.select",
+      "tool.bond",
+      "tool.text"
+    ]);
   });
 });

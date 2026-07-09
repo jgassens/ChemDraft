@@ -3844,6 +3844,21 @@ function ToolbarPaletteItem({
     );
   }
 
+  // A spacer is deliberate empty space (Safari's "Space") — it occupies its grid cells but paints
+  // nothing and carries no semantics. Customize mode gives it a visible dashed outline via CSS.
+  if (item.kind === "spacer") {
+    return (
+      <span
+        className="toolbar-item-grid-slot toolbar-item-spacer"
+        aria-hidden="true"
+        style={toolbarItemGridStyle(item.layout)}
+        data-toolbar-item-id={item.id}
+        data-toolbar-layout-col-span={item.layout.colSpan}
+        data-toolbar-layout-row-span={item.layout.rowSpan}
+      />
+    );
+  }
+
   if (item.primary.type === "control") {
     return (
       <span
