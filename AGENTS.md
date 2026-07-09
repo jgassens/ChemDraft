@@ -468,3 +468,26 @@ For NMR work, also report:
 Do not claim scientific validation, full plugin sandboxing, dynamic plugin installation, or production readiness unless those claims are supported by completed tests and documented evidence.
 
 Structure the final report so it can be archived verbatim: the operator files it under `reports/` in the planning workspace and updates `STATUS.md` (milestone table, assumption ledger, open decisions) from it. Include an explicit "assumption discrepancies" section, even when it is empty.
+
+## Label every build by its worktree (do not remove)
+
+Several ChemDraft worktrees are checked out at once, and every one builds an app literally named
+"ChemDraft" — so nothing on screen tells them apart unless we label it, which has repeatedly caused
+"wrong build launched" confusion. Every build must therefore carry its worktree/branch label, driven
+by `CHEMDRAFT_WORKTREE_LABEL` (exported automatically by `run-app` as `<dir> [<branch>]`), in three
+places:
+
+- the **window title** — `ChemDraft — <dir> [<branch>]` (Rust `main_window_title()` reads it via
+  `option_env!`; `build.rs` re-emits it as `cargo:rustc-env` so cargo actually recompiles the title
+  when it changes — a bare env var is NOT a tracked compile input);
+- the **on-screen build stamp** — the label leads the stamp (`vite.config.ts` `buildStamp()`);
+- a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.
+
+This is automatic — nothing to remember, nothing to type. Do NOT strip the label out of `run-app`,
+`vite.config.ts`, `apps/desktop/src-tauri/src/lib.rs` (`main_window_title`), or `build.rs`. When you
+report launch verification, state the label you saw (title bar or build stamp) and confirm it matches
+this worktree.
+
+If this worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed
+on this branch yet — port it in from `refactor/toolbars` (the four files above), or pick it up on the
+next merge from `main`.
