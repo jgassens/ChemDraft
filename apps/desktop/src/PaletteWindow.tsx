@@ -22,9 +22,11 @@ import {
   listenForPalettePointer,
   listenForPalettePointerLeave,
   listenForToolsetActiveTool,
+  listenForToolsetLayoutState,
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
+  requestToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
   setToolsetPopoverContent,
@@ -112,6 +114,38 @@ export function PaletteWindow({
 
     return () => {
       active = false;
+    };
+  }, []);
+
+  // Follow live layout-state changes from the Customize dialog. The registry above is built once at
+  // window creation, so without this subscription item hides/reorders/renames would never reach an
+  // already-open palette. Also request the current state once subscribed — the disk copy read on
+  // mount can be stale while the main window's save chain is still flushing.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetLayoutState((layoutState) => {
+      if (!active || layoutState === undefined || layoutState === null) {
+        return;
+      }
+      try {
+        setToolsetRegistry(createDesktopToolsetRegistry(layoutState));
+      } catch {
+        // Malformed state: keep showing the last good layout rather than blanking the palette.
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+        void requestToolsetLayoutState().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
     };
   }, []);
 

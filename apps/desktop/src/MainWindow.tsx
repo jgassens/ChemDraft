@@ -466,6 +466,7 @@ import { ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
+  broadcastToolsetLayoutState,
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
   dismissToolsetPopovers,
@@ -476,6 +477,7 @@ import {
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
+  listenForToolsetLayoutStateRequests,
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
   saveToolsetLayoutState,
@@ -7137,8 +7139,13 @@ export function MainWindow({
     }
     resolvedToolsetIdsRef.current = new Set(nextRegistry.listToolsets().map((toolset) => toolset.id));
     layoutSaveEnabledRef.current = true;
+    // Push the new state into the open palette webviews NOW (they built their toolbar once, at
+    // window creation — without this, item hides/reorders/renames never reach them), and again once
+    // the save has flushed so a palette window created mid-save can't be left on the stale disk copy.
+    void broadcastToolsetLayoutState(next).catch(() => undefined);
     layoutSaveChainRef.current = layoutSaveChainRef.current
       .then(() => saveToolsetLayoutState(next))
+      .then(() => broadcastToolsetLayoutState(next))
       .catch(() => undefined);
     if (closeDialog) {
       setCustomizeToolbarsOpen(false);
@@ -8055,6 +8062,31 @@ export function MainWindow({
       unlistenPreview?.();
       unlistenCommit?.();
       unlistenCancel?.();
+    };
+  }, []);
+
+  // A freshly created palette window asks for the current layout state (its disk copy can be stale
+  // while the save chain is flushing); answer with the live state so it never renders an old layout.
+  useEffect(() => {
+    let active = true;
+    let unlistenLayoutStateRequest: (() => void) | undefined;
+    void listenForToolsetLayoutStateRequests(() => {
+      const layoutState = layoutStateRef.current;
+      if (layoutState !== undefined) {
+        void broadcastToolsetLayoutState(layoutState).catch(() => undefined);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenLayoutStateRequest = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlistenLayoutStateRequest?.();
     };
   }, []);
 

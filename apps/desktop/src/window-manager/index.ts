@@ -15,6 +15,8 @@ export const TOOLSET_TEXT_STYLE_EVENT = "chemdraft://toolset-text-style";
 export const TOOLSET_TEXT_STYLE_REQUEST_EVENT = "chemdraft://toolset-text-style-request";
 export const PALETTE_POINTER_EVENT = "chemdraft://palette-pointer";
 export const PALETTE_POINTER_LEAVE_EVENT = "chemdraft://palette-pointer-leave";
+export const TOOLSET_LAYOUT_STATE_EVENT = "chemdraft://toolset-layout-state";
+export const TOOLSET_LAYOUT_STATE_REQUEST_EVENT = "chemdraft://toolset-layout-state-request";
 export const DEFAULT_TOOLSET_ID = "core.main";
 
 export interface ToolsetWindowPosition {
@@ -601,6 +603,47 @@ export async function listenForPalettePointerLeave(
       handler();
     }
   });
+}
+
+/** Push the current toolbar layout state to every native palette webview. Each palette builds its
+ *  toolbar from the layout state ONCE at window creation, so without this broadcast the Customize
+ *  dialog's item hides/reorders/renames never reach an already-open palette. Desktop only — the
+ *  browser renders palettes in-window straight from MainWindow state. */
+export async function broadcastToolsetLayoutState(layoutState: unknown): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
+}
+
+export async function listenForToolsetLayoutState(
+  handler: (layoutState: unknown) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler(event.payload));
+}
+
+/** A freshly created palette window asks the main window for the current layout state — the disk
+ *  copy it loads on mount can be stale while the save chain is still flushing (create-vs-save race,
+ *  same shape as the popover content request). */
+export async function requestToolsetLayoutState(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
+}
+
+export async function listenForToolsetLayoutStateRequests(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
 }
 
 export async function listenForToolsetActiveToolRequests(handler: () => void): Promise<Unlisten> {
