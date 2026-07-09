@@ -2443,6 +2443,21 @@ textarea:focus-visible,
   background: var(--cd-bg-hover);
 }
 
+/* Synthesized hover for the native palette panels: they never become the key window, so the OS
+   never drives CSS :hover there. PaletteWindow applies this class from the Rust pointer feed. */
+.icon-button.palette-synthetic-hover:not(:disabled):not([data-disabled="true"]) {
+  border-color: var(--cd-border-control);
+  background: var(--cd-bg-hover);
+}
+
+.toolbar-align-button.palette-synthetic-hover,
+.toolbar-text-button.palette-synthetic-hover {
+  border-color: var(--cd-accent-border);
+  background-color: var(--cd-bg-active);
+  color: var(--cd-accent-text);
+  box-shadow: var(--cd-focus-ring);
+}
+
 .icon-button.active {
   border-color: var(--cd-accent-border);
   background: var(--cd-bg-active);

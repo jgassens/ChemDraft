@@ -2,6 +2,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -512,6 +513,53 @@ function usePaletteTooltipState() {
     requestTooltip,
     clearTooltip
   };
+}
+
+/**
+ * Pin the visible tooltip to fixed viewport coordinates, clamped inside the window. The native
+ * floating palettes are content-fit windows, so the default absolutely-positioned tooltip (7px
+ * below its button) lands OUTSIDE the window for bottom-row/edge items and a webview cannot paint
+ * past its window — it was silently clipped. Fixed + clamped keeps it visible in the tiny palette
+ * window (overlapping neighbors briefly, which is fine for a transient pointer-events:none tip)
+ * and is a no-op visually in the big in-window/browser case. Inline styles are cleared when hidden
+ * so the CSS enter/exit transitions keep working.
+ */
+function useClampedTooltip(shellRef: { current: HTMLElement | null }, visible: boolean) {
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    const tooltip = shell?.querySelector<HTMLElement>(".tool-tooltip");
+    if (!shell || !tooltip) {
+      return;
+    }
+    if (!visible) {
+      tooltip.style.position = "";
+      tooltip.style.left = "";
+      tooltip.style.top = "";
+      tooltip.style.right = "";
+      tooltip.style.bottom = "";
+      tooltip.style.transform = "";
+      return;
+    }
+    tooltip.style.position = "fixed";
+    tooltip.style.right = "auto";
+    tooltip.style.bottom = "auto";
+    tooltip.style.transform = "none";
+    const margin = 4;
+    const anchor = shell.getBoundingClientRect();
+    const width = tooltip.offsetWidth;
+    const height = tooltip.offsetHeight;
+    let left = anchor.left + anchor.width / 2 - width / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+    let top = anchor.bottom + 6;
+    if (top + height > window.innerHeight - margin) {
+      top = anchor.top - height - 6;
+    }
+    if (top < margin) {
+      top = Math.max(margin, window.innerHeight - height - margin);
+    }
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+  }, [shellRef, visible]);
 }
 
 // Text objects can use any installed font. The four legacy presets stay pinned at the
@@ -3604,6 +3652,7 @@ function ToolbarPaletteItem({
   const primaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
+  useClampedTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
   const pointerInvokedRef = useRef(false);
@@ -4227,6 +4276,7 @@ function DistributeCommandIconButton({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
+  useClampedTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
   const activeState = active && !disabled;

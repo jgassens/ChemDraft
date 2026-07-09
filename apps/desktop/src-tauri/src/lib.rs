@@ -24,8 +24,10 @@ use tauri::{
 };
 
 #[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
+    NSEvent, NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
     NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
 };
 #[cfg(target_os = "macos")]
@@ -39,6 +41,10 @@ const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
+#[cfg(target_os = "macos")]
+const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
+#[cfg(target_os = "macos")]
+const PALETTE_POINTER_LEAVE_EVENT: &str = "chemdraft://palette-pointer-leave";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
@@ -307,6 +313,10 @@ pub fn run() {
             if let Err(error) = focus_main_document_window_impl(app) {
                 eprintln!("Could not focus ChemDraft document window: {error}");
             }
+
+            // Palettes never become key, so hover must be fed to their webviews (see
+            // start_palette_pointer_feed's doc for why the OS won't deliver it).
+            start_palette_pointer_feed(app.clone());
 
             Ok(())
         })
@@ -2135,6 +2145,149 @@ fn configure_toolset_utility_window<R: Runtime>(
 
     Ok(())
 }
+
+/// Local (top-left origin, logical px) pointer position inside a palette window. Tagged with the
+/// toolset id because a plain JS `listen()` receives events regardless of the emit target — each
+/// palette filters to its own id (the same pattern the popover-content events use).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PalettePointerPayload {
+    toolset_id: String,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PalettePointerLeavePayload {
+    toolset_id: String,
+}
+
+/// Feed hover into the palette webviews. The palettes are non-activating panels that never become
+/// the key window (deliberately — clicking them must not steal the document's focus), and macOS
+/// only routes mouseMoved/hover to the key window; WKWebView's own tracking is key-window-scoped
+/// too, so CSS :hover, pointerenter, and therefore tooltips simply never fire in them (adding our
+/// own NSTrackingArea was tried and WebKit still swallowed it). Instead: poll the real cursor on
+/// the main thread, hit-test which palette window is frontmost under it (windowNumberAtPoint sees
+/// every on-screen window, so anything overlapping a palette correctly suppresses hover), and push
+/// window-local coordinates into that palette; PaletteWindow synthesizes pointerover/out from them.
+#[cfg(target_os = "macos")]
+fn start_palette_pointer_feed(app: tauri::AppHandle) {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct FeedState {
+        /// (window label, toolset id) currently under the cursor.
+        last: Option<(String, String)>,
+        last_x: f64,
+        last_y: f64,
+    }
+
+    fn emit_leave(app: &tauri::AppHandle, label: &str, toolset_id: String) {
+        let _ = app.emit_to(
+            label,
+            PALETTE_POINTER_LEAVE_EVENT,
+            PalettePointerLeavePayload { toolset_id },
+        );
+    }
+
+    let state: Arc<Mutex<FeedState>> = Arc::new(Mutex::new(FeedState::default()));
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let app_handle = app.clone();
+        let state = Arc::clone(&state);
+        let _ = app.run_on_main_thread(move || {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            // Bottom-left-origin global screen points; NSWindow frames share the same space.
+            let mouse = NSEvent::mouseLocation();
+            let front_window_number =
+                NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(mouse, 0, mtm);
+
+            let entries: Vec<(String, String)> = app_handle
+                .state::<ToolsetWindowDirectory>()
+                .labels
+                .lock()
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .map(|(label, toolset_id)| (label.clone(), toolset_id.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut hovered: Option<(String, PalettePointerPayload)> = None;
+            for (label, toolset_id) in entries {
+                let Some(window) = app_handle.get_webview_window(&label) else {
+                    continue;
+                };
+                if !window.is_visible().unwrap_or(false) {
+                    continue;
+                }
+                let Ok(ns_window_ptr) = window.ns_window() else {
+                    continue;
+                };
+                let Some(ns_window) = (unsafe { (ns_window_ptr as *mut NSWindow).as_ref() }) else {
+                    continue;
+                };
+                if ns_window.windowNumber() != front_window_number {
+                    continue;
+                }
+                // Borderless panel: content rect == frame, so frame-local is webview-local. Flip
+                // the y axis to the web's top-left origin; points == CSS px.
+                let frame = ns_window.frame();
+                hovered = Some((
+                    label,
+                    PalettePointerPayload {
+                        toolset_id,
+                        x: mouse.x - frame.origin.x,
+                        y: frame.size.height - (mouse.y - frame.origin.y),
+                    },
+                ));
+                break;
+            }
+
+            let Ok(mut state) = state.lock() else {
+                return;
+            };
+            match hovered {
+                Some((label, payload)) => {
+                    let changed = state
+                        .last
+                        .as_ref()
+                        .map(|(last_label, _)| last_label != &label)
+                        .unwrap_or(true);
+                    let moved = (payload.x - state.last_x).abs() >= 1.0
+                        || (payload.y - state.last_y).abs() >= 1.0;
+                    if changed {
+                        if let Some((previous_label, previous_toolset)) = state.last.take() {
+                            emit_leave(&app_handle, &previous_label, previous_toolset);
+                        }
+                    }
+                    if changed || moved {
+                        let _ = app_handle.emit_to(
+                            label.as_str(),
+                            PALETTE_POINTER_EVENT,
+                            payload.clone(),
+                        );
+                        state.last_x = payload.x;
+                        state.last_y = payload.y;
+                        state.last = Some((label, payload.toolset_id));
+                    }
+                }
+                None => {
+                    if let Some((previous_label, previous_toolset)) = state.last.take() {
+                        emit_leave(&app_handle, &previous_label, previous_toolset);
+                    }
+                }
+            }
+        });
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_palette_pointer_feed(_app: tauri::AppHandle) {}
 
 fn toolset_window_focusable() -> bool {
     false

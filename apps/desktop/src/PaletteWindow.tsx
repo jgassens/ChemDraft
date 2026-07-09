@@ -19,6 +19,8 @@ import {
   currentWindowLogicalPosition,
   dismissToolsetPopovers,
   openToolsetPopoverWindow,
+  listenForPalettePointer,
+  listenForPalettePointerLeave,
   listenForToolsetActiveTool,
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
@@ -204,6 +206,80 @@ export function PaletteWindow({
       unlisten?.();
     };
   }, []);
+
+  // Synthesize hover from the Rust pointer feed. This panel never becomes the key window (so
+  // clicking it can't steal the document's focus), and macOS only delivers hover/mouseMoved to the
+  // key window — so CSS :hover and pointerenter never fire here natively. Rust polls the cursor and
+  // pushes window-local coordinates; we resolve the element under them and dispatch bubbling
+  // pointerover/out pairs (which React turns into pointerenter/leave — the tooltip trigger), plus a
+  // hover class for the :hover styling the OS can't apply.
+  useEffect(() => {
+    let unlistenMove: (() => void) | undefined;
+    let unlistenLeave: (() => void) | undefined;
+    let lastElement: Element | null = null;
+    const HOVER_CLASS = "palette-synthetic-hover";
+
+    const syntheticPointer = (type: string, target: Element, relatedTarget: Element | null, x?: number, y?: number) => {
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerType: "mouse",
+          relatedTarget: relatedTarget ?? document.body,
+          clientX: x,
+          clientY: y
+        })
+      );
+    };
+    const swapHoverClass = (previous: Element | null, next: Element | null) => {
+      const previousHoverable = previous?.closest(".icon-button, .toolbar-text-button, .toolbar-align-button");
+      const nextHoverable = next?.closest(".icon-button, .toolbar-text-button, .toolbar-align-button");
+      if (previousHoverable !== nextHoverable) {
+        previousHoverable?.classList.remove(HOVER_CLASS);
+        nextHoverable?.classList.add(HOVER_CLASS);
+      }
+    };
+    const handleLeave = () => {
+      if (!lastElement) {
+        return;
+      }
+      syntheticPointer("pointerout", lastElement, null);
+      swapHoverClass(lastElement, null);
+      lastElement = null;
+    };
+    const handleMove = (x: number, y: number) => {
+      const element = document.elementFromPoint(x, y);
+      if (element === lastElement) {
+        return;
+      }
+      const previous = lastElement;
+      lastElement = element;
+      if (previous) {
+        syntheticPointer("pointerout", previous, element);
+      }
+      if (element) {
+        syntheticPointer("pointerover", element, previous, x, y);
+      }
+      swapHoverClass(previous, element);
+    };
+
+    void listenForPalettePointer(toolset.id, (payload) => handleMove(payload.x, payload.y))
+      .then((cleanup) => {
+        unlistenMove = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForPalettePointerLeave(toolset.id, handleLeave)
+      .then((cleanup) => {
+        unlistenLeave = cleanup;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      unlistenMove?.();
+      unlistenLeave?.();
+      handleLeave();
+    };
+  }, [toolset.id]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

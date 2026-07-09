@@ -13,6 +13,8 @@ export const TOOLSET_ACTIVE_TOOL_EVENT = "chemdraft://toolset-active-tool";
 export const TOOLSET_ACTIVE_TOOL_REQUEST_EVENT = "chemdraft://toolset-active-tool-request";
 export const TOOLSET_TEXT_STYLE_EVENT = "chemdraft://toolset-text-style";
 export const TOOLSET_TEXT_STYLE_REQUEST_EVENT = "chemdraft://toolset-text-style-request";
+export const PALETTE_POINTER_EVENT = "chemdraft://palette-pointer";
+export const PALETTE_POINTER_LEAVE_EVENT = "chemdraft://palette-pointer-leave";
 export const DEFAULT_TOOLSET_ID = "core.main";
 
 export interface ToolsetWindowPosition {
@@ -560,6 +562,45 @@ export async function listenForPaletteCommandCancels(handler: (commandId: string
 
 export async function listenForToolsetActiveTool(handler: (commandId: string) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(TOOLSET_ACTIVE_TOOL_EVENT, handler);
+}
+
+/** Window-local pointer position pushed by Rust's palette pointer feed (desktop only). The palette
+ *  panels never become the key window, so the OS never delivers hover to their webviews; Rust polls
+ *  the cursor and feeds it here, and PaletteWindow synthesizes pointerover/out (tooltips, hover).
+ *  Every webview's `listen()` sees every event regardless of the emit target, so payloads carry the
+ *  toolset id and each palette filters to its own. */
+export async function listenForPalettePointer(
+  toolsetId: string,
+  handler: (payload: { x: number; y: number }) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ toolsetId?: string; x?: number; y?: number }>(PALETTE_POINTER_EVENT, (event) => {
+    if (event.payload?.toolsetId !== toolsetId) {
+      return;
+    }
+    if (typeof event.payload.x === "number" && typeof event.payload.y === "number") {
+      handler({ x: event.payload.x, y: event.payload.y });
+    }
+  });
+}
+
+/** The cursor left this palette window (or something covered it) — clear synthesized hover. */
+export async function listenForPalettePointerLeave(
+  toolsetId: string,
+  handler: () => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ toolsetId?: string }>(PALETTE_POINTER_LEAVE_EVENT, (event) => {
+    if (event.payload?.toolsetId === toolsetId) {
+      handler();
+    }
+  });
 }
 
 export async function listenForToolsetActiveToolRequests(handler: () => void): Promise<Unlisten> {
