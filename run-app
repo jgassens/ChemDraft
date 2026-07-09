@@ -201,6 +201,19 @@ stop_existing_dev_server() {
   done
 }
 
+stop_stale_dev_servers_for_this_checkout() {
+  # select_dev_port stops scanning at the FIRST free port, so a same-checkout dev server left
+  # running on a higher port from an earlier `--dev` session (one you forgot to close) is never
+  # even inspected, let alone stopped — it just orphans forever and the next run picks a new port
+  # instead of reclaiming the old one. Sweep the same candidate range unconditionally, in both
+  # launch modes, so leftovers from this checkout are always reaped before anything else runs.
+  local candidate start
+  start="$DEV_PORT"
+  for ((candidate = start; candidate <= start + 20; candidate++)); do
+    stop_existing_dev_server "$candidate" ignore-unrelated
+  done
+}
+
 select_dev_port() {
   if ! command -v lsof >/dev/null 2>&1; then
     export CHEMDRAFT_DEV_PORT="$DEV_PORT"
@@ -396,6 +409,7 @@ fi
 
 stop_existing_dev_apps
 unregister_stale_chem_draft_bundles
+stop_stale_dev_servers_for_this_checkout
 
 if [ -z "${CHEMDRAFT_ENGINE3D_SIDECAR:-}" ] && [ -x "$LOCAL_ENGINE3D_SIDECAR" ]; then
   export CHEMDRAFT_ENGINE3D_SIDECAR="$LOCAL_ENGINE3D_SIDECAR"
