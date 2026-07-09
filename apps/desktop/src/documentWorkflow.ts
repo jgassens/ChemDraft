@@ -13091,7 +13091,7 @@ function formulaFromElementCounts(counts: ReadonlyMap<string, number>): string {
     .join("") || "C0H0";
 }
 
-function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]): string {
+export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]): string {
   if (atoms.length === 0) {
     return "";
   }
@@ -13104,7 +13104,12 @@ function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bonds: read
     return singleCycleSmiles;
   }
   if (!isForestGraph(atoms, bonds, components)) {
-    return atoms.map((atom) => nativeAtomSmiles(atom)).join("");
+    // Any graph the single-cycle renderer can't linearize — fused/bridged/spiro polycyclics
+    // (naphthalene, decalin, steroids, …) or multiple components where at least one has a
+    // ring — goes through the general DFS spanning-tree writer. The former fallback here
+    // concatenated bare atom symbols, which SMILES reads as a bonded chain, silently turning
+    // every multi-ring molecule into an acyclic one (10-carbon naphthalene → "CCCCCCCCCC").
+    return nativeGeneralGraphSmiles(components, adjacency, atomById, bondByAtomPair);
   }
 
   return components.map((componentIds) => {
@@ -13116,6 +13121,115 @@ function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bonds: read
     const mainPath = longestNativePath(componentAtoms, adjacency);
     return renderNativePath(mainPath, adjacency, atomById, bondByAtomPair);
   }).join(".");
+}
+
+/**
+ * General SMILES writer for arbitrary connected graphs. It builds a depth-first spanning tree
+ * and turns each non-tree ("back") edge into a ring-closure digit, so it linearizes any ring
+ * system — fused, bridged, or spiro — that the single-cycle renderer above cannot. Bond orders
+ * come from `bondOrderSymbol` and atom labels/charges from `nativeAtomSmiles`; it is a pure
+ * graph→string function with no OpenChemLib dependency, keeping OCL worker-only.
+ */
+function nativeGeneralGraphSmiles(
+  components: readonly (readonly string[])[],
+  adjacency: ReadonlyMap<string, readonly string[]>,
+  atomById: ReadonlyMap<string, MoleculeAtom>,
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>
+): string {
+  return components
+    .map((componentIds) => renderConnectedGraphSmiles(componentIds, adjacency, atomById, bondByAtomPair))
+    .join(".");
+}
+
+function renderConnectedGraphSmiles(
+  componentIds: readonly string[],
+  adjacency: ReadonlyMap<string, readonly string[]>,
+  atomById: ReadonlyMap<string, MoleculeAtom>,
+  bondByAtomPair: ReadonlyMap<string, MoleculeBond>
+): string {
+  if (componentIds.length <= 1) {
+    return nativeAtomSmiles(atomById.get(componentIds[0]));
+  }
+
+  const rootAtomId = [...componentIds].sort()[0];
+
+  // Phase 1 — carve a spanning tree out of the component. Every undirected edge (keyed by
+  // atomPairKey) is classified exactly once: an edge into an unvisited atom is a tree edge,
+  // an edge into an already-visited atom is a back edge and becomes a ring closure.
+  const visited = new Set<string>();
+  const classifiedEdges = new Set<string>();
+  const ringClosureEdgeKeys = new Set<string>();
+  const treeChildren = new Map<string, string[]>();
+
+  const buildSpanningTree = (atomId: string): void => {
+    visited.add(atomId);
+    const children: string[] = [];
+    (adjacency.get(atomId) ?? []).forEach((neighborId) => {
+      const edgeKey = atomPairKey(atomId, neighborId);
+      if (classifiedEdges.has(edgeKey)) {
+        return;
+      }
+      classifiedEdges.add(edgeKey);
+      if (visited.has(neighborId)) {
+        ringClosureEdgeKeys.add(edgeKey);
+      } else {
+        children.push(neighborId);
+        buildSpanningTree(neighborId);
+      }
+    });
+    treeChildren.set(atomId, children);
+  };
+  buildSpanningTree(rootAtomId);
+
+  // Phase 2 — emit in the same pre-order the tree was built. A ring-closure digit is allocated
+  // the first time an atom touches a closure edge (the opening end, always emitted before its
+  // partner) and released when the partner closes it, so digits stay small and get reused.
+  const openRingDigits = new Map<string, number>();
+  const freedRingDigits: number[] = [];
+  let nextRingDigit = 1;
+
+  const acquireRingDigit = (): number => {
+    if (freedRingDigits.length > 0) {
+      freedRingDigits.sort((left, right) => left - right);
+      return freedRingDigits.shift() as number;
+    }
+    const digit = nextRingDigit;
+    nextRingDigit += 1;
+    return digit;
+  };
+
+  const emitAtom = (atomId: string): string => {
+    const ringClosures = (adjacency.get(atomId) ?? [])
+      .map((neighborId) => atomPairKey(atomId, neighborId))
+      .filter((edgeKey) => ringClosureEdgeKeys.has(edgeKey))
+      .map((edgeKey) => {
+        const openDigit = openRingDigits.get(edgeKey);
+        if (openDigit !== undefined) {
+          openRingDigits.delete(edgeKey);
+          freedRingDigits.push(openDigit);
+          return ringClosureDigitToken(openDigit);
+        }
+        const digit = acquireRingDigit();
+        openRingDigits.set(edgeKey, digit);
+        // The ring bond order is written once, at the opening end (SMILES allows it at either).
+        return `${bondOrderSymbol(bondByAtomPair.get(edgeKey)?.order)}${ringClosureDigitToken(digit)}`;
+      })
+      .join("");
+
+    const renderedChildren = (treeChildren.get(atomId) ?? []).map((childId) =>
+      `${bondOrderSymbol(bondByAtomPair.get(atomPairKey(atomId, childId))?.order)}${emitAtom(childId)}`
+    );
+    const branches = renderedChildren.slice(0, -1).map((child) => `(${child})`).join("");
+    const continuation = renderedChildren.length > 0 ? renderedChildren[renderedChildren.length - 1] : "";
+
+    return `${nativeAtomSmiles(atomById.get(atomId))}${ringClosures}${branches}${continuation}`;
+  };
+
+  return emitAtom(rootAtomId);
+}
+
+function ringClosureDigitToken(digit: number): string {
+  return digit < 10 ? String(digit) : `%${String(digit).padStart(2, "0")}`;
 }
 
 function renderSingleCycleWithBranchesSmiles(
