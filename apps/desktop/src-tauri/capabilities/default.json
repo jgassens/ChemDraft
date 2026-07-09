@@ -34,6 +34,7 @@
     "allow-load-toolset-customization-state",
     "allow-focus-main-document-window",
     "allow-route-toolset-command",
+    "allow-sync-plugin-menu-items",
     "allow-read-clipboard-payload",
     "allow-write-clipboard-text-items",
     "allow-open-tool-palette",
