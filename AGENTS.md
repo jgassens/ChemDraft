@@ -88,6 +88,33 @@ git diff --check
 
 Also smoke `./run-app --dev` long enough to confirm startup, then stop the dev server.
 
+## Launch Verification
+
+Every newly built or freshly verified ChemDraft app must be launched from this worktree with
+one of the repository launchers:
+
+```bash
+./run-app
+./run-app --dev
+```
+
+Use `./run-app` for packaged-app verification and `./run-app --dev` for Tauri/Vite HMR
+verification. Do not treat an already-open ChemDraft window, a sibling worktree's app,
+`cargo run`, a direct `tauri dev`, or a browser tab on an old Vite port as proof that the
+current branch was launched. When reporting launch verification, include the exact command
+and the observable success signal, such as the app bundle path for `./run-app` or the
+selected Vite port plus `target/debug/chemdraft` launch for `./run-app --dev`.
+
+Before launching a fresh build, close or stop other running ChemDraft instances that come
+from this checkout or the same build history. Use process working directories, target paths,
+Vite ports, and bundle paths to distinguish same-history instances from unrelated sibling
+worktrees. If a stale instance from the same branch/build lineage is still running, stop it
+before treating the new launch as verified.
+
+If the app feels like the wrong build, check active Vite ports and process working directories
+before editing source. A different checkout listening on `5173` while this worktree uses
+`5174` is a stale-session problem, not proof that this branch failed to build.
+
 ### 5.26 Do not duplicate layout-engine rendering math
 
 Native-molecule rendering math — bond line/segment geometry, double/triple-bond gap and
@@ -811,5 +838,7 @@ At implementation closeout:
 
 - Update the build stamp in this file.
 - Update the `Build` string in `apps/desktop/src/MainWindow.tsx`.
+- Launch the new build through `./run-app` or `./run-app --dev` from this worktree before claiming live verification.
+- Close or stop other running ChemDraft instances from this checkout or the same build history before launch verification.
 - Report tests run and any skipped verification.
 - Keep the final answer focused on the branch and the specific slice completed.
