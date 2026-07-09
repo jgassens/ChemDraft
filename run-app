@@ -60,29 +60,42 @@ stop_existing_dev_apps() {
     return 0
   fi
 
-  # Only stop ChemDraft processes launched from THIS checkout's build output. A bare
-  # `pgrep -x chemdraft` (or unanchored path fragments like "target/debug/chemdraft") would also
-  # match sibling worktrees or other builds and kill them — potentially discarding unsaved work in
-  # another window. Anchoring every pattern to this checkout's target dir keeps the blast radius
-  # to the app this script actually rebuilds and relaunches.
-  local target_dir="$APP_DIR/src-tauri/target"
-  local command pattern pid pids
+  # Stop ChemDraft app processes launched from THIS checkout so a relaunch replaces the previous
+  # build instead of leaving a stale window shadowing the new one. Scope by each process's working
+  # directory (dev binary) or executable path (packaged bundle) against $ROOT_DIR rather than a fixed
+  # argv fragment: `tauri dev` runs the binary through `cargo run`, which launches it with a
+  # *relative* path ("target/debug/chemdraft"), so the old absolute-path match never fired and older
+  # dev builds were never actually killed. Comparing to $ROOT_DIR both fixes that and keeps the blast
+  # radius to this worktree — a sibling worktree's build (its cwd and paths live elsewhere) is left
+  # running on purpose.
+  local pid pids cwd command belongs
   pids="$(
-    for pattern in \
-      "$target_dir/debug/chemdraft" \
-      "$target_dir/release/chemdraft" \
-      "$target_dir/release/bundle/macos/"; do
-      pgrep -f "$pattern" 2>/dev/null || true
-    done
+    { pgrep -x chemdraft 2>/dev/null || true; }
+    { pgrep -f "/target/debug/chemdraft" 2>/dev/null || true; }
+    { pgrep -f "/target/release/chemdraft" 2>/dev/null || true; }
+    { pgrep -f "$RUN_APP_BUNDLE" 2>/dev/null || true; }
   )"
 
   for pid in $(printf "%s\n" $pids | awk 'NF && !seen[$0]++'); do
-    if [ "$pid" != "$$" ]; then
-      command="$(process_command "$pid")"
+    if [ "$pid" = "$$" ]; then
+      continue
+    fi
+
+    cwd="$(process_cwd "$pid")"
+    command="$(process_command "$pid")"
+    belongs=0
+    case "$cwd" in
+      "$ROOT_DIR" | "$ROOT_DIR"/*) belongs=1 ;;
+    esac
+    case "$command" in
+      *"$ROOT_DIR"/*) belongs=1 ;;
+    esac
+
+    if [ "$belongs" = "1" ]; then
       if [ -n "$command" ]; then
-        echo "Stopping existing ChemDraft app process $pid: $command"
+        echo "Stopping existing ChemDraft build from this checkout (pid $pid): $command"
       else
-        echo "Stopping existing ChemDraft app process $pid."
+        echo "Stopping existing ChemDraft build from this checkout (pid $pid)."
       fi
       stop_process "$pid"
     fi
