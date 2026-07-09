@@ -1,6 +1,8 @@
+import { toolsetItemCustomizationId } from "@chemdraft/toolset-registry";
 import type {
   ToolsetDefinition,
   ToolsetGroupDefinition,
+  ToolsetItemDefinition,
   ToolsetLayoutState,
   UserToolsetDefinition,
   UserToolsetOverride
@@ -12,9 +14,12 @@ import type {
  * commit (setLayoutState + save) on Apply. `applyToolsetLayoutState` in `@chemdraft/toolset-registry`
  * interprets the state these produce; keeping the two in lockstep is the invariant under test.
  *
- * Invariant: **structural** edits (add/remove/move items, add groups) apply only to `user.*` toolsets;
- * core and plugin toolsets can only be *overridden* (visibility, title, order, hide, reorder) — cloning
- * a built-in toolset first (see {@link cloneToolset}) is how you get a structurally-editable copy.
+ * Invariant: **full** structural edits (replace groups, add/remove groups) apply only to `user.*`
+ * toolsets; core and plugin toolsets can only be *overridden* (visibility, title, order, hide,
+ * reorder). The ONE exception is an add-only item *addition* ({@link addToolsetItemAddition}) — a
+ * core toolset may gain a new command/spacer via `toolsetOverrides[].itemAdditions`, but its
+ * manifest items are never mutated. Cloning a built-in toolset (see {@link cloneToolset}) is still
+ * how you get a fully structurally-editable copy.
  */
 
 export const USER_TOOLSET_ID_PREFIX = "user.";
@@ -38,6 +43,7 @@ function isEmptyOverride(override: UserToolsetOverride): boolean {
     (override.groupOrder?.length ?? 0) === 0 &&
     (override.hiddenCommandIds?.length ?? 0) === 0 &&
     (override.itemOverrides?.length ?? 0) === 0 &&
+    (override.itemAdditions?.length ?? 0) === 0 &&
     Object.keys(override.itemOrder ?? {}).length === 0
   );
 }
@@ -147,6 +153,105 @@ export function setItemHidden<I extends string, A extends string>(
     }
     draft.hiddenCommandIds = current.size > 0 ? [...current] : undefined;
   });
+}
+
+const SPACER_ID_PREFIX = "user.spacer.";
+
+/** Add a new item (a gallery command, or a spacer) to ANY toolset — the one add-only structural
+ *  edit permitted on core/plugin toolsets, persisted as `toolsetOverrides[].itemAdditions`. No-op
+ *  when the item yields no customization id, the id is already present in the toolset
+ *  (`options.presentItemIds`), or the id already sits among this override's additions. */
+export function addToolsetItemAddition<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  addition: { groupId: string; index?: number; item: ToolsetItemDefinition<I, A> },
+  options: { presentItemIds?: ReadonlySet<string> } = {}
+): ToolsetLayoutState<I, A> {
+  const id = toolsetItemCustomizationId(addition.item);
+  if (id === undefined || options.presentItemIds?.has(id)) {
+    return state;
+  }
+  const current = state.toolsetOverrides.find((override) => override.toolsetId === toolsetId);
+  const alreadyAdded = (current?.itemAdditions ?? []).some(
+    (existing) => toolsetItemCustomizationId(existing.item as ToolsetItemDefinition<I, A>) === id
+  );
+  if (alreadyAdded) {
+    return state;
+  }
+  return withOverride(state, toolsetId, (draft) => {
+    draft.itemAdditions = [
+      ...(draft.itemAdditions ?? []),
+      { groupId: addition.groupId, index: addition.index, item: addition.item }
+    ];
+  });
+}
+
+/** Remove an item from a toolset. An id belonging to an addition is deleted outright (and scrubbed
+ *  from itemOrder / hiddenCommandIds / itemOverrides so no dangling reference survives); a manifest
+ *  (base) item can only be hidden, so it falls through to {@link setItemHidden}. */
+export function removeToolsetItem<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  itemId: string
+): ToolsetLayoutState<I, A> {
+  const current = state.toolsetOverrides.find((override) => override.toolsetId === toolsetId);
+  const isAddition = (current?.itemAdditions ?? []).some(
+    (existing) => toolsetItemCustomizationId(existing.item as ToolsetItemDefinition<I, A>) === itemId
+  );
+  if (!isAddition) {
+    return setItemHidden(state, toolsetId, itemId, true);
+  }
+  return withOverride(state, toolsetId, (draft) => {
+    const additions = (draft.itemAdditions ?? []).filter(
+      (existing) => toolsetItemCustomizationId(existing.item as ToolsetItemDefinition<I, A>) !== itemId
+    );
+    draft.itemAdditions = additions.length > 0 ? additions : undefined;
+    if (draft.hiddenCommandIds) {
+      const hidden = draft.hiddenCommandIds.filter((id) => id !== itemId);
+      draft.hiddenCommandIds = hidden.length > 0 ? hidden : undefined;
+    }
+    if (draft.itemOverrides) {
+      const overrides = draft.itemOverrides.filter((itemOverride) => itemOverride.commandId !== itemId);
+      draft.itemOverrides = overrides.length > 0 ? overrides : undefined;
+    }
+    if (draft.itemOrder) {
+      const itemOrder: Record<string, string[]> = {};
+      for (const [groupId, ids] of Object.entries(draft.itemOrder)) {
+        const filtered = ids.filter((id) => id !== itemId);
+        if (filtered.length > 0) {
+          itemOrder[groupId] = filtered;
+        }
+      }
+      draft.itemOrder = Object.keys(itemOrder).length > 0 ? itemOrder : undefined;
+    }
+  });
+}
+
+/** The next unused `user.spacer.<n>` id for a toolset, scanning both its existing additions and any
+ *  itemOrder mentions so an id survives a remove-then-re-add without colliding with a live spacer. */
+export function nextSpacerItemId<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string
+): string {
+  const override = state.toolsetOverrides.find((entry) => entry.toolsetId === toolsetId);
+  let max = 0;
+  const consider = (id: string | undefined) => {
+    if (id && id.startsWith(SPACER_ID_PREFIX)) {
+      const n = Number.parseInt(id.slice(SPACER_ID_PREFIX.length), 10);
+      if (Number.isFinite(n) && n > max) {
+        max = n;
+      }
+    }
+  };
+  for (const addition of override?.itemAdditions ?? []) {
+    consider(toolsetItemCustomizationId(addition.item as ToolsetItemDefinition<I, A>));
+  }
+  for (const ids of Object.values(override?.itemOrder ?? {})) {
+    for (const id of ids) {
+      consider(id);
+    }
+  }
+  return `${SPACER_ID_PREFIX}${max + 1}`;
 }
 
 /** Drop all overrides for one toolset (Reset Toolbar Layout), leaving user toolsets intact. */

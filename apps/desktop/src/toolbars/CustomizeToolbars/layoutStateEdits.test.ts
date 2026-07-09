@@ -3,13 +3,17 @@ import {
   ToolsetRegistry,
   applyToolsetLayoutState,
   type ToolsetDefinition,
+  type ToolsetItemDefinition,
   type ToolsetLayoutState
 } from "@chemdraft/toolset-registry";
 import {
+  addToolsetItemAddition,
   cloneToolset,
   createUserToolset,
   deleteUserToolset,
   emptyLayoutState,
+  nextSpacerItemId,
+  removeToolsetItem,
   renameToolset,
   reorderGroups,
   reorderItems,
@@ -230,5 +234,126 @@ describe("layoutStateEdits — derived empties register without crashing", () =>
     state = setItemHidden(state, "core.demo", "tool.b", true);
     state = setItemHidden(state, "core.demo", "widget.core.demo", true);
     expect(register(state)).not.toThrow();
+  });
+});
+
+describe("layoutStateEdits — item additions (spacers + gallery adds)", () => {
+  const spacer = (id: string): ToolsetItemDefinition => ({
+    id,
+    kind: "spacer",
+    label: "Spacer",
+    primary: { type: "none" }
+  });
+
+  it("adds a spacer at its index; it appears there after apply", () => {
+    const state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      index: 1,
+      item: spacer("user.spacer.1")
+    });
+    const { toolsets } = apply(state);
+    expect(itemIds(toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual([
+      "tool.a",
+      "user.spacer.1",
+      "tool.b",
+      "widget.core.demo"
+    ]);
+  });
+
+  it("reorders a group including an added spacer id", () => {
+    let state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: spacer("user.spacer.1")
+    });
+    state = reorderItems(state, "core.demo", "core.demo.main", ["user.spacer.1", "tool.a", "tool.b", "widget.core.demo"]);
+    const { toolsets } = apply(state);
+    expect(itemIds(toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual([
+      "user.spacer.1",
+      "tool.a",
+      "tool.b",
+      "widget.core.demo"
+    ]);
+  });
+
+  it("removing the only addition collapses the override to empty", () => {
+    let state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: spacer("user.spacer.1")
+    });
+    expect(state.toolsetOverrides).toHaveLength(1);
+    state = removeToolsetItem(state, "core.demo", "user.spacer.1");
+    expect(state.toolsetOverrides).toEqual([]);
+  });
+
+  it("removing a manifest item hides it (there is no addition to delete)", () => {
+    const state = removeToolsetItem(emptyLayoutState(), "core.demo", "tool.b");
+    expect(state.toolsetOverrides[0]?.hiddenCommandIds).toEqual(["tool.b"]);
+    const { toolsets } = apply(state);
+    expect(itemIds(toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual(["tool.a", "widget.core.demo"]);
+  });
+
+  it("removing an addition scrubs its itemOrder and hidden references", () => {
+    let state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: spacer("user.spacer.1")
+    });
+    state = reorderItems(state, "core.demo", "core.demo.main", ["user.spacer.1", "tool.a", "tool.b", "widget.core.demo"]);
+    state = setItemHidden(state, "core.demo", "user.spacer.1", true);
+    state = removeToolsetItem(state, "core.demo", "user.spacer.1");
+    expect(JSON.stringify(state).includes("user.spacer.1")).toBe(false);
+  });
+
+  it("skips an addition that is already present or already added, and one with no id", () => {
+    const present = addToolsetItemAddition(
+      emptyLayoutState(),
+      "core.demo",
+      { groupId: "core.demo.main", item: spacer("user.spacer.1") },
+      { presentItemIds: new Set(["user.spacer.1"]) }
+    );
+    expect(present.toolsetOverrides).toEqual([]);
+
+    const state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: spacer("user.spacer.1")
+    });
+    const again = addToolsetItemAddition(state, "core.demo", { groupId: "core.demo.main", item: spacer("user.spacer.1") });
+    expect(again).toBe(state);
+    expect(again.toolsetOverrides[0]?.itemAdditions).toHaveLength(1);
+
+    const noId = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: { kind: "spacer", label: "S", primary: { type: "none" } } as ToolsetItemDefinition
+    });
+    expect(noId.toolsetOverrides).toEqual([]);
+  });
+
+  it("nextSpacerItemId increments and never collides with a live spacer", () => {
+    const s0 = emptyLayoutState();
+    expect(nextSpacerItemId(s0, "core.demo")).toBe("user.spacer.1");
+    const s1 = addToolsetItemAddition(s0, "core.demo", { groupId: "core.demo.main", item: spacer("user.spacer.1") });
+    expect(nextSpacerItemId(s1, "core.demo")).toBe("user.spacer.2");
+    const s2 = addToolsetItemAddition(s1, "core.demo", { groupId: "core.demo.main", item: spacer("user.spacer.2") });
+    const s3 = removeToolsetItem(s2, "core.demo", "user.spacer.1");
+    // spacer.2 is still live, so the next id must skip past it.
+    expect(nextSpacerItemId(s3, "core.demo")).toBe("user.spacer.3");
+  });
+
+  it("resetToolsetLayout clears additions", () => {
+    const state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: spacer("user.spacer.1")
+    });
+    expect(resetToolsetLayout(state, "core.demo").toolsetOverrides).toEqual([]);
+  });
+
+  it("addToolsetItemAddition / removeToolsetItem do not mutate the input state", () => {
+    const state = addToolsetItemAddition(emptyLayoutState(), "core.demo", {
+      groupId: "core.demo.main",
+      item: spacer("user.spacer.1")
+    });
+    const snapshot = structuredClone(state);
+    removeToolsetItem(state, "core.demo", "user.spacer.1");
+    addToolsetItemAddition(state, "core.demo", { groupId: "core.demo.main", item: spacer("user.spacer.2") });
+    expect(state).toEqual(snapshot);
   });
 });
