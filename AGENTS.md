@@ -820,3 +820,26 @@ At implementation closeout:
 - Update the `Build` string in `apps/desktop/src/MainWindow.tsx`.
 - Report tests run and any skipped verification.
 - Keep the final answer focused on the branch and the specific slice completed.
+
+## Label every build by its worktree (do not remove)
+
+Several ChemDraft worktrees are checked out at once, and every one builds an app literally named
+"ChemDraft" — so nothing on screen tells them apart unless we label it, which has repeatedly caused
+"wrong build launched" confusion. Every build must therefore carry its worktree/branch label, driven
+by `CHEMDRAFT_WORKTREE_LABEL` (exported automatically by `run-app` as `<dir> [<branch>]`), in three
+places:
+
+- the **window title** — `ChemDraft — <dir> [<branch>]` (Rust `main_window_title()` reads it via
+  `option_env!`; `build.rs` re-emits it as `cargo:rustc-env` so cargo actually recompiles the title
+  when it changes — a bare env var is NOT a tracked compile input);
+- the **on-screen build stamp** — the label leads the stamp (`vite.config.ts` `buildStamp()`);
+- a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.
+
+This is automatic — nothing to remember, nothing to type. Do NOT strip the label out of `run-app`,
+`vite.config.ts`, `apps/desktop/src-tauri/src/lib.rs` (`main_window_title`), or `build.rs`. When you
+report launch verification, state the label you saw (title bar or build stamp) and confirm it matches
+this worktree.
+
+If this worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed
+on this branch yet — port it in from `refactor/toolbars` (the four files above), or pick it up on the
+next merge from `main`.
