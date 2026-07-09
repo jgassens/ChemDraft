@@ -47,6 +47,18 @@ const NmrPredictionUncertaintySchema = z.object({
   maximumPpm: z.number().optional()
 });
 
+const NmrCouplingSchema = z.object({
+  jHz: z.number(),
+  partnerCount: z.number(),
+  kind: z.enum(["vicinal", "aromatic-ortho", "aromatic-meta", "aldehyde", "other"]),
+  toAtomIndex: z.number().optional()
+});
+
+const NmrMultipletSchema = z.object({
+  label: z.string(),
+  couplings: z.array(NmrCouplingSchema)
+});
+
 const NmrResonanceSchema = z.object({
   id: z.string(),
   nucleus: NmrNucleusSchema,
@@ -55,6 +67,7 @@ const NmrResonanceSchema = z.object({
   equivalentNuclei: z.number().optional(),
   uncertainty: NmrPredictionUncertaintySchema.optional(),
   evidence: NmrPredictionEvidenceSchema.optional(),
+  multiplet: NmrMultipletSchema.optional(),
   flags: z.array(z.string())
 });
 

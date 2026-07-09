@@ -71,6 +71,23 @@ export interface NmrPredictionUncertainty {
   maximumPpm?: number;
 }
 
+/** One first-order scalar coupling: a typical J for its class and how many equivalent partners
+ *  contribute it. J values are class-typical estimates from the bond topology, not measured. */
+export interface NmrCoupling {
+  jHz: number;
+  partnerCount: number;
+  kind: "vicinal" | "aromatic-ortho" | "aromatic-meta" | "aldehyde" | "other";
+  /** A representative partner atom index (for future peak↔peak linking). */
+  toAtomIndex?: number;
+}
+
+/** First-order multiplicity for a ¹H resonance: a label (s, d, t, q, quint, sext, sept, dd, dt, ddd,
+ *  m, …) and the distinct J groups (merged by value, largest first) that produce it. */
+export interface NmrMultiplet {
+  label: string;
+  couplings: readonly NmrCoupling[];
+}
+
 export interface NmrResonance {
   id: string;
   nucleus: NmrNucleus;
@@ -80,6 +97,8 @@ export interface NmrResonance {
   equivalentNuclei?: number;
   uncertainty?: NmrPredictionUncertainty;
   evidence?: NmrPredictionEvidence;
+  /** First-order multiplicity + estimated couplings (¹H only; absent for ¹³C or when not computed). */
+  multiplet?: NmrMultiplet;
   flags: readonly string[];
 }
 

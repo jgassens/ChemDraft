@@ -72,7 +72,17 @@ describe("composePredictionReport", () => {
     expect(figure.structure).toBeUndefined();
 
     const table = report.sections.find((section) => section.kind === "table");
-    expect(table && table.kind === "table" && table.rows[0]).toEqual(["¹³C", "128.50", "6", "0.40", "0", "Caq0h1(...)"]);
+    // ¹³C fixture resonance carries no multiplet → Mult./J columns are "—".
+    expect(table && table.kind === "table" && table.rows[0]).toEqual([
+      "¹³C",
+      "128.50",
+      "6",
+      "—",
+      "—",
+      "0.40",
+      "0",
+      "Caq0h1(...)"
+    ]);
     expect(textBodies(report)).toContain("Synthetic fixture values");
     expect(textBodies(report)).toContain("NMR_NO_FRAGMENT_MATCH");
   });

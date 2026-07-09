@@ -160,6 +160,8 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
       nucleusLabel(resonance.nucleus),
       resonance.deltaPpm.toFixed(2),
       String(resonance.equivalentNuclei ?? 1),
+      resonance.multiplet?.label ?? "—",
+      formatCouplings(resonance),
       formatUncertainty(resonance),
       resonance.atomRefs.map((ref) => ref.sourceAtomIndex).join(", "),
       resonance.evidence?.environmentCode ?? "—"
@@ -168,9 +170,15 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
   return {
     kind: "table",
     title: "Predicted shifts",
-    columns: ["Nucleus", "δ (ppm)", "Equiv.", "± σ (ppm)", "Atoms", "Environment"],
+    columns: ["Nucleus", "δ (ppm)", "Equiv.", "Mult.", "J (Hz)", "± σ (ppm)", "Atoms", "Environment"],
     rows
   };
+}
+
+/** First-order coupling constants (estimated, topology-based) for a resonance; "—" when none. */
+function formatCouplings(resonance: NmrResonance): string {
+  const couplings = resonance.multiplet?.couplings ?? [];
+  return couplings.length === 0 ? "—" : couplings.map((coupling) => coupling.jHz.toFixed(1)).join(", ");
 }
 
 function formatUncertainty(resonance: NmrResonance): string {

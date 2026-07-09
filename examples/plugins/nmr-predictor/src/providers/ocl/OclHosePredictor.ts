@@ -5,6 +5,7 @@ import type {
   NmrPredictionRequest,
   NmrPredictionResult,
   NmrPredictor,
+  NmrMultiplet,
   NmrPredictorCapabilities,
   NmrResonance
 } from "../../domain/contracts";
@@ -15,6 +16,7 @@ import { normalizeStructure } from "../../application/normalizeStructure";
 import { atomEnvironmentCodes, environmentKey, MAX_SPHERES } from "./environmentCode";
 import type { CompiledNmrDatabase, NmrDatabaseEntry, NmrDatabaseProvenance } from "./localDatabase";
 import { buildStructureDepiction } from "./structureDepiction";
+import { computeMultiplet } from "./coupling";
 import bundledDatabase from "./nmrshiftdb2.database.json";
 
 const SMALL_POPULATION_THRESHOLD = 3;
@@ -62,7 +64,7 @@ export class OclHosePredictor implements NmrPredictor {
       nuclei: this.database.provenance.nuclei,
       supportsAtomAssignments: true,
       supportsUncertainty: true,
-      supportsCouplings: false,
+      supportsCouplings: true,
       supportsSolvent: false,
       supportsConformers: false,
       supportsStereochemistry: false
@@ -210,8 +212,17 @@ function predictProton(
 
   for (const group of matched.values()) {
     const totalProtons = group.protons.reduce((sum, count) => sum + count, 0);
+    const multiplet = computeMultiplet(molecule, group.atoms[0]);
     resonances.push(
-      buildResonance("1H", group.match, group.atoms, totalProtons, group.protons.map((count) => ({ element: "H", count })), warnings)
+      buildResonance(
+        "1H",
+        group.match,
+        group.atoms,
+        totalProtons,
+        group.protons.map((count) => ({ element: "H", count })),
+        warnings,
+        multiplet
+      )
     );
   }
   let unmatchedCount = 0;
@@ -228,7 +239,8 @@ function buildResonance(
   atoms: readonly number[],
   equivalentNuclei: number,
   refs: readonly { element: string; count: number }[],
-  warnings: NmrPredictionWarning[]
+  warnings: NmrPredictionWarning[],
+  multiplet?: NmrMultiplet
 ): NmrResonance {
   const { entry, code } = match;
   if (entry.n < SMALL_POPULATION_THRESHOLD) {
@@ -263,6 +275,7 @@ function buildResonance(
     // stdev is absent for single-observation environments (localDatabase omits it for n < 2).
     uncertainty: { standardDeviationPpm: entry.stdev, minimumPpm: entry.min, maximumPpm: entry.max },
     evidence: { method: "hose-fragment", matchedSphere: entry.sphere, sampleCount: entry.n, environmentCode: code },
+    ...(multiplet ? { multiplet } : {}),
     flags: []
   };
 }

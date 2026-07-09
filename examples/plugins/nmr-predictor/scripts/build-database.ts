@@ -19,8 +19,8 @@ if (!input || !output) {
 
 const database = buildNmrDatabase(readFileSync(input, "utf8"), {
   provenance: {
-    name: "NMRShiftDB2 (NMReDATA export)",
-    version: "nmrshiftdb2rawdata.nmredata.sd",
+    name: "NMRShiftDB2 (full NMReDATA export)",
+    version: "nmrshiftdb2.nmredata.sd",
     source: "https://sourceforge.net/projects/nmrshiftdb2/files/data/",
     license: "nmrshiftdb2 Database License (ODbL-derived)",
     licenseUrl: "https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt",
