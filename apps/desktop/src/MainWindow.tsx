@@ -480,6 +480,7 @@ import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRunti
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
+import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
@@ -1809,6 +1810,12 @@ export function MainWindow({
     getSelection: () => buildPluginSelectionSnapshot(documentRef.current)
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+
+  // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
+  // from the OS menu bar, not only the in-window (web) bar (ADR-0016). No-op on the web build.
+  useEffect(() => {
+    void syncPluginNativeMenuItems(pluginRuntime.pluginMenuItems);
+  }, [pluginRuntime.pluginMenuItems]);
 
   // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
   // if the live molecule no longer matches (edited or removed), flag the panel as out of date.

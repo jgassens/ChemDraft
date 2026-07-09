@@ -46,6 +46,9 @@ const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
+/// Namespace for plugin command ids (manifest-enforced). Native menu clicks on ids with this prefix
+/// are routed to the webview, which invokes the plugin command (ADR-0016).
+const PLUGIN_COMMAND_PREFIX: &str = "plugin.";
 const AGENT_BRIDGE_ENV_VAR: &str = "CHEMDRAFT_AGENT_BRIDGE";
 const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
 const ENGINE3D_PROTOCOL_VERSION: u32 = 2;
@@ -93,6 +96,26 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "chemistry.validateSelection",
     "structure.openInteractive3d",
 ];
+
+/// A plugin's contributed menu item, synced from the webview (which owns the plugin registry) so the
+/// native menu can include it. `id` is the `plugin.*` command id, routed back by prefix (ADR-0016).
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginMenuItemInput {
+    id: String,
+    label: String,
+    #[serde(default = "default_menu_item_enabled")]
+    enabled: bool,
+}
+
+fn default_menu_item_enabled() -> bool {
+    true
+}
+
+/// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
+/// survive toolset-driven rebuilds, not only plugin syncs.
+#[derive(Default)]
+struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -276,6 +299,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
+        .manage(PluginNativeMenuItems::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
@@ -411,6 +435,7 @@ pub fn run() {
             load_toolset_customization_state,
             focus_main_document_window,
             route_toolset_command,
+            sync_plugin_menu_items,
             read_clipboard_payload,
             write_clipboard_text_items,
             open_tool_palette,
@@ -1545,21 +1570,96 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
+/// Sync the webview's plugin Analyze menu items into the native menu (ADR-0016): store them, then
+/// rebuild + reinstall the app menu so they appear natively. Clicks route back by the `plugin.`
+/// prefix through the existing native→webview command bridge.
+#[tauri::command]
+fn sync_plugin_menu_items(
+    app: tauri::AppHandle,
+    items: Vec<PluginMenuItemInput>,
+) -> Result<(), String> {
+    {
+        let state = app.state::<PluginNativeMenuItems>();
+        let mut guard = state.0.lock().map_err(|error| error.to_string())?;
+        *guard = items;
+    }
+    reinstall_app_menu(&app)
+}
+
+/// Rebuild and install the app menu on the main thread from the current toolset + plugin state.
+fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let app = app.clone();
+    app.clone()
+        .run_on_main_thread(move || {
+            let manifest = toolset_manifest();
+            let layout_state = load_toolset_layout_state(&app);
+            let plugin_items = current_plugin_menu_items(&app);
+            let result = create_app_menu_for_toolsets(&app, &manifest, &layout_state, &plugin_items)
+                .and_then(|menu| app.set_menu(menu).map(|_| ()));
+            if let Err(error) = result {
+                eprintln!("Could not update ChemDraft plugin menu: {error}");
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Build the Analyze submenu: the static "Validate Selected Structure" item plus any plugin items
+/// (synced from the webview), separated. Plugin `id`s are `plugin.*` command ids routed by prefix.
+fn build_analyze_submenu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    plugin_items: &[PluginMenuItemInput],
+) -> tauri::Result<Submenu<R>> {
+    let validate = MenuItem::with_id(
+        app,
+        "chemistry.validateSelection",
+        "Validate Selected Structure",
+        true,
+        None::<&str>,
+    )?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let plugin_menu_items = plugin_items
+        .iter()
+        .map(|item| {
+            MenuItem::with_id(app, item.id.as_str(), item.label.as_str(), item.enabled, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![&validate];
+    if !plugin_menu_items.is_empty() {
+        items.push(&separator);
+        for item in &plugin_menu_items {
+            items.push(item);
+        }
+    }
+    Submenu::with_items(app, "Analyze", true, &items)
+}
+
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let manifest = toolset_manifest();
     let layout_state = ToolsetLayoutState::default();
-    create_app_menu_for_toolsets(app, &manifest, &layout_state)
+    let plugin_items = current_plugin_menu_items(app);
+    create_app_menu_for_toolsets(app, &manifest, &layout_state, &plugin_items)
+}
+
+/// The plugin menu items last synced from the webview (empty until the first sync). Read on every menu
+/// build so toolset-driven rebuilds keep the plugin items too (ADR-0016).
+fn current_plugin_menu_items<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<PluginMenuItemInput> {
+    app.try_state::<PluginNativeMenuItems>()
+        .and_then(|state| state.0.lock().ok().map(|items| items.clone()))
+        .unwrap_or_default()
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_manifest: &ToolsetManifest,
     layout_state: &ToolsetLayoutState,
+    plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, toolset_manifest, layout_state)?;
+    let analyze_menu = build_analyze_submenu(app, plugin_items)?;
 
     Menu::with_items(
         app,
@@ -1642,18 +1742,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                 ],
             )?,
-            &Submenu::with_items(
-                app,
-                "Analyze",
-                true,
-                &[&MenuItem::with_id(
-                    app,
-                    "chemistry.validateSelection",
-                    "Validate Selected Structure",
-                    true,
-                    None::<&str>,
-                )?],
-            )?,
+            &analyze_menu,
             &Submenu::with_items(
                 app,
                 "Window",
@@ -1853,7 +1942,9 @@ fn schedule_customized_toolset_menu<R: Runtime>(
     let app = app.clone();
     app.clone()
         .run_on_main_thread(move || {
-            let menu = create_app_menu_for_toolsets(&app, &toolset_manifest, &layout_state);
+            let plugin_items = current_plugin_menu_items(&app);
+            let menu =
+                create_app_menu_for_toolsets(&app, &toolset_manifest, &layout_state, &plugin_items);
             match menu.and_then(|menu| app.set_menu(menu).map(|_| ())) {
                 Ok(()) => {}
                 Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
@@ -2150,7 +2241,9 @@ fn toolset_toggle_command_id(toolset_id: &str) -> String {
 }
 
 fn is_routed_menu_command(command_id: &str) -> bool {
-    MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
+    MENU_COMMAND_IDS.contains(&command_id)
+        || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
+        || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
 }
 
 fn toolset_visible(toolset: &ToolsetDefinition, layout_state: &ToolsetLayoutState) -> bool {
@@ -2582,6 +2675,14 @@ mod tests {
         expect_true(is_routed_menu_command("export.open"));
         expect_false(is_routed_menu_command("export.pdf"));
         expect_false(is_routed_menu_command("export.png"));
+
+        // Plugin command ids (ADR-0016) route generically by their `plugin.` namespace, so a plugin's
+        // native menu items reach the webview without any core edit.
+        expect_true(is_routed_menu_command(
+            "plugin.nmrPredictor.predictSelectedStructure",
+        ));
+        expect_true(is_routed_menu_command("plugin.molscribeOcsr.recognizeImage"));
+        expect_false(is_routed_menu_command("definitely.not.a.routed.command"));
     }
 
     #[test]
