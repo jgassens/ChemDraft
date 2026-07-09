@@ -1363,14 +1363,14 @@ textarea:focus-visible,
 }
 
 .main-toolbar-style-controls {
-  --cd-main-toolbar-style-width: 344px;
-
+  /* Size to content (both rows) instead of a fixed 344px — the old fixed width + `1fr` columns
+     below left dead whitespace between the swatch/align groups and made the font box sprawl. */
   display: grid;
   grid-template-rows: 24px 24px;
   align-items: stretch;
+  justify-items: start;
   justify-content: start;
-  width: var(--cd-main-toolbar-style-width);
-  min-width: var(--cd-main-toolbar-style-width);
+  width: max-content;
   gap: var(--cd-space-2);
   padding-left: var(--cd-space-2);
 }
@@ -1379,22 +1379,14 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--cd-space-2);
-  width: 100%;
   min-width: 0;
 }
 
-.toolbar-style-row-primary {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content;
-}
-
-.toolbar-style-row-primary .toolbar-align-group {
-  justify-self: end;
-}
-
+/* Both rows pack left with a single gap between groups — no `1fr` filler. The font/size boxes take
+   exact grid-cell widths (4 and 3 cells) so the widget aligns to the toolbar's 24px grid. */
+.toolbar-style-row-primary,
 .toolbar-style-row-secondary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 70px max-content;
+  display: flex;
 }
 
 .text-toolbar-style-controls {
@@ -1427,9 +1419,13 @@ textarea:focus-visible,
   min-width: 0;
 }
 
-.toolbar-font-control,
+/* Exact grid-cell widths: the font box spans 4 toolbar cells, the size box 3 (cell = 24px, gap = 4px). */
+.toolbar-font-control {
+  width: calc(var(--cd-control-height) * 4 + var(--cd-space-2) * 3);
+}
+
 .toolbar-size-control {
-  width: 100%;
+  width: calc(var(--cd-control-height) * 3 + var(--cd-space-2) * 2);
 }
 
 .toolbar-select {

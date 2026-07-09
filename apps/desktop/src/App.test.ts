@@ -521,7 +521,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("app-shell");
     expect(markup).not.toContain("canvas-region");
     expect(markup).not.toContain("utility-drawer");
-    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 70px max-content;");
+    expect(appCss).toContain("width: calc(var(--cd-control-height) * 4 + var(--cd-space-2) * 3);");
     expect(appCss).toContain("grid-template-columns: 170px 70px auto;");
     expect(appCss).toContain("appearance: none;");
     expect(appCss).toContain("linear-gradient(45deg, transparent 50%, var(--cd-text-secondary) 50%)");
@@ -2724,10 +2724,11 @@ describe("ChemDraft desktop shell", () => {
 
     expect(fontIndex).toBeGreaterThan(-1);
     expect(boldIndex).toBeGreaterThan(fontIndex);
-    expect(appCss).toContain("--cd-main-toolbar-style-width: 344px;");
-    expect(appCss).toContain("grid-template-columns: max-content minmax(0, 1fr) max-content;");
-    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 70px max-content;");
-    expect(appCss).toContain("justify-self: end;");
+    // Two 24px rows, content-sized (no fixed 344px width / `1fr` filler), with the font box exactly
+    // 4 grid cells and the size box 3 — so both rows are the same width and columns line up.
+    expect(appCss).toContain("grid-template-rows: 24px 24px;");
+    expect(appCss).toContain("width: calc(var(--cd-control-height) * 4 + var(--cd-space-2) * 3);");
+    expect(appCss).toContain("width: calc(var(--cd-control-height) * 3 + var(--cd-space-2) * 2);");
     expect(appCss).toContain(".tool-palette.floating.horizontal.main-style-palette");
     expect(appCss).toContain("max-height: 64px;");
   });

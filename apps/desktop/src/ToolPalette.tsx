@@ -741,6 +741,11 @@ function MainToolbarStyleControls() {
   const boldActive = (currentTextStyle?.fontWeight ?? 400) >= 600;
   const italicActive = currentTextStyle?.fontStyle === "italic";
   const underlineActive = currentTextStyle?.textDecoration === "underline";
+  // Superscript rides the top row (above subscript on the bottom row — they stack in the last
+  // column); subscript stays with the B/I/U toggles on the bottom row. Both rows are the same total
+  // cell count, so their right edges align and the x²/x₂ pair lines up vertically.
+  const superscriptCommand = textScriptCommands.find((command) => command.script === "superscript");
+  const subscriptCommand = textScriptCommands.find((command) => command.script === "subscript");
 
   return (
     <div className="main-toolbar-style-controls" data-toolbar-style-controls="main">
@@ -765,6 +770,18 @@ function MainToolbarStyleControls() {
             />
           ))}
         </div>
+        {superscriptCommand ? (
+          <ToolbarTextButton
+            commandId={superscriptCommand.id}
+            label={superscriptCommand.title}
+            active={currentTextScript === "superscript"}
+            onInvoke={onInvoke}
+          >
+            <span className="toolbar-script-glyph" data-text-script="superscript">
+              x<span>2</span>
+            </span>
+          </ToolbarTextButton>
+        ) : null}
       </div>
       <div className="toolbar-style-row toolbar-style-row-secondary">
         <TextFontSelect
@@ -814,19 +831,18 @@ function MainToolbarStyleControls() {
           >
             U
           </ToolbarTextButton>
-          {textScriptCommands.filter((command) => command.script !== "normal").map((command) => (
+          {subscriptCommand ? (
             <ToolbarTextButton
-              commandId={command.id}
-              label={command.title}
-              active={currentTextScript === command.script}
-              key={command.id}
+              commandId={subscriptCommand.id}
+              label={subscriptCommand.title}
+              active={currentTextScript === "subscript"}
               onInvoke={onInvoke}
             >
-              <span className="toolbar-script-glyph" data-text-script={command.script}>
-                x<span>{command.script === "subscript" ? "2" : "2"}</span>
+              <span className="toolbar-script-glyph" data-text-script="subscript">
+                x<span>2</span>
               </span>
             </ToolbarTextButton>
-          ))}
+          ) : null}
         </div>
       </div>
     </div>
