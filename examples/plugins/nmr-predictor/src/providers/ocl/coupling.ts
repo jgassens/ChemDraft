@@ -17,6 +17,8 @@ const J_AROMATIC_ORTHO = 7.8;
 const J_AROMATIC_META = 1.6;
 const J_ALDEHYDE = 2.4;
 const J_MERGE_TOLERANCE = 0.6;
+// O–H / N–H / S–H protons are usually exchange-decoupled and don't produce observable splitting.
+const LABILE_PARTNER_ELEMENTS = new Set([7, 8, 16]);
 
 const NAMES: Record<number, string> = { 1: "d", 2: "t", 3: "q", 4: "quint", 5: "sext", 6: "sept" };
 
@@ -30,7 +32,7 @@ export function computeMultiplet(molecule: OCL.Molecule, hostAtom: number): NmrM
   for (let i = 0; i < molecule.getConnAtoms(hostAtom); i += 1) {
     const neighbor = molecule.getConnAtom(hostAtom, i);
     const partnerCount = molecule.getAllHydrogens(neighbor);
-    if (partnerCount <= 0) {
+    if (partnerCount <= 0 || LABILE_PARTNER_ELEMENTS.has(molecule.getAtomicNo(neighbor))) {
       continue;
     }
     if (hostAromatic && molecule.isAromaticAtom(neighbor)) {

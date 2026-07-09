@@ -40,14 +40,18 @@ describe("OclHosePredictor", () => {
     expect(() => NmrPredictionResultSchema.parse(result)).not.toThrow();
   });
 
-  it("warns instead of fabricating when nothing matches", async () => {
+  it("rule-estimates (never fabricates a match) when nothing is in the database", async () => {
     const database = buildNmrDatabase(makeSd("CCC", [{ atom: 2, shift: 16.1 }]), {
       provenance: { name: "test", version: "1", source: "s", license: "l", attribution: "a", note: "n" }
     });
     const predictor = new OclHosePredictor({ database });
     // A silicon environment shares no code with the propane-only database.
     const result = await predict(predictor, "C[Si](C)(C)C");
-    expect(result.warnings.map((warning) => warning.code)).toContain("NMR_NO_FRAGMENT_MATCH");
+    // No fabricated DB hit — unmatched environments surface as explicit, low-confidence rule estimates.
+    expect(result.warnings.map((warning) => warning.code)).toContain("NMR_RULE_ESTIMATED");
+    const estimated = result.resonances.filter((resonance) => resonance.evidence?.method === "rule-estimated");
+    expect(estimated.length).toBeGreaterThan(0);
+    expect(estimated.every((resonance) => resonance.flags.includes("rule-estimated"))).toBe(true);
   });
 
   it("uses the bundled NMRShiftDB2 database (lazy-loaded) and surfaces its provenance", async () => {
@@ -60,11 +64,15 @@ describe("OclHosePredictor", () => {
     expect(result.backend.license).toBeTruthy();
     expect(result.backend.attribution).toBeTruthy();
     expect(result.resonances.length).toBeGreaterThan(0);
+    // Acetone is well covered, so at least one resonance is a real DB match.
+    expect(result.resonances.some((resonance) => resonance.evidence?.method === "hose-fragment")).toBe(true);
     for (const resonance of result.resonances) {
-      // stdev is present for n>=2 reference populations and omitted for singletons; sampleCount is always real.
       const sd = resonance.uncertainty?.standardDeviationPpm;
       expect(sd === undefined || typeof sd === "number").toBe(true);
-      expect(resonance.evidence?.sampleCount).toBeGreaterThan(0);
+      // DB-matched resonances carry a real sample count; rule-estimated ones legitimately do not.
+      if (resonance.evidence?.method === "hose-fragment") {
+        expect(resonance.evidence.sampleCount).toBeGreaterThan(0);
+      }
     }
   });
 

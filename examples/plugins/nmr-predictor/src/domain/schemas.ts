@@ -35,7 +35,7 @@ const NmrAtomReferenceSchema = z.object({
 });
 
 const NmrPredictionEvidenceSchema = z.object({
-  method: z.enum(["fixture-fragment", "hose-fragment", "gnn", "dft", "hybrid"]),
+  method: z.enum(["fixture-fragment", "hose-fragment", "gnn", "dft", "hybrid", "rule-estimated"]),
   matchedSphere: z.number().optional(),
   sampleCount: z.number().optional(),
   environmentCode: z.string().optional()

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  PluginLinkedFigurePeak,
   PluginLinkedFigureSpectrum,
   PluginLinkedFigureStructure
 } from "@chemdraft/plugin-api";
@@ -194,11 +195,16 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
             );
           })}
           {spectrum.peaks.map((peak) => {
-            const x = xOf(peak.ppm);
-            if (x < MARGIN.left - 1 || x > MARGIN.left + PLOT_W + 1) return null;
-            const height = 16 + (peak.intensity / maxIntensity) * (PLOT_H - 30);
-            const topY = BASE_Y - height;
+            const centerX = xOf(peak.ppm);
+            if (centerX < MARGIN.left - 1 || centerX > MARGIN.left + PLOT_W + 1) return null;
+            const fullHeight = 16 + (peak.intensity / maxIntensity) * (PLOT_H - 30);
             const active = activePeakIds.has(peak.id);
+            const stickClass = peak.estimated ? "lf-stick is-estimated" : "lf-stick";
+            // First-order multiplet lines; sub-pixel at full view, resolve as you zoom in.
+            const lines = multipletLines(peak);
+            const xs = lines.map((line) => xOf(line.ppm));
+            const minX = Math.min(centerX, ...xs);
+            const maxX = Math.max(centerX, ...xs);
             return (
               <g
                 key={peak.id}
@@ -207,12 +213,21 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
                 onMouseEnter={() => setHoverPeakId(peak.id)}
                 onMouseLeave={() => setHoverPeakId(null)}
               >
-                <line className="lf-stick" x1={x} y1={BASE_Y} x2={x} y2={topY} />
-                <text className="lf-peak-label" x={x} y={topY - 4} textAnchor="middle">
+                {lines.map((line, index) => (
+                  <line
+                    key={index}
+                    className={stickClass}
+                    x1={round(xOf(line.ppm))}
+                    y1={BASE_Y}
+                    x2={round(xOf(line.ppm))}
+                    y2={round(BASE_Y - fullHeight * line.rel)}
+                  />
+                ))}
+                <text className="lf-peak-label" x={round(centerX)} y={round(BASE_Y - fullHeight - 4)} textAnchor="middle">
                   {peak.label ?? peak.ppm.toFixed(2)}
                 </text>
-                {/* Wider transparent hit area so thin sticks are easy to hover. */}
-                <rect className="lf-hit" x={x - 6} y={MARGIN.top} width={12} height={PLOT_H} />
+                {/* Wider transparent hit area covering the whole multiplet, so it is easy to hover. */}
+                <rect className="lf-hit" x={minX - 6} y={MARGIN.top} width={maxX - minX + 12} height={PLOT_H} />
               </g>
             );
           })}
@@ -333,6 +348,41 @@ function parallelLines(
     x2: round(b.sx + nx * offset),
     y2: round(b.sy + ny * offset)
   }));
+}
+
+const SPECTROMETER_MHZ = 400;
+const MAX_MULTIPLET_LINES = 32;
+
+/** First-order multiplet line positions (ppm) + relative heights for a peak. Sub-pixel at full view;
+ *  they spread apart as you zoom in. Falls back to a single line when the pattern is too dense. */
+function multipletLines(peak: PluginLinkedFigurePeak): { ppm: number; rel: number }[] {
+  const couplings = peak.couplings ?? [];
+  const lineCount = couplings.reduce((n, coupling) => n * (coupling.partnerCount + 1), 1);
+  if (couplings.length === 0 || lineCount > MAX_MULTIPLET_LINES) {
+    return [{ ppm: peak.ppm, rel: 1 }];
+  }
+  let lines: { ppm: number; weight: number }[] = [{ ppm: peak.ppm, weight: 1 }];
+  for (const coupling of couplings) {
+    const offset = coupling.jHz / SPECTROMETER_MHZ;
+    const n = coupling.partnerCount;
+    const next: { ppm: number; weight: number }[] = [];
+    for (const line of lines) {
+      for (let k = 0; k <= n; k += 1) {
+        next.push({ ppm: line.ppm + (k - n / 2) * offset, weight: line.weight * binomial(n, k) });
+      }
+    }
+    lines = next;
+  }
+  const maxWeight = Math.max(...lines.map((line) => line.weight));
+  return lines.map((line) => ({ ppm: line.ppm, rel: line.weight / maxWeight }));
+}
+
+function binomial(n: number, k: number): number {
+  let result = 1;
+  for (let i = 0; i < k; i += 1) {
+    result = (result * (n - i)) / (i + 1);
+  }
+  return result;
 }
 
 function axisTicks(min: number, max: number): number[] {

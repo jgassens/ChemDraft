@@ -59,7 +59,7 @@ export interface NmrAtomReference {
 }
 
 export interface NmrPredictionEvidence {
-  method: "fixture-fragment" | "hose-fragment" | "gnn" | "dft" | "hybrid";
+  method: "fixture-fragment" | "hose-fragment" | "gnn" | "dft" | "hybrid" | "rule-estimated";
   matchedSphere?: number;
   sampleCount?: number;
   environmentCode?: string;

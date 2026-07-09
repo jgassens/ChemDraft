@@ -12,10 +12,10 @@ third-party evaluation result, and the future data paths.
 | **OCL-native** (default) | `providers/ocl/nmrshiftdb2.database.json` | Aggregated experimental shift statistics (median/mean/stdev/min/max/n per HOSE-code) compiled from NMRShiftDB2. **Statistics only — no structures.** | nmrshiftdb2 Database License (ODbL-derived) — see `providers/ocl/NMRSHIFTDB2_LICENSE.md` |
 | **Fixture** | `providers/fixture/fixtureDatabase.ts` | Hand-authored **synthetic** values for a small environment table. | ChemDraft-owned; not experimental data |
 
-The compiled NMRShiftDB2 database holds **5020 entries** (3034 ¹³C + 1986 ¹H) from
-**129 atom-assigned structures** (from `nmrshiftdb2rawdata.nmredata.sd`, 196
-records), ~817 KB. Rebuild with `scripts/build-database.ts` from the upstream
-NMReDATA export.
+The compiled NMRShiftDB2 database holds **40,024 entries** (HOSE-code → shift
+statistics) from **49,628 atom-assigned structures**, pruned to environments with
+≥ 5 observations for bundle size (~6.1 MB, from ~530k raw environments; ADR-0017).
+Rebuild with `scripts/build-database.ts` from the full `nmrshiftdb2.nmredata.sd`.
 
 ## NMRShiftDB2 license handling (ADR-0014)
 
@@ -31,18 +31,22 @@ with three obligations honored here:
 
 Only compiled statistics are redistributed; the raw structures are not committed.
 
-## Provider limitations (disclosed, by design)
+## Prediction behavior (disclosed, by design)
 
-The bundled database is intentionally narrow (129 structures). Consequences the
-panel surfaces rather than hides:
+- **Coverage + fallback.** The full corpus covers common groups (aldehydes,
+  carbonyls, etc.). Environments still absent get a **rule-estimated** shift from
+  functional-group rules (`NMR_RULE_ESTIMATED`, `evidence.method: "rule-estimated"`)
+  instead of being dropped — marked (dashed peak, "≈" shift, "rule-estimated" in the
+  table) so a guess never reads as a measured match (ADR-0018).
+- **Multiplicity + J.** First-order multiplicity and class-typical coupling constants
+  are estimated from the bond topology (`supportsCouplings: true`) and drawn as split
+  peaks — estimates for readability, not a spin simulation (ADR-0017/0018).
+- Shallow-sphere matches (`NMR_LOW_HOSE_SPHERE_MATCH`), small reference populations
+  (`NMR_SMALL_REFERENCE_POPULATION`), and omitted labile protons are still surfaced.
 
-- Many atoms match only a shallow sphere → coarse prediction (`NMR_LOW_HOSE_SPHERE_MATCH`).
-- Quaternary/carbonyl and uncommon environments often have **no** match
-  (`NMR_NO_FRAGMENT_MATCH`) → partial results.
-- Small reference populations widen uncertainty (`NMR_SMALL_REFERENCE_POPULATION`).
-
-The predictor **never presents thin or synthetic predictions as authoritative**.
-The fixture provider's values are labeled synthetic everywhere they appear.
+The predictor **never presents an estimate as a measured match**: DB matches are
+`hose-fragment`; estimates are `rule-estimated`. The fixture provider's values are
+labeled synthetic everywhere they appear.
 
 ## Third-party evaluation result (M11, ADR-0013)
 

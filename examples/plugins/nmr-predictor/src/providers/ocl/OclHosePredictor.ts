@@ -17,6 +17,7 @@ import { atomEnvironmentCodes, environmentKey, MAX_SPHERES } from "./environment
 import type { CompiledNmrDatabase, NmrDatabaseEntry, NmrDatabaseProvenance } from "./localDatabase";
 import { buildStructureDepiction } from "./structureDepiction";
 import { computeMultiplet } from "./coupling";
+import { estimateCarbonShift, estimateProtonShift } from "./functionalGroupFallback";
 import bundledDatabase from "./nmrshiftdb2.database.json";
 
 const SMALL_POPULATION_THRESHOLD = 3;
@@ -79,21 +80,22 @@ export class OclHosePredictor implements NmrPredictor {
 
     const warnings: NmrPredictionWarning[] = [];
     const resonances: NmrResonance[] = [];
-    let unmatched = 0;
+    let estimated = 0;
 
     for (const nucleus of dedupeNuclei(request.nuclei)) {
       throwIfAborted(signal);
-      unmatched +=
+      estimated +=
         nucleus === "13C"
           ? predictCarbon(this.database, molecule, maxSpheres, resonances, warnings)
           : predictProton(this.database, molecule, request, maxSpheres, resonances, warnings);
     }
 
-    if (unmatched > 0 && resonances.length > 0) {
+    if (estimated > 0) {
       warnings.push(
         nmrWarning(
-          NmrWarningCodes.PartialPrediction,
-          `${unmatched} atom environment(s) had no database match; the prediction is partial.`
+          NmrWarningCodes.RuleEstimated,
+          `${estimated} resonance(s) had no database match and are shown as coarse rule estimates (low confidence).`,
+          { severity: "info" }
         )
       );
     }
@@ -161,12 +163,21 @@ function predictCarbon(
       buildResonance("13C", group.match, group.atoms, group.atoms.length, group.atoms.map(() => ({ element: "C", count: 1 })), warnings)
     );
   }
-  let unmatchedCount = 0;
+  let estimatedCount = 0;
   for (const [code, atoms] of unmatched) {
-    unmatchedCount += atoms.length;
-    warnings.push(noMatchWarning("13C", code, atoms));
+    estimatedCount += 1;
+    resonances.push(
+      buildEstimatedResonance(
+        "13C",
+        atoms,
+        atoms.length,
+        atoms.map(() => ({ element: "C", count: 1 })),
+        estimateCarbonShift(molecule, atoms[0]),
+        code
+      )
+    );
   }
-  return unmatchedCount;
+  return estimatedCount;
 }
 
 function predictProton(
@@ -225,12 +236,23 @@ function predictProton(
       )
     );
   }
-  let unmatchedCount = 0;
+  let estimatedCount = 0;
   for (const [code, atoms] of unmatched) {
-    unmatchedCount += atoms.reduce((sum, atom) => sum + molecule.getAllHydrogens(atom), 0);
-    warnings.push(noMatchWarning("1H", code, atoms));
+    estimatedCount += 1;
+    const totalProtons = atoms.reduce((sum, atom) => sum + molecule.getAllHydrogens(atom), 0);
+    resonances.push(
+      buildEstimatedResonance(
+        "1H",
+        atoms,
+        totalProtons,
+        atoms.map((atom) => ({ element: "H", count: molecule.getAllHydrogens(atom) })),
+        estimateProtonShift(molecule, atoms[0]),
+        code,
+        computeMultiplet(molecule, atoms[0])
+      )
+    );
   }
-  return unmatchedCount;
+  return estimatedCount;
 }
 
 function buildResonance(
@@ -280,12 +302,36 @@ function buildResonance(
   };
 }
 
-function noMatchWarning(nucleus: NmrNucleus, code: string, atoms: readonly number[]): NmrPredictionWarning {
-  return nmrWarning(NmrWarningCodes.NoFragmentMatch, `No ${nucleus} database match for environment ${code}.`, {
-    severity: "warning",
-    atomIndices: [...atoms],
-    details: { nucleus, environmentCode: code }
-  });
+/** Build a resonance for an environment the database does not cover, from a coarse functional-group
+ *  estimate. Marked `rule-estimated` with wide uncertainty so a guess never reads as a measured match
+ *  — the alternative (dropping it) made aldehydes and other groups silently disappear. */
+function buildEstimatedResonance(
+  nucleus: NmrNucleus,
+  atoms: readonly number[],
+  equivalentNuclei: number,
+  refs: readonly { element: string; count: number }[],
+  shift: number,
+  code: string,
+  multiplet?: NmrMultiplet
+): NmrResonance {
+  const resonance: NmrResonance = {
+    id: `${nucleus === "13C" ? "c" : "h"}-est-${Math.min(...atoms)}`,
+    nucleus,
+    deltaPpm: Math.round(shift * 100) / 100,
+    atomRefs: atoms.map((atom, index) => ({
+      sourceAtomIndex: atom,
+      element: refs[index].element,
+      equivalentCount: refs[index].count
+    })),
+    equivalentNuclei,
+    uncertainty: { standardDeviationPpm: nucleus === "1H" ? 0.5 : 10 },
+    evidence: { method: "rule-estimated", environmentCode: code },
+    flags: ["rule-estimated"]
+  };
+  if (multiplet) {
+    resonance.multiplet = multiplet;
+  }
+  return resonance;
 }
 
 function pushGroup(groups: Map<string, number[]>, key: string, atom: number): void {

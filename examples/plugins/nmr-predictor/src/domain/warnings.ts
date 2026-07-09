@@ -11,7 +11,8 @@ export const NmrWarningCodes = {
   NoFragmentMatch: "NMR_NO_FRAGMENT_MATCH",
   LowHoseSphereMatch: "NMR_LOW_HOSE_SPHERE_MATCH",
   SmallReferencePopulation: "NMR_SMALL_REFERENCE_POPULATION",
-  PartialPrediction: "NMR_PARTIAL_PREDICTION"
+  PartialPrediction: "NMR_PARTIAL_PREDICTION",
+  RuleEstimated: "NMR_RULE_ESTIMATED"
 } as const;
 
 export type NmrWarningCode = (typeof NmrWarningCodes)[keyof typeof NmrWarningCodes];

@@ -5203,6 +5203,16 @@ textarea:focus-visible,
   stroke-width: 2;
 }
 
+/* Rule-estimated peaks (no reference-DB match) render dashed + muted so they never read as measured. */
+.lf-stick.is-estimated {
+  stroke: var(--cd-text-muted);
+  stroke-dasharray: 3 2;
+}
+
+.lf-peak.is-active .lf-stick.is-estimated {
+  stroke: var(--cd-accent-strong);
+}
+
 .lf-peak-label {
   font-size: 13px;
   fill: var(--cd-accent-text);

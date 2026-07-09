@@ -105,4 +105,26 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector(".lf-structure")).toBeNull();
     expect(container!.querySelectorAll(".lf-peak").length).toBe(2);
   });
+
+  it("draws first-order split lines for a coupled peak (triplet → 3 lines)", () => {
+    const coupled: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 8 },
+      reversed: true,
+      peaks: [{ id: "t", ppm: 3.5, intensity: 1, label: "3.50", atomIndices: [0], couplings: [{ jHz: 7, partnerCount: 2 }] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: coupled }));
+    expect(container!.querySelectorAll('[data-peak-id="t"] .lf-stick').length).toBe(3);
+  });
+
+  it("marks rule-estimated peaks with dashed is-estimated sticks", () => {
+    const estimatedSpectrum: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 12 },
+      reversed: true,
+      peaks: [{ id: "e", ppm: 9.7, intensity: 1, label: "9.70", atomIndices: [0], estimated: true }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: estimatedSpectrum }));
+    expect(container!.querySelector('[data-peak-id="e"] .lf-stick.is-estimated')).not.toBeNull();
+  });
 });

@@ -312,7 +312,14 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
                   intensity: z.number().min(0),
                   label: z.string().optional(),
                   /** Structure atom `index` values this peak is assigned to (for cross-highlight). */
-                  atomIndices: z.array(z.number().int().min(0)).max(4000)
+                  atomIndices: z.array(z.number().int().min(0)).max(4000),
+                  /** True when the shift is a coarse rule estimate, not a reference-DB match. */
+                  estimated: z.boolean().optional(),
+                  /** First-order couplings (Hz + equivalent-partner count) for drawing split peaks. */
+                  couplings: z
+                    .array(z.object({ jHz: z.number(), partnerCount: z.number().int().min(0) }).strict())
+                    .max(16)
+                    .optional()
                 })
                 .strict()
             )

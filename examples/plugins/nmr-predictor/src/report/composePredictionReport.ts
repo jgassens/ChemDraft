@@ -114,13 +114,23 @@ function distinctNuclei(result: NmrPredictionResult): NmrNucleus[] {
 function linkedFigureSection(result: NmrPredictionResult, experimental: boolean): PluginLinkedFigureSection {
   const nucleus = result.resonances[0]?.nucleus ?? "13C";
   const shifts = result.resonances.map((resonance) => resonance.deltaPpm);
-  const peaks: PluginLinkedFigurePeak[] = result.resonances.map((resonance) => ({
-    id: resonance.id,
-    ppm: resonance.deltaPpm,
-    intensity: resonance.equivalentNuclei ?? 1,
-    label: resonance.deltaPpm.toFixed(2),
-    atomIndices: resonance.atomRefs.map((ref) => ref.sourceAtomIndex)
-  }));
+  const peaks: PluginLinkedFigurePeak[] = result.resonances.map((resonance) => {
+    const peak: PluginLinkedFigurePeak = {
+      id: resonance.id,
+      ppm: resonance.deltaPpm,
+      intensity: resonance.equivalentNuclei ?? 1,
+      label: resonance.deltaPpm.toFixed(2),
+      atomIndices: resonance.atomRefs.map((ref) => ref.sourceAtomIndex)
+    };
+    if (resonance.evidence?.method === "rule-estimated") {
+      peak.estimated = true;
+    }
+    const couplings = resonance.multiplet?.couplings ?? [];
+    if (couplings.length > 0) {
+      peak.couplings = couplings.map((coupling) => ({ jHz: coupling.jHz, partnerCount: coupling.partnerCount }));
+    }
+    return peak;
+  });
 
   const section: PluginLinkedFigureSection = {
     kind: "linkedFigure",
@@ -156,16 +166,19 @@ function spectrumDomain(nucleus: NmrNucleus, shifts: readonly number[]): { min: 
 function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
   const rows = [...result.resonances]
     .sort((a, b) => b.deltaPpm - a.deltaPpm)
-    .map((resonance) => [
-      nucleusLabel(resonance.nucleus),
-      resonance.deltaPpm.toFixed(2),
-      String(resonance.equivalentNuclei ?? 1),
-      resonance.multiplet?.label ?? "—",
-      formatCouplings(resonance),
-      formatUncertainty(resonance),
-      resonance.atomRefs.map((ref) => ref.sourceAtomIndex).join(", "),
-      resonance.evidence?.environmentCode ?? "—"
-    ]);
+    .map((resonance) => {
+      const estimated = resonance.evidence?.method === "rule-estimated";
+      return [
+        nucleusLabel(resonance.nucleus),
+        `${estimated ? "≈" : ""}${resonance.deltaPpm.toFixed(2)}`,
+        String(resonance.equivalentNuclei ?? 1),
+        resonance.multiplet?.label ?? "—",
+        formatCouplings(resonance),
+        formatUncertainty(resonance),
+        resonance.atomRefs.map((ref) => ref.sourceAtomIndex).join(", "),
+        estimated ? "rule-estimated" : resonance.evidence?.environmentCode ?? "—"
+      ];
+    });
 
   return {
     kind: "table",
