@@ -94,6 +94,30 @@ export interface NmrPredictionBackend {
   source?: string;
 }
 
+export interface NmrStructureAtom {
+  index: number;
+  x: number;
+  y: number;
+  element: string;
+}
+
+export interface NmrStructureBond {
+  from: number;
+  to: number;
+  order: number;
+}
+
+/**
+ * A chemistry-agnostic 2D depiction the desktop's interactive linked figure renders (ADR-0015).
+ * Atom `index` values are the predictor's own atom indices, so they line up with resonance
+ * `atomRefs.sourceAtomIndex` and the panel can cross-highlight peaks against atoms with no
+ * re-derivation. Only backends that build a real molecule (the OCL predictor) emit this.
+ */
+export interface NmrStructureDepiction {
+  atoms: readonly NmrStructureAtom[];
+  bonds: readonly NmrStructureBond[];
+}
+
 export interface NmrPredictionResult {
   schemaVersion: "1";
   sourceFingerprint: string;
@@ -101,6 +125,8 @@ export interface NmrPredictionResult {
   resonances: readonly NmrResonance[];
   warnings: readonly NmrPredictionWarning[];
   generatedAt: string;
+  /** Optional 2D structure geometry for the interactive panel figure. Absent for fixture backends. */
+  depiction?: NmrStructureDepiction;
 }
 
 export interface NmrPredictor {

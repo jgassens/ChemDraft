@@ -1,5 +1,7 @@
 import type { PluginPanelReport, PluginPanelSection } from "@chemdraft/plugin-api";
 
+import { LinkedFigureView } from "./LinkedFigureView";
+
 /**
  * Renders a validated {@link PluginPanelReport} with core desktop UI. Plugins never ship components;
  * they describe results as data, and this is the single renderer for all of them. SVG sections are
@@ -74,6 +76,14 @@ function PluginReportSectionView({ section }: { section: PluginPanelSection }) {
             alt={section.title ?? section.caption ?? "Plugin visualization"}
             src={`data:image/svg+xml;utf8,${encodeURIComponent(section.svg)}`}
           />
+          {section.caption ? <p className="plugin-report-caption">{section.caption}</p> : null}
+        </section>
+      );
+    case "linkedFigure":
+      return (
+        <section className="plugin-report-section plugin-report-figure">
+          {section.title ? <h4>{section.title}</h4> : null}
+          <LinkedFigureView spectrum={section.spectrum} structure={section.structure} />
           {section.caption ? <p className="plugin-report-caption">{section.caption}</p> : null}
         </section>
       );

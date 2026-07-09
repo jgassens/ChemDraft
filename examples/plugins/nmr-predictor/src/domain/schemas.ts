@@ -76,11 +76,17 @@ const NmrPredictionWarningSchema = z.object({
   details: z.record(z.string(), z.unknown()).optional()
 });
 
+const NmrStructureDepictionSchema = z.object({
+  atoms: z.array(z.object({ index: z.number(), x: z.number(), y: z.number(), element: z.string() })),
+  bonds: z.array(z.object({ from: z.number(), to: z.number(), order: z.number() }))
+});
+
 export const NmrPredictionResultSchema = z.object({
   schemaVersion: z.literal("1"),
   sourceFingerprint: z.string(),
   backend: NmrPredictionBackendSchema,
   resonances: z.array(NmrResonanceSchema),
   warnings: z.array(NmrPredictionWarningSchema),
-  generatedAt: z.string()
+  generatedAt: z.string(),
+  depiction: NmrStructureDepictionSchema.optional()
 });

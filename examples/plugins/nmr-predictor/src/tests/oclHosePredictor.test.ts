@@ -67,4 +67,30 @@ describe("OclHosePredictor", () => {
       expect(resonance.evidence?.sampleCount).toBeGreaterThan(0);
     }
   });
+
+  it("emits 2D depiction geometry whose atom indices align with resonance atomRefs (ADR-0015)", async () => {
+    const predictor = new OclHosePredictor({ now: () => "t" });
+    const result = await predict(predictor, "CC(=O)C"); // acetone — 3 C + 1 O heavy atoms
+    const depiction = result.depiction;
+    expect(depiction).toBeDefined();
+    if (!depiction) return;
+
+    expect(depiction.atoms).toHaveLength(4);
+    expect(depiction.bonds.length).toBeGreaterThanOrEqual(3);
+    const atomIndices = new Set(depiction.atoms.map((atom) => atom.index));
+
+    // Every predicted atom ref resolves to a real depiction atom, so the panel can cross-highlight it.
+    for (const resonance of result.resonances) {
+      for (const ref of resonance.atomRefs) {
+        expect(atomIndices.has(ref.sourceAtomIndex)).toBe(true);
+      }
+    }
+    // Bonds reference real atoms and carry single/double/triple orders.
+    for (const bond of depiction.bonds) {
+      expect(atomIndices.has(bond.from)).toBe(true);
+      expect(atomIndices.has(bond.to)).toBe(true);
+      expect(bond.order).toBeGreaterThanOrEqual(1);
+      expect(bond.order).toBeLessThanOrEqual(3);
+    }
+  });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RecognizedStructureResult } from "./index";
 import {
+  PluginPanelReportSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
   dangerousPluginPermissions,
@@ -225,5 +226,68 @@ describe("RecognizedStructureResult", () => {
   it("keeps dangerous permission names explicit for host review surfaces", () => {
     expect(dangerousPluginPermissions).toContain("native.execute");
     expect(dangerousPluginPermissions).toContain("model.download");
+  });
+});
+
+describe("linkedFigure panel section (ADR-0015)", () => {
+  const figureReport = {
+    title: "NMR Prediction",
+    sections: [
+      {
+        kind: "linkedFigure" as const,
+        title: "Predicted ¹H NMR",
+        caption: "Hover a peak to highlight its atoms.",
+        spectrum: {
+          nucleus: "1H",
+          domain: { min: 0, max: 8 },
+          reversed: true,
+          peaks: [
+            { id: "h-0", ppm: 7.34, intensity: 2, label: "7.34", atomIndices: [0, 2] },
+            { id: "h-5", ppm: 2.43, intensity: 2, atomIndices: [5] }
+          ]
+        },
+        structure: {
+          atoms: [
+            { index: 0, x: 0, y: 0, element: "C" },
+            { index: 2, x: 1.2, y: 0.4, element: "C" },
+            { index: 5, x: -0.8, y: 1.1, element: "C" }
+          ],
+          bonds: [{ from: 0, to: 2, order: 2 }]
+        }
+      }
+    ]
+  };
+
+  it("accepts a data-only interactive figure (spectrum + structure geometry)", () => {
+    expect(() => PluginPanelReportSchema.parse(figureReport)).not.toThrow();
+  });
+
+  it("accepts a figure with no structure (fixture backends omit geometry)", () => {
+    const noStructure = {
+      ...figureReport,
+      sections: [{ ...figureReport.sections[0], structure: undefined }]
+    };
+    expect(() => PluginPanelReportSchema.parse(noStructure)).not.toThrow();
+  });
+
+  it("rejects a stray/script-carrying property (strict, data-only)", () => {
+    const withScript = {
+      ...figureReport,
+      sections: [{ ...figureReport.sections[0], onClick: "alert(1)" }]
+    };
+    expect(() => PluginPanelReportSchema.parse(withScript)).toThrow();
+  });
+
+  it("rejects a negative bond order", () => {
+    const badBond = {
+      ...figureReport,
+      sections: [
+        {
+          ...figureReport.sections[0],
+          structure: { atoms: figureReport.sections[0].structure.atoms, bonds: [{ from: 0, to: 2, order: 0 }] }
+        }
+      ]
+    };
+    expect(() => PluginPanelReportSchema.parse(badBond)).toThrow();
   });
 });

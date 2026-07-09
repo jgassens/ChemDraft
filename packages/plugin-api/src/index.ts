@@ -250,8 +250,11 @@ export const PluginManifestSchema = z
   });
 
 /** Declarative panel content: plugins describe results as data (never framework
- *  components), and the host renders them with core UI. Spectra travel as SVG strings
- *  rendered in an <img> context so scripts can never execute. */
+ *  components), and the host renders them with core UI. Static spectra travel as SVG
+ *  strings rendered in an <img> context so scripts can never execute. The `linkedFigure`
+ *  section is richer: the plugin ships only *data* (peaks + chemistry-agnostic point/line
+ *  geometry) and the trusted core renders an interactive, zoomable figure with hover
+ *  cross-highlighting — no plugin-supplied script or components (ADR-0015). */
 export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -282,6 +285,70 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
       svg: z.string().max(512_000),
       caption: z.string().optional()
     })
+    .strict(),
+  // Core-owned interactive figure (ADR-0015). Plugins supply serializable data only; the desktop
+  // renders a zoomable spectrum linked to an annotated structure with hover cross-highlighting.
+  // Geometry is chemistry-agnostic (points, lines, labels) so the section stays domain-neutral.
+  z
+    .object({
+      kind: z.literal("linkedFigure"),
+      title: NonEmptyStringSchema.optional(),
+      caption: z.string().optional(),
+      spectrum: z
+        .object({
+          /** Free-form axis label token, e.g. "1H" or "13C". Rendered, not interpreted. */
+          nucleus: z.string(),
+          /** ppm range to plot. Peaks outside are clamped by the renderer. */
+          domain: z.object({ min: z.number(), max: z.number() }).strict(),
+          /** NMR convention plots high→low left→right; default true. */
+          reversed: z.boolean().optional(),
+          peaks: z
+            .array(
+              z
+                .object({
+                  id: NonEmptyStringSchema,
+                  ppm: z.number(),
+                  /** Relative stick height (e.g. equivalent-nuclei count); >= 0. */
+                  intensity: z.number().min(0),
+                  label: z.string().optional(),
+                  /** Structure atom `index` values this peak is assigned to (for cross-highlight). */
+                  atomIndices: z.array(z.number().int().min(0)).max(4000)
+                })
+                .strict()
+            )
+            .max(4000)
+        })
+        .strict(),
+      /** Optional 2D depiction. Omitted when the backend has no molecule geometry (e.g. a fixture). */
+      structure: z
+        .object({
+          atoms: z
+            .array(
+              z
+                .object({
+                  index: z.number().int().min(0),
+                  x: z.number(),
+                  y: z.number(),
+                  element: z.string()
+                })
+                .strict()
+            )
+            .max(4000),
+          bonds: z
+            .array(
+              z
+                .object({
+                  from: z.number().int().min(0),
+                  to: z.number().int().min(0),
+                  order: z.number().int().min(1).max(3)
+                })
+                .strict()
+            )
+            .max(8000)
+        })
+        .strict()
+        .optional()
+    })
     .strict()
 ]);
 
@@ -305,6 +372,14 @@ export const PluginPanelReportSchema = z
 
 export type PluginPanelSection = z.infer<typeof PluginPanelSectionSchema>;
 export type PluginPanelReport = z.infer<typeof PluginPanelReportSchema>;
+
+/** The interactive figure section (ADR-0015), extracted for composers and the core renderer. */
+export type PluginLinkedFigureSection = Extract<PluginPanelSection, { kind: "linkedFigure" }>;
+export type PluginLinkedFigureSpectrum = PluginLinkedFigureSection["spectrum"];
+export type PluginLinkedFigurePeak = PluginLinkedFigureSpectrum["peaks"][number];
+export type PluginLinkedFigureStructure = NonNullable<PluginLinkedFigureSection["structure"]>;
+export type PluginLinkedFigureAtom = PluginLinkedFigureStructure["atoms"][number];
+export type PluginLinkedFigureBond = PluginLinkedFigureStructure["bonds"][number];
 
 export interface PluginPanelAPI {
   showReport(panelId: string, report: PluginPanelReport): Promise<void>;

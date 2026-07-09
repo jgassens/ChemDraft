@@ -1,4 +1,5 @@
 import type { PluginManifest } from "@chemdraft/plugin-api";
+import { useState } from "react";
 
 import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
 import { PluginReportRenderer } from "./PluginReportRenderer";
@@ -24,16 +25,26 @@ export interface PluginPanelSurfaceProps {
  */
 export function PluginPanelSurface(props: PluginPanelSurfaceProps) {
   const { openPanel, diagnosticsOpen } = props;
+  const [expanded, setExpanded] = useState(false);
   if (!openPanel && !diagnosticsOpen) {
     return null;
   }
 
+  // Only interactive figures benefit from the large view; a text/table report stays compact.
+  const canExpand = openPanel?.report.sections.some((section) => section.kind === "linkedFigure") ?? false;
+  const className = ["plugin-surface", expanded && canExpand ? "plugin-surface--expanded" : ""]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className="plugin-surface" data-testid="plugin-surface">
+    <div className={className} data-testid="plugin-surface">
       {openPanel ? (
         <OpenPanelView
           panel={openPanel}
           stale={props.stale ?? false}
+          canExpand={canExpand}
+          expanded={expanded}
+          onToggleExpand={() => setExpanded((value) => !value)}
           onClose={props.onClose}
           onRunAgain={props.onRunAgain}
         />
@@ -58,11 +69,17 @@ export function PluginPanelSurface(props: PluginPanelSurfaceProps) {
 function OpenPanelView({
   panel,
   stale,
+  canExpand,
+  expanded,
+  onToggleExpand,
   onClose,
   onRunAgain
 }: {
   panel: OpenPluginPanel;
   stale: boolean;
+  canExpand: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
   onClose: () => void;
   onRunAgain: (commandId: string) => void;
 }) {
@@ -77,6 +94,16 @@ function OpenPanelView({
       <header className="plugin-panel-header">
         <h3 className="plugin-panel-title">{panel.report.title || panel.title}</h3>
         <div className="plugin-panel-actions">
+          {canExpand ? (
+            <button
+              type="button"
+              className="plugin-panel-expand"
+              aria-pressed={expanded}
+              onClick={onToggleExpand}
+            >
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+          ) : null}
           {runCommandId ? (
             <button type="button" className="plugin-panel-run-again" onClick={() => onRunAgain(runCommandId)}>
               Run again

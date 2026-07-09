@@ -14,6 +14,7 @@ import { nmrWarning, NmrWarningCodes, type NmrPredictionWarning } from "../../do
 import { normalizeStructure } from "../../application/normalizeStructure";
 import { atomEnvironmentCodes, environmentKey, MAX_SPHERES } from "./environmentCode";
 import type { CompiledNmrDatabase, NmrDatabaseEntry, NmrDatabaseProvenance } from "./localDatabase";
+import { buildStructureDepiction } from "./structureDepiction";
 import bundledDatabase from "./nmrshiftdb2.database.json";
 
 const SMALL_POPULATION_THRESHOLD = 3;
@@ -109,7 +110,10 @@ export class OclHosePredictor implements NmrPredictor {
       },
       resonances,
       warnings,
-      generatedAt: this.now()
+      generatedAt: this.now(),
+      // 2D geometry for the interactive panel figure. Built last (it invents coordinates on the
+      // molecule) and only after resonances, so atom indices stay aligned with atomRefs (ADR-0015).
+      depiction: buildStructureDepiction(molecule)
     };
   }
 }

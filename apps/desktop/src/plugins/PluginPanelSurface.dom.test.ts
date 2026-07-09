@@ -110,6 +110,39 @@ describe("PluginPanelSurface", () => {
     expect(container!.querySelector("svg")).toBeNull();
   });
 
+  it("renders an interactive linked figure and offers an Expand toggle that grows the surface", () => {
+    const figurePanel: OpenPluginPanel = {
+      ...openPanel,
+      report: {
+        title: "NMR Prediction",
+        sections: [
+          {
+            kind: "linkedFigure",
+            title: "Predicted ¹H NMR",
+            spectrum: {
+              nucleus: "1H",
+              domain: { min: 0, max: 8 },
+              reversed: true,
+              peaks: [{ id: "p1", ppm: 7.2, intensity: 1, label: "7.20", atomIndices: [0] }]
+            }
+          }
+        ]
+      }
+    };
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: figurePanel })));
+
+    // The core renders the figure as live SVG (not an inert <img>).
+    expect(container!.querySelector(".lf-spectrum")).not.toBeNull();
+    const expand = container!.querySelector<HTMLButtonElement>(".plugin-panel-expand");
+    expect(expand).not.toBeNull();
+    expect(container!.querySelector(".plugin-surface--expanded")).toBeNull();
+
+    act(() => {
+      expand!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container!.querySelector(".plugin-surface--expanded")).not.toBeNull();
+  });
+
   it("lists bundled plugins when diagnostics are open", () => {
     mount(createElement(PluginPanelSurface, surfaceProps({ diagnosticsOpen: true, plugins: [molscribeOcsrManifest] })));
 

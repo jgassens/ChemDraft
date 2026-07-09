@@ -55,18 +55,44 @@ describe("composePredictionReport", () => {
     expect(textBodies(report)).toContain("NMR_EMPTY_STRUCTURE");
   });
 
-  it("result report includes an SVG spectrum, provenance, a shift table, notices, and the disclaimer", () => {
+  it("result report includes an interactive linked figure, provenance, a shift table, notices, and the disclaimer", () => {
     const report = composePredictionReport(source, result);
     const kinds = report.sections.map((section) => section.kind);
-    expect(kinds).toContain("svg");
+    expect(kinds).toContain("linkedFigure");
     expect(kinds).toContain("keyValue");
     expect(kinds).toContain("table");
-    const svg = report.sections.find((section) => section.kind === "svg");
-    expect(svg && svg.kind === "svg" && svg.svg.startsWith("<svg")).toBe(true);
+
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    expect(figure).toBeDefined();
+    if (!figure || figure.kind !== "linkedFigure") throw new Error("expected a linkedFigure section");
+    expect(figure.spectrum.peaks).toHaveLength(1);
+    expect(figure.spectrum.peaks[0].atomIndices).toEqual([0]);
+    expect(figure.spectrum.reversed).toBe(true);
+    // A fixture result carries no molecule geometry — the spectrum still renders, without structure.
+    expect(figure.structure).toBeUndefined();
+
     const table = report.sections.find((section) => section.kind === "table");
     expect(table && table.kind === "table" && table.rows[0]).toEqual(["¹³C", "128.50", "6", "0.40", "0", "Caq0h1(...)"]);
     expect(textBodies(report)).toContain("Synthetic fixture values");
     expect(textBodies(report)).toContain("NMR_NO_FRAGMENT_MATCH");
+  });
+
+  it("carries the 2D depiction into the figure when the backend supplies one", () => {
+    const withDepiction: NmrPredictionResult = {
+      ...result,
+      depiction: {
+        atoms: [
+          { index: 0, x: 0, y: 0, element: "C" },
+          { index: 1, x: 1, y: 0, element: "O" }
+        ],
+        bonds: [{ from: 0, to: 1, order: 2 }]
+      }
+    };
+    const report = composePredictionReport(source, withDepiction);
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    if (!figure || figure.kind !== "linkedFigure") throw new Error("expected a linkedFigure section");
+    expect(figure.structure?.atoms).toHaveLength(2);
+    expect(figure.structure?.bonds[0].order).toBe(2);
   });
 
   it("stamps the report source for staleness detection (D-09)", () => {

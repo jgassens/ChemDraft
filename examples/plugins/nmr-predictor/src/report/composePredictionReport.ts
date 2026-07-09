@@ -1,8 +1,13 @@
-import type { PluginPanelReport, PluginPanelSection, PluginSelectedMolecule } from "@chemdraft/plugin-api";
+import type {
+  PluginLinkedFigurePeak,
+  PluginLinkedFigureSection,
+  PluginPanelReport,
+  PluginPanelSection,
+  PluginSelectedMolecule
+} from "@chemdraft/plugin-api";
 
 import type { NmrNucleus, NmrPredictionResult, NmrResonance } from "../domain/contracts";
 import type { CommandError } from "../application/mapSelection";
-import { renderStickSpectrumSvg } from "./stickSpectrumSvg";
 
 const PANEL_TITLE = "NMR Prediction";
 const SYNTHETIC_DISCLAIMER =
@@ -78,14 +83,7 @@ export function composePredictionReport(
   const experimental = result.backend.method === "hose-fragment";
 
   if (result.resonances.length > 0) {
-    sections.push({
-      kind: "svg",
-      title: "Stick spectrum",
-      svg: renderStickSpectrumSvg(result),
-      caption: experimental
-        ? "Predicted from aggregated experimental reference shifts."
-        : "Predicted shifts — synthetic fixture data, not experimental."
-    });
+    sections.push(linkedFigureSection(result, experimental));
     sections.push(resonanceTable(result));
   }
   sections.push(...noticeSections(result));
@@ -106,6 +104,53 @@ function distinctNuclei(result: NmrPredictionResult): NmrNucleus[] {
     seen.add(resonance.nucleus);
   }
   return [...seen];
+}
+
+/**
+ * The interactive figure (ADR-0015): peaks carry the atoms they came from, and — when the backend
+ * built a real molecule — the 2D depiction rides along so the desktop can annotate each atom with its
+ * shift and cross-highlight on hover. Data only; the core owns all rendering and interaction.
+ */
+function linkedFigureSection(result: NmrPredictionResult, experimental: boolean): PluginLinkedFigureSection {
+  const nucleus = result.resonances[0]?.nucleus ?? "13C";
+  const shifts = result.resonances.map((resonance) => resonance.deltaPpm);
+  const peaks: PluginLinkedFigurePeak[] = result.resonances.map((resonance) => ({
+    id: resonance.id,
+    ppm: resonance.deltaPpm,
+    intensity: resonance.equivalentNuclei ?? 1,
+    label: resonance.deltaPpm.toFixed(2),
+    atomIndices: resonance.atomRefs.map((ref) => ref.sourceAtomIndex)
+  }));
+
+  const section: PluginLinkedFigureSection = {
+    kind: "linkedFigure",
+    title: `Predicted ${nucleusLabel(nucleus)} NMR`,
+    caption: experimental
+      ? "Scroll to zoom, drag to pan; hover a peak to highlight the atoms it came from."
+      : "Synthetic fixture spectrum. Scroll to zoom, drag to pan; hover a peak to highlight its atoms.",
+    spectrum: { nucleus, domain: spectrumDomain(nucleus, shifts), reversed: true, peaks }
+  };
+
+  if (result.depiction) {
+    section.structure = {
+      atoms: result.depiction.atoms.map((atom) => ({ index: atom.index, x: atom.x, y: atom.y, element: atom.element })),
+      bonds: result.depiction.bonds.map((bond) => ({ from: bond.from, to: bond.to, order: bond.order }))
+    };
+  }
+
+  return section;
+}
+
+/** ppm window to plot: the nucleus's conventional range, widened to fit any outlying predicted shift. */
+function spectrumDomain(nucleus: NmrNucleus, shifts: readonly number[]): { min: number; max: number } {
+  const defaults = nucleus === "13C" ? { min: 0, max: 220 } : { min: 0, max: 12 };
+  if (shifts.length === 0) {
+    return defaults;
+  }
+  return {
+    min: Math.min(defaults.min, Math.floor(Math.min(...shifts) - 5)),
+    max: Math.max(defaults.max, Math.ceil(Math.max(...shifts) + 5))
+  };
 }
 
 function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
