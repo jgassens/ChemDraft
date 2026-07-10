@@ -4944,6 +4944,18 @@ textarea:focus-visible,
   padding: var(--cd-space-4) var(--cd-space-5);
   border-bottom: 1px solid var(--cd-border-subtle);
   background: var(--cd-bg-panel);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.plugin-panel-header:active {
+  cursor: grabbing;
+}
+
+/* Buttons in the header keep their own cursor and never start a drag. */
+.plugin-panel-header button {
+  cursor: pointer;
 }
 
 .plugin-panel-title {

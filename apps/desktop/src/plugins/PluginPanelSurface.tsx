@@ -1,5 +1,5 @@
 import type { PluginManifest } from "@chemdraft/plugin-api";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
 import { PluginReportRenderer } from "./PluginReportRenderer";
@@ -84,14 +84,48 @@ function OpenPanelView({
   onRunAgain: (commandId: string) => void;
 }) {
   const runCommandId = panel.commandId;
+  const panelRef = useRef<HTMLElement | null>(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+
+  // Drag the whole panel by its header. Window-level listeners (added on pointer-down, removed on
+  // up) keep the drag alive even when the pointer leaves the header; a button press never starts a
+  // drag. Clamped so the panel can't be dragged fully off-screen (skipped when there is no layout,
+  // e.g. jsdom).
+  const onHeaderPointerDown = (event: React.PointerEvent<HTMLElement>): void => {
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    event.preventDefault();
+    const start = { x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y };
+    const rect = panelRef.current?.getBoundingClientRect();
+    const base = rect ? { left: rect.left - offset.x, top: rect.top - offset.y, width: rect.width } : undefined;
+    const onMove = (move: PointerEvent): void => {
+      let x = start.ox + (move.clientX - start.x);
+      let y = start.oy + (move.clientY - start.y);
+      if (base && base.width > 0) {
+        x = Math.min(Math.max(x, 80 - base.width - base.left), window.innerWidth - 80 - base.left);
+        y = Math.min(Math.max(y, -base.top), window.innerHeight - 40 - base.top);
+      }
+      setOffset({ x, y });
+    };
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   return (
     <section
+      ref={panelRef}
       className={["plugin-panel", stale ? "is-stale" : ""].filter(Boolean).join(" ")}
       data-testid="plugin-panel"
       data-panel-id={panel.panelId}
       data-stale={stale ? "true" : undefined}
+      style={offset.x !== 0 || offset.y !== 0 ? { transform: `translate(${offset.x}px, ${offset.y}px)` } : undefined}
     >
-      <header className="plugin-panel-header">
+      <header className="plugin-panel-header" onPointerDown={onHeaderPointerDown} title="Drag to move">
         <h3 className="plugin-panel-title">{panel.report.title || panel.title}</h3>
         <div className="plugin-panel-actions">
           {canExpand ? (

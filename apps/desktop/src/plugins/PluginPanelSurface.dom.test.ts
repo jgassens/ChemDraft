@@ -143,6 +143,43 @@ describe("PluginPanelSurface", () => {
     expect(container!.querySelector(".plugin-surface--expanded")).not.toBeNull();
   });
 
+  it("lets the user drag the panel by its header, and stops tracking on pointer-up", () => {
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    const panel = container!.querySelector<HTMLElement>('[data-testid="plugin-panel"]')!;
+    const header = panel.querySelector<HTMLElement>(".plugin-panel-header")!;
+    expect(panel.style.transform).toBe("");
+
+    act(() => {
+      header.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 160, clientY: 135 }));
+    });
+    expect(panel.style.transform).toBe("translate(60px, 35px)");
+
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", {}));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 300, clientY: 300 }));
+    });
+    expect(panel.style.transform).toBe("translate(60px, 35px)"); // released: no further movement
+  });
+
+  it("does not start a drag when a header button is pressed", () => {
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    const panel = container!.querySelector<HTMLElement>('[data-testid="plugin-panel"]')!;
+    const close = panel.querySelector<HTMLButtonElement>(".plugin-panel-close")!;
+
+    act(() => {
+      close.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 160, clientY: 135 }));
+    });
+    expect(panel.style.transform).toBe("");
+  });
+
   it("lists bundled plugins when diagnostics are open", () => {
     mount(createElement(PluginPanelSurface, surfaceProps({ diagnosticsOpen: true, plugins: [molscribeOcsrManifest] })));
 
