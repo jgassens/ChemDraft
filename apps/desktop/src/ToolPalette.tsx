@@ -521,6 +521,15 @@ export const TOOLBAR_WIDGET_TITLES: Readonly<Record<string, string>> = Object.fr
   Object.entries(TOOLBAR_WIDGET_REGISTRY).map(([id, entry]) => [id, entry.title])
 );
 
+/** Widgets the customize gallery can add to a grid toolbar: only `append`-mode sections (they render
+ *  below the grid). `hide-grid` / `replace-grid` widgets (inspectors, art style) ARE that toolbar's
+ *  whole content — adding one to the Main grid would erase it — so they're not offered here. */
+export const APPENDABLE_TOOLBAR_WIDGETS: ReadonlyArray<{ id: string; title: string }> = Object.entries(
+  TOOLBAR_WIDGET_REGISTRY
+)
+  .filter(([, entry]) => entry.gridMode === "append")
+  .map(([id, entry]) => ({ id, title: entry.title }));
+
 function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPaletteItemModel[][] {
   return groups.map((group) => group.map((command) => ({
     id: command.id,

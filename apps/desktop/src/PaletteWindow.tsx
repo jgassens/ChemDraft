@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
 import {
+  APPENDABLE_TOOLBAR_WIDGETS,
   PALETTE_TOOLTIP_DOM_EVENT,
-  TOOLBAR_WIDGET_TITLES,
   ToolPalette,
   type PaletteTooltipDomDetail,
   type ToolbarFlyoutRequest,
@@ -20,7 +20,6 @@ import {
   desktopToolsetRegistry,
   computePaletteGridSize,
   getToolsetPaletteGroups,
-  getToolsetWidgetIds,
   paletteCommandGroupsFromItemGroups,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -108,12 +107,9 @@ export function PaletteWindow({
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
     [allCommands]
   );
-  // Section widgets this toolset declares (from the base manifest, so a hidden one still shows as a
-  // restorable "Widgets" tile in the gallery).
-  const galleryWidgets = useMemo(
-    () => getToolsetWidgetIds(toolset.id).map((id) => ({ id, title: TOOLBAR_WIDGET_TITLES[id] ?? id })),
-    [toolset.id]
-  );
+  // Every append-mode section widget the gallery can offer (Style Controls, Text Style) — present ones
+  // gray out, removed ones (e.g. Style Controls after a drag-out) show as restorable tiles.
+  const galleryWidgets = APPENDABLE_TOOLBAR_WIDGETS;
 
   // In-place customize mode (Main palette only). MainWindow broadcasts the flag; we mirror it and
   // suppress the drag-fighting feeds (pointer-feed hover synthesis, tooltips, popover-dismiss, shell

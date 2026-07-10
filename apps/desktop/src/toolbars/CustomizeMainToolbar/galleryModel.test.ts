@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandSpec } from "../../commands";
-import { GALLERY_COMMAND_LIMIT, buildGalleryModel, type GalleryWidgetDescriptor } from "./galleryModel";
+import { buildGalleryModel, type GalleryWidgetDescriptor } from "./galleryModel";
 
 const cmd = (id: string, title: string): CommandSpec =>
   ({ id, title, icon: "palette", source: "core" }) as CommandSpec;
@@ -61,10 +61,10 @@ describe("buildGalleryModel", () => {
     expect(dividerOnly.map((entry) => entry.kind)).toEqual(["separator"]);
   });
 
-  it("caps the number of command tiles", () => {
-    const many = Array.from({ length: GALLERY_COMMAND_LIMIT + 20 }, (_value, index) => cmd(`tool.n${index}`, `N${index}`));
+  it("lists every command — no cap (the toolbar must host every tool; the tray scrolls)", () => {
+    const many = Array.from({ length: 150 }, (_value, index) => cmd(`tool.n${index}`, `N${index}`));
     const entries = buildGalleryModel(many, [], new Set(), "");
     const commandEntries = entries.filter((entry) => entry.kind === "command");
-    expect(commandEntries).toHaveLength(GALLERY_COMMAND_LIMIT);
+    expect(commandEntries).toHaveLength(150);
   });
 });

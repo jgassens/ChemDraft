@@ -44,10 +44,6 @@ export interface GalleryEntry {
   present: boolean;
 }
 
-/** How many command tiles to show at once — the same soft cap the Customize dialog uses so a long
- *  catalog doesn't balloon the tray. Structural tiles are always shown on top of this. */
-export const GALLERY_COMMAND_LIMIT = 40;
-
 const STRUCTURAL_ENTRIES: ReadonlyArray<{ kind: GalleryStructuralKind; title: string; icon: IconName }> = [
   { kind: "spacer", title: "Space", icon: "palette" },
   { kind: "separator", title: "Divider", icon: "palette" }
@@ -62,10 +58,10 @@ function matchesSearch(query: string, ...fields: (string | undefined)[]): boolea
 
 /**
  * Build the gallery entries for the tray: the two structural tiles (Space, Divider) first, then any
- * section widgets (style controls, inspectors) the toolset declares, then the command catalog deduped
- * by id (first spec wins, matching the Customize dialog), filtered by the search box, and capped.
- * `presentItemIds` are the customization ids already in the toolbar — present command/widget tiles
- * render grayed and inert so an item can't be added twice.
+ * section widgets (style controls) offered, then the FULL command catalog deduped by id (first spec
+ * wins, matching the Customize dialog) and filtered by the search box. Not capped — the toolbar must
+ * be able to host every tool, and the tray scrolls. `presentItemIds` are the customization ids already
+ * in the toolbar — present command/widget tiles render grayed and inert so an item can't be added twice.
  */
 export function buildGalleryModel(
   commands: readonly CommandSpec[],
@@ -116,9 +112,6 @@ export function buildGalleryModel(
       command,
       present: presentItemIds.has(command.id)
     });
-    if (commandEntries.length >= GALLERY_COMMAND_LIMIT) {
-      break;
-    }
   }
 
   return [...structural, ...widgetEntries, ...commandEntries];

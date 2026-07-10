@@ -466,7 +466,7 @@ import {
 } from "./documentWorkflow";
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
-import { TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
+import { APPENDABLE_TOOLBAR_WIDGETS, TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
@@ -511,7 +511,6 @@ import {
   getToolsetItemGroups,
   getToolsetPaletteGroups,
   getToolsetToggleActions,
-  getToolsetWidgetIds,
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -1246,7 +1245,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.20-opus";
+const CURRENT_BUILD_STAMP = "7.5.21-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -13821,7 +13820,7 @@ export function MainWindow({
                         />
                         <GalleryTray
                           commands={galleryCommands}
-                          widgets={getToolsetWidgetIds(toolset.id).map((id) => ({ id, title: TOOLBAR_WIDGET_TITLES[id] ?? id }))}
+                          widgets={APPENDABLE_TOOLBAR_WIDGETS}
                           presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
                         />
                       </>
