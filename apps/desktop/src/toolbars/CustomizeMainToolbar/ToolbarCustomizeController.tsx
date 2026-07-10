@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -125,10 +125,53 @@ export function customizeDragEndEdit(
   return { kind: "reorderItems", groupId: activeGroup.id, orderedItemIds: arrayMove(ids, from, to) };
 }
 
+/** Reorder a group's item models to match an ordered id list, keeping any unlisted item at the end. */
+function reorderModelItems(
+  items: readonly ToolbarPaletteItemModel[],
+  orderedItemIds: readonly string[]
+): ToolbarPaletteItemModel[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const ordered = orderedItemIds
+    .map((id) => byId.get(id))
+    .filter((item): item is ToolbarPaletteItemModel => item !== undefined);
+  const orderedIds = new Set(orderedItemIds);
+  return [...ordered, ...items.filter((item) => !orderedIds.has(item.id))];
+}
+
 /**
- * Owns the single DndContext wrapping the customizable Main palette (and, in Phase 5, the gallery
- * tray). Every drop is resolved to one edit op and handed to `onEdit`; the palette repaints from the
- * main window's re-broadcast, never from a local mutation.
+ * Optimistically apply a resolved edit to the displayed group models so a reorder/remove shows
+ * instantly instead of animating back to the old layout for the ~few ms until the main window's
+ * broadcast lands. Returns `null` for edits that shouldn't be previewed locally (adds — synthesizing
+ * a real icon model here would duplicate the applier; the ~1-frame gap is accepted).
+ */
+export function optimisticGroupsForEdit(
+  groups: readonly ToolbarPaletteGroupModel[],
+  edit: ToolsetLayoutEdit
+): ToolbarPaletteGroupModel[] | null {
+  switch (edit.kind) {
+    case "reorderItems":
+      return groups.map((group) =>
+        group.id === edit.groupId ? { ...group, items: reorderModelItems(group.items, edit.orderedItemIds) } : group
+      );
+    case "removeItem":
+      return groups.map((group) => ({ ...group, items: group.items.filter((item) => item.id !== edit.itemId) }));
+    default:
+      return null;
+  }
+}
+
+/** A structure-only fingerprint of the groups (ids + item order) — changes exactly when the real
+ *  layout updates, independent of array-reference churn, so it's a reliable "broadcast landed" signal. */
+function groupsSignature(groups: readonly ToolbarPaletteGroupModel[]): string {
+  return groups.map((group) => `${group.id ?? ""}:${group.items.map((item) => item.id).join(",")}`).join("|");
+}
+
+/**
+ * Owns the single DndContext wrapping the customizable Main palette and the gallery tray. Every drop
+ * is resolved to one edit op and handed to `onEdit`; the authoritative layout still comes from the
+ * main window's re-broadcast, but the controller previews reorder/remove locally (optimistic display)
+ * so the palette doesn't flash the old layout during the round-trip. `children` is a render-prop given
+ * the groups to render (optimistic overlay ?? authoritative).
  */
 export function ToolbarCustomizeController({
   groups,
@@ -138,11 +181,19 @@ export function ToolbarCustomizeController({
   toolsetId: string;
   groups: readonly ToolbarPaletteGroupModel[];
   onEdit: (edit: ToolsetLayoutEdit) => void;
-  children: ReactNode;
+  children: (effectiveGroups: readonly ToolbarPaletteGroupModel[]) => ReactNode;
 }) {
   const [activeItem, setActiveItem] = useState<ToolbarPaletteItemModel | null>(null);
   // A gallery tile being dragged (its id isn't in `groups`, so it's tracked separately for the ghost).
   const [activeGallery, setActiveGallery] = useState<CustomizeDragData | null>(null);
+  // Optimistic overlay: the just-dropped reorder/remove shown before the broadcast round-trip lands.
+  const [optimisticGroups, setOptimisticGroups] = useState<readonly ToolbarPaletteGroupModel[] | null>(null);
+  const authoritativeSignature = useMemo(() => groupsSignature(groups), [groups]);
+  // Clear the overlay once the authoritative structure catches up (or diverges) — the truth has landed.
+  useEffect(() => {
+    setOptimisticGroups(null);
+  }, [authoritativeSignature]);
+  const effectiveGroups = optimisticGroups ?? groups;
   // display:contents wrapper (no box of its own) so we can measure the palette's rect on drag-end
   // without changing the shell's grid layout.
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -166,7 +217,7 @@ export function ToolbarCustomizeController({
       return;
     }
     const id = String(event.active.id);
-    const item = groups.flatMap((group) => group.items).find((candidate) => candidate.id === id) ?? null;
+    const item = effectiveGroups.flatMap((group) => group.items).find((candidate) => candidate.id === id) ?? null;
     setActiveItem(item);
     setActiveGallery(null);
   };
@@ -186,9 +237,14 @@ export function ToolbarCustomizeController({
       String(event.active.id),
       event.active.data.current as CustomizeDragData | undefined,
       overId,
-      groups
+      effectiveGroups
     );
     if (edit) {
+      // Preview reorder/remove locally so the drop lands instantly; the broadcast confirms it.
+      const preview = optimisticGroupsForEdit(effectiveGroups, edit);
+      if (preview) {
+        setOptimisticGroups(preview);
+      }
       onEdit(edit);
     }
   };
@@ -204,7 +260,7 @@ export function ToolbarCustomizeController({
       onDragCancel={clearActive}
     >
       <div ref={containerRef} style={{ display: "contents" }}>
-        {children}
+        {children(effectiveGroups)}
       </div>
       <DragOverlay>
         {activeItem ? (

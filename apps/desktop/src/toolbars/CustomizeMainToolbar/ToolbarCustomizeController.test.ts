@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ToolbarPaletteGroupModel, ToolbarPaletteItemModel } from "../../toolsets";
-import { customizeDragEndEdit } from "./ToolbarCustomizeController";
+import { customizeDragEndEdit, optimisticGroupsForEdit } from "./ToolbarCustomizeController";
 
 const item = (id: string): ToolbarPaletteItemModel => ({ id }) as unknown as ToolbarPaletteItemModel;
 const groups: ToolbarPaletteGroupModel[] = [
@@ -80,5 +80,31 @@ describe("customizeDragEndEdit", () => {
     expect(
       customizeDragEndEdit("gallery:command:", { gallery: true, galleryKind: "command" }, "a", groups)
     ).toBeUndefined();
+  });
+});
+
+describe("optimisticGroupsForEdit", () => {
+  it("previews a reorder within the group", () => {
+    const next = optimisticGroupsForEdit(groups, {
+      kind: "reorderItems",
+      groupId: "g1",
+      orderedItemIds: ["b", "a", "user.spacer.1"]
+    });
+    expect(next?.[0]?.items.map((item) => item.id)).toEqual(["b", "a", "user.spacer.1"]);
+    // Other groups untouched (same reference).
+    expect(next?.[1]).toBe(groups[1]);
+  });
+
+  it("previews a remove by dropping the item from whichever group holds it", () => {
+    const next = optimisticGroupsForEdit(groups, { kind: "removeItem", itemId: "b" });
+    expect(next?.[0]?.items.map((item) => item.id)).toEqual(["a", "user.spacer.1"]);
+  });
+
+  it("does not preview adds (returns null so the round-trip inserts)", () => {
+    expect(optimisticGroupsForEdit(groups, { kind: "addSpacer", groupId: "g1", index: 0 })).toBeNull();
+    expect(
+      optimisticGroupsForEdit(groups, { kind: "addCommand", groupId: "g1", index: 0, commandId: "tool.x" })
+    ).toBeNull();
+    expect(optimisticGroupsForEdit(groups, { kind: "resetToolset" })).toBeNull();
   });
 });

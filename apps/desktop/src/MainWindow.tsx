@@ -512,7 +512,8 @@ import {
   getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
-  type DesktopToolsetRegistry
+  type DesktopToolsetRegistry,
+  type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel } from "./appMenu";
@@ -1244,7 +1245,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.18.24-fable";
+const CURRENT_BUILD_STAMP = "7.5.19-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -13732,9 +13733,11 @@ export function MainWindow({
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
             const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides);
-            const paletteElement = (
+            // Render from a given set of groups — the controller passes an optimistic overlay while a
+            // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
+            const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
               <ToolPalette
-                itemGroups={paletteGroups.map((group) => group.items)}
+                itemGroups={renderGroups.map((group) => group.items)}
                 gridLayout={toolset.gridLayout}
                 activeTool={activeTool}
                 currentDistributeMode={distributeMode}
@@ -13742,7 +13745,7 @@ export function MainWindow({
                 orientation={toolset.gridLayout?.orientation ?? "vertical"}
                 title={toolset.title}
                 onInvoke={invoke}
-                customize={customizingThis ? { groupIds: paletteGroups.map((group) => group.id) } : undefined}
+                customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
                 widgetState={{
                   currentObjectColor: currentToolbarObjectColor,
                   currentArtStyle,
@@ -13799,18 +13802,22 @@ export function MainWindow({
                     groups={paletteGroups}
                     onEdit={(edit) => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit }).catch(() => undefined)}
                   >
-                    {paletteElement}
-                    <CustomizeBar
-                      onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
-                      onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
-                    />
-                    <GalleryTray
-                      commands={galleryCommands}
-                      presentItemIds={new Set(paletteGroups.flatMap((group) => group.items.map((item) => item.id)))}
-                    />
+                    {(effectiveGroups) => (
+                      <>
+                        {renderPalette(effectiveGroups)}
+                        <CustomizeBar
+                          onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
+                          onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+                        />
+                        <GalleryTray
+                          commands={galleryCommands}
+                          presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
+                        />
+                      </>
+                    )}
                   </ToolbarCustomizeController>
                 ) : (
-                  paletteElement
+                  renderPalette(paletteGroups)
                 )}
               </section>
             );

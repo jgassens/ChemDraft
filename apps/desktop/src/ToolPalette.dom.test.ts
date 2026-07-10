@@ -1072,14 +1072,15 @@ describe("ToolPalette customize mode", () => {
           toolsetId: "core.main",
           groups,
           onEdit: vi.fn(),
-          children: createElement(ToolPalette, {
-            itemGroups,
-            gridLayout: { orientation: "horizontal", rows: 2 },
-            orientation: "horizontal",
-            mode: "floating",
-            onInvoke,
-            customize: { groupIds: ["core.main.selection"] }
-          })
+          children: (effectiveGroups: readonly ToolbarPaletteGroupModel[]) =>
+            createElement(ToolPalette, {
+              itemGroups: effectiveGroups.map((group) => group.items),
+              gridLayout: { orientation: "horizontal", rows: 2 },
+              orientation: "horizontal",
+              mode: "floating",
+              onInvoke,
+              customize: { groupIds: effectiveGroups.map((group) => group.id) }
+            })
         })
       );
     });

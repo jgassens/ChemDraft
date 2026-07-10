@@ -19,7 +19,8 @@ import {
   computePaletteGridSize,
   getToolsetPaletteGroups,
   paletteCommandGroupsFromItemGroups,
-  type DesktopToolsetRegistry
+  type DesktopToolsetRegistry,
+  type ToolbarPaletteGroupModel
 } from "./toolsets";
 import {
   DEFAULT_TOOLSET_ID,
@@ -96,8 +97,6 @@ export function PaletteWindow({
   // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them.
   const paletteGroups = useMemo(() => getToolsetPaletteGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
-  // Derive command groups from the already-normalized itemGroups instead of normalizing the toolset a second time.
-  const groups = useMemo(() => paletteCommandGroupsFromItemGroups(itemGroups), [itemGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
   // The full command catalog feeds both the shortcut registry and the customize gallery. Customize
   // mode never invokes, so a static (phase-4) document is fine — we only need id/title/icon.
@@ -105,12 +104,6 @@ export function PaletteWindow({
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
     [allCommands]
-  );
-  // Customization ids already in the toolbar — the gallery grays these so a command can't be added
-  // twice (a command id is unique within a toolset).
-  const presentItemIds = useMemo(
-    () => new Set(paletteGroups.flatMap((group) => group.items.map((item) => item.id))),
-    [paletteGroups]
   );
 
   // In-place customize mode (Main palette only). MainWindow broadcasts the flag; we mirror it and
@@ -120,7 +113,6 @@ export function PaletteWindow({
   const customizeThisPalette = customizeActive && toolset.id === DEFAULT_TOOLSET_ID;
   const customizeThisPaletteRef = useRef(false);
   customizeThisPaletteRef.current = customizeThisPalette;
-  const customizeGroupIds = useMemo(() => paletteGroups.map((group) => group.id), [paletteGroups]);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
@@ -704,37 +696,42 @@ export function PaletteWindow({
     };
   });
 
-  const paletteElement = (
-    <ToolPalette
-      groups={groups}
-      itemGroups={itemGroups}
-      gridLayout={toolset.gridLayout}
-      activeTool={activeTool}
-      mode="floating"
-      orientation={toolset.gridLayout?.orientation ?? "vertical"}
-      title={toolset.title}
-      onRequestFlyout={openFlyoutPopover}
-      onInvoke={invokeCommand}
-      customize={customizeThisPalette ? { groupIds: customizeGroupIds } : undefined}
-      widgetState={{
-        currentObjectColor: currentTextStyle.color,
-        currentArtStyle,
-        currentArtStyleTarget,
-        currentMoleculeInspector,
-        currentTextStyle,
-        currentTextScript,
-        onColorPickerOpenChange: setColorPickerOpen,
-        onRequestColorPopover: openArtColorPopover,
-        onArtStylePreview: previewCommand,
-        onArtStyleCommit: commitPreviewCommand,
-        onArtStyleCancel: cancelPreviewCommand,
-        onMoleculeInspectorPreview: previewCommand,
-        onMoleculeInspectorCommit: commitPreviewCommand,
-        onMoleculeInspectorCancel: cancelPreviewCommand,
-        onInvoke: invokeCommand
-      }}
-    />
-  );
+  // Render the palette from a given set of groups — the controller passes an optimistic overlay while
+  // a drop is settling, otherwise this is the authoritative `paletteGroups`.
+  const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => {
+    const renderItemGroups = renderGroups.map((group) => group.items);
+    return (
+      <ToolPalette
+        groups={paletteCommandGroupsFromItemGroups(renderItemGroups)}
+        itemGroups={renderItemGroups}
+        gridLayout={toolset.gridLayout}
+        activeTool={activeTool}
+        mode="floating"
+        orientation={toolset.gridLayout?.orientation ?? "vertical"}
+        title={toolset.title}
+        onRequestFlyout={openFlyoutPopover}
+        onInvoke={invokeCommand}
+        customize={customizeThisPalette ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
+        widgetState={{
+          currentObjectColor: currentTextStyle.color,
+          currentArtStyle,
+          currentArtStyleTarget,
+          currentMoleculeInspector,
+          currentTextStyle,
+          currentTextScript,
+          onColorPickerOpenChange: setColorPickerOpen,
+          onRequestColorPopover: openArtColorPopover,
+          onArtStylePreview: previewCommand,
+          onArtStyleCommit: commitPreviewCommand,
+          onArtStyleCancel: cancelPreviewCommand,
+          onMoleculeInspectorPreview: previewCommand,
+          onMoleculeInspectorCommit: commitPreviewCommand,
+          onMoleculeInspectorCancel: cancelPreviewCommand,
+          onInvoke: invokeCommand
+        }}
+      />
+    );
+  };
 
   return (
     <main
@@ -781,15 +778,22 @@ export function PaletteWindow({
           groups={paletteGroups}
           onEdit={(edit) => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit }).catch(() => undefined)}
         >
-          {paletteElement}
-          <CustomizeBar
-            onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
-            onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
-          />
-          <GalleryTray commands={allCommands} presentItemIds={presentItemIds} />
+          {(effectiveGroups) => (
+            <>
+              {renderPalette(effectiveGroups)}
+              <CustomizeBar
+                onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
+                onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+              />
+              <GalleryTray
+                commands={allCommands}
+                presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
+              />
+            </>
+          )}
         </ToolbarCustomizeController>
       ) : (
-        paletteElement
+        renderPalette(paletteGroups)
       )}
     </main>
   );
