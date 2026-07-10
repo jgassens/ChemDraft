@@ -65,6 +65,9 @@ importers:
       '@chemdraft/plugin-host':
         specifier: workspace:*
         version: link:../../packages/plugin-host
+      '@chemdraft/plugin-mass-fragment':
+        specifier: workspace:*
+        version: link:../../examples/plugins/mass-fragment-demo
       '@chemdraft/plugin-nmr-predictor':
         specifier: workspace:*
         version: link:../../examples/plugins/nmr-predictor
@@ -132,6 +135,19 @@ importers:
       vite:
         specifier: ^7.0.0
         version: 7.3.3(@types/node@25.9.3)
+
+  examples/plugins/mass-fragment-demo:
+    dependencies:
+      '@chemdraft/plugin-api':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-api
+      openchemlib:
+        specifier: ^9.22.1
+        version: 9.22.1
+    devDependencies:
+      '@chemdraft/plugin-host':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-host
 
   examples/plugins/molscribe-ocsr:
     dependencies:

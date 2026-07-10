@@ -5,6 +5,7 @@ import {
   molscribeOcsrPanelId,
   runMolScribeOcsrMockRecognition
 } from "@chemdraft/molscribe-ocsr-plugin";
+import { createMassRegistration, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import {
   createNmrRegistration,
   createWorkerBackedPredictor,
@@ -38,6 +39,13 @@ export function registerBundledPlugins(runtime: DesktopPluginRuntime): void {
   runtime.host.registerPlugin(nmrPredictorManifest, {
     commandHandlers: nmr.commandHandlers,
     onPanelClosed: nmr.onPanelClosed
+  });
+
+  // Second, unrelated analyzer (mass spectrometry) on the very same host/analysis/panel APIs — no
+  // worker, no reference database, zero NMR concepts. That it registers identically is the proof that
+  // the plugin infrastructure is domain-agnostic, not NMR-shaped.
+  runtime.host.registerPlugin(massFragmentManifest, {
+    commandHandlers: createMassRegistration().commandHandlers
   });
 }
 
