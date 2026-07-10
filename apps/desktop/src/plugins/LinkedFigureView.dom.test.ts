@@ -114,7 +114,7 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelectorAll(".lf-peak").length).toBe(2);
   });
 
-  it("draws first-order split lines for a coupled peak (triplet → 3 lines)", () => {
+  it("draws a continuous spectrum curve and resolves a coupled peak to 3 first-order lines", () => {
     const coupled: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
       domain: { min: 0, max: 8 },
@@ -122,10 +122,14 @@ describe("LinkedFigureView", () => {
       peaks: [{ id: "t", ppm: 3.5, intensity: 1, label: "3.50", atomIndices: [0], couplings: [{ jHz: 7, partnerCount: 2 }] }]
     };
     mount(createElement(LinkedFigureView, { spectrum: coupled }));
-    expect(container!.querySelectorAll('[data-peak-id="t"] .lf-stick').length).toBe(3);
+    // The spectrum is now a single Lorentzian trace, not raw sticks; the triplet's line count is retained.
+    const curve = container!.querySelector<SVGPathElement>(".lf-curve");
+    expect(curve).not.toBeNull();
+    expect((curve!.getAttribute("d") ?? "").length).toBeGreaterThan(50); // a real, multi-point path
+    expect(container!.querySelector('[data-peak-id="t"]')!.getAttribute("data-line-count")).toBe("3");
   });
 
-  it("marks rule-estimated peaks with dashed is-estimated sticks", () => {
+  it("marks a rule-estimated peak with a muted italic label (never reads as measured)", () => {
     const estimatedSpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
       domain: { min: 0, max: 12 },
@@ -133,7 +137,7 @@ describe("LinkedFigureView", () => {
       peaks: [{ id: "e", ppm: 9.7, intensity: 1, label: "9.70", atomIndices: [0], estimated: true }]
     };
     mount(createElement(LinkedFigureView, { spectrum: estimatedSpectrum }));
-    expect(container!.querySelector('[data-peak-id="e"] .lf-stick.is-estimated')).not.toBeNull();
+    expect(container!.querySelector('[data-peak-id="e"] .lf-peak-label.is-estimated')).not.toBeNull();
   });
 
   it("mutes a matched-but-low-confidence peak (is-low-confidence), but not a confident one", () => {
@@ -149,6 +153,22 @@ describe("LinkedFigureView", () => {
     mount(createElement(LinkedFigureView, { spectrum: mixed }));
     expect(container!.querySelector('[data-peak-id="lo"]')!.classList.contains("is-low-confidence")).toBe(true);
     expect(container!.querySelector('[data-peak-id="hi"]')!.classList.contains("is-low-confidence")).toBe(false);
+  });
+
+  it("colors structure shift labels by estimation quality (ChemDraw-style) and shows the legend", () => {
+    const qualitySpectrum: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 8 },
+      reversed: true,
+      peaks: [
+        { id: "a", ppm: 7.3, intensity: 1, label: "7.30", atomIndices: [0], confidence: "high" },
+        { id: "b", ppm: 2.4, intensity: 1, label: "2.40", atomIndices: [1], estimated: true }
+      ]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: qualitySpectrum, structure }));
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-good')).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-rough')).not.toBeNull();
+    expect(container!.querySelector(".lf-legend")).not.toBeNull();
   });
 
   // Regression guard for the update flicker: when a new prediction with a wider ppm domain replaces the

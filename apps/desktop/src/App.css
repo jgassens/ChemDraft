@@ -5198,19 +5198,18 @@ textarea:focus-visible,
   fill: var(--cd-text-muted);
 }
 
-.lf-stick {
+/* The spectrum trace: one continuous summed-Lorentzian curve, like a real NMR spectrum. */
+.lf-curve {
+  fill: none;
   stroke: var(--cd-accent);
-  stroke-width: 2;
+  stroke-width: 1.25;
+  stroke-linejoin: round;
 }
 
-/* Rule-estimated peaks (no reference-DB match) render dashed + muted so they never read as measured. */
-.lf-stick.is-estimated {
-  stroke: var(--cd-text-muted);
-  stroke-dasharray: 3 2;
-}
-
-.lf-peak.is-active .lf-stick.is-estimated {
+/* Only the hovered peak(s) redraw a highlighted trace on top of the neutral spectrum. */
+.lf-curve.is-active {
   stroke: var(--cd-accent-strong);
+  stroke-width: 1.75;
 }
 
 .lf-peak-label {
@@ -5218,9 +5217,10 @@ textarea:focus-visible,
   fill: var(--cd-accent-text);
 }
 
-.lf-peak.is-active .lf-stick {
-  stroke: var(--cd-accent-strong);
-  stroke-width: 3.5;
+/* Rule-estimated peaks: the number reads muted + italic so a guess never looks measured. */
+.lf-peak-label.is-estimated {
+  fill: var(--cd-text-muted);
+  font-style: italic;
 }
 
 .lf-peak.is-active .lf-peak-label {
@@ -5265,10 +5265,44 @@ textarea:focus-visible,
   fill: var(--cd-accent-text);
 }
 
+/* Estimation quality (ChemDraw-style): a shift's color tells the reader how much to trust it. */
+.lf-shift-label.is-good {
+  fill: #2f6fed;
+}
+.lf-shift-label.is-medium {
+  fill: #c026a8;
+}
+.lf-shift-label.is-rough {
+  fill: #d0421b;
+}
+
 .lf-atom.is-active .lf-shift-label,
 .lf-atom.is-active .lf-atom-label {
   fill: var(--cd-accent-strong);
   font-weight: 700;
+}
+
+/* Quality legend under the figure. */
+.lf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cd-space-3);
+  padding: var(--cd-space-2) var(--cd-space-4) 0;
+  font-size: 11px;
+  color: var(--cd-text-muted);
+}
+.lf-legend-item {
+  font-weight: 600;
+}
+.lf-legend-item.is-good {
+  color: #2f6fed;
+}
+.lf-legend-item.is-medium {
+  color: #c026a8;
+}
+.lf-legend-item.is-rough {
+  color: #d0421b;
 }
 
 .lf-peak,

@@ -93,8 +93,6 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
     return set;
   }, [hoverPeakId, hoverAtomIndex, spectrum.peaks]);
 
-  const maxIntensity = Math.max(1, ...spectrum.peaks.map((peak) => peak.intensity));
-
   const xOf = (ppm: number): number => {
     const frac = (ppm - view.min) / (view.max - view.min || 1);
     return MARGIN.left + (reversed ? 1 - frac : frac) * PLOT_W;
@@ -153,6 +151,53 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
 
   const layout = useMemo(() => (structure ? layoutStructure(structure) : undefined), [structure]);
 
+  // ---- realistic (summed-Lorentzian) spectrum -------------------------------------------------
+  const halfWidthPpm = Math.max(LINE_HALF_WIDTH_PPM, MIN_HALF_WIDTH_PX * ((view.max - view.min) / PLOT_W));
+  const spectrumLines = useMemo(
+    () =>
+      spectrum.peaks.flatMap((peak) =>
+        multipletLines(peak).map((line) => ({ ppm: line.ppm, amp: Math.max(0.001, peak.intensity) * line.rel, peakId: peak.id }))
+      ),
+    [spectrum.peaks]
+  );
+  const sampled = useMemo(
+    () => sampleLorentzian(spectrumLines, view, reversed, halfWidthPpm),
+    [spectrumLines, view.min, view.max, reversed, halfWidthPpm]
+  );
+  const heightScale = (PLOT_H - SPECTRUM_TOP_PAD) / sampled.max;
+  const spectrumPath = useMemo(() => spectrumPathFrom(sampled.xs, sampled.totals, heightScale), [sampled, heightScale]);
+  const activeCurvePath = useMemo(() => {
+    if (activePeakIds.size === 0) return "";
+    const lines = spectrumLines.filter((line) => activePeakIds.has(line.peakId));
+    const s = sampleLorentzian(lines, view, reversed, halfWidthPpm);
+    return spectrumPathFrom(s.xs, s.totals, heightScale);
+  }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, heightScale]);
+  const heightAt = (centerX: number): number => {
+    const index = Math.min(sampled.totals.length - 1, Math.max(0, Math.round(centerX - MARGIN.left)));
+    return sampled.totals[index] * heightScale;
+  };
+
+  // Per-atom estimation quality (good/medium/rough) for coloring the structure's shift labels, the way
+  // ChemDraw signals confidence — derived from the same tiers as the table (high→good, low/est→rough).
+  const atomQuality = useMemo(() => {
+    const map = new Map<number, "good" | "medium" | "rough">();
+    for (const peak of spectrum.peaks) {
+      const quality = peak.estimated
+        ? "rough"
+        : peak.confidence === "high"
+          ? "good"
+          : peak.confidence === "medium"
+            ? "medium"
+            : peak.confidence === "low"
+              ? "rough"
+              : undefined;
+      if (!quality) continue;
+      for (const atom of peak.atomIndices) map.set(atom, quality);
+    }
+    return map;
+  }, [spectrum.peaks]);
+  const hasQuality = atomQuality.size > 0;
+
   return (
     <div className="lf-root">
       <div className="lf-toolbar">
@@ -200,43 +245,36 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
               </g>
             );
           })}
+          {/* The spectrum itself: one continuous summed-Lorentzian trace, like a real NMR spectrum. */}
+          <path className="lf-curve" d={spectrumPath} />
+          {activeCurvePath ? <path className="lf-curve is-active" d={activeCurvePath} /> : null}
           {spectrum.peaks.map((peak) => {
             const centerX = xOf(peak.ppm);
             if (centerX < MARGIN.left - 1 || centerX > MARGIN.left + PLOT_W + 1) return null;
-            const fullHeight = 16 + (peak.intensity / maxIntensity) * (PLOT_H - 30);
             const active = activePeakIds.has(peak.id);
-            const stickClass = peak.estimated ? "lf-stick is-estimated" : "lf-stick";
-            // A matched-but-low-confidence peak (shallow HOSE sphere / sparse reference) is drawn muted,
-            // so the spectrum communicates trust at a glance — distinct from the dashed estimate style.
+            // A matched-but-low-confidence peak (shallow HOSE sphere / sparse reference) reads muted.
             const peakClass = `lf-peak${active ? " is-active" : ""}${peak.confidence === "low" ? " is-low-confidence" : ""}`;
-            // First-order multiplet lines; sub-pixel at full view, resolve as you zoom in.
+            const labelClass = peak.estimated ? "lf-peak-label is-estimated" : "lf-peak-label";
+            // Multiplet line positions still drive the hover hit area and the resolved-line count.
             const lines = multipletLines(peak);
             const xs = lines.map((line) => xOf(line.ppm));
             const minX = Math.min(centerX, ...xs);
             const maxX = Math.max(centerX, ...xs);
+            const apexY = BASE_Y - heightAt(centerX);
             return (
               <g
                 key={peak.id}
                 className={peakClass}
                 data-peak-id={peak.id}
+                data-line-count={lines.length}
                 onMouseEnter={() => setHoverPeakId(peak.id)}
                 onMouseLeave={() => setHoverPeakId(null)}
               >
-                {lines.map((line, index) => (
-                  <line
-                    key={index}
-                    className={stickClass}
-                    x1={round(xOf(line.ppm))}
-                    y1={BASE_Y}
-                    x2={round(xOf(line.ppm))}
-                    y2={round(BASE_Y - fullHeight * line.rel)}
-                  />
-                ))}
-                <text className="lf-peak-label" x={round(centerX)} y={round(BASE_Y - fullHeight - 4)} textAnchor="middle">
+                <text className={labelClass} x={round(centerX)} y={round(apexY - 6)} textAnchor="middle">
                   {peak.label ?? peak.ppm.toFixed(2)}
                 </text>
                 {/* Wider transparent hit area covering the whole multiplet, so it is easy to hover. */}
-                <rect className="lf-hit" x={minX - 6} y={MARGIN.top} width={maxX - minX + 12} height={PLOT_H} />
+                <rect className="lf-hit" x={round(minX - 6)} y={MARGIN.top} width={round(maxX - minX + 12)} height={PLOT_H} />
               </g>
             );
           })}
@@ -276,7 +314,12 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
                     </>
                   ) : null}
                   {shift ? (
-                    <text className="lf-shift-label" x={atom.sx + 7} y={atom.sy - 7} textAnchor="start">
+                    <text
+                      className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
+                      x={atom.sx + 7}
+                      y={atom.sy - 7}
+                      textAnchor="start"
+                    >
                       {shift}
                     </text>
                   ) : null}
@@ -288,6 +331,15 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
           </svg>
         ) : null}
       </div>
+
+      {hasQuality ? (
+        <div className="lf-legend" aria-hidden="true">
+          <span>Shift label color = estimation quality:</span>
+          <span className="lf-legend-item is-good">good</span>
+          <span className="lf-legend-item is-medium">medium</span>
+          <span className="lf-legend-item is-rough">rough</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -362,6 +414,13 @@ function parallelLines(
 const SPECTROMETER_MHZ = 400;
 const MAX_MULTIPLET_LINES = 32;
 
+// A real NMR line is ~Lorentzian. We draw the summed-Lorentzian envelope (not raw sticks) so the trace
+// looks like an actual spectrum. The ppm half-width is sharp; a pixel floor keeps a peak visible (never
+// sub-pixel) at full zoom, and multiplets resolve as you zoom in and the ppm term takes over.
+const LINE_HALF_WIDTH_PPM = 0.0042; // ≈ 1.7 Hz half-width at 400 MHz
+const MIN_HALF_WIDTH_PX = 1.1; // floor: peaks stay ≥ ~2px FWHM at full view
+const SPECTRUM_TOP_PAD = 26; // headroom above the tallest peak for its label
+
 /** First-order multiplet line positions (ppm) + relative heights for a peak. Sub-pixel at full view;
  *  they spread apart as you zoom in. Falls back to a single line when the pattern is too dense. */
 function multipletLines(peak: PluginLinkedFigurePeak): { ppm: number; rel: number }[] {
@@ -392,6 +451,42 @@ function binomial(n: number, k: number): number {
     result = (result * (n - i)) / (i + 1);
   }
   return result;
+}
+
+/** Sample the summed-Lorentzian envelope of `lines` across the plot, one point per pixel. Returns the
+ *  pre-scale heights + their max, so the caller can normalize the tallest visible peak to fill the plot. */
+function sampleLorentzian(
+  lines: readonly { ppm: number; amp: number }[],
+  view: { min: number; max: number },
+  reversed: boolean,
+  halfWidthPpm: number
+): { xs: number[]; totals: number[]; max: number } {
+  const xs: number[] = [];
+  const totals: number[] = [];
+  let max = 1e-9;
+  const span = view.max - view.min || 1;
+  for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + 0.5; x += 1) {
+    const frac = (x - MARGIN.left) / PLOT_W;
+    const ppm = view.min + (reversed ? 1 - frac : frac) * span;
+    let total = 0;
+    for (const line of lines) {
+      const d = (ppm - line.ppm) / halfWidthPpm;
+      total += line.amp / (1 + d * d);
+    }
+    xs.push(x);
+    totals.push(total);
+    if (total > max) max = total;
+  }
+  return { xs, totals, max };
+}
+
+/** Build an SVG polyline `d` from sampled heights at a given value→pixel `scale`, along the baseline. */
+function spectrumPathFrom(xs: readonly number[], totals: readonly number[], scale: number): string {
+  let d = "";
+  for (let i = 0; i < xs.length; i += 1) {
+    d += `${i === 0 ? "M" : "L"}${round(xs[i])} ${round(BASE_Y - totals[i] * scale)}`;
+  }
+  return d;
 }
 
 function axisTicks(min: number, max: number): number[] {
