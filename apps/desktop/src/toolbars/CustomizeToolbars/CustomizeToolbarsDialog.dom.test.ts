@@ -159,6 +159,32 @@ describe("CustomizeToolbarsDialog", () => {
     expect(userToolset?.groups.some((group) => group.items.some((item) => item.id === "tool.circle"))).toBe(true);
   });
 
+  it("surfaces an in-place addition (spacer) as a row so it can be hidden there too", () => {
+    const withSpacer: ToolsetLayoutState = {
+      version: 1,
+      userToolsets: [],
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          itemAdditions: [
+            {
+              groupId: "core.main.g",
+              index: 1,
+              item: { id: "user.spacer.1", kind: "spacer", label: "Spacer", primary: { type: "none" }, layout: { rowSpan: 2 } }
+            }
+          ]
+        }
+      ]
+    };
+    render(withSpacer);
+    const spacerRow = container.querySelector('[data-item-id="user.spacer.1"]');
+    expect(spacerRow).not.toBeNull();
+    const visible = spacerRow!.querySelector<HTMLInputElement>(".customize-item-visible");
+    act(() => visible!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const override = applied().toolsetOverrides.find((entry) => entry.toolsetId === "core.main");
+    expect(override?.hiddenCommandIds).toContain("user.spacer.1");
+  });
+
   it("duplicates the on-screen (customized) toolset, not the raw manifest", () => {
     render();
     // Hide core.main's only item, then Duplicate core.main.

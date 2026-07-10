@@ -78,6 +78,32 @@ function orderItemsByIds(
   return ordered;
 }
 
+/** Insert a core toolset's in-place additions (spacers/dividers/commands added on the live palette)
+ *  into a base group's item list so the Customize dialog can see, hide, and reorder them too —
+ *  mirroring applyUserToolsetOverride's insert-before-reorder. First-wins on a duplicate id. */
+function mergeGroupAdditions(
+  items: readonly ToolsetItemDefinition<string, string>[],
+  additions: readonly { groupId: string; index?: number; item: ToolsetItemDefinition<string, string> }[],
+  groupId: string
+): ToolsetItemDefinition<string, string>[] {
+  const groupAdditions = additions.filter((addition) => addition.groupId === groupId);
+  if (groupAdditions.length === 0) {
+    return [...items];
+  }
+  const present = new Set(items.map((item) => itemCustomizationId(item)).filter((id) => id.length > 0));
+  const result: ToolsetItemDefinition<string, string>[] = [...items];
+  for (const addition of groupAdditions) {
+    const id = itemCustomizationId(addition.item);
+    if (id.length === 0 || present.has(id)) {
+      continue;
+    }
+    present.add(id);
+    const clamped = Math.max(0, Math.min(addition.index ?? result.length, result.length));
+    result.splice(clamped, 0, addition.item);
+  }
+  return result;
+}
+
 type LayoutState = ToolsetLayoutState<string, string>;
 
 export interface CustomizeToolbarsDialogProps {
@@ -281,9 +307,11 @@ export function CustomizeToolbarsDialog({
     }
     const override = draft.toolsetOverrides.find((entry) => entry.toolsetId === selectedToolsetId);
     const hidden = new Set(override?.hiddenCommandIds ?? []);
+    const additions = override?.itemAdditions ?? [];
     return selectedBase.groups.map((group) => {
       const groupId = group.id ?? "";
-      const ordered = orderItemsByIds(group.items, groupId ? override?.itemOrder?.[groupId] : undefined);
+      const withAdditions = mergeGroupAdditions(group.items, additions, groupId);
+      const ordered = orderItemsByIds(withAdditions, groupId ? override?.itemOrder?.[groupId] : undefined);
       return {
         id: groupId,
         title: group.title,

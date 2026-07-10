@@ -1,7 +1,8 @@
 # Toolbars And Toolsets
 
 Status: single-brain toolbar architecture shipping — native floating palettes, manifest-declared
-widgets, and a working drag-and-drop Customize Toolbars editor.
+widgets, a drag-and-drop Customize Toolbars editor, and Safari-style in-place customization of the
+Main toolbar (drag items on the live palette; a gallery tray to add commands, spacers, and dividers).
 
 ChemDraft toolbars are declarative toolsets backed by command IDs. A toolbar button never owns behavior directly; it invokes a command registered by the app or a plugin.
 
@@ -51,7 +52,10 @@ Item fields:
   separators may omit it.
 - `id`: stable item identity for customization and DOM metadata. Defaults to `commandId`
   when omitted.
-- `kind`: `button`, `toggle`, `control`, or `separator`. Defaults to `button`.
+- `kind`: `button`, `toggle`, `control`, `separator`, or `spacer`. Defaults to `button`. A `spacer`
+  is deliberate empty grid space (Safari's "Space"); a `separator` renders a thin divider. Both are
+  commandless (`primary: { "type": "none" }`) and carry an explicit stable `id` so they can be
+  reordered and hidden like any other item.
 - `label`: user-facing item label. Defaults to `title` or `commandId`.
 - `primary`: primary action descriptor. Current production items use
   `{ "type": "command", "commandId": "..." }`; `control` and `none` are reserved for
@@ -89,6 +93,9 @@ The state is versioned and supports:
 - item ordering inside a group,
 - hidden command IDs,
 - item placement metadata for future grid toolbars,
+- item additions (`itemAdditions`) — the one structural edit allowed on a core/plugin toolset: an
+  add-only list of `{ groupId, index?, item }` that in-place customize uses to drop new commands,
+  spacers, and dividers onto a built-in toolbar without cloning it (manifest items are never mutated),
 - user-created toolsets,
 - cloned built-in or plugin toolsets,
 - toolbar size and cell-size preferences.
@@ -98,7 +105,37 @@ manifests. `layoutStateEdits.ts` is a pure `ToolsetLayoutState -> ToolsetLayoutS
 rename, reorder toolsets/groups/items, hide, clone, create, delete); the dnd-kit dialog keeps a draft
 and commits (setLayoutState + save) only on Apply. Invariant: structural edits (add/remove items) apply
 only to `user.*` toolsets; core and plugin toolsets take overrides only (clone a built-in first to edit
-it structurally). Built-in and plugin manifests remain stable source contributions.
+it structurally) — with the single exception of add-only `itemAdditions`, which in-place customize
+uses to grow a core toolbar. Built-in and plugin manifests remain stable source contributions.
+
+## In-Place Customize (Main toolbar)
+
+The Main toolbar (`core.main`) also has a **Safari-style in-place mode** (View ▸ "Customize Main
+Toolbar…"): you rearrange items on the live palette itself, drag items off to remove them, and drag
+new ones in from a gallery tray. Only `core.main` gets this mode; other toolbars use the list dialog.
+
+The single-brain rule still holds — a palette webview never writes layout state. Instead the palette
+sends **edit ops** to the main window on the `chemdraft://toolset-layout-edit` channel
+(`reorderItems | addCommand | addSpacer | addSeparator | removeItem | resetToolset | exitCustomize`,
+each wrapped with a `toolsetId`). MainWindow applies the op against `layoutStateRef.current` with the
+pure `applyToolsetLayoutEdit` (adds become `itemAdditions`; removing a base item hides it, removing an
+addition deletes it) and commits through the normal funnel, which re-broadcasts the new layout state;
+the palette repaints from that broadcast. Ops, not snapshots, so a stale palette can't clobber state.
+Mode entry/exit rides a companion `chemdraft://toolset-customize-mode` broadcast (with a request/
+response so a palette opened mid-mode catches up). Both channels dual-dispatch (DOM CustomEvent +
+Tauri emit) so the browser build and jsdom tests exercise the identical path.
+
+The gallery tray lives **inside** the Main palette window (a webview can't paint outside its window),
+so the window grows to fit it via the shell `ResizeObserver`; the tray is width-capped and scrolls at
+a fixed px height. Because palettes ship non-focusable, entering customize mode flips the window
+focusable (`set_toolset_window_focusable`) so the gallery's search field can take keystrokes, and back
+off on exit. To avoid a flash of the old layout during the op round-trip, `ToolbarCustomizeController`
+previews reorder/remove locally (optimistic display) and drops the preview once the authoritative
+broadcast lands. Additions made here also appear in the list-style Customize Toolbars dialog, which
+merges a core toolset's `itemAdditions` into its rows.
+
+Implementation lives in `apps/desktop/src/toolbars/CustomizeMainToolbar/` (the controller, the pure
+op applier, the gallery model/tray, and the Done/Restore bar).
 
 ## View Menu
 
