@@ -155,6 +155,13 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-peak-id="hi"]')!.classList.contains("is-low-confidence")).toBe(false);
   });
 
+  it("offers Copy SVG and Export (JCAMP-DX) actions in the toolbar", () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const labels = [...container!.querySelectorAll(".lf-btn")].map((button) => button.textContent);
+    expect(labels).toContain("Copy SVG");
+    expect(labels).toContain("Export");
+  });
+
   it("colors structure shift labels by estimation quality (ChemDraw-style) and shows the legend", () => {
     const qualitySpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",

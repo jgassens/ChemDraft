@@ -6,6 +6,8 @@ import type {
   PluginLinkedFigureStructure
 } from "@chemdraft/plugin-api";
 
+import { downloadTextFile, spectrumToJcampDx, standaloneSpectrumSvg } from "./spectrumExport";
+
 /**
  * Core-owned interactive figure for the `linkedFigure` panel section (ADR-0015). The plugin ships
  * only data (peaks + chemistry-agnostic geometry); this component owns all rendering and interaction:
@@ -146,6 +148,23 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
     dragRef.current = null;
   };
 
+  const [copied, setCopied] = useState(false);
+  const onCopySvg = (): void => {
+    const svg = spectrumRef.current;
+    if (!svg) return;
+    void navigator.clipboard?.writeText(standaloneSpectrumSvg(svg)).then(
+      () => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1400);
+      },
+      () => undefined // clipboard blocked — no-op rather than throw
+    );
+  };
+  const onExportJcamp = (): void => {
+    const jdx = spectrumToJcampDx(spectrum, { title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR` });
+    downloadTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, jdx, "chemical/x-jcamp-dx");
+  };
+
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
 
@@ -216,6 +235,18 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
             onClick={() => setView({ min: spectrum.domain.min, max: spectrum.domain.max })}
           >
             Reset
+          </button>
+          <span className="lf-toolbar-sep" aria-hidden="true" />
+          <button type="button" className="lf-btn" onClick={onCopySvg} title="Copy the spectrum as SVG (paste-ready)">
+            {copied ? "Copied" : "Copy SVG"}
+          </button>
+          <button
+            type="button"
+            className="lf-btn"
+            onClick={onExportJcamp}
+            title="Download as JCAMP-DX (.jdx) — opens in MestReNova, TopSpin, ACD, …"
+          >
+            Export
           </button>
         </div>
       </div>

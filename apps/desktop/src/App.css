@@ -5132,7 +5132,15 @@ textarea:focus-visible,
 
 .lf-toolbar-actions {
   display: flex;
+  align-items: center;
   gap: var(--cd-space-2);
+}
+
+.lf-toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px var(--cd-space-1);
+  background: var(--cd-border-subtle);
 }
 
 .lf-btn {
