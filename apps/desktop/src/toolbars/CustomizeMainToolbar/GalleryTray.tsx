@@ -5,7 +5,7 @@ import type { ToolbarPaletteItemModel } from "../../toolsets";
 import type { CommandSpec } from "../../commands";
 import {
   GALLERY_TRAY_DROPPABLE_ID,
-  buildGalleryModel,
+  buildGallerySections,
   type GalleryEntry,
   type GalleryWidgetDescriptor
 } from "./galleryModel";
@@ -95,8 +95,8 @@ export function GalleryTray({
   presentItemIds: ReadonlySet<string>;
 }) {
   const [search, setSearch] = useState("");
-  const entries = useMemo(
-    () => buildGalleryModel(commands, widgets, presentItemIds, search),
+  const sections = useMemo(
+    () => buildGallerySections(commands, widgets, presentItemIds, search),
     [commands, widgets, presentItemIds, search]
   );
   const { setNodeRef, isOver } = useDroppable({ id: GALLERY_TRAY_DROPPABLE_ID });
@@ -119,11 +119,18 @@ export function GalleryTray({
           aria-label="Search toolbar items"
         />
       </div>
-      <div className="customize-gallery-grid">
-        {entries.map((entry) => (
-          <GalleryTile key={entry.dragId} entry={entry} />
+      <div className="customize-gallery-sections">
+        {sections.map((section) => (
+          <section key={section.id} className="customize-gallery-section" aria-label={section.title}>
+            <h4 className="customize-gallery-section-title">{section.title}</h4>
+            <div className="customize-gallery-grid">
+              {section.entries.map((entry) => (
+                <GalleryTile key={entry.dragId} entry={entry} />
+              ))}
+            </div>
+          </section>
         ))}
-        {entries.length === 0 ? <p className="customize-gallery-empty">No items match.</p> : null}
+        {sections.length === 0 ? <p className="customize-gallery-empty">No items match.</p> : null}
       </div>
       <p className="customize-gallery-hint">Drag items to the toolbar. Drag a tool here to remove it.</p>
     </section>

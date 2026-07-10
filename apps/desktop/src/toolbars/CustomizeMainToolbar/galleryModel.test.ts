@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandSpec } from "../../commands";
-import { buildGalleryModel, type GalleryWidgetDescriptor } from "./galleryModel";
+import { buildGalleryModel, buildGallerySections, type GalleryWidgetDescriptor } from "./galleryModel";
 
 const cmd = (id: string, title: string): CommandSpec =>
   ({ id, title, icon: "palette", source: "core" }) as CommandSpec;
@@ -66,5 +66,74 @@ describe("buildGalleryModel", () => {
     const entries = buildGalleryModel(many, [], new Set(), "");
     const commandEntries = entries.filter((entry) => entry.kind === "command");
     expect(commandEntries).toHaveLength(150);
+  });
+});
+
+describe("buildGallerySections", () => {
+  const themed: CommandSpec[] = [
+    cmd("view.toolset.toggle.core.art", "Toggle Art Toolbar"),
+    cmd("tool.select", "Selection Tool"),
+    cmd("tool.bond", "Single Bond"),
+    cmd("tool.benzene", "Benzene Template"),
+    cmd("atom.setHoveredElement.N", "Set Hovered Atom: N"),
+    cmd("tool.reactionArrow", "Reaction Arrow"),
+    cmd("tool.plus", "Positive Charge Tool"),
+    cmd("tool.pOrbital", "p Orbital Tool"),
+    cmd("structure.cleanup2d", "Clean up Structure 2D"),
+    cmd("text.bold", "Bold Text"),
+    cmd("tool.art.pen", "Pen"),
+    cmd("object.effect.glow", "Art Effect: Glow"),
+    cmd("layout.alignLeft", "Align Left"),
+    cmd("edit.undo", "Undo"),
+    cmd("document.save", "Save Native Document"),
+    cmd("view.zoomIn", "Zoom In"),
+    cmd("mystery.command", "Mystery")
+  ];
+
+  it("groups entries into themed sections in the declared order", () => {
+    const sections = buildGallerySections(themed, widgets, new Set(), "");
+    expect(sections.map((section) => section.id)).toEqual([
+      "layout",
+      "widgets",
+      "toolbars",
+      "selection",
+      "bonds",
+      "rings",
+      "atoms",
+      "arrows",
+      "symbols",
+      "orbitals",
+      "chemistry",
+      "text",
+      "art",
+      "objectStyle",
+      "arrange",
+      "editing",
+      "document",
+      "view",
+      "other"
+    ]);
+    const byId = new Map(sections.map((section) => [section.id, section]));
+    expect(byId.get("layout")?.entries.map((entry) => entry.title)).toEqual(["Space", "Divider"]);
+    expect(byId.get("widgets")?.entries.map((entry) => entry.widgetId)).toEqual(["widget.core.mainStyleControls"]);
+    expect(byId.get("bonds")?.entries.map((entry) => entry.commandId)).toEqual(["tool.bond"]);
+    expect(byId.get("other")?.entries.map((entry) => entry.commandId)).toEqual(["mystery.command"]);
+  });
+
+  it("offers toolbar toggles as launcher tiles with the 'Toggle ' prefix stripped for display", () => {
+    const sections = buildGallerySections(themed, [], new Set(), "");
+    const toolbars = sections.find((section) => section.id === "toolbars");
+    expect(toolbars?.entries).toHaveLength(1);
+    expect(toolbars?.entries[0]).toMatchObject({
+      commandId: "view.toolset.toggle.core.art",
+      title: "Art Toolbar"
+    });
+    // The underlying command spec is untouched — only the tile label is shortened.
+    expect(toolbars?.entries[0]?.command?.title).toBe("Toggle Art Toolbar");
+  });
+
+  it("drops empty sections, so a search shows only the themes that hit", () => {
+    const sections = buildGallerySections(themed, widgets, new Set(), "benzene");
+    expect(sections.map((section) => section.id)).toEqual(["rings"]);
   });
 });

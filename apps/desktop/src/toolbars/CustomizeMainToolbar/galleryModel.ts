@@ -116,3 +116,141 @@ export function buildGalleryModel(
 
   return [...structural, ...widgetEntries, ...commandEntries];
 }
+
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+// Themed sections. The flat entry list groups into labeled sections so ~270 tiles read as a catalog,
+// not a dump. Section membership is derived from the command-id families (tool.*, text.*, layout.*,
+// atom.*, …) — chemistry-first ordering: draw the molecule (selection, bonds, rings, atoms), annotate
+// the reaction (arrows, charges, orbitals), analyze it (3D/cleanup), then art/layout/housekeeping.
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+
+export interface GallerySection {
+  id: string;
+  title: string;
+  entries: GalleryEntry[];
+}
+
+/** Display order + titles. "layout" (Space/Divider), "widgets", and "toolbars" lead because they're
+ *  the gallery-only items a user can't find anywhere else; command themes follow chemistry-first. */
+const GALLERY_SECTIONS: ReadonlyArray<{ id: string; title: string }> = [
+  { id: "layout", title: "Layout" },
+  { id: "widgets", title: "Widgets" },
+  { id: "toolbars", title: "Toolbars (show/hide)" },
+  { id: "selection", title: "Selection & Erase" },
+  { id: "bonds", title: "Bonds & Chains" },
+  { id: "rings", title: "Rings & Templates" },
+  { id: "atoms", title: "Atoms & Elements" },
+  { id: "arrows", title: "Arrows & Reactions" },
+  { id: "symbols", title: "Charges, Brackets & Symbols" },
+  { id: "orbitals", title: "Orbitals" },
+  { id: "chemistry", title: "Chemistry & 3D" },
+  { id: "text", title: "Text & Typography" },
+  { id: "art", title: "Art & Shapes" },
+  { id: "objectStyle", title: "Object Style" },
+  { id: "arrange", title: "Arrange & Align" },
+  { id: "editing", title: "Clipboard & History" },
+  { id: "document", title: "Document & Pages" },
+  { id: "view", title: "View & Zoom" },
+  { id: "layers", title: "Layers" },
+  { id: "stylePresets", title: "Style Presets" },
+  { id: "other", title: "Other" }
+];
+
+/** First matching family wins. Kept as data (pattern → section) so new command families land in a
+ *  sensible bucket by prefix without touching the tray. */
+const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }> = [
+  // A button that shows/hides another toolbar — the way grid-replacing surfaces (Art, the inspectors)
+  // are reachable from Main without embedding them.
+  { pattern: /^view\.toolset\.toggle\./, section: "toolbars" },
+  { pattern: /^view\.toggle(MoleculeInspector|RingInspector|ToolPalette)$/, section: "toolbars" },
+  { pattern: /^tool\.(select|lasso|eraser)$/, section: "selection" },
+  { pattern: /^tool\.(bond|wedgeBond|hashedBond|dashedBond|boldBond|chain)$/, section: "bonds" },
+  { pattern: /^bond\./, section: "bonds" },
+  { pattern: /^tool\.(cyclopentane|cyclohexane|benzene|chairCyclohexane|templateGrid)/, section: "rings" },
+  { pattern: /^atom\./, section: "atoms" },
+  { pattern: /^tool\.(reactionArrow|resonanceArrow|equilibriumArrow|retroArrow|mechanismArrow|arrows)$/, section: "arrows" },
+  { pattern: /^tool\.(plus|minus|bracket|squareBracket|dagger|symbol)$/, section: "symbols" },
+  { pattern: /^tool\.(lobe|shadedLobe|pOrbital|sOrbital)$/, section: "orbitals" },
+  { pattern: /^(structure|chemistry)\./, section: "chemistry" },
+  { pattern: /^tool\.text$/, section: "text" },
+  { pattern: /^text\./, section: "text" },
+  { pattern: /^style\.formulaText$/, section: "text" },
+  { pattern: /^tool\.art\./, section: "art" },
+  { pattern: /^tool\.(shape|shapeShadow)$/, section: "art" },
+  { pattern: /^art\./, section: "art" },
+  { pattern: /^object\./, section: "objectStyle" },
+  { pattern: /^style\.color$/, section: "objectStyle" },
+  { pattern: /^layout\./, section: "arrange" },
+  { pattern: /^(edit|clipboard)\./, section: "editing" },
+  { pattern: /^(document|export|page)\./, section: "document" },
+  { pattern: /^view\.(zoom|toggle)/, section: "view" },
+  { pattern: /^layer\./, section: "layers" },
+  { pattern: /^style\./, section: "stylePresets" }
+];
+
+function commandSectionId(commandId: string): string {
+  for (const rule of COMMAND_SECTION_RULES) {
+    if (rule.pattern.test(commandId)) {
+      return rule.section;
+    }
+  }
+  return "other";
+}
+
+/** "Toggle Art Toolbar" reads redundantly under the "Toolbars (show/hide)" header — show "Art
+ *  Toolbar" on the tile (the command title itself is untouched). */
+function sectionDisplayTitle(section: string, entry: GalleryEntry): string {
+  if (section === "toolbars" && entry.title.startsWith("Toggle ")) {
+    return entry.title.slice("Toggle ".length);
+  }
+  return entry.title;
+}
+
+/**
+ * Group the flat gallery model into titled sections, preserving the flat builder's dedupe/search/
+ * present semantics. Sections with no matching entries drop out entirely (so a search shows only the
+ * themes that hit).
+ */
+export function buildGallerySections(
+  commands: readonly CommandSpec[],
+  widgets: readonly GalleryWidgetDescriptor[],
+  presentItemIds: ReadonlySet<string>,
+  search: string
+): GallerySection[] {
+  const entries = buildGalleryModel(commands, widgets, presentItemIds, search);
+  const bySection = new Map<string, GalleryEntry[]>();
+  for (const entry of entries) {
+    const section =
+      entry.kind === "spacer" || entry.kind === "separator"
+        ? "layout"
+        : entry.kind === "widget"
+          ? "widgets"
+          : commandSectionId(entry.commandId ?? "");
+    const bucket = bySection.get(section) ?? [];
+    bucket.push({ ...entry, title: sectionDisplayTitle(section, entry) });
+    bySection.set(section, bucket);
+  }
+  // The toolbars section can hold two commands that open the same window (a manifest toggle like
+  // view.toggleMoleculeInspector plus the generated view.toolset.toggle.core.moleculeInspector) —
+  // identical effect, identical display title. Keep the first so the section reads one-tile-per-toolbar.
+  const toolbars = bySection.get("toolbars");
+  if (toolbars) {
+    const seenTitles = new Set<string>();
+    bySection.set(
+      "toolbars",
+      toolbars.filter((entry) => {
+        if (seenTitles.has(entry.title)) {
+          return false;
+        }
+        seenTitles.add(entry.title);
+        return true;
+      })
+    );
+  }
+  return GALLERY_SECTIONS.flatMap((section) => {
+    const sectionEntries = bySection.get(section.id);
+    return sectionEntries && sectionEntries.length > 0
+      ? [{ id: section.id, title: section.title, entries: sectionEntries }]
+      : [];
+  });
+}
