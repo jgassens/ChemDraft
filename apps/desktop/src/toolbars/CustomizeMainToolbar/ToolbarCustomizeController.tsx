@@ -15,20 +15,53 @@ import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import type { ToolsetLayoutEdit } from "../../window-manager";
 import { ToolbarItemIcon } from "../../ToolPalette";
 import type { ToolbarPaletteGroupModel, ToolbarPaletteItemModel } from "../../toolsets";
+import type { CommandSpec } from "../../commands";
+import { GALLERY_TRAY_DROPPABLE_ID, type GalleryEntryKind } from "./galleryModel";
 
-/** dnd-kit `active.data.current` shape a customize slot carries. Gallery tiles (Phase 5) will add
- *  `gallery`/`commandId`; `groupId` is the source group of an in-toolbar slot. */
+/** dnd-kit `active.data.current` shape a customize slot or gallery tile carries. In-toolbar slots set
+ *  `groupId`/`kind`; gallery tiles set `gallery` plus what the drop and the drag ghost need. */
 export interface CustomizeDragData {
   groupId?: string;
   kind?: string;
+  /** True for a gallery tile being dragged into the toolbar. */
+  gallery?: boolean;
+  galleryKind?: GalleryEntryKind;
+  /** Command id for a gallery command tile. */
+  commandId?: string;
+  /** A ready-to-render item model + command for the drag ghost (gallery tiles only). */
+  iconItem?: ToolbarPaletteItemModel;
+  command?: CommandSpec;
+}
+
+/** Find which group an item id lives in and at what index (used to place a gallery add). */
+function locateItem(
+  groups: readonly ToolbarPaletteGroupModel[],
+  itemId: string
+): { groupId: string; index: number } | undefined {
+  for (const group of groups) {
+    if (!group.id) {
+      continue;
+    }
+    const index = group.items.findIndex((item) => item.id === itemId);
+    if (index >= 0) {
+      return { groupId: group.id, index };
+    }
+  }
+  return undefined;
 }
 
 /**
- * Resolve one drag-end into a layout edit (pure, unit-tested). Phase 4 handles in-toolbar slots:
- *  - dropped outside any slot (over === null) → remove the item
- *  - dropped on a sibling in the SAME group → reorder that group
- *  - dropped on another group (base items can't be re-homed; itemOrder is per-group) → snap back
- *  - dropped on itself → no-op
+ * Resolve one drag-end into a layout edit (pure, unit-tested).
+ *
+ * Gallery tile (`activeData.gallery`) dragged INTO the toolbar:
+ *  - over an in-toolbar slot → add its command/spacer/divider at that slot's index
+ *  - over the tray / off the bar (over === null or the tray id) → no-op
+ *
+ * In-toolbar slot dragged:
+ *  - onto the tray, or off the bar (over === null) → remove the item
+ *  - onto a sibling in the SAME group → reorder that group
+ *  - onto another group (base items can't be re-homed; itemOrder is per-group) → snap back
+ *  - onto itself → no-op
  */
 /** The release point of a drag, in client coordinates: the activator (pointerdown) position plus the
  *  drag delta. Null for a keyboard drag (no client coords). */
@@ -46,11 +79,33 @@ function isPointInRect(point: { x: number; y: number }, rect: DOMRect): boolean 
 
 export function customizeDragEndEdit(
   activeId: string,
-  _activeData: CustomizeDragData | undefined,
+  activeData: CustomizeDragData | undefined,
   overId: string | null,
   groups: readonly ToolbarPaletteGroupModel[]
 ): ToolsetLayoutEdit | undefined {
-  if (overId === null) {
+  if (activeData?.gallery) {
+    if (overId === null || overId === GALLERY_TRAY_DROPPABLE_ID) {
+      return undefined;
+    }
+    const target = locateItem(groups, overId);
+    if (!target) {
+      return undefined;
+    }
+    switch (activeData.galleryKind) {
+      case "spacer":
+        return { kind: "addSpacer", groupId: target.groupId, index: target.index };
+      case "separator":
+        return { kind: "addSeparator", groupId: target.groupId, index: target.index };
+      case "command":
+        return activeData.commandId === undefined
+          ? undefined
+          : { kind: "addCommand", groupId: target.groupId, index: target.index, commandId: activeData.commandId };
+      default:
+        return undefined;
+    }
+  }
+
+  if (overId === null || overId === GALLERY_TRAY_DROPPABLE_ID) {
     return { kind: "removeItem", itemId: activeId };
   }
   if (overId === activeId) {
@@ -86,6 +141,8 @@ export function ToolbarCustomizeController({
   children: ReactNode;
 }) {
   const [activeItem, setActiveItem] = useState<ToolbarPaletteItemModel | null>(null);
+  // A gallery tile being dragged (its id isn't in `groups`, so it's tracked separately for the ghost).
+  const [activeGallery, setActiveGallery] = useState<CustomizeDragData | null>(null);
   // display:contents wrapper (no box of its own) so we can measure the palette's rect on drag-end
   // without changing the shell's grid layout.
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -96,14 +153,26 @@ export function ToolbarCustomizeController({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
+  const clearActive = () => {
+    setActiveItem(null);
+    setActiveGallery(null);
+  };
+
   const handleDragStart = (event: DragStartEvent) => {
+    const data = event.active.data.current as CustomizeDragData | undefined;
+    if (data?.gallery) {
+      setActiveGallery(data);
+      setActiveItem(null);
+      return;
+    }
     const id = String(event.active.id);
     const item = groups.flatMap((group) => group.items).find((candidate) => candidate.id === id) ?? null;
     setActiveItem(item);
+    setActiveGallery(null);
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
-    setActiveItem(null);
+    clearActive();
     let overId = event.over ? String(event.over.id) : null;
     // closestCenter always reports the nearest slot, even when the release point is far off the
     // palette — so `over` is never null and the "dragged out → remove" path would never fire. Detect
@@ -132,7 +201,7 @@ export function ToolbarCustomizeController({
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onDragCancel={() => setActiveItem(null)}
+      onDragCancel={clearActive}
     >
       <div ref={containerRef} style={{ display: "contents" }}>
         {children}
@@ -149,6 +218,16 @@ export function ToolbarCustomizeController({
                   command={activeItem.primary.type === "command" ? activeItem.primary.command : undefined}
                 />
               </span>
+            )}
+          </span>
+        ) : activeGallery ? (
+          <span className="toolbar-item-grid-slot customize-drag-overlay">
+            {activeGallery.galleryKind === "command" && activeGallery.iconItem ? (
+              <span className="icon-button">
+                <ToolbarItemIcon item={activeGallery.iconItem} command={activeGallery.command} />
+              </span>
+            ) : (
+              <span className="toolbar-item-spacer customize-slot-placeholder" aria-hidden="true" />
             )}
           </span>
         ) : null}

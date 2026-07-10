@@ -22,6 +22,7 @@ fn main() {
             "open_toolset_popover",
             "show_toolset_tooltip_window",
             "close_toolset_popover",
+            "set_toolset_window_focusable",
             "route_toolset_command",
             "read_clipboard_payload",
             "write_clipboard_text_items",

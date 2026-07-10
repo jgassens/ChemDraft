@@ -156,6 +156,7 @@ export function setItemHidden<I extends string, A extends string>(
 }
 
 const SPACER_ID_PREFIX = "user.spacer.";
+const SEPARATOR_ID_PREFIX = "user.separator.";
 
 /** Add a new item (a gallery command, or a spacer) to ANY toolset — the one add-only structural
  *  edit permitted on core/plugin toolsets, persisted as `toolsetOverrides[].itemAdditions`. No-op
@@ -227,17 +228,18 @@ export function removeToolsetItem<I extends string, A extends string>(
   });
 }
 
-/** The next unused `user.spacer.<n>` id for a toolset, scanning both its existing additions and any
- *  itemOrder mentions so an id survives a remove-then-re-add without colliding with a live spacer. */
-export function nextSpacerItemId<I extends string, A extends string>(
+/** The next unused `<prefix><n>` id for a toolset, scanning both its existing additions and any
+ *  itemOrder mentions so an id survives a remove-then-re-add without colliding with a live one. */
+export function nextAdditionItemId<I extends string, A extends string>(
   state: ToolsetLayoutState<I, A>,
-  toolsetId: string
+  toolsetId: string,
+  prefix: string
 ): string {
   const override = state.toolsetOverrides.find((entry) => entry.toolsetId === toolsetId);
   let max = 0;
   const consider = (id: string | undefined) => {
-    if (id && id.startsWith(SPACER_ID_PREFIX)) {
-      const n = Number.parseInt(id.slice(SPACER_ID_PREFIX.length), 10);
+    if (id && id.startsWith(prefix)) {
+      const n = Number.parseInt(id.slice(prefix.length), 10);
       if (Number.isFinite(n) && n > max) {
         max = n;
       }
@@ -251,7 +253,23 @@ export function nextSpacerItemId<I extends string, A extends string>(
       consider(id);
     }
   }
-  return `${SPACER_ID_PREFIX}${max + 1}`;
+  return `${prefix}${max + 1}`;
+}
+
+/** The next unused `user.spacer.<n>` id. */
+export function nextSpacerItemId<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string
+): string {
+  return nextAdditionItemId(state, toolsetId, SPACER_ID_PREFIX);
+}
+
+/** The next unused `user.separator.<n>` id (a divider line). */
+export function nextSeparatorItemId<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string
+): string {
+  return nextAdditionItemId(state, toolsetId, SEPARATOR_ID_PREFIX);
 }
 
 /** Drop all overrides for one toolset (Reset Toolbar Layout), leaving user toolsets intact. */

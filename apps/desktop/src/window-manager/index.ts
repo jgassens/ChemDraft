@@ -164,6 +164,18 @@ export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void
   await invoke("close_toolset_popover", { toolsetId }).catch(() => undefined);
 }
 
+/** Toggle a palette window's focusability. Palettes ship non-focusable (they never steal key status);
+ *  the in-place customize gallery flips this on so its search field can take keystrokes, and off again
+ *  on exit. No-op in the browser build. */
+export async function setToolsetWindowFocusable(toolsetId: string, focusable: boolean): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_toolset_window_focusable", { toolsetId, focusable }).catch(() => undefined);
+}
+
 /** Route param identifying a palette popover webview (see App.tsx / PalettePopoverWindow). */
 export const TOOLSET_POPOVER_WINDOW_KIND = "toolsetPopover";
 
@@ -666,6 +678,7 @@ export type ToolsetLayoutEdit =
   | { kind: "reorderItems"; groupId: string; orderedItemIds: string[] }
   | { kind: "addCommand"; groupId: string; index: number; commandId: string }
   | { kind: "addSpacer"; groupId: string; index: number }
+  | { kind: "addSeparator"; groupId: string; index: number }
   | { kind: "removeItem"; itemId: string }
   | { kind: "resetToolset" }
   | { kind: "exitCustomize" };

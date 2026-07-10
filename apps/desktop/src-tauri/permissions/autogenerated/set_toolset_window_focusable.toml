@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-toolset-window-focusable"
+description = "Enables the set_toolset_window_focusable command without any pre-configured scope."
+commands.allow = ["set_toolset_window_focusable"]
+
+[[permission]]
+identifier = "deny-set-toolset-window-focusable"
+description = "Denies the set_toolset_window_focusable command without any pre-configured scope."
+commands.deny = ["set_toolset_window_focusable"]

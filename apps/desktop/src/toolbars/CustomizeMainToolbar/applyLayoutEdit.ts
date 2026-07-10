@@ -2,6 +2,7 @@ import type { ToolsetItemDefinition, ToolsetLayoutState } from "@chemdraft/tools
 import type { ToolsetLayoutEditPayload } from "../../window-manager";
 import {
   addToolsetItemAddition,
+  nextSeparatorItemId,
   nextSpacerItemId,
   removeToolsetItem,
   reorderItems,
@@ -57,6 +58,21 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         id: nextSpacerItemId(state, toolsetId),
         kind: "spacer",
         label: "Spacer",
+        primary: { type: "none" },
+        layout: { rowSpan: context.gridRows ?? 1 }
+      } as ToolsetItemDefinition<I, A>;
+      return addToolsetItemAddition(
+        state,
+        toolsetId,
+        { groupId: edit.groupId, index: edit.index, item },
+        { presentItemIds: context.presentItemIds }
+      );
+    }
+    case "addSeparator": {
+      const item = {
+        id: nextSeparatorItemId(state, toolsetId),
+        kind: "separator",
+        label: "Divider",
         primary: { type: "none" },
         layout: { rowSpan: context.gridRows ?? 1 }
       } as ToolsetItemDefinition<I, A>;

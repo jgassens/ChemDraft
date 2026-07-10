@@ -81,6 +81,31 @@ describe("applyToolsetLayoutEdit", () => {
     expect(next.toolsetOverrides[0]?.itemAdditions?.[0]?.item.layout?.rowSpan).toBe(1);
   });
 
+  it("addSeparator adds a divider whose rowSpan comes from gridRows", () => {
+    const next = applyToolsetLayoutEdit(
+      emptyLayoutState(),
+      payload({ kind: "addSeparator", groupId: "core.main.selection", index: 2 }),
+      context
+    );
+    const addition = next.toolsetOverrides[0]?.itemAdditions?.[0];
+    expect(addition?.item.kind).toBe("separator");
+    expect(addition?.item.id).toBe("user.separator.1");
+    expect(addition?.item.layout?.rowSpan).toBe(2);
+    expect(addition?.item.primary).toEqual({ type: "none" });
+  });
+
+  it("spacer and divider ids increment independently", () => {
+    let state = applyToolsetLayoutEdit(
+      emptyLayoutState(),
+      payload({ kind: "addSpacer", groupId: "core.main.selection", index: 0 }),
+      context
+    );
+    state = applyToolsetLayoutEdit(state, payload({ kind: "addSeparator", groupId: "core.main.selection", index: 0 }), context);
+    state = applyToolsetLayoutEdit(state, payload({ kind: "addSpacer", groupId: "core.main.selection", index: 0 }), context);
+    const ids = state.toolsetOverrides[0]?.itemAdditions?.map((addition) => addition.item.id);
+    expect(ids).toEqual(["user.spacer.1", "user.separator.1", "user.spacer.2"]);
+  });
+
   it("removeItem deletes an addition but hides a base item", () => {
     const added = applyToolsetLayoutEdit(
       emptyLayoutState(),

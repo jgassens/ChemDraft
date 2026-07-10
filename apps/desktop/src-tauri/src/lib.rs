@@ -340,6 +340,7 @@ pub fn run() {
             open_toolset_popover,
             show_toolset_tooltip_window,
             close_toolset_popover,
+            set_toolset_window_focusable,
             route_toolset_command,
             read_clipboard_payload,
             write_clipboard_text_items,
@@ -845,6 +846,25 @@ fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<()
 
 fn toolset_popover_window_label(toolset_id: &str) -> String {
     format!("toolset-popover-{}", toolset_id.replace('.', "-"))
+}
+
+/// Toggle a palette window's focusability. Palettes ship `focusable(false)` (they never steal key
+/// status — see `toolset_window_focusable`), but the in-place customize gallery's search field needs
+/// keyboard focus. Mirrors the popover precedent: `configure_toolset_popover_window` re-asserts
+/// `set_focusable(true)` on a NonactivatingPanel and the color-picker hex input proves a text field
+/// then receives input without the panel activating the app. The palette re-asserts `false` on exit.
+#[tauri::command]
+fn set_toolset_window_focusable(
+    app: tauri::AppHandle,
+    toolset_id: String,
+    focusable: bool,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
+        window
+            .set_focusable(focusable)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";

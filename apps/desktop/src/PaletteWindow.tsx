@@ -12,6 +12,7 @@ import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
+import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
@@ -49,6 +50,7 @@ import {
   showPaletteFloatingTooltip,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
+  setToolsetWindowFocusable,
   startPaletteWindowDrag,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
@@ -97,9 +99,18 @@ export function PaletteWindow({
   // Derive command groups from the already-normalized itemGroups instead of normalizing the toolset a second time.
   const groups = useMemo(() => paletteCommandGroupsFromItemGroups(itemGroups), [itemGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
+  // The full command catalog feeds both the shortcut registry and the customize gallery. Customize
+  // mode never invokes, so a static (phase-4) document is fine — we only need id/title/icon.
+  const allCommands = useMemo(() => allShellCommands(createPhase4Document()), []);
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }),
-    []
+    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
+    [allCommands]
+  );
+  // Customization ids already in the toolbar — the gallery grays these so a command can't be added
+  // twice (a command id is unique within a toolset).
+  const presentItemIds = useMemo(
+    () => new Set(paletteGroups.flatMap((group) => group.items.map((item) => item.id))),
+    [paletteGroups]
   );
 
   // In-place customize mode (Main palette only). MainWindow broadcasts the flag; we mirror it and
@@ -197,6 +208,18 @@ export function PaletteWindow({
       unlisten?.();
     };
   }, [toolset.id]);
+
+  // Palettes ship non-focusable; the gallery's search field needs keystrokes, so flip focusability on
+  // while customizing this palette and back off on exit (restoring the never-steal-key default).
+  useEffect(() => {
+    if (!customizeThisPalette) {
+      return;
+    }
+    void setToolsetWindowFocusable(toolset.id, true).catch(() => undefined);
+    return () => {
+      void setToolsetWindowFocusable(toolset.id, false).catch(() => undefined);
+    };
+  }, [customizeThisPalette, toolset.id]);
 
   useEffect(() => {
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
@@ -763,6 +786,7 @@ export function PaletteWindow({
             onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
             onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
           />
+          <GalleryTray commands={allCommands} presentItemIds={presentItemIds} />
         </ToolbarCustomizeController>
       ) : (
         paletteElement

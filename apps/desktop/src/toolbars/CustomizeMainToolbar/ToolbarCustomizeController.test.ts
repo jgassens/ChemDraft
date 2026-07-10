@@ -36,4 +36,49 @@ describe("customizeDragEndEdit", () => {
       orderedItemIds: ["user.spacer.1", "a", "b"]
     });
   });
+
+  it("removes an in-toolbar item dropped onto the gallery tray", () => {
+    expect(customizeDragEndEdit("b", { groupId: "g1" }, "gallery-tray", groups)).toEqual({
+      kind: "removeItem",
+      itemId: "b"
+    });
+  });
+
+  it("adds a gallery command at the over-item's index", () => {
+    expect(
+      customizeDragEndEdit(
+        "gallery:command:tool.text",
+        { gallery: true, galleryKind: "command", commandId: "tool.text" },
+        "b",
+        groups
+      )
+    ).toEqual({ kind: "addCommand", groupId: "g1", index: 1, commandId: "tool.text" });
+  });
+
+  it("adds a spacer from the gallery over a slot", () => {
+    expect(
+      customizeDragEndEdit("gallery:spacer", { gallery: true, galleryKind: "spacer" }, "c", groups)
+    ).toEqual({ kind: "addSpacer", groupId: "g2", index: 0 });
+  });
+
+  it("adds a divider from the gallery over a slot", () => {
+    expect(
+      customizeDragEndEdit("gallery:separator", { gallery: true, galleryKind: "separator" }, "a", groups)
+    ).toEqual({ kind: "addSeparator", groupId: "g1", index: 0 });
+  });
+
+  it("is a no-op when a gallery tile is released on the tray or off the bar", () => {
+    expect(
+      customizeDragEndEdit("gallery:spacer", { gallery: true, galleryKind: "spacer" }, "gallery-tray", groups)
+    ).toBeUndefined();
+    expect(
+      customizeDragEndEdit("gallery:spacer", { gallery: true, galleryKind: "spacer" }, null, groups)
+    ).toBeUndefined();
+  });
+
+  it("is a no-op for a gallery command tile carrying no command id", () => {
+    expect(
+      customizeDragEndEdit("gallery:command:", { gallery: true, galleryKind: "command" }, "a", groups)
+    ).toBeUndefined();
+  });
 });

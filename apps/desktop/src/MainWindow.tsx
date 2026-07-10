@@ -85,6 +85,7 @@ import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits"
 import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
+import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
 import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
@@ -7217,6 +7218,13 @@ export function MainWindow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Full command specs (with icons) for the in-place customize gallery. Static like the options above.
+  const galleryCommands = useMemo(
+    () => allShellCommands(documentRef.current),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op). Stable — customizeCommandOptions is built once.
   const commandTitleById = useMemo(
@@ -13795,6 +13803,10 @@ export function MainWindow({
                     <CustomizeBar
                       onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
                       onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+                    />
+                    <GalleryTray
+                      commands={galleryCommands}
+                      presentItemIds={new Set(paletteGroups.flatMap((group) => group.items.map((item) => item.id)))}
                     />
                   </ToolbarCustomizeController>
                 ) : (
