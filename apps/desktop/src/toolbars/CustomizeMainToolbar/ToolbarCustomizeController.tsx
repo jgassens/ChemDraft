@@ -278,6 +278,11 @@ export function ToolbarCustomizeController({
       collisionDetection={pointerFirstCollision}
       // The palette window resizes as the tray grows / items move, so re-measure droppables always.
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+      // Auto-scroll OFF: the (now scrollable) gallery tray would auto-scroll mid-drag, shifting content
+      // and corrupting the delta-based drop point (making the geometric in-palette check misfire, so a
+      // gallery add no-ops and the drop ghost strands). Customize drags never need it — the toolbar is a
+      // fixed grid and the user scrolls the tray manually before grabbing a tile.
+      autoScroll={false}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragCancel={clearActive}
