@@ -81,6 +81,29 @@ describe("customizeDragEndEdit", () => {
       customizeDragEndEdit("gallery:command:", { gallery: true, galleryKind: "command" }, "a", groups)
     ).toBeUndefined();
   });
+
+  it("adds a widget from the gallery over a slot", () => {
+    expect(
+      customizeDragEndEdit(
+        "gallery:widget:widget.core.mainStyleControls",
+        { gallery: true, galleryKind: "widget", widgetId: "widget.core.mainStyleControls" },
+        "b",
+        groups
+      )
+    ).toEqual({ kind: "addWidget", groupId: "g1", index: 1, widgetId: "widget.core.mainStyleControls" });
+  });
+
+  it("removes an in-toolbar widget dragged off the bar", () => {
+    expect(
+      customizeDragEndEdit("widget.core.mainStyleControls", { widget: true, groupId: "g1", kind: "control" }, null, groups)
+    ).toEqual({ kind: "removeItem", itemId: "widget.core.mainStyleControls" });
+  });
+
+  it("does not reorder a widget dropped back inside the palette (append panel, not a grid slot)", () => {
+    expect(
+      customizeDragEndEdit("widget.core.mainStyleControls", { widget: true, groupId: "g1", kind: "control" }, "a", groups)
+    ).toBeUndefined();
+  });
 });
 
 describe("optimisticGroupsForEdit", () => {

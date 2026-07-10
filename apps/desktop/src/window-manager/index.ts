@@ -679,6 +679,7 @@ export type ToolsetLayoutEdit =
   | { kind: "addCommand"; groupId: string; index: number; commandId: string }
   | { kind: "addSpacer"; groupId: string; index: number }
   | { kind: "addSeparator"; groupId: string; index: number }
+  | { kind: "addWidget"; groupId: string; index: number; widgetId: string }
   | { kind: "removeItem"; itemId: string }
   | { kind: "resetToolset" }
   | { kind: "exitCustomize" };

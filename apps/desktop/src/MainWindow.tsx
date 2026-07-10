@@ -466,7 +466,7 @@ import {
 } from "./documentWorkflow";
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
-import { ToolPalette } from "./ToolPalette";
+import { TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
@@ -511,6 +511,7 @@ import {
   getToolsetItemGroups,
   getToolsetPaletteGroups,
   getToolsetToggleActions,
+  getToolsetWidgetIds,
   isDisabledPlaceholderCommand,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -8176,6 +8177,7 @@ export function MainWindow({
         commandTitle: (commandId) => commandTitleById.get(commandId),
         commandIcon: (commandId) => commandById.get(commandId)?.icon,
         commandAssetName: (commandId) => commandById.get(commandId)?.assetName,
+        widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
       });
       if (next !== current) {
@@ -13819,6 +13821,7 @@ export function MainWindow({
                         />
                         <GalleryTray
                           commands={galleryCommands}
+                          widgets={getToolsetWidgetIds(toolset.id).map((id) => ({ id, title: TOOLBAR_WIDGET_TITLES[id] ?? id }))}
                           presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
                         />
                       </>

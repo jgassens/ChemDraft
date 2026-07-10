@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEven
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
 import {
   PALETTE_TOOLTIP_DOM_EVENT,
+  TOOLBAR_WIDGET_TITLES,
   ToolPalette,
   type PaletteTooltipDomDetail,
   type ToolbarFlyoutRequest,
@@ -19,6 +20,7 @@ import {
   desktopToolsetRegistry,
   computePaletteGridSize,
   getToolsetPaletteGroups,
+  getToolsetWidgetIds,
   paletteCommandGroupsFromItemGroups,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -105,6 +107,12 @@ export function PaletteWindow({
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
     [allCommands]
+  );
+  // Section widgets this toolset declares (from the base manifest, so a hidden one still shows as a
+  // restorable "Widgets" tile in the gallery).
+  const galleryWidgets = useMemo(
+    () => getToolsetWidgetIds(toolset.id).map((id) => ({ id, title: TOOLBAR_WIDGET_TITLES[id] ?? id })),
+    [toolset.id]
   );
 
   // In-place customize mode (Main palette only). MainWindow broadcasts the flag; we mirror it and
@@ -788,6 +796,7 @@ export function PaletteWindow({
               />
               <GalleryTray
                 commands={allCommands}
+                widgets={galleryWidgets}
                 presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
               />
             </>

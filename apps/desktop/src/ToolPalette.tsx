@@ -12,6 +12,7 @@ import {
   type ReactNode
 } from "react";
 import iro from "@jaames/iro";
+import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
@@ -21,7 +22,6 @@ import {
   ToolbarWidgetStateContext,
   TOOLBAR_WIDGET_IDS,
   isToolbarWidgetItem,
-  toolbarWidgetIdsFromItemGroups,
   useToolbarWidgetState,
   type ToolbarWidgetGridMode,
   type ToolbarWidgetState
@@ -266,9 +266,22 @@ export function ToolPalette({
     }))
     .filter((group) => group.items.length > 0);
   const gridItemGroups = gridGroups.map((group) => group.items);
-  const presentWidgets = toolbarWidgetIdsFromItemGroups(effectiveItemGroups)
-    .filter((widgetId): widgetId is keyof typeof TOOLBAR_WIDGET_REGISTRY => widgetId in TOOLBAR_WIDGET_REGISTRY)
-    .map((widgetId) => ({ widgetId, ...TOOLBAR_WIDGET_REGISTRY[widgetId] }));
+  // Pair each present widget with the id of the group it lives in (from `customize`, aligned to the
+  // UNFILTERED groups), so a customize drag-out can address it. Deduped, first-seen order.
+  const presentWidgets = effectiveItemGroups
+    .flatMap((group, index) =>
+      group
+        .filter((item) => isToolbarWidgetItem(item) && item.primary.type === "control")
+        .map((item) => ({
+          widgetId: item.primary.type === "control" ? item.primary.controlId : item.id,
+          groupId: customize?.groupIds[index]
+        }))
+    )
+    .filter(
+      (widget, index, all): widget is { widgetId: keyof typeof TOOLBAR_WIDGET_REGISTRY; groupId: string | undefined } =>
+        widget.widgetId in TOOLBAR_WIDGET_REGISTRY && all.findIndex((other) => other.widgetId === widget.widgetId) === index
+    )
+    .map((widget) => ({ ...widget, ...TOOLBAR_WIDGET_REGISTRY[widget.widgetId] }));
   const hidesGrid = presentWidgets.some((widget) => widget.gridMode === "hide-grid");
   const replacesGrid = presentWidgets.some((widget) => widget.gridMode === "replace-grid");
 
@@ -347,9 +360,20 @@ export function ToolPalette({
             </div>
           </div>
         ) : toolGroupElements}
-        {presentWidgets.map((widget) => (
-          <Fragment key={widget.widgetId}>{widget.render()}</Fragment>
-        ))}
+        {presentWidgets.map((widget) =>
+          customize ? (
+            <CustomizeWidgetSlot
+              key={widget.widgetId}
+              widgetId={widget.widgetId}
+              groupId={widget.groupId}
+              title={widget.title}
+            >
+              {widget.render()}
+            </CustomizeWidgetSlot>
+          ) : (
+            <Fragment key={widget.widgetId}>{widget.render()}</Fragment>
+          )
+        )}
       </aside>
     </ToolbarWidgetStateContext.Provider>
   );
@@ -400,40 +424,102 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
 }
 
 /**
+ * A section-widget (style controls, inspector) wrapped for customize mode: a drag handle overlays the
+ * (inert, dimmed) widget so it can be grabbed and dragged out of the palette to remove it. Uses
+ * `useDraggable` (not sortable) — the widget renders as an appended panel, not a grid slot, so it
+ * doesn't reorder among the icons; dropping it back inside the palette is a no-op (see the controller).
+ * Carries `data-palette-control` so the shell-drag / popover-dismiss `closest()` checks skip it.
+ */
+function CustomizeWidgetSlot({
+  widgetId,
+  groupId,
+  title,
+  children
+}: {
+  widgetId: string;
+  groupId?: string;
+  title: string;
+  children: ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: widgetId,
+    data: { widget: true, widgetId, groupId, kind: "control" }
+  });
+  const style: CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    touchAction: "none",
+    opacity: isDragging ? 0.4 : undefined
+  };
+  return (
+    <div
+      ref={setNodeRef}
+      className="customize-widget-slot"
+      style={style}
+      data-toolbar-item-id={widgetId}
+      data-palette-control="true"
+    >
+      <button
+        type="button"
+        className="customize-widget-handle"
+        data-palette-control="true"
+        title={`${title} — drag out to remove`}
+        aria-label={`${title} — drag out to remove`}
+        {...attributes}
+        {...listeners}
+      >
+        <span className="customize-widget-handle-grip" aria-hidden="true">⠿</span>
+        <span className="customize-widget-handle-label">{title}</span>
+      </button>
+      {children}
+    </div>
+  );
+}
+
+/**
  * Maps a manifest widget id (a `control` item's `controlId`) to the component that renders it and how
  * it sits relative to the tool grid. Components read their live state from {@link ToolbarWidgetStateContext};
  * ring vs. molecule share MoleculeInspectorControls (ring passes `ringOnly`).
  */
 const TOOLBAR_WIDGET_REGISTRY: Record<
   string,
-  { gridMode: ToolbarWidgetGridMode; className: string; render: () => ReactNode }
+  { gridMode: ToolbarWidgetGridMode; className: string; title: string; render: () => ReactNode }
 > = {
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: {
     gridMode: "append",
     className: "main-style-palette",
+    title: "Style Controls",
     render: () => <MainToolbarStyleControls />
   },
   [TOOLBAR_WIDGET_IDS.textStyleControls]: {
     gridMode: "append",
     className: "text-style-palette",
+    title: "Text Style",
     render: () => <TextToolbarStyleControls />
   },
   [TOOLBAR_WIDGET_IDS.artStyleControls]: {
     gridMode: "replace-grid",
     className: "art-style-palette",
+    title: "Art Style",
     render: () => <ArtToolbarStyleControls />
   },
   [TOOLBAR_WIDGET_IDS.ringInspector]: {
     gridMode: "hide-grid",
     className: "ring-inspector-palette",
+    title: "Ring Inspector",
     render: () => <MoleculeInspectorControls ringOnly />
   },
   [TOOLBAR_WIDGET_IDS.moleculeInspector]: {
     gridMode: "hide-grid",
     className: "molecule-inspector-palette",
+    title: "Molecule Inspector",
     render: () => <MoleculeInspectorControls />
   }
 };
+
+/** Public widget catalog (id + title) for the customize gallery's "Widgets" tiles. */
+export const TOOLBAR_WIDGET_TITLES: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(TOOLBAR_WIDGET_REGISTRY).map(([id, entry]) => [id, entry.title])
+);
 
 function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPaletteItemModel[][] {
   return groups.map((group) => group.map((command) => ({

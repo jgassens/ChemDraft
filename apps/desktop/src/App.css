@@ -2391,12 +2391,60 @@ textarea:focus-visible,
   border-radius: 6px;
 }
 
-/* The style/inspector widget section can't be customized in v1 — dim it and turn off interaction. */
+/* The widget's own controls stay inert while customizing (a drag must not open the font dropdown);
+   the drag handle above the panel is what the user grabs. Slightly dimmed to read as "not live". */
 .tool-palette.customizing .main-style-controls,
 .tool-palette.customizing .text-style-controls,
 .tool-palette.customizing .art-style-controls {
   pointer-events: none;
-  opacity: 0.45;
+  opacity: 0.55;
+}
+
+/* The Main palette is normally capped at 64px; in customize mode the widget grows a drag-handle strip,
+   so lift the cap and let the window size to content (the tray/bar already do this). */
+.tool-palette.customizing.horizontal.main-style-palette,
+.tool-palette.customizing.floating.horizontal.main-style-palette {
+  max-height: none;
+}
+
+/* A section widget wrapped for customize mode: a dashed box with a grab strip on top. */
+.customize-widget-slot {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  border: 1px dashed var(--cd-border-control, #b5b5b5);
+  border-radius: 6px;
+  box-sizing: border-box;
+  touch-action: none;
+}
+
+.customize-widget-handle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: none;
+  border-bottom: 1px dashed var(--cd-border-control, #b5b5b5);
+  border-radius: 6px 6px 0 0;
+  background: var(--cd-bg-hover, rgba(0, 0, 0, 0.05));
+  color: var(--cd-text-secondary, #555);
+  font-size: 10px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.customize-widget-handle:active {
+  cursor: grabbing;
+}
+
+.customize-widget-handle-grip {
+  letter-spacing: -2px;
+  opacity: 0.7;
+}
+
+.customize-widget-handle-label {
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .customize-slot {

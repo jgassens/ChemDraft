@@ -6,7 +6,8 @@ import type { CommandSpec } from "../../commands";
 import {
   GALLERY_TRAY_DROPPABLE_ID,
   buildGalleryModel,
-  type GalleryEntry
+  type GalleryEntry,
+  type GalleryWidgetDescriptor
 } from "./galleryModel";
 
 /** Build a full palette item model for a gallery entry so `ToolbarItemIcon` can render its icon. */
@@ -35,14 +36,16 @@ function GalleryTile({ entry }: { entry: GalleryEntry }) {
       gallery: true,
       galleryKind: entry.kind,
       commandId: entry.commandId,
+      widgetId: entry.widgetId,
       iconItem,
       command: entry.command
     }
   });
 
+  const structural = entry.kind === "spacer" || entry.kind === "separator";
   const className = [
     "gallery-tile",
-    entry.kind === "command" ? "gallery-tile-command" : "gallery-tile-structural",
+    structural ? "gallery-tile-structural" : entry.kind === "widget" ? "gallery-tile-widget" : "gallery-tile-command",
     entry.present ? "gallery-tile-present" : "",
     isDragging ? "gallery-tile-dragging" : ""
   ]
@@ -84,15 +87,17 @@ function GalleryTile({ entry }: { entry: GalleryEntry }) {
  */
 export function GalleryTray({
   commands,
+  widgets = [],
   presentItemIds
 }: {
   commands: readonly CommandSpec[];
+  widgets?: readonly GalleryWidgetDescriptor[];
   presentItemIds: ReadonlySet<string>;
 }) {
   const [search, setSearch] = useState("");
   const entries = useMemo(
-    () => buildGalleryModel(commands, presentItemIds, search),
-    [commands, presentItemIds, search]
+    () => buildGalleryModel(commands, widgets, presentItemIds, search),
+    [commands, widgets, presentItemIds, search]
   );
   const { setNodeRef, isOver } = useDroppable({ id: GALLERY_TRAY_DROPPABLE_ID });
 

@@ -25,11 +25,16 @@ import { GALLERY_TRAY_DROPPABLE_ID, type GalleryEntryKind } from "./galleryModel
 export interface CustomizeDragData {
   groupId?: string;
   kind?: string;
+  /** True for an in-toolbar section-widget (style controls) — it can be dragged out to remove but does
+   *  not reorder among the icon grid (it renders as an appended panel, not a grid slot). */
+  widget?: boolean;
   /** True for a gallery tile being dragged into the toolbar. */
   gallery?: boolean;
   galleryKind?: GalleryEntryKind;
   /** Command id for a gallery command tile. */
   commandId?: string;
+  /** Control id for a gallery/in-toolbar widget tile. */
+  widgetId?: string;
   /** A ready-to-render item model + command for the drag ghost (gallery tiles only). */
   iconItem?: ToolbarPaletteItemModel;
   command?: CommandSpec;
@@ -112,6 +117,10 @@ export function customizeDragEndEdit(
         return activeData.commandId === undefined
           ? undefined
           : { kind: "addCommand", groupId: target.groupId, index: target.index, commandId: activeData.commandId };
+      case "widget":
+        return activeData.widgetId === undefined
+          ? undefined
+          : { kind: "addWidget", groupId: target.groupId, index: target.index, widgetId: activeData.widgetId };
       default:
         return undefined;
     }
@@ -119,6 +128,11 @@ export function customizeDragEndEdit(
 
   if (overId === null || overId === GALLERY_TRAY_DROPPABLE_ID) {
     return { kind: "removeItem", itemId: activeId };
+  }
+  // A section-widget panel can be dragged out to remove, but it doesn't reorder among the icon grid
+  // (it renders as an appended panel, not a grid slot) — so any in-palette drop is a no-op.
+  if (activeData?.widget) {
+    return undefined;
   }
   if (overId === activeId) {
     return undefined;

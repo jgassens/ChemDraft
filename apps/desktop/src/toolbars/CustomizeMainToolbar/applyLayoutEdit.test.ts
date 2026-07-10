@@ -114,6 +114,45 @@ describe("applyToolsetLayoutEdit", () => {
     expect(ids).toEqual(["user.spacer.1", "user.separator.1", "user.spacer.2"]);
   });
 
+  it("addWidget un-hides a removed base widget rather than duplicating it", () => {
+    const removed = applyToolsetLayoutEdit(
+      emptyLayoutState(),
+      payload({ kind: "removeItem", itemId: "widget.core.mainStyleControls" }),
+      context
+    );
+    expect(removed.toolsetOverrides[0]?.hiddenCommandIds).toEqual(["widget.core.mainStyleControls"]);
+    const restored = applyToolsetLayoutEdit(
+      removed,
+      payload({ kind: "addWidget", groupId: "core.main.style", index: 0, widgetId: "widget.core.mainStyleControls" }),
+      context
+    );
+    // Un-hidden → no leftover hidden id, and no duplicate addition.
+    expect(restored.toolsetOverrides).toEqual([]);
+  });
+
+  it("addWidget for a widget the toolset never had adds a control addition", () => {
+    const next = applyToolsetLayoutEdit(
+      emptyLayoutState(),
+      payload({ kind: "addWidget", groupId: "core.main.style", index: 0, widgetId: "widget.core.textStyleControls" }),
+      { ...context, widgetTitle: () => "Text Style" }
+    );
+    const addition = next.toolsetOverrides[0]?.itemAdditions?.[0];
+    expect(addition?.item.kind).toBe("control");
+    expect(addition?.item.primary).toEqual({ type: "control", controlId: "widget.core.textStyleControls" });
+    expect(addition?.item.label).toBe("Text Style");
+  });
+
+  it("addCommand un-hides a previously removed base command instead of adding a duplicate", () => {
+    const hidden = applyToolsetLayoutEdit(emptyLayoutState(), payload({ kind: "removeItem", itemId: "tool.bond" }), context);
+    expect(hidden.toolsetOverrides[0]?.hiddenCommandIds).toEqual(["tool.bond"]);
+    const restored = applyToolsetLayoutEdit(
+      hidden,
+      payload({ kind: "addCommand", groupId: "core.main.selection", index: 0, commandId: "tool.bond" }),
+      { ...context, commandTitle: (id) => (id === "tool.bond" ? "Bond" : undefined) }
+    );
+    expect(restored.toolsetOverrides).toEqual([]);
+  });
+
   it("removeItem deletes an addition but hides a base item", () => {
     const added = applyToolsetLayoutEdit(
       emptyLayoutState(),

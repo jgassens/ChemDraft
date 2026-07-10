@@ -6,8 +6,20 @@ import {
   nextSpacerItemId,
   removeToolsetItem,
   reorderItems,
-  resetToolsetLayout
+  resetToolsetLayout,
+  setItemHidden
 } from "../CustomizeToolbars/layoutStateEdits";
+
+/** True when the toolset's override currently hides this id (so re-adding it should un-hide rather
+ *  than create a duplicate addition — a removed base command/widget was only hidden, not deleted). */
+function isHiddenByOverride<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  id: string
+): boolean {
+  const override = state.toolsetOverrides.find((entry) => entry.toolsetId === toolsetId);
+  return (override?.hiddenCommandIds ?? []).includes(id);
+}
 
 export interface ApplyToolsetLayoutEditContext {
   /** Customization ids currently present in the toolset — used to no-op a duplicate add. */
@@ -19,6 +31,8 @@ export interface ApplyToolsetLayoutEditContext {
    *  glyph instead of the generic fallback. Optional — a missing icon just falls back. */
   commandIcon?: (commandId: string) => string | undefined;
   commandAssetName?: (commandId: string) => string | undefined;
+  /** Resolve a widget id to its human title (for the control item's label / dialog rows). Optional. */
+  widgetTitle?: (widgetId: string) => string | undefined;
   /** Rows in the toolset's grid (core.main = 2), so a spacer spans a full column. */
   gridRows?: number;
 }
@@ -43,6 +57,11 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         // Unknown command — never add an item that would prune away or render dead.
         return state;
       }
+      // A removed base command was only hidden; re-adding it should un-hide, not add a duplicate id
+      // (which the hidden filter would then strip anyway).
+      if (isHiddenByOverride(state, toolsetId, edit.commandId)) {
+        return setItemHidden(state, toolsetId, edit.commandId, false);
+      }
       const item = {
         id: edit.commandId,
         kind: "button",
@@ -50,6 +69,27 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         icon: context.commandIcon?.(edit.commandId),
         assetName: context.commandAssetName?.(edit.commandId),
         primary: { type: "command", commandId: edit.commandId },
+        submenu: null
+      } as ToolsetItemDefinition<I, A>;
+      return addToolsetItemAddition(
+        state,
+        toolsetId,
+        { groupId: edit.groupId, index: edit.index, item },
+        { presentItemIds: context.presentItemIds }
+      );
+    }
+    case "addWidget": {
+      // Widgets (style controls, inspectors) are base manifest items; removing one hides it. Re-adding
+      // from the gallery un-hides it. (A control addition is only built for the rare case of dropping a
+      // widget onto a toolset that never declared it.)
+      if (isHiddenByOverride(state, toolsetId, edit.widgetId)) {
+        return setItemHidden(state, toolsetId, edit.widgetId, false);
+      }
+      const item = {
+        id: edit.widgetId,
+        kind: "control",
+        label: context.widgetTitle?.(edit.widgetId) ?? edit.widgetId,
+        primary: { type: "control", controlId: edit.widgetId },
         submenu: null
       } as ToolsetItemDefinition<I, A>;
       return addToolsetItemAddition(

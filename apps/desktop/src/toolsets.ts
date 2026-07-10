@@ -11,7 +11,7 @@ import {
   type ToolsetDefinition
 } from "@chemdraft/toolset-registry";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { WIDGET_CONTROL_ID_PREFIX } from "./toolbars/toolbarWidgets";
+import { WIDGET_CONTROL_ID_PREFIX, toolbarWidgetIdsFromItemGroups } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
@@ -119,6 +119,15 @@ export function getToolsetPaletteGroups(
     id: group.id,
     items: group.items.map((item) => toolsetItemToPaletteItem(item, commandOverrides))
   }));
+}
+
+/** The section-widget control ids a toolset declares in its manifest (default: the base registry, so a
+ *  user-hidden widget is still listed — the customize gallery offers it as a restorable "Widgets" tile). */
+export function getToolsetWidgetIds(
+  toolsetId: string,
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): string[] {
+  return toolbarWidgetIdsFromItemGroups(getToolsetItemGroups(toolsetId, registry));
 }
 
 export function getToolsetItemGroups(

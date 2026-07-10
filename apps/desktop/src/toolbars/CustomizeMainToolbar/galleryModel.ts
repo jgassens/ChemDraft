@@ -4,7 +4,7 @@ import type { ToolbarAssetName } from "../../toolbarAssets";
 
 /** The structural tiles the gallery always offers (Safari's "Space" plus a thin divider). */
 export type GalleryStructuralKind = "spacer" | "separator";
-export type GalleryEntryKind = "command" | GalleryStructuralKind;
+export type GalleryEntryKind = "command" | "widget" | GalleryStructuralKind;
 
 export const GALLERY_DRAG_ID_PREFIX = "gallery:";
 
@@ -12,27 +12,35 @@ export const GALLERY_DRAG_ID_PREFIX = "gallery:";
  *  behavior: drag an item off the bar and into the gallery to take it out). */
 export const GALLERY_TRAY_DROPPABLE_ID = "gallery-tray";
 
-/** dnd-kit draggable id for a gallery tile. Command tiles embed the command id so a drop can read it
+/** dnd-kit draggable id for a gallery tile. Command/widget tiles embed their id so a drop can read it
  *  straight off `active.id` without a lookup; structural tiles are a fixed pair. */
-export function galleryDragId(kind: GalleryEntryKind, commandId?: string): string {
-  return kind === "command"
-    ? `${GALLERY_DRAG_ID_PREFIX}command:${commandId}`
-    : `${GALLERY_DRAG_ID_PREFIX}${kind}`;
+export function galleryDragId(kind: GalleryEntryKind, id?: string): string {
+  return kind === "command" || kind === "widget" ? `${GALLERY_DRAG_ID_PREFIX}${kind}:${id}` : `${GALLERY_DRAG_ID_PREFIX}${kind}`;
+}
+
+/** A toolset section-widget the gallery can offer (e.g. the Main style controls) — its control id
+ *  plus a human title/icon for the tile. */
+export interface GalleryWidgetDescriptor {
+  id: string;
+  title: string;
+  icon?: IconName;
 }
 
 export interface GalleryEntry {
   /** dnd-kit draggable id (see `galleryDragId`). */
   dragId: string;
   kind: GalleryEntryKind;
-  /** Present only on command entries. */
+  /** Present on command entries. */
   commandId?: string;
+  /** Present on widget entries (the control id). */
+  widgetId?: string;
   title: string;
   icon?: IconName;
   assetName?: ToolbarAssetName;
-  /** The command spec, for icon rendering; undefined for structural entries. */
+  /** The command spec, for icon rendering; undefined for non-command entries. */
   command?: CommandSpec;
-  /** True when this command is already in the toolbar — the tile is shown grayed and is not
-   *  draggable (a command id is unique in a toolset, so it can appear at most once). */
+  /** True when this item is already in the toolbar — the tile is shown grayed and is not draggable
+   *  (a command/widget id is unique in a toolset, so it can appear at most once). */
   present: boolean;
 }
 
@@ -53,13 +61,15 @@ function matchesSearch(query: string, ...fields: (string | undefined)[]): boolea
 }
 
 /**
- * Build the gallery entries for the tray: the two structural tiles (Space, Divider) first, then the
- * command catalog deduped by id (first spec wins, matching the Customize dialog), filtered by the
- * search box, and capped. `presentItemIds` are the customization ids already in the toolbar — those
- * command tiles render grayed and inert so a command can't be added twice.
+ * Build the gallery entries for the tray: the two structural tiles (Space, Divider) first, then any
+ * section widgets (style controls, inspectors) the toolset declares, then the command catalog deduped
+ * by id (first spec wins, matching the Customize dialog), filtered by the search box, and capped.
+ * `presentItemIds` are the customization ids already in the toolbar — present command/widget tiles
+ * render grayed and inert so an item can't be added twice.
  */
 export function buildGalleryModel(
   commands: readonly CommandSpec[],
+  widgets: readonly GalleryWidgetDescriptor[],
   presentItemIds: ReadonlySet<string>,
   search: string
 ): GalleryEntry[] {
@@ -74,6 +84,17 @@ export function buildGalleryModel(
     icon: entry.icon,
     present: false
   }));
+
+  const widgetEntries: GalleryEntry[] = widgets
+    .filter((widget) => matchesSearch(query, widget.title, widget.id))
+    .map((widget) => ({
+      dragId: galleryDragId("widget", widget.id),
+      kind: "widget" as const,
+      widgetId: widget.id,
+      title: widget.title,
+      icon: widget.icon,
+      present: presentItemIds.has(widget.id)
+    }));
 
   const seen = new Set<string>();
   const commandEntries: GalleryEntry[] = [];
@@ -100,5 +121,5 @@ export function buildGalleryModel(
     }
   }
 
-  return [...structural, ...commandEntries];
+  return [...structural, ...widgetEntries, ...commandEntries];
 }
