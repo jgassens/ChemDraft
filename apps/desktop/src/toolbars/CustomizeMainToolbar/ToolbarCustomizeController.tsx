@@ -210,7 +210,6 @@ export function ToolbarCustomizeController({
   children: (effectiveGroups: readonly ToolbarPaletteGroupModel[]) => ReactNode;
 }) {
   const [activeItem, setActiveItem] = useState<ToolbarPaletteItemModel | null>(null);
-  const [dbg, setDbg] = useState(""); // TEMP diagnostic overlay
   // A gallery tile being dragged (its id isn't in `groups`, so it's tracked separately for the ghost).
   const [activeGallery, setActiveGallery] = useState<CustomizeDragData | null>(null);
   // Optimistic overlay: the just-dropped reorder/remove shown before the broadcast round-trip lands.
@@ -224,6 +223,17 @@ export function ToolbarCustomizeController({
   // display:contents wrapper (no box of its own) so we can measure the palette's rect on drag-end
   // without changing the shell's grid layout.
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // The true last pointer position (client coords), tracked directly. dnd-kit's `activatorEvent + delta`
+  // is scroll-adjusted for a draggable inside a scroll container (the gallery tray), so it mis-reports
+  // where a gallery tile was actually dropped — this raw feed keeps the in-palette check honest.
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const track = (event: PointerEvent) => {
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
+    };
+    window.addEventListener("pointermove", track, true);
+    return () => window.removeEventListener("pointermove", track, true);
+  }, []);
 
   const sensors = useSensors(
     // 5px activation is required in WKWebView — without it micro-movements cancel the drag.
@@ -256,7 +266,9 @@ export function ToolbarCustomizeController({
     // palette — so `over` is never null and the "dragged out → remove" path would never fire. Detect
     // it geometrically: a release outside the palette's box is a remove (overId forced to null).
     const paletteRect = containerRef.current?.querySelector(".tool-palette")?.getBoundingClientRect();
-    const point = dragEndPoint(event);
+    // Prefer the raw tracked pointer (correct even when the drag started in the scrollable tray); fall
+    // back to activator+delta for a keyboard drag (no pointer feed).
+    const point = lastPointerRef.current ?? dragEndPoint(event);
     if (paletteRect && point && !isPointInRect(point, paletteRect)) {
       overId = null;
     }
