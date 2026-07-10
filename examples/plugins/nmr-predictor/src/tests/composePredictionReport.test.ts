@@ -72,7 +72,7 @@ describe("composePredictionReport", () => {
     expect(figure.structure).toBeUndefined();
 
     const table = report.sections.find((section) => section.kind === "table");
-    // ¹³C fixture resonance carries no multiplet → Mult./J columns are "—".
+    // ¹³C fixture resonance carries no multiplet → Mult./J columns are "—"; no sphere/n → Confidence "—".
     expect(table && table.kind === "table" && table.rows[0]).toEqual([
       "¹³C",
       "128.50",
@@ -80,11 +80,51 @@ describe("composePredictionReport", () => {
       "—",
       "—",
       "0.40",
+      "—",
       "0",
       "Caq0h1(...)"
     ]);
     expect(textBodies(report)).toContain("Synthetic fixture values");
     expect(textBodies(report)).toContain("NMR_NO_FRAGMENT_MATCH");
+  });
+
+  it("labels per-peak confidence from match applicability (sphere depth + reference n)", () => {
+    const mkRes = (
+      id: string,
+      deltaPpm: number,
+      evidence: NmrPredictionResult["resonances"][number]["evidence"],
+      flags: string[] = []
+    ): NmrPredictionResult["resonances"][number] => ({
+      id,
+      nucleus: "1H",
+      deltaPpm,
+      atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }],
+      equivalentNuclei: 1,
+      evidence,
+      flags
+    });
+    const tiered: NmrPredictionResult = {
+      ...result,
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances: [
+        mkRes("r1", 8, { method: "hose-fragment", matchedSphere: 4, sampleCount: 42, environmentCode: "A" }),
+        mkRes("r2", 7, { method: "hose-fragment", matchedSphere: 2, sampleCount: 5, environmentCode: "B" }),
+        mkRes("r3", 6, { method: "hose-fragment", matchedSphere: 1, sampleCount: 30, environmentCode: "C" }), // shallow → low
+        mkRes("r4", 5, { method: "hose-fragment", matchedSphere: 4, sampleCount: 2, environmentCode: "D" }), // sparse → low
+        mkRes("r5", 4, { method: "rule-estimated", environmentCode: "E" }, ["rule-estimated"])
+      ],
+      warnings: []
+    };
+    const table = composePredictionReport(source, tiered).sections.find((section) => section.kind === "table");
+    if (!table || table.kind !== "table") throw new Error("expected a table section");
+    // Confidence is column index 6 (after ± σ); rows are sorted by δ descending, matching input order.
+    expect(table.rows.map((row) => row[6])).toEqual([
+      "high · s4, n=42",
+      "med · s2, n=5",
+      "low · s1, n=30",
+      "low · s4, n=2",
+      "est."
+    ]);
   });
 
   it("carries the 2D depiction into the figure when the backend supplies one", () => {

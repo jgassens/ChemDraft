@@ -175,6 +175,7 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
         resonance.multiplet?.label ?? "—",
         formatCouplings(resonance),
         formatUncertainty(resonance),
+        confidenceLabel(resonance),
         resonance.atomRefs.map((ref) => ref.sourceAtomIndex).join(", "),
         estimated ? "rule-estimated" : resonance.evidence?.environmentCode ?? "—"
       ];
@@ -183,7 +184,7 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
   return {
     kind: "table",
     title: "Predicted shifts",
-    columns: ["Nucleus", "δ (ppm)", "Equiv.", "Mult.", "J (Hz)", "± σ (ppm)", "Atoms", "Environment"],
+    columns: ["Nucleus", "δ (ppm)", "Equiv.", "Mult.", "J (Hz)", "± σ (ppm)", "Confidence", "Atoms", "Environment"],
     rows
   };
 }
@@ -197,6 +198,38 @@ function formatCouplings(resonance: NmrResonance): string {
 function formatUncertainty(resonance: NmrResonance): string {
   const sigma = resonance.uncertainty?.standardDeviationPpm;
   return sigma === undefined ? "—" : sigma.toFixed(2);
+}
+
+// Honest confidence comes from the *applicability* of the match, not a fabricated score: how specific
+// the matched environment is (HOSE sphere depth) and how well-populated its reference is (n). These
+// mirror the notices the predictor already raises — LowHoseSphereMatch (sphere ≤ 1) and
+// SmallReferencePopulation (n < 3) — so the column and the notices never disagree.
+const CONFIDENCE_MIN_POPULATION = 3; // mirrors OclHosePredictor SMALL_POPULATION_THRESHOLD
+const CONFIDENCE_HIGH_POPULATION = 8; // a healthy reference population, well above the small-population floor
+const CONFIDENCE_HIGH_SPHERE = 3; // a specific (≥3-bond) environment, not a shallow class match
+
+/**
+ * Per-peak confidence label carrying its own basis (sphere depth + n) so the number is self-explaining:
+ * `high · s4, n=42`. A rule-estimated peak is never a database match → `est.`; a match with no
+ * applicability data (e.g. the synthetic fixture) → `—`.
+ */
+function confidenceLabel(resonance: NmrResonance): string {
+  const evidence = resonance.evidence;
+  if (evidence?.method === "rule-estimated") {
+    return "est.";
+  }
+  const sphere = evidence?.matchedSphere;
+  const n = evidence?.sampleCount;
+  if (sphere === undefined || n === undefined) {
+    return "—";
+  }
+  if (sphere <= 1 || n < CONFIDENCE_MIN_POPULATION) {
+    return `low · s${sphere}, n=${n}`;
+  }
+  if (sphere >= CONFIDENCE_HIGH_SPHERE && n >= CONFIDENCE_HIGH_POPULATION) {
+    return `high · s${sphere}, n=${n}`;
+  }
+  return `med · s${sphere}, n=${n}`;
 }
 
 /** Database provenance (ADR-0014): name, version, license, source + attribution, when the backend
