@@ -206,6 +206,9 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
             const fullHeight = 16 + (peak.intensity / maxIntensity) * (PLOT_H - 30);
             const active = activePeakIds.has(peak.id);
             const stickClass = peak.estimated ? "lf-stick is-estimated" : "lf-stick";
+            // A matched-but-low-confidence peak (shallow HOSE sphere / sparse reference) is drawn muted,
+            // so the spectrum communicates trust at a glance — distinct from the dashed estimate style.
+            const peakClass = `lf-peak${active ? " is-active" : ""}${peak.confidence === "low" ? " is-low-confidence" : ""}`;
             // First-order multiplet lines; sub-pixel at full view, resolve as you zoom in.
             const lines = multipletLines(peak);
             const xs = lines.map((line) => xOf(line.ppm));
@@ -214,7 +217,7 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
             return (
               <g
                 key={peak.id}
-                className={active ? "lf-peak is-active" : "lf-peak"}
+                className={peakClass}
                 data-peak-id={peak.id}
                 onMouseEnter={() => setHoverPeakId(peak.id)}
                 onMouseLeave={() => setHoverPeakId(null)}

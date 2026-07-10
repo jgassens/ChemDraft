@@ -136,6 +136,21 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-peak-id="e"] .lf-stick.is-estimated')).not.toBeNull();
   });
 
+  it("mutes a matched-but-low-confidence peak (is-low-confidence), but not a confident one", () => {
+    const mixed: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 10 },
+      reversed: true,
+      peaks: [
+        { id: "lo", ppm: 3.1, intensity: 1, label: "3.10", atomIndices: [0], confidence: "low" },
+        { id: "hi", ppm: 7.3, intensity: 1, label: "7.30", atomIndices: [1], confidence: "high" }
+      ]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: mixed }));
+    expect(container!.querySelector('[data-peak-id="lo"]')!.classList.contains("is-low-confidence")).toBe(true);
+    expect(container!.querySelector('[data-peak-id="hi"]')!.classList.contains("is-low-confidence")).toBe(false);
+  });
+
   // Regression guard for the update flicker: when a new prediction with a wider ppm domain replaces the
   // previous one in place, the viewport must adopt the new domain in the same render — so a peak that
   // only fits the new domain is drawn immediately, never dropped for a frame under the old window.

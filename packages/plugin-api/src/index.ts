@@ -315,6 +315,8 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
                   atomIndices: z.array(z.number().int().min(0)).max(4000),
                   /** True when the shift is a coarse rule estimate, not a reference-DB match. */
                   estimated: z.boolean().optional(),
+                  /** Match-applicability confidence (HOSE sphere depth + reference n); low peaks draw muted. */
+                  confidence: z.enum(["high", "medium", "low"]).optional(),
                   /** First-order couplings (Hz + equivalent-partner count) for drawing split peaks. */
                   couplings: z
                     .array(z.object({ jHz: z.number(), partnerCount: z.number().int().min(0) }).strict())

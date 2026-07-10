@@ -115,7 +115,8 @@ describe("composePredictionReport", () => {
       ],
       warnings: []
     };
-    const table = composePredictionReport(source, tiered).sections.find((section) => section.kind === "table");
+    const report = composePredictionReport(source, tiered);
+    const table = report.sections.find((section) => section.kind === "table");
     if (!table || table.kind !== "table") throw new Error("expected a table section");
     // Confidence is column index 6 (after ± σ); rows are sorted by δ descending, matching input order.
     expect(table.rows.map((row) => row[6])).toEqual([
@@ -125,6 +126,12 @@ describe("composePredictionReport", () => {
       "low · s4, n=2",
       "est."
     ]);
+
+    // The same tier reaches the figure peak so the spectrum can mute low/estimated ones (M17a2).
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    if (!figure || figure.kind !== "linkedFigure") throw new Error("expected a linkedFigure section");
+    expect(figure.spectrum.peaks.map((peak) => peak.confidence)).toEqual(["high", "medium", "low", "low", undefined]);
+    expect(figure.spectrum.peaks.map((peak) => peak.estimated)).toEqual([undefined, undefined, undefined, undefined, true]);
   });
 
   it("carries the 2D depiction into the figure when the backend supplies one", () => {

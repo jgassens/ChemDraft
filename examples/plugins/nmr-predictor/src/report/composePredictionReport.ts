@@ -122,8 +122,11 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
       label: resonance.deltaPpm.toFixed(2),
       atomIndices: resonance.atomRefs.map((ref) => ref.sourceAtomIndex)
     };
-    if (resonance.evidence?.method === "rule-estimated") {
+    const tier = confidenceTier(resonance);
+    if (tier === "estimated") {
       peak.estimated = true;
+    } else if (tier === "high" || tier === "medium" || tier === "low") {
+      peak.confidence = tier;
     }
     const couplings = resonance.multiplet?.couplings ?? [];
     if (couplings.length > 0) {
@@ -208,28 +211,45 @@ const CONFIDENCE_MIN_POPULATION = 3; // mirrors OclHosePredictor SMALL_POPULATIO
 const CONFIDENCE_HIGH_POPULATION = 8; // a healthy reference population, well above the small-population floor
 const CONFIDENCE_HIGH_SPHERE = 3; // a specific (≥3-bond) environment, not a shallow class match
 
+type ConfidenceTier = "high" | "medium" | "low" | "estimated" | "unknown";
+
+/** Machine-readable confidence tier from match applicability. Shared by the table label and the
+ *  figure peak (low-confidence peaks are drawn muted). `estimated` = rule guess (never a DB match);
+ *  `unknown` = a match with no sphere/n basis (e.g. the synthetic fixture). */
+function confidenceTier(resonance: NmrResonance): ConfidenceTier {
+  const evidence = resonance.evidence;
+  if (evidence?.method === "rule-estimated") {
+    return "estimated";
+  }
+  const sphere = evidence?.matchedSphere;
+  const n = evidence?.sampleCount;
+  if (sphere === undefined || n === undefined) {
+    return "unknown";
+  }
+  if (sphere <= 1 || n < CONFIDENCE_MIN_POPULATION) {
+    return "low";
+  }
+  if (sphere >= CONFIDENCE_HIGH_SPHERE && n >= CONFIDENCE_HIGH_POPULATION) {
+    return "high";
+  }
+  return "medium";
+}
+
 /**
  * Per-peak confidence label carrying its own basis (sphere depth + n) so the number is self-explaining:
  * `high · s4, n=42`. A rule-estimated peak is never a database match → `est.`; a match with no
  * applicability data (e.g. the synthetic fixture) → `—`.
  */
 function confidenceLabel(resonance: NmrResonance): string {
-  const evidence = resonance.evidence;
-  if (evidence?.method === "rule-estimated") {
+  const tier = confidenceTier(resonance);
+  if (tier === "estimated") {
     return "est.";
   }
-  const sphere = evidence?.matchedSphere;
-  const n = evidence?.sampleCount;
-  if (sphere === undefined || n === undefined) {
+  if (tier === "unknown") {
     return "—";
   }
-  if (sphere <= 1 || n < CONFIDENCE_MIN_POPULATION) {
-    return `low · s${sphere}, n=${n}`;
-  }
-  if (sphere >= CONFIDENCE_HIGH_SPHERE && n >= CONFIDENCE_HIGH_POPULATION) {
-    return `high · s${sphere}, n=${n}`;
-  }
-  return `med · s${sphere}, n=${n}`;
+  const { matchedSphere, sampleCount } = resonance.evidence ?? {};
+  return `${tier === "medium" ? "med" : tier} · s${matchedSphere}, n=${sampleCount}`;
 }
 
 /** Database provenance (ADR-0014): name, version, license, source + attribution, when the backend
