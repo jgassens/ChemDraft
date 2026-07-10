@@ -30,6 +30,14 @@ function mount(element: ReturnType<typeof createElement>): void {
   });
 }
 
+// Re-render into the SAME root so the component reconciles in place (as it does when a new prediction
+// replaces the previous report at the same section index) rather than remounting fresh.
+function rerender(element: ReturnType<typeof createElement>): void {
+  act(() => {
+    root!.render(element);
+  });
+}
+
 // React synthesises onMouseEnter from a bubbling `mouseover` at the delegation root.
 function hover(element: Element): void {
   act(() => {
@@ -126,5 +134,27 @@ describe("LinkedFigureView", () => {
     };
     mount(createElement(LinkedFigureView, { spectrum: estimatedSpectrum }));
     expect(container!.querySelector('[data-peak-id="e"] .lf-stick.is-estimated')).not.toBeNull();
+  });
+
+  // Regression guard for the update flicker: when a new prediction with a wider ppm domain replaces the
+  // previous one in place, the viewport must adopt the new domain in the same render — so a peak that
+  // only fits the new domain is drawn immediately, never dropped for a frame under the old window.
+  it("adopts a new structure's ppm domain on in-place update (no stale viewport)", () => {
+    mount(createElement(LinkedFigureView, { spectrum })); // domain 0–8
+    expect(container!.querySelector('[data-peak-id="hi"]')).toBeNull();
+
+    const wider: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 12 },
+      reversed: true,
+      peaks: [{ id: "hi", ppm: 11, intensity: 1, label: "11.00", atomIndices: [0] }] // only in-window for 0–12
+    };
+    rerender(createElement(LinkedFigureView, { spectrum: wider }));
+
+    // The high-ppm peak is present (it would be culled if the viewport were still the old 0–8 window),
+    // and the axis now extends past the old domain.
+    expect(container!.querySelector('[data-peak-id="hi"]')).not.toBeNull();
+    const tickValues = [...container!.querySelectorAll(".lf-tick-label")].map((node) => Number(node.textContent));
+    expect(Math.max(...tickValues)).toBeGreaterThan(8);
   });
 });

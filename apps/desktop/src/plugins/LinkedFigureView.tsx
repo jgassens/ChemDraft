@@ -33,16 +33,22 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
   const domainSpan = Math.max(1e-6, spectrum.domain.max - spectrum.domain.min);
 
   const [view, setView] = useState({ min: spectrum.domain.min, max: spectrum.domain.max });
+  const [viewDomain, setViewDomain] = useState({ min: spectrum.domain.min, max: spectrum.domain.max });
   const [hoverPeakId, setHoverPeakId] = useState<string | null>(null);
   const [hoverAtomIndex, setHoverAtomIndex] = useState<number | null>(null);
   const spectrumRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<number | null>(null);
 
   // Reset the viewport when a different structure is predicted (its ppm domain changes); a re-run of
-  // the same structure keeps the current zoom.
-  useEffect(() => {
+  // the same structure keeps the current zoom. Done *during render* (not a post-paint effect): if we
+  // waited for an effect, the new peaks would paint once through the previous structure's zoom window
+  // first — a visible one-frame flash of the old layout before it snapped into place. Setting state
+  // during render is React's supported way to adjust state from a changed prop; it re-renders before
+  // committing to the screen, so nothing flickers.
+  if (viewDomain.min !== spectrum.domain.min || viewDomain.max !== spectrum.domain.max) {
+    setViewDomain({ min: spectrum.domain.min, max: spectrum.domain.max });
     setView({ min: spectrum.domain.min, max: spectrum.domain.max });
-  }, [spectrum.domain.min, spectrum.domain.max]);
+  }
 
   // Cross-highlight maps: which peaks reference each atom, and which shift labels an atom carries.
   const atomToPeakIds = useMemo(() => {
