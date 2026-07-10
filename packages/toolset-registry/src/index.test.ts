@@ -673,6 +673,28 @@ describe("core toolset item additions (spacers + gallery adds)", () => {
     expect(warnings.some((warning) => warning.includes("plugin.gone"))).toBe(true);
   });
 
+  it("keeps an addition whose command is a registered additional command (the shell catalog)", () => {
+    const warnings: string[] = [];
+    const customized = applyToolsetLayoutState(
+      [fixtureToolset],
+      {
+        version: 1,
+        toolsetOverrides: [
+          {
+            toolsetId: "core.fixture",
+            // edit.undo is a real shell command but NOT in any toolset manifest — the in-place gallery
+            // can still add it, so it must survive pruning when passed via additionalCommandIds.
+            itemAdditions: [{ groupId: "fixture.tools", index: 1, item: commandItem("edit.undo", "Undo") }],
+            itemOrder: { "fixture.tools": ["tool.select", "edit.undo"] }
+          }
+        ]
+      },
+      { onUnknownCommand: "prune", additionalCommandIds: ["edit.undo"], onWarning: (warning) => warnings.push(warning) }
+    );
+    expect(itemIds(customized[0], "fixture.tools")).toContain("edit.undo");
+    expect(warnings.some((warning) => warning.includes("edit.undo"))).toBe(false);
+  });
+
   it("keeps a spacer addition through pruning (it references no command)", () => {
     const customized = applyToolsetLayoutState(
       [fixtureToolset],

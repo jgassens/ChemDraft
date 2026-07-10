@@ -6,8 +6,10 @@ import {
   MeasuringStrategy,
   PointerSensor,
   closestCenter,
+  pointerWithin,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent
 } from "@dnd-kit/core";
@@ -32,6 +34,16 @@ export interface CustomizeDragData {
   iconItem?: ToolbarPaletteItemModel;
   command?: CommandSpec;
 }
+
+/** Collision detection that keys off the POINTER, not the dragged item's rect-center. A gallery tile
+ *  is much larger than a 24px toolbar slot, so `closestCenter` (rect-center based) can miss the slot
+ *  under the cursor and report the tray (or nothing); `pointerWithin` returns whatever droppable the
+ *  cursor is actually over. Fall back to `closestCenter` when the pointer is within nothing (e.g. a
+ *  keyboard drag, or the gap between slots) so reorder/remove still resolve. */
+const pointerFirstCollision: CollisionDetection = (args) => {
+  const pointerCollisions = pointerWithin(args);
+  return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
+};
 
 /** Find which group an item id lives in and at what index (used to place a gallery add). */
 function locateItem(
@@ -184,6 +196,7 @@ export function ToolbarCustomizeController({
   children: (effectiveGroups: readonly ToolbarPaletteGroupModel[]) => ReactNode;
 }) {
   const [activeItem, setActiveItem] = useState<ToolbarPaletteItemModel | null>(null);
+  const [dbg, setDbg] = useState(""); // TEMP diagnostic overlay
   // A gallery tile being dragged (its id isn't in `groups`, so it's tracked separately for the ghost).
   const [activeGallery, setActiveGallery] = useState<CustomizeDragData | null>(null);
   // Optimistic overlay: the just-dropped reorder/remove shown before the broadcast round-trip lands.
@@ -233,12 +246,8 @@ export function ToolbarCustomizeController({
     if (paletteRect && point && !isPointInRect(point, paletteRect)) {
       overId = null;
     }
-    const edit = customizeDragEndEdit(
-      String(event.active.id),
-      event.active.data.current as CustomizeDragData | undefined,
-      overId,
-      effectiveGroups
-    );
+    const activeData = event.active.data.current as CustomizeDragData | undefined;
+    const edit = customizeDragEndEdit(String(event.active.id), activeData, overId, effectiveGroups);
     if (edit) {
       // Preview reorder/remove locally so the drop lands instantly; the broadcast confirms it.
       const preview = optimisticGroupsForEdit(effectiveGroups, edit);
@@ -252,7 +261,7 @@ export function ToolbarCustomizeController({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCenter}
+      collisionDetection={pointerFirstCollision}
       // The palette window resizes as the tray grows / items move, so re-measure droppables always.
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragStart={handleDragStart}

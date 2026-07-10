@@ -59,10 +59,19 @@ export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(
 export const desktopToolsetRegistry = createDesktopToolsetRegistry();
 export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopToolsetRegistry);
 
-export function createDesktopToolsetRegistry(layoutState?: unknown): DesktopToolsetRegistry {
+export function createDesktopToolsetRegistry(
+  layoutState?: unknown,
+  additionalCommandIds?: ReadonlySet<string>
+): DesktopToolsetRegistry {
   const toolsets = layoutState === undefined || layoutState === null
     ? desktopToolsets
-    : applyToolsetLayoutState<IconName, ToolbarAssetName>(desktopToolsets, layoutState);
+    // Prune (not throw) so persisted customization referencing a since-removed command degrades
+    // gracefully instead of discarding the whole layout; `additionalCommandIds` lets in-place-added
+    // shell commands (e.g. edit.undo) count as valid targets so they aren't pruned as "unknown".
+    : applyToolsetLayoutState<IconName, ToolbarAssetName>(desktopToolsets, layoutState, {
+        additionalCommandIds,
+        onUnknownCommand: "prune"
+      });
 
   return new ToolsetRegistry<IconName, ToolbarAssetName>(toolsets);
 }

@@ -15,6 +15,10 @@ export interface ApplyToolsetLayoutEditContext {
   /** Resolve a command id to its title (from the command catalog). Returns undefined for an unknown
    *  command, which makes an addCommand a no-op — the gallery only surfaces real commands. */
   commandTitle: (commandId: string) => string | undefined;
+  /** Resolve a command id to its icon name / toolbar asset, so an added command renders with its real
+   *  glyph instead of the generic fallback. Optional — a missing icon just falls back. */
+  commandIcon?: (commandId: string) => string | undefined;
+  commandAssetName?: (commandId: string) => string | undefined;
   /** Rows in the toolset's grid (core.main = 2), so a spacer spans a full column. */
   gridRows?: number;
 }
@@ -43,6 +47,8 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         id: edit.commandId,
         kind: "button",
         label: title,
+        icon: context.commandIcon?.(edit.commandId),
+        assetName: context.commandAssetName?.(edit.commandId),
         primary: { type: "command", commandId: edit.commandId },
         submenu: null
       } as ToolsetItemDefinition<I, A>;

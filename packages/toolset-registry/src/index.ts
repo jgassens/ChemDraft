@@ -368,6 +368,11 @@ export interface ToolsetToggleCommandDefinition {
 
 export interface ApplyToolsetLayoutStateOptions {
   registeredCommandIds?: ReadonlySet<string> | readonly string[];
+  /** Command ids that are valid override/addition targets IN ADDITION to the toolsets' own commands
+   *  (or to `registeredCommandIds` when that is given). In-place customize can add any shell command
+   *  to a toolbar, not just the ones already in a manifest, so the app passes its full command
+   *  catalog here — without it those additions read as "unknown" and get pruned/thrown on render. */
+  additionalCommandIds?: ReadonlySet<string> | readonly string[];
   /** "throw" (default) rejects layout state referencing unknown commands; "prune" drops the
    *  offending items/overrides instead — persisted customization must never crash startup
    *  just because a plugin was removed — and reports each drop through onWarning. */
@@ -878,13 +883,15 @@ function commandIdSetFromOptions<TIcon extends string, TAssetName extends string
   toolsets: readonly ToolsetDefinition<TIcon, TAssetName>[],
   options: ApplyToolsetLayoutStateOptions
 ): ReadonlySet<string> {
-  if (options.registeredCommandIds) {
-    return "has" in options.registeredCommandIds
-      ? options.registeredCommandIds
-      : new Set(options.registeredCommandIds);
+  const base = options.registeredCommandIds
+    ? new Set(options.registeredCommandIds)
+    : new Set(toolsets.flatMap(toolsetOverrideTargetIds));
+  if (options.additionalCommandIds) {
+    for (const id of options.additionalCommandIds) {
+      base.add(id);
+    }
   }
-
-  return new Set(toolsets.flatMap(toolsetOverrideTargetIds));
+  return base;
 }
 
 /** Ids an override may legitimately target: command ids PLUS `control` (widget) ids, since widgets

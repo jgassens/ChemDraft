@@ -7233,6 +7233,12 @@ export function MainWindow({
     [customizeCommandOptions]
   );
 
+  // Command id → spec, so an added command's synthesized item carries the command's real icon/asset.
+  const commandById = useMemo(
+    () => new Map(galleryCommands.map((command) => [command.id, command])),
+    [galleryCommands]
+  );
+
   useEffect(() => {
     if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
       setDevBrowserMenuOpenId(null);
@@ -8168,6 +8174,8 @@ export function MainWindow({
       const next = applyToolsetLayoutEdit(current, payload, {
         presentItemIds,
         commandTitle: (commandId) => commandTitleById.get(commandId),
+        commandIcon: (commandId) => commandById.get(commandId)?.icon,
+        commandAssetName: (commandId) => commandById.get(commandId)?.assetName,
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
       });
       if (next !== current) {

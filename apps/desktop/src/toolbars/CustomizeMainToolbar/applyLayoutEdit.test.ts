@@ -7,6 +7,7 @@ const TOOLSET = "core.main";
 const context = {
   presentItemIds: new Set(["tool.select", "tool.bond"]),
   commandTitle: (id: string) => (id === "tool.extra" ? "Extra" : id === "tool.select" ? "Select" : undefined),
+  commandIcon: (id: string) => (id === "tool.extra" ? "atom" : undefined),
   gridRows: 2
 };
 
@@ -34,7 +35,14 @@ describe("applyToolsetLayoutEdit", () => {
       {
         groupId: "core.main.selection",
         index: 1,
-        item: { id: "tool.extra", kind: "button", label: "Extra", primary: { type: "command", commandId: "tool.extra" }, submenu: null }
+        item: {
+          id: "tool.extra",
+          kind: "button",
+          label: "Extra",
+          icon: "atom",
+          primary: { type: "command", commandId: "tool.extra" },
+          submenu: null
+        }
       }
     ]);
   });

@@ -13,6 +13,7 @@ import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
+import { SHELL_COMMAND_IDS } from "./shellCommandIds";
 import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
@@ -134,7 +135,7 @@ export function PaletteWindow({
     void loadToolsetLayoutState()
       .then((layoutState) => {
         if (active && layoutState !== undefined) {
-          setToolsetRegistry(createDesktopToolsetRegistry(layoutState));
+          setToolsetRegistry(createDesktopToolsetRegistry(layoutState, SHELL_COMMAND_IDS));
         }
       })
       .catch(() => undefined);
@@ -156,7 +157,7 @@ export function PaletteWindow({
         return;
       }
       try {
-        setToolsetRegistry(createDesktopToolsetRegistry(layoutState));
+        setToolsetRegistry(createDesktopToolsetRegistry(layoutState, SHELL_COMMAND_IDS));
       } catch {
         // Malformed state: keep showing the last good layout rather than blanking the palette.
       }
