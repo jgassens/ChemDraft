@@ -2704,11 +2704,12 @@ textarea:focus-visible,
   min-width: 1px;
 }
 
-/* A grid-citizen widget's slot: the live widget renders inside its colSpan×rowSpan span. */
+/* A grid-citizen widget's slot: the live widget renders inside its colSpan×rowSpan span, centered so
+   the sub-cell remainder splits into symmetric breathing room instead of piling up on one edge. */
 .toolbar-widget-grid-slot {
   display: grid;
   align-items: center;
-  justify-items: start;
+  justify-items: center;
 }
 
 /* In customize mode the widget rides inside its sortable slot, inert — the slot owns the drag. */
