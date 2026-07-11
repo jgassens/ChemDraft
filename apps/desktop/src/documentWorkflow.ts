@@ -10533,6 +10533,144 @@ export function cleanUpNativeMolecules2d(
   return applyPatches(document, patches, { now: phase4Timestamp });
 }
 
+/** True when any connected component of the molecule carries MORE than one ring (fused, bridged,
+ *  spiro, or multiple rings joined by a chain) — the shapes the polygon+tree 2D cleanup cannot lay
+ *  out and therefore leaves as drawn. MainWindow uses this to point the user at 3D Cleanup. */
+export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
+  const adjacency = nativeAdjacency(molecule.atoms, molecule.bonds);
+  return nativeComponents(molecule.atoms, adjacency).some((componentIds) => {
+    const componentAtomSet = new Set(componentIds);
+    const componentBondCount = molecule.bonds.filter(
+      (bond) => componentAtomSet.has(bond.fromAtomId) && componentAtomSet.has(bond.toAtomId)
+    ).length;
+    return componentBondCount - componentIds.length + 1 >= 2;
+  });
+}
+
+/**
+ * Rebuild a native molecule's 2D geometry from an engine re-layout (the "3D Cleanup" command).
+ * `relayout` receives the molecule as a V2000 molfile (atoms/bonds in model order) and returns a
+ * depiction whose indices align 1:1 with that order — the OCL adapter's `relayoutMolfile2D`.
+ * The fresh engine-frame coordinates (y-UP) map back into the document frame by negating y,
+ * scaling so the mean bond length matches the drawing's current mean (falling back to the app
+ * standard when degenerate), and recentring on the molecule's current centroid. Wedge/hash bonds
+ * are REPLACED by the engine's parity-derived assignment (correct for the new geometry); other
+ * bond decorations (dashed, bold) are preserved; double-bond sides and perspective depth weights
+ * are recomputed/cleared for the new layout. Throws when the depiction cannot be trusted to map
+ * back (atom count/element mismatch) — the caller surfaces that as a status, nothing commits.
+ */
+export function applyNativeMoleculeEngineRelayout(
+  document: ChemDraftDocument,
+  objectId: string,
+  relayout: (molfile: string) => PastedStructureDepiction
+): ChemDraftDocument {
+  const molecule = firstPage(document).objects.find(
+    (object): object is MoleculeObject =>
+      object.id === objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
+  );
+  if (!molecule || molecule.atoms.length === 0) {
+    return document;
+  }
+
+  const depiction = relayout(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+  if (depiction.atoms.length !== molecule.atoms.length) {
+    throw new Error(
+      `Engine re-layout returned ${depiction.atoms.length} atoms for a ${molecule.atoms.length}-atom structure.`
+    );
+  }
+  depiction.atoms.forEach((atom, index) => {
+    const expected = molecule.atoms[index].element;
+    if (atom.element.toUpperCase() !== expected.toUpperCase()) {
+      throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
+    }
+  });
+
+  // Engine frame is y-UP; the document draws y-DOWN (the coordinate-frame contract: negate y, never
+  // swap wedges).
+  const enginePoints = depiction.atoms.map((atom) => ({ x: atom.x, y: -atom.y }));
+  const engineBondLengths = depiction.bonds
+    .map((bond) => {
+      const from = enginePoints[bond.from];
+      const to = enginePoints[bond.to];
+      return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
+    })
+    .filter((length) => length > 0.001);
+  const currentBondLengths = molecule.bonds
+    .map((bond) => {
+      const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
+      const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
+      return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
+    })
+    .filter((length) => length > 0.001);
+  const mean = (values: readonly number[]): number =>
+    values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+  const targetBondLength = mean(currentBondLengths) > 0.001 ? mean(currentBondLengths) : nativeBondLength;
+  const engineBondLength = mean(engineBondLengths);
+  const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
+
+  const engineCenter = averagePagePoint(enginePoints);
+  const currentCenter = averagePagePoint(molecule.atoms);
+
+  const atoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
+    const { z: _z, ...flatAtom } = atom;
+    return {
+      ...flatAtom,
+      x: roundGeometryCoordinate(currentCenter.x + (enginePoints[index].x - engineCenter.x) * scale),
+      y: roundGeometryCoordinate(currentCenter.y + (enginePoints[index].y - engineCenter.y) * scale)
+    };
+  });
+
+  // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint
+  // atom indices (bond order in the emitted molfile matches molecule.bonds minus dangling entries,
+  // so pair keys are the robust join).
+  const atomIndexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
+  const wedgeByPair = new Map(
+    depiction.bonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond.wedge])
+  );
+  const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
+    const fromIndex = atomIndexById.get(bond.fromAtomId);
+    const toIndex = atomIndexById.get(bond.toAtomId);
+    const pairKey =
+      fromIndex !== undefined && toIndex !== undefined
+        ? atomPairKey(`${Math.min(fromIndex, toIndex)}`, `${Math.max(fromIndex, toIndex)}`)
+        : undefined;
+    const wedge = pairKey !== undefined ? wedgeByPair.get(pairKey) ?? null : null;
+    const {
+      bondStyle: previousStyle,
+      depthWeight: _depthWeight,
+      doubleBondSide: _side,
+      ...restDisplay
+    } = bond.display ?? {};
+    const keptStyle = previousStyle === "wedge" || previousStyle === "hashed" ? undefined : previousStyle;
+    const display = {
+      ...restDisplay,
+      ...(wedge ? { bondStyle: wedge } : keptStyle ? { bondStyle: keptStyle } : {})
+    };
+    return Object.keys(display).length > 0 ? { ...bond, display } : { ...bond, display: undefined };
+  });
+
+  // Recompute each double bond's drawn side from the new geometry (ring doubles draw inward).
+  const geometry = moleculeGeometryFromAtoms(atoms);
+  const sideMolecule: MoleculeObject = { ...molecule, atoms, bonds: baseBonds, ...geometry };
+  const bonds: MoleculeBond[] = baseBonds.map((bond) =>
+    bond.order === "double"
+      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
+      : bond
+  );
+
+  const cleaned = withNativeMoleculeTransform(
+    normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }),
+    defaultNativeMoleculeTransform
+  );
+  if (!nativeMoleculeGeometryOrTransformChanged(molecule, cleaned)) {
+    return document;
+  }
+
+  return applyPatches(document, [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }], {
+    now: phase4Timestamp
+  });
+}
+
 // ── 3D spin → flatten commit (Phase 5) ──────────────────────────────────────
 
 export interface FlattenSpunOutcome {
@@ -11127,6 +11265,15 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     const componentAtoms = componentIds
       .map((atomId) => atomById.get(atomId))
       .filter((atom): atom is MoleculeAtom => atom !== undefined);
+    const componentBonds = molecule.bonds.filter((bond) => componentAtomSet.has(bond.fromAtomId) && componentAtomSet.has(bond.toAtomId));
+    // A component with more than one ring (fused/bridged/spiro, or rings joined by a chain) is
+    // beyond this polygon+tree pass: laying it out as a tree and then relaxing bond lengths shears
+    // the rings into something WORSE than the drawing. First, do no harm — keep the drawn geometry;
+    // 3D Cleanup does a full engine re-layout for these.
+    const cyclomaticNumber = componentBonds.length - componentAtoms.length + 1;
+    if (cyclomaticNumber >= 2) {
+      return;
+    }
     const componentCenter = averagePagePoint(componentAtoms);
     const layout = cleanUpNativeMoleculeComponent2d({
       componentAtoms,
@@ -11135,13 +11282,9 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
       adjacency,
       bondByAtomPair
     });
-    const componentBonds = molecule.bonds.filter((bond) => componentAtomSet.has(bond.fromAtomId) && componentAtomSet.has(bond.toAtomId));
-    const adjustedLayout = componentBonds.length > componentAtoms.length
-      ? relaxNativeCleanupBondLengths(layout, componentBonds)
-      : layout;
-    const layoutCenter = averagePagePoint([...adjustedLayout.values()]);
+    const layoutCenter = averagePagePoint([...layout.values()]);
 
-    adjustedLayout.forEach((point, atomId) => {
+    layout.forEach((point, atomId) => {
       nextAtomPoints.set(atomId, {
         x: roundGeometryCoordinate(componentCenter.x + point.x - layoutCenter.x),
         y: roundGeometryCoordinate(componentCenter.y + point.y - layoutCenter.y)
@@ -11295,92 +11438,6 @@ function layoutNativeCleanupSubtree(input: {
       directionAngle: childAngles[index] ?? input.directionAngle
     });
   });
-}
-
-function relaxNativeCleanupBondLengths(
-  layout: ReadonlyMap<string, PagePoint>,
-  bonds: readonly MoleculeBond[]
-): ReadonlyMap<string, PagePoint> {
-  const points = new Map([...layout.entries()].map(([atomId, point]) => [atomId, { ...point }]));
-  const bondedAtomPairs = new Set(bonds.map((bond) => atomPairKey(bond.fromAtomId, bond.toAtomId)));
-  const relaxation = 0.45;
-  const separationRelaxation = 0.36;
-  const minimumNonBondedDistance = nativeBondLength * 0.31;
-
-  for (let iteration = 0; iteration < 180; iteration += 1) {
-    let maxError = 0;
-
-    bonds.forEach((bond) => {
-      const from = points.get(bond.fromAtomId);
-      const to = points.get(bond.toAtomId);
-      if (!from || !to) {
-        return;
-      }
-
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const length = Math.hypot(dx, dy);
-      if (length <= 0.001) {
-        return;
-      }
-
-      const error = length - nativeBondLength;
-      maxError = Math.max(maxError, Math.abs(error));
-      const adjustment = error * relaxation / 2;
-      const ux = dx / length;
-      const uy = dy / length;
-
-      from.x += ux * adjustment;
-      from.y += uy * adjustment;
-      to.x -= ux * adjustment;
-      to.y -= uy * adjustment;
-    });
-
-    const atomPoints = [...points.entries()].sort(([leftAtomId], [rightAtomId]) => leftAtomId.localeCompare(rightAtomId));
-    for (let leftIndex = 0; leftIndex < atomPoints.length; leftIndex += 1) {
-      const [leftAtomId, left] = atomPoints[leftIndex];
-      for (let rightIndex = leftIndex + 1; rightIndex < atomPoints.length; rightIndex += 1) {
-        const [rightAtomId, right] = atomPoints[rightIndex];
-        if (bondedAtomPairs.has(atomPairKey(leftAtomId, rightAtomId))) {
-          continue;
-        }
-
-        let dx = right.x - left.x;
-        let dy = right.y - left.y;
-        let length = Math.hypot(dx, dy);
-        if (length >= minimumNonBondedDistance) {
-          continue;
-        }
-
-        if (length <= 0.001) {
-          const deterministicAngle = (leftIndex * 31 + rightIndex * 17) * Math.PI / 180;
-          dx = Math.cos(deterministicAngle);
-          dy = Math.sin(deterministicAngle);
-          length = 1;
-        }
-
-        const error = minimumNonBondedDistance - length;
-        maxError = Math.max(maxError, error);
-        const adjustment = error * separationRelaxation / 2;
-        const ux = dx / length;
-        const uy = dy / length;
-
-        left.x -= ux * adjustment;
-        left.y -= uy * adjustment;
-        right.x += ux * adjustment;
-        right.y += uy * adjustment;
-      }
-    }
-
-    if (maxError < 0.002) {
-      break;
-    }
-  }
-
-  return new Map([...points.entries()].map(([atomId, point]) => [atomId, {
-    x: roundGeometryCoordinate(point.x),
-    y: roundGeometryCoordinate(point.y)
-  }]));
 }
 
 function cleanUpSimpleCyclePath(

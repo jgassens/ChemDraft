@@ -321,11 +321,14 @@ describe("ChemDraft desktop shell", () => {
 
     expect(desktopToolsetsSource).toContain(structureCleanup3dCommandId);
     expect(desktopToolsetsSource).toContain('"title": "3D Cleanup"');
-    expect(desktopToolsetsSource).toContain('"disabledReason": "requires conformer-backed 3D cleanup engine"');
+    // 3D Cleanup is wired now: the manifest no longer disables it, and the handler routes through
+    // the lazy engine re-layout instead of the old stub status.
+    expect(desktopToolsetsSource).not.toContain('"disabledReason": "requires conformer-backed 3D cleanup engine"');
     expect(desktopToolsetsSource).not.toContain('"commandId": "structure.rotate3d"');
     expect(desktopToolsetsSource).not.toContain('"title": "3D Rotate"');
     expect(mainWindowSource).toContain("cleanUpSelectedStructure3d");
-    expect(mainWindowSource).toContain("3D cleanup requires the conformer-backed cleanup engine");
+    expect(mainWindowSource).toContain("applyNativeMoleculeEngineRelayout");
+    expect(mainWindowSource).toContain("relayoutMolfile2D");
     expect(mainWindowSource).not.toContain("tool.id === structureRotate3dCommandId");
     expect(implementationSource).toContain("tiltNativeMoleculeProjectedPlane");
     expect(implementationSource).toContain("tiltNativeMoleculePartsProjectedPlane");
@@ -336,8 +339,8 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain(".object-tilt3d-arrowhead");
     // NOTE: a blanket "no conformer imports" assertion used to live here, but the Spin 3D
     // feature now legitimately uses the conformer worker/OCL adapter in MainWindow's overlay
-    // path (and SMILES paste references OpenChemLib in a status message). The 3D-cleanup item
-    // remains a stub — that invariant is covered by the status-string assertions above.
+    // path (and SMILES paste references OpenChemLib in a status message). 3D Cleanup itself now
+    // lazy-loads the same adapter for its clean re-layout — asserted above.
   });
 
   it("renders compact web-preview workspace regions with a floating fallback palette", () => {
@@ -1891,6 +1894,7 @@ describe("ChemDraft desktop shell", () => {
       structureCleanupCommandId,
       structureSpin3dCommandId,
       structureInteractive3dCommandId,
+      structureCleanup3dCommandId,
       "tool.plus",
       "tool.minus",
       "layout.bringToFront",
@@ -1910,8 +1914,7 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.text")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
-      enabled: false,
-      disabledReason: "requires conformer-backed 3D cleanup engine"
+      enabled: true
     });
     expect(paletteGroups.flat().find((command) => command.id === "tool.plus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });

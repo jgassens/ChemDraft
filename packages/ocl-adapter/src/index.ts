@@ -223,14 +223,10 @@ function depictionOrder(order: number): DepictionBondOrder {
   }
 }
 
-/**
- * Lay out a SMILES into a 2D depiction with wedge/hash stereo bonds derived from
- * its parities, returning both a structured form (atom order preserved) and the
- * corresponding molfile. Atom indices in `bonds` and the molfile match the `atoms`
- * array, so coordinates returned by `generate3DConformer(molfile)` align 1:1.
- */
-export function depictSmiles2D(smiles: string): Depiction2D {
-  const mol: OclMolecule = OCL.Molecule.fromSmiles(smiles);
+/** Invent fresh 2D coordinates for an OCL molecule and read the result back as a Depiction2D.
+ *  Shared by the SMILES depictor and the molfile re-layout: atom order is never disturbed by the
+ *  coordinate inventor, so indices stay aligned with the caller's input. */
+function inventDepiction2D(mol: OclMolecule): Depiction2D {
   mol.inventCoordinates();
   mol.ensureHelperArrays(OCL.Molecule.cHelperParities);
 
@@ -263,6 +259,35 @@ export function depictSmiles2D(smiles: string): Depiction2D {
   }
 
   return { molfile: mol.toMolfile(), atoms, bonds };
+}
+
+/**
+ * Lay out a SMILES into a 2D depiction with wedge/hash stereo bonds derived from
+ * its parities, returning both a structured form (atom order preserved) and the
+ * corresponding molfile. Atom indices in `bonds` and the molfile match the `atoms`
+ * array, so coordinates returned by `generate3DConformer(molfile)` align 1:1.
+ */
+export function depictSmiles2D(smiles: string): Depiction2D {
+  return inventDepiction2D(OCL.Molecule.fromSmiles(smiles));
+}
+
+/**
+ * Regenerate a clean 2D layout for an existing structure (the "3D Cleanup" engine): parse the
+ * molfile (OCL perceives the drawn wedge/hash stereo into parities), invent fresh coordinates, and
+ * re-derive the wedge bonds from those parities on the new geometry. Atom order is preserved, so the
+ * result maps back onto the source structure by index. Throws if the re-layout would change the
+ * molecule's identity (canonical idcode compared before/after — belt and braces; the inventor only
+ * writes coordinates and stereo bonds).
+ */
+export function relayoutMolfile2D(molfile: string): Depiction2D {
+  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
+  const identityBefore = mol.getIDCode();
+  const depiction = inventDepiction2D(mol);
+  const identityAfter = mol.getIDCode();
+  if (identityBefore !== identityAfter) {
+    throw new Error("2D re-layout unexpectedly changed the molecule's identity.");
+  }
+  return depiction;
 }
 
 /** Per-atom stereo verdict, index-aligned to the molfile's atom order (so index i corresponds to

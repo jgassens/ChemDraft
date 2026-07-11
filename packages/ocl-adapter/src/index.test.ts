@@ -9,7 +9,8 @@ import {
   ensureOclResources,
   generate3DConformerProgressive,
   oclConformerGenerator,
-  perceiveStereoCentersFromMolfile
+  perceiveStereoCentersFromMolfile,
+  relayoutMolfile2D
 } from "./index";
 
 /** Minimal V2000 atom-block y-coordinate reader, to pin the depiction's y convention. */
@@ -102,6 +103,54 @@ describe("ocl-adapter — depictSmiles2D", () => {
     const dep = depictSmiles2D("C[C@H](F)Cl");
     const molfileYs = molfileAtomYs(dep.molfile, dep.atoms.length);
     dep.atoms.forEach((a, i) => expect(a.y).toBeCloseTo(molfileYs[i], 3));
+  });
+});
+
+describe("ocl-adapter — relayoutMolfile2D (3D Cleanup engine)", () => {
+  /** Decalin (two fused cyclohexanes) with deliberately mangled coordinates: every atom collapsed
+   *  near the origin, the shape a distorted drawing session can produce. */
+  function mangledDecalinMolfile(): string {
+    const mol = OCL.Molecule.fromSmiles("C1CCC2CCCCC2C1");
+    mol.inventCoordinates();
+    for (let i = 0; i < mol.getAllAtoms(); i++) {
+      mol.setAtomX(i, (i % 3) * 0.1);
+      mol.setAtomY(i, (i % 2) * 0.1);
+    }
+    return mol.toMolfile();
+  }
+
+  it("untangles a mangled fused-ring system into a uniform, non-overlapping layout", () => {
+    const dep = relayoutMolfile2D(mangledDecalinMolfile());
+    expect(dep.atoms).toHaveLength(10);
+
+    const lengths = dep.bonds.map((bond) => {
+      const from = dep.atoms[bond.from];
+      const to = dep.atoms[bond.to];
+      return Math.hypot(to.x - from.x, to.y - from.y);
+    });
+    const mean = lengths.reduce((sum, value) => sum + value, 0) / lengths.length;
+    lengths.forEach((length) => expect(Math.abs(length - mean) / mean).toBeLessThan(0.05));
+
+    for (let a = 0; a < dep.atoms.length; a++) {
+      for (let b = a + 1; b < dep.atoms.length; b++) {
+        const distance = Math.hypot(dep.atoms[b].x - dep.atoms[a].x, dep.atoms[b].y - dep.atoms[a].y);
+        expect(distance, `atoms ${a}/${b} overlap`).toBeGreaterThan(mean * 0.5);
+      }
+    }
+  });
+
+  it("preserves atom order, elements, and tetrahedral stereo through the re-layout", () => {
+    // Start from a laid-out chiral depiction, whose molfile carries the wedge.
+    const source = depictSmiles2D("C[C@H](N)C(=O)O");
+    const before = perceiveStereoCentersFromMolfile(source.molfile);
+
+    const relaid = relayoutMolfile2D(source.molfile);
+    expect(relaid.atoms.map((atom) => atom.element)).toEqual(source.atoms.map((atom) => atom.element));
+    expect(relaid.bonds.some((bond) => bond.wedge !== null)).toBe(true);
+
+    const after = perceiveStereoCentersFromMolfile(relaid.molfile);
+    expect(after.map((entry) => entry.descriptor)).toEqual(before.map((entry) => entry.descriptor));
+    expect(after.map((entry) => entry.isStereoCenter)).toEqual(before.map((entry) => entry.isStereoCenter));
   });
 });
 

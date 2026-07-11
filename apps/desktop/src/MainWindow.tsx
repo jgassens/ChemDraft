@@ -319,7 +319,9 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   createSelectionClipboardPayload,
+  applyNativeMoleculeEngineRelayout,
   cleanUpNativeMolecules2d,
+  moleculeHasFusedRingSystem,
   attachSpin3dModelFromConformer,
   conformerGraphSignature,
   deleteNativeGraphicPathNode,
@@ -1247,7 +1249,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.28-opus";
+const CURRENT_BUILD_STAMP = "7.5.29-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3103,7 +3105,14 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
-    setStatus(changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`);
+    // Multi-ring systems are deliberately left as drawn by the 2D pass (its polygon+tree layout
+    // would shear them) — tell the user where the full re-layout lives.
+    const hasFusedTarget = targetObjectIds.some((targetId) => {
+      const target = findDocumentObject(documentRef.current, targetId);
+      return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
+    });
+    const fusedHint = hasFusedTarget ? " — fused rings kept as drawn; use 3D Cleanup for a full re-layout" : "";
+    setStatus(changed ? `Cleaned up selected ${targetLabel}${fusedHint}` : `Selected ${targetLabel} already clean${fusedHint}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
@@ -4039,7 +4048,7 @@ export function MainWindow({
 
     const objectId = selectedObjectIds[0];
     const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
-    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
+    if (!objectId || object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
       setStatus("3D cleanup needs an editable native molecule");
       return;
     }
@@ -4052,8 +4061,20 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
-    setStatus("3D cleanup requires the conformer-backed cleanup engine");
-  }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
+    setStatus("Rebuilding clean 2D layout…");
+    // Engine lazy-loads (same pattern as Spin 3D): the whole re-layout is pure once the module is in.
+    void (async () => {
+      try {
+        const { relayoutMolfile2D } = await import("@chemdraft/ocl-adapter");
+        const changed = commitDocumentChange((current) =>
+          applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D)
+        );
+        setStatus(changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout");
+      } catch (error) {
+        setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    })();
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const cancelInteractive3dDragScheduler = useCallback((): Interactive3dDragSchedulerState | undefined => {
     const scheduler = interactive3dDragSchedulerRef.current;
