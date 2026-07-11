@@ -20,6 +20,8 @@ export interface LinkedFigureViewProps {
   structure?: PluginLinkedFigureStructure;
   /** True when rendered inside the full-size modal — hides its own "Full size" button (no recursion). */
   fullScreen?: boolean;
+  /** Initial rendering field (MHz); the modal passes the outer view's choice through. */
+  defaultSpectrometerMHz?: number;
 }
 
 const SPECTRUM_W = 680;
@@ -33,8 +35,14 @@ const STRUCT_W = 340;
 const STRUCT_H = 260;
 const STRUCT_PAD = 34;
 
-export function LinkedFigureView({ spectrum, structure, fullScreen = false }: LinkedFigureViewProps) {
+export function LinkedFigureView({
+  spectrum,
+  structure,
+  fullScreen = false,
+  defaultSpectrometerMHz = DEFAULT_SPECTROMETER_MHZ
+}: LinkedFigureViewProps) {
   const reversed = spectrum.reversed ?? true;
+  const [spectrometerMHz, setSpectrometerMHz] = useState(defaultSpectrometerMHz);
   const domainSpan = Math.max(1e-6, spectrum.domain.max - spectrum.domain.min);
 
   const [view, setView] = useState({ min: spectrum.domain.min, max: spectrum.domain.max });
@@ -174,7 +182,10 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
     });
   };
   const onExportJcamp = (): void => {
-    const jdx = spectrumToJcampDx(spectrum, { title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR` });
+    const jdx = spectrumToJcampDx(spectrum, {
+      title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR`,
+      freqMHz: spectrometerMHz
+    });
     void saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, jdx, {
       title: "Export spectrum (JCAMP-DX)",
       formatLabel: "JCAMP-DX",
@@ -198,21 +209,25 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
 
   const layout = useMemo(() => (structure ? layoutStructure(structure) : undefined), [structure]);
 
-  // ---- realistic (summed-Lorentzian) spectrum -------------------------------------------------
+  // ---- realistic (summed pseudo-Voigt) spectrum -----------------------------------------------
   const ppmPerPx = (view.max - view.min) / PLOT_W;
-  const halfWidthPpm = Math.max(LINE_HALF_WIDTH_PPM, MIN_HALF_WIDTH_PX * ppmPerPx);
+  const halfWidthPpm = Math.max(LINE_HALF_WIDTH_HZ / spectrometerMHz, MIN_HALF_WIDTH_PX * ppmPerPx);
   // Oversample finely enough that a peak this sharp is caught (≈3 samples across its half-width), but no
   // finer than 1px so zoomed-in views stay cheap.
   const sampleStep = Math.max(0.25, Math.min(1, halfWidthPpm / ppmPerPx / 3));
   const spectrumLines = useMemo(
     () =>
       spectrum.peaks.flatMap((peak) =>
-        multipletLines(peak).map((line) => ({ ppm: line.ppm, amp: Math.max(0.001, peak.intensity) * line.rel, peakId: peak.id }))
+        multipletLines(peak, spectrometerMHz).map((line) => ({
+          ppm: line.ppm,
+          amp: Math.max(0.001, peak.intensity) * line.rel,
+          peakId: peak.id
+        }))
       ),
-    [spectrum.peaks]
+    [spectrum.peaks, spectrometerMHz]
   );
   const sampled = useMemo(
-    () => sampleLorentzian(spectrumLines, view, reversed, halfWidthPpm, sampleStep),
+    () => sampleEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep),
     [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep]
   );
   const heightScale = (PLOT_H - SPECTRUM_TOP_PAD) / sampled.max;
@@ -220,11 +235,11 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
   const activeCurvePath = useMemo(() => {
     if (activePeakIds.size === 0) return "";
     const lines = spectrumLines.filter((line) => activePeakIds.has(line.peakId));
-    const s = sampleLorentzian(lines, view, reversed, halfWidthPpm, sampleStep);
+    const s = sampleEnvelope(lines, view, reversed, halfWidthPpm, sampleStep);
     return spectrumPathFrom(s.xs, s.totals, heightScale);
   }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, sampleStep, heightScale]);
   // Label height comes from the true curve value at the peak's center ppm (independent of sampling).
-  const heightAtPpm = (ppm: number): number => lorentzianHeight(spectrumLines, ppm, halfWidthPpm) * heightScale;
+  const heightAtPpm = (ppm: number): number => envelopeHeight(spectrumLines, ppm, halfWidthPpm) * heightScale;
 
   // Per-atom estimation quality (good/medium/rough) for coloring the structure's shift labels, the way
   // ChemDraw signals confidence — derived from the same tiers as the table (high→good, low/est→rough).
@@ -291,6 +306,25 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
         </div>
       </div>
 
+      <div className="lf-meta">
+        {spectrum.solvent ? <span>Solvent: {spectrum.solvent}</span> : null}
+        <label className="lf-meta-field">
+          Spectrometer
+          <select
+            className="lf-select"
+            value={spectrometerMHz}
+            onChange={(event) => setSpectrometerMHz(Number(event.target.value))}
+            title="J couplings are fixed in Hz; the field sets how far apart multiplet lines sit on the ppm axis"
+          >
+            {SPECTROMETER_FIELDS_MHZ.map((mhz) => (
+              <option key={mhz} value={mhz}>
+                {mhz} MHz
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <div className="lf-figures">
         <svg
           ref={spectrumRef}
@@ -327,7 +361,7 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
             const peakClass = `lf-peak${active ? " is-active" : ""}${peak.confidence === "low" ? " is-low-confidence" : ""}`;
             const labelClass = peak.estimated ? "lf-peak-label is-estimated" : "lf-peak-label";
             // Multiplet line positions still drive the hover hit area and the resolved-line count.
-            const lines = multipletLines(peak);
+            const lines = multipletLines(peak, spectrometerMHz);
             const xs = lines.map((line) => xOf(line.ppm));
             const minX = Math.min(centerX, ...xs);
             const maxX = Math.max(centerX, ...xs);
@@ -436,7 +470,7 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
             >
               Close
             </button>
-            <LinkedFigureView spectrum={spectrum} structure={structure} fullScreen />
+            <LinkedFigureView spectrum={spectrum} structure={structure} fullScreen defaultSpectrometerMHz={spectrometerMHz} />
           </div>
         </div>,
         document.body
@@ -527,20 +561,25 @@ function parallelLines(
   }));
 }
 
-const SPECTROMETER_MHZ = 400;
+/** Selectable rendering fields. J is field-independent in Hz; the field sets the ppm spacing (J/MHz). */
+const SPECTROMETER_FIELDS_MHZ = [300, 400, 500, 600, 700, 800, 900, 1000] as const;
+const DEFAULT_SPECTROMETER_MHZ = 400;
 const MAX_MULTIPLET_LINES = 32;
 
-// A real NMR line is ~Lorentzian. We draw the summed-Lorentzian envelope (not raw sticks) so the trace
-// looks like an actual spectrum. The half-width must stay *narrower than a typical coupling* (J ≈ 7 Hz =
-// 0.0175 ppm at 400 MHz) or multiplets collapse into singlets, so it is deliberately sharp with only a
-// small pixel floor; the curve is oversampled (sub-pixel) so those sharp peaks never fall between samples.
-const LINE_HALF_WIDTH_PPM = 0.0022; // ≈ 0.9 Hz half-width at 400 MHz — well under a 7 Hz coupling
+// The trace is a summed line-profile envelope (not raw sticks) so it reads as an actual spectrum. The
+// half-width must stay *narrower than a typical coupling* (7 Hz) or multiplets collapse into singlets:
+// it is a physical ~0.9 Hz linewidth (ppm width = Hz / field) with only a small pixel floor, and the
+// curve is oversampled (sub-pixel) so sharp peaks never fall between samples. The profile itself is a
+// pseudo-Voigt — a Lorentzian core with a Gaussian-dominated base — because a pure Lorentzian's 1/(1+d²)
+// tail leaves an identical wide flare at the base of every peak at this vertical scale.
+const LINE_HALF_WIDTH_HZ = 0.9;
 const MIN_HALF_WIDTH_PX = 0.5; // floor so a peak stays ≥ ~1px FWHM at full view without merging multiplets
+const LORENTZIAN_FRACTION = 0.3; // pseudo-Voigt mix: 30% Lorentzian core, 70% Gaussian base
 const SPECTRUM_TOP_PAD = 26; // headroom above the tallest peak for its label
 
 /** First-order multiplet line positions (ppm) + relative heights for a peak. Sub-pixel at full view;
  *  they spread apart as you zoom in. Falls back to a single line when the pattern is too dense. */
-function multipletLines(peak: PluginLinkedFigurePeak): { ppm: number; rel: number }[] {
+function multipletLines(peak: PluginLinkedFigurePeak, spectrometerMHz: number): { ppm: number; rel: number }[] {
   const couplings = peak.couplings ?? [];
   const lineCount = couplings.reduce((n, coupling) => n * (coupling.partnerCount + 1), 1);
   if (couplings.length === 0 || lineCount > MAX_MULTIPLET_LINES) {
@@ -548,7 +587,7 @@ function multipletLines(peak: PluginLinkedFigurePeak): { ppm: number; rel: numbe
   }
   let lines: { ppm: number; weight: number }[] = [{ ppm: peak.ppm, weight: 1 }];
   for (const coupling of couplings) {
-    const offset = coupling.jHz / SPECTROMETER_MHZ;
+    const offset = coupling.jHz / spectrometerMHz;
     const n = coupling.partnerCount;
     const next: { ppm: number; weight: number }[] = [];
     for (const line of lines) {
@@ -570,20 +609,26 @@ function binomial(n: number, k: number): number {
   return result;
 }
 
-/** Evaluate the summed-Lorentzian height (pre-scale) at a single ppm — used for peak-label placement. */
-function lorentzianHeight(lines: readonly { ppm: number; amp: number }[], ppm: number, halfWidthPpm: number): number {
+/** Pseudo-Voigt line profile (normalized to 1 at d=0, 0.5 at d=±1): Lorentzian core, Gaussian base. */
+function lineShape(d: number): number {
+  const lorentzian = 1 / (1 + d * d);
+  const gaussian = Math.exp(-Math.LN2 * d * d);
+  return LORENTZIAN_FRACTION * lorentzian + (1 - LORENTZIAN_FRACTION) * gaussian;
+}
+
+/** Evaluate the summed line-profile height (pre-scale) at a single ppm — used for peak-label placement. */
+function envelopeHeight(lines: readonly { ppm: number; amp: number }[], ppm: number, halfWidthPpm: number): number {
   let total = 0;
   for (const line of lines) {
-    const d = (ppm - line.ppm) / halfWidthPpm;
-    total += line.amp / (1 + d * d);
+    total += line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
   }
   return total;
 }
 
-/** Sample the summed-Lorentzian envelope of `lines` across the plot at `step` px (sub-pixel so sharp
+/** Sample the summed line-profile envelope of `lines` across the plot at `step` px (sub-pixel so sharp
  *  peaks never fall between samples). Returns the pre-scale heights + their max, so the caller can
  *  normalize the tallest visible peak to fill the plot. */
-function sampleLorentzian(
+function sampleEnvelope(
   lines: readonly { ppm: number; amp: number }[],
   view: { min: number; max: number },
   reversed: boolean,
@@ -597,7 +642,7 @@ function sampleLorentzian(
   for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
     const frac = (x - MARGIN.left) / PLOT_W;
     const ppm = view.min + (reversed ? 1 - frac : frac) * span;
-    const total = lorentzianHeight(lines, ppm, halfWidthPpm);
+    const total = envelopeHeight(lines, ppm, halfWidthPpm);
     xs.push(x);
     totals.push(total);
     if (total > max) max = total;

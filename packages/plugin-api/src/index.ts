@@ -302,6 +302,8 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
           domain: z.object({ min: z.number(), max: z.number() }).strict(),
           /** NMR convention plots high→low left→right; default true. */
           reversed: z.boolean().optional(),
+          /** Solvent context of the reference data (e.g. "CDCl₃ (predominant reference solvent)"). */
+          solvent: z.string().min(1).max(120).optional(),
           peaks: z
             .array(
               z

@@ -144,6 +144,31 @@ describe("LinkedFigureView", () => {
     expect(peakCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("shows the reference solvent and a field selector whose choice retunes the multiplet rendering", () => {
+    const coupled: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 3 },
+      reversed: true,
+      solvent: "CDCl₃ (predominant reference solvent; mixed corpus)",
+      peaks: [{ id: "d", ppm: 1.5, intensity: 1, label: "1.50", atomIndices: [0], couplings: [{ jHz: 7, partnerCount: 1 }] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: coupled }));
+    expect(container!.textContent).toContain("Solvent: CDCl₃");
+
+    const select = container!.querySelector<HTMLSelectElement>(".lf-select")!;
+    const values = [...select.options].map((option) => option.value);
+    expect(values[0]).toBe("300");
+    expect(values.at(-1)).toBe("1000");
+
+    // J is fixed in Hz, so a higher field tightens the doublet on the ppm axis → the curve changes.
+    const before = container!.querySelector(".lf-curve")!.getAttribute("d");
+    act(() => {
+      select.value = "1000";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container!.querySelector(".lf-curve")!.getAttribute("d")).not.toBe(before);
+  });
+
   it("marks a rule-estimated peak with a muted italic label (never reads as measured)", () => {
     const estimatedSpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",

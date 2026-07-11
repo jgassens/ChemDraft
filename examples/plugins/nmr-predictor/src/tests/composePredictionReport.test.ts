@@ -132,6 +132,12 @@ describe("composePredictionReport", () => {
     if (!figure || figure.kind !== "linkedFigure") throw new Error("expected a linkedFigure section");
     expect(figure.spectrum.peaks.map((peak) => peak.confidence)).toEqual(["high", "medium", "low", "low", undefined]);
     expect(figure.spectrum.peaks.map((peak) => peak.estimated)).toEqual([undefined, undefined, undefined, undefined, true]);
+    // Measured-data results carry the reference-solvent context; the synthetic fixture must not.
+    expect(figure.spectrum.solvent).toContain("CDCl₃");
+    const fixtureFigure = composePredictionReport(source, result).sections.find(
+      (section) => section.kind === "linkedFigure"
+    );
+    expect(fixtureFigure && fixtureFigure.kind === "linkedFigure" ? fixtureFigure.spectrum.solvent : "set").toBeUndefined();
   });
 
   it("plots a tight ppm window around the peaks (~1 ppm buffer, not the whole ¹H range)", () => {

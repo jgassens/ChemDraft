@@ -5143,6 +5143,32 @@ textarea:focus-visible,
   background: var(--cd-border-subtle);
 }
 
+/* Solvent context + rendering-field selector, stacked under the toolbar. */
+.lf-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cd-space-1);
+  padding: 0 var(--cd-space-1) var(--cd-space-2);
+  font-size: 11px;
+  color: var(--cd-text-muted);
+}
+
+.lf-meta-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cd-space-2);
+}
+
+.lf-select {
+  height: 20px;
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+}
+
 .lf-btn {
   height: 22px;
   min-width: 26px;

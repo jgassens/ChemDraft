@@ -144,6 +144,12 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
     spectrum: { nucleus, domain: spectrumDomain(nucleus, shifts), reversed: true, peaks }
   };
 
+  if (experimental) {
+    // Measured 106/196 CDCl₃ in the NMReDATA sample (then D₂O, DMSO-d₆, …): predominant, not uniform.
+    // Only stated for measured-data results — the synthetic fixture has no solvent context.
+    section.spectrum.solvent = "CDCl₃ (predominant reference solvent; mixed corpus)";
+  }
+
   if (result.depiction) {
     section.structure = {
       atoms: result.depiction.atoms.map((atom) => ({ index: atom.index, x: atom.x, y: atom.y, element: atom.element })),
