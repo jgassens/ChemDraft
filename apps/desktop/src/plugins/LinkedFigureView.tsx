@@ -563,7 +563,7 @@ function parallelLines(
 
 /** Selectable rendering fields. J is field-independent in Hz; the field sets the ppm spacing (J/MHz). */
 const SPECTROMETER_FIELDS_MHZ = [300, 400, 500, 600, 700, 800, 900, 1000] as const;
-const DEFAULT_SPECTROMETER_MHZ = 400;
+const DEFAULT_SPECTROMETER_MHZ = 300;
 const MAX_MULTIPLET_LINES = 32;
 
 // The trace is a summed line-profile envelope (not raw sticks) so it reads as an actual spectrum. The
