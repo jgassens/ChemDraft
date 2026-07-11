@@ -3,9 +3,11 @@ import { ToolsetRegistry, type ToolsetDefinition } from "@chemdraft/toolset-regi
 import type { CommandSpec } from "./commands";
 import {
   computePaletteGridSize,
+  createDesktopToolsetRegistry,
   desktopToolsets,
   getToolsetCommandGroups,
   getToolsetItemGroups,
+  migrateLegacyMainToolbarLayoutState,
   type DesktopToolsetRegistry
 } from "./toolsets";
 
@@ -148,6 +150,14 @@ describe("desktop toolset mapping", () => {
             expect("submenu" in item, `${toolset.id}/${group.id}/${item.id} submenu key`).toBe(true);
             continue;
           }
+          if (item.kind === "separator" || item.kind === "spacer") {
+            // Flattened toolbars carry structural items (dividers/spaces) with explicit stable ids so
+            // customize mode can address them (hide/reorder); they are commandless by definition.
+            expect(item.id, `${toolset.id}/${group.id} structural item id`).toBeTruthy();
+            expect(item.commandId, `${toolset.id}/${group.id}/${item.id} commandId`).toBeUndefined();
+            expect(item.primary?.type, `${toolset.id}/${group.id}/${item.id} primary`).toBe("none");
+            continue;
+          }
           expect(item.id, `${toolset.id}/${group.id}/${item.commandId} id`).toBe(item.commandId);
           expect(item.kind, `${toolset.id}/${group.id}/${item.commandId} kind`).toBe("button");
           expect(item.label, `${toolset.id}/${group.id}/${item.commandId} label`).toBeTruthy();
@@ -223,5 +233,95 @@ describe("desktop toolset mapping", () => {
     );
 
     expect(size).toEqual({ width: 32, height: 58 });
+  });
+});
+
+describe("flattened Main toolbar manifest", () => {
+  it("has a single group whose section boundaries are explicit removable dividers", () => {
+    const main = desktopToolsets.find((toolset) => toolset.id === "core.main");
+    expect(main?.groups).toHaveLength(1);
+    expect(main?.groups[0]?.id).toBe("core.main.items");
+    const dividerIds = main?.groups[0]?.items
+      .filter((item) => item.kind === "separator")
+      .map((item) => item.id);
+    expect(dividerIds).toEqual([
+      "core.main.divider.1",
+      "core.main.divider.2",
+      "core.main.divider.3",
+      "core.main.divider.4",
+      "core.main.divider.5",
+      "core.main.divider.6"
+    ]);
+  });
+
+  it("hides a manifest divider via a persisted override (the drag-out remove path)", () => {
+    const registry = createDesktopToolsetRegistry({
+      version: 1,
+      toolsetOverrides: [{ toolsetId: "core.main", hiddenCommandIds: ["core.main.divider.1"] }]
+    });
+    const [items] = getToolsetItemGroups("core.main", registry);
+    expect(items.some((item) => item.id === "core.main.divider.1")).toBe(false);
+    expect(items.some((item) => item.id === "core.main.divider.2")).toBe(true);
+  });
+});
+
+describe("migrateLegacyMainToolbarLayoutState", () => {
+  it("re-homes legacy per-group additions and folds per-group orders onto core.main.items", () => {
+    const migrated = migrateLegacyMainToolbarLayoutState({
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          groupOrder: ["core.main.layout", "core.main.selection"],
+          hiddenCommandIds: ["tool.lasso"],
+          itemAdditions: [
+            {
+              groupId: "core.main.arrows",
+              index: 3,
+              item: {
+                id: "art.boolean.union",
+                kind: "button",
+                label: "Union",
+                primary: { type: "command", commandId: "art.boolean.union" },
+                submenu: null
+              }
+            }
+          ],
+          itemOrder: {
+            "core.main.selection": ["tool.text", "tool.select"],
+            "core.main.layout": ["layout.group"]
+          }
+        }
+      ]
+    }) as { toolsetOverrides: Array<Record<string, unknown>> };
+    const override = migrated.toolsetOverrides[0];
+    expect((override.itemAdditions as Array<{ groupId: string }>)[0].groupId).toBe("core.main.items");
+    expect(override.itemOrder).toEqual({ "core.main.items": ["tool.text", "tool.select", "layout.group"] });
+    expect(override.groupOrder).toBeUndefined();
+    expect(override.hiddenCommandIds).toEqual(["tool.lasso"]);
+  });
+
+  it("passes through non-main overrides and already-migrated state unchanged", () => {
+    const state = {
+      version: 1,
+      toolsetOverrides: [
+        { toolsetId: "core.art", itemOrder: { "core.art.tools": ["tool.art.pen"] } },
+        { toolsetId: "core.main", itemOrder: { "core.main.items": ["tool.select"] } }
+      ]
+    };
+    expect(migrateLegacyMainToolbarLayoutState(state)).toBe(state);
+    expect(migrateLegacyMainToolbarLayoutState(undefined)).toBeUndefined();
+    expect(migrateLegacyMainToolbarLayoutState("garbage")).toBe("garbage");
+  });
+
+  it("applies end-to-end: a legacy-keyed order reorders the flattened Main toolbar", () => {
+    const registry = createDesktopToolsetRegistry({
+      version: 1,
+      toolsetOverrides: [
+        { toolsetId: "core.main", itemOrder: { "core.main.selection": ["tool.text", "tool.select"] } }
+      ]
+    });
+    const [items] = getToolsetItemGroups("core.main", registry);
+    expect(items.slice(0, 2).map((item) => item.id)).toEqual(["tool.text", "tool.select"]);
   });
 });

@@ -68,12 +68,91 @@ export function createDesktopToolsetRegistry(
     // Prune (not throw) so persisted customization referencing a since-removed command degrades
     // gracefully instead of discarding the whole layout; `additionalCommandIds` lets in-place-added
     // shell commands (e.g. edit.undo) count as valid targets so they aren't pruned as "unknown".
-    : applyToolsetLayoutState<IconName, ToolbarAssetName>(desktopToolsets, layoutState, {
+    : applyToolsetLayoutState<IconName, ToolbarAssetName>(desktopToolsets, migrateLegacyMainToolbarLayoutState(layoutState), {
         additionalCommandIds,
         onUnknownCommand: "prune"
       });
 
   return new ToolsetRegistry<IconName, ToolbarAssetName>(toolsets);
+}
+
+/** The Main toolbar's original manifest groups, in display order — kept only so persisted state from
+ *  before the flatten (commit that merged core.main into one "core.main.items" group) keeps applying. */
+const LEGACY_MAIN_GROUP_IDS = [
+  "core.main.selection",
+  "core.main.structure",
+  "core.main.arrows",
+  "core.main.annotations",
+  "core.main.orbitals-style",
+  "core.main.layout",
+  "core.main.style"
+];
+
+const MAIN_ITEMS_GROUP_ID = "core.main.items";
+
+/**
+ * Remap a persisted layout state written against the old 7-group Main toolbar onto the flattened
+ * single-group manifest: item additions re-home to the one group, per-group item orders fold into a
+ * single list (in old section order, so relative positions survive), and the now-meaningless
+ * groupOrder drops. Anything unrecognized passes through untouched; hides are id-based and need no
+ * migration. Pure and idempotent — safe to run on every load.
+ */
+export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
+  if (typeof state !== "object" || state === null) {
+    return state;
+  }
+  const record = state as { toolsetOverrides?: unknown };
+  if (!Array.isArray(record.toolsetOverrides)) {
+    return state;
+  }
+  let changed = false;
+  const toolsetOverrides = record.toolsetOverrides.map((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return entry;
+    }
+    const override = entry as Record<string, unknown>;
+    if (override.toolsetId !== "core.main") {
+      return entry;
+    }
+    const next: Record<string, unknown> = { ...override };
+    if (Array.isArray(override.itemAdditions)) {
+      next.itemAdditions = override.itemAdditions.map((additionEntry) => {
+        if (typeof additionEntry !== "object" || additionEntry === null) {
+          return additionEntry;
+        }
+        const addition = additionEntry as Record<string, unknown>;
+        if (typeof addition.groupId === "string" && LEGACY_MAIN_GROUP_IDS.includes(addition.groupId)) {
+          changed = true;
+          return { ...addition, groupId: MAIN_ITEMS_GROUP_ID };
+        }
+        return additionEntry;
+      });
+    }
+    const itemOrder = override.itemOrder;
+    if (typeof itemOrder === "object" && itemOrder !== null && !Array.isArray(itemOrder)) {
+      const orderRecord = itemOrder as Record<string, unknown>;
+      const legacyKeys = LEGACY_MAIN_GROUP_IDS.filter((key) => Array.isArray(orderRecord[key]));
+      if (legacyKeys.length > 0) {
+        changed = true;
+        const merged: unknown[] = Array.isArray(orderRecord[MAIN_ITEMS_GROUP_ID])
+          ? [...(orderRecord[MAIN_ITEMS_GROUP_ID] as unknown[])]
+          : [];
+        for (const key of legacyKeys) {
+          merged.push(...(orderRecord[key] as unknown[]));
+        }
+        const remaining = Object.fromEntries(
+          Object.entries(orderRecord).filter(([key]) => !LEGACY_MAIN_GROUP_IDS.includes(key))
+        );
+        next.itemOrder = { ...remaining, [MAIN_ITEMS_GROUP_ID]: merged };
+      }
+    }
+    if (Array.isArray(override.groupOrder)) {
+      changed = true;
+      delete next.groupOrder;
+    }
+    return next;
+  });
+  return changed ? { ...record, toolsetOverrides } : state;
 }
 
 export function createDefaultVisibleToolsetIds(

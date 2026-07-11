@@ -2821,11 +2821,11 @@ describe("ChemDraft desktop shell", () => {
       checked: true,
       source: "user"
     });
-    expect(getToolsetCommandGroups("core.main", registry)[0].map((command) => command.id)).toEqual([
-      "tool.text",
-      "tool.select",
-      "tool.eraser"
-    ]);
+    const mainCommands = getToolsetCommandGroups("core.main", registry)[0].map((command) => command.id);
+    // The legacy per-group order folds onto the flattened single-group Main toolbar: the listed ids
+    // lead, the hidden lasso is gone, and the rest of the toolbar follows in manifest order.
+    expect(mainCommands.slice(0, 3)).toEqual(["tool.text", "tool.select", "tool.eraser"]);
+    expect(mainCommands).not.toContain("tool.lasso");
   });
 
   it("creates toggle commands for every registered toolset", () => {
@@ -3034,10 +3034,10 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("places cleanup in the main toolbar chrome cluster instead of a vague disabled options button", () => {
-    const mainGroups = getToolsetCommandGroups("core.main");
-    const styleGroupIds = mainGroups.at(-1)?.map((command) => command.id) ?? [];
-
-    expect(styleGroupIds).toEqual([
+    // The Main toolbar is one flattened group now; the chrome cluster is its tail segment (after the
+    // last divider), so assert its contiguous order at the end instead of indexing a per-section group.
+    const mainCommandIds = getToolsetCommandGroups("core.main")[0].map((command) => command.id);
+    const chromeCluster = [
       "style.color",
       "tool.settings",
       structureCleanupCommandId,
@@ -3045,12 +3045,14 @@ describe("ChemDraft desktop shell", () => {
       structureInteractive3dCommandId,
       structureCleanup3dCommandId,
       "tool.templateGrid"
-    ]);
-    expect(styleGroupIds).not.toContain("tool.toolOptions");
-    expect(mainGroups.flat().filter((command) => command.id === structureCleanupCommandId)).toHaveLength(1);
-    expect(mainGroups.flat().filter((command) => command.id === structureInteractive3dCommandId)).toHaveLength(1);
-    expect(mainGroups.flat().filter((command) => command.id === structureCleanup3dCommandId)).toHaveLength(1);
-    expect(mainGroups.flat().filter((command) => command.id === structureRotate3dCommandId)).toHaveLength(0);
+    ];
+
+    expect(mainCommandIds.slice(-chromeCluster.length)).toEqual(chromeCluster);
+    expect(mainCommandIds).not.toContain("tool.toolOptions");
+    expect(mainCommandIds.filter((id) => id === structureCleanupCommandId)).toHaveLength(1);
+    expect(mainCommandIds.filter((id) => id === structureInteractive3dCommandId)).toHaveLength(1);
+    expect(mainCommandIds.filter((id) => id === structureCleanup3dCommandId)).toHaveLength(1);
+    expect(mainCommandIds.filter((id) => id === structureRotate3dCommandId)).toHaveLength(0);
   });
 
   it("routes palette events as command ids only", () => {

@@ -21,7 +21,7 @@
       },
       "groups": [
         {
-          "id": "core.main.selection",
+          "id": "core.main.items",
           "items": [
             {
               "commandId": "tool.select",
@@ -117,12 +117,18 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            }
-          ]
-        },
-        {
-          "id": "core.main.structure",
-          "items": [
+            },
+            {
+              "id": "core.main.divider.1",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
+                "rowSpan": 2
+              }
+            },
             {
               "commandId": "tool.bond",
               "title": "Single Bond",
@@ -463,12 +469,18 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            }
-          ]
-        },
-        {
-          "id": "core.main.arrows",
-          "items": [
+            },
+            {
+              "id": "core.main.divider.2",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
+                "rowSpan": 2
+              }
+            },
             {
               "commandId": "tool.reactionArrow",
               "title": "Reaction Arrow",
@@ -656,12 +668,18 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            }
-          ]
-        },
-        {
-          "id": "core.main.annotations",
-          "items": [
+            },
+            {
+              "id": "core.main.divider.3",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
+                "rowSpan": 2
+              }
+            },
             {
               "commandId": "tool.bracket",
               "title": "Curly Bracket Tool",
@@ -853,12 +871,18 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            }
-          ]
-        },
-        {
-          "id": "core.main.orbitals-style",
-          "items": [
+            },
+            {
+              "id": "core.main.divider.4",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
+                "rowSpan": 2
+              }
+            },
             {
               "commandId": "tool.lobe",
               "title": "Orbital Lobe Tool",
@@ -978,12 +1002,18 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            }
-          ]
-        },
-        {
-          "id": "core.main.layout",
-          "items": [
+            },
+            {
+              "id": "core.main.divider.5",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
+                "rowSpan": 2
+              }
+            },
             {
               "commandId": "layout.alignLeft",
               "title": "Align Left",
@@ -1596,12 +1626,18 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            }
-          ]
-        },
-        {
-          "id": "core.main.style",
-          "items": [
+            },
+            {
+              "id": "core.main.divider.6",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
+                "rowSpan": 2
+              }
+            },
             {
               "commandId": "style.color",
               "title": "Color Controls",

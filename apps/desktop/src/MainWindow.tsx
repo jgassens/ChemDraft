@@ -512,6 +512,7 @@ import {
   getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
+  migrateLegacyMainToolbarLayoutState,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
@@ -1245,7 +1246,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.24-fable";
+const CURRENT_BUILD_STAMP = "7.5.25-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2376,14 +2377,17 @@ export function MainWindow({
         }
 
         if (layoutState !== undefined) {
-          toolbarCatalog.setLayoutState(layoutState);
+          // Fold pre-flatten (7-group) Main-toolbar state onto the single-group manifest before anything
+          // consumes it; the next save persists the migrated shape.
+          const migrated = migrateLegacyMainToolbarLayoutState(layoutState);
+          toolbarCatalog.setLayoutState(migrated);
           const nextRegistry = toolbarCatalog.registry();
           setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
           // The registry's default-visible set already reflects the saved toolsetOverrides[].visible,
           // so this restores exactly the palettes the user last had open.
           setVisibleToolsetIds(createDefaultVisibleToolsetIds(nextRegistry));
           try {
-            layoutStateRef.current = parseToolsetLayoutState(layoutState);
+            layoutStateRef.current = parseToolsetLayoutState(migrated);
           } catch {
             layoutStateRef.current = undefined;
           }

@@ -782,4 +782,54 @@ describe("core toolset item additions (spacers + gallery adds)", () => {
       "tool.text"
     ]);
   });
+
+  const dividerToolset: ToolsetDefinition = {
+    ...fixtureToolset,
+    groups: [
+      {
+        id: "fixture.tools",
+        items: [
+          { commandId: "tool.select", title: "Selection Tool", icon: "select" },
+          { id: "fixture.divider.1", kind: "separator", primary: { type: "none" } },
+          { commandId: "tool.bond", title: "Single Bond", icon: "bond" }
+        ]
+      }
+    ]
+  };
+
+  it("lets an override hide a manifest separator by its explicit id (not pruned as unknown)", () => {
+    const hidden = applyToolsetLayoutState(
+      [dividerToolset],
+      {
+        version: 1,
+        toolsetOverrides: [{ toolsetId: "core.fixture", hiddenCommandIds: ["fixture.divider.1"] }]
+      },
+      { onUnknownCommand: "prune" }
+    );
+    expect(itemIds(hidden[0], "fixture.tools")).toEqual(["tool.select", "tool.bond"]);
+  });
+
+  it("lets an override reorder a manifest separator by its explicit id (assert mode accepts it)", () => {
+    const reordered = applyToolsetLayoutState([dividerToolset], {
+      version: 1,
+      toolsetOverrides: [
+        { toolsetId: "core.fixture", itemOrder: { "fixture.tools": ["fixture.divider.1", "tool.bond", "tool.select"] } }
+      ]
+    });
+    expect(itemIds(reordered[0], "fixture.tools")).toEqual(["fixture.divider.1", "tool.bond", "tool.select"]);
+  });
+
+  it("still prunes a genuinely unknown id from hiddenCommandIds", () => {
+    const warnings: string[] = [];
+    const pruned = applyToolsetLayoutState(
+      [fixtureToolset],
+      {
+        version: 1,
+        toolsetOverrides: [{ toolsetId: "core.fixture", hiddenCommandIds: ["no.such.id", "tool.bond"] }]
+      },
+      { onUnknownCommand: "prune", onWarning: (warning) => warnings.push(warning) }
+    );
+    expect(itemIds(pruned[0], "fixture.tools")).toEqual(["tool.select", "tool.text"]);
+    expect(warnings.some((warning) => warning.includes("no.such.id"))).toBe(true);
+  });
 });

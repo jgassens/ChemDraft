@@ -574,11 +574,14 @@ export function applyToolsetLayoutState<TIcon extends string = string, TAssetNam
       continue;
     }
 
+    // The override may target the toolset's own commandless items (a manifest divider's explicit id)
+    // in hiddenCommandIds/itemOrder — those ids are as legitimate as registered commands.
+    const toolsetItemIds = toolsetItemCustomizationIds(toolset);
     let safeOverride = override;
     if (onUnknownCommand === "prune") {
-      safeOverride = pruneUnknownOverrideCommands(override, commandIds, warn);
+      safeOverride = pruneUnknownOverrideCommands(override, commandIds, warn, toolsetItemIds);
     } else {
-      assertOverrideCommandsRegistered(override, commandIds);
+      assertOverrideCommandsRegistered(override, commandIds, toolsetItemIds);
     }
     toolsetsById.set(override.toolsetId, applyUserToolsetOverride(toolset, safeOverride));
   }
@@ -637,10 +640,29 @@ function pruneUnknownSubmenuCommands<TIcon extends string, TAssetName extends st
   return items.length > 0 ? { ...item.submenu, items } : null;
 }
 
+/** All customization ids a toolset's own manifest items expose (command ids, control ids, explicit
+ *  separator/spacer ids). Overrides may legitimately target these — e.g. hiding a manifest divider —
+ *  so they join the keep-set alongside registered commands and surviving addition ids. */
+function toolsetItemCustomizationIds<TIcon extends string, TAssetName extends string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const group of toolset.groups) {
+    for (const item of group.items) {
+      const id = toolsetItemCustomizationId(item as ToolsetItemDefinition);
+      if (id !== undefined) {
+        ids.add(id);
+      }
+    }
+  }
+  return ids;
+}
+
 function pruneUnknownOverrideCommands(
   override: UserToolsetOverride,
   registeredCommandIds: ReadonlySet<string>,
-  warn: (warning: string) => void
+  warn: (warning: string) => void,
+  toolsetItemIds: ReadonlySet<string> = new Set()
 ): UserToolsetOverride {
   // Prune additions first, by their OWN primary command id(s): a spacer has none so it always
   // survives (same mechanism that keeps user-toolset separators), while a command addition whose
@@ -670,7 +692,7 @@ function pruneUnknownOverrideCommands(
   }
 
   const keep = (commandId: string, context: string): boolean => {
-    if (registeredCommandIds.has(commandId) || survivingAdditionIds.has(commandId)) {
+    if (registeredCommandIds.has(commandId) || survivingAdditionIds.has(commandId) || toolsetItemIds.has(commandId)) {
       return true;
     }
     warn(`Toolbar customization for "${override.toolsetId}" dropped unknown command "${commandId}" (${context}).`);
@@ -941,11 +963,13 @@ function assertToolsetCommandsRegistered<TIcon extends string, TAssetName extend
 
 function assertOverrideCommandsRegistered(
   override: UserToolsetOverride,
-  registeredCommandIds: ReadonlySet<string>
+  registeredCommandIds: ReadonlySet<string>,
+  toolsetItemIds: ReadonlySet<string> = new Set()
 ): void {
-  // Additions must reference registered commands (a spacer references none); their own ids then
-  // become valid targets for the command-keyed lists below, alongside the registered commands.
-  const allowed = new Set(registeredCommandIds);
+  // Additions must reference registered commands (a spacer references none); their own ids — and the
+  // toolset's own item ids (e.g. a manifest divider) — are then valid targets for the command-keyed
+  // lists below, alongside the registered commands.
+  const allowed = new Set([...registeredCommandIds, ...toolsetItemIds]);
   override.itemAdditions?.forEach((addition) => {
     toolsetItemPrimaryCommandIds(addition.item as ToolsetItemDefinition).forEach((commandId) =>
       assertCommandRegistered(commandId, registeredCommandIds)
