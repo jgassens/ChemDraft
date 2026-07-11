@@ -108,6 +108,19 @@ only to `user.*` toolsets; core and plugin toolsets take overrides only (clone a
 it structurally) — with the single exception of add-only `itemAdditions`, which in-place customize
 uses to grow a core toolbar. Built-in and plugin manifests remain stable source contributions.
 
+## Flattened Main Toolbar (free placement)
+
+`core.main` is a **single manifest group** (`core.main.items`): every icon, spacer, and divider lives
+in one item list, so customize-mode drags reorder freely across the whole bar — there are no section
+boundaries to snap back to. The old section boundaries are explicit `separator` items
+(`core.main.divider.1..6`) with stable ids: they drag, reorder, and remove like any other item, and
+new ones come from the gallery's Layout tiles. Because overrides may target these commandless ids,
+the registry's prune/assert keep-sets union each toolset's own item customization ids alongside
+registered commands. Persisted state from the old 7-group manifest keeps applying via
+`migrateLegacyMainToolbarLayoutState` (toolsets.ts): legacy per-group additions re-home to the single
+group, per-group orders fold into one list in old section order, and `groupOrder` drops — run
+idempotently at the MainWindow load funnel and in `createDesktopToolsetRegistry`.
+
 ## In-Place Customize (Main toolbar)
 
 The Main toolbar (`core.main`) also has a **Safari-style in-place mode** (View ▸ "Customize Main
