@@ -128,6 +128,9 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
     } else if (tier === "high" || tier === "medium" || tier === "low") {
       peak.confidence = tier;
     }
+    if (resonance.crossCheck?.disagrees) {
+      peak.alternativePpm = resonance.crossCheck.incrementPpm;
+    }
     const couplings = resonance.multiplet?.couplings ?? [];
     if (couplings.length > 0) {
       peak.couplings = couplings.map((coupling) => ({ jHz: coupling.jHz, partnerCount: coupling.partnerCount }));
@@ -188,7 +191,7 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
         resonance.multiplet?.label ?? "—",
         formatCouplings(resonance),
         formatUncertainty(resonance),
-        confidenceLabel(resonance),
+        confidenceCell(resonance),
         resonance.atomRefs.map((ref) => ref.sourceAtomIndex).join(", "),
         estimated ? "rule-estimated" : resonance.evidence?.environmentCode ?? "—"
       ];
@@ -260,6 +263,16 @@ function confidenceLabel(resonance: NmrResonance): string {
   }
   const { matchedSphere, sampleCount } = resonance.evidence ?? {};
   return `${tier === "medium" ? "med" : tier} · s${matchedSphere}, n=${sampleCount}`;
+}
+
+/** Confidence label plus, when the independent increment estimate disagrees, its value — so the table
+ *  always shows both numbers transparently (the figure's toggle only governs how the peak is drawn). */
+function confidenceCell(resonance: NmrResonance): string {
+  const base = confidenceLabel(resonance);
+  if (resonance.crossCheck?.disagrees) {
+    return `${base} · vs inc ${resonance.crossCheck.incrementPpm.toFixed(2)}`;
+  }
+  return base;
 }
 
 /** Database provenance (ADR-0014): name, version, license, source + attribution, when the backend

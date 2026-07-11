@@ -319,6 +319,12 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
                   estimated: z.boolean().optional(),
                   /** Match-applicability confidence (HOSE sphere depth + reference n); low peaks draw muted. */
                   confidence: z.enum(["high", "medium", "low"]).optional(),
+                  /**
+                   * An independent additive-increment estimate that *disagrees* with this (HOSE) peak,
+                   * present only for low-confidence peaks. The figure's cross-check control draws the peak
+                   * at this ppm instead ("prefer increment") or draws both ("show both").
+                   */
+                  alternativePpm: z.number().optional(),
                   /** First-order couplings (Hz + equivalent-partner count) for drawing split peaks. */
                   couplings: z
                     .array(z.object({ jHz: z.number(), partnerCount: z.number().int().min(0) }).strict())

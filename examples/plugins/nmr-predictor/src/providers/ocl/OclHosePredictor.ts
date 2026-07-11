@@ -17,7 +17,8 @@ import { atomEnvironmentCodes, environmentKey, MAX_SPHERES } from "./environment
 import type { CompiledNmrDatabase, NmrDatabaseEntry, NmrDatabaseProvenance } from "./localDatabase";
 import { buildStructureDepiction } from "./structureDepiction";
 import { computeMultiplet } from "./coupling";
-import { estimateCarbonShift, estimateProtonShift } from "./functionalGroupFallback";
+import { estimateCarbonShift } from "./functionalGroupFallback";
+import { incrementProtonShift } from "./incrementEstimator";
 import bundledDatabase from "./nmrshiftdb2.database.json";
 
 const SMALL_POPULATION_THRESHOLD = 3;
@@ -224,6 +225,7 @@ function predictProton(
   for (const group of matched.values()) {
     const totalProtons = group.protons.reduce((sum, count) => sum + count, 0);
     const multiplet = computeMultiplet(molecule, group.atoms[0]);
+    const crossCheck = protonCrossCheck(molecule, group.atoms[0], group.match.entry);
     resonances.push(
       buildResonance(
         "1H",
@@ -232,7 +234,8 @@ function predictProton(
         totalProtons,
         group.protons.map((count) => ({ element: "H", count })),
         warnings,
-        multiplet
+        multiplet,
+        crossCheck
       )
     );
   }
@@ -246,13 +249,32 @@ function predictProton(
         atoms,
         totalProtons,
         atoms.map((atom) => ({ element: "H", count: molecule.getAllHydrogens(atom) })),
-        estimateProtonShift(molecule, atoms[0]),
+        incrementProtonShift(molecule, atoms[0]),
         code,
         computeMultiplet(molecule, atoms[0])
       )
     );
   }
   return estimatedCount;
+}
+
+/** ¹H second opinion: for a *low-confidence* HOSE match, an independent additive-increment estimate,
+ *  flagged `disagrees` when it differs from the median beyond max(0.4 ppm, 1.5σ) — a genuine outlier
+ *  relative to the environment's own measured scatter, not just any small difference. */
+const CROSS_CHECK_ABS_FLOOR_PPM = 0.4;
+const CROSS_CHECK_SIGMA_MULTIPLE = 1.5;
+function protonCrossCheck(
+  molecule: OCL.Molecule,
+  atom: number,
+  entry: { median: number; stdev?: number; sphere: number; n: number }
+): { incrementPpm: number; disagrees: boolean } | undefined {
+  const lowConfidence = entry.sphere <= 1 || entry.n < SMALL_POPULATION_THRESHOLD;
+  if (!lowConfidence) {
+    return undefined;
+  }
+  const incrementPpm = Math.round(incrementProtonShift(molecule, atom) * 100) / 100;
+  const threshold = Math.max(CROSS_CHECK_ABS_FLOOR_PPM, CROSS_CHECK_SIGMA_MULTIPLE * (entry.stdev ?? 0));
+  return { incrementPpm, disagrees: Math.abs(entry.median - incrementPpm) > threshold };
 }
 
 function buildResonance(
@@ -262,7 +284,8 @@ function buildResonance(
   equivalentNuclei: number,
   refs: readonly { element: string; count: number }[],
   warnings: NmrPredictionWarning[],
-  multiplet?: NmrMultiplet
+  multiplet?: NmrMultiplet,
+  crossCheck?: { incrementPpm: number; disagrees: boolean }
 ): NmrResonance {
   const { entry, code } = match;
   if (entry.n < SMALL_POPULATION_THRESHOLD) {
@@ -298,6 +321,7 @@ function buildResonance(
     uncertainty: { standardDeviationPpm: entry.stdev, minimumPpm: entry.min, maximumPpm: entry.max },
     evidence: { method: "hose-fragment", matchedSphere: entry.sphere, sampleCount: entry.n, environmentCode: code },
     ...(multiplet ? { multiplet } : {}),
+    ...(crossCheck ? { crossCheck } : {}),
     flags: []
   };
 }

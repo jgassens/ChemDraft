@@ -169,6 +169,30 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector(".lf-curve")!.getAttribute("d")).not.toBe(before);
   });
 
+  it("cross-check: replaces a disagreeing peak with the increment by default, and shows both on toggle", () => {
+    const spec: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 8 },
+      reversed: true,
+      peaks: [{ id: "cc", ppm: 2.0, intensity: 1, label: "2.00", atomIndices: [0], confidence: "low", alternativePpm: 2.9 }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: spec }));
+    // Default = "Prefer increment": a single peak, drawn as the increment variant.
+    expect(container!.querySelectorAll("[data-variant]")).toHaveLength(1);
+    expect(container!.querySelector('[data-variant="increment"]')).not.toBeNull();
+
+    const uncertain = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) =>
+      [...select.options].some((option) => option.value === "both")
+    )!;
+    act(() => {
+      uncertain.value = "both";
+      uncertain.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const variants = [...container!.querySelectorAll("[data-variant]")].map((node) => node.getAttribute("data-variant"));
+    expect(variants).toContain("primary");
+    expect(variants).toContain("increment");
+  });
+
   it("marks a rule-estimated peak with a muted italic label (never reads as measured)", () => {
     const estimatedSpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",

@@ -68,6 +68,7 @@ const NmrResonanceSchema = z.object({
   uncertainty: NmrPredictionUncertaintySchema.optional(),
   evidence: NmrPredictionEvidenceSchema.optional(),
   multiplet: NmrMultipletSchema.optional(),
+  crossCheck: z.object({ incrementPpm: z.number(), disagrees: z.boolean() }).optional(),
   flags: z.array(z.string())
 });
 

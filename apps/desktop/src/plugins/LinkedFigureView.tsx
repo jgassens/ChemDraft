@@ -22,6 +22,8 @@ export interface LinkedFigureViewProps {
   fullScreen?: boolean;
   /** Initial rendering field (MHz); the modal passes the outer view's choice through. */
   defaultSpectrometerMHz?: number;
+  /** Initial cross-check display mode; the modal passes the outer view's choice through. */
+  defaultCrossCheckMode?: "increment" | "both";
 }
 
 const SPECTRUM_W = 680;
@@ -39,10 +41,13 @@ export function LinkedFigureView({
   spectrum,
   structure,
   fullScreen = false,
-  defaultSpectrometerMHz = DEFAULT_SPECTROMETER_MHZ
+  defaultSpectrometerMHz = DEFAULT_SPECTROMETER_MHZ,
+  defaultCrossCheckMode = "increment"
 }: LinkedFigureViewProps) {
   const reversed = spectrum.reversed ?? true;
   const [spectrometerMHz, setSpectrometerMHz] = useState(defaultSpectrometerMHz);
+  const [crossCheckMode, setCrossCheckMode] = useState<"increment" | "both">(defaultCrossCheckMode);
+  const hasCrossCheck = spectrum.peaks.some((peak) => peak.alternativePpm !== undefined);
   const domainSpan = Math.max(1e-6, spectrum.domain.max - spectrum.domain.min);
 
   const [view, setView] = useState({ min: spectrum.domain.min, max: spectrum.domain.max });
@@ -215,16 +220,17 @@ export function LinkedFigureView({
   // Oversample finely enough that a peak this sharp is caught (≈3 samples across its half-width), but no
   // finer than 1px so zoomed-in views stay cheap.
   const sampleStep = Math.max(0.25, Math.min(1, halfWidthPpm / ppmPerPx / 3));
+  const renderPeaks = useMemo(() => toRenderPeaks(spectrum.peaks, crossCheckMode), [spectrum.peaks, crossCheckMode]);
   const spectrumLines = useMemo(
     () =>
-      spectrum.peaks.flatMap((peak) =>
+      renderPeaks.flatMap((peak) =>
         multipletLines(peak, spectrometerMHz).map((line) => ({
           ppm: line.ppm,
           amp: Math.max(0.001, peak.intensity) * line.rel,
-          peakId: peak.id
+          peakId: peak.sourceId
         }))
       ),
-    [spectrum.peaks, spectrometerMHz]
+    [renderPeaks, spectrometerMHz]
   );
   const sampled = useMemo(
     () => sampleEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep),
@@ -323,6 +329,20 @@ export function LinkedFigureView({
             ))}
           </select>
         </label>
+        {hasCrossCheck ? (
+          <label className="lf-meta-field">
+            Uncertain peaks
+            <select
+              className="lf-select"
+              value={crossCheckMode}
+              onChange={(event) => setCrossCheckMode(event.target.value as "increment" | "both")}
+              title="Some peaks are low-confidence and an additive-increment estimate disagrees. Prefer the increment value, or show both."
+            >
+              <option value="increment">Prefer increment</option>
+              <option value="both">Show both (ᵢ = increment)</option>
+            </select>
+          </label>
+        ) : null}
       </div>
 
       <div className="lf-figures">
@@ -353,13 +373,13 @@ export function LinkedFigureView({
           {/* The spectrum itself: one continuous summed-Lorentzian trace, like a real NMR spectrum. */}
           <path className="lf-curve" d={spectrumPath} />
           {activeCurvePath ? <path className="lf-curve is-active" d={activeCurvePath} /> : null}
-          {spectrum.peaks.map((peak) => {
+          {renderPeaks.map((peak) => {
             const centerX = xOf(peak.ppm);
             if (centerX < MARGIN.left - 1 || centerX > MARGIN.left + PLOT_W + 1) return null;
-            const active = activePeakIds.has(peak.id);
+            const active = activePeakIds.has(peak.sourceId);
             // A matched-but-low-confidence peak (shallow HOSE sphere / sparse reference) reads muted.
             const peakClass = `lf-peak${active ? " is-active" : ""}${peak.confidence === "low" ? " is-low-confidence" : ""}`;
-            const labelClass = peak.estimated ? "lf-peak-label is-estimated" : "lf-peak-label";
+            const labelClass = `lf-peak-label${peak.estimated ? " is-estimated" : ""}${peak.variant === "increment" ? " is-increment" : ""}`;
             // Multiplet line positions still drive the hover hit area and the resolved-line count.
             const lines = multipletLines(peak, spectrometerMHz);
             const xs = lines.map((line) => xOf(line.ppm));
@@ -368,15 +388,16 @@ export function LinkedFigureView({
             const apexY = BASE_Y - heightAtPpm(peak.ppm);
             return (
               <g
-                key={peak.id}
+                key={peak.key}
                 className={peakClass}
-                data-peak-id={peak.id}
+                data-peak-id={peak.key}
+                data-variant={peak.variant}
                 data-line-count={lines.length}
-                onMouseEnter={() => setHoverPeakId(peak.id)}
+                onMouseEnter={() => setHoverPeakId(peak.sourceId)}
                 onMouseLeave={() => setHoverPeakId(null)}
               >
                 <text className={labelClass} x={round(centerX)} y={round(apexY - 6)} textAnchor="middle">
-                  {peak.label ?? peak.ppm.toFixed(2)}
+                  {peak.variant === "increment" ? `${peak.label}ᵢ` : peak.label}
                 </text>
                 {/* Wider transparent hit area covering the whole multiplet, so it is easy to hover. */}
                 <rect className="lf-hit" x={round(minX - 6)} y={MARGIN.top} width={round(maxX - minX + 12)} height={PLOT_H} />
@@ -470,7 +491,13 @@ export function LinkedFigureView({
             >
               Close
             </button>
-            <LinkedFigureView spectrum={spectrum} structure={structure} fullScreen defaultSpectrometerMHz={spectrometerMHz} />
+            <LinkedFigureView
+              spectrum={spectrum}
+              structure={structure}
+              fullScreen
+              defaultSpectrometerMHz={spectrometerMHz}
+              defaultCrossCheckMode={crossCheckMode}
+            />
           </div>
         </div>,
         document.body
@@ -579,7 +606,50 @@ const SPECTRUM_TOP_PAD = 26; // headroom above the tallest peak for its label
 
 /** First-order multiplet line positions (ppm) + relative heights for a peak. Sub-pixel at full view;
  *  they spread apart as you zoom in. Falls back to a single line when the pattern is too dense. */
-function multipletLines(peak: PluginLinkedFigurePeak, spectrometerMHz: number): { ppm: number; rel: number }[] {
+interface RenderPeak {
+  key: string;
+  sourceId: string;
+  ppm: number;
+  intensity: number;
+  label: string;
+  atomIndices: readonly number[];
+  couplings?: PluginLinkedFigurePeak["couplings"];
+  confidence?: PluginLinkedFigurePeak["confidence"];
+  estimated?: boolean;
+  variant: "primary" | "increment";
+}
+
+/** Expand cross-check peaks per the display mode: "increment" replaces a disagreeing peak with its
+ *  additive-increment value; "both" keeps the HOSE peak and adds the increment one. Others pass through. */
+function toRenderPeaks(peaks: readonly PluginLinkedFigurePeak[], mode: "increment" | "both"): RenderPeak[] {
+  const out: RenderPeak[] = [];
+  for (const peak of peaks) {
+    const shared = {
+      sourceId: peak.id,
+      intensity: peak.intensity,
+      atomIndices: peak.atomIndices,
+      couplings: peak.couplings,
+      confidence: peak.confidence,
+      estimated: peak.estimated
+    };
+    if (peak.alternativePpm === undefined) {
+      out.push({ ...shared, key: peak.id, ppm: peak.ppm, label: peak.label ?? peak.ppm.toFixed(2), variant: "primary" });
+      continue;
+    }
+    if (mode === "increment") {
+      out.push({ ...shared, key: peak.id, ppm: peak.alternativePpm, label: peak.alternativePpm.toFixed(2), variant: "increment" });
+    } else {
+      out.push({ ...shared, key: peak.id, ppm: peak.ppm, label: peak.label ?? peak.ppm.toFixed(2), variant: "primary" });
+      out.push({ ...shared, key: `${peak.id}~inc`, ppm: peak.alternativePpm, label: peak.alternativePpm.toFixed(2), variant: "increment" });
+    }
+  }
+  return out;
+}
+
+function multipletLines(
+  peak: { ppm: number; couplings?: PluginLinkedFigurePeak["couplings"] },
+  spectrometerMHz: number
+): { ppm: number; rel: number }[] {
   const couplings = peak.couplings ?? [];
   const lineCount = couplings.reduce((n, coupling) => n * (coupling.partnerCount + 1), 1);
   if (couplings.length === 0 || lineCount > MAX_MULTIPLET_LINES) {

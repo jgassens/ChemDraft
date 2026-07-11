@@ -5269,6 +5269,12 @@ textarea:focus-visible,
   font-style: italic;
 }
 
+/* Increment (second-opinion) peaks in a distinct color so they read apart from the HOSE peaks. */
+.lf-peak-label.is-increment {
+  fill: #b5651d;
+  font-style: italic;
+}
+
 .lf-peak.is-active .lf-peak-label {
   font-weight: 700;
   fill: var(--cd-accent-strong);

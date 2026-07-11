@@ -158,6 +158,30 @@ describe("composePredictionReport", () => {
     expect(max).toBeLessThan(11.01);
   });
 
+  it("carries a disagreeing increment cross-check into the figure peak and the table", () => {
+    const withCrossCheck: NmrPredictionResult = {
+      ...result,
+      resonances: [
+        {
+          id: "r",
+          nucleus: "1H",
+          deltaPpm: 6.12,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }],
+          equivalentNuclei: 1,
+          evidence: { method: "hose-fragment", matchedSphere: 1, sampleCount: 5, environmentCode: "X" },
+          crossCheck: { incrementPpm: 6.99, disagrees: true },
+          flags: []
+        }
+      ]
+    };
+    const report = composePredictionReport(source, withCrossCheck);
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.peaks[0].alternativePpm : undefined).toBe(6.99);
+    const table = report.sections.find((section) => section.kind === "table");
+    const row = table && table.kind === "table" ? table.rows[0] : [];
+    expect(row.some((cell) => cell.includes("vs inc 6.99"))).toBe(true);
+  });
+
   it("carries the 2D depiction into the figure when the backend supplies one", () => {
     const withDepiction: NmrPredictionResult = {
       ...result,

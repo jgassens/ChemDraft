@@ -99,6 +99,16 @@ export interface NmrResonance {
   evidence?: NmrPredictionEvidence;
   /** First-order multiplicity + estimated couplings (¹H only; absent for ¹³C or when not computed). */
   multiplet?: NmrMultiplet;
+  /**
+   * Independent additive-increment (ChemDraw-style) estimate, computed only where the HOSE match is
+   * weak (low confidence / rule-estimated). `disagrees` is true when it differs from `deltaPpm` beyond
+   * max(absolute floor, 2σ) — a signal to distrust the value or show both. `deltaPpm` stays the HOSE
+   * value; the UI decides whether to prefer this or show both.
+   */
+  crossCheck?: {
+    incrementPpm: number;
+    disagrees: boolean;
+  };
   flags: readonly string[];
 }
 
