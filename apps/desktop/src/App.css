@@ -2467,7 +2467,7 @@ textarea:focus-visible,
   cursor: grabbing;
 }
 
-/* A spacer/separator slot in customize mode reads as an empty dashed cell you can grab. */
+/* A spacer slot in customize mode reads as an empty striped cell you can grab. */
 .customize-slot-blank {
   border-style: dashed;
   background: repeating-linear-gradient(
@@ -2477,6 +2477,21 @@ textarea:focus-visible,
     var(--cd-bg-hover, rgba(0, 0, 0, 0.05)) 3px,
     var(--cd-bg-hover, rgba(0, 0, 0, 0.05)) 6px
   );
+}
+
+/* A divider slot shows its actual line (no stripes), so Divider and Space are tellable apart. */
+.customize-slot-separator {
+  display: grid;
+  place-items: center;
+  background: none;
+}
+
+.customize-slot-divider-line {
+  display: block;
+  width: 2px;
+  height: 75%;
+  border-radius: 1px;
+  background: var(--cd-text-secondary, #8a8a8a);
 }
 
 .customize-slot-placeholder {

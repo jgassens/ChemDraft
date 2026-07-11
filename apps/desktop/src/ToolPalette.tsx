@@ -406,7 +406,8 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
     id: item.id,
     data: { groupId, kind: item.kind }
   });
-  const isBlank = item.kind === "spacer" || item.kind === "separator";
+  const isSeparator = item.kind === "separator";
+  const isBlank = item.kind === "spacer" || isSeparator;
   // A grid-citizen widget rides inside its sortable slot, inert (the slot owns the drag; the
   // customize-mode CSS already turns the widget's own controls off).
   const gridWidget =
@@ -421,7 +422,14 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
   return (
     <span
       ref={setNodeRef}
-      className={["toolbar-item-grid-slot", "customize-slot", isBlank ? "customize-slot-blank" : ""].filter(Boolean).join(" ")}
+      className={[
+        "toolbar-item-grid-slot",
+        "customize-slot",
+        isBlank ? "customize-slot-blank" : "",
+        isSeparator ? "customize-slot-separator" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
       style={style}
       data-toolbar-item-id={item.id}
       data-palette-control="true"
@@ -433,6 +441,9 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
     >
       {gridWidget ? (
         <span className="customize-widget-grid-content">{gridWidget.render()}</span>
+      ) : isSeparator ? (
+        // Show the actual divider line, so a Divider and a Space are tellable apart while editing.
+        <span className="customize-slot-divider-line" aria-hidden="true" />
       ) : isBlank ? (
         <span className="customize-slot-placeholder" aria-hidden="true" />
       ) : (

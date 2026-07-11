@@ -101,5 +101,5 @@ export function isGridWidgetItem(item: ToolbarPaletteItemModel): boolean {
  *  (24px + gap) to fit each widget's intrinsic content. Widgets not listed here re-add as appended
  *  sections (legacy behavior). */
 export const TOOLBAR_WIDGET_GRID_SPANS: Readonly<Record<string, { colSpan: number; rowSpan: number }>> = {
-  [TOOLBAR_WIDGET_IDS.mainStyleControls]: { colSpan: 13, rowSpan: 2 }
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: { colSpan: 12, rowSpan: 2 }
 };
