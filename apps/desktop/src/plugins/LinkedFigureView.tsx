@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type {
   PluginLinkedFigurePeak,
@@ -6,7 +7,7 @@ import type {
   PluginLinkedFigureStructure
 } from "@chemdraft/plugin-api";
 
-import { downloadTextFile, spectrumToJcampDx, standaloneSpectrumSvg } from "./spectrumExport";
+import { copySpectrumToClipboard, saveTextFile, spectrumToJcampDx, standaloneSpectrumSvg } from "./spectrumExport";
 
 /**
  * Core-owned interactive figure for the `linkedFigure` panel section (ADR-0015). The plugin ships
@@ -17,6 +18,8 @@ import { downloadTextFile, spectrumToJcampDx, standaloneSpectrumSvg } from "./sp
 export interface LinkedFigureViewProps {
   spectrum: PluginLinkedFigureSpectrum;
   structure?: PluginLinkedFigureStructure;
+  /** True when rendered inside the full-size modal — hides its own "Full size" button (no recursion). */
+  fullScreen?: boolean;
 }
 
 const SPECTRUM_W = 680;
@@ -30,7 +33,7 @@ const STRUCT_W = 340;
 const STRUCT_H = 260;
 const STRUCT_PAD = 34;
 
-export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps) {
+export function LinkedFigureView({ spectrum, structure, fullScreen = false }: LinkedFigureViewProps) {
   const reversed = spectrum.reversed ?? true;
   const domainSpan = Math.max(1e-6, spectrum.domain.max - spectrum.domain.min);
 
@@ -116,13 +119,27 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
 
   const zoomByButton = (factor: number): void => zoomAround(MARGIN.left + PLOT_W / 2, factor > 1 ? 120 : -120);
 
+  // Pan the viewport by `dx` pixels (in SPECTRUM_W space); shared by drag and horizontal scroll.
+  const panByPixels = (dx: number): void => {
+    setView((prev) => {
+      const span = prev.max - prev.min;
+      const shift = (span / PLOT_W) * dx * (reversed ? 1 : -1);
+      return clampWindow(prev.min + shift, prev.max + shift, spectrum.domain);
+    });
+  };
+
   useEffect(() => {
     const svg = spectrumRef.current;
     if (!svg) return undefined;
     const onWheel = (event: WheelEvent): void => {
       event.preventDefault();
       const rect = svg.getBoundingClientRect();
-      zoomAround(((event.clientX - rect.left) / rect.width) * SPECTRUM_W, event.deltaY);
+      // A two-finger horizontal swipe (deltaX dominant) pans left/right; vertical scroll/pinch zooms.
+      if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+        panByPixels((-event.deltaX / rect.width) * SPECTRUM_W);
+      } else {
+        zoomAround(((event.clientX - rect.left) / rect.width) * SPECTRUM_W, event.deltaY);
+      }
     };
     svg.addEventListener("wheel", onWheel, { passive: false });
     return () => svg.removeEventListener("wheel", onWheel);
@@ -138,32 +155,43 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
     const rect = event.currentTarget.getBoundingClientRect();
     const dx = ((event.clientX - dragRef.current) / rect.width) * SPECTRUM_W;
     dragRef.current = event.clientX;
-    setView((prev) => {
-      const span = prev.max - prev.min;
-      const shift = (span / PLOT_W) * dx * (reversed ? 1 : -1);
-      return clampWindow(prev.min + shift, prev.max + shift, spectrum.domain);
-    });
+    panByPixels(dx);
   };
   const endDrag = (): void => {
     dragRef.current = null;
   };
 
   const [copied, setCopied] = useState(false);
-  const onCopySvg = (): void => {
+  const onCopy = (): void => {
     const svg = spectrumRef.current;
     if (!svg) return;
-    void navigator.clipboard?.writeText(standaloneSpectrumSvg(svg)).then(
-      () => {
+    // Prefer a PNG (pastes as an image into Word) with the SVG as text fallback for vector editors.
+    void copySpectrumToClipboard(standaloneSpectrumSvg(svg)).then((result) => {
+      if (result !== "none") {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1400);
-      },
-      () => undefined // clipboard blocked — no-op rather than throw
-    );
+      }
+    });
   };
   const onExportJcamp = (): void => {
     const jdx = spectrumToJcampDx(spectrum, { title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR` });
-    downloadTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, jdx, "chemical/x-jcamp-dx");
+    void saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, jdx, {
+      title: "Export spectrum (JCAMP-DX)",
+      formatLabel: "JCAMP-DX",
+      extensions: ["jdx", "dx"],
+      mimeType: "chemical/x-jcamp-dx"
+    });
   };
+
+  const [showFull, setShowFull] = useState(false);
+  useEffect(() => {
+    if (!showFull) return undefined;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setShowFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showFull]);
 
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
@@ -219,8 +247,8 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
   }, [spectrum.peaks]);
   const hasQuality = atomQuality.size > 0;
 
-  return (
-    <div className="lf-root">
+  const figure = (
+    <div className={`lf-root${fullScreen ? " is-fullscreen" : ""}`}>
       <div className="lf-toolbar">
         <span className="lf-axis-name">{formatNucleus(spectrum.nucleus)}</span>
         <div className="lf-toolbar-actions">
@@ -239,8 +267,13 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
             Reset
           </button>
           <span className="lf-toolbar-sep" aria-hidden="true" />
-          <button type="button" className="lf-btn" onClick={onCopySvg} title="Copy the spectrum as SVG (paste-ready)">
-            {copied ? "Copied" : "Copy SVG"}
+          <button
+            type="button"
+            className="lf-btn"
+            onClick={onCopy}
+            title="Copy the spectrum (image for Word/docs, SVG for vector editors)"
+          >
+            {copied ? "Copied" : "Copy"}
           </button>
           <button
             type="button"
@@ -250,6 +283,11 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
           >
             Export
           </button>
+          {!fullScreen ? (
+            <button type="button" className="lf-btn" onClick={() => setShowFull(true)} title="Open an enlarged spectrum">
+              Full size
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -374,6 +412,35 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
         </div>
       ) : null}
     </div>
+  );
+
+  if (fullScreen || !showFull) {
+    return figure;
+  }
+
+  // Enlarged spectrum in a modal, portalled to <body> so the draggable panel's transform can't offset
+  // it. The modal hosts a fresh full-size figure (its own zoom/pan); Esc, the Close button, or a
+  // backdrop click dismiss it.
+  return (
+    <>
+      {figure}
+      {createPortal(
+        <div className="lf-modal-backdrop" role="presentation" onClick={() => setShowFull(false)}>
+          <div className="lf-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              className="lf-btn lf-modal-close"
+              onClick={() => setShowFull(false)}
+              aria-label="Close full-size spectrum"
+            >
+              Close
+            </button>
+            <LinkedFigureView spectrum={spectrum} structure={structure} fullScreen />
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 

@@ -5325,6 +5325,48 @@ textarea:focus-visible,
   color: #d0421b;
 }
 
+/* Full-size spectrum modal (portalled to <body>). */
+.lf-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cd-space-5);
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.lf-modal {
+  position: relative;
+  width: min(1200px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  padding: var(--cd-space-6) var(--cd-space-5) var(--cd-space-5);
+  background: var(--cd-bg-panel-raised);
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  box-shadow: var(--cd-shadow-panel);
+}
+
+.lf-modal-close {
+  position: absolute;
+  top: var(--cd-space-3);
+  right: var(--cd-space-3);
+  z-index: 1;
+}
+
+/* In the modal the spectrum dominates; a wider SVG is proportionally taller (fixed viewBox aspect). */
+.lf-root.is-fullscreen .lf-figures {
+  flex-wrap: nowrap;
+}
+.lf-root.is-fullscreen .lf-spectrum {
+  flex: 3 1 720px;
+}
+.lf-root.is-fullscreen .lf-structure {
+  flex: 1 1 320px;
+}
+
 .lf-peak,
 .lf-atom {
   cursor: pointer;

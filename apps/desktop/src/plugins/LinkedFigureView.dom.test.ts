@@ -170,11 +170,33 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-peak-id="hi"]')!.classList.contains("is-low-confidence")).toBe(false);
   });
 
-  it("offers Copy SVG and Export (JCAMP-DX) actions in the toolbar", () => {
+  it("offers Copy, Export (JCAMP-DX), and Full size actions in the toolbar", () => {
     mount(createElement(LinkedFigureView, { spectrum }));
     const labels = [...container!.querySelectorAll(".lf-btn")].map((button) => button.textContent);
-    expect(labels).toContain("Copy SVG");
+    expect(labels).toContain("Copy");
     expect(labels).toContain("Export");
+    expect(labels).toContain("Full size");
+  });
+
+  it("opens an enlarged spectrum modal from Full size, and closes it", () => {
+    mount(createElement(LinkedFigureView, { spectrum, structure }));
+    expect(document.querySelector(".lf-modal")).toBeNull();
+
+    const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((b) => b.textContent === "Full size")!;
+    act(() => {
+      fullSize.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const modal = document.querySelector(".lf-modal");
+    expect(modal).not.toBeNull();
+    // The modal hosts a second, full-size figure (no nested "Full size" button — no recursion).
+    expect(modal!.querySelector(".lf-root.is-fullscreen")).not.toBeNull();
+    expect([...modal!.querySelectorAll(".lf-btn")].map((b) => b.textContent)).not.toContain("Full size");
+
+    const close = modal!.querySelector<HTMLButtonElement>(".lf-modal-close")!;
+    act(() => {
+      close.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
   it("colors structure shift labels by estimation quality (ChemDraw-style) and shows the legend", () => {
