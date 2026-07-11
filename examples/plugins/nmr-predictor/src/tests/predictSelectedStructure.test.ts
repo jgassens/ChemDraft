@@ -88,6 +88,16 @@ describe("predictSelectedStructure", () => {
     expect(many).toMatchObject({ ok: false, error: { code: NmrErrorCodes.MultipleSelectedStructures } });
   });
 
+  it("tags each report with the nucleus's rerun command so Run again repeats the same nucleus", async () => {
+    const carbon = makeContext([molecule()]);
+    await predictSelectedStructure(carbon.context, services, { nuclei: ["13C"] });
+    expect(carbon.reports.at(-1)?.report.rerunCommandId).toBe(nmrPredictCarbonCommandId);
+
+    const proton = makeContext([molecule()]);
+    await predictSelectedStructure(proton.context, services, { nuclei: ["1H"], ignoreLabileHydrogens: true });
+    expect(proton.reports.at(-1)?.report.rerunCommandId).toBe(nmrPredictProtonCommandId);
+  });
+
   it("rejects an unknown structure format and shows an error panel", async () => {
     const { context, reports, writes } = makeContext([molecule({ structureFormat: "unknown" })]);
     const result = await predictSelectedStructure(context, services, CARBON);

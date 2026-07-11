@@ -38,7 +38,9 @@ export class PluginPanelController {
       panelId,
       title: panel.title,
       report,
-      commandId: panel.commandId,
+      // A report may name the exact command "Run again" should re-invoke (e.g. the ¹H vs ¹³C command
+      // that produced it); otherwise fall back to the panel contribution's default command.
+      commandId: report.rerunCommandId ?? panel.commandId,
       openedAt: this.nowIso()
     };
     this.notify();

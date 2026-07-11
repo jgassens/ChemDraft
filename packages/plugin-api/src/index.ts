@@ -375,7 +375,13 @@ export const PluginPanelReportSchema = z
         objectId: NonEmptyStringSchema,
         sourceFingerprint: NonEmptyStringSchema
       })
-      .optional()
+      .optional(),
+    /**
+     * The command the host's "Run again" should re-invoke for this report. Lets a report re-run the
+     * exact variant that produced it (e.g. the ¹H command for a ¹H report) instead of the panel
+     * contribution's single default command. When absent, chrome falls back to the panel's commandId.
+     */
+    rerunCommandId: NonEmptyStringSchema.optional()
   })
   .strict();
 

@@ -199,6 +199,27 @@ describe("LinkedFigureView", () => {
     expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
+  it("shrinks shift labels for a crowded structure but keeps them full-size for a sparse one", () => {
+    const shiftAll = (count: number): PluginLinkedFigureSpectrum => ({
+      nucleus: "13C",
+      domain: { min: 0, max: 200 },
+      reversed: true,
+      peaks: [{ id: "p", ppm: 128, intensity: 1, label: "128.0", atomIndices: Array.from({ length: count }, (_, i) => i) }]
+    });
+    const chain = (count: number): PluginLinkedFigureStructure => ({
+      atoms: Array.from({ length: count }, (_, i) => ({ index: i, x: i, y: 0, element: "C" })),
+      bonds: Array.from({ length: count - 1 }, (_, i) => ({ from: i, to: i + 1, order: 1 }))
+    });
+    const fontOf = (count: number): number => {
+      mount(createElement(LinkedFigureView, { spectrum: shiftAll(count), structure: chain(count) }));
+      return parseFloat(container!.querySelector<SVGTextElement>(".lf-shift-label")!.style.fontSize);
+    };
+
+    expect(fontOf(2)).toBeGreaterThan(12); // sparse → near the full 14px
+    act(() => root!.unmount());
+    expect(fontOf(24)).toBeLessThan(9); // crowded → shrunk so numbers don't overlap
+  });
+
   it("colors structure shift labels by estimation quality (ChemDraw-style) and shows the legend", () => {
     const qualitySpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",

@@ -389,6 +389,7 @@ export function LinkedFigureView({ spectrum, structure, fullScreen = false }: Li
                       className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
                       x={atom.sx + 7}
                       y={atom.sy - 7}
+                      style={{ fontSize: layout.labelFontSize }}
                       textAnchor="start"
                     >
                       {shift}
@@ -456,7 +457,9 @@ interface LaidOutBond {
 
 /** Fit the molecule's arbitrary 2D coordinates into the structure viewBox, preserving aspect ratio,
  *  and pre-compute bond line geometry (double/triple bonds as parallel offset lines). */
-function layoutStructure(structure: PluginLinkedFigureStructure): { atoms: LaidOutAtom[]; bonds: LaidOutBond[] } {
+function layoutStructure(
+  structure: PluginLinkedFigureStructure
+): { atoms: LaidOutAtom[]; bonds: LaidOutBond[]; labelFontSize: number } {
   const xs = structure.atoms.map((atom) => atom.x);
   const ys = structure.atoms.map((atom) => atom.y);
   const minX = Math.min(...xs);
@@ -487,7 +490,20 @@ function layoutStructure(structure: PluginLinkedFigureStructure): { atoms: LaidO
     return [{ lines: parallelLines(a, b, bond.order) }];
   });
 
-  return { atoms, bonds };
+  // Shrink the shift labels when the structure is crowded (many atoms → short laid-out bonds) so the
+  // numbers don't overlap; a sparse structure keeps the full-size label.
+  const bondLengths = structure.bonds
+    .map((bond) => {
+      const a = byIndex.get(bond.from);
+      const b = byIndex.get(bond.to);
+      return a && b ? Math.hypot(b.sx - a.sx, b.sy - a.sy) : 0;
+    })
+    .filter((length) => length > 0)
+    .sort((left, right) => left - right);
+  const medianBond = bondLengths.length ? bondLengths[Math.floor(bondLengths.length / 2)] : 40;
+  const labelFontSize = Math.max(6.5, Math.min(14, medianBond * 0.34));
+
+  return { atoms, bonds, labelFontSize };
 }
 
 function parallelLines(

@@ -1,13 +1,19 @@
 import type {
   PluginAnalysisWarning,
   PluginCommandContext,
-  PluginCommandResult
+  PluginCommandResult,
+  PluginPanelReport
 } from "@chemdraft/plugin-api";
 
 import type { NmrNucleus, NmrPredictionRequest, NmrPredictionResult, NmrPredictor } from "../domain/contracts";
 import { NmrErrorCodes } from "../domain/errors";
 import type { NmrPredictionWarning } from "../domain/warnings";
-import { nmrForwardPredictionAnalysisType, nmrPredictorPanelId } from "../manifest";
+import {
+  nmrForwardPredictionAnalysisType,
+  nmrPredictCarbonCommandId,
+  nmrPredictProtonCommandId,
+  nmrPredictorPanelId
+} from "../manifest";
 import {
   composeErrorReport,
   composePendingReport,
@@ -42,6 +48,10 @@ export async function predictSelectedStructure(
 ): Promise<PluginCommandResult<NmrPredictionResult>> {
   const { selection, panels, analysis } = context;
 
+  // "Run again" must re-run the nucleus the user is viewing — not the panel's default (¹³C) command.
+  const rerunCommandId = config.nuclei.includes("1H") ? nmrPredictProtonCommandId : nmrPredictCarbonCommandId;
+  const withRerun = (report: PluginPanelReport): PluginPanelReport => ({ ...report, rerunCommandId });
+
   if (!selection || !analysis) {
     return {
       ok: false,
@@ -68,11 +78,11 @@ export async function predictSelectedStructure(
   const source = molecules[0];
   const mapped = mapSelectedMoleculeToPredictionInput(source);
   if (!mapped.ok) {
-    await panels?.showReport(nmrPredictorPanelId, composeErrorReport(source, mapped.error));
+    await panels?.showReport(nmrPredictorPanelId, withRerun(composeErrorReport(source, mapped.error)));
     return { ok: false, error: mapped.error };
   }
 
-  await panels?.showReport(nmrPredictorPanelId, composePendingReport(source, config.nuclei));
+  await panels?.showReport(nmrPredictorPanelId, withRerun(composePendingReport(source, config.nuclei)));
 
   const request: NmrPredictionRequest = {
     structure: mapped.value,
@@ -114,7 +124,7 @@ export async function predictSelectedStructure(
       }
     });
 
-    await panels?.showReport(nmrPredictorPanelId, composePredictionReport(source, result));
+    await panels?.showReport(nmrPredictorPanelId, withRerun(composePredictionReport(source, result)));
     return { ok: true, data: result };
   } catch (error) {
     if (isCancellationError(error)) {
@@ -122,7 +132,7 @@ export async function predictSelectedStructure(
       return { ok: false, error: { code: NmrErrorCodes.PredictionCancelled, message: "Prediction was cancelled." } };
     }
     const normalized = toCommandError(error);
-    await panels?.showReport(nmrPredictorPanelId, composeErrorReport(source, normalized));
+    await panels?.showReport(nmrPredictorPanelId, withRerun(composeErrorReport(source, normalized)));
     return { ok: false, error: normalized };
   }
 }
