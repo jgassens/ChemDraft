@@ -129,6 +129,21 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-peak-id="t"]')!.getAttribute("data-line-count")).toBe("3");
   });
 
+  it("resolves a doublet into two distinct lines at a normal zoom (linewidth < coupling)", () => {
+    const doublet: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 3 },
+      reversed: true,
+      peaks: [{ id: "d", ppm: 1, intensity: 1, label: "1.00", atomIndices: [0], couplings: [{ jHz: 7, partnerCount: 1 }] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: doublet }));
+    const path = container!.querySelector<SVGPathElement>(".lf-curve")!.getAttribute("d") ?? "";
+    const ys = [...path.matchAll(/[ML][\d.]+\s+([\d.]+)/g)].map((match) => Number(match[1]));
+    // A spectrum peak is a local *minimum* in y (y grows downward). A resolved doublet has two of them.
+    const peakCount = ys.filter((y, i) => i > 0 && i < ys.length - 1 && y < ys[i - 1] && y < ys[i + 1]).length;
+    expect(peakCount).toBeGreaterThanOrEqual(2);
+  });
+
   it("marks a rule-estimated peak with a muted italic label (never reads as measured)", () => {
     const estimatedSpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",

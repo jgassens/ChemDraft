@@ -171,7 +171,11 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
   const layout = useMemo(() => (structure ? layoutStructure(structure) : undefined), [structure]);
 
   // ---- realistic (summed-Lorentzian) spectrum -------------------------------------------------
-  const halfWidthPpm = Math.max(LINE_HALF_WIDTH_PPM, MIN_HALF_WIDTH_PX * ((view.max - view.min) / PLOT_W));
+  const ppmPerPx = (view.max - view.min) / PLOT_W;
+  const halfWidthPpm = Math.max(LINE_HALF_WIDTH_PPM, MIN_HALF_WIDTH_PX * ppmPerPx);
+  // Oversample finely enough that a peak this sharp is caught (≈3 samples across its half-width), but no
+  // finer than 1px so zoomed-in views stay cheap.
+  const sampleStep = Math.max(0.25, Math.min(1, halfWidthPpm / ppmPerPx / 3));
   const spectrumLines = useMemo(
     () =>
       spectrum.peaks.flatMap((peak) =>
@@ -180,21 +184,19 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
     [spectrum.peaks]
   );
   const sampled = useMemo(
-    () => sampleLorentzian(spectrumLines, view, reversed, halfWidthPpm),
-    [spectrumLines, view.min, view.max, reversed, halfWidthPpm]
+    () => sampleLorentzian(spectrumLines, view, reversed, halfWidthPpm, sampleStep),
+    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep]
   );
   const heightScale = (PLOT_H - SPECTRUM_TOP_PAD) / sampled.max;
   const spectrumPath = useMemo(() => spectrumPathFrom(sampled.xs, sampled.totals, heightScale), [sampled, heightScale]);
   const activeCurvePath = useMemo(() => {
     if (activePeakIds.size === 0) return "";
     const lines = spectrumLines.filter((line) => activePeakIds.has(line.peakId));
-    const s = sampleLorentzian(lines, view, reversed, halfWidthPpm);
+    const s = sampleLorentzian(lines, view, reversed, halfWidthPpm, sampleStep);
     return spectrumPathFrom(s.xs, s.totals, heightScale);
-  }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, heightScale]);
-  const heightAt = (centerX: number): number => {
-    const index = Math.min(sampled.totals.length - 1, Math.max(0, Math.round(centerX - MARGIN.left)));
-    return sampled.totals[index] * heightScale;
-  };
+  }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, sampleStep, heightScale]);
+  // Label height comes from the true curve value at the peak's center ppm (independent of sampling).
+  const heightAtPpm = (ppm: number): number => lorentzianHeight(spectrumLines, ppm, halfWidthPpm) * heightScale;
 
   // Per-atom estimation quality (good/medium/rough) for coloring the structure's shift labels, the way
   // ChemDraw signals confidence — derived from the same tiers as the table (high→good, low/est→rough).
@@ -291,7 +293,7 @@ export function LinkedFigureView({ spectrum, structure }: LinkedFigureViewProps)
             const xs = lines.map((line) => xOf(line.ppm));
             const minX = Math.min(centerX, ...xs);
             const maxX = Math.max(centerX, ...xs);
-            const apexY = BASE_Y - heightAt(centerX);
+            const apexY = BASE_Y - heightAtPpm(peak.ppm);
             return (
               <g
                 key={peak.id}
@@ -446,10 +448,11 @@ const SPECTROMETER_MHZ = 400;
 const MAX_MULTIPLET_LINES = 32;
 
 // A real NMR line is ~Lorentzian. We draw the summed-Lorentzian envelope (not raw sticks) so the trace
-// looks like an actual spectrum. The ppm half-width is sharp; a pixel floor keeps a peak visible (never
-// sub-pixel) at full zoom, and multiplets resolve as you zoom in and the ppm term takes over.
-const LINE_HALF_WIDTH_PPM = 0.0042; // ≈ 1.7 Hz half-width at 400 MHz
-const MIN_HALF_WIDTH_PX = 1.1; // floor: peaks stay ≥ ~2px FWHM at full view
+// looks like an actual spectrum. The half-width must stay *narrower than a typical coupling* (J ≈ 7 Hz =
+// 0.0175 ppm at 400 MHz) or multiplets collapse into singlets, so it is deliberately sharp with only a
+// small pixel floor; the curve is oversampled (sub-pixel) so those sharp peaks never fall between samples.
+const LINE_HALF_WIDTH_PPM = 0.0022; // ≈ 0.9 Hz half-width at 400 MHz — well under a 7 Hz coupling
+const MIN_HALF_WIDTH_PX = 0.5; // floor so a peak stays ≥ ~1px FWHM at full view without merging multiplets
 const SPECTRUM_TOP_PAD = 26; // headroom above the tallest peak for its label
 
 /** First-order multiplet line positions (ppm) + relative heights for a peak. Sub-pixel at full view;
@@ -484,26 +487,34 @@ function binomial(n: number, k: number): number {
   return result;
 }
 
-/** Sample the summed-Lorentzian envelope of `lines` across the plot, one point per pixel. Returns the
- *  pre-scale heights + their max, so the caller can normalize the tallest visible peak to fill the plot. */
+/** Evaluate the summed-Lorentzian height (pre-scale) at a single ppm — used for peak-label placement. */
+function lorentzianHeight(lines: readonly { ppm: number; amp: number }[], ppm: number, halfWidthPpm: number): number {
+  let total = 0;
+  for (const line of lines) {
+    const d = (ppm - line.ppm) / halfWidthPpm;
+    total += line.amp / (1 + d * d);
+  }
+  return total;
+}
+
+/** Sample the summed-Lorentzian envelope of `lines` across the plot at `step` px (sub-pixel so sharp
+ *  peaks never fall between samples). Returns the pre-scale heights + their max, so the caller can
+ *  normalize the tallest visible peak to fill the plot. */
 function sampleLorentzian(
   lines: readonly { ppm: number; amp: number }[],
   view: { min: number; max: number },
   reversed: boolean,
-  halfWidthPpm: number
+  halfWidthPpm: number,
+  step: number
 ): { xs: number[]; totals: number[]; max: number } {
   const xs: number[] = [];
   const totals: number[] = [];
   let max = 1e-9;
   const span = view.max - view.min || 1;
-  for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + 0.5; x += 1) {
+  for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
     const frac = (x - MARGIN.left) / PLOT_W;
     const ppm = view.min + (reversed ? 1 - frac : frac) * span;
-    let total = 0;
-    for (const line of lines) {
-      const d = (ppm - line.ppm) / halfWidthPpm;
-      total += line.amp / (1 + d * d);
-    }
+    const total = lorentzianHeight(lines, ppm, halfWidthPpm);
     xs.push(x);
     totals.push(total);
     if (total > max) max = total;
