@@ -4385,12 +4385,18 @@ const TITLE_GLYPH_STOPWORDS = new Set([
   "native"
 ]);
 
-/** 1–2 letter monogram from a title: initials of the first two meaningful words ("Molecule
- *  Inspector" → "MI"), or the first two letters of a lone word ("Rings" → "Ri"). */
+/** 1–2 char monogram from a title. A dimension token ("3D", "2D") reads far clearer as the whole
+ *  glyph than its initial, so it wins ("Interactive 3D Workspace" → "3D"); otherwise the initials of
+ *  the first two meaningful words ("Molecule Inspector" → "MI"), or the first two letters of a lone
+ *  word ("Rings" → "Ri"). */
 export function titleMonogram(title: string): string {
   const words = title.split(/[^A-Za-z0-9]+/).filter((word) => word.length > 0 && !TITLE_GLYPH_STOPWORDS.has(word.toLowerCase()));
   if (words.length === 0) {
     return title.trim().slice(0, 2) || "?";
+  }
+  const dimensionToken = words.find((word) => /^\d+D$/i.test(word));
+  if (dimensionToken) {
+    return dimensionToken.toUpperCase();
   }
   if (words.length === 1) {
     return words[0].slice(0, 2);

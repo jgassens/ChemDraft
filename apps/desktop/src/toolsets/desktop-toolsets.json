@@ -1736,8 +1736,7 @@
             {
               "commandId": "structure.openInteractive3d",
               "title": "Interactive 3D Workspace",
-              "icon": "style",
-              "assetName": "Custom_Spin_3D",
+              "icon": "palette",
               "category": "structure",
               "id": "structure.openInteractive3d",
               "kind": "button",
@@ -1815,6 +1814,17 @@
               "submenu": null,
               "layout": {
                 "colSpan": 12,
+                "rowSpan": 2
+              }
+            },
+            {
+              "id": "core.main.divider.7",
+              "kind": "separator",
+              "label": "Divider",
+              "primary": {
+                "type": "none"
+              },
+              "layout": {
                 "rowSpan": 2
               }
             }
@@ -1955,8 +1965,7 @@
             {
               "commandId": "structure.openInteractive3d",
               "title": "Interactive 3D Workspace",
-              "icon": "style",
-              "assetName": "Custom_Spin_3D",
+              "icon": "palette",
               "category": "structure",
               "id": "structure.openInteractive3d",
               "kind": "button",

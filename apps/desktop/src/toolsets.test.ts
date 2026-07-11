@@ -250,7 +250,9 @@ describe("flattened Main toolbar manifest", () => {
       "core.main.divider.3",
       "core.main.divider.4",
       "core.main.divider.5",
-      "core.main.divider.6"
+      "core.main.divider.6",
+      // divider.7 caps the trailing end of the bar (after the style-controls widget).
+      "core.main.divider.7"
     ]);
   });
 

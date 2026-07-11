@@ -6,7 +6,7 @@ import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
-import { ToolPalette } from "./ToolPalette";
+import { ToolPalette, titleMonogram } from "./ToolPalette";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import {
   objectEffectDisableCommandId,
@@ -1032,6 +1032,16 @@ describe("ToolPalette spacer items", () => {
     expect(spacerSlot?.querySelector("button")).toBeNull();
     // The command button still renders normally alongside it.
     expect(container.querySelector('button[data-command-id="tool.bond"]')).not.toBeNull();
+  });
+});
+
+describe("titleMonogram", () => {
+  it("prefers a dimension token, else word initials, else lone-word prefix", () => {
+    expect(titleMonogram("Interactive 3D Workspace")).toBe("3D");
+    expect(titleMonogram("Molecule Inspector")).toBe("MI");
+    expect(titleMonogram("Toggle Art Toolbar")).toBe("Ar"); // stopwords Toggle/Toolbar skipped
+    expect(titleMonogram("Rings")).toBe("Ri");
+    expect(titleMonogram("2D Cleanup")).toBe("2D");
   });
 });
 

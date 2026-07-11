@@ -2700,7 +2700,9 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
     expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
     expect([...assetNamesByCommandId.get(structureSpin3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
-    expect([...assetNamesByCommandId.get(structureInteractive3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
+    // Interactive 3D Workspace no longer shares Spin 3D's asset — it renders a title-generated "3D"
+    // monogram so the two 3D buttons are visually distinct.
+    expect(assetNamesByCommandId.has(structureInteractive3dCommandId)).toBe(false);
   });
 
   it("keeps sparse floating toolsets compact", () => {
@@ -3018,12 +3020,9 @@ describe("ChemDraft desktop shell", () => {
       assetName: "Custom_Spin_3D",
       category: "structure"
     });
-    expect(assetCommands.find((command) => command.id === structureInteractive3dCommandId)).toMatchObject({
-      id: structureInteractive3dCommandId,
-      title: "Interactive 3D Workspace",
-      assetName: "Custom_Spin_3D",
-      category: "structure"
-    });
+    // Interactive 3D Workspace is asset-less now (title-generated "3D" monogram), so it isn't among
+    // the asset-backed commands.
+    expect(assetCommands.find((command) => command.id === structureInteractive3dCommandId)).toBeUndefined();
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
       id: structureCleanup3dCommandId,
       title: "3D Cleanup",
