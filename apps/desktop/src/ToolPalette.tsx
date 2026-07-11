@@ -21,6 +21,7 @@ import type { CommandSpec } from "./commands";
 import {
   ToolbarWidgetStateContext,
   TOOLBAR_WIDGET_IDS,
+  isGridWidgetItem,
   isToolbarWidgetItem,
   useToolbarWidgetState,
   type ToolbarWidgetGridMode,
@@ -262,7 +263,9 @@ export function ToolPalette({
   const gridGroups = effectiveItemGroups
     .map((group, index) => ({
       id: customize?.groupIds[index],
-      items: group.filter((item) => !isToolbarWidgetItem(item))
+      // Widgets with declared grid spans stay IN the grid (grid citizens, freely placeable); only
+      // span-less widgets drop out to the appended-section path below.
+      items: group.filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item))
     }))
     .filter((group) => group.items.length > 0);
   const gridItemGroups = gridGroups.map((group) => group.items);
@@ -271,7 +274,7 @@ export function ToolPalette({
   const presentWidgets = effectiveItemGroups
     .flatMap((group, index) =>
       group
-        .filter((item) => isToolbarWidgetItem(item) && item.primary.type === "control")
+        .filter((item) => isToolbarWidgetItem(item) && !isGridWidgetItem(item) && item.primary.type === "control")
         .map((item) => ({
           widgetId: item.primary.type === "control" ? item.primary.controlId : item.id,
           groupId: customize?.groupIds[index]
@@ -284,6 +287,18 @@ export function ToolPalette({
     .map((widget) => ({ ...widget, ...TOOLBAR_WIDGET_REGISTRY[widget.widgetId] }));
   const hidesGrid = presentWidgets.some((widget) => widget.gridMode === "hide-grid");
   const replacesGrid = presentWidgets.some((widget) => widget.gridMode === "replace-grid");
+  // Palette-level class hooks (main-style-palette height cap, tooltip direction) follow ALL present
+  // widgets — including grid citizens, which presentWidgets deliberately excludes from rendering.
+  const widgetClassNames = [
+    ...new Set(
+      effectiveItemGroups
+        .flatMap((group) => group.filter((item) => isToolbarWidgetItem(item) && item.primary.type === "control"))
+        .map((item) =>
+          item.primary.type === "control" ? TOOLBAR_WIDGET_REGISTRY[item.primary.controlId]?.className : undefined
+        )
+        .filter((className): className is string => Boolean(className))
+    )
+  ];
 
   const toolGroupElements = gridGroups.map((group, groupIndex) => {
     const content = group.items.map((tool, toolIndex) => {
@@ -338,7 +353,7 @@ export function ToolPalette({
           mode,
           orientation,
           customize ? "customizing" : "",
-          ...presentWidgets.map((widget) => widget.className)
+          ...widgetClassNames
         ].filter(Boolean).join(" ")}
         aria-label={title}
         data-tool-palette-orientation={orientation}
@@ -392,6 +407,10 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
     data: { groupId, kind: item.kind }
   });
   const isBlank = item.kind === "spacer" || item.kind === "separator";
+  // A grid-citizen widget rides inside its sortable slot, inert (the slot owns the drag; the
+  // customize-mode CSS already turns the widget's own controls off).
+  const gridWidget =
+    isGridWidgetItem(item) && item.primary.type === "control" ? TOOLBAR_WIDGET_REGISTRY[item.primary.controlId] : undefined;
   const style: CSSProperties = {
     ...toolbarItemGridStyle(item.layout),
     transform: CSS.Translate.toString(transform),
@@ -412,7 +431,9 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
       {...attributes}
       {...listeners}
     >
-      {isBlank ? (
+      {gridWidget ? (
+        <span className="customize-widget-grid-content">{gridWidget.render()}</span>
+      ) : isBlank ? (
         <span className="customize-slot-placeholder" aria-hidden="true" />
       ) : (
         <span className="icon-button customize-slot-icon" aria-label={item.label}>
@@ -4040,6 +4061,25 @@ function ToolbarPaletteItem({
     );
   }
 
+  // A grid-citizen widget renders its live component inside its spanning slot (it occupies
+  // colSpan×rowSpan cells like any other item, so it moves freely in customize mode).
+  if (isGridWidgetItem(item) && item.primary.type === "control") {
+    const gridWidget = TOOLBAR_WIDGET_REGISTRY[item.primary.controlId];
+    if (gridWidget) {
+      return (
+        <span
+          className="toolbar-item-grid-slot toolbar-widget-grid-slot"
+          style={toolbarItemGridStyle(item.layout)}
+          data-toolbar-item-id={item.id}
+          data-toolbar-layout-col-span={item.layout.colSpan}
+          data-toolbar-layout-row-span={item.layout.rowSpan}
+        >
+          {gridWidget.render()}
+        </span>
+      );
+    }
+  }
+
   if (item.primary.type === "control") {
     return (
       <span
@@ -4293,10 +4333,12 @@ export function ToolbarItemIcon({
   if (command) {
     return <ToolbarCommandIcon command={command} />;
   }
-  if (item.icon) {
+  if (item.icon && item.icon !== "palette") {
     return <Icon name={item.icon} />;
   }
-  return <Icon name="palette" />;
+  // No distinctive icon — derive one from the title (user ask): a boxed 1–2 letter monogram keeps
+  // otherwise-identical fallback glyphs (toolbar launchers, widgets, unknowns) tellable apart.
+  return <TitleGlyphIcon title={item.tooltip?.title || item.label || item.id} />;
 }
 
 function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
@@ -4307,7 +4349,52 @@ function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
   if (command.id.startsWith("tool.art.")) {
     return <ArtToolIcon commandId={command.id} />;
   }
+  if (!command.icon || command.icon === "palette") {
+    return <TitleGlyphIcon title={command.title || command.id} />;
+  }
   return <Icon name={command.icon} />;
+}
+
+const TITLE_GLYPH_STOPWORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "of",
+  "to",
+  "and",
+  "or",
+  "for",
+  "tool",
+  "tools",
+  "toolbar",
+  "toggle",
+  "show",
+  "hide",
+  "set",
+  "native"
+]);
+
+/** 1–2 letter monogram from a title: initials of the first two meaningful words ("Molecule
+ *  Inspector" → "MI"), or the first two letters of a lone word ("Rings" → "Ri"). */
+export function titleMonogram(title: string): string {
+  const words = title.split(/[^A-Za-z0-9]+/).filter((word) => word.length > 0 && !TITLE_GLYPH_STOPWORDS.has(word.toLowerCase()));
+  if (words.length === 0) {
+    return title.trim().slice(0, 2) || "?";
+  }
+  if (words.length === 1) {
+    return words[0].slice(0, 2);
+  }
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+/** Deterministic fallback glyph: a boxed monogram derived from the command title, in the same visual
+ *  family as the B/I/U/x² text buttons. */
+export function TitleGlyphIcon({ title }: { title: string }) {
+  return (
+    <span className="title-glyph-icon" aria-hidden="true">
+      {titleMonogram(title)}
+    </span>
+  );
 }
 
 function toolbarTooltipText(item: ToolbarPaletteItemModel, primaryCommand: CommandSpec | undefined): string {

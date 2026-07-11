@@ -1319,9 +1319,18 @@ textarea:focus-visible,
   border-bottom: 0;
 }
 
+/* The closing hairline predates in-grid widgets (it framed the appended widget section); the widget
+   is a grid citizen now, so drop it and give the bar symmetric trailing padding instead of ending
+   flush at the last cell. */
 .tool-palette.horizontal .tool-group:last-of-type,
 .tool-palette.floating.horizontal .tool-group:last-of-type {
-  border-right: 1px solid var(--line-soft);
+  border-right: 0;
+  padding-right: 0;
+}
+
+.tool-palette.horizontal,
+.tool-palette.floating.horizontal {
+  padding-right: 10px;
 }
 
 .tool-palette.horizontal.main-style-palette .tool-tooltip,
@@ -2678,6 +2687,37 @@ textarea:focus-visible,
   align-self: stretch;
   width: 1px;
   min-width: 1px;
+}
+
+/* A grid-citizen widget's slot: the live widget renders inside its colSpan×rowSpan span. */
+.toolbar-widget-grid-slot {
+  display: grid;
+  align-items: center;
+  justify-items: start;
+}
+
+/* In customize mode the widget rides inside its sortable slot, inert — the slot owns the drag. */
+.customize-slot .customize-widget-grid-content {
+  display: block;
+  pointer-events: none;
+}
+
+/* Deterministic monogram fallback for commands without a distinctive icon: a boxed 1–2 letter glyph
+   derived from the title, in the same visual family as the B/I/U/x² text buttons. */
+.title-glyph-icon {
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 2px;
+  border: 1px solid var(--cd-border-control, #b5b5b5);
+  border-radius: 4px;
+  background: var(--cd-bg-control-opaque, #fff);
+  color: var(--cd-text-secondary, #555);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
 }
 
 .icon-button {

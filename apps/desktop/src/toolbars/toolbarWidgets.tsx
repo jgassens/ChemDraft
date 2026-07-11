@@ -89,3 +89,17 @@ export function toolbarWidgetIdsFromItemGroups(
 export function isToolbarWidgetItem(item: ToolbarPaletteItemModel): boolean {
   return item.primary.type === "control" && item.primary.controlId.startsWith(WIDGET_CONTROL_ID_PREFIX);
 }
+
+/** A widget item with declared grid spans (>1×1) is a grid citizen: it occupies colSpan×rowSpan cells
+ *  inside the tool grid — freely placeable and reorderable like any icon — instead of rendering as an
+ *  appended section pinned to the end of the palette. */
+export function isGridWidgetItem(item: ToolbarPaletteItemModel): boolean {
+  return isToolbarWidgetItem(item) && (item.layout.colSpan > 1 || item.layout.rowSpan > 1);
+}
+
+/** Grid spans for widgets the customize gallery can (re)add as grid citizens, sized in icon cells
+ *  (24px + gap) to fit each widget's intrinsic content. Widgets not listed here re-add as appended
+ *  sections (legacy behavior). */
+export const TOOLBAR_WIDGET_GRID_SPANS: Readonly<Record<string, { colSpan: number; rowSpan: number }>> = {
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: { colSpan: 13, rowSpan: 2 }
+};

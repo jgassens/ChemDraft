@@ -237,7 +237,14 @@ export function computePaletteGridSize(
   // filter). Inline controls (other `control` items) DO occupy a slot and are sized normally.
   const placedItems = itemGroups
     .flat()
-    .filter((item) => !(item.primary.type === "control" && item.primary.controlId.startsWith(WIDGET_CONTROL_ID_PREFIX)));
+    // Span-less widgets render as appended sections (excluded from the grid math); a widget with
+    // declared grid spans is a grid citizen and its cells count like any other item's.
+    .filter(
+      (item) =>
+        !(item.primary.type === "control" && item.primary.controlId.startsWith(WIDGET_CONTROL_ID_PREFIX)) ||
+        item.layout.colSpan > 1 ||
+        item.layout.rowSpan > 1
+    );
   const placedColumnCount = Math.max(
     0,
     ...placedItems

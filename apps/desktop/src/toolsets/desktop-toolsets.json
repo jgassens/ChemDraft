@@ -1812,7 +1812,11 @@
                 "type": "control",
                 "controlId": "widget.core.mainStyleControls"
               },
-              "submenu": null
+              "submenu": null,
+              "layout": {
+                "colSpan": 13,
+                "rowSpan": 2
+              }
             }
           ]
         }

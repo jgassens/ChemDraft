@@ -33,6 +33,8 @@ export interface ApplyToolsetLayoutEditContext {
   commandAssetName?: (commandId: string) => string | undefined;
   /** Resolve a widget id to its human title (for the control item's label / dialog rows). Optional. */
   widgetTitle?: (widgetId: string) => string | undefined;
+  /** Grid spans for a widget being (re)added as a grid citizen; undefined → appended section. */
+  widgetLayout?: (widgetId: string) => { colSpan: number; rowSpan: number } | undefined;
   /** Rows in the toolset's grid (core.main = 2), so a spacer spans a full column. */
   gridRows?: number;
 }
@@ -90,7 +92,8 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         kind: "control",
         label: context.widgetTitle?.(edit.widgetId) ?? edit.widgetId,
         primary: { type: "control", controlId: edit.widgetId },
-        submenu: null
+        submenu: null,
+        layout: context.widgetLayout?.(edit.widgetId)
       } as ToolsetItemDefinition<I, A>;
       return addToolsetItemAddition(
         state,
