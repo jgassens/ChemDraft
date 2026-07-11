@@ -134,6 +134,24 @@ describe("composePredictionReport", () => {
     expect(figure.spectrum.peaks.map((peak) => peak.estimated)).toEqual([undefined, undefined, undefined, undefined, true]);
   });
 
+  it("plots a tight ppm window around the peaks (~1 ppm buffer, not the whole ¹H range)", () => {
+    const proton: NmrPredictionResult = {
+      ...result,
+      resonances: [
+        { id: "a", nucleus: "1H", deltaPpm: 9.51, atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }], equivalentNuclei: 1, flags: [] },
+        { id: "b", nucleus: "1H", deltaPpm: 0.95, atomRefs: [{ sourceAtomIndex: 1, element: "H", equivalentCount: 3 }], equivalentNuclei: 3, flags: [] }
+      ]
+    };
+    const figure = composePredictionReport(source, proton).sections.find((section) => section.kind === "linkedFigure");
+    if (!figure || figure.kind !== "linkedFigure") throw new Error("expected a linkedFigure section");
+    const { min, max } = figure.spectrum.domain;
+    // ~1 ppm below the lowest / above the highest peak, snapped — not the old [-5, 15].
+    expect(min).toBeGreaterThan(-1.01);
+    expect(min).toBeLessThanOrEqual(0.95);
+    expect(max).toBeGreaterThanOrEqual(9.51);
+    expect(max).toBeLessThan(11.01);
+  });
+
   it("carries the 2D depiction into the figure when the backend supplies one", () => {
     const withDepiction: NmrPredictionResult = {
       ...result,

@@ -154,16 +154,20 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
   return section;
 }
 
-/** ppm window to plot: the nucleus's conventional range, widened to fit any outlying predicted shift. */
+/**
+ * ppm window to plot: just the predicted peaks plus a small buffer, snapped to a clean edge — not the
+ * whole conventional range. A ~1 ppm (¹H) / ~10 ppm (¹³C) margin keeps a little breathing room without
+ * a screenful of empty baseline.
+ */
 function spectrumDomain(nucleus: NmrNucleus, shifts: readonly number[]): { min: number; max: number } {
-  const defaults = nucleus === "13C" ? { min: 0, max: 220 } : { min: 0, max: 12 };
   if (shifts.length === 0) {
-    return defaults;
+    return nucleus === "13C" ? { min: 0, max: 220 } : { min: 0, max: 12 };
   }
-  return {
-    min: Math.min(defaults.min, Math.floor(Math.min(...shifts) - 5)),
-    max: Math.max(defaults.max, Math.ceil(Math.max(...shifts) + 5))
-  };
+  const buffer = nucleus === "13C" ? 10 : 1;
+  const snap = nucleus === "13C" ? 5 : 0.5;
+  const lo = Math.min(...shifts) - buffer;
+  const hi = Math.max(...shifts) + buffer;
+  return { min: Math.floor(lo / snap) * snap, max: Math.ceil(hi / snap) * snap };
 }
 
 function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
