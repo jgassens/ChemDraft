@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
         Arc, Mutex,
     },
@@ -62,6 +62,10 @@ const ENGINE3D_SESSION_OUTPUT_QUIET: Duration = Duration::from_millis(20);
 // timeout, so idle client polling never ties up a worker thread (or a session lock) for 250ms.
 const ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT: Duration = Duration::from_millis(30);
 static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// Set once app exit begins. Quit teardown destroys every palette window; without this guard those
+/// Destroyed events would be recorded as user closes (visible: false) and clobber the saved
+/// open-palette set that the next launch restores.
+static APP_QUITTING: AtomicBool = AtomicBool::new(false);
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const MENU_COMMAND_IDS: &[&str] = &[
@@ -302,6 +306,10 @@ pub fn run() {
                     }
                 }
                 WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                    // Only a user close reaches the saved layout state; quit teardown must not.
+                    if APP_QUITTING.load(Ordering::SeqCst) {
+                        return;
+                    }
                     if let Err(error) = mark_toolset_window_closed(app, &toolset_id) {
                         eprintln!(
                             "Could not update ChemDraft toolbar menu state {toolset_id}: {error}"
@@ -371,6 +379,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
+            RunEvent::ExitRequested { .. } => {
+                APP_QUITTING.store(true, Ordering::SeqCst);
+            }
             RunEvent::Reopen { .. } => {
                 if let Err(error) = ensure_main_window_visible(app) {
                     eprintln!("Could not reopen ChemDraft main window: {error}");
