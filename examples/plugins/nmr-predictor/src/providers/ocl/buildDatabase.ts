@@ -3,12 +3,7 @@ import * as OCL from "openchemlib";
 import type { NmrNucleus } from "../../domain/contracts";
 import { atomEnvironmentCodes, environmentKey, protonHostAtom, sphereDepthOf, MAX_SPHERES } from "./environmentCode";
 import { summarizeShifts, type CompiledNmrDatabase, type NmrDatabaseEntry, type NmrDatabaseProvenance } from "./localDatabase";
-
-interface Assignment {
-  label: string;
-  shift: number;
-  atoms: number[]; // 1-based molfile atom indices
-}
+import { extractMolfile, parseAssignments, parseSpectrumLabels, splitRecords } from "./nmredata";
 
 export interface BuildDatabaseOptions {
   provenance: Omit<
@@ -139,72 +134,3 @@ export function buildNmrDatabase(rawSdContent: string, options: BuildDatabaseOpt
   };
 }
 
-function splitRecords(content: string): string[] {
-  return content.split(/^\$\$\$\$\s*$/m).filter((record) => record.trim().length > 0);
-}
-
-function extractMolfile(record: string): string | undefined {
-  const end = record.indexOf("M  END");
-  if (end < 0) {
-    return undefined;
-  }
-  // Anchor on the V2000/V3000 counts line and reconstruct the 4-line header from there, so a stray
-  // leading newline from record splitting can't misalign the header (which silently yields 0 atoms).
-  const lines = record.slice(0, end + "M  END".length).split("\n");
-  const countsIndex = lines.findIndex((line) => /V2000|V3000/.test(line));
-  if (countsIndex < 3) {
-    return undefined;
-  }
-  return lines.slice(countsIndex - 3).join("\n");
-}
-
-function parseAssignments(record: string): Assignment[] {
-  const block = extractTag(record, "NMREDATA_ASSIGNMENT");
-  if (!block) {
-    return [];
-  }
-  const assignments: Assignment[] = [];
-  for (const raw of block.split("\n")) {
-    const line = raw.replace(/\\\s*$/, "").trim();
-    if (!line) {
-      continue;
-    }
-    const parts = line.split(",");
-    if (parts.length < 3) {
-      continue;
-    }
-    const label = parts[0].trim();
-    const shift = Number(parts[1].trim());
-    if (!Number.isFinite(shift)) {
-      continue;
-    }
-    const atoms = parts
-      .slice(2)
-      .join(" ")
-      .trim()
-      .split(/[\s,]+/)
-      .map(Number)
-      .filter((value) => Number.isInteger(value) && value > 0);
-    if (atoms.length === 0) {
-      continue;
-    }
-    assignments.push({ label, shift, atoms });
-  }
-  return assignments;
-}
-
-function parseSpectrumLabels(record: string, tag: string): Set<string> {
-  const block = extractTag(record, tag);
-  const labels = new Set<string>();
-  if (block) {
-    for (const match of block.matchAll(/L=(\w+)/g)) {
-      labels.add(match[1]);
-    }
-  }
-  return labels;
-}
-
-function extractTag(record: string, tag: string): string | undefined {
-  const match = record.match(new RegExp(`>\\s*<${tag}>\\s*\\n([\\s\\S]*?)(?:\\n\\n|\\n>|$)`));
-  return match?.[1];
-}

@@ -32,7 +32,7 @@ export interface OclHosePredictorOptions {
   now?: () => string;
 }
 
-interface Match {
+export interface Match {
   code: string;
   entry: NmrDatabaseEntry;
 }
@@ -141,7 +141,13 @@ export class OclHosePredictor implements NmrPredictor {
   }
 }
 
-function match(database: CompiledNmrDatabase, nucleus: NmrNucleus, codes: readonly string[]): Match | undefined {
+/** The production database lookup: first (deepest) environment code with an entry wins. Exported so
+ * the leakage-free benchmark scores exactly this path, never a reimplementation of it. */
+export function matchEnvironment(
+  database: CompiledNmrDatabase,
+  nucleus: NmrNucleus,
+  codes: readonly string[]
+): Match | undefined {
   for (const code of codes) {
     const entry = database.entries[environmentKey(nucleus, code)];
     if (entry) return { code, entry };
@@ -163,7 +169,7 @@ function predictCarbon(
   for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
     if (molecule.getAtomicNo(atom) !== 6) continue;
     const codes = atomEnvironmentCodes(molecule, atom, maxSpheres);
-    const found = match(database, "13C", codes);
+    const found = matchEnvironment(database, "13C", codes);
     if (!found) {
       pushGroup(unmatched, codes[codes.length - 1], atom);
       continue;
@@ -254,7 +260,7 @@ function predictProton(
       continue;
     }
     const codes = atomEnvironmentCodes(molecule, atom, maxSpheres);
-    const found = match(database, "1H", codes);
+    const found = matchEnvironment(database, "1H", codes);
     if (!found) {
       pushGroup(unmatched, codes[codes.length - 1], atom);
       continue;
@@ -519,7 +525,7 @@ function warnOmitted(
   );
 }
 
-function shiftFor(entry: NmrDatabaseEntry, statistic: Statistic): number {
+export function shiftFor(entry: NmrDatabaseEntry, statistic: Statistic): number {
   return statistic === "mean" ? entry.mean : entry.median;
 }
 
