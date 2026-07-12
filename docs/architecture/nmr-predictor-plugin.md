@@ -57,9 +57,13 @@ warnings, a `backend` (id/version/method + optional data provenance), and the
 
 - **`OclHosePredictor` (default).** Reuses ChemDraft's OpenChemLib to derive each
   atom's environment code, looks it up in a compiled NMRShiftDB2 database
-  **deepest-sphere-first with fallback**, and reports the aggregated median +
-  dispersion + sample count + matched sphere. It **warns rather than fabricates**
-  when coverage is thin. Method `hose-fragment`.
+  **deepest-sphere-first with fallback**, honors the requested median/mean statistic,
+  and reports dispersion + sample count + matched sphere. Applicability-gated,
+  versioned local rules may estimate an unmatched environment or compare every
+  chemically applicable ¹H HOSE match; unsupported environments are omitted with
+  warnings. The v1.3 aliphatic rule uses source-backed alpha/beta/gamma
+  corrections through three carbons. Method
+  `hose-fragment`, with per-resonance rule provenance where applicable.
 - **`FixtureHosePredictor`.** Deterministic synthetic data over a small
   environment table; used for tests and as an offline/no-`Worker` fallback. Method
   `fixture-fragment`.
@@ -73,7 +77,12 @@ is `chemdraft.fixture-hose`. The desktop uses the worker-backed predictor where
 `normalizeStructure` parses SMILES / molfile with OCL, rejects `unknown`/empty
 (`NMR_UNSUPPORTED_STRUCTURE_FORMAT` / `NMR_EMPTY_STRUCTURE`) and unparseable input
 (`NMR_STRUCTURE_PARSE_FAILED`), materializes ring/aromaticity perception, and
-returns the OCL molecule as the internal object plus a serializable summary. Both
+returns the OCL molecule as the internal object plus a serializable summary. Formal
+charge, isotope labels, radicals, and unsupported elements are preserved and
+surfaced as warnings rather than silently ignored. The canonical N+/O- resonance
+form of an ordinary nitro group is the narrow exception: NO2 is an explicit
+increment-table class, so that representation is not mislabeled as unsupported
+ionic chemistry. Both
 providers share the same environment-code generator, which produces **identical
 codes for explicit-H molfiles and implicit-H SMILES** — the invariant that lets a
 molfile-built database match live SMILES selections.
@@ -90,11 +99,11 @@ conditions); cancellation writes nothing and leaves the panel. ¹³C and ¹H are
 
 ## The panel (M9)
 
-`composePredictionReport` builds a declarative report: a **stick-spectrum SVG**
-(reversed ppm axis), a shift table, notice sections for warnings, a "Reference
-database" provenance section, and an experimental-vs-synthetic note. The desktop
-adds chrome (title, Close, "Run again"), a staleness banner, and panel-close
-cancellation.
+`composePredictionReport` builds a declarative report: a reversed-ppm linked
+spectrum, annotated structure, shift table, warning notices, reference-database and
+rule-estimator provenance, and a method-specific HOSE/rule/mixed/synthetic note. The desktop adds
+zoom/pan, field-aware rendering/export, copy-as-image, chrome (title, Close,
+"Run again"), a staleness banner, and panel-close cancellation.
 
 ## Testing
 

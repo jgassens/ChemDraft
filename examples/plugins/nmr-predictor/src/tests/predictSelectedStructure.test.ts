@@ -131,6 +131,42 @@ describe("predictSelectedStructure", () => {
     expect(writes[0]?.status).toBe("partial");
   });
 
+  it("summarizes additive-increment involvement in generic analysis provenance", async () => {
+    const mixedResult: NmrPredictionResult = {
+      schemaVersion: "1",
+      sourceFingerprint: "fp1",
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances: [
+        {
+          id: "h-0",
+          nucleus: "1H",
+          deltaPpm: 2.5,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }],
+          crossCheck: {
+            incrementPpm: 0.7,
+            disagrees: true,
+            reason: "weak-applicability",
+            estimator: {
+              id: "chemdraft.h1-additive-increment",
+              version: "1.3.0",
+              method: "shoolery-alpha-beta-gamma"
+            }
+          },
+          flags: []
+        }
+      ],
+      warnings: [],
+      generatedAt: "t"
+    };
+    const predictor: NmrPredictor = {
+      getCapabilities: () => services.predictor.getCapabilities(),
+      predict: async () => mixedResult
+    };
+    const { context, writes } = makeContext([molecule({ structure: "CC" })]);
+    await predictSelectedStructure(context, { predictor }, { nuclei: ["1H"] });
+    expect(writes[0]?.provenance.method).toBe("hose-fragment+additive-increment");
+  });
+
   it("returns not-ok and writes nothing when the prediction is cancelled", async () => {
     const cancelling: NmrPredictor = {
       getCapabilities: () => services.predictor.getCapabilities(),

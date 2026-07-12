@@ -1,4 +1,10 @@
 fn main() {
+    // run-app exports the label; re-emitting it as rustc-env makes it a tracked compile input for
+    // option_env! in lib.rs. A bare environment variable alone does not force the crate to rebuild.
+    println!("cargo:rerun-if-env-changed=CHEMDRAFT_WORKTREE_LABEL");
+    if let Ok(label) = std::env::var("CHEMDRAFT_WORKTREE_LABEL") {
+        println!("cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL={label}");
+    }
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "open_toolset_window",

@@ -15,6 +15,8 @@ import { usePluginRuntime } from "./usePluginRuntime";
 
 let container: HTMLElement | undefined;
 let root: Root | undefined;
+const originalInnerWidth = window.innerWidth;
+const originalInnerHeight = window.innerHeight;
 
 afterEach(() => {
   act(() => {
@@ -23,7 +25,33 @@ afterEach(() => {
   container?.remove();
   root = undefined;
   container = undefined;
+  vi.restoreAllMocks();
+  setViewport(originalInnerWidth, originalInnerHeight);
 });
+
+function setViewport(width: number, height: number): void {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+}
+
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({})
+  } as DOMRect;
+}
+
+function renderedOffset(panel: HTMLElement): { x: number; y: number } {
+  const match = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\)$/.exec(panel.style.transform);
+  return match ? { x: Number(match[1]), y: Number(match[2]) } : { x: 0, y: 0 };
+}
 
 function mount(element: ReturnType<typeof createElement>): void {
   container = document.createElement("div");
@@ -58,6 +86,25 @@ const openPanel: OpenPluginPanel = {
     sections: [
       { kind: "keyValue", title: "Runtime", rows: [{ label: "Runtime path", value: "Active" }] },
       { kind: "text", body: "No document changes were made." }
+    ]
+  }
+};
+
+const linkedFigurePanel: OpenPluginPanel = {
+  ...openPanel,
+  report: {
+    title: "NMR Prediction",
+    sections: [
+      {
+        kind: "linkedFigure",
+        title: "Predicted ¹H NMR",
+        spectrum: {
+          nucleus: "1H",
+          domain: { min: 0, max: 8 },
+          reversed: true,
+          peaks: [{ id: "p1", ppm: 7.2, intensity: 1, label: "7.20", atomIndices: [0] }]
+        }
+      }
     ]
   }
 };
@@ -111,25 +158,7 @@ describe("PluginPanelSurface", () => {
   });
 
   it("renders an interactive linked figure and offers an Expand toggle that grows the surface", () => {
-    const figurePanel: OpenPluginPanel = {
-      ...openPanel,
-      report: {
-        title: "NMR Prediction",
-        sections: [
-          {
-            kind: "linkedFigure",
-            title: "Predicted ¹H NMR",
-            spectrum: {
-              nucleus: "1H",
-              domain: { min: 0, max: 8 },
-              reversed: true,
-              peaks: [{ id: "p1", ppm: 7.2, intensity: 1, label: "7.20", atomIndices: [0] }]
-            }
-          }
-        ]
-      }
-    };
-    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: figurePanel })));
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: linkedFigurePanel })));
 
     // The core renders the figure as live SVG (not an inert <img>).
     expect(container!.querySelector(".lf-spectrum")).not.toBeNull();
@@ -141,6 +170,76 @@ describe("PluginPanelSurface", () => {
       expand!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container!.querySelector(".plugin-surface--expanded")).not.toBeNull();
+  });
+
+  it("re-clamps a left-dragged panel when Expand changes the right-docked surface width", () => {
+    setViewport(1200, 800);
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: linkedFigurePanel })));
+    const panel = container!.querySelector<HTMLElement>('[data-testid="plugin-panel"]')!;
+    const header = panel.querySelector<HTMLElement>(".plugin-panel-header")!;
+
+    vi.spyOn(panel, "getBoundingClientRect").mockImplementation(() => {
+      const expanded = container!.querySelector(".plugin-surface--expanded") !== null;
+      const width = expanded ? 1080 : 430;
+      const baseLeft = 1200 - 16 - width;
+      const current = renderedOffset(panel);
+      return domRect(baseLeft + current.x, 96 + current.y, width, 600);
+    });
+    vi.spyOn(header, "getBoundingClientRect").mockReturnValue(domRect(0, 0, 430, 40));
+
+    act(() => {
+      header.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: -654, clientY: 100 }));
+      window.dispatchEvent(new MouseEvent("pointerup"));
+    });
+    expect(panel.style.transform).toBe("translate(-754px, 0px)");
+
+    act(() => {
+      panel.querySelector<HTMLButtonElement>(".plugin-panel-expand")!.click();
+    });
+    // Expanded base is 104px from the left, so -104px is the furthest safe left offset.
+    expect(panel.style.transform).toBe("translate(-104px, 0px)");
+  });
+
+  it("re-clamps when a same-panel pending/result update restores an expanded figure", () => {
+    setViewport(1200, 800);
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: linkedFigurePanel })));
+    const panel = container!.querySelector<HTMLElement>('[data-testid="plugin-panel"]')!;
+    const header = panel.querySelector<HTMLElement>(".plugin-panel-header")!;
+
+    vi.spyOn(panel, "getBoundingClientRect").mockImplementation(() => {
+      const expanded = container!.querySelector(".plugin-surface--expanded") !== null;
+      const width = expanded ? 1080 : 430;
+      const baseLeft = 1200 - 16 - width;
+      const current = renderedOffset(panel);
+      return domRect(baseLeft + current.x, 96 + current.y, width, 600);
+    });
+    vi.spyOn(header, "getBoundingClientRect").mockReturnValue(domRect(0, 0, 430, 40));
+
+    act(() => {
+      panel.querySelector<HTMLButtonElement>(".plugin-panel-expand")!.click();
+    });
+    const pendingPanel: OpenPluginPanel = {
+      ...linkedFigurePanel,
+      report: { title: "Predicting NMR", sections: [{ kind: "text", body: "Working…" }] }
+    };
+    act(() => {
+      root!.render(createElement(PluginPanelSurface, surfaceProps({ openPanel: pendingPanel })));
+    });
+    expect(container!.querySelector(".plugin-surface--expanded")).toBeNull();
+
+    act(() => {
+      header.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: -654, clientY: 100 }));
+      window.dispatchEvent(new MouseEvent("pointerup"));
+    });
+    expect(panel.style.transform).toBe("translate(-754px, 0px)");
+
+    act(() => {
+      root!.render(createElement(PluginPanelSurface, surfaceProps({ openPanel: linkedFigurePanel })));
+    });
+    expect(container!.querySelector(".plugin-surface--expanded")).not.toBeNull();
+    expect(panel.style.transform).toBe("translate(-104px, 0px)");
   });
 
   it("lets the user drag the panel by its header, and stops tracking on pointer-up", () => {
@@ -164,6 +263,69 @@ describe("PluginPanelSurface", () => {
       window.dispatchEvent(new MouseEvent("pointermove", { clientX: 300, clientY: 300 }));
     });
     expect(panel.style.transform).toBe("translate(60px, 35px)"); // released: no further movement
+  });
+
+  it("stops tracking on pointer-cancel", () => {
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    const panel = container!.querySelector<HTMLElement>('[data-testid="plugin-panel"]')!;
+    const header = panel.querySelector<HTMLElement>(".plugin-panel-header")!;
+
+    act(() => {
+      header.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 140, clientY: 125 }));
+    });
+    expect(panel.style.transform).toBe("translate(40px, 25px)");
+
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointercancel"));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 300, clientY: 300 }));
+    });
+    expect(panel.style.transform).toBe("translate(40px, 25px)");
+  });
+
+  it("re-clamps a dragged panel after resize so its full header and Close control remain accessible", () => {
+    setViewport(1000, 800);
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    const panel = container!.querySelector<HTMLElement>('[data-testid="plugin-panel"]')!;
+    const header = panel.querySelector<HTMLElement>(".plugin-panel-header")!;
+    const base = { left: 500, top: 100, width: 400, height: 500 };
+
+    vi.spyOn(panel, "getBoundingClientRect").mockImplementation(() => {
+      const current = renderedOffset(panel);
+      return domRect(base.left + current.x, base.top + current.y, base.width, base.height);
+    });
+    vi.spyOn(header, "getBoundingClientRect").mockReturnValue(domRect(base.left, base.top, base.width, 40));
+
+    act(() => {
+      header.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: -200, clientY: 400 }));
+    });
+    expect(panel.style.transform).toBe("translate(-300px, 300px)");
+
+    setViewport(500, 200);
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    // Final bounds: left=100, right=500; header top=160, bottom=200.
+    expect(panel.style.transform).toBe("translate(-400px, 60px)");
+  });
+
+  it("removes active drag listeners when the panel unmounts", () => {
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    const header = container!.querySelector<HTMLElement>(".plugin-panel-header")!;
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+
+    act(() => {
+      header.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100 }));
+    });
+    act(() => {
+      root!.unmount();
+    });
+    root = undefined;
+
+    const removedTypes = removeEventListener.mock.calls.map(([type]) => type);
+    expect(removedTypes).toEqual(expect.arrayContaining(["pointermove", "pointerup", "pointercancel"]));
   });
 
   it("does not start a drag when a header button is pressed", () => {

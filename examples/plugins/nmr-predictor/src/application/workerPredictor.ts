@@ -22,7 +22,7 @@ export function createWorkerBackedPredictor(
       return capabilities;
     },
     predict(request: NmrPredictionRequest, signal?: AbortSignal) {
-      return client.predict(request, request.sourceFingerprint ?? "", signal);
+      return client.predict(request, request.sourceFingerprint, signal);
     }
   };
 }

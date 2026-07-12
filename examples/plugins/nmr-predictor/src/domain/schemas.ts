@@ -34,12 +34,23 @@ const NmrAtomReferenceSchema = z.object({
   chemDraftAtomId: z.string().optional()
 });
 
-const NmrPredictionEvidenceSchema = z.object({
-  method: z.enum(["fixture-fragment", "hose-fragment", "gnn", "dft", "hybrid", "rule-estimated"]),
-  matchedSphere: z.number().optional(),
-  sampleCount: z.number().optional(),
-  environmentCode: z.string().optional()
-});
+const NmrEstimateProvenanceSchema = z.object({ id: z.string(), version: z.string(), method: z.string() });
+
+const NmrPredictionEvidenceSchema = z.union([
+  z.object({
+    method: z.literal("rule-estimated"),
+    matchedSphere: z.number().optional(),
+    sampleCount: z.number().optional(),
+    environmentCode: z.string().optional(),
+    estimator: NmrEstimateProvenanceSchema.optional()
+  }),
+  z.object({
+    method: z.enum(["fixture-fragment", "hose-fragment", "gnn", "dft", "hybrid"]),
+    matchedSphere: z.number().optional(),
+    sampleCount: z.number().optional(),
+    environmentCode: z.string().optional()
+  })
+]);
 
 const NmrPredictionUncertaintySchema = z.object({
   standardDeviationPpm: z.number().optional(),
@@ -68,7 +79,12 @@ const NmrResonanceSchema = z.object({
   uncertainty: NmrPredictionUncertaintySchema.optional(),
   evidence: NmrPredictionEvidenceSchema.optional(),
   multiplet: NmrMultipletSchema.optional(),
-  crossCheck: z.object({ incrementPpm: z.number(), disagrees: z.boolean() }).optional(),
+  crossCheck: z.object({
+    incrementPpm: z.number(),
+    disagrees: z.boolean(),
+    reason: z.enum(["routine-applicability", "weak-applicability", "high-dispersion"]).optional(),
+    estimator: NmrEstimateProvenanceSchema.optional()
+  }).optional(),
   flags: z.array(z.string())
 });
 

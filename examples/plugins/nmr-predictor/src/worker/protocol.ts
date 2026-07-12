@@ -6,7 +6,7 @@ import type { NmrPredictionRequest, NmrPredictionResult, NmrPredictorCapabilitie
  */
 export type NmrWorkerRequest =
   | { type: "initialize"; requestId: string; providerId: string }
-  | { type: "predict"; requestId: string; request: NmrPredictionRequest; sourceFingerprint: string }
+  | { type: "predict"; requestId: string; request: NmrPredictionRequest; sourceFingerprint?: string }
   | { type: "cancel"; requestId: string };
 
 export interface NmrWorkerErrorPayload {

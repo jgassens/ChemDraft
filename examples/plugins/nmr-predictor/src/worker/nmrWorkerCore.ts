@@ -52,7 +52,12 @@ export function createNmrWorkerHandler(
         const controller = new AbortController();
         activeController = controller;
         activeRequestId = message.requestId;
-        const request = { ...message.request, sourceFingerprint: message.sourceFingerprint };
+        const { sourceFingerprint: requestFingerprint, ...requestWithoutFingerprint } = message.request;
+        const sourceFingerprint = message.sourceFingerprint || requestFingerprint;
+        const request = {
+          ...requestWithoutFingerprint,
+          ...(sourceFingerprint ? { sourceFingerprint } : {})
+        };
         Promise.resolve()
           .then(() => ensurePredictor("").predict(request, controller.signal))
           .then(

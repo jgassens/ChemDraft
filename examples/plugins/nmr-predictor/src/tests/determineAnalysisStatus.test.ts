@@ -27,6 +27,19 @@ describe("determineAnalysisStatus", () => {
     expect(determineAnalysisStatus(result([resonance], ["NMR_PARTIAL_PREDICTION"]))).toBe("partial");
   });
 
+  it("is partial when any resonance is a disclosed rule estimate", () => {
+    const estimated: NmrResonance = {
+      ...resonance,
+      evidence: {
+        method: "rule-estimated",
+        estimator: { id: "rules", version: "1", method: "generic-sp3-carbon" }
+      },
+      flags: ["rule-estimated"]
+    };
+    expect(determineAnalysisStatus(result([estimated]))).toBe("partial");
+    expect(determineAnalysisStatus(result([resonance], ["NMR_RULE_ESTIMATED"]))).toBe("partial");
+  });
+
   it("is complete when everything matched", () => {
     expect(determineAnalysisStatus(result([resonance]))).toBe("complete");
     expect(determineAnalysisStatus(result([resonance], ["NMR_SMALL_REFERENCE_POPULATION"]))).toBe("complete");

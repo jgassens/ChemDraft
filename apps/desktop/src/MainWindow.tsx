@@ -1209,7 +1209,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.9.14.23-opus";
+const CURRENT_BUILD_STAMP = "7.12.8.56-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1532,6 +1532,12 @@ export function MainWindow({
   initialActiveToolCommandId,
   nativePalette = false
 }: MainWindowProps) {
+  // WKWebView mirrors the document title back to NSWindow after page load, so reinforce the Rust
+  // title here. This is what keeps sibling ChemDraft worktrees distinct in the title bar/cmd-tab.
+  useEffect(() => {
+    window.document.title = __WORKTREE_LABEL__ ? `ChemDraft — ${__WORKTREE_LABEL__}` : "ChemDraft";
+  }, []);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);

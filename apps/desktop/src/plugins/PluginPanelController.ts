@@ -33,6 +33,15 @@ export class PluginPanelController {
       return;
     }
 
+    const previous = this.open;
+    const updatesOpenPanel = previous?.pluginId === pluginId && previous.panelId === panelId;
+    if (previous && !updatesOpenPanel) {
+      // The surface supports one contributed panel at a time. Replacing it is therefore a real
+      // close for the previous plugin, even though the user did not click Close. This lets an NMR
+      // panel abort in-flight work before a different analyzer takes over the surface.
+      this.host.notifyPanelClosed(previous.pluginId, previous.panelId);
+    }
+
     this.open = {
       pluginId,
       panelId,
@@ -41,7 +50,8 @@ export class PluginPanelController {
       // A report may name the exact command "Run again" should re-invoke (e.g. the ¹H vs ¹³C command
       // that produced it); otherwise fall back to the panel contribution's default command.
       commandId: report.rerunCommandId ?? panel.commandId,
-      openedAt: this.nowIso()
+      // Pending -> result reports for the same panel are updates, not close/reopen cycles.
+      openedAt: updatesOpenPanel ? previous.openedAt : this.nowIso()
     };
     this.notify();
   }

@@ -5160,6 +5160,11 @@ textarea:focus-visible,
   gap: var(--cd-space-2);
 }
 
+.lf-observe-frequency {
+  color: var(--cd-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .lf-select {
   height: 20px;
   border: 1px solid var(--cd-border-control);
@@ -5167,6 +5172,11 @@ textarea:focus-visible,
   background: var(--cd-bg-control);
   color: var(--cd-text-secondary);
   font-size: 11px;
+}
+
+.lf-select:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .lf-btn {
@@ -5258,6 +5268,25 @@ textarea:focus-visible,
   stroke-width: 1.75;
 }
 
+/* Method provenance applies to the actual trace; confidence deliberately does not (ADR-0025). */
+.lf-curve.is-estimated {
+  stroke: var(--cd-text-muted);
+  opacity: 0.45;
+  stroke-dasharray: 2 2;
+}
+
+.lf-curve.is-alternative {
+  stroke: #b5651d;
+  opacity: 0.72;
+  stroke-dasharray: 5 3;
+}
+
+.lf-spectrum-note {
+  fill: var(--cd-text-muted);
+  font-size: 9.5px;
+  pointer-events: none;
+}
+
 .lf-peak-label {
   font-size: 13px;
   fill: var(--cd-accent-text);
@@ -5269,8 +5298,8 @@ textarea:focus-visible,
   font-style: italic;
 }
 
-/* Increment (second-opinion) peaks in a distinct color so they read apart from the HOSE peaks. */
-.lf-peak-label.is-increment {
+/* Alternative peaks use a distinct color so they read apart from the provider's primary peaks. */
+.lf-peak-label.is-alternative {
   fill: #b5651d;
   font-style: italic;
 }
@@ -5278,16 +5307,6 @@ textarea:focus-visible,
 .lf-peak.is-active .lf-peak-label {
   font-weight: 700;
   fill: var(--cd-accent-strong);
-}
-
-/* Matched-but-low-confidence peaks (shallow HOSE sphere / sparse reference) are muted so the
-   spectrum communicates trust at a glance; restored to full on hover so they stay inspectable. */
-.lf-peak.is-low-confidence {
-  opacity: 0.5;
-}
-
-.lf-peak.is-low-confidence.is-active {
-  opacity: 1;
 }
 
 .lf-bond line {
@@ -5326,6 +5345,11 @@ textarea:focus-visible,
 }
 .lf-shift-label.is-rough {
   fill: #d0421b;
+}
+
+.lf-shift-alternative {
+  fill: #b5651d;
+  font-style: italic;
 }
 
 .lf-atom.is-active .lf-shift-label,

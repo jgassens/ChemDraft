@@ -7,12 +7,14 @@ export const NmrWarningCodes = {
   UnsupportedElement: "NMR_UNSUPPORTED_ELEMENT",
   ChargedStructure: "NMR_CHARGED_STRUCTURE",
   IsotopeNotSupported: "NMR_ISOTOPE_NOT_SUPPORTED",
+  RadicalNotSupported: "NMR_RADICAL_NOT_SUPPORTED",
   LabileProtonOmitted: "NMR_LABILE_PROTON_OMITTED",
   NoFragmentMatch: "NMR_NO_FRAGMENT_MATCH",
   LowHoseSphereMatch: "NMR_LOW_HOSE_SPHERE_MATCH",
   SmallReferencePopulation: "NMR_SMALL_REFERENCE_POPULATION",
   PartialPrediction: "NMR_PARTIAL_PREDICTION",
-  RuleEstimated: "NMR_RULE_ESTIMATED"
+  RuleEstimated: "NMR_RULE_ESTIMATED",
+  PotentiallyDiastereotopicHydrogens: "NMR_POTENTIALLY_DIASTEREOTOPIC_HYDROGENS"
 } as const;
 
 export type NmrWarningCode = (typeof NmrWarningCodes)[keyof typeof NmrWarningCodes];

@@ -2,6 +2,8 @@
 
 // Injected at build time by vite/vitest `define` (see vite.config.ts buildStamp()).
 declare const __BUILD_STAMP__: string;
+// Used as the document/window title so WKWebView cannot replace the native worktree-aware title.
+declare const __WORKTREE_LABEL__: string;
 
 declare module "node:fs" {
   export function readFileSync(path: URL | string, encoding: string): string;

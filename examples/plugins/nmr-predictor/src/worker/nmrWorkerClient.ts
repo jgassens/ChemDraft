@@ -10,7 +10,7 @@ export interface NmrWorkerClient {
   initialize(providerId: string): Promise<NmrPredictorCapabilities>;
   predict(
     request: NmrPredictionRequest,
-    sourceFingerprint: string,
+    sourceFingerprint?: string,
     signal?: AbortSignal
   ): Promise<NmrPredictionResult>;
   dispose(): void;

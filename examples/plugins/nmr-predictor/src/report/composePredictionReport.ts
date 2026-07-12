@@ -6,6 +6,7 @@ import type {
   PluginSelectedMolecule
 } from "@chemdraft/plugin-api";
 
+import { PROTON_HIGH_DISPERSION_CROSS_CHECK_PPM } from "../domain/contracts";
 import type { NmrNucleus, NmrPredictionResult, NmrResonance } from "../domain/contracts";
 import type { CommandError } from "../application/mapSelection";
 
@@ -15,6 +16,18 @@ const SYNTHETIC_DISCLAIMER =
 const EXPERIMENTAL_NOTE =
   "Statistical predictions from aggregated experimental reference shifts. Confidence is low where the " +
   "reference population is small or only a shallow environment matched — see notices above.";
+const MIXED_METHOD_NOTE =
+  "Mixed result: HOSE peaks are statistical predictions from aggregated experimental reference shifts; " +
+  "rule-estimated shifts are marked ≈ in the table and drawn muted/italic in the spectrum.";
+const RULE_ONLY_NOTE =
+  "Rule-estimated shifts from bounded increment and functional-class tables; no HOSE reference match " +
+  "contributed to this result. Treat these values as coarse estimates, not experimental-reference predictions.";
+const NO_RESULT_NOTE =
+  "No applicable resonance was produced: neither the configured reference database nor the bounded " +
+  "rule tables yielded a supported shift. See the notices for the omitted chemistry.";
+const OTHER_METHOD_NOTE =
+  "Method-derived predicted shifts from the reported backend. They are predictions, not experimental " +
+  "measurements; consult the engine provenance and notices for method-specific limits.";
 
 function nucleusLabel(nucleus: NmrNucleus): string {
   return nucleus === "13C" ? "¹³C" : "¹H";
@@ -60,18 +73,19 @@ export function composeErrorReport(source: PluginSelectedMolecule, error: Comman
   };
 }
 
-/** Panel shown for a produced result: provenance, the shift table, notices, and the synthetic-data
- *  disclaimer. The stick-spectrum SVG is added in M9; this milestone renders the data as a table. */
+/** Panel shown for a produced result: provenance, linked spectrum/structure, shift table, notices,
+ * and a method-specific scientific disclaimer. */
 export function composePredictionReport(
   source: PluginSelectedMolecule,
   result: NmrPredictionResult
 ): PluginPanelReport {
+  const methods = resultMethodSummary(result);
   const sections: PluginPanelSection[] = [
     {
       kind: "keyValue",
       title: "Prediction",
       rows: [
-        { label: "Method", value: result.backend.method },
+        { label: "Method", value: resultMethodLabel(result, methods) },
         { label: "Engine", value: `${result.backend.id} v${result.backend.version}` },
         { label: "Nuclei", value: nucleiLabel(distinctNuclei(result)) || "—" },
         { label: "Resonances", value: String(result.resonances.length) }
@@ -80,15 +94,14 @@ export function composePredictionReport(
     structureSection(source)
   ];
 
-  const experimental = result.backend.method === "hose-fragment";
-
   if (result.resonances.length > 0) {
-    sections.push(linkedFigureSection(result, experimental));
+    sections.push(...estimateProvenanceSections(result));
+    sections.push(linkedFigureSection(result, methods));
     sections.push(resonanceTable(result));
   }
   sections.push(...noticeSections(result));
   sections.push(...databaseSection(result));
-  sections.push({ kind: "text", body: experimental ? EXPERIMENTAL_NOTE : SYNTHETIC_DISCLAIMER });
+  sections.push({ kind: "text", body: resultDisclaimer(result, methods) });
 
   return {
     title: PANEL_TITLE,
@@ -111,9 +124,40 @@ function distinctNuclei(result: NmrPredictionResult): NmrNucleus[] {
  * built a real molecule — the 2D depiction rides along so the desktop can annotate each atom with its
  * shift and cross-highlight on hover. Data only; the core owns all rendering and interaction.
  */
-function linkedFigureSection(result: NmrPredictionResult, experimental: boolean): PluginLinkedFigureSection {
+interface ResultMethodSummary {
+  fixture: boolean;
+  hasHose: boolean;
+  hasRules: boolean;
+  empty: boolean;
+}
+
+function resultMethodSummary(result: NmrPredictionResult): ResultMethodSummary {
+  return {
+    fixture: result.backend.method === "fixture-fragment",
+    hasHose: result.resonances.some((resonance) => resonance.evidence?.method === "hose-fragment"),
+    hasRules: result.resonances.some((resonance) => resonance.evidence?.method === "rule-estimated"),
+    empty: result.resonances.length === 0
+  };
+}
+
+function resultDisclaimer(result: NmrPredictionResult, methods: ResultMethodSummary): string {
+  if (methods.empty) return NO_RESULT_NOTE;
+  if (methods.fixture) return SYNTHETIC_DISCLAIMER;
+  if (methods.hasHose && methods.hasRules) return MIXED_METHOD_NOTE;
+  if (methods.hasRules) return RULE_ONLY_NOTE;
+  if (methods.hasHose || result.backend.method === "hose-fragment") return EXPERIMENTAL_NOTE;
+  return OTHER_METHOD_NOTE;
+}
+
+function resultMethodLabel(result: NmrPredictionResult, methods: ResultMethodSummary): string {
+  if (methods.empty) return "no applicable prediction";
+  if (methods.hasHose && methods.hasRules) return "hose-fragment + rule-estimated";
+  if (methods.hasRules) return "rule-estimated";
+  return result.backend.method;
+}
+
+function linkedFigureSection(result: NmrPredictionResult, methods: ResultMethodSummary): PluginLinkedFigureSection {
   const nucleus = result.resonances[0]?.nucleus ?? "13C";
-  const shifts = result.resonances.map((resonance) => resonance.deltaPpm);
   const peaks: PluginLinkedFigurePeak[] = result.resonances.map((resonance) => {
     const peak: PluginLinkedFigurePeak = {
       id: resonance.id,
@@ -128,7 +172,9 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
     } else if (tier === "high" || tier === "medium" || tier === "low") {
       peak.confidence = tier;
     }
-    if (resonance.crossCheck?.disagrees) {
+    // Expose every chemically applicable HOSE/increment pair to the figure. `disagrees` controls
+    // interpretation only; it never gates the user's access to an available table calculation.
+    if (resonance.crossCheck) {
       peak.alternativePpm = resonance.crossCheck.incrementPpm;
     }
     const couplings = resonance.multiplet?.couplings ?? [];
@@ -137,17 +183,34 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
     }
     return peak;
   });
+  // A user may switch to "Show both" after the initial render. Include alternatives in the initial
+  // domain so the added comparison peak cannot fall off-canvas.
+  const shifts = peaks.flatMap((peak) =>
+    peak.alternativePpm === undefined ? [peak.ppm] : [peak.ppm, peak.alternativePpm]
+  );
 
   const section: PluginLinkedFigureSection = {
     kind: "linkedFigure",
     title: `Predicted ${nucleusLabel(nucleus)} NMR`,
-    caption: experimental
-      ? "Scroll to zoom, drag to pan; hover a peak to highlight the atoms it came from."
-      : "Synthetic fixture spectrum. Scroll to zoom, drag to pan; hover a peak to highlight its atoms.",
-    spectrum: { nucleus, domain: spectrumDomain(nucleus, shifts), reversed: true, peaks }
+    caption: figureCaption(methods),
+    spectrum: {
+      nucleus,
+      domain: spectrumDomain(nucleus, shifts),
+      reversed: true,
+      peaks,
+      ...(nucleus === "1H" && methods.hasHose
+        ? {
+            comparison: {
+              primaryLabel: "HOSE",
+              alternativeLabel: "increment",
+              alternativeMarker: "ᵢ"
+            }
+          }
+        : {})
+    }
   };
 
-  if (experimental) {
+  if (methods.hasHose) {
     // Measured 106/196 CDCl₃ in the NMReDATA sample (then D₂O, DMSO-d₆, …): predominant, not uniform.
     // Only stated for measured-data results — the synthetic fixture has no solvent context.
     section.spectrum.solvent = "CDCl₃ (predominant reference solvent; mixed corpus)";
@@ -161,6 +224,20 @@ function linkedFigureSection(result: NmrPredictionResult, experimental: boolean)
   }
 
   return section;
+}
+
+function figureCaption(methods: ResultMethodSummary): string {
+  const interaction =
+    "Peak height represents predicted equivalent nuclei, not experimental integration. " +
+    "Scroll to zoom, drag to pan; hover a peak to highlight its atoms.";
+  if (methods.fixture) return `Synthetic fixture spectrum. ${interaction}`;
+  if (methods.hasHose && methods.hasRules) {
+    return `Mixed HOSE and rule-estimated spectrum; muted italic peaks mark rule estimates. ${interaction}`;
+  }
+  if (methods.hasRules) {
+    return `Rule-estimated spectrum; muted italic peaks mark coarse table estimates. ${interaction}`;
+  }
+  return interaction;
 }
 
 /**
@@ -193,7 +270,9 @@ function resonanceTable(result: NmrPredictionResult): PluginPanelSection {
         formatUncertainty(resonance),
         confidenceCell(resonance),
         resonance.atomRefs.map((ref) => ref.sourceAtomIndex).join(", "),
-        estimated ? "rule-estimated" : resonance.evidence?.environmentCode ?? "—"
+        estimated
+          ? `rule-estimated (${resonance.evidence?.estimator?.method ?? "unknown rule"})`
+          : resonance.evidence?.environmentCode ?? "—"
       ];
     });
 
@@ -265,11 +344,11 @@ function confidenceLabel(resonance: NmrResonance): string {
   return `${tier === "medium" ? "med" : tier} · s${matchedSphere}, n=${sampleCount}`;
 }
 
-/** Confidence label plus, when the independent increment estimate disagrees, its value — so the table
- *  always shows both numbers transparently (the figure's toggle only governs how the peak is drawn). */
+/** Confidence label plus every paired increment value. The table always shows both numbers
+ * transparently; `disagrees` controls notice emphasis, not whether the second opinion is visible. */
 function confidenceCell(resonance: NmrResonance): string {
   const base = confidenceLabel(resonance);
-  if (resonance.crossCheck?.disagrees) {
+  if (resonance.crossCheck) {
     return `${base} · vs inc ${resonance.crossCheck.incrementPpm.toFixed(2)}`;
   }
   return base;
@@ -299,15 +378,92 @@ function databaseSection(result: NmrPredictionResult): PluginPanelSection[] {
   return sections;
 }
 
-function noticeSections(result: NmrPredictionResult): PluginPanelSection[] {
-  if (result.warnings.length === 0) {
-    return [];
+/** Exact per-estimate identity for mixed-method results. The overall backend remains the HOSE engine;
+ * this section prevents a displayed additive value from inheriting database provenance by accident. */
+function estimateProvenanceSections(result: NmrPredictionResult): PluginPanelSection[] {
+  const estimates = new Map<string, { id: string; version: string; method: string }>();
+  for (const resonance of result.resonances) {
+    for (const estimator of [resonance.evidence?.estimator, resonance.crossCheck?.estimator]) {
+      if (!estimator) continue;
+      estimates.set(`${estimator.id}@${estimator.version}:${estimator.method}`, estimator);
+    }
   }
+  if (estimates.size === 0) return [];
+  return [
+    {
+      kind: "keyValue",
+      title: "Estimate provenance",
+      rows: [...estimates.values()].map((estimator, index) => ({
+        label: estimates.size === 1 ? "Estimator" : `Estimator ${index + 1}`,
+        value: `${estimator.id} v${estimator.version} · ${estimator.method}`
+      }))
+    }
+  ];
+}
+
+function noticeSections(result: NmrPredictionResult): PluginPanelSection[] {
+  const lines: string[] = [];
+  const agreement = incrementAgreementSummary(result);
+  if (agreement) lines.push(`• ${agreement}`);
+  const eligibility = incrementEligibilitySummary(result);
+  if (eligibility) lines.push(`• ${eligibility}`);
+  lines.push(...result.warnings.map((warning) => `• ${warning.message} (${warning.code})`));
+  if (lines.length === 0) return [];
   return [
     {
       kind: "text",
       title: "Notices",
-      body: result.warnings.map((warning) => `• ${warning.message} (${warning.code})`).join("\n")
+      body: lines.join("\n")
     }
   ];
+}
+
+function incrementEligibilitySummary(result: NmrPredictionResult): string | undefined {
+  const highDispersionCount = result.resonances.filter(
+    (resonance) => resonance.crossCheck?.reason === "high-dispersion"
+  ).length;
+  if (highDispersionCount === 0) return undefined;
+  const noun = highDispersionCount === 1 ? "HOSE resonance" : "HOSE resonances";
+  return `${highDispersionCount} compared ${noun} ${highDispersionCount === 1 ? "has" : "have"} a broad reference distribution (σ ≥ ${PROTON_HIGH_DISPERSION_CROSS_CHECK_PPM.toFixed(2)} ppm); that spread affects interpretation, not comparison availability.`;
+}
+
+/** Plain-language method comparison for the report's Notices area. Only paired, applicable
+ * HOSE/increment values participate; unmatched rule estimates have no HOSE value to compare against. */
+function incrementAgreementSummary(result: NmrPredictionResult): string | undefined {
+  const hoseResonances = result.resonances.filter(
+    (resonance) => resonance.nucleus === "1H" && resonance.evidence?.method === "hose-fragment"
+  );
+  if (hoseResonances.length === 0) return undefined;
+
+  const comparisons = hoseResonances.flatMap((resonance) =>
+    resonance.crossCheck ? [{ hosePpm: resonance.deltaPpm, comparison: resonance.crossCheck }] : []
+  );
+  const coverage = `${comparisons.length} of ${hoseResonances.length} HOSE-predicted resonances`;
+  if (comparisons.length === 0) {
+    return `Additive-increment table calculations are not applicable to any of the ${hoseResonances.length} HOSE-predicted resonances in this structure; the shift comparison is HOSE-only.`;
+  }
+
+  const disagreementCount = comparisons.filter(({ comparison }) => comparison.disagrees).length;
+  const agreementCount = comparisons.length - disagreementCount;
+  const coverageIsLimited = comparisons.length < 3 || comparisons.length / hoseResonances.length < 0.5;
+  if (coverageIsLimited) {
+    if (comparisons.length === 1) {
+      const [{ hosePpm, comparison }] = comparisons;
+      const difference = Math.abs(hosePpm - comparison.incrementPpm).toFixed(2);
+      return `Limited additive-increment comparison: ${coverage} has an applicable table calculation. It differs from HOSE by ${difference} ppm and ${comparison.disagrees ? "exceeds" : "is within"} the comparison threshold. Coverage is too limited to assess general agreement.`;
+    }
+    return `Limited additive-increment comparison: ${coverage} have applicable table calculations; ${agreementCount} are within the comparison threshold and ${disagreementCount} exceed it. Coverage is too limited to assess general agreement.`;
+  }
+
+  const allCompared =
+    comparisons.length === 1
+      ? "the compared resonance"
+      : `all ${comparisons.length} compared resonances`;
+  if (disagreementCount === 0) {
+    return `Additive-increment table calculations are in general agreement with the HOSE predictions for ${allCompared} (${coverage} covered).`;
+  }
+  if (agreementCount === 0) {
+    return `Additive-increment table calculations are not in general agreement with the HOSE predictions: ${allCompared} ${comparisons.length === 1 ? "exceeds" : "exceed"} the disagreement threshold (${coverage} covered).`;
+  }
+  return `Additive-increment table calculations show mixed agreement with the HOSE predictions: ${agreementCount} of ${comparisons.length} are within the comparison threshold and ${disagreementCount} exceed it (${coverage} covered).`;
 }

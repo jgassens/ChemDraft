@@ -55,4 +55,18 @@ describe("createWorkerBackedPredictor", () => {
     await predictor.predict(request);
     expect(predict).toHaveBeenCalledWith(request, "sel-fp", undefined);
   });
+
+  it("keeps an omitted fingerprint optional so the provider can derive its fallback", async () => {
+    const predict = vi.fn(async () => RESULT);
+    const client: NmrWorkerClient = { initialize: vi.fn(async () => CAPABILITIES), predict, dispose: vi.fn() };
+    const predictor = createWorkerBackedPredictor(client);
+    const request = {
+      structure: { format: "smiles" as const, value: "CC" },
+      nuclei: ["13C" as const],
+      options: { statistic: "median" as const, hoseLevels: [2], ignoreLabileHydrogens: true }
+    };
+
+    await predictor.predict(request);
+    expect(predict).toHaveBeenCalledWith(request, undefined, undefined);
+  });
 });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { NmrPredictor, NmrPredictionResult } from "../domain/contracts";
+import { fingerprintStructureInput } from "../domain/fingerprint";
+import { NmrPredictionResultSchema } from "../domain/schemas";
 import { createNmrWorkerHandler } from "../worker/nmrWorkerCore";
 import type { NmrWorkerResponse } from "../worker/protocol";
 
@@ -37,6 +39,110 @@ describe("createNmrWorkerHandler", () => {
     const result = responses.find((response) => response.type === "result");
     expect(result).toBeDefined();
     expect(result && result.type === "result" && result.result.sourceFingerprint).toBe(FP);
+  });
+
+  it("derives a structure fingerprint when the optional worker fingerprint is blank", async () => {
+    const { responses, post } = collector();
+    const handle = createNmrWorkerHandler(post);
+    const request = baseRequest();
+    handle({ type: "predict", requestId: "p-derived", request, sourceFingerprint: "" });
+    await flush();
+    const response = responses.find((candidate) => candidate.type === "result");
+    expect(response && response.type === "result" ? response.result.sourceFingerprint : undefined).toBe(
+      fingerprintStructureInput(request.structure)
+    );
+  });
+
+  it("preserves all additive comparison contexts across a serializable worker result", async () => {
+    const estimator = {
+      id: "chemdraft.h1-additive-increment",
+      version: "1.3.0",
+      method: "shoolery-alpha-beta-gamma"
+    };
+    const result: NmrPredictionResult = {
+      schemaVersion: "1",
+      sourceFingerprint: FP,
+      backend: { id: "x", version: "1", method: "hose-fragment" },
+      resonances: [
+        {
+          id: "weak",
+          nucleus: "1H",
+          deltaPpm: 1,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }],
+          crossCheck: { incrementPpm: 1.1, disagrees: false, reason: "weak-applicability", estimator },
+          flags: []
+        },
+        {
+          id: "spread",
+          nucleus: "1H",
+          deltaPpm: 2,
+          atomRefs: [{ sourceAtomIndex: 1, element: "H", equivalentCount: 1 }],
+          crossCheck: { incrementPpm: 2.8, disagrees: true, reason: "high-dispersion", estimator },
+          flags: []
+        },
+        {
+          id: "routine",
+          nucleus: "1H",
+          deltaPpm: 3,
+          atomRefs: [{ sourceAtomIndex: 2, element: "H", equivalentCount: 1 }],
+          crossCheck: { incrementPpm: 3.1, disagrees: false, reason: "routine-applicability", estimator },
+          flags: []
+        }
+      ],
+      warnings: [],
+      generatedAt: "t"
+    };
+    const predictor: NmrPredictor = {
+      getCapabilities: () => ({
+        id: "x",
+        version: "1",
+        execution: "worker-js",
+        nuclei: ["1H"],
+        supportsAtomAssignments: true,
+        supportsUncertainty: true,
+        supportsCouplings: false,
+        supportsSolvent: false,
+        supportsConformers: false,
+        supportsStereochemistry: false
+      }),
+      predict: async () => result
+    };
+    const { responses, post } = collector();
+    const handle = createNmrWorkerHandler(post, { createPredictor: () => predictor });
+    handle({ type: "predict", requestId: "cross-check", sourceFingerprint: FP, request: baseRequest() });
+    await flush();
+
+    const response = responses.find((candidate) => candidate.type === "result");
+    const roundTripped = structuredClone(response && response.type === "result" ? response.result : undefined);
+    const parsed = NmrPredictionResultSchema.parse(roundTripped);
+    expect(parsed.resonances.map((resonance) => resonance.crossCheck?.reason)).toEqual([
+      "weak-applicability",
+      "high-dispersion",
+      "routine-applicability"
+    ]);
+  });
+
+  it("keeps older schema-v1 rule and cross-check payloads readable without provenance fields", () => {
+    expect(() =>
+      NmrPredictionResultSchema.parse({
+        schemaVersion: "1",
+        sourceFingerprint: FP,
+        backend: { id: "x", version: "1", method: "hose-fragment" },
+        resonances: [
+          {
+            id: "legacy-rule",
+            nucleus: "1H",
+            deltaPpm: 1.2,
+            atomRefs: [{ sourceAtomIndex: 0, element: "H" }],
+            evidence: { method: "rule-estimated" },
+            crossCheck: { incrementPpm: 1.1, disagrees: false },
+            flags: ["rule-estimated"]
+          }
+        ],
+        warnings: [],
+        generatedAt: "t"
+      })
+    ).not.toThrow();
   });
 
   it("normalizes a domain error into an error response", async () => {

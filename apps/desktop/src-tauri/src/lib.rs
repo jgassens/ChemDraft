@@ -480,6 +480,9 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         None => create_main_window(app)?,
     };
 
+    // Tauri auto-creates the configured main window, so create_main_window may not run at startup.
+    // Apply the worktree-aware title to the window actually resolved on both startup and reopen.
+    let _ = window.set_title(&main_window_title());
     window
         .set_decorations(true)
         .map_err(|error| error.to_string())?;
@@ -551,9 +554,19 @@ fn focus_native_document_window<R: Runtime>(
     Ok(())
 }
 
+/// Distinguishes identically named ChemDraft builds from sibling worktrees. run-app bakes the label
+/// into this crate; unlabeled external builds retain the ordinary product title.
+fn main_window_title() -> String {
+    match option_env!("CHEMDRAFT_WORKTREE_LABEL") {
+        Some(label) if !label.trim().is_empty() => format!("ChemDraft — {}", label.trim()),
+        _ => "ChemDraft".to_string(),
+    }
+}
+
 fn create_main_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    let title = main_window_title();
     if let Some(config) = app
         .config()
         .app
@@ -561,14 +574,16 @@ fn create_main_window<R: Runtime>(
         .iter()
         .find(|window| window.label == MAIN_WINDOW_LABEL)
     {
-        return WebviewWindowBuilder::from_config(app, config)
+        let window = WebviewWindowBuilder::from_config(app, config)
             .map_err(|error| error.to_string())?
             .build()
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string())?;
+        let _ = window.set_title(&title);
+        return Ok(window);
     }
 
     WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
-        .title("ChemDraft")
+        .title(&title)
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 640.0)
         .resizable(true)

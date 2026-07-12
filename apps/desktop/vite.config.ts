@@ -13,8 +13,31 @@ const gitStampCommandOptions = {
   timeout: 750
 } as const;
 
+// Prefer run-app's single source of truth. Bare Vite commands still derive the checkout label so
+// every on-screen build stamp leads with "<worktree> [<branch>]".
+function worktreeLabel(): string {
+  const fromEnv = process.env.CHEMDRAFT_WORKTREE_LABEL?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  try {
+    const toplevel = execSync("git rev-parse --show-toplevel", gitStampCommandOptions).trim();
+    const base = toplevel.split("/").pop() ?? "";
+    let branch = "";
+    try {
+      branch = execSync("git rev-parse --abbrev-ref HEAD", gitStampCommandOptions).trim();
+    } catch {
+      // Detached HEAD or no branch: the worktree directory still distinguishes the build.
+    }
+    return branch && base ? `${base} [${branch}]` : base;
+  } catch {
+    return "";
+  }
+}
+
 // Computed once per `vite build` / `vite dev` start, so the on-screen stamp always reflects
-// the actual source that was bundled. Format: "YYYY-MM-DD HH:MM:SS <shortSha>[+dirty]".
+// the actual source that was bundled. Format:
+// "<worktree [branch]> · YYYY-MM-DD HH:MM:SS <shortSha>[+dirty]".
 function buildStamp(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -29,7 +52,8 @@ function buildStamp(): string {
   } catch {
     // Not a git checkout, git unavailable, or a damaged shared object store. Keep dev startup moving.
   }
-  return `${when} ${sha}${dirty}`;
+  const label = worktreeLabel();
+  return `${label ? `${label} · ` : ""}${when} ${sha}${dirty}`;
 }
 
 export default defineConfig({
@@ -37,7 +61,8 @@ export default defineConfig({
   // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
   plugins: [react()],
   define: {
-    __BUILD_STAMP__: JSON.stringify(buildStamp())
+    __BUILD_STAMP__: JSON.stringify(buildStamp()),
+    __WORKTREE_LABEL__: JSON.stringify(worktreeLabel())
   },
   resolve: {
     alias: {

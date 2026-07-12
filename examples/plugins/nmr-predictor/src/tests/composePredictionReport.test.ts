@@ -111,7 +111,16 @@ describe("composePredictionReport", () => {
         mkRes("r2", 7, { method: "hose-fragment", matchedSphere: 2, sampleCount: 5, environmentCode: "B" }),
         mkRes("r3", 6, { method: "hose-fragment", matchedSphere: 1, sampleCount: 30, environmentCode: "C" }), // shallow → low
         mkRes("r4", 5, { method: "hose-fragment", matchedSphere: 4, sampleCount: 2, environmentCode: "D" }), // sparse → low
-        mkRes("r5", 4, { method: "rule-estimated", environmentCode: "E" }, ["rule-estimated"])
+        mkRes(
+          "r5",
+          4,
+          {
+            method: "rule-estimated",
+            environmentCode: "E",
+            estimator: { id: "rules", version: "1", method: "generic-sp3-carbon" }
+          },
+          ["rule-estimated"]
+        )
       ],
       warnings: []
     };
@@ -132,12 +141,124 @@ describe("composePredictionReport", () => {
     if (!figure || figure.kind !== "linkedFigure") throw new Error("expected a linkedFigure section");
     expect(figure.spectrum.peaks.map((peak) => peak.confidence)).toEqual(["high", "medium", "low", "low", undefined]);
     expect(figure.spectrum.peaks.map((peak) => peak.estimated)).toEqual([undefined, undefined, undefined, undefined, true]);
+    expect(figure.spectrum.comparison).toEqual({
+      primaryLabel: "HOSE",
+      alternativeLabel: "increment",
+      alternativeMarker: "ᵢ"
+    });
+    expect(textBodies(report)).toContain(
+      "Additive-increment table calculations are not applicable to any of the 4 HOSE-predicted resonances"
+    );
     // Measured-data results carry the reference-solvent context; the synthetic fixture must not.
     expect(figure.spectrum.solvent).toContain("CDCl₃");
     const fixtureFigure = composePredictionReport(source, result).sections.find(
       (section) => section.kind === "linkedFigure"
     );
     expect(fixtureFigure && fixtureFigure.kind === "linkedFigure" ? fixtureFigure.spectrum.solvent : "set").toBeUndefined();
+  });
+
+  it("labels an all-rule OCL fallback as coarse rule data, not an experimental-reference prediction", () => {
+    const ruleOnly: NmrPredictionResult = {
+      ...result,
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances: [
+        {
+          id: "estimated",
+          nucleus: "1H",
+          deltaPpm: 1.2,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 3 }],
+          equivalentNuclei: 3,
+          evidence: {
+            method: "rule-estimated",
+            estimator: { id: "rules", version: "1", method: "shoolery-alpha-beta-gamma" }
+          },
+          flags: ["rule-estimated"]
+        }
+      ],
+      warnings: []
+    };
+
+    const report = composePredictionReport(source, ruleOnly);
+    expect(textBodies(report)).toContain("no HOSE reference match contributed");
+    expect(textBodies(report)).not.toContain("Statistical predictions from aggregated experimental reference shifts");
+    expect(textBodies(report)).toContain('"label":"Method","value":"rule-estimated"');
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.solvent : "set").toBeUndefined();
+    expect(figure && figure.kind === "linkedFigure" ? figure.caption : "").toContain("Rule-estimated spectrum");
+  });
+
+  it("labels a mixed OCL result with separate HOSE and rule provenance", () => {
+    const mixed: NmrPredictionResult = {
+      ...result,
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances: [
+        {
+          id: "matched",
+          nucleus: "1H",
+          deltaPpm: 7.2,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }],
+          evidence: { method: "hose-fragment", matchedSphere: 3, sampleCount: 10 },
+          flags: []
+        },
+        {
+          id: "estimated",
+          nucleus: "1H",
+          deltaPpm: 1.2,
+          atomRefs: [{ sourceAtomIndex: 1, element: "H", equivalentCount: 3 }],
+          evidence: {
+            method: "rule-estimated",
+            estimator: { id: "rules", version: "1", method: "shoolery-alpha-beta-gamma" }
+          },
+          flags: ["rule-estimated"]
+        }
+      ],
+      warnings: []
+    };
+
+    const report = composePredictionReport(source, mixed);
+    expect(textBodies(report)).toContain("Mixed result");
+    expect(textBodies(report)).toContain("rule-estimated shifts are marked ≈ in the table");
+    expect(textBodies(report)).toContain('"label":"Method","value":"hose-fragment + rule-estimated"');
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.solvent : "").toContain("CDCl₃");
+    expect(figure && figure.kind === "linkedFigure" ? figure.caption : "").toContain("Mixed HOSE and rule-estimated");
+    expect(figure && figure.kind === "linkedFigure" ? figure.caption : "").toContain("muted italic peaks");
+  });
+
+  it("labels a zero-resonance OCL result as no applicable prediction", () => {
+    const empty: NmrPredictionResult = {
+      ...result,
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances: [],
+      warnings: [
+        { code: "NMR_NO_FRAGMENT_MATCH", message: "Unsupported chemistry was omitted.", severity: "warning" }
+      ]
+    };
+    const report = composePredictionReport(source, empty);
+    expect(textBodies(report)).toContain('"label":"Method","value":"no applicable prediction"');
+    expect(textBodies(report)).toContain("No applicable resonance was produced");
+    expect(textBodies(report)).not.toContain("Statistical predictions from aggregated experimental reference shifts");
+  });
+
+  it("uses a method-neutral disclaimer for non-HOSE model results", () => {
+    const gnn: NmrPredictionResult = {
+      ...result,
+      backend: { id: "model", version: "1", method: "gnn" },
+      resonances: [
+        {
+          id: "model-peak",
+          nucleus: "1H",
+          deltaPpm: 2.1,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H" }],
+          evidence: { method: "gnn" },
+          flags: []
+        }
+      ],
+      warnings: []
+    };
+    const report = composePredictionReport(source, gnn);
+    expect(textBodies(report)).toContain("Method-derived predicted shifts from the reported backend");
+    expect(textBodies(report)).not.toContain("Statistical predictions from aggregated experimental reference shifts");
   });
 
   it("plots a tight ppm window around the peaks (~1 ppm buffer, not the whole ¹H range)", () => {
@@ -159,27 +280,149 @@ describe("composePredictionReport", () => {
   });
 
   it("carries a disagreeing increment cross-check into the figure peak and the table", () => {
+    const estimator = {
+      id: "chemdraft.h1-additive-increment",
+      version: "1.3.0",
+      method: "shoolery-alpha-beta-gamma"
+    };
     const withCrossCheck: NmrPredictionResult = {
       ...result,
       resonances: [
         {
           id: "r",
           nucleus: "1H",
-          deltaPpm: 6.12,
+          deltaPpm: 2.52,
           atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 1 }],
           equivalentNuclei: 1,
           evidence: { method: "hose-fragment", matchedSphere: 1, sampleCount: 5, environmentCode: "X" },
-          crossCheck: { incrementPpm: 6.99, disagrees: true },
+          crossCheck: { incrementPpm: 0.7, disagrees: true, reason: "weak-applicability", estimator },
           flags: []
         }
       ]
     };
     const report = composePredictionReport(source, withCrossCheck);
     const figure = report.sections.find((section) => section.kind === "linkedFigure");
-    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.peaks[0].alternativePpm : undefined).toBe(6.99);
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.peaks[0].alternativePpm : undefined).toBe(0.7);
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.comparison : undefined).toEqual({
+      primaryLabel: "HOSE",
+      alternativeLabel: "increment",
+      alternativeMarker: "ᵢ"
+    });
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.domain.min : Infinity).toBeLessThanOrEqual(0.7);
     const table = report.sections.find((section) => section.kind === "table");
     const row = table && table.kind === "table" ? table.rows[0] : [];
-    expect(row.some((cell) => cell.includes("vs inc 6.99"))).toBe(true);
+    expect(row.some((cell) => cell.includes("vs inc 0.70"))).toBe(true);
+    const provenance = report.sections.find(
+      (section) => section.kind === "keyValue" && section.title === "Estimate provenance"
+    );
+    expect(JSON.stringify(provenance)).toContain("chemdraft.h1-additive-increment v1.3.0");
+    expect(JSON.stringify(provenance)).toContain("shoolery-alpha-beta-gamma");
+    expect(textBodies(report)).toContain("Limited additive-increment comparison");
+    expect(textBodies(report)).toContain("exceeds the comparison threshold");
+  });
+
+  it("keeps an applicable increment comparison visible even when it is below the disagreement threshold", () => {
+    const withCloseCrossCheck: NmrPredictionResult = {
+      ...result,
+      warnings: [],
+      resonances: [
+        {
+          id: "close",
+          nucleus: "1H",
+          deltaPpm: 1.2,
+          atomRefs: [{ sourceAtomIndex: 0, element: "H", equivalentCount: 3 }],
+          equivalentNuclei: 3,
+          evidence: { method: "hose-fragment", matchedSphere: 1, sampleCount: 8, environmentCode: "X" },
+          crossCheck: {
+            incrementPpm: 1.05,
+            disagrees: false,
+            reason: "high-dispersion",
+            estimator: {
+              id: "chemdraft.h1-additive-increment",
+              version: "1.3.0",
+              method: "shoolery-alpha-beta-gamma"
+            }
+          },
+          flags: []
+        }
+      ]
+    };
+
+    const report = composePredictionReport(source, withCloseCrossCheck);
+    const figure = report.sections.find((section) => section.kind === "linkedFigure");
+    expect(figure && figure.kind === "linkedFigure" ? figure.spectrum.peaks[0].alternativePpm : undefined).toBe(1.05);
+    const table = report.sections.find((section) => section.kind === "table");
+    expect(table && table.kind === "table" ? table.rows[0].join(" ") : "").toContain("vs inc 1.05");
+    const notices = report.sections.find((section) => section.kind === "text" && section.title === "Notices");
+    expect(notices && notices.kind === "text" ? notices.body : "").toContain("Coverage is too limited");
+    expect(notices && notices.kind === "text" ? notices.body : "").toContain("is within the comparison threshold");
+    expect(notices && notices.kind === "text" ? notices.body : "").toContain(
+      "broad reference distribution (σ ≥ 0.50 ppm)"
+    );
+  });
+
+  it("reports exact limited comparison coverage instead of implying molecule-wide agreement", () => {
+    const resonances: NmrPredictionResult["resonances"] = Array.from({ length: 4 }, (_, index) => ({
+      id: `h-${index}`,
+      nucleus: "1H" as const,
+      deltaPpm: 5 - index,
+      atomRefs: [{ sourceAtomIndex: index, element: "H", equivalentCount: 1 }],
+      equivalentNuclei: 1,
+      evidence: { method: "hose-fragment" as const, matchedSphere: 3, sampleCount: 12 },
+      ...(index === 0
+        ? {
+            crossCheck: {
+              incrementPpm: 4.86,
+              disagrees: false,
+              reason: "routine-applicability" as const,
+              estimator: {
+                id: "chemdraft.h1-additive-increment",
+                version: "1.3.0",
+                method: "functional-class-vinylic"
+              }
+            }
+          }
+        : {}),
+      flags: []
+    }));
+    const report = composePredictionReport(source, {
+      ...result,
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances,
+      warnings: []
+    });
+    expect(textBodies(report)).toContain("1 of 4 HOSE-predicted resonances");
+    expect(textBodies(report)).toContain("differs from HOSE by 0.14 ppm");
+    expect(textBodies(report)).toContain("too limited to assess general agreement");
+  });
+
+  it("uses general agreement language only when comparison count and coverage are sufficient", () => {
+    const resonances: NmrPredictionResult["resonances"] = Array.from({ length: 3 }, (_, index) => ({
+      id: `h-${index}`,
+      nucleus: "1H" as const,
+      deltaPpm: 3 - index,
+      atomRefs: [{ sourceAtomIndex: index, element: "H", equivalentCount: 1 }],
+      evidence: { method: "hose-fragment" as const, matchedSphere: 3, sampleCount: 12 },
+      crossCheck: {
+        incrementPpm: 2.9 - index,
+        disagrees: false,
+        reason: "routine-applicability" as const,
+        estimator: {
+          id: "chemdraft.h1-additive-increment",
+          version: "1.3.0",
+          method: "shoolery-alpha-beta-gamma"
+        }
+      },
+      flags: []
+    }));
+    const report = composePredictionReport(source, {
+      ...result,
+      backend: { id: "chemdraft.ocl-hose", version: "1", method: "hose-fragment" },
+      resonances,
+      warnings: []
+    });
+    expect(textBodies(report)).toContain("in general agreement with the HOSE predictions");
+    expect(textBodies(report)).toContain("3 of 3 HOSE-predicted resonances covered");
   });
 
   it("carries the 2D depiction into the figure when the backend supplies one", () => {

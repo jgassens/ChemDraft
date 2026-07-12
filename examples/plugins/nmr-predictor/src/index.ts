@@ -48,6 +48,13 @@ export {
 } from "./providers/fixture/fixtureEnvironment";
 
 export { OclHosePredictor, type OclHosePredictorOptions } from "./providers/ocl/OclHosePredictor";
+export {
+  estimateProtonIncrement,
+  PROTON_INCREMENT_ESTIMATOR_ID,
+  PROTON_INCREMENT_ESTIMATOR_VERSION,
+  type ProtonIncrementEstimate,
+  type ProtonIncrementUnavailableReason
+} from "./providers/ocl/incrementEstimator";
 export { buildNmrDatabase, type BuildDatabaseOptions } from "./providers/ocl/buildDatabase";
 export {
   atomEnvironmentCodes,

@@ -82,7 +82,8 @@ prerequisite is that the desktop declares the plugin as a `workspace:*` dependen
 `RegisterPluginOptions.onPanelClosed(panelId)` lets a plugin cancel in-flight work
 when the desktop closes its panel. The NMR registration shares one
 `AbortController` across the command and `onPanelClosed`: a new prediction
-supersedes the prior; closing the panel aborts the active one; and the command
+supersedes the prior; closing the panel aborts the active one; replacing it with a
+different plugin/panel is also treated as a close; and the command
 re-checks `signal.aborted` after the predictor resolves, so a late result never
 writes a record or resurrects a dismissed panel.
 

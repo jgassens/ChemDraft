@@ -298,12 +298,24 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
         .object({
           /** Free-form axis label token, e.g. "1H" or "13C". Rendered, not interpreted. */
           nucleus: z.string(),
-          /** ppm range to plot. Peaks outside are clamped by the renderer. */
+          /** Suggested ppm range. The renderer expands it when a supplied peak falls outside. */
           domain: z.object({ min: z.number(), max: z.number() }).strict(),
           /** NMR convention plots high→low left→right; default true. */
           reversed: z.boolean().optional(),
           /** Solvent context of the reference data (e.g. "CDCl₃ (predominant reference solvent)"). */
           solvent: z.string().min(1).max(120).optional(),
+          /** Provider-owned comparison capability and labels. This may be present with zero
+           * currently applicable alternative values; per-peak `alternativePpm` is the availability
+           * source of truth, allowing the renderer to explain a primary-only result. */
+          comparison: z
+            .object({
+              primaryLabel: NonEmptyStringSchema,
+              alternativeLabel: NonEmptyStringSchema,
+              /** Short visual suffix for the alternative value, e.g. "ᵢ". */
+              alternativeMarker: z.string().min(1).max(8).optional()
+            })
+            .strict()
+            .optional(),
           peaks: z
             .array(
               z
@@ -317,13 +329,10 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
                   atomIndices: z.array(z.number().int().min(0)).max(4000),
                   /** True when the shift is a coarse rule estimate, not a reference-DB match. */
                   estimated: z.boolean().optional(),
-                  /** Match-applicability confidence (HOSE sphere depth + reference n); low peaks draw muted. */
+                  /** Plugin-supplied confidence tier; low peaks draw muted. */
                   confidence: z.enum(["high", "medium", "low"]).optional(),
-                  /**
-                   * An independent additive-increment estimate that *disagrees* with this (HOSE) peak,
-                   * present only for low-confidence peaks. The figure's cross-check control draws the peak
-                   * at this ppm instead ("prefer increment") or draws both ("show both").
-                   */
+                  /** Optional alternative estimate for the same peak. A renderer may show it beside
+                   * the primary value; the producing plugin owns its method and eligibility policy. */
                   alternativePpm: z.number().optional(),
                   /** First-order couplings (Hz + equivalent-partner count) for drawing split peaks. */
                   couplings: z

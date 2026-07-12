@@ -51,4 +51,26 @@ describe("normalizeStructure", () => {
     const { normalized } = normalizeStructure({ format: "smiles", value: "C[N+](C)(C)C" });
     expect(normalized.warnings.map((warning) => warning.code)).toContain("NMR_CHARGED_STRUCTURE");
   });
+
+  it("does not mislabel the canonical nitro resonance form as unsupported ionic chemistry", () => {
+    const { normalized } = normalizeStructure({ format: "smiles", value: "O=[N+]([O-])c1ccccc1" });
+    expect(normalized.warnings.map((warning) => warning.code)).not.toContain("NMR_CHARGED_STRUCTURE");
+  });
+
+  it("keeps the charged-structure warning for a noncanonical N/O ion", () => {
+    const { normalized } = normalizeStructure({ format: "smiles", value: "[O-][N+](=O)(O)c1ccccc1" });
+    expect(normalized.warnings.map((warning) => warning.code)).toContain("NMR_CHARGED_STRUCTURE");
+  });
+
+  it("warns when OCL preserves isotope, radical, or unsupported-element chemistry", () => {
+    expect(
+      normalizeStructure({ format: "smiles", value: "[13CH4]" }).normalized.warnings.map((warning) => warning.code)
+    ).toContain("NMR_ISOTOPE_NOT_SUPPORTED");
+    expect(
+      normalizeStructure({ format: "smiles", value: "[CH3]" }).normalized.warnings.map((warning) => warning.code)
+    ).toContain("NMR_RADICAL_NOT_SUPPORTED");
+    expect(
+      normalizeStructure({ format: "smiles", value: "[SiH4]" }).normalized.warnings.map((warning) => warning.code)
+    ).toContain("NMR_UNSUPPORTED_ELEMENT");
+  });
 });

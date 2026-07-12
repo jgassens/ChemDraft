@@ -3,7 +3,7 @@
 import type { PluginLinkedFigureSpectrum, PluginLinkedFigureStructure } from "@chemdraft/plugin-api";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LinkedFigureView } from "./LinkedFigureView";
 
@@ -43,6 +43,21 @@ function hover(element: Element): void {
   act(() => {
     element.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
   });
+}
+
+function click(element: Element): void {
+  act(() => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+function tickSpan(): number {
+  const ticks = [...container!.querySelectorAll(".lf-tick-label")].map((node) => Number(node.textContent));
+  return Math.max(...ticks) - Math.min(...ticks);
+}
+
+function pathYs(path: Element): number[] {
+  return [...(path.getAttribute("d") ?? "").matchAll(/[ML][\d.]+\s+([\d.]+)/g)].map((match) => Number(match[1]));
 }
 
 function isActive(selector: string): boolean {
@@ -129,6 +144,37 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-peak-id="t"]')!.getAttribute("data-line-count")).toBe("3");
   });
 
+  it("zooms in with + and back out with − (button directions are not inverted)", () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const initialSpan = tickSpan();
+    click(container!.querySelector('[aria-label="Zoom in"]')!);
+    expect(tickSpan()).toBeLessThan(initialSpan);
+    expect([...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Reset")!.disabled).toBe(
+      false
+    );
+
+    click(container!.querySelector('[aria-label="Zoom out"]')!);
+    expect(tickSpan()).toBe(initialSpan);
+  });
+
+  it("does not magnify distant line-shape tails when a zoomed viewport contains no peak", () => {
+    const edgePeak: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 8 },
+      reversed: true,
+      peaks: [{ id: "edge", ppm: 0, intensity: 1, atomIndices: [0] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: edgePeak }));
+    const zoomIn = container!.querySelector('[aria-label="Zoom in"]')!;
+    click(zoomIn);
+    click(zoomIn);
+    click(zoomIn); // centered zoom now excludes the 0 ppm line
+
+    expect(container!.querySelector('[data-peak-id="edge"]')).toBeNull();
+    const ys = pathYs(container!.querySelector(".lf-curve")!);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(2);
+  });
+
   it("resolves a doublet into two distinct lines at a normal zoom (linewidth < coupling)", () => {
     const doublet: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
@@ -169,28 +215,125 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector(".lf-curve")!.getAttribute("d")).not.toBe(before);
   });
 
-  it("cross-check: replaces a disagreeing peak with the increment by default, and shows both on toggle", () => {
+  it("cross-check: keeps the HOSE peak by default, and shows both on toggle", () => {
     const spec: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
       domain: { min: 0, max: 8 },
       reversed: true,
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment", alternativeMarker: "ᵢ" },
       peaks: [{ id: "cc", ppm: 2.0, intensity: 1, label: "2.00", atomIndices: [0], confidence: "low", alternativePpm: 2.9 }]
     };
-    mount(createElement(LinkedFigureView, { spectrum: spec }));
-    // Default = "Prefer increment": a single peak, drawn as the increment variant.
+    mount(createElement(LinkedFigureView, { spectrum: spec, structure }));
+    expect(container!.textContent).toContain("Shift comparison");
+    // Default = "Prefer HOSE": a single primary peak and the HOSE structure annotation.
     expect(container!.querySelectorAll("[data-variant]")).toHaveLength(1);
-    expect(container!.querySelector('[data-variant="increment"]')).not.toBeNull();
+    expect(container!.querySelector('[data-variant="primary"]')).not.toBeNull();
+    // Confidence no longer restyles the trace (ADR-0025): the low-confidence peak draws plain.
+    expect(container!.querySelector("path.lf-curve")).not.toBeNull();
+    expect(container!.querySelector("path.lf-curve.is-low-confidence")).toBeNull();
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label')!.textContent).toBe("2.00");
+    expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("orange");
 
     const uncertain = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) =>
       [...select.options].some((option) => option.value === "both")
     )!;
+    expect(uncertain.value).toBe("primary");
+    expect(uncertain.selectedOptions[0].textContent).toBe("Prefer HOSE");
     act(() => {
       uncertain.value = "both";
       uncertain.dispatchEvent(new Event("change", { bubbles: true }));
     });
     const variants = [...container!.querySelectorAll("[data-variant]")].map((node) => node.getAttribute("data-variant"));
     expect(variants).toContain("primary");
-    expect(variants).toContain("increment");
+    expect(variants).toContain("alternative");
+    expect(container!.querySelector("path.lf-curve.is-alternative")).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label')!.textContent).toBe("2.00 / 2.90ᵢ");
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-alternative')).not.toBeNull();
+    expect(container!.querySelector(".lf-spectrum-note")!.textContent).toContain("dashed orange = increment");
+    expect(container!.querySelector(".lf-legend")!.textContent).toContain("HOSE confidence");
+  });
+
+  it("keeps a declared comparison visible but disabled when no alternative value is applicable", () => {
+    const hoseOnly: PluginLinkedFigureSpectrum = {
+      ...spectrum,
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment", alternativeMarker: "ᵢ" }
+    };
+    mount(createElement(LinkedFigureView, { spectrum: hoseOnly }));
+
+    expect(container!.textContent).toContain("Shift comparison");
+    const comparisonSelect = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) =>
+      select.textContent.includes("HOSE only")
+    )!;
+    expect(comparisonSelect.disabled).toBe(true);
+    expect(comparisonSelect.value).toBe("primary");
+    expect(comparisonSelect.selectedOptions[0].textContent).toContain("HOSE only — increment not applicable");
+    expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("orange");
+  });
+
+  it("resets a stale show-both choice when a rerun loses comparisons and does not restore it later", () => {
+    const comparable: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 8 },
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment", alternativeMarker: "ᵢ" },
+      peaks: [{ id: "first", ppm: 2, alternativePpm: 2.9, intensity: 1, atomIndices: [0] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: comparable }));
+    const comparisonSelect = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) =>
+      [...select.options].some((option) => option.value === "both")
+    )!;
+    act(() => {
+      comparisonSelect.value = "both";
+      comparisonSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container!.querySelector('[data-variant="alternative"]')).not.toBeNull();
+
+    rerender(
+      createElement(LinkedFigureView, {
+        spectrum: { ...comparable, peaks: [{ id: "second", ppm: 3, intensity: 1, atomIndices: [0] }] }
+      })
+    );
+    const disabled = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) => select.disabled)!;
+    expect(disabled.value).toBe("primary");
+    expect(container!.querySelector('[data-variant="alternative"]')).toBeNull();
+
+    rerender(
+      createElement(LinkedFigureView, {
+        spectrum: {
+          ...comparable,
+          peaks: [{ id: "third", ppm: 4, alternativePpm: 4.2, intensity: 1, atomIndices: [0] }]
+        }
+      })
+    );
+    const restored = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) =>
+      [...select.options].some((option) => option.value === "both")
+    )!;
+    expect(restored.value).toBe("primary");
+    expect(container!.querySelector('[data-variant="alternative"]')).toBeNull();
+  });
+
+  it("supports legacy alternative peaks that did not declare provider labels", () => {
+    const legacy: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0, max: 8 },
+      peaks: [{ id: "legacy", ppm: 2, alternativePpm: 2.2, intensity: 1, atomIndices: [0] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: legacy }));
+    expect(container!.textContent).toContain("Shift comparison");
+    expect(container!.textContent).toContain("Prefer primary");
+  });
+
+  it("expands the plotting domain so an out-of-domain cross-check value remains visible", () => {
+    const spec: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 1.5, max: 4 },
+      reversed: true,
+      peaks: [{ id: "outside", ppm: 2.52, alternativePpm: 0.7, intensity: 1, atomIndices: [0], confidence: "low" }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: spec }));
+
+    expect(container!.querySelector('[data-peak-id="outside"]')).not.toBeNull();
+    const ticks = [...container!.querySelectorAll(".lf-tick-label")].map((node) => Number(node.textContent));
+    expect(Math.min(...ticks)).toBeLessThan(1.5);
   });
 
   it("marks a rule-estimated peak with a muted italic label (never reads as measured)", () => {
@@ -202,9 +345,10 @@ describe("LinkedFigureView", () => {
     };
     mount(createElement(LinkedFigureView, { spectrum: estimatedSpectrum }));
     expect(container!.querySelector('[data-peak-id="e"] .lf-peak-label.is-estimated')).not.toBeNull();
+    expect(container!.querySelector("path.lf-curve.is-estimated")).not.toBeNull();
   });
 
-  it("mutes a matched-but-low-confidence peak (is-low-confidence), but not a confident one", () => {
+  it("renders a low-confidence peak exactly like any other in the spectrum (confidence lives in structure labels/table)", () => {
     const mixed: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
       domain: { min: 0, max: 10 },
@@ -214,9 +358,33 @@ describe("LinkedFigureView", () => {
         { id: "hi", ppm: 7.3, intensity: 1, label: "7.30", atomIndices: [1], confidence: "high" }
       ]
     };
-    mount(createElement(LinkedFigureView, { spectrum: mixed }));
-    expect(container!.querySelector('[data-peak-id="lo"]')!.classList.contains("is-low-confidence")).toBe(true);
+    mount(createElement(LinkedFigureView, { spectrum: mixed, structure }));
+    // ADR-0025: the spectrum trace and its labels are confidence-blind. Confidence still colors the
+    // molecular shift labels (asserted below via the quality classes) and the table elsewhere.
+    expect(container!.querySelector('[data-peak-id="lo"]')!.classList.contains("is-low-confidence")).toBe(false);
     expect(container!.querySelector('[data-peak-id="hi"]')!.classList.contains("is-low-confidence")).toBe(false);
+    expect(container!.querySelector('[data-peak-id="lo"] .lf-peak-label')?.textContent).toBe("3.10");
+    expect(container!.querySelector('[data-peak-id="hi"] .lf-peak-label')?.textContent).toBe("7.30");
+    expect([...container!.querySelectorAll(".lf-shift-label")].map((node) => node.textContent)).toEqual(
+      expect.arrayContaining(["3.10", "7.30"])
+    );
+    expect(container!.querySelector("path.lf-curve.is-low-confidence")).toBeNull();
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-rough')).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-good')).not.toBeNull();
+    expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("lower confidence");
+  });
+
+  it("places a multiplet label above the true line apex rather than in the center valley", () => {
+    const doublet: PluginLinkedFigureSpectrum = {
+      nucleus: "1H",
+      domain: { min: 0.9, max: 1.1 },
+      reversed: true,
+      peaks: [{ id: "d", ppm: 1, intensity: 1, atomIndices: [0], couplings: [{ jHz: 7, partnerCount: 1 }] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: doublet }));
+    const apexY = Math.min(...pathYs(container!.querySelector(".lf-curve")!));
+    const labelY = Number(container!.querySelector('[data-peak-id="d"] .lf-peak-label')!.getAttribute("y"));
+    expect(labelY).toBeLessThan(apexY);
   });
 
   it("offers Copy, Export (JCAMP-DX), and Full size actions in the toolbar", () => {
@@ -225,6 +393,17 @@ describe("LinkedFigureView", () => {
     expect(labels).toContain("Copy");
     expect(labels).toContain("Export");
     expect(labels).toContain("Full size");
+  });
+
+  it("labels intensity honestly and shows the nucleus-specific observe frequency", () => {
+    const carbon = { ...spectrum, nucleus: "13C" };
+    mount(createElement(LinkedFigureView, { spectrum: carbon }));
+    expect(container!.textContent).toContain("Proton-rated field");
+    expect(container!.textContent).toContain("Observe ¹³C: 75.43 MHz");
+    expect(container!.querySelector(".lf-spectrum")!.getAttribute("data-observe-frequency-mhz")).toBe("75.43");
+    expect(container!.querySelector(".lf-spectrum-note")!.textContent).toContain(
+      "predicted equivalent nuclei (not experimental integration)"
+    );
   });
 
   it("opens an enlarged spectrum modal from Full size, and closes it", () => {
@@ -283,6 +462,7 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-good')).not.toBeNull();
     expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-rough')).not.toBeNull();
     expect(container!.querySelector(".lf-legend")).not.toBeNull();
+    expect(container!.querySelector(".lf-legend")!.textContent).toContain("prediction confidence");
   });
 
   // Regression guard for the update flicker: when a new prediction with a wider ppm domain replaces the
@@ -305,5 +485,74 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector('[data-peak-id="hi"]')).not.toBeNull();
     const tickValues = [...container!.querySelectorAll(".lf-tick-label")].map((node) => Number(node.textContent));
     expect(Math.max(...tickValues)).toBeGreaterThan(8);
+  });
+
+  it("preserves zoom for an identical rerun but resets for a different spectrum with the same domain", () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    click(container!.querySelector('[aria-label="Zoom in"]')!);
+    const zoomedSpan = tickSpan();
+    const resetButton = (): HTMLButtonElement =>
+      [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Reset")!;
+    expect(resetButton().disabled).toBe(false);
+
+    // A value-identical result object represents a rerun of the same prediction; keep the user's view.
+    rerender(createElement(LinkedFigureView, { spectrum: structuredClone(spectrum) }));
+    expect(tickSpan()).toBe(zoomedSpan);
+    expect(resetButton().disabled).toBe(false);
+
+    // Same bounds, different peak data: this is a new spectrum and must start from its full domain.
+    const different: PluginLinkedFigureSpectrum = {
+      ...spectrum,
+      peaks: [{ id: "new", ppm: 4.1, intensity: 1, atomIndices: [0] }]
+    };
+    rerender(createElement(LinkedFigureView, { spectrum: different }));
+    expect(resetButton().disabled).toBe(true);
+    expect(tickSpan()).toBeGreaterThan(zoomedSpan);
+  });
+
+  it("coalesces rapid pointer-pan moves into one viewport update per animation frame", () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    Object.defineProperty(window, "requestAnimationFrame", { configurable: true, value: requestFrame });
+    Object.defineProperty(window, "cancelAnimationFrame", { configurable: true, value: vi.fn() });
+
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      click(container!.querySelector('[aria-label="Zoom in"]')!); // leave room to pan
+      const svg = container!.querySelector<SVGSVGElement>(".lf-spectrum")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 680,
+        bottom: 240,
+        width: 680,
+        height: 240,
+        toJSON: () => ({})
+      });
+      act(() => {
+        svg.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100 }));
+        svg.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 110 }));
+        svg.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 125 }));
+        svg.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 140 }));
+      });
+      expect(requestFrame).toHaveBeenCalledOnce();
+      act(() => callbacks[0](0));
+    } finally {
+      Object.defineProperty(window, "requestAnimationFrame", {
+        configurable: true,
+        value: originalRequestAnimationFrame
+      });
+      Object.defineProperty(window, "cancelAnimationFrame", {
+        configurable: true,
+        value: originalCancelAnimationFrame
+      });
+    }
   });
 });

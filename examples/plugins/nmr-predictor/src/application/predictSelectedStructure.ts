@@ -120,7 +120,7 @@ export async function predictSelectedStructure(
         engineId: result.backend.id,
         engineVersion: result.backend.version,
         dataVersion: result.backend.dataVersion,
-        method: result.backend.method
+        method: analysisProvenanceMethod(result)
       }
     });
 
@@ -135,6 +135,21 @@ export async function predictSelectedStructure(
     await panels?.showReport(nmrPredictorPanelId, withRerun(composeErrorReport(source, normalized)));
     return { ok: false, error: normalized };
   }
+}
+
+/** The generic record has one method string, while the payload can mix measured HOSE values with
+ * per-resonance rules. Keep the summary honest and leave exact IDs/versions on nested estimates. */
+function analysisProvenanceMethod(result: NmrPredictionResult): string {
+  const methods = [result.backend.method];
+  const hasAdditiveIncrement = result.resonances.some(
+    (resonance) =>
+      resonance.crossCheck !== undefined ||
+      resonance.evidence?.estimator?.id === "chemdraft.h1-additive-increment"
+  );
+  const hasRuleEstimate = result.resonances.some((resonance) => resonance.evidence?.method === "rule-estimated");
+  if (hasAdditiveIncrement) methods.push("additive-increment");
+  if (hasRuleEstimate) methods.push("rule-estimated");
+  return methods.join("+");
 }
 
 function toAnalysisWarning(warning: NmrPredictionWarning): PluginAnalysisWarning {

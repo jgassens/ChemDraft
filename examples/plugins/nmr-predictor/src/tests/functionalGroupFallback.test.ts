@@ -1,7 +1,10 @@
 import * as OCL from "openchemlib";
 import { describe, expect, it } from "vitest";
 
-import { estimateCarbonShift, estimateProtonShift } from "../providers/ocl/functionalGroupFallback";
+import {
+  estimateCarbonShift,
+  estimateCarbonShiftWithApplicability
+} from "../providers/ocl/functionalGroupFallback";
 
 function mol(smiles: string): OCL.Molecule {
   const molecule = OCL.Molecule.fromSmiles(smiles);
@@ -10,16 +13,18 @@ function mol(smiles: string): OCL.Molecule {
 }
 
 describe("functional-group fallback estimates", () => {
-  it("puts an aldehyde proton near 9.7 and its carbon near 192", () => {
+  it("puts an aldehyde carbon near 192 with explicit estimator provenance", () => {
     const acetaldehyde = mol("CC=O"); // atom 1 = aldehyde carbon
-    expect(estimateProtonShift(acetaldehyde, 1)).toBe(9.7);
     expect(estimateCarbonShift(acetaldehyde, 1)).toBe(192);
-  });
-
-  it("estimates aromatic, C–O and generic sp³ protons", () => {
-    expect(estimateProtonShift(mol("c1ccccc1"), 0)).toBe(7.3); // aromatic C–H
-    expect(estimateProtonShift(mol("CCO"), 1)).toBe(3.6); // O–CH2
-    expect(estimateProtonShift(mol("CCCC"), 1)).toBe(1.3); // generic sp³
+    expect(estimateCarbonShiftWithApplicability(acetaldehyde, 1)).toMatchObject({
+      applicable: true,
+      ppm: 192,
+      estimator: {
+        id: "chemdraft.functional-group-rules",
+        version: "1.1.0",
+        method: "carbonyl-aldehyde"
+      }
+    });
   });
 
   it("separates ketone (~205) from acid/ester (~172) carbonyls", () => {

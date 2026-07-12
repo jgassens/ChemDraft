@@ -241,6 +241,7 @@ describe("linkedFigure panel section (ADR-0015)", () => {
           nucleus: "1H",
           domain: { min: 0, max: 8 },
           reversed: true,
+          comparison: { primaryLabel: "database", alternativeLabel: "rule", alternativeMarker: "ᵣ" },
           peaks: [
             { id: "h-0", ppm: 7.34, intensity: 2, label: "7.34", atomIndices: [0, 2] },
             { id: "h-5", ppm: 2.43, intensity: 2, atomIndices: [5] }

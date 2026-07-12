@@ -10,6 +10,8 @@
 import type { NmrPredictionWarning } from "./warnings";
 
 export type NmrNucleus = "1H" | "13C";
+/** Heuristic ¹H reference-spread threshold for flagging a broad HOSE reference distribution; not an accuracy claim. */
+export const PROTON_HIGH_DISPERSION_CROSS_CHECK_PPM = 0.5;
 
 /** The predictor's input structure. Deliberately excludes "unknown": a selection may report unknown,
  *  but request construction must reject it (NMR_UNSUPPORTED_STRUCTURE_FORMAT) before this type. */
@@ -58,12 +60,31 @@ export interface NmrAtomReference {
   chemDraftAtomId?: string;
 }
 
-export interface NmrPredictionEvidence {
-  method: "fixture-fragment" | "hose-fragment" | "gnn" | "dft" | "hybrid" | "rule-estimated";
+interface NmrPredictionEvidenceBase {
   matchedSphere?: number;
   sampleCount?: number;
   environmentCode?: string;
 }
+
+/** Serializable identity for a per-resonance estimate. Keeping this on the estimate (rather than
+ * only on the overall backend) prevents an additive rule value from being mistaken for a HOSE
+ * database value when one result contains both methods. */
+export interface NmrEstimateProvenance {
+  id: string;
+  version: string;
+  method: string;
+}
+
+export type NmrPredictionEvidence =
+  | (NmrPredictionEvidenceBase & {
+      method: "rule-estimated";
+      /** Current producers always supply this. Optionality preserves older schema-v1 session data. */
+      estimator?: NmrEstimateProvenance;
+    })
+  | (NmrPredictionEvidenceBase & {
+      method: "fixture-fragment" | "hose-fragment" | "gnn" | "dft" | "hybrid";
+      estimator?: never;
+    });
 
 export interface NmrPredictionUncertainty {
   standardDeviationPpm?: number;
@@ -100,14 +121,18 @@ export interface NmrResonance {
   /** First-order multiplicity + estimated couplings (¹H only; absent for ¹³C or when not computed). */
   multiplet?: NmrMultiplet;
   /**
-   * Independent additive-increment (ChemDraw-style) estimate, computed only where the HOSE match is
-   * weak (low confidence / rule-estimated). `disagrees` is true when it differs from `deltaPpm` beyond
-   * max(absolute floor, 2σ) — a signal to distrust the value or show both. `deltaPpm` stays the HOSE
-   * value; the UI decides whether to prefer this or show both.
+   * Independent additive-increment estimate for any HOSE match whose chemistry is supported by the
+   * bounded table. `disagrees` is true when it differs from `deltaPpm` beyond max(0.4 ppm, 1.5σ).
+   * `deltaPpm` stays the HOSE value; applicability controls availability while reference quality
+   * controls interpretation (ADR-0024 / M25).
    */
   crossCheck?: {
     incrementPpm: number;
     disagrees: boolean;
+    /** Optional so earlier schema-v1 session payloads remain readable. */
+    reason?: "routine-applicability" | "weak-applicability" | "high-dispersion";
+    /** Current producers always supply this. Optionality preserves older schema-v1 session data. */
+    estimator?: NmrEstimateProvenance;
   };
   flags: readonly string[];
 }

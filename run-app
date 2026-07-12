@@ -6,6 +6,11 @@ APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
 DEV_PORT="${CHEMDRAFT_DEV_PORT:-5173}"
 RUN_MODE="${1:-app}"
+# Several worktrees build an app literally named "ChemDraft". Derive one label here and export it
+# so the native title, on-screen build stamp, and launch banner all identify this exact checkout.
+CHEMDRAFT_WORKTREE_BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+CHEMDRAFT_WORKTREE_LABEL="$(basename "$ROOT_DIR")${CHEMDRAFT_WORKTREE_BRANCH:+ [$CHEMDRAFT_WORKTREE_BRANCH]}"
+export CHEMDRAFT_WORKTREE_LABEL
 LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
 TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
 RUN_APP_BUNDLE="$TAURI_OUTPUT_BUNDLE"
@@ -14,6 +19,17 @@ RUN_APP_BUNDLE_ID="org.chemdraft.desktop"
 LEGACY_RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
 RUN_APP_DISPLAY_NAME="ChemDraft"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+print_launch_banner() {
+  local mode="$1"
+  echo ""
+  echo "============================================================"
+  echo "  ChemDraft  ▸  $CHEMDRAFT_WORKTREE_LABEL"
+  echo "  worktree:  $ROOT_DIR"
+  echo "  mode:      $mode"
+  echo "============================================================"
+  echo ""
+}
 
 usage() {
   cat <<EOF
@@ -418,6 +434,7 @@ fi
 if [ "$RUN_MODE" = "--dev" ]; then
   select_dev_port
   prime_tauri_context_rebuild_for_dev
+  print_launch_banner "dev (Vite HMR)"
   exec npm run dev:tauri
 fi
 
@@ -438,6 +455,7 @@ stage_run_app_bundle
 resign_local_bundle "$RUN_APP_BUNDLE"
 clear_saved_window_state
 
+print_launch_banner "packaged app"
 echo "Launching $RUN_APP_DISPLAY_NAME from $RUN_APP_BUNDLE"
 launch_bundle "$RUN_APP_BUNDLE"
 activate_launched_bundle

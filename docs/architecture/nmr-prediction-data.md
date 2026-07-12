@@ -33,11 +33,35 @@ Only compiled statistics are redistributed; the raw structures are not committed
 
 ## Prediction behavior (disclosed, by design)
 
-- **Coverage + fallback.** The full corpus covers common groups (aldehydes,
-  carbonyls, etc.). Environments still absent get a **rule-estimated** shift from
-  functional-group rules (`NMR_RULE_ESTIMATED`, `evidence.method: "rule-estimated"`)
-  instead of being dropped — marked (dashed peak, "≈" shift, "rule-estimated" in the
-  table) so a guess never reads as a measured match (ADR-0018).
+- **Coverage + bounded fallback.** The full corpus covers common groups (aldehydes,
+  carbonyls, etc.). An absent environment receives a **rule-estimated** shift only
+  when a versioned local rule declares itself applicable. The resonance carries that
+  rule's exact id, version, and method and is recorded as partial. Unsupported
+  environments are omitted with `NMR_NO_FRAGMENT_MATCH` / partial-result warnings;
+  they are never coerced into a generic alkyl or benzene value.
+- **Additive-increment comparison.** Every ¹H HOSE match whose chemistry is
+  supported by the bounded tables may carry a second, versioned additive-increment
+  estimate. The v1.3 sp3 scheme uses separate methane/methyl/methylene/methine
+  baselines plus alpha/beta/gamma substituent corrections through three carbons.
+  Heteroarenes, imines, charged/isotopic/
+  radical structures, sulfur/silicon substituents, and other out-of-table cases are
+  explicitly inapplicable and therefore cannot replace the HOSE value. When a valid
+  comparison exists, the figure offers **Prefer HOSE** / **Show both**. With no
+  applicable values, the same control remains visible but disabled as HOSE-only.
+  The absolute/σ threshold flags disagreement and broad reference distributions;
+  neither condition controls visibility. Notices report comparison coverage and
+  withhold an overall agreement conclusion when fewer than three resonances or
+  less than half of the HOSE resonances can be compared. Both methods retain
+  per-resonance provenance.
+- **Potentially nonequivalent methylene hydrogens.** For a stereogenic structure,
+  CH₂ sites receive `NMR_POTENTIALLY_DIASTEREOTOPIC_HYDROGENS`. The warning explains
+  that this provider reports one carbon-hosted shift and does not fabricate separate
+  diastereotopic values.
+- **Rule parameter provenance.** The aliphatic alpha/beta/gamma constants cite the
+  Beauchamp–Marquez primary paper; aromatic values consolidate standard RSC/MIT
+  teaching tables. The aldehyde/vinylic/alkynyl fallbacks are separately labeled
+  ChemDraft coarse representative in-range heuristics rather than outputs of either increment
+  table. Exact sources and links are in `THIRD_PARTY_NOTICES.md`.
 - **Multiplicity + J.** First-order multiplicity and class-typical coupling constants
   are estimated from the bond topology (`supportsCouplings: true`) and drawn as split
   peaks — estimates for readability, not a spin simulation (ADR-0017/0018).
@@ -45,8 +69,8 @@ Only compiled statistics are redistributed; the raw structures are not committed
   (`NMR_SMALL_REFERENCE_POPULATION`), and omitted labile protons are still surfaced.
 
 The predictor **never presents an estimate as a measured match**: DB matches are
-`hose-fragment`; estimates are `rule-estimated`. The fixture provider's values are
-labeled synthetic everywhere they appear.
+`hose-fragment`; estimates are `rule-estimated` with estimator provenance. The
+fixture provider's values are labeled synthetic everywhere they appear.
 
 ## Third-party evaluation result (M11, ADR-0013)
 

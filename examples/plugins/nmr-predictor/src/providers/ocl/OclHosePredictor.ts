@@ -1,28 +1,31 @@
-import type * as OCL from "openchemlib";
+import * as OCL from "openchemlib";
 
 import type {
+  NmrEstimateProvenance,
+  NmrMultiplet,
   NmrNucleus,
+  NmrPredictionOptions,
   NmrPredictionRequest,
   NmrPredictionResult,
   NmrPredictor,
-  NmrMultiplet,
   NmrPredictorCapabilities,
   NmrResonance
 } from "../../domain/contracts";
+import { PROTON_HIGH_DISPERSION_CROSS_CHECK_PPM } from "../../domain/contracts";
 import { NmrError, NmrErrorCodes } from "../../domain/errors";
 import { fingerprintStructureInput } from "../../domain/fingerprint";
 import { nmrWarning, NmrWarningCodes, type NmrPredictionWarning } from "../../domain/warnings";
 import { normalizeStructure } from "../../application/normalizeStructure";
+import { computeMultiplet } from "./coupling";
 import { atomEnvironmentCodes, environmentKey, MAX_SPHERES } from "./environmentCode";
+import { estimateCarbonShiftWithApplicability } from "./functionalGroupFallback";
+import { estimateProtonIncrement } from "./incrementEstimator";
 import type { CompiledNmrDatabase, NmrDatabaseEntry, NmrDatabaseProvenance } from "./localDatabase";
 import { buildStructureDepiction } from "./structureDepiction";
-import { computeMultiplet } from "./coupling";
-import { estimateCarbonShift } from "./functionalGroupFallback";
-import { incrementProtonShift } from "./incrementEstimator";
 import bundledDatabase from "./nmrshiftdb2.database.json";
 
 const SMALL_POPULATION_THRESHOLD = 3;
-const LABILE_HYDROGEN_HOSTS = new Set([7, 8, 16]); // N, O, S
+const LABILE_HYDROGEN_HOSTS = new Set([7, 8, 16]);
 
 export interface OclHosePredictorOptions {
   database?: CompiledNmrDatabase;
@@ -34,16 +37,18 @@ interface Match {
   entry: NmrDatabaseEntry;
 }
 
+interface PredictionCounts {
+  estimated: number;
+  omitted: number;
+}
+
+type Statistic = NmrPredictionOptions["statistic"];
+
 /**
- * Experimentally-grounded predictor: reuses ChemDraft's OpenChemLib to derive an atom's environment
- * code, then looks it up in a compiled HOSE-code → shift database (NMRShiftDB2 by default, ADR-0014),
- * falling back from the deepest sphere to the shallowest. It reports the aggregated median shift with
- * its dispersion and sample count, groups equivalent environments, and warns (never fabricates) when
- * coverage is thin. Method label `hose-fragment`. All I/O is serializable — worker/store safe.
- *
- * The ~800 KB database is a static import so the worker bundles it directly (workers can't
- * code-split). The desktop keeps it off the main thread by loading this class lazily on the in-thread
- * fallback path only (see the desktop's `registerBundledPlugins`).
+ * Experimentally-grounded predictor: derive local OCL environments, search the bundled HOSE database
+ * deepest-first, and disclose thin matches. A rule estimate is emitted only when its estimator says
+ * the chemistry is applicable; otherwise the unsupported unmatched environment is omitted with a
+ * stable warning. All output remains serializable worker/store data.
  */
 export class OclHosePredictor implements NmrPredictor {
   private readonly database: CompiledNmrDatabase;
@@ -75,35 +80,50 @@ export class OclHosePredictor implements NmrPredictor {
 
   async predict(request: NmrPredictionRequest, signal?: AbortSignal): Promise<NmrPredictionResult> {
     throwIfAborted(signal);
-    const { molecule } = normalizeStructure(request.structure);
-    // Honor the requested HOSE depth: the deepest level requested caps generation/search.
-    const maxSpheres = Math.max(1, ...(request.options.hoseLevels.length ? request.options.hoseLevels : [MAX_SPHERES]));
+    const { molecule, normalized } = normalizeStructure(request.structure);
+    const maxSpheres = Math.max(
+      1,
+      ...(request.options.hoseLevels.length ? request.options.hoseLevels : [MAX_SPHERES])
+    );
 
-    const warnings: NmrPredictionWarning[] = [];
+    // Normalization warnings describe chemistry the parser preserved but the predictor cannot fully
+    // model. They must survive into the final result rather than being discarded at this boundary.
+    const warnings: NmrPredictionWarning[] = [...normalized.warnings];
     const resonances: NmrResonance[] = [];
-    let estimated = 0;
+    const totals: PredictionCounts = { estimated: 0, omitted: 0 };
 
     for (const nucleus of dedupeNuclei(request.nuclei)) {
       throwIfAborted(signal);
-      estimated +=
+      const counts =
         nucleus === "13C"
-          ? predictCarbon(this.database, molecule, maxSpheres, resonances, warnings)
+          ? predictCarbon(this.database, molecule, request.options.statistic, maxSpheres, resonances, warnings)
           : predictProton(this.database, molecule, request, maxSpheres, resonances, warnings);
+      totals.estimated += counts.estimated;
+      totals.omitted += counts.omitted;
     }
 
-    if (estimated > 0) {
+    if (totals.estimated > 0) {
       warnings.push(
         nmrWarning(
           NmrWarningCodes.RuleEstimated,
-          `${estimated} resonance(s) had no database match and are shown as coarse rule estimates (low confidence).`,
-          { severity: "info" }
+          `${totals.estimated} resonance(s) had no database match and are shown as disclosed rule estimates (low confidence).`,
+          { severity: "warning" }
+        )
+      );
+    }
+    if (totals.omitted > 0) {
+      warnings.push(
+        nmrWarning(
+          NmrWarningCodes.PartialPrediction,
+          `${totals.omitted} unmatched atom environment(s) were omitted because no applicable rule estimate exists.`,
+          { severity: "warning", details: { omittedEnvironmentCount: totals.omitted } }
         )
       );
     }
 
     return {
       schemaVersion: "1",
-      sourceFingerprint: request.sourceFingerprint ?? fingerprintStructureInput(request.structure),
+      sourceFingerprint: request.sourceFingerprint || fingerprintStructureInput(request.structure),
       backend: {
         id: "chemdraft.ocl-hose",
         version: this.database.provenance.version,
@@ -116,8 +136,6 @@ export class OclHosePredictor implements NmrPredictor {
       resonances,
       warnings,
       generatedAt: this.now(),
-      // 2D geometry for the interactive panel figure. Built last (it invents coordinates on the
-      // molecule) and only after resonances, so atom indices stay aligned with atomRefs (ADR-0015).
       depiction: buildStructureDepiction(molecule)
     };
   }
@@ -125,11 +143,8 @@ export class OclHosePredictor implements NmrPredictor {
 
 function match(database: CompiledNmrDatabase, nucleus: NmrNucleus, codes: readonly string[]): Match | undefined {
   for (const code of codes) {
-    // codes are deepest-first, so the first hit is the most specific available sphere.
     const entry = database.entries[environmentKey(nucleus, code)];
-    if (entry) {
-      return { code, entry };
-    }
+    if (entry) return { code, entry };
   }
   return undefined;
 }
@@ -137,17 +152,16 @@ function match(database: CompiledNmrDatabase, nucleus: NmrNucleus, codes: readon
 function predictCarbon(
   database: CompiledNmrDatabase,
   molecule: OCL.Molecule,
+  statistic: Statistic,
   maxSpheres: number,
   resonances: NmrResonance[],
   warnings: NmrPredictionWarning[]
-): number {
+): PredictionCounts {
   const matched = new Map<string, { match: Match; atoms: number[] }>();
   const unmatched = new Map<string, number[]>();
 
   for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
-    if (molecule.getAtomicNo(atom) !== 6) {
-      continue;
-    }
+    if (molecule.getAtomicNo(atom) !== 6) continue;
     const codes = atomEnvironmentCodes(molecule, atom, maxSpheres);
     const found = match(database, "13C", codes);
     if (!found) {
@@ -161,24 +175,48 @@ function predictCarbon(
 
   for (const group of matched.values()) {
     resonances.push(
-      buildResonance("13C", group.match, group.atoms, group.atoms.length, group.atoms.map(() => ({ element: "C", count: 1 })), warnings)
-    );
-  }
-  let estimatedCount = 0;
-  for (const [code, atoms] of unmatched) {
-    estimatedCount += 1;
-    resonances.push(
-      buildEstimatedResonance(
+      buildResonance(
         "13C",
-        atoms,
-        atoms.length,
-        atoms.map(() => ({ element: "C", count: 1 })),
-        estimateCarbonShift(molecule, atoms[0]),
-        code
+        group.match,
+        statistic,
+        group.atoms,
+        group.atoms.length,
+        group.atoms.map(() => ({ element: "C", count: 1 })),
+        warnings
       )
     );
   }
-  return estimatedCount;
+
+  const estimatedGroups = new Map<string, { code: string; ppm: number; estimator: NmrEstimateProvenance; atoms: number[] }>();
+  let omitted = 0;
+  for (const [code, atoms] of unmatched) {
+    for (const atom of atoms) {
+      const estimate = estimateCarbonShiftWithApplicability(molecule, atom);
+      if (!estimate.applicable) {
+        omitted += 1;
+        warnOmitted(warnings, "13C", atom, code, estimate.reason);
+        continue;
+      }
+      const key = estimateGroupKey(code, estimate.ppm, estimate.estimator);
+      const group = estimatedGroups.get(key) ?? { code, ppm: estimate.ppm, estimator: estimate.estimator, atoms: [] };
+      group.atoms.push(atom);
+      estimatedGroups.set(key, group);
+    }
+  }
+  for (const group of estimatedGroups.values()) {
+    resonances.push(
+      buildEstimatedResonance(
+        "13C",
+        group.atoms,
+        group.atoms.length,
+        group.atoms.map(() => ({ element: "C", count: 1 })),
+        group.ppm,
+        group.code,
+        group.estimator
+      )
+    );
+  }
+  return { estimated: estimatedGroups.size, omitted };
 }
 
 function predictProton(
@@ -188,16 +226,29 @@ function predictProton(
   maxSpheres: number,
   resonances: NmrResonance[],
   warnings: NmrPredictionWarning[]
-): number {
+): PredictionCounts {
   const matched = new Map<string, { match: Match; atoms: number[]; protons: number[] }>();
   const unmatched = new Map<string, number[]>();
   let omittedLabile = 0;
 
+  const potentiallyDiastereotopic = potentiallyDiastereotopicMethyleneAtoms(molecule);
+  if (potentiallyDiastereotopic.length > 0) {
+    warnings.push(
+      nmrWarning(
+        NmrWarningCodes.PotentiallyDiastereotopicHydrogens,
+        `${potentiallyDiastereotopic.length} methylene site(s) in this stereogenic structure may contain chemically nonequivalent hydrogens; when predicted, this model reports one carbon-hosted shift per site and does not predict separate diastereotopic values.`,
+        {
+          severity: "info",
+          atomIndices: potentiallyDiastereotopic,
+          details: { methyleneSiteCount: potentiallyDiastereotopic.length }
+        }
+      )
+    );
+  }
+
   for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
     const protonCount = molecule.getAllHydrogens(atom);
-    if (protonCount === 0) {
-      continue;
-    }
+    if (protonCount === 0) continue;
     if (LABILE_HYDROGEN_HOSTS.has(molecule.getAtomicNo(atom)) && request.options.ignoreLabileHydrogens) {
       omittedLabile += protonCount;
       continue;
@@ -223,76 +274,172 @@ function predictProton(
   }
 
   for (const group of matched.values()) {
-    const totalProtons = group.protons.reduce((sum, count) => sum + count, 0);
-    const multiplet = computeMultiplet(molecule, group.atoms[0]);
-    const crossCheck = protonCrossCheck(molecule, group.atoms[0], group.match.entry);
-    resonances.push(
-      buildResonance(
-        "1H",
-        group.match,
-        group.atoms,
-        totalProtons,
-        group.protons.map((count) => ({ element: "H", count })),
-        warnings,
-        multiplet,
+    // A shallow HOSE code can group atoms whose longer-range substituents (and therefore additive
+    // estimates or coupling patterns) differ. Split on the derived per-atom data instead of borrowing
+    // `group.atoms[0]` for every atom in the group.
+    const subgroups = new Map<
+      string,
+      { atoms: number[]; protons: number[]; multiplet: NmrMultiplet; crossCheck?: NmrResonance["crossCheck"] }
+    >();
+    group.atoms.forEach((atom, index) => {
+      const multiplet = computeMultiplet(molecule, atom);
+      const crossCheck = protonCrossCheck(molecule, atom, group.match.entry, request.options.statistic);
+      const key = JSON.stringify({
+        protonCount: group.protons[index],
+        multiplet: multipletGroupingSignature(multiplet),
         crossCheck
-      )
-    );
+      });
+      const subgroup = subgroups.get(key) ?? { atoms: [], protons: [], multiplet, crossCheck };
+      subgroup.atoms.push(atom);
+      subgroup.protons.push(group.protons[index]);
+      subgroups.set(key, subgroup);
+    });
+
+    for (const subgroup of subgroups.values()) {
+      resonances.push(
+        buildResonance(
+          "1H",
+          group.match,
+          request.options.statistic,
+          subgroup.atoms,
+          subgroup.protons.reduce((sum, count) => sum + count, 0),
+          subgroup.protons.map((count) => ({ element: "H", count })),
+          warnings,
+          subgroup.multiplet,
+          subgroup.crossCheck
+        )
+      );
+    }
   }
-  let estimatedCount = 0;
+
+  const estimatedGroups = new Map<
+    string,
+    {
+      code: string;
+      ppm: number;
+      estimator: NmrEstimateProvenance;
+      atoms: number[];
+      protons: number[];
+      multiplet: NmrMultiplet;
+    }
+  >();
+  let omitted = 0;
   for (const [code, atoms] of unmatched) {
-    estimatedCount += 1;
-    const totalProtons = atoms.reduce((sum, atom) => sum + molecule.getAllHydrogens(atom), 0);
+    for (const atom of atoms) {
+      const estimate = estimateProtonIncrement(molecule, atom);
+      if (!estimate.applicable) {
+        omitted += 1;
+        warnOmitted(warnings, "1H", atom, code, estimate.reason);
+        continue;
+      }
+      const protonCount = molecule.getAllHydrogens(atom);
+      const multiplet = computeMultiplet(molecule, atom);
+      const key = JSON.stringify({
+        estimate: estimateGroupKey(code, estimate.ppm, estimate.estimator),
+        protonCount,
+        multiplet: multipletGroupingSignature(multiplet)
+      });
+      const group = estimatedGroups.get(key) ?? {
+        code,
+        ppm: estimate.ppm,
+        estimator: estimate.estimator,
+        atoms: [],
+        protons: [],
+        multiplet
+      };
+      group.atoms.push(atom);
+      group.protons.push(protonCount);
+      estimatedGroups.set(key, group);
+    }
+  }
+  for (const group of estimatedGroups.values()) {
     resonances.push(
       buildEstimatedResonance(
         "1H",
-        atoms,
-        totalProtons,
-        atoms.map((atom) => ({ element: "H", count: molecule.getAllHydrogens(atom) })),
-        incrementProtonShift(molecule, atoms[0]),
-        code,
-        computeMultiplet(molecule, atoms[0])
+        group.atoms,
+        group.protons.reduce((sum, count) => sum + count, 0),
+        group.protons.map((count) => ({ element: "H", count })),
+        group.ppm,
+        group.code,
+        group.estimator,
+        group.multiplet
       )
     );
   }
-  return estimatedCount;
+  return { estimated: estimatedGroups.size, omitted };
 }
 
-/** ¹H second opinion: for a *low-confidence* HOSE match, an independent additive-increment estimate,
- *  flagged `disagrees` when it differs from the median beyond max(0.4 ppm, 1.5σ) — a genuine outlier
- *  relative to the environment's own measured scatter, not just any small difference. */
+/** Independent additive comparison. Applicability determines whether a value is available; the
+ * selected HOSE mean/median remains primary and its quality only affects interpretation. */
 const CROSS_CHECK_ABS_FLOOR_PPM = 0.4;
 const CROSS_CHECK_SIGMA_MULTIPLE = 1.5;
 function protonCrossCheck(
   molecule: OCL.Molecule,
   atom: number,
-  entry: { median: number; stdev?: number; sphere: number; n: number }
-): { incrementPpm: number; disagrees: boolean } | undefined {
-  const lowConfidence = entry.sphere <= 1 || entry.n < SMALL_POPULATION_THRESHOLD;
-  if (!lowConfidence) {
-    return undefined;
-  }
-  const incrementPpm = Math.round(incrementProtonShift(molecule, atom) * 100) / 100;
+  entry: NmrDatabaseEntry,
+  statistic: Statistic
+): NmrResonance["crossCheck"] | undefined {
+  const estimate = estimateProtonIncrement(molecule, atom);
+  if (!estimate.applicable) return undefined;
+  const reason = protonCrossCheckReason(entry);
+  const referencePpm = shiftFor(entry, statistic);
   const threshold = Math.max(CROSS_CHECK_ABS_FLOOR_PPM, CROSS_CHECK_SIGMA_MULTIPLE * (entry.stdev ?? 0));
-  return { incrementPpm, disagrees: Math.abs(entry.median - incrementPpm) > threshold };
+  return {
+    incrementPpm: estimate.ppm,
+    disagrees: Math.abs(referencePpm - estimate.ppm) > threshold,
+    reason,
+    estimator: estimate.estimator
+  };
+}
+
+function protonCrossCheckReason(
+  entry: NmrDatabaseEntry
+): "routine-applicability" | "weak-applicability" | "high-dispersion" {
+  if (entry.sphere <= 1 || entry.n < SMALL_POPULATION_THRESHOLD) return "weak-applicability";
+  if ((entry.stdev ?? 0) >= PROTON_HIGH_DISPERSION_CROSS_CHECK_PPM) return "high-dispersion";
+  return "routine-applicability";
+}
+
+/** A CH₂ group in a constitutionally stereogenic molecule may contain a diastereotopic proton pair.
+ * This is a disclosure detector only: it never splits the host or fabricates two shifts. */
+function potentiallyDiastereotopicMethyleneAtoms(molecule: OCL.Molecule): number[] {
+  molecule.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  let hasStereoCenter = false;
+  for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+    if (molecule.isAtomStereoCenter(atom)) {
+      hasStereoCenter = true;
+      break;
+    }
+  }
+  if (!hasStereoCenter) return [];
+
+  const methylenes: number[] = [];
+  for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+    if (molecule.getAtomicNo(atom) === 6 && molecule.getAllHydrogens(atom) === 2) {
+      methylenes.push(atom);
+    }
+  }
+  return methylenes;
 }
 
 function buildResonance(
   nucleus: NmrNucleus,
   match: Match,
+  statistic: Statistic,
   atoms: readonly number[],
   equivalentNuclei: number,
   refs: readonly { element: string; count: number }[],
   warnings: NmrPredictionWarning[],
   multiplet?: NmrMultiplet,
-  crossCheck?: { incrementPpm: number; disagrees: boolean }
+  crossCheck?: NmrResonance["crossCheck"]
 ): NmrResonance {
   const { entry, code } = match;
+  const deltaPpm = shiftFor(entry, statistic);
   if (entry.n < SMALL_POPULATION_THRESHOLD) {
     warnings.push(
       nmrWarning(
         NmrWarningCodes.SmallReferencePopulation,
-        `Only ${entry.n} reference shift(s) for ${nucleus} ${entry.median} ppm.`,
+        `Only ${entry.n} reference shift(s) for ${nucleus} ${deltaPpm} ppm.`,
         { severity: "info", atomIndices: [...atoms] }
       )
     );
@@ -301,7 +448,7 @@ function buildResonance(
     warnings.push(
       nmrWarning(
         NmrWarningCodes.LowHoseSphereMatch,
-        `${nucleus} ${entry.median} ppm matched only a 1-sphere environment; confidence is low.`,
+        `${nucleus} ${deltaPpm} ppm matched only a 1-sphere environment; confidence is low.`,
         { severity: "info", atomIndices: [...atoms] }
       )
     );
@@ -310,14 +457,13 @@ function buildResonance(
   return {
     id: `${nucleus === "13C" ? "c" : "h"}-${Math.min(...atoms)}`,
     nucleus,
-    deltaPpm: entry.median,
+    deltaPpm,
     atomRefs: atoms.map((atom, index) => ({
       sourceAtomIndex: atom,
       element: refs[index].element,
       equivalentCount: refs[index].count
     })),
     equivalentNuclei,
-    // stdev is absent for single-observation environments (localDatabase omits it for n < 2).
     uncertainty: { standardDeviationPpm: entry.stdev, minimumPpm: entry.min, maximumPpm: entry.max },
     evidence: { method: "hose-fragment", matchedSphere: entry.sphere, sampleCount: entry.n, environmentCode: code },
     ...(multiplet ? { multiplet } : {}),
@@ -326,9 +472,6 @@ function buildResonance(
   };
 }
 
-/** Build a resonance for an environment the database does not cover, from a coarse functional-group
- *  estimate. Marked `rule-estimated` with wide uncertainty so a guess never reads as a measured match
- *  — the alternative (dropping it) made aldehydes and other groups silently disappear. */
 function buildEstimatedResonance(
   nucleus: NmrNucleus,
   atoms: readonly number[],
@@ -336,35 +479,68 @@ function buildEstimatedResonance(
   refs: readonly { element: string; count: number }[],
   shift: number,
   code: string,
+  estimator: NmrEstimateProvenance,
   multiplet?: NmrMultiplet
 ): NmrResonance {
   const resonance: NmrResonance = {
     id: `${nucleus === "13C" ? "c" : "h"}-est-${Math.min(...atoms)}`,
     nucleus,
-    deltaPpm: Math.round(shift * 100) / 100,
+    deltaPpm: round2(shift),
     atomRefs: atoms.map((atom, index) => ({
       sourceAtomIndex: atom,
       element: refs[index].element,
       equivalentCount: refs[index].count
     })),
     equivalentNuclei,
-    uncertainty: { standardDeviationPpm: nucleus === "1H" ? 0.5 : 10 },
-    evidence: { method: "rule-estimated", environmentCode: code },
+    evidence: { method: "rule-estimated", environmentCode: code, estimator },
     flags: ["rule-estimated"]
   };
-  if (multiplet) {
-    resonance.multiplet = multiplet;
-  }
+  if (multiplet) resonance.multiplet = multiplet;
   return resonance;
+}
+
+function warnOmitted(
+  warnings: NmrPredictionWarning[],
+  nucleus: NmrNucleus,
+  atom: number,
+  code: string,
+  reason: string
+): void {
+  warnings.push(
+    nmrWarning(
+      NmrWarningCodes.NoFragmentMatch,
+      `No ${nucleus} database match or applicable rule estimate for atom ${atom}; the resonance was omitted (${reason}).`,
+      {
+        severity: "warning",
+        atomIndices: [atom],
+        details: { nucleus, environmentCode: code, estimateInapplicableReason: reason }
+      }
+    )
+  );
+}
+
+function shiftFor(entry: NmrDatabaseEntry, statistic: Statistic): number {
+  return statistic === "mean" ? entry.mean : entry.median;
+}
+
+function estimateGroupKey(code: string, ppm: number, estimator: NmrEstimateProvenance): string {
+  return JSON.stringify({ code, ppm: round2(ppm), estimator });
+}
+
+/** Coupling partner indices identify representative atoms, not distinct spectral patterns. Exclude
+ * them when grouping equivalent environments so symmetric atoms such as ethane's two carbons remain
+ * one six-proton resonance while genuinely different J/kind/count patterns still split. */
+function multipletGroupingSignature(multiplet: NmrMultiplet): unknown {
+  return {
+    label: multiplet.label,
+    couplings: multiplet.couplings.map(({ jHz, partnerCount, kind }) => ({ jHz, partnerCount, kind }))
+  };
 }
 
 function pushGroup(groups: Map<string, number[]>, key: string, atom: number): void {
   const existing = groups.get(key);
-  if (existing) {
-    existing.push(atom);
-  } else {
-    groups.set(key, [atom]);
-  }
+  if (existing) existing.push(atom);
+  else groups.set(key, [atom]);
 }
 
 function dedupeNuclei(nuclei: readonly NmrNucleus[]): NmrNucleus[] {
@@ -376,3 +552,5 @@ function throwIfAborted(signal?: AbortSignal): void {
     throw new NmrError(NmrErrorCodes.PredictionCancelled, "Prediction was cancelled.");
   }
 }
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
