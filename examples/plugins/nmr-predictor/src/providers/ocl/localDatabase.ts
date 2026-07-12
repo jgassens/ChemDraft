@@ -27,6 +27,15 @@ export interface NmrDatabaseProvenance {
   nuclei: readonly NmrNucleus[];
   generatedAt: string;
   note: string;
+  /** Pruning rule the compiler enforced: environments with fewer observations were dropped.
+   * Recorded (with the pre-prune count) so a rebuild from the same raw input is reproducible. */
+  minObservations?: number;
+  /** Environment count before the minObservations prune. */
+  rawEntryCount?: number;
+  /** SHA-256 of the exact raw input file the artifact was compiled from. */
+  inputSha256?: string;
+  /** Byte length of that raw input file. */
+  inputBytes?: number;
 }
 
 export interface CompiledNmrDatabase {

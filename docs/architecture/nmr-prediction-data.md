@@ -15,7 +15,25 @@ third-party evaluation result, and the future data paths.
 The compiled NMRShiftDB2 database holds **40,024 entries** (HOSE-code → shift
 statistics) from **49,628 atom-assigned structures**, pruned to environments with
 ≥ 5 observations for bundle size (~6.1 MB, from ~530k raw environments; ADR-0017).
-Rebuild with `scripts/build-database.ts` from the full `nmrshiftdb2.nmredata.sd`.
+
+### Rebuilding reproducibly (report 0024)
+
+Rebuild with `scripts/build-database.ts` from the full NMReDATA export:
+
+```bash
+npx tsx examples/plugins/nmr-predictor/scripts/build-database.ts \
+  <nmrshiftdb2rawdata.nmredata.sd> \
+  examples/plugins/nmr-predictor/src/providers/ocl/nmrshiftdb2.database.json
+```
+
+The compiler enforces the bundle-size prune itself (`--min-observations`,
+default **5** — the shipped policy) and embeds reproducibility metadata in the
+artifact's provenance: `minObservations`, `rawEntryCount` (pre-prune), and the
+**SHA-256 + byte length of the exact raw input** (`inputSha256`, `inputBytes`).
+Same input + same flags → the same artifact, and the artifact says which input
+it came from. The currently bundled artifact (generated 2026-07-09) predates
+this mechanism, so its raw-input checksum is unrecorded; the next corpus
+refresh records it automatically.
 
 ## NMRShiftDB2 license handling (ADR-0014)
 

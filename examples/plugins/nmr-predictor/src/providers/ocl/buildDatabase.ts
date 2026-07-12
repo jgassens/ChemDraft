@@ -11,9 +11,16 @@ interface Assignment {
 }
 
 export interface BuildDatabaseOptions {
-  provenance: Omit<NmrDatabaseProvenance, "structureCount" | "entryCount" | "nuclei" | "generatedAt">;
+  provenance: Omit<
+    NmrDatabaseProvenance,
+    "structureCount" | "entryCount" | "nuclei" | "generatedAt" | "minObservations" | "rawEntryCount"
+  >;
   now?: () => string;
   maxSpheres?: number;
+  /** Drop environments observed fewer than this many times (bundle-size prune). Default 1 = keep
+   * everything. When > 1 the rule and the pre-prune count are recorded in provenance so a rebuild
+   * from the same raw input reproduces the artifact exactly. */
+  minObservations?: number;
 }
 
 /**
@@ -28,6 +35,7 @@ export function buildNmrDatabase(rawSdContent: string, options: BuildDatabaseOpt
   // Normalize line endings so the record split and tag terminators work on CRLF exports too.
   const sdContent = rawSdContent.replace(/\r\n?/g, "\n");
   const maxSpheres = options.maxSpheres ?? MAX_SPHERES;
+  const minObservations = options.minObservations ?? 1;
   const buckets = new Map<string, { nucleus: NmrNucleus; sphere: number; shifts: number[] }>();
   const nucleiSeen = new Set<NmrNucleus>();
   let structureCount = 0;
@@ -112,6 +120,9 @@ export function buildNmrDatabase(rawSdContent: string, options: BuildDatabaseOpt
 
   const entries: Record<string, NmrDatabaseEntry> = {};
   for (const [key, bucket] of buckets) {
+    if (bucket.shifts.length < minObservations) {
+      continue;
+    }
     entries[key] = { nucleus: bucket.nucleus, sphere: bucket.sphere, ...summarizeShifts(bucket.shifts) };
   }
 
@@ -121,7 +132,8 @@ export function buildNmrDatabase(rawSdContent: string, options: BuildDatabaseOpt
       structureCount,
       entryCount: Object.keys(entries).length,
       nuclei: [...nucleiSeen].sort(),
-      generatedAt: (options.now ?? (() => new Date().toISOString()))()
+      generatedAt: (options.now ?? (() => new Date().toISOString()))(),
+      ...(minObservations > 1 ? { minObservations, rawEntryCount: buckets.size } : {})
     },
     entries
   };

@@ -39,4 +39,48 @@ describe("buildNmrDatabase", () => {
     expect(database.provenance.structureCount).toBe(0);
     expect(Object.keys(database.entries)).toHaveLength(0);
   });
+
+  it("prunes environments below minObservations and records the rule + pre-prune count", () => {
+    // Propane ¹³C: the equivalent methyls aggregate to n = 2 per sphere, the CH2 to n = 1.
+    const sd = makeSd("CCC", [
+      { atom: 1, shift: 15.5 },
+      { atom: 2, shift: 16.1 },
+      { atom: 3, shift: 15.5 }
+    ]);
+    const database = buildNmrDatabase(sd, { provenance: PROVENANCE, now: () => "t", minObservations: 2 });
+
+    const entries = Object.values(database.entries);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((entry) => entry.n >= 2)).toBe(true);
+    expect(entries.some((entry) => entry.median === 16.1)).toBe(false); // the n=1 CH2 is gone
+    expect(database.provenance.minObservations).toBe(2);
+    // rawEntryCount is the pre-prune environment count: methyl + CH2 at each of 4 sphere depths.
+    expect(database.provenance.rawEntryCount).toBe(8);
+    expect(database.provenance.entryCount).toBe(entries.length);
+    expect(database.provenance.rawEntryCount).toBeGreaterThan(database.provenance.entryCount);
+  });
+
+  it("keeps every environment and records no prune metadata by default", () => {
+    const sd = makeSd("CCC", [
+      { atom: 1, shift: 15.5 },
+      { atom: 2, shift: 16.1 },
+      { atom: 3, shift: 15.5 }
+    ]);
+    const database = buildNmrDatabase(sd, { provenance: PROVENANCE, now: () => "t" });
+
+    expect(Object.values(database.entries).some((entry) => entry.n === 1)).toBe(true);
+    expect(database.provenance.minObservations).toBeUndefined();
+    expect(database.provenance.rawEntryCount).toBeUndefined();
+  });
+
+  it("passes raw-input identity (sha256 + byte length) through provenance untouched", () => {
+    const sd = makeSd("CC", [{ atom: 1, shift: 7.1 }]);
+    const database = buildNmrDatabase(sd, {
+      provenance: { ...PROVENANCE, inputSha256: "ab".repeat(32), inputBytes: 1234 },
+      now: () => "t"
+    });
+
+    expect(database.provenance.inputSha256).toBe("ab".repeat(32));
+    expect(database.provenance.inputBytes).toBe(1234);
+  });
 });
