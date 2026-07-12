@@ -88,6 +88,13 @@ import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
 import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
+import {
+  DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
+  buildDocumentSessionEnvelope,
+  documentIsBlank,
+  parseDocumentSessionEnvelope,
+  shouldRestoreDocumentSession
+} from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { PatchReviewTray } from "./plugins/PatchReviewTray";
 import {
@@ -493,6 +500,8 @@ import {
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
   saveToolsetLayoutState,
+  loadDocumentSession,
+  saveDocumentSession,
   sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
@@ -1252,7 +1261,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.32-fable";
+const CURRENT_BUILD_STAMP = "7.5.33-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1798,6 +1807,8 @@ export function MainWindow({
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const fileStateRef = useRef<NativeFileState>(fileState);
+  // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
+  const documentSessionHydratedRef = useRef(false);
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
@@ -6237,7 +6248,13 @@ export function MainWindow({
   const openDocumentContents = useCallback((
     contents: string,
     displayName: string,
-    path?: string
+    path?: string,
+    options?: {
+      /** Restore-session path: the contents hold edits never written to `path`. */
+      dirty?: boolean;
+      /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
+      statusOverride?: string;
+    }
   ) => {
     const opened = openNativeDocument(contents);
     const resolvedOpen = resolveOpenResultDocument(opened);
@@ -6247,14 +6264,17 @@ export function MainWindow({
     const fitRecommendation = resolvedOpen.source === "external-cdxml"
       ? recommendImportedPageFit(resolvedOpen.document)
       : undefined;
+    const dirty = options?.dirty ?? false;
     resetDocumentHistory(resolvedOpen.document, {
       path,
-      dirty: false,
-      lastSavedPayloadHash: sha256Utf8Hex(contents)
+      dirty,
+      // Dirty contents were never saved anywhere, so they must not pose as the on-disk state.
+      lastSavedPayloadHash: dirty ? undefined : sha256Utf8Hex(contents)
     });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
-    const openStatus = formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
+    const openStatus = options?.statusOverride
+      ?? formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
@@ -6394,6 +6414,83 @@ export function MainWindow({
       unlisten?.();
     };
   }, [openDocumentContents]);
+
+  // Restore the last edited document at startup (see documentSession.ts). Anything that landed
+  // first wins: an OS "open with" or an early edit leaves the canvas non-pristine, and the restore
+  // backs off. A corrupt/future envelope restores nothing — the blank document stands.
+  useEffect(() => {
+    if (documentSessionHydratedRef.current) {
+      return undefined;
+    }
+    if (!isDesktopRuntime()) {
+      documentSessionHydratedRef.current = true;
+      return undefined;
+    }
+
+    let active = true;
+    void loadDocumentSession()
+      .then((raw) => {
+        if (!active) {
+          return;
+        }
+        const envelope = parseDocumentSessionEnvelope(raw);
+        if (!envelope || !shouldRestoreDocumentSession(envelope)) {
+          return;
+        }
+        const pristine = !fileStateRef.current.path
+          && !fileStateRef.current.dirty
+          && documentIsBlank(documentRef.current);
+        if (!pristine) {
+          return;
+        }
+        try {
+          openDocumentContents(envelope.contents, envelope.displayName, envelope.path, {
+            dirty: envelope.dirty,
+            statusOverride: `Restored last session — ${envelope.displayName}${envelope.dirty ? " (unsaved changes)" : ""}`
+          });
+        } catch {
+          // Never block startup on a bad autosave; the next edit overwrites it.
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) {
+          documentSessionHydratedRef.current = true;
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [openDocumentContents]);
+
+  // Autosave the working document + file association (debounced) so a relaunch — or a crash —
+  // resumes the last edited state with no explicit save. Gated on hydration so the startup blank
+  // can't clobber the previous session before the restore above has read it.
+  useEffect(() => {
+    if (!isDesktopRuntime()) {
+      return undefined;
+    }
+    const handle = window.setTimeout(() => {
+      if (!documentSessionHydratedRef.current) {
+        return;
+      }
+      try {
+        const payload = createNativeSavePayload(documentRef.current);
+        const path = fileStateRef.current.path;
+        const envelope = buildDocumentSessionEnvelope(
+          payload,
+          fileStateRef.current,
+          path ? nativePathBasename(path) : payload.filename,
+          documentIsBlank(documentRef.current)
+        );
+        void saveDocumentSession(envelope).catch(() => undefined);
+      } catch {
+        // Serialization must never break editing; the previous autosave stays.
+      }
+    }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [document, fileState]);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
     const payload = createNativeSavePayload(documentRef.current);

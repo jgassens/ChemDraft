@@ -68,6 +68,7 @@ static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static APP_QUITTING: AtomicBool = AtomicBool::new(false);
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
@@ -296,6 +297,13 @@ pub fn run() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
                         }
                     }
+                    WindowEvent::Destroyed => {
+                        // The close button only hides the main window, so its actual destruction
+                        // means the app is dying — including SIGTERM teardowns that never fire
+                        // ExitRequested. Raise the quit flag so palette destruction that follows
+                        // isn't recorded as user closes.
+                        APP_QUITTING.store(true, Ordering::SeqCst);
+                    }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
                         if !APP_QUITTING.load(Ordering::SeqCst) {
@@ -380,6 +388,8 @@ pub fn run() {
             list_toolset_window_states,
             load_toolset_customization_state,
             save_toolset_customization_state,
+            load_document_session,
+            save_document_session,
             set_toolbars_menu,
             focus_main_document_window,
             set_menu_checked,
@@ -644,6 +654,32 @@ fn save_toolset_customization_state(
     state: serde_json::Value,
 ) -> Result<(), String> {
     let path = toolset_customization_state_path(&app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+    fs::write(path, contents).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let path = document_session_path(&app)?;
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Ok(None);
+    };
+
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| format!("Document session is invalid: {error}"))
+}
+
+/// The working document's autosave (serialized contents + file association). JS owns the envelope
+/// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
+/// opaque JSON, exactly like the toolbar customization state.
+#[tauri::command]
+fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
+    let path = document_session_path(&app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -2800,6 +2836,14 @@ fn toolset_customization_state_path<R: Runtime>(
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join(TOOLSET_CUSTOMIZATION_STATE_FILENAME))
+}
+
+fn document_session_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join(DOCUMENT_SESSION_FILENAME))
 }
 
 fn set_toolset_menu_checked<R: Runtime>(

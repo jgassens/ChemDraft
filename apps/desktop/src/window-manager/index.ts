@@ -407,6 +407,28 @@ export async function saveToolsetLayoutState(state: unknown): Promise<void> {
   await invoke("save_toolset_customization_state", { state }).catch(() => undefined);
 }
 
+/** Load the working-document autosave envelope (see documentSession.ts). Undefined when there is
+ *  none or off the desktop runtime. */
+export async function loadDocumentSession(): Promise<unknown | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<unknown | null>("load_document_session").then((state) => state ?? undefined);
+}
+
+/** Persist the working-document autosave envelope. JS owns the shape; Rust writes the opaque
+ *  JSON. No-op off the desktop runtime. */
+export async function saveDocumentSession(state: unknown): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("save_document_session", { state }).catch(() => undefined);
+}
+
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */
 export interface ToolbarMenuEntry {
   toolsetId: string;
