@@ -20,6 +20,7 @@ use tauri::{
     menu::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
     },
+    webview::PageLoadEvent,
     Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
@@ -241,6 +242,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
+        .on_page_load(|webview, payload| {
+            if webview.label() == MAIN_WINDOW_LABEL
+                && matches!(payload.event(), PageLoadEvent::Finished)
+            {
+                // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
+                // overwriting the label set by ensure_main_window_visible. Reassert the baked
+                // worktree title at the page-load boundary so the actual macOS title bar, not only
+                // the web document/build stamp, identifies this checkout.
+                let _ = webview.window().set_title(&main_window_title());
+            }
+        })
         .on_menu_event(|app, event| {
             // Single brain: every menu click (toolset toggles included) routes to the JS
             // command dispatcher, which owns visibility and pushes checkmarks back via
@@ -613,7 +625,9 @@ fn set_toolbars_menu(
     };
     app.clone()
         .run_on_main_thread(move || {
-            match create_app_menu_for_toolsets(&app, &entries, view_state).and_then(|menu| app.set_menu(menu).map(|_| ())) {
+            match create_app_menu_for_toolsets(&app, &entries, view_state)
+                .and_then(|menu| app.set_menu(menu).map(|_| ()))
+            {
                 Ok(()) => {}
                 Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
             }
@@ -630,7 +644,11 @@ fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
 /// pushes each toggle's checkmark here. Takes the full menu command id
 /// (e.g. `view.toolset.toggle.core.main`) so it works for any check menu item.
 #[tauri::command]
-fn set_menu_checked(app: tauri::AppHandle, command_id: String, checked: bool) -> Result<(), String> {
+fn set_menu_checked(
+    app: tauri::AppHandle,
+    command_id: String,
+    checked: bool,
+) -> Result<(), String> {
     let command_id = command_id.trim();
     if command_id.is_empty() {
         return Err("Menu command id cannot be empty.".to_string());
@@ -832,7 +850,9 @@ fn configure_toolset_popover_window<R: Runtime>(
     order_front: bool,
 ) -> Result<(), String> {
     configure_toolset_utility_window(window, order_front)?;
-    window.set_focusable(true).map_err(|error| error.to_string())?;
+    window
+        .set_focusable(true)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2175,7 +2195,10 @@ fn ensure_toolset_window<R: Runtime>(
             format!("ChemDraft {}", geometry.title),
             geometry.width,
             geometry.height,
-            ToolsetWindowPosition { x: geometry.x, y: geometry.y },
+            ToolsetWindowPosition {
+                x: geometry.x,
+                y: geometry.y,
+            },
         ),
         None => (
             "ChemDraft Toolbar".to_string(),
@@ -2462,7 +2485,6 @@ fn toolset_state<R: Runtime>(
     }
 }
 
-
 fn toolset_window_label(toolset_id: &str) -> String {
     let suffix: String = toolset_id
         .chars()
@@ -2496,7 +2518,6 @@ fn toolset_toggle_command_id(toolset_id: &str) -> String {
 fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
 }
-
 
 fn persisted_toolset_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -2603,7 +2624,6 @@ fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLa
 
     serde_json::from_str(&contents).unwrap_or_default()
 }
-
 
 fn save_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -2712,7 +2732,10 @@ mod tests {
     #[test]
     fn toolset_window_labels_are_stable_and_sanitized() {
         expect_eq("toolset-core-main", &toolset_window_label("core.main"));
-        expect_eq("toolset-plugin-fixture", &toolset_window_label("plugin.fixture"));
+        expect_eq(
+            "toolset-plugin-fixture",
+            &toolset_window_label("plugin.fixture"),
+        );
     }
 
     #[test]

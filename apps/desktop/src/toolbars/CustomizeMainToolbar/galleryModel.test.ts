@@ -132,6 +132,43 @@ describe("buildGallerySections", () => {
     expect(toolbars?.entries[0]?.command?.title).toBe("Toggle Art Toolbar");
   });
 
+  it("dedupes legacy and generated launchers by target toolbar even when their titles differ", () => {
+    const sections = buildGallerySections(
+      [
+        cmd("view.toggleRingInspector", "Toggle Rings Toolbar"),
+        cmd("view.toolset.toggle.core.ringInspector", "Toggle Rings")
+      ],
+      [],
+      new Set(),
+      ""
+    );
+    const toolbars = sections.find((section) => section.id === "toolbars");
+
+    expect(toolbars?.entries).toHaveLength(1);
+    expect(toolbars?.entries[0]).toMatchObject({
+      commandId: "view.toolset.toggle.core.ringInspector",
+      title: "Rings"
+    });
+  });
+
+  it("keeps distinct toolbar targets that happen to share a display title", () => {
+    const sections = buildGallerySections(
+      [
+        cmd("view.toolset.toggle.user.alpha", "Toggle Shared Toolbar"),
+        cmd("view.toolset.toggle.user.beta", "Toggle Shared Toolbar")
+      ],
+      [],
+      new Set(),
+      ""
+    );
+    const toolbars = sections.find((section) => section.id === "toolbars");
+
+    expect(toolbars?.entries.map((entry) => entry.commandId)).toEqual([
+      "view.toolset.toggle.user.alpha",
+      "view.toolset.toggle.user.beta"
+    ]);
+  });
+
   it("drops empty sections, so a search shows only the themes that hit", () => {
     const sections = buildGallerySections(themed, widgets, new Set(), "benzene");
     expect(sections.map((section) => section.id)).toEqual(["rings"]);

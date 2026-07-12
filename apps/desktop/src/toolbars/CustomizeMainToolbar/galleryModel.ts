@@ -1,3 +1,4 @@
+import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "../../commands";
 import type { IconName } from "../../icons";
 import type { ToolbarAssetName } from "../../toolbarAssets";
@@ -206,6 +207,48 @@ function sectionDisplayTitle(section: string, entry: GalleryEntry): string {
   return entry.title;
 }
 
+const LEGACY_TOOLBAR_LAUNCHER_TARGETS: Readonly<Record<string, string>> = {
+  "view.toggleToolPalette": "core.main",
+  "view.toggleRingInspector": "core.ringInspector",
+  "view.toggleMoleculeInspector": "core.moleculeInspector"
+};
+
+/** Resolve aliases that show/hide the same toolbar to one stable target identity. */
+function toolbarLauncherTargetId(entry: GalleryEntry): string {
+  const commandId = entry.commandId ?? "";
+  return parseToolsetToggleCommandId(commandId)
+    ?? LEGACY_TOOLBAR_LAUNCHER_TARGETS[commandId]
+    ?? `command:${commandId}`;
+}
+
+function isGeneratedToolbarLauncher(entry: GalleryEntry): boolean {
+  return parseToolsetToggleCommandId(entry.commandId ?? "") !== undefined;
+}
+
+/**
+ * Keep one launcher per target toolbar. Prefer the generated `view.toolset.toggle.*` command because
+ * it carries the target id directly and its title follows live toolbar naming; display titles are not
+ * identities (two distinct user toolbars may legitimately share one title).
+ */
+function dedupeToolbarLaunchers(entries: readonly GalleryEntry[]): GalleryEntry[] {
+  const result: GalleryEntry[] = [];
+  const indexByTarget = new Map<string, number>();
+  for (const entry of entries) {
+    const target = toolbarLauncherTargetId(entry);
+    const existingIndex = indexByTarget.get(target);
+    if (existingIndex === undefined) {
+      indexByTarget.set(target, result.length);
+      result.push(entry);
+      continue;
+    }
+    const existing = result[existingIndex];
+    if (existing && !isGeneratedToolbarLauncher(existing) && isGeneratedToolbarLauncher(entry)) {
+      result[existingIndex] = entry;
+    }
+  }
+  return result;
+}
+
 /**
  * Group the flat gallery model into titled sections, preserving the flat builder's dedupe/search/
  * present semantics. Sections with no matching entries drop out entirely (so a search shows only the
@@ -230,22 +273,11 @@ export function buildGallerySections(
     bucket.push({ ...entry, title: sectionDisplayTitle(section, entry) });
     bySection.set(section, bucket);
   }
-  // The toolbars section can hold two commands that open the same window (a manifest toggle like
-  // view.toggleMoleculeInspector plus the generated view.toolset.toggle.core.moleculeInspector) —
-  // identical effect, identical display title. Keep the first so the section reads one-tile-per-toolbar.
+  // The toolbars section can hold legacy and generated commands that open the same window. Dedupe by
+  // target toolset id, never by display title: titles are editable and are not unique identities.
   const toolbars = bySection.get("toolbars");
   if (toolbars) {
-    const seenTitles = new Set<string>();
-    bySection.set(
-      "toolbars",
-      toolbars.filter((entry) => {
-        if (seenTitles.has(entry.title)) {
-          return false;
-        }
-        seenTitles.add(entry.title);
-        return true;
-      })
-    );
+    bySection.set("toolbars", dedupeToolbarLaunchers(toolbars));
   }
   return GALLERY_SECTIONS.flatMap((section) => {
     const sectionEntries = bySection.get(section.id);

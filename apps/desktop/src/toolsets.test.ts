@@ -98,6 +98,68 @@ describe("desktop toolset mapping", () => {
     ).toBe(false);
   });
 
+  it("refreshes generated launcher presentation in user toolsets without replacing contextual tools", () => {
+    const userRegistry = registry([
+      {
+        id: "user.host",
+        title: "Host",
+        source: "user",
+        defaultVisible: false,
+        defaultMode: "floating",
+        groups: [
+          {
+            id: "user.host.items",
+            items: [
+              { commandId: "view.toolset.toggle.user.quick", title: "Toggle Old Quick Tools", icon: "text" },
+              { commandId: "tool.select", title: "Host Selection", icon: "text" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "user.quick",
+        title: "Renamed Quick Tools",
+        source: "user",
+        defaultVisible: false,
+        defaultMode: "floating",
+        groups: []
+      }
+    ]);
+    const overrides = new Map<string, CommandSpec>([
+      [
+        "view.toolset.toggle.user.quick",
+        {
+          id: "view.toolset.toggle.user.quick",
+          title: "Toggle Renamed Quick Tools",
+          icon: "palette",
+          source: "core",
+          description: "Show or hide Renamed Quick Tools"
+        }
+      ],
+      [
+        "tool.select",
+        { id: "tool.select", title: "Global Selection", icon: "select", source: "core" }
+      ]
+    ]);
+
+    const [launcher, contextualTool] = getToolsetItemGroups("user.host", userRegistry, overrides)[0];
+    expect(launcher).toMatchObject({
+      label: "Toggle Renamed Quick Tools",
+      icon: "palette",
+      tooltip: {
+        title: "Toggle Renamed Quick Tools",
+        description: "Show or hide Renamed Quick Tools"
+      },
+      primary: { type: "command", command: { title: "Toggle Renamed Quick Tools", icon: "palette" } }
+    });
+    expect(contextualTool).toMatchObject({
+      label: "Host Selection",
+      icon: "text",
+      tooltip: { title: "Host Selection" },
+      primary: { type: "command", command: { title: "Host Selection", icon: "text" } }
+    });
+  });
+
   it("maps schema submenus to command specs while preserving command override state", () => {
     const overrides = new Map<string, CommandSpec>([
       [
@@ -268,7 +330,7 @@ describe("flattened Main toolbar manifest", () => {
 });
 
 describe("migrateLegacyMainToolbarLayoutState", () => {
-  it("re-homes legacy per-group additions and folds per-group orders onto core.main.items", () => {
+  it("preserves legacy group/order semantics and maps additions to absolute flattened positions", () => {
     const migrated = migrateLegacyMainToolbarLayoutState({
       version: 1,
       toolsetOverrides: [
@@ -297,8 +359,27 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
       ]
     }) as { toolsetOverrides: Array<Record<string, unknown>> };
     const override = migrated.toolsetOverrides[0];
-    expect((override.itemAdditions as Array<{ groupId: string }>)[0].groupId).toBe("core.main.items");
-    expect(override.itemOrder).toEqual({ "core.main.items": ["tool.text", "tool.select", "layout.group"] });
+    const addition = (override.itemAdditions as Array<{ groupId: string; index: number }>)[0];
+    const order = (override.itemOrder as Record<string, string[]>)["core.main.items"];
+    expect(addition.groupId).toBe("core.main.items");
+    expect(addition.index).toBe(order.indexOf("art.boolean.union"));
+    // Saved groupOrder puts Layout first, and its partial item order is padded with every omitted item.
+    expect(order.slice(0, 4)).toEqual([
+      "layout.group",
+      "layout.alignLeft",
+      "layout.alignCenter",
+      "layout.alignRight"
+    ]);
+    expect(order.indexOf("core.main.divider.6")).toBeLessThan(order.indexOf("tool.text"));
+    expect(order.slice(order.indexOf("tool.text"), order.indexOf("tool.text") + 4)).toEqual([
+      "tool.text",
+      "tool.select",
+      "tool.lasso",
+      "tool.eraser"
+    ]);
+    expect(order.indexOf("core.main.divider.1")).toBeLessThan(order.indexOf("tool.bond"));
+    expect(order.indexOf("art.boolean.union")).toBeGreaterThan(order.indexOf("tool.equilibriumArrow"));
+    expect(order.indexOf("art.boolean.union")).toBeLessThan(order.indexOf("tool.retroArrow"));
     expect(override.groupOrder).toBeUndefined();
     expect(override.hiddenCommandIds).toEqual(["tool.lasso"]);
   });
@@ -316,14 +397,43 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
     expect(migrateLegacyMainToolbarLayoutState("garbage")).toBe("garbage");
   });
 
-  it("applies end-to-end: a legacy-keyed order reorders the flattened Main toolbar", () => {
+  it("applies a partial legacy order inside its original section instead of hoisting it globally", () => {
     const registry = createDesktopToolsetRegistry({
       version: 1,
       toolsetOverrides: [
-        { toolsetId: "core.main", itemOrder: { "core.main.selection": ["tool.text", "tool.select"] } }
+        { toolsetId: "core.main", itemOrder: { "core.main.structure": ["tool.chain", "tool.bond"] } }
       ]
     });
     const [items] = getToolsetItemGroups("core.main", registry);
-    expect(items.slice(0, 2).map((item) => item.id)).toEqual(["tool.text", "tool.select"]);
+    expect(items.slice(0, 5).map((item) => item.id)).toEqual([
+      "tool.select",
+      "tool.lasso",
+      "tool.eraser",
+      "tool.text",
+      "core.main.divider.1"
+    ]);
+    expect(items.slice(5, 8).map((item) => item.id)).toEqual(["tool.chain", "tool.bond", "tool.wedgeBond"]);
+  });
+
+  it("applies a legacy addition at its section-relative position after flattening", () => {
+    const registry = createDesktopToolsetRegistry({
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          itemAdditions: [
+            {
+              groupId: "core.main.arrows",
+              index: 1,
+              item: { id: "user.spacer.9", kind: "spacer", label: "Space", primary: { type: "none" } }
+            }
+          ]
+        }
+      ]
+    });
+    const [items] = getToolsetItemGroups("core.main", registry);
+    const ids = items.map((item) => item.id);
+    expect(ids.indexOf("user.spacer.9")).toBe(ids.indexOf("tool.reactionArrow") + 1);
+    expect(ids.indexOf("user.spacer.9")).toBeLessThan(ids.indexOf("tool.resonanceArrow"));
   });
 });

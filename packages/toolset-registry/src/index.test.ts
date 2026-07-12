@@ -635,6 +635,29 @@ describe("core toolset item additions (spacers + gallery adds)", () => {
     expect(itemIds(customized[0], "fixture.tools")).toEqual(["tool.select", "user.spacer.1", "tool.bond", "tool.text"]);
   });
 
+  it("replays saved additions chronologically because each index addresses the already-merged list", () => {
+    const customized = applyToolsetLayoutState([fixtureToolset], {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.fixture",
+          itemAdditions: [
+            { groupId: "fixture.tools", index: 2, item: spacerItem("user.spacer.1") },
+            { groupId: "fixture.tools", index: 0, item: spacerItem("user.spacer.2") }
+          ]
+        }
+      ]
+    });
+
+    expect(itemIds(customized[0], "fixture.tools")).toEqual([
+      "user.spacer.2",
+      "tool.select",
+      "tool.bond",
+      "user.spacer.1",
+      "tool.text"
+    ]);
+  });
+
   it("applies additions before itemOrder, so itemOrder can address an added command", () => {
     const customized = applyToolsetLayoutState(
       [fixtureToolset],
@@ -693,6 +716,44 @@ describe("core toolset item additions (spacers + gallery adds)", () => {
     );
     expect(itemIds(customized[0], "fixture.tools")).toContain("edit.undo");
     expect(warnings.some((warning) => warning.includes("edit.undo"))).toBe(false);
+  });
+
+  it("automatically accepts generated launchers for base/plugin and user toolsets", () => {
+    const userToolset: ToolsetDefinition = {
+      id: "user.quick",
+      title: "Quick",
+      source: "user",
+      defaultVisible: true,
+      defaultMode: "floating",
+      groups: [{ id: "user.quick.tools", items: [{ commandId: "tool.select" }] }]
+    };
+    const customized = applyToolsetLayoutState([fixtureToolset, pluginToolset], {
+      version: 1,
+      userToolsets: [userToolset],
+      toolsetOverrides: [
+        {
+          toolsetId: "core.fixture",
+          itemAdditions: [
+            {
+              groupId: "fixture.tools",
+              item: commandItem(createToolsetToggleCommandId("plugin.fixture"), "Plugin Toolbar")
+            },
+            {
+              groupId: "fixture.tools",
+              item: commandItem(createToolsetToggleCommandId("user.quick"), "Quick Toolbar")
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(itemIds(customized[0], "fixture.tools")).toEqual([
+      "tool.select",
+      "tool.bond",
+      "tool.text",
+      "view.toolset.toggle.plugin.fixture",
+      "view.toolset.toggle.user.quick"
+    ]);
   });
 
   it("keeps a spacer addition through pruning (it references no command)", () => {

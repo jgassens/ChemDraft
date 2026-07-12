@@ -25,7 +25,7 @@ separators may omit it. Explicit schema fields describe how the item should rend
 
 Supported item metadata:
 
-- `kind`: `button`, `toggle`, `control`, or `separator`.
+- `kind`: `button`, `toggle`, `control`, `separator`, or `spacer`.
 - `primary`: `command`, `control`, or `none`. If `primary.commandId` is present, it must
   match the compatibility `commandId`.
 - `submenu`: `null` or a non-empty `command-grid` submenu. Submenu commands are included in
@@ -34,6 +34,12 @@ Supported item metadata:
 - `tooltip`: title, optional description, and optional shortcut text.
 - `layout`: item span metadata (`colSpan`, `rowSpan`).
 - `placement`: group, row, column, and order metadata for customization.
+
+Core and plugin toolsets may receive add-only `itemAdditions` from toolbar customization. Their
+indices are replayed in saved order: each index addresses the group produced by all earlier
+additions. Customization IDs are unique across the whole toolset, with manifest items and then the
+first saved addition winning. `mergeToolsetItemAdditions` is the shared merge path for registry and
+editor previews.
 
 `normalizeToolsetItem`, `normalizeToolsetDefinition`, and `normalizeToolsetDefinitions`
 are the preferred read path for UI code. They fill defaults for legacy items, preserve

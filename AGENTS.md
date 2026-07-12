@@ -123,11 +123,11 @@ carries its worktree/branch label in three places, all driven by `CHEMDRAFT_WORK
 (exported automatically by `run-app` as `<dir> [<branch>]`):
 
 - the **window title** — `ChemDraft — <dir> [<branch>]`. `index.html` ships
-  `<title>ChemDraft</title>` and WKWebView syncs the document title onto the NSWindow title, so the
-  value that WINS is set from JS: MainWindow sets `window.document.title` from the `__WORKTREE_LABEL__`
-  vite define. Rust also sets it (`main_window_title()` via `option_env!`, applied in
-  `ensure_main_window_visible`; `build.rs` re-emits the env as `rustc-env`), which covers the brief
-  moment before the webview loads — but the webview is the one that sticks;
+  `<title>ChemDraft</title>`, while MainWindow sets the labeled web-document title from the
+  `__WORKTREE_LABEL__` vite define. Rust applies the same label with `main_window_title()` via
+  `option_env!` (`build.rs` re-emits the env as `rustc-env`) during startup and again from the Tauri
+  page-load hook, after WKWebView has applied the initial HTML title; this second native write is what
+  keeps the actual macOS title bar labeled;
 - the **on-screen build stamp** — the worktree label leads the stamp (vite.config.ts `buildStamp()`
   reads the env, or derives it from git as a fallback);
 - a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.

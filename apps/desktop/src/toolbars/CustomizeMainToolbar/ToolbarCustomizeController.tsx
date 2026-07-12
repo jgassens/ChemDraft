@@ -14,6 +14,7 @@ import {
   type DragStartEvent
 } from "@dnd-kit/core";
 import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { isKeyboardEvent } from "@dnd-kit/utilities";
 import type { ToolsetLayoutEdit } from "../../window-manager";
 import { ToolbarItemIcon } from "../../ToolPalette";
 import type { ToolbarPaletteGroupModel, ToolbarPaletteItemModel } from "../../toolsets";
@@ -88,6 +89,18 @@ function dragEndPoint(event: DragEndEvent): { x: number; y: number } | null {
     return { x: activator.clientX + event.delta.x, y: activator.clientY + event.delta.y };
   }
   return null;
+}
+
+/**
+ * The pointer position used only for the out-of-palette geometry check. Keyboard drags must never
+ * consult the window-wide pointer feed: that ref may describe a mouse movement from long before the
+ * keyboard drag, and an old point outside the palette would turn a keyboard reorder into removal.
+ */
+export function dragGeometryPoint(
+  event: DragEndEvent,
+  lastPointer: { x: number; y: number } | null
+): { x: number; y: number } | null {
+  return isKeyboardEvent(event.activatorEvent) ? null : lastPointer ?? dragEndPoint(event);
 }
 
 function isPointInRect(point: { x: number; y: number }, rect: DOMRect): boolean {
@@ -193,6 +206,42 @@ function groupsSignature(groups: readonly ToolbarPaletteGroupModel[]): string {
 }
 
 /**
+ * Invoke the authoritative edit transport and report either a synchronous throw or an asynchronous
+ * rejection through one path. This seam keeps optimistic rollback testable without driving sensors.
+ */
+export function dispatchCustomizeEdit(
+  edit: ToolsetLayoutEdit,
+  onEdit: (edit: ToolsetLayoutEdit) => void | Promise<void>,
+  onFailure: () => void
+): void {
+  try {
+    const result = onEdit(edit);
+    if (result) {
+      void result.catch(onFailure);
+    }
+  } catch {
+    onFailure();
+  }
+}
+
+/** Roll back only the preview belonging to the failed send, preserving any newer in-flight edit. */
+export function rollbackOptimisticPreview(
+  current: readonly ToolbarPaletteGroupModel[] | null,
+  failedPreview: readonly ToolbarPaletteGroupModel[]
+): readonly ToolbarPaletteGroupModel[] | null {
+  return current === failedPreview ? null : current;
+}
+
+/** A gallery command or widget has a meaningful icon preview; structural entries use a placeholder. */
+export function galleryOverlayIconItem(
+  activeGallery: CustomizeDragData | null
+): ToolbarPaletteItemModel | undefined {
+  return activeGallery?.galleryKind === "command" || activeGallery?.galleryKind === "widget"
+    ? activeGallery.iconItem
+    : undefined;
+}
+
+/**
  * Owns the single DndContext wrapping the customizable Main palette and the gallery tray. Every drop
  * is resolved to one edit op and handed to `onEdit`; the authoritative layout still comes from the
  * main window's re-broadcast, but the controller previews reorder/remove locally (optimistic display)
@@ -206,7 +255,7 @@ export function ToolbarCustomizeController({
 }: {
   toolsetId: string;
   groups: readonly ToolbarPaletteGroupModel[];
-  onEdit: (edit: ToolsetLayoutEdit) => void;
+  onEdit: (edit: ToolsetLayoutEdit) => void | Promise<void>;
   children: (effectiveGroups: readonly ToolbarPaletteGroupModel[]) => ReactNode;
 }) {
   const [activeItem, setActiveItem] = useState<ToolbarPaletteItemModel | null>(null);
@@ -266,9 +315,9 @@ export function ToolbarCustomizeController({
     // palette — so `over` is never null and the "dragged out → remove" path would never fire. Detect
     // it geometrically: a release outside the palette's box is a remove (overId forced to null).
     const paletteRect = containerRef.current?.querySelector(".tool-palette")?.getBoundingClientRect();
-    // Prefer the raw tracked pointer (correct even when the drag started in the scrollable tray); fall
-    // back to activator+delta for a keyboard drag (no pointer feed).
-    const point = lastPointerRef.current ?? dragEndPoint(event);
+    // Prefer the raw tracked pointer for pointer drags (correct even when the drag started in the
+    // scrollable tray). Keyboard drags deliberately skip this geometry check: the ref may be stale.
+    const point = dragGeometryPoint(event, lastPointerRef.current);
     if (paletteRect && point && !isPointInRect(point, paletteRect)) {
       overId = null;
     }
@@ -280,9 +329,16 @@ export function ToolbarCustomizeController({
       if (preview) {
         setOptimisticGroups(preview);
       }
-      onEdit(edit);
+      dispatchCustomizeEdit(edit, onEdit, () => {
+        // A late rejection from an older edit must not erase a newer optimistic preview.
+        if (preview) {
+          setOptimisticGroups((current) => rollbackOptimisticPreview(current, preview));
+        }
+      });
     }
   };
+
+  const activeGalleryIconItem = galleryOverlayIconItem(activeGallery);
 
   return (
     <DndContext
@@ -318,9 +374,9 @@ export function ToolbarCustomizeController({
           </span>
         ) : activeGallery ? (
           <span className="toolbar-item-grid-slot customize-drag-overlay">
-            {activeGallery.galleryKind === "command" && activeGallery.iconItem ? (
+            {activeGalleryIconItem ? (
               <span className="icon-button">
-                <ToolbarItemIcon item={activeGallery.iconItem} command={activeGallery.command} />
+                <ToolbarItemIcon item={activeGalleryIconItem} command={activeGallery.command} />
               </span>
             ) : (
               <span className="toolbar-item-spacer customize-slot-placeholder" aria-hidden="true" />

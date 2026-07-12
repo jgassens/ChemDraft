@@ -2736,6 +2736,16 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("width: calc(var(--cd-control-height) * 3 + var(--cd-space-2) * 2);");
     expect(appCss).toContain(".tool-palette.floating.horizontal.main-style-palette");
     expect(appCss).toContain("max-height: 64px;");
+    expect(appCss).toContain(".tool-palette.horizontal.main-style-palette .tool-group:last-of-type");
+    expect(appCss).toContain(
+      ".tool-palette.horizontal.main-style-palette,\n.tool-palette.floating.horizontal.main-style-palette {\n  padding-right: 10px;"
+    );
+    expect(appCss).not.toContain(
+      ".tool-palette.horizontal .tool-group:last-of-type,\n.tool-palette.floating.horizontal .tool-group:last-of-type {"
+    );
+    expect(appCss).not.toContain(
+      ".tool-palette.horizontal,\n.tool-palette.floating.horizontal {\n  padding-right: 10px;"
+    );
   });
 
   it("clips narrow palette titles away from the close control", () => {
@@ -2840,6 +2850,51 @@ describe("ChemDraft desktop shell", () => {
       expect.arrayContaining(["view.toolset.toggle.core.structure", "view.toolset.toggle.plugin.fixture"])
     );
     expect(toggles.every((command) => command.category === "view")).toBe(true);
+  });
+
+  it("builds the shell catalog from the effective registry and current history availability", () => {
+    const pluginCommands = allShellCommands(createPhase4Document(), undefined, {
+      registry: buildRegistryWithFixture()
+    });
+    expect(pluginCommands).toContainEqual(
+      expect.objectContaining({
+        id: "view.toolset.toggle.plugin.fixture",
+        title: "Toggle Fixture Plugin Toolbar"
+      })
+    );
+
+    const customizedRegistry = createDesktopToolsetRegistry({
+      version: 1,
+      toolsetOverrides: [{ toolsetId: "core.main", title: "My Lab Toolbar" }],
+      userToolsets: [
+        {
+          id: "user.quick",
+          title: "My Quick Tools",
+          source: "user",
+          defaultVisible: false,
+          defaultMode: "floating",
+          groups: [
+            {
+              id: "user.quick.items",
+              items: [{ commandId: "tool.select", title: "Selection Tool" }]
+            }
+          ]
+        }
+      ]
+    });
+    const commands = allShellCommands(createPhase4Document(), undefined, {
+      availability: { canUndo: true, canRedo: false },
+      registry: customizedRegistry
+    });
+
+    expect(commands).toContainEqual(
+      expect.objectContaining({ id: "view.toolset.toggle.core.main", title: "Toggle My Lab Toolbar" })
+    );
+    expect(commands).toContainEqual(
+      expect.objectContaining({ id: "view.toolset.toggle.user.quick", title: "Toggle My Quick Tools" })
+    );
+    expect(commands.find((command) => command.id === "edit.undo")?.enabled).toBe(true);
+    expect(commands.find((command) => command.id === "edit.redo")?.enabled).toBe(false);
   });
 
   it("renders an independent plugin fixture toolset surface", () => {

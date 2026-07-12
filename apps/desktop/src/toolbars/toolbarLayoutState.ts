@@ -28,8 +28,10 @@ export function mergeVisibilityIntoLayoutState(
   // is the module-level EMPTY_LAYOUT_STATE and spreading it would return its array, so a later
   // mutation of the result would corrupt the shared constant for every subsequent merge.
   return {
+    ...base,
     version: 1,
     toolsetOverrides: [...preserved, ...updated],
-    userToolsets: [...base.userToolsets]
+    userToolsets: [...base.userToolsets],
+    ...(base.toolsetOrder ? { toolsetOrder: [...base.toolsetOrder] } : {})
   };
 }

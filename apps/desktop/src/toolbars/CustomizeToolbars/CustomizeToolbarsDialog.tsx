@@ -18,12 +18,14 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   applyToolsetLayoutState,
+  mergeToolsetItemAdditions,
   toolsetItemCustomizationId,
   type ToolsetGroupDefinition,
   type ToolsetItemDefinition,
   type ToolsetLayoutState
 } from "@chemdraft/toolset-registry";
 import type { DesktopToolsetDefinition } from "../../toolsets";
+import { SHELL_COMMAND_IDS } from "../../shellCommandIds";
 import { WIDGET_CONTROL_ID_PREFIX } from "../toolbarWidgets";
 import {
   USER_TOOLSET_ID_PREFIX,
@@ -78,32 +80,6 @@ function orderItemsByIds(
   return ordered;
 }
 
-/** Insert a core toolset's in-place additions (spacers/dividers/commands added on the live palette)
- *  into a base group's item list so the Customize dialog can see, hide, and reorder them too —
- *  mirroring applyUserToolsetOverride's insert-before-reorder. First-wins on a duplicate id. */
-function mergeGroupAdditions(
-  items: readonly ToolsetItemDefinition<string, string>[],
-  additions: readonly { groupId: string; index?: number; item: ToolsetItemDefinition<string, string> }[],
-  groupId: string
-): ToolsetItemDefinition<string, string>[] {
-  const groupAdditions = additions.filter((addition) => addition.groupId === groupId);
-  if (groupAdditions.length === 0) {
-    return [...items];
-  }
-  const present = new Set(items.map((item) => itemCustomizationId(item)).filter((id) => id.length > 0));
-  const result: ToolsetItemDefinition<string, string>[] = [...items];
-  for (const addition of groupAdditions) {
-    const id = itemCustomizationId(addition.item);
-    if (id.length === 0 || present.has(id)) {
-      continue;
-    }
-    present.add(id);
-    const clamped = Math.max(0, Math.min(addition.index ?? result.length, result.length));
-    result.splice(clamped, 0, addition.item);
-  }
-  return result;
-}
-
 type LayoutState = ToolsetLayoutState<string, string>;
 
 export interface CustomizeToolbarsDialogProps {
@@ -129,7 +105,13 @@ function useEffectiveToolsets(baseToolsets: readonly DesktopToolsetDefinition[],
       // Let the generics infer from baseToolsets (DesktopToolsetDefinition) so the result stays
       // desktop-typed for SortableToolsetRow; a literal <string, string> is unsound here (string is
       // not assignable to IconName) and only compiled by TS eliding a deep comparison.
-      return { toolsets: applyToolsetLayoutState([...baseToolsets], draft, { onUnknownCommand: "prune" }), error: false };
+      return {
+        toolsets: applyToolsetLayoutState([...baseToolsets], draft, {
+          additionalCommandIds: SHELL_COMMAND_IDS,
+          onUnknownCommand: "prune"
+        }),
+        error: false
+      };
     } catch {
       return { toolsets: [...baseToolsets], error: true };
     }
@@ -308,10 +290,10 @@ export function CustomizeToolbarsDialog({
     const override = draft.toolsetOverrides.find((entry) => entry.toolsetId === selectedToolsetId);
     const hidden = new Set(override?.hiddenCommandIds ?? []);
     const additions = override?.itemAdditions ?? [];
-    return selectedBase.groups.map((group) => {
+    const groupsWithAdditions = mergeToolsetItemAdditions<string, string>(selectedBase.groups, additions);
+    return groupsWithAdditions.map((group) => {
       const groupId = group.id ?? "";
-      const withAdditions = mergeGroupAdditions(group.items, additions, groupId);
-      const ordered = orderItemsByIds(withAdditions, groupId ? override?.itemOrder?.[groupId] : undefined);
+      const ordered = orderItemsByIds(group.items, groupId ? override?.itemOrder?.[groupId] : undefined);
       return {
         id: groupId,
         title: group.title,

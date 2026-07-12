@@ -21,9 +21,34 @@ function isHiddenByOverride<I extends string, A extends string>(
   return (override?.hiddenCommandIds ?? []).includes(id);
 }
 
+/** Persist the drop position as a complete order over the authoritative, currently rendered group.
+ *  Addition indices are replay metadata; an explicit itemOrder keeps a new or re-shown item at the
+ *  exact requested slot even when the group had already been reordered. */
+function placeItemAtIndex<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  groupId: string,
+  itemId: string,
+  index: number,
+  orderedItemIdsByGroup: ReadonlyMap<string, readonly string[]> | undefined
+): ToolsetLayoutState<I, A> {
+  const currentIds = orderedItemIdsByGroup?.get(groupId);
+  if (!currentIds) {
+    return state;
+  }
+  const withoutItem = currentIds.filter((id) => id !== itemId);
+  const clampedIndex = Math.max(0, Math.min(index, withoutItem.length));
+  const orderedItemIds = [...withoutItem];
+  orderedItemIds.splice(clampedIndex, 0, itemId);
+  return reorderItems(state, toolsetId, groupId, orderedItemIds);
+}
+
 export interface ApplyToolsetLayoutEditContext {
   /** Customization ids currently present in the toolset — used to no-op a duplicate add. */
   presentItemIds: ReadonlySet<string>;
+  /** Authoritative visible item order for each group before this edit. Used to persist an add/re-add
+   *  at its requested drop position instead of letting an older itemOrder append or relocate it. */
+  orderedItemIdsByGroup?: ReadonlyMap<string, readonly string[]>;
   /** Resolve a command id to its title (from the command catalog). Returns undefined for an unknown
    *  command, which makes an addCommand a no-op — the gallery only surfaces real commands. */
   commandTitle: (commandId: string) => string | undefined;
@@ -62,7 +87,15 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
       // A removed base command was only hidden; re-adding it should un-hide, not add a duplicate id
       // (which the hidden filter would then strip anyway).
       if (isHiddenByOverride(state, toolsetId, edit.commandId)) {
-        return setItemHidden(state, toolsetId, edit.commandId, false);
+        const unhidden = setItemHidden(state, toolsetId, edit.commandId, false);
+        return placeItemAtIndex(
+          unhidden,
+          toolsetId,
+          edit.groupId,
+          edit.commandId,
+          edit.index,
+          context.orderedItemIdsByGroup
+        );
       }
       const item = {
         id: edit.commandId,
@@ -73,19 +106,37 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         primary: { type: "command", commandId: edit.commandId },
         submenu: null
       } as ToolsetItemDefinition<I, A>;
-      return addToolsetItemAddition(
+      const added = addToolsetItemAddition(
         state,
         toolsetId,
         { groupId: edit.groupId, index: edit.index, item },
         { presentItemIds: context.presentItemIds }
       );
+      return added === state
+        ? state
+        : placeItemAtIndex(
+            added,
+            toolsetId,
+            edit.groupId,
+            edit.commandId,
+            edit.index,
+            context.orderedItemIdsByGroup
+          );
     }
     case "addWidget": {
       // Widgets (style controls, inspectors) are base manifest items; removing one hides it. Re-adding
       // from the gallery un-hides it. (A control addition is only built for the rare case of dropping a
       // widget onto a toolset that never declared it.)
       if (isHiddenByOverride(state, toolsetId, edit.widgetId)) {
-        return setItemHidden(state, toolsetId, edit.widgetId, false);
+        const unhidden = setItemHidden(state, toolsetId, edit.widgetId, false);
+        return placeItemAtIndex(
+          unhidden,
+          toolsetId,
+          edit.groupId,
+          edit.widgetId,
+          edit.index,
+          context.orderedItemIdsByGroup
+        );
       }
       const item = {
         id: edit.widgetId,
@@ -95,42 +146,74 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
         submenu: null,
         layout: context.widgetLayout?.(edit.widgetId)
       } as ToolsetItemDefinition<I, A>;
-      return addToolsetItemAddition(
+      const added = addToolsetItemAddition(
         state,
         toolsetId,
         { groupId: edit.groupId, index: edit.index, item },
         { presentItemIds: context.presentItemIds }
       );
+      return added === state
+        ? state
+        : placeItemAtIndex(
+            added,
+            toolsetId,
+            edit.groupId,
+            edit.widgetId,
+            edit.index,
+            context.orderedItemIdsByGroup
+          );
     }
     case "addSpacer": {
+      const itemId = nextSpacerItemId(state, toolsetId);
       const item = {
-        id: nextSpacerItemId(state, toolsetId),
+        id: itemId,
         kind: "spacer",
         label: "Spacer",
         primary: { type: "none" },
         layout: { rowSpan: context.gridRows ?? 1 }
       } as ToolsetItemDefinition<I, A>;
-      return addToolsetItemAddition(
+      const added = addToolsetItemAddition(
         state,
         toolsetId,
         { groupId: edit.groupId, index: edit.index, item },
         { presentItemIds: context.presentItemIds }
       );
+      return added === state
+        ? state
+        : placeItemAtIndex(
+            added,
+            toolsetId,
+            edit.groupId,
+            itemId,
+            edit.index,
+            context.orderedItemIdsByGroup
+          );
     }
     case "addSeparator": {
+      const itemId = nextSeparatorItemId(state, toolsetId);
       const item = {
-        id: nextSeparatorItemId(state, toolsetId),
+        id: itemId,
         kind: "separator",
         label: "Divider",
         primary: { type: "none" },
         layout: { rowSpan: context.gridRows ?? 1 }
       } as ToolsetItemDefinition<I, A>;
-      return addToolsetItemAddition(
+      const added = addToolsetItemAddition(
         state,
         toolsetId,
         { groupId: edit.groupId, index: edit.index, item },
         { presentItemIds: context.presentItemIds }
       );
+      return added === state
+        ? state
+        : placeItemAtIndex(
+            added,
+            toolsetId,
+            edit.groupId,
+            itemId,
+            edit.index,
+            context.orderedItemIdsByGroup
+          );
     }
     case "removeItem":
       return removeToolsetItem(state, toolsetId, edit.itemId);

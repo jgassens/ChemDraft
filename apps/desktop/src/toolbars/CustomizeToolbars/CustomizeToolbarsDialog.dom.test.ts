@@ -185,6 +185,66 @@ describe("CustomizeToolbarsDialog", () => {
     expect(override?.hiddenCommandIds).toContain("user.spacer.1");
   });
 
+  it("shows multiple additions in the registry's chronological insertion order", () => {
+    render({
+      version: 1,
+      userToolsets: [],
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          itemAdditions: [
+            {
+              groupId: "core.main.g",
+              index: 1,
+              item: { id: "user.spacer.1", kind: "spacer", label: "First", primary: { type: "none" } }
+            },
+            {
+              groupId: "core.main.g",
+              index: 0,
+              item: { id: "user.spacer.2", kind: "spacer", label: "Second", primary: { type: "none" } }
+            }
+          ]
+        }
+      ]
+    });
+
+    expect([...container.querySelectorAll("[data-item-id]")].map((row) => row.getAttribute("data-item-id"))).toEqual([
+      "user.spacer.2",
+      "tool.a",
+      "user.spacer.1"
+    ]);
+  });
+
+  it("preserves a shell-only toolbar addition when duplicating the effective toolbar", () => {
+    render({
+      version: 1,
+      userToolsets: [],
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          itemAdditions: [
+            {
+              groupId: "core.main.g",
+              index: 1,
+              item: {
+                id: "edit.undo",
+                kind: "button",
+                label: "Undo",
+                primary: { type: "command", commandId: "edit.undo" },
+                submenu: null
+              }
+            }
+          ]
+        }
+      ]
+    });
+
+    const cloneButton = container.querySelector<HTMLButtonElement>('[data-toolset-id="core.main"] .customize-toolset-action');
+    act(() => cloneButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const clone = applied().userToolsets.find((toolset) => toolset.id === "user.main-toolbar-copy");
+    expect(clone?.groups.flatMap((group) => group.items).map((item) => item.id ?? item.commandId)).toContain("edit.undo");
+  });
+
   it("duplicates the on-screen (customized) toolset, not the raw manifest", () => {
     render();
     // Hide core.main's only item, then Duplicate core.main.

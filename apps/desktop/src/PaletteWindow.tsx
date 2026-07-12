@@ -8,7 +8,7 @@ import {
   type ToolbarFlyoutRequest,
   type ToolbarPopoverAnchor
 } from "./ToolPalette";
-import { allShellCommands } from "./commands";
+import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
@@ -35,12 +35,14 @@ import {
   listenForPalettePointer,
   listenForPalettePointerLeave,
   listenForToolsetActiveTool,
+  listenForToolsetCommandSpecs,
   listenForToolsetCustomizeMode,
   listenForToolsetLayoutState,
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
   requestToolsetCustomizeMode,
+  requestToolsetCommandSpecs,
   requestToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
@@ -55,6 +57,7 @@ import {
   setCurrentWindowLogicalSize,
   setToolsetWindowFocusable,
   startPaletteWindowDrag,
+  toolsetCommandSpecsSignature,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetMoleculeInspectorPayload,
@@ -72,6 +75,19 @@ type PaletteWindowDrag = {
   startY?: number;
 };
 
+/** Rehydrate persisted palette layout against both the static shell catalog and runtime commands
+ *  contributed by user/plugin toolsets. The latter must not be pruned while a detached palette is
+ *  waiting for its next layout/spec broadcast. */
+export function createPaletteRegistryFromLayoutState(
+  layoutState: unknown,
+  commandSpecs: readonly CommandSpec[]
+): DesktopToolsetRegistry {
+  return createDesktopToolsetRegistry(
+    layoutState,
+    new Set([...SHELL_COMMAND_IDS, ...commandSpecs.map((command) => command.id)])
+  );
+}
+
 export function PaletteWindow({
   toolsetId = "core.main",
   // Interim seam so tests (and, until Phase 4's definition-push, callers) can supply a
@@ -88,6 +104,15 @@ export function PaletteWindow({
   const animationFrameRef = useRef<number | undefined>(undefined);
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const [toolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
+  const [commandSpecs, setCommandSpecs] = useState<CommandSpec[]>(() =>
+    allShellCommands(createPhase4Document(), undefined, {
+      registry: initialRegistry ?? desktopToolsetRegistry
+    })
+  );
+  const commandSpecsRef = useRef(commandSpecs);
+  const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
+  const latestLayoutStateRef = useRef<unknown>(undefined);
+  commandSpecsRef.current = commandSpecs;
   const [activeTool, setActiveTool] = useState("tool.select");
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);
@@ -96,13 +121,20 @@ export function PaletteWindow({
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
+  const commandOverrides = useMemo(
+    () => new Map(commandSpecs.map((command) => [command.id, command] as const)),
+    [commandSpecs]
+  );
   // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them.
-  const paletteGroups = useMemo(() => getToolsetPaletteGroups(toolset.id, toolsetRegistry), [toolset.id, toolsetRegistry]);
+  const paletteGroups = useMemo(
+    () => getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides),
+    [commandOverrides, toolset.id, toolsetRegistry]
+  );
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
-  // The full command catalog feeds both the shortcut registry and the customize gallery. Customize
-  // mode never invokes, so a static (phase-4) document is fine — we only need id/title/icon.
-  const allCommands = useMemo(() => allShellCommands(createPhase4Document()), []);
+  // The main window owns live command metadata/availability and publishes snapshots to detached
+  // palettes. The state initializer above is only a first-paint fallback before that handshake.
+  const allCommands = commandSpecs;
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
     [allCommands]
@@ -139,7 +171,9 @@ export function PaletteWindow({
     void loadToolsetLayoutState()
       .then((layoutState) => {
         if (active && layoutState !== undefined) {
-          setToolsetRegistry(createDesktopToolsetRegistry(layoutState, SHELL_COMMAND_IDS));
+          const nextRegistry = createPaletteRegistryFromLayoutState(layoutState, commandSpecsRef.current);
+          latestLayoutStateRef.current = layoutState;
+          setToolsetRegistry(nextRegistry);
         }
       })
       .catch(() => undefined);
@@ -161,7 +195,9 @@ export function PaletteWindow({
         return;
       }
       try {
-        setToolsetRegistry(createDesktopToolsetRegistry(layoutState, SHELL_COMMAND_IDS));
+        const nextRegistry = createPaletteRegistryFromLayoutState(layoutState, commandSpecsRef.current);
+        latestLayoutStateRef.current = layoutState;
+        setToolsetRegistry(nextRegistry);
       } catch {
         // Malformed state: keep showing the last good layout rather than blanking the palette.
       }
@@ -173,6 +209,44 @@ export function PaletteWindow({
         }
         unlisten = cleanup;
         void requestToolsetLayoutState().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Resolve every persisted command id against the main window's live CommandSpec. This preserves
+  // current titles/icons/shortcuts and, importantly, changing enabled state such as Undo/Redo.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetCommandSpecs((commands) => {
+      if (active) {
+        const signature = toolsetCommandSpecsSignature(commands);
+        if (signature === commandSpecsSignatureRef.current) {
+          return;
+        }
+        commandSpecsSignatureRef.current = signature;
+        commandSpecsRef.current = commands;
+        setCommandSpecs(commands);
+        if (latestLayoutStateRef.current !== undefined) {
+          try {
+            setToolsetRegistry(createPaletteRegistryFromLayoutState(latestLayoutStateRef.current, commands));
+          } catch {
+            // Retain the last good registry if a future schema/version makes rehydration fail.
+          }
+        }
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+        void requestToolsetCommandSpecs().catch(() => undefined);
       })
       .catch(() => undefined);
     return () => {
@@ -781,7 +855,7 @@ export function PaletteWindow({
         <ToolbarCustomizeController
           toolsetId={toolset.id}
           groups={paletteGroups}
-          onEdit={(edit) => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit }).catch(() => undefined)}
+          onEdit={(edit) => sendToolsetLayoutEdit({ toolsetId: toolset.id, edit })}
         >
           {(effectiveGroups) => (
             <>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
-import { relayoutMolfile2D } from "@chemdraft/ocl-adapter";
+import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   applyPatch,
   applyPatchWithHistory,
@@ -8,6 +8,7 @@ import {
   createDocumentHistory,
   deserializeDocument,
   inchesToCssPx,
+  moleculeToMolfileV2000,
   mmToCssPx,
   redo,
   serializeDocument,
@@ -2538,6 +2539,132 @@ describe("Phase 4 document workflow", () => {
       const unwedged = moleculeById(engineNoWedge, molecule.id);
       // No stereo verdict from the engine → the user's non-stereo decoration is preserved.
       expect(unwedged.bonds[0]?.display?.bondStyle).toBe("dashed");
+    });
+
+    it("keeps OCL's directed wedge end so a valid R/S center stays specified", () => {
+      const base = createPhase4Document("Directed Stereo Relayout");
+      const molecule: MoleculeObject = {
+        id: "directed_stereo",
+        type: "molecule",
+        x: 180.86,
+        y: 189,
+        width: 38.28,
+        height: 33,
+        rotation: 0,
+        style: {},
+        structureFormat: "molfile-v2000",
+        structure: "",
+        atoms: [
+          { id: "center", element: "C", x: 200, y: 200, formalCharge: 0 },
+          { id: "fluorine", element: "F", x: 219.14, y: 189, formalCharge: 0 },
+          { id: "chlorine", element: "Cl", x: 180.86, y: 189, formalCharge: 0 },
+          { id: "bromine", element: "Br", x: 200, y: 222, formalCharge: 0 }
+        ],
+        bonds: [
+          // This ordinary bond is deliberately stored F→C. OCL chooses it as the fresh stereo
+          // bond and reverses it to C→F; losing that direction makes the center unspecified.
+          { id: "cf", fromAtomId: "fluorine", toAtomId: "center", order: "single" },
+          { id: "ccl", fromAtomId: "center", toAtomId: "chlorine", order: "single", display: { bondStyle: "wedge" } },
+          { id: "cbr", fromAtomId: "center", toAtomId: "bromine", order: "single" }
+        ],
+        superatoms: [],
+        rGroups: []
+      };
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      const before = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+      expect(before[0]?.descriptor).not.toBe("unspecified");
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const result = moleculeById(relaid, molecule.id);
+      const after = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(result, { fromDocFrame: true }));
+
+      expect(after).toEqual(before);
+      expect(result.bonds.find((bond) => bond.id === "cf")).toMatchObject({
+        fromAtomId: "center",
+        toAtomId: "fluorine",
+        display: { bondStyle: expect.stringMatching(/^(wedge|hashed)$/) }
+      });
+    });
+
+    it("re-lays out a molecule selected on a later page instead of silently no-oping", () => {
+      const base = createPhase4Document("Later-page Relayout");
+      const molecule = createNativeSingleBondMolecule(base, { x: 200, y: 220 });
+      const firstPage = base.pages[0];
+      const document: ChemDraftDocument = {
+        ...base,
+        pages: [firstPage, { ...firstPage, id: "page_002", objects: [molecule] }],
+        selection: { pageId: "page_002", objectIds: [molecule.id] }
+      };
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, () => ({
+        atoms: [
+          { element: "C", x: 0, y: 0, charge: 0 },
+          { element: "C", x: 1, y: 1, charge: 0 }
+        ],
+        bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+      }));
+
+      expect(relaid).not.toBe(document);
+      expect(relaid.pages[0].objects).toEqual([]);
+      expect(moleculeById(relaid, molecule.id).atoms[1]?.y).not.toBe(molecule.atoms[1]?.y);
+    });
+
+    it("raises a collapsed nonzero bond to the minimum drawable cleanup scale", () => {
+      const base = createPhase4Document("Collapsed Relayout");
+      const source = createNativeSingleBondMolecule(base, { x: 200, y: 220 });
+      const molecule: MoleculeObject = {
+        ...source,
+        x: 200,
+        y: 220,
+        width: 0.002,
+        height: 0,
+        atoms: [
+          { ...source.atoms[0], x: 200, y: 220 },
+          { ...source.atoms[1], x: 200.002, y: 220 }
+        ]
+      };
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, () => ({
+        atoms: [
+          { element: "C", x: 0, y: 0, charge: 0 },
+          { element: "C", x: 1, y: 0, charge: 0 }
+        ],
+        bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+      }));
+      const result = moleculeById(relaid, molecule.id);
+      expect(moleculeBondLength(result, result.bonds[0]?.id ?? "bond_001")).toBeCloseTo(4.5, 3);
+    });
+
+    it("commits bond-only cleanup changes even when engine coordinates already match", () => {
+      const document = insertNativeSingleBondMolecule(createPhase4Document("Bond-only Relayout"), { x: 200, y: 220 });
+      const molecule = selectedMolecule(document);
+      const styled = applyPatches(document, [{
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: {
+          bonds: molecule.bonds.map((bond) => ({ ...bond, display: { bondStyle: "dashed" as const, depthWeight: 0.8 } }))
+        }
+      }]);
+      const relaid = applyNativeMoleculeEngineRelayout(styled, molecule.id, () => ({
+        atoms: molecule.atoms.map((atom) => ({ element: atom.element, x: atom.x, y: -atom.y, charge: atom.formalCharge })),
+        bonds: [{ from: 1, to: 0, order: "single", wedge: "wedge" }]
+      }));
+      const result = moleculeById(relaid, molecule.id);
+
+      expect(relaid).not.toBe(styled);
+      expect(result.bonds[0]).toMatchObject({
+        fromAtomId: molecule.bonds[0]?.toAtomId,
+        toAtomId: molecule.bonds[0]?.fromAtomId,
+        display: { bondStyle: "wedge" }
+      });
+      expect(result.bonds[0]?.display?.depthWeight).toBeUndefined();
     });
 
     it("refuses an engine result it cannot trust to map back", () => {

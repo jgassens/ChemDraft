@@ -3,15 +3,20 @@ import {
   applyToolsetLayoutState,
   createToolbarsMenuModel,
   createToolsetToggleCommandDefinitions,
+  mergeToolsetItemAdditions,
   normalizeToolsetDefinition,
   parseToolsetManifest,
+  toolsetItemCustomizationId,
   type NormalizedToolsetItem,
   type NormalizedToolsetSubmenuItem,
   type ToolbarsMenuItem,
-  type ToolsetDefinition
+  type ToolsetDefinition,
+  type ToolsetGroupDefinition,
+  type ToolsetItemAddition,
+  type ToolsetItemDefinition
 } from "@chemdraft/toolset-registry";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { WIDGET_CONTROL_ID_PREFIX } from "./toolbars/toolbarWidgets";
+import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
@@ -90,12 +95,70 @@ const LEGACY_MAIN_GROUP_IDS = [
 
 const MAIN_ITEMS_GROUP_ID = "core.main.items";
 
+const LEGACY_MAIN_DIVIDER_IDS = LEGACY_MAIN_GROUP_IDS.map((_, index) => `core.main.divider.${index + 1}`);
+
+/** Reconstruct the old seven manifest groups from the flattened manifest's explicit divider
+ *  boundaries. This keeps the migration aligned if a base item is added inside one section later. */
+function legacyMainGroupsFromFlattenedManifest(): ToolsetGroupDefinition<IconName, ToolbarAssetName>[] {
+  const mainItems = desktopToolsets
+    .find((toolset) => toolset.id === "core.main")
+    ?.groups.find((group) => group.id === MAIN_ITEMS_GROUP_ID)
+    ?.items ?? [];
+  let start = 0;
+  return LEGACY_MAIN_GROUP_IDS.map((groupId, sectionIndex) => {
+    const dividerId = LEGACY_MAIN_DIVIDER_IDS[sectionIndex];
+    const dividerIndex = mainItems.findIndex(
+      (item, itemIndex) => itemIndex >= start && toolsetItemCustomizationId(item) === dividerId
+    );
+    const end = dividerIndex >= 0 ? dividerIndex : mainItems.length;
+    const group = { id: groupId, items: mainItems.slice(start, end) };
+    start = dividerIndex >= 0 ? dividerIndex + 1 : end;
+    return group;
+  });
+}
+
+const LEGACY_MAIN_GROUPS = legacyMainGroupsFromFlattenedManifest();
+
+/** `reorderById` semantics over ids: listed ids lead, then every unlisted id keeps source order. */
+function reorderToolbarIds(ids: readonly string[], preferredOrder: unknown): string[] {
+  if (!Array.isArray(preferredOrder)) {
+    return [...ids];
+  }
+  const remaining = [...ids];
+  const ordered: string[] = [];
+  for (const candidate of preferredOrder) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const index = remaining.indexOf(candidate);
+    if (index >= 0) {
+      ordered.push(remaining.splice(index, 1)[0]);
+    }
+  }
+  return [...ordered, ...remaining];
+}
+
+function legacyMainAddition(value: unknown): value is ToolsetItemAddition<string, string> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const addition = value as { groupId?: unknown; item?: unknown };
+  return (
+    typeof addition.groupId === "string" &&
+    LEGACY_MAIN_GROUP_IDS.includes(addition.groupId) &&
+    typeof addition.item === "object" &&
+    addition.item !== null &&
+    toolsetItemCustomizationId(addition.item as ToolsetItemDefinition<string, string>) !== undefined
+  );
+}
+
 /**
  * Remap a persisted layout state written against the old 7-group Main toolbar onto the flattened
- * single-group manifest: item additions re-home to the one group, per-group item orders fold into a
- * single list (in old section order, so relative positions survive), and the now-meaningless
- * groupOrder drops. Anything unrecognized passes through untouched; hides are id-based and need no
- * migration. Pure and idempotent — safe to run on every load.
+ * single-group manifest. The old effective section order (including a saved groupOrder), each
+ * section's fully padded item order, explicit divider boundaries, and accepted additions are folded
+ * into one complete order. Addition indices become absolute flattened positions. Anything
+ * unrecognized passes through untouched; hides are id-based and need no migration. Pure and
+ * idempotent — safe to run on every load.
  */
 export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
   if (typeof state !== "object" || state === null) {
@@ -114,42 +177,62 @@ export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
     if (override.toolsetId !== "core.main") {
       return entry;
     }
+    const rawAdditions = Array.isArray(override.itemAdditions) ? override.itemAdditions : [];
+    const additions = rawAdditions.filter(legacyMainAddition);
+    const itemOrder =
+      typeof override.itemOrder === "object" && override.itemOrder !== null && !Array.isArray(override.itemOrder)
+        ? (override.itemOrder as Record<string, unknown>)
+        : {};
+    const hasLegacyItemOrder = LEGACY_MAIN_GROUP_IDS.some((groupId) => Array.isArray(itemOrder[groupId]));
+    const hasLegacyGroupOrder =
+      Array.isArray(override.groupOrder) &&
+      override.groupOrder.some((groupId) => typeof groupId === "string" && LEGACY_MAIN_GROUP_IDS.includes(groupId));
+    if (additions.length === 0 && !hasLegacyItemOrder && !hasLegacyGroupOrder) {
+      return entry;
+    }
+
+    changed = true;
     const next: Record<string, unknown> = { ...override };
-    if (Array.isArray(override.itemAdditions)) {
-      next.itemAdditions = override.itemAdditions.map((additionEntry) => {
-        if (typeof additionEntry !== "object" || additionEntry === null) {
+    const groupsWithAdditions = mergeToolsetItemAdditions<string, string>(LEGACY_MAIN_GROUPS, additions);
+    const orderedIdsByGroup = new Map(
+      groupsWithAdditions.map((group) => [
+        group.id ?? "",
+        reorderToolbarIds(
+          group.items
+            .map((item) => toolsetItemCustomizationId(item))
+            .filter((id): id is string => id !== undefined),
+          group.id ? itemOrder[group.id] : undefined
+        )
+      ])
+    );
+    const orderedGroupIds = reorderToolbarIds(LEGACY_MAIN_GROUP_IDS, override.groupOrder);
+    let flattenedOrder = orderedGroupIds.flatMap((groupId) => [
+      ...(orderedIdsByGroup.get(groupId) ?? []),
+      LEGACY_MAIN_DIVIDER_IDS[LEGACY_MAIN_GROUP_IDS.indexOf(groupId)]
+    ]);
+    // A mixed state may already carry a flattened preference alongside legacy keys. It is a global
+    // order and therefore takes precedence after the legacy sections have been reconstructed.
+    flattenedOrder = reorderToolbarIds(flattenedOrder, itemOrder[MAIN_ITEMS_GROUP_ID]);
+
+    if (rawAdditions.length > 0) {
+      next.itemAdditions = rawAdditions.map((additionEntry) => {
+        if (!legacyMainAddition(additionEntry)) {
           return additionEntry;
         }
-        const addition = additionEntry as Record<string, unknown>;
-        if (typeof addition.groupId === "string" && LEGACY_MAIN_GROUP_IDS.includes(addition.groupId)) {
-          changed = true;
-          return { ...addition, groupId: MAIN_ITEMS_GROUP_ID };
-        }
-        return additionEntry;
+        const itemId = toolsetItemCustomizationId(additionEntry.item);
+        const absoluteIndex = itemId === undefined ? -1 : flattenedOrder.indexOf(itemId);
+        return {
+          ...additionEntry,
+          groupId: MAIN_ITEMS_GROUP_ID,
+          ...(absoluteIndex >= 0 ? { index: absoluteIndex } : {})
+        };
       });
     }
-    const itemOrder = override.itemOrder;
-    if (typeof itemOrder === "object" && itemOrder !== null && !Array.isArray(itemOrder)) {
-      const orderRecord = itemOrder as Record<string, unknown>;
-      const legacyKeys = LEGACY_MAIN_GROUP_IDS.filter((key) => Array.isArray(orderRecord[key]));
-      if (legacyKeys.length > 0) {
-        changed = true;
-        const merged: unknown[] = Array.isArray(orderRecord[MAIN_ITEMS_GROUP_ID])
-          ? [...(orderRecord[MAIN_ITEMS_GROUP_ID] as unknown[])]
-          : [];
-        for (const key of legacyKeys) {
-          merged.push(...(orderRecord[key] as unknown[]));
-        }
-        const remaining = Object.fromEntries(
-          Object.entries(orderRecord).filter(([key]) => !LEGACY_MAIN_GROUP_IDS.includes(key))
-        );
-        next.itemOrder = { ...remaining, [MAIN_ITEMS_GROUP_ID]: merged };
-      }
-    }
-    if (Array.isArray(override.groupOrder)) {
-      changed = true;
-      delete next.groupOrder;
-    }
+    const remainingItemOrder = Object.fromEntries(
+      Object.entries(itemOrder).filter(([key]) => !LEGACY_MAIN_GROUP_IDS.includes(key) && key !== MAIN_ITEMS_GROUP_ID)
+    );
+    next.itemOrder = { ...remainingItemOrder, [MAIN_ITEMS_GROUP_ID]: flattenedOrder };
+    delete next.groupOrder;
     return next;
   });
   return changed ? { ...record, toolsetOverrides } : state;
@@ -194,9 +277,28 @@ export function getToolsetPaletteGroups(
   registry: DesktopToolsetRegistry = desktopToolsetRegistry,
   commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
 ): ToolbarPaletteGroupModel[] {
+  // Items absent from this core toolset's shipped definition are persisted custom additions. Their
+  // stored item shell is placement only; visual/interactive command semantics must follow the live
+  // CommandSpec (for example a renamed user-toolbar launcher or changing Undo availability).
+  const shippedToolset = desktopToolsetRegistry.get(toolsetId);
+  const shippedItemIds = new Set(
+    shippedToolset
+      ? normalizeToolsetDefinition(shippedToolset).groups
+          .flatMap((group) => group.items.map((item) => item.id))
+      : []
+  );
   return normalizeToolsetDefinition(registry.require(toolsetId)).groups.map((group) => ({
     id: group.id,
-    items: group.items.map((item) => toolsetItemToPaletteItem(item, commandOverrides))
+    items: group.items.map((item) => {
+      const commandId = item.primary.type === "command" ? item.primary.commandId : undefined;
+      const isGeneratedLauncher = commandId?.startsWith("view.toolset.toggle.") === true;
+      const isCustomCoreAddition = Boolean(shippedToolset) && !shippedItemIds.has(item.id);
+      return toolsetItemToPaletteItem(
+        item,
+        commandOverrides,
+        isGeneratedLauncher || isCustomCoreAddition
+      );
+    })
   }));
 }
 
@@ -239,12 +341,7 @@ export function computePaletteGridSize(
     .flat()
     // Span-less widgets render as appended sections (excluded from the grid math); a widget with
     // declared grid spans is a grid citizen and its cells count like any other item's.
-    .filter(
-      (item) =>
-        !(item.primary.type === "control" && item.primary.controlId.startsWith(WIDGET_CONTROL_ID_PREFIX)) ||
-        item.layout.colSpan > 1 ||
-        item.layout.rowSpan > 1
-    );
+    .filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item));
   const placedColumnCount = Math.max(
     0,
     ...placedItems
@@ -335,25 +432,31 @@ export function isDisabledPlaceholderCommand(command: CommandSpec): boolean {
 
 export function toolsetItemToPaletteItem(
   item: NormalizedToolsetItem,
-  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
+  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map(),
+  preferCommandPresentation = false
 ): ToolbarPaletteItemModel {
   const primary = item.primary.type === "command"
     ? {
         type: "command" as const,
-        command: commandSpecForNormalizedItem(item, commandOverrides)
+        command: commandSpecForNormalizedItem(item, commandOverrides, preferCommandPresentation)
       }
     : item.primary.type === "control"
       ? { type: "control" as const, controlId: item.primary.controlId }
       : { type: "none" as const };
-  const tooltipShortcut = item.tooltip.shortcut ?? (primary.type === "command" ? primary.command.shortcut : null) ?? null;
+  const liveCommand = preferCommandPresentation && primary.type === "command"
+    ? primary.command
+    : undefined;
+  const tooltipShortcut = liveCommand
+    ? liveCommand.shortcut ?? liveCommand.defaultShortcut ?? null
+    : item.tooltip.shortcut ?? (primary.type === "command" ? primary.command.shortcut : null) ?? null;
 
   return {
     id: item.id,
     kind: item.kind,
-    label: item.label,
-    icon: item.icon as IconName | undefined,
-    assetName: item.assetName as ToolbarAssetName | undefined,
-    iconDataUri: item.iconDataUri,
+    label: liveCommand?.title ?? item.label,
+    icon: liveCommand?.icon ?? item.icon as IconName | undefined,
+    assetName: liveCommand ? liveCommand.assetName : item.assetName as ToolbarAssetName | undefined,
+    iconDataUri: liveCommand ? undefined : item.iconDataUri,
     primary,
     submenu: item.submenu
       ? {
@@ -365,14 +468,14 @@ export function toolsetItemToPaletteItem(
         }
       : null,
     tooltip: {
-      title: item.tooltip.title,
-      description: item.tooltip.description ?? null,
+      title: liveCommand?.title ?? item.tooltip.title,
+      description: liveCommand ? liveCommand.description ?? null : item.tooltip.description ?? null,
       shortcut: tooltipShortcut,
-      shortcutLabel: compactMacShortcutLabel(tooltipShortcut ?? undefined) ?? null
+      shortcutLabel: liveCommand?.shortcutLabel ?? compactMacShortcutLabel(tooltipShortcut ?? undefined) ?? null
     },
     layout: item.layout,
-    disabledReason: item.disabledReason,
-    category: item.category
+    disabledReason: liveCommand ? liveCommand.disabledReason : item.disabledReason,
+    category: liveCommand ? liveCommand.category : item.category
   };
 }
 
@@ -393,7 +496,8 @@ export function submenuItemToCommandSpec(
 
 function commandSpecForNormalizedItem(
   item: NormalizedToolsetItem,
-  commandOverrides: ReadonlyMap<string, CommandSpec>
+  commandOverrides: ReadonlyMap<string, CommandSpec>,
+  preferCommandPresentation = false
 ): CommandSpec {
   if (item.primary.type !== "command") {
     throw new Error(`Toolset item "${item.id}" has no command primary.`);
@@ -408,7 +512,7 @@ function commandSpecForNormalizedItem(
     disabledReason: item.disabledReason,
     category: item.category
   });
-  return mergeToolsetCommandSpec(base, commandOverrides.get(item.primary.commandId));
+  return mergeToolsetCommandSpec(base, commandOverrides.get(item.primary.commandId), preferCommandPresentation);
 }
 
 function commandSpecFromManifest({
@@ -447,22 +551,30 @@ function commandSpecFromManifest({
   };
 }
 
-function mergeToolsetCommandSpec(base: CommandSpec, override: CommandSpec | undefined): CommandSpec {
+function mergeToolsetCommandSpec(
+  base: CommandSpec,
+  override: CommandSpec | undefined,
+  preferCommandPresentation = false
+): CommandSpec {
   if (!override) {
     return base;
   }
 
   return {
     ...base,
-    assetName: override.assetName ?? base.assetName,
+    title: preferCommandPresentation ? override.title : base.title,
+    icon: preferCommandPresentation ? override.icon : base.icon,
+    // Asset choice is contextual presentation just like title/icon (the same layer command uses
+    // different glyphs in Main vs Art). Only custom/generated launcher items opt into replacement.
+    assetName: preferCommandPresentation ? override.assetName : base.assetName,
     enabled: override.enabled,
     disabledReason: override.disabledReason,
-    description: override.description ?? base.description,
-    shortcut: override.shortcut ?? base.shortcut,
-    shortcutLabel: override.shortcutLabel ?? base.shortcutLabel,
-    defaultShortcut: override.defaultShortcut ?? base.defaultShortcut,
+    description: preferCommandPresentation ? override.description : override.description ?? base.description,
+    shortcut: preferCommandPresentation ? override.shortcut : override.shortcut ?? base.shortcut,
+    shortcutLabel: preferCommandPresentation ? override.shortcutLabel : override.shortcutLabel ?? base.shortcutLabel,
+    defaultShortcut: preferCommandPresentation ? override.defaultShortcut : override.defaultShortcut ?? base.defaultShortcut,
     source: override.source,
-    category: override.category ?? base.category
+    category: preferCommandPresentation ? override.category : override.category ?? base.category
   };
 }
 

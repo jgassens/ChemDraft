@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyToolsetLayoutState, type ToolsetDefinition, type ToolsetLayoutState } from "@chemdraft/toolset-registry";
 import type { ToolsetLayoutEditPayload } from "../../window-manager";
 import { emptyLayoutState } from "../CustomizeToolbars/layoutStateEdits";
 import { applyToolsetLayoutEdit } from "./applyLayoutEdit";
@@ -10,6 +11,29 @@ const context = {
   commandIcon: (id: string) => (id === "tool.extra" ? "atom" : undefined),
   gridRows: 2
 };
+
+const baseToolset: ToolsetDefinition = {
+  id: TOOLSET,
+  title: "Main",
+  source: "core",
+  defaultVisible: true,
+  defaultMode: "floating",
+  groups: [
+    {
+      id: "core.main.selection",
+      items: [
+        { commandId: "tool.select", title: "Select" },
+        { commandId: "tool.bond", title: "Bond" }
+      ]
+    }
+  ]
+};
+
+function appliedItemIds(state: ToolsetLayoutState): (string | undefined)[] {
+  return applyToolsetLayoutState([baseToolset], state, { additionalCommandIds: ["tool.extra"] })[0].groups[0].items.map(
+    (item) => item.id ?? item.commandId
+  );
+}
 
 function payload(edit: ToolsetLayoutEditPayload["edit"]): ToolsetLayoutEditPayload {
   return { toolsetId: TOOLSET, edit };
@@ -65,6 +89,33 @@ describe("applyToolsetLayoutEdit", () => {
       context
     );
     expect(next).toBe(state);
+  });
+
+  it("keeps a new item at its requested index after the group was already reordered", () => {
+    let state = applyToolsetLayoutEdit(
+      emptyLayoutState(),
+      payload({
+        kind: "reorderItems",
+        groupId: "core.main.selection",
+        orderedItemIds: ["tool.bond", "tool.select"]
+      }),
+      context
+    );
+    state = applyToolsetLayoutEdit(
+      state,
+      payload({ kind: "addCommand", groupId: "core.main.selection", index: 1, commandId: "tool.extra" }),
+      {
+        ...context,
+        orderedItemIdsByGroup: new Map([["core.main.selection", ["tool.bond", "tool.select"]]])
+      }
+    );
+
+    expect(state.toolsetOverrides[0]?.itemOrder?.["core.main.selection"]).toEqual([
+      "tool.bond",
+      "tool.extra",
+      "tool.select"
+    ]);
+    expect(appliedItemIds(state)).toEqual(["tool.bond", "tool.extra", "tool.select"]);
   });
 
   it("addSpacer adds a spacer whose rowSpan comes from gridRows", () => {
@@ -151,6 +202,32 @@ describe("applyToolsetLayoutEdit", () => {
       { ...context, commandTitle: (id) => (id === "tool.bond" ? "Bond" : undefined) }
     );
     expect(restored.toolsetOverrides).toEqual([]);
+  });
+
+  it("places a re-added hidden command at the gallery drop position", () => {
+    let state = applyToolsetLayoutEdit(
+      emptyLayoutState(),
+      payload({
+        kind: "reorderItems",
+        groupId: "core.main.selection",
+        orderedItemIds: ["tool.select", "tool.bond"]
+      }),
+      context
+    );
+    state = applyToolsetLayoutEdit(state, payload({ kind: "removeItem", itemId: "tool.bond" }), context);
+    state = applyToolsetLayoutEdit(
+      state,
+      payload({ kind: "addCommand", groupId: "core.main.selection", index: 0, commandId: "tool.bond" }),
+      {
+        ...context,
+        commandTitle: (id) => (id === "tool.bond" ? "Bond" : undefined),
+        orderedItemIdsByGroup: new Map([["core.main.selection", ["tool.select"]]])
+      }
+    );
+
+    expect(state.toolsetOverrides[0]?.hiddenCommandIds).toBeUndefined();
+    expect(state.toolsetOverrides[0]?.itemOrder?.["core.main.selection"]).toEqual(["tool.bond", "tool.select"]);
+    expect(appliedItemIds(state)).toEqual(["tool.bond", "tool.select"]);
   });
 
   it("removeItem deletes an addition but hides a base item", () => {

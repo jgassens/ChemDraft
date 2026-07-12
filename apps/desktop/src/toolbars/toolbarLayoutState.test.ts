@@ -28,6 +28,20 @@ describe("mergeVisibilityIntoLayoutState", () => {
     });
   });
 
+  it("preserves the top-level toolset order while saving visibility", () => {
+    const existing: ToolsetLayoutState = {
+      version: 1,
+      toolsetOrder: ["core.art", "core.main"],
+      toolsetOverrides: [],
+      userToolsets: []
+    };
+
+    const merged = mergeVisibilityIntoLayoutState(existing, ["core.main", "core.art"], new Set(["core.main"]));
+
+    expect(merged.toolsetOrder).toEqual(["core.art", "core.main"]);
+    expect(merged.toolsetOrder).not.toBe(existing.toolsetOrder);
+  });
+
   it("hides a customized toolset while preserving its other customization", () => {
     const existing: ToolsetLayoutState = {
       version: 1,

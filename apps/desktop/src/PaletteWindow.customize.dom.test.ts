@@ -7,8 +7,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PaletteWindow } from "./PaletteWindow";
+import { allShellCommands, type CommandSpec } from "./commands";
+import { createPhase4Document } from "./documentWorkflow";
+import { createPaletteRegistryFromLayoutState, PaletteWindow } from "./PaletteWindow";
 import {
+  broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
   TOOLSET_LAYOUT_EDIT_EVENT,
   type ToolsetLayoutEditPayload
@@ -44,9 +47,9 @@ describe("PaletteWindow customize mode bridge", () => {
     container.remove();
   });
 
-  async function renderMainPalette() {
+  async function renderMainPalette(initialRegistry?: Parameters<typeof PaletteWindow>[0]["initialRegistry"]) {
     await act(async () => {
-      root.render(createElement(PaletteWindow, { toolsetId: "core.main" }));
+      root.render(createElement(PaletteWindow, { toolsetId: "core.main", initialRegistry }));
     });
     // Let the async listener-attachment effects settle before "the main window broadcasts".
     await act(async () => {
@@ -101,5 +104,83 @@ describe("PaletteWindow customize mode bridge", () => {
       await broadcastToolsetCustomizeMode({ toolsetId: "core.art", active: true });
     });
     expect(container.querySelector(".customize-main-toolbar-bar")).toBeNull();
+  });
+
+  it("keeps an added dynamic launcher and refreshes its live title, icon, and availability", async () => {
+    const commandId = "view.toolset.toggle.user.quick";
+    const layoutState = {
+      version: 1,
+      toolsetOverrides: [
+        {
+          toolsetId: "core.main",
+          itemAdditions: [
+            {
+              groupId: "core.main.items",
+              index: 0,
+              item: {
+                id: commandId,
+                kind: "button",
+                label: "Toggle Old Quick Tools",
+                icon: "text",
+                assetName: "Custom_Text",
+                primary: { type: "command", commandId },
+                submenu: null
+              }
+            }
+          ]
+        }
+      ],
+      userToolsets: [
+        {
+          id: "user.quick",
+          title: "Renamed Quick Tools",
+          source: "user",
+          defaultVisible: false,
+          defaultMode: "floating",
+          groups: [
+            {
+              id: "user.quick.items",
+              items: [{ commandId: "tool.select", title: "Selection Tool" }]
+            }
+          ]
+        }
+      ]
+    };
+    const seedSpec: CommandSpec = {
+      id: commandId,
+      title: "Toggle Renamed Quick Tools",
+      icon: "palette",
+      source: "core"
+    };
+
+    // The static shell id set does not know this user-toolbar launcher; the live spec id keeps the
+    // persisted addition from being pruned during detached-palette rehydration.
+    const registry = createPaletteRegistryFromLayoutState(layoutState, [seedSpec]);
+    const liveLauncher = allShellCommands(createPhase4Document(), undefined, { registry })
+      .find((command) => command.id === commandId);
+    expect(liveLauncher?.title).toBe("Toggle Renamed Quick Tools");
+    await renderMainPalette(registry);
+
+    let button = container.querySelector<HTMLButtonElement>(`[data-command-id="${commandId}"]`);
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute("aria-label")).toContain("Toggle Renamed Quick Tools");
+    expect(button?.getAttribute("data-toolbar-asset")).toBeNull();
+
+    await act(async () => {
+      await broadcastToolsetCommandSpecs([
+        {
+          ...seedSpec,
+          title: "Toggle Final Quick Tools",
+          icon: "undo",
+          enabled: false,
+          disabledReason: "Temporarily unavailable"
+        }
+      ]);
+    });
+
+    button = container.querySelector<HTMLButtonElement>(`[data-command-id="${commandId}"]`);
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute("aria-label")).toBe("Toggle Final Quick Tools: Temporarily unavailable");
+    expect(button?.querySelector(".title-glyph-icon")).toBeNull();
   });
 });

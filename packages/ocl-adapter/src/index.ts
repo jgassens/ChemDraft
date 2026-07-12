@@ -178,6 +178,169 @@ async function registerOclResources(): Promise<void> {
 
 type OclMolecule = InstanceType<typeof OCL.Molecule>;
 
+interface InputOrderedOclMolecule {
+  molecule: OclMolecule;
+  /** Maps each molfile atom index to the corresponding OCL atom index. */
+  originalToEngineAtom: number[];
+  /** Maps each OCL atom index back to its molfile atom index. */
+  engineToOriginalAtom: number[];
+  /** Maps each OCL bond index back to its V2000 molfile bond index when available. */
+  engineToOriginalBond?: number[];
+}
+
+interface V2000Blocks {
+  lines: string[];
+  countsLineIndex: number;
+  atomCount: number;
+  bondCount: number;
+  atomLines: string[];
+  bondLines: string[];
+}
+
+function v2000Blocks(molfile: string): V2000Blocks | undefined {
+  const lines = molfile.split(/\r?\n/);
+  const countsLineIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+  if (countsLineIndex < 0) return undefined;
+  const countsLine = lines[countsLineIndex] ?? "";
+  const atomCount = Number.parseInt(countsLine.slice(0, 3).trim(), 10);
+  const bondCount = Number.parseInt(countsLine.slice(3, 6).trim(), 10);
+  if (!Number.isInteger(atomCount) || !Number.isInteger(bondCount)) return undefined;
+  const atomStart = countsLineIndex + 1;
+  const atomLines = lines.slice(atomStart, atomStart + atomCount);
+  const bondLines = lines.slice(atomStart + atomCount, atomStart + atomCount + bondCount);
+  if (atomLines.length !== atomCount || bondLines.length !== bondCount) return undefined;
+  return { lines, countsLineIndex, atomCount, bondCount, atomLines, bondLines };
+}
+
+function v2000BondAtomIndices(line: string): { from: number; to: number } | undefined {
+  const from = Number.parseInt(line.slice(0, 3).trim(), 10) - 1;
+  const to = Number.parseInt(line.slice(3, 6).trim(), 10) - 1;
+  return Number.isInteger(from) && from >= 0 && Number.isInteger(to) && to >= 0 ? { from, to } : undefined;
+}
+
+function numericAtomPairKey(from: number, to: number): string {
+  return from < to ? `${from}::${to}` : `${to}::${from}`;
+}
+
+function v2000EngineToOriginalBondMap(
+  molfile: string,
+  molecule: OclMolecule,
+  engineToOriginalAtom: readonly number[]
+): number[] | undefined {
+  const blocks = v2000Blocks(molfile);
+  if (!blocks || blocks.bondCount !== molecule.getAllBonds()) return undefined;
+  const originalIndicesByPair = new Map<string, number[]>();
+  blocks.bondLines.forEach((line, originalBondIndex) => {
+    const atoms = v2000BondAtomIndices(line);
+    if (!atoms) return;
+    const key = numericAtomPairKey(atoms.from, atoms.to);
+    originalIndicesByPair.set(key, [...(originalIndicesByPair.get(key) ?? []), originalBondIndex]);
+  });
+
+  const engineToOriginalBond: number[] = [];
+  for (let engineBondIndex = 0; engineBondIndex < molecule.getAllBonds(); engineBondIndex++) {
+    const engineFrom = molecule.getBondAtom(0, engineBondIndex);
+    const engineTo = molecule.getBondAtom(1, engineBondIndex);
+    const originalFrom = engineToOriginalAtom[engineFrom];
+    const originalTo = engineToOriginalAtom[engineTo];
+    if (originalFrom === undefined || originalTo === undefined) return undefined;
+    const candidates = originalIndicesByPair.get(numericAtomPairKey(originalFrom, originalTo));
+    const originalBondIndex = candidates?.shift();
+    if (originalBondIndex === undefined) return undefined;
+    engineToOriginalBond.push(originalBondIndex);
+  }
+  return engineToOriginalBond;
+}
+
+function v2000Coordinate(value: number): string {
+  const safe = Number.isFinite(value) ? value + 0 : 0;
+  const text = safe.toFixed(4);
+  if (text.length > 10) {
+    throw new Error("OpenChemLib returned a 2D coordinate outside V2000's fixed-width range.");
+  }
+  return text.padStart(10);
+}
+
+/**
+ * Keep the caller's atom/bond order and all original atom-indexed property lines (`M  CHG`,
+ * `M  ISO`, `M  RAD`, etc.), replacing only the freshly invented geometry and wedge assignment.
+ * Reordering OCL's serialized atom block alone would leave those property lines pointing at the
+ * wrong atoms whenever OCL compacted an explicit hydrogen.
+ */
+function rewriteOriginalV2000Depiction(molfile: string, depiction: Depiction2D): string {
+  const blocks = v2000Blocks(molfile);
+  if (!blocks || blocks.atomCount !== depiction.atoms.length || blocks.bondCount !== depiction.bonds.length) {
+    throw new Error("OpenChemLib returned a 2D depiction that cannot be mapped onto the input V2000 structure.");
+  }
+
+  const atomLines = blocks.atomLines.map((line, index) => {
+    const atom = depiction.atoms[index];
+    if (!atom) throw new Error("OpenChemLib omitted an atom from its 2D depiction.");
+    return `${v2000Coordinate(atom.x)}${v2000Coordinate(atom.y)}${v2000Coordinate(0)}${line.slice(30)}`;
+  });
+  const depictionBondByPair = new Map(
+    depiction.bonds.map((bond) => [numericAtomPairKey(bond.from, bond.to), bond])
+  );
+  const bondLines = blocks.bondLines.map((line) => {
+    const inputAtoms = v2000BondAtomIndices(line);
+    if (!inputAtoms) throw new Error("Input V2000 structure contains an invalid bond line.");
+    const bond = depictionBondByPair.get(numericAtomPairKey(inputAtoms.from, inputAtoms.to));
+    if (!bond) throw new Error("OpenChemLib omitted a bond from its 2D depiction.");
+    const stereoCode = bond.wedge === "wedge" ? 1 : bond.wedge === "hashed" ? 6 : 0;
+    const originalStereoCode = Number.parseInt(line.slice(9, 12).trim(), 10) || 0;
+    const from = bond.wedge ? bond.from : inputAtoms.from;
+    const to = bond.wedge ? bond.to : inputAtoms.to;
+    const stereo = bond.wedge || originalStereoCode === 1 || originalStereoCode === 6
+      ? stereoCode
+      : originalStereoCode;
+    return `${String(from + 1).padStart(3)}${String(to + 1).padStart(3)}${line.slice(6, 9)}${String(stereo).padStart(3)}${line.slice(12)}`;
+  });
+
+  const atomStart = blocks.countsLineIndex + 1;
+  const suffixStart = atomStart + blocks.atomCount + blocks.bondCount;
+  return [
+    ...blocks.lines.slice(0, atomStart),
+    ...atomLines,
+    ...bondLines,
+    ...blocks.lines.slice(suffixStart)
+  ].join("\n");
+}
+
+/**
+ * OCL compacts ordinary explicit hydrogens to the end while parsing a molfile. In doing so it may
+ * move a non-hydrogen atom into the vacated slot as well, so reading index `i` directly from the
+ * parsed molecule is not an input-order contract. Keep OCL's own parser-provided map beside every
+ * parsed molecule and use it whenever values cross the adapter boundary by atom index.
+ */
+function parseMolfileWithInputOrder(molfile: string): InputOrderedOclMolecule {
+  const parsed = OCL.Molecule.fromMolfileWithAtomMap(molfile);
+  const molecule = parsed.molecule as OclMolecule;
+  const originalToEngineAtom = [...parsed.map];
+  const engineToOriginalAtom = new Array<number>(molecule.getAllAtoms()).fill(-1);
+
+  originalToEngineAtom.forEach((engineIndex, originalIndex) => {
+    if (
+      !Number.isInteger(engineIndex) ||
+      engineIndex < 0 ||
+      engineIndex >= engineToOriginalAtom.length ||
+      engineToOriginalAtom[engineIndex] !== -1
+    ) {
+      throw new Error("OpenChemLib returned an invalid molfile atom-order map.");
+    }
+    engineToOriginalAtom[engineIndex] = originalIndex;
+  });
+
+  if (
+    originalToEngineAtom.length !== molecule.getAllAtoms() ||
+    engineToOriginalAtom.some((originalIndex) => originalIndex === -1)
+  ) {
+    throw new Error("OpenChemLib could not preserve every molfile atom index.");
+  }
+
+  const engineToOriginalBond = v2000EngineToOriginalBondMap(molfile, molecule, engineToOriginalAtom);
+  return { molecule, originalToEngineAtom, engineToOriginalAtom, engineToOriginalBond };
+}
+
 // ---------------------------------------------------------------------------
 // 2D depiction utility (SMILES -> laid-out 2D structure with wedges + molfile)
 // ---------------------------------------------------------------------------
@@ -224,18 +387,23 @@ function depictionOrder(order: number): DepictionBondOrder {
 }
 
 /** Invent fresh 2D coordinates for an OCL molecule and read the result back as a Depiction2D.
- *  Shared by the SMILES depictor and the molfile re-layout: atom order is never disturbed by the
- *  coordinate inventor, so indices stay aligned with the caller's input. */
-function inventDepiction2D(mol: OclMolecule): Depiction2D {
-  mol.inventCoordinates();
+ *  Shared by the SMILES depictor and molfile re-layout. Coordinate invention keeps OCL's parsed
+ *  atom table stable; `inputOrder` restores the caller's pre-compaction molfile indices. */
+function inventDepiction2D(
+  mol: OclMolecule,
+  inputOrder?: Pick<InputOrderedOclMolecule, "originalToEngineAtom" | "engineToOriginalAtom">
+): Depiction2D {
+  // Ordinary explicit H atoms are real ChemDraft atoms. OCL removes them by default during
+  // coordinate invention, so keeping them is required for both atom identity and index mapping.
+  mol.inventCoordinates({ keepHydrogens: true });
   mol.ensureHelperArrays(OCL.Molecule.cHelperParities);
 
   const up = OCL.Molecule.cBondTypeUp;
   const down = OCL.Molecule.cBondTypeDown;
 
-  const atoms: DepictionAtom2D[] = [];
+  const engineAtoms: DepictionAtom2D[] = [];
   for (let i = 0; i < mol.getAllAtoms(); i++) {
-    atoms.push({
+    engineAtoms.push({
       element: mol.getAtomLabel(i),
       x: mol.getAtomX(i),
       // OCL's 2D layout is screen-oriented (y grows DOWN); its molfile writer flips
@@ -247,10 +415,10 @@ function inventDepiction2D(mol: OclMolecule): Depiction2D {
     });
   }
 
-  const bonds: DepictionBond2D[] = [];
+  const engineBonds: DepictionBond2D[] = [];
   for (let b = 0; b < mol.getAllBonds(); b++) {
     const type = mol.getBondType(b);
-    bonds.push({
+    engineBonds.push({
       from: mol.getBondAtom(0, b),
       to: mol.getBondAtom(1, b),
       order: depictionOrder(mol.getBondOrder(b)),
@@ -258,7 +426,25 @@ function inventDepiction2D(mol: OclMolecule): Depiction2D {
     });
   }
 
-  return { molfile: mol.toMolfile(), atoms, bonds };
+  const atoms = inputOrder
+    ? inputOrder.originalToEngineAtom.map((engineIndex) => engineAtoms[engineIndex])
+    : engineAtoms;
+  if (atoms.some((atom) => atom === undefined)) {
+    throw new Error("OpenChemLib lost an atom while inventing 2D coordinates.");
+  }
+
+  const bonds = inputOrder
+    ? engineBonds.map((bond) => {
+        const from = inputOrder.engineToOriginalAtom[bond.from];
+        const to = inputOrder.engineToOriginalAtom[bond.to];
+        if (from === undefined || from < 0 || to === undefined || to < 0) {
+          throw new Error("OpenChemLib returned a bond with an unmapped atom.");
+        }
+        return { ...bond, from, to };
+      })
+    : engineBonds;
+
+  return { molfile: mol.toMolfile(), atoms: atoms as DepictionAtom2D[], bonds };
 }
 
 /**
@@ -280,10 +466,13 @@ export function depictSmiles2D(smiles: string): Depiction2D {
  * writes coordinates and stereo bonds).
  */
 export function relayoutMolfile2D(molfile: string): Depiction2D {
-  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
-  const identityBefore = mol.getIDCode();
-  const depiction = inventDepiction2D(mol);
-  const identityAfter = mol.getIDCode();
+  const parsed = parseMolfileWithInputOrder(molfile);
+  const identityBefore = parsed.molecule.getIDCode();
+  const invented = inventDepiction2D(parsed.molecule, parsed);
+  const depiction = { ...invented, molfile: rewriteOriginalV2000Depiction(molfile, invented) };
+  // Reparse the actual serialized output. Comparing the same mutable OCL object before/after does
+  // not validate the wedge/coordinate representation that crosses the adapter boundary.
+  const identityAfter = OCL.Molecule.fromMolfile(depiction.molfile).getIDCode();
   if (identityBefore !== identityAfter) {
     throw new Error("2D re-layout unexpectedly changed the molecule's identity.");
   }
@@ -308,32 +497,32 @@ export interface OclAtomStereo {
  * array is index-aligned to the molfile's atom order.
  */
 export function perceiveStereoCentersFromMolfile(molfile: string): OclAtomStereo[] {
-  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
+  const parsed = parseMolfileWithInputOrder(molfile);
+  const mol = parsed.molecule;
   mol.ensureHelperArrays(OCL.Molecule.cHelperCIP);
-  const out: OclAtomStereo[] = [];
-  for (let i = 0; i < mol.getAllAtoms(); i++) {
-    const isStereoCenter = mol.isAtomStereoCenter(i);
+  return parsed.originalToEngineAtom.map((engineIndex): OclAtomStereo => {
+    const isStereoCenter = mol.isAtomStereoCenter(engineIndex);
     let descriptor: OclAtomStereo["descriptor"] = "unspecified";
     // A cumulated-π axial center (allene/cumulene, pi ≥ 2) is a genuine stereocenter, but its hand
     // is carried by the AXIS, not by a σ-bond wedge, so a flat 2D depiction cannot encode it. Leave
     // its descriptor "unspecified" so the flatten read-back guard never treats it as a center it
     // must preserve — which it never can, so the whole flatten would otherwise be refused. Such
     // axes are surfaced separately by perceiveUnrepresentableStereo.
-    if (isStereoCenter && mol.getAtomPi(i) < 2) {
-      const cip = mol.getAtomCIPParity(i);
+    if (isStereoCenter && mol.getAtomPi(engineIndex) < 2) {
+      const cip = mol.getAtomCIPParity(engineIndex);
       if (cip === OCL.Molecule.cAtomCIPParityRorM) descriptor = "R";
       else if (cip === OCL.Molecule.cAtomCIPParitySorP) descriptor = "S";
     }
-    out.push({ isStereoCenter, descriptor });
-  }
-  return out;
+    return { isStereoCenter, descriptor };
+  });
 }
 
 export interface UnrepresentableStereo {
   /** Allene / cumulene axial stereocenters: the central atom's asymmetry is carried by a
    *  cumulated-π AXIS (≥2 π bonds), not by four σ substituents — there is no bond to wedge. */
   alleneAtoms: number[];
-  /** Atropisomer (BINAP-type) hindered-rotation stereo axes, reported by their pivot bond index. */
+  /** Atropisomer (BINAP-type) hindered-rotation stereo axes, reported by their V2000 input bond
+   *  index. For V3000, where OCL exposes no original bond map, this remains the engine bond index. */
   atropisomerBonds: number[];
 }
 
@@ -345,18 +534,22 @@ export interface UnrepresentableStereo {
  * Deliberate gap: PLANAR (cyclophane, trans-cyclooctene) and HELICAL (helicene) chirality are
  * invisible to CIP perception AND inexpressible in 2D notation, so they can be neither detected
  * here nor supplied as 2D input — a molecule only acquires them from a hand-built 3D structure.
- * Indices are in molfile atom/bond order.
+ * Atom indices are in molfile input order. Bond indices are in V2000 input order; see the V3000
+ * limitation on `atropisomerBonds` above.
  */
 export function perceiveUnrepresentableStereo(molfile: string): UnrepresentableStereo {
-  const mol: OclMolecule = OCL.Molecule.fromMolfile(molfile);
+  const parsed = parseMolfileWithInputOrder(molfile);
+  const mol = parsed.molecule;
   mol.ensureHelperArrays(OCL.Molecule.cHelperCIP);
   const alleneAtoms: number[] = [];
-  for (let i = 0; i < mol.getAllAtoms(); i++) {
-    if (mol.isAtomStereoCenter(i) && mol.getAtomPi(i) >= 2) alleneAtoms.push(i);
+  for (let engineIndex = 0; engineIndex < mol.getAllAtoms(); engineIndex++) {
+    if (mol.isAtomStereoCenter(engineIndex) && mol.getAtomPi(engineIndex) >= 2) {
+      alleneAtoms.push(parsed.engineToOriginalAtom[engineIndex]);
+    }
   }
   const atropisomerBonds: number[] = [];
   for (let b = 0; b < mol.getAllBonds(); b++) {
-    if (mol.isBINAPChiralityBond(b)) atropisomerBonds.push(b);
+    if (mol.isBINAPChiralityBond(b)) atropisomerBonds.push(parsed.engineToOriginalBond?.[b] ?? b);
   }
   return { alleneAtoms, atropisomerBonds };
 }
@@ -442,14 +635,17 @@ export async function generate3DConformerProgressive(
 
   const parseSpan = startOclTraceSpan("parse-molfile");
   let parsed: OclMolecule;
+  let originalToEngineAtom: number[];
   try {
-    parsed = OCL.Molecule.fromMolfile(input.molfile);
-    parseSpan.complete({ atomCount: parsed.getAllAtoms() });
+    const inputOrdered = parseMolfileWithInputOrder(input.molfile);
+    parsed = inputOrdered.molecule;
+    originalToEngineAtom = inputOrdered.originalToEngineAtom;
+    parseSpan.complete({ atomCount: originalToEngineAtom.length });
   } catch (error) {
     parseSpan.fail(error);
     throw error;
   }
-  const originalAtomCount = parsed.getAllAtoms();
+  const originalAtomCount = originalToEngineAtom.length;
   const explicitInputHydrogens = countExplicitHydrogens(parsed);
 
   if (typeof input.originalAtomCount === "number" && input.originalAtomCount !== originalAtomCount) {
@@ -461,7 +657,9 @@ export async function generate3DConformerProgressive(
   }
 
   // Tag every original atom so it survives H-saturation and any reordering.
-  for (let i = 0; i < originalAtomCount; i++) parsed.setAtomMapNo(i, i + 1, false);
+  for (let originalIndex = 0; originalIndex < originalAtomCount; originalIndex++) {
+    parsed.setAtomMapNo(originalToEngineAtom[originalIndex], originalIndex + 1, false);
+  }
 
   // Work on a copy — the conformer generator mutates its argument in place.
   const work: OclMolecule = new OCL.Molecule(0, 0);

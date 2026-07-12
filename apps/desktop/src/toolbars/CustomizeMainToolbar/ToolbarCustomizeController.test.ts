@@ -1,6 +1,15 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { describe, expect, it, vi } from "vitest";
 import type { ToolbarPaletteGroupModel, ToolbarPaletteItemModel } from "../../toolsets";
-import { customizeDragEndEdit, optimisticGroupsForEdit } from "./ToolbarCustomizeController";
+import {
+  customizeDragEndEdit,
+  dispatchCustomizeEdit,
+  dragGeometryPoint,
+  galleryOverlayIconItem,
+  optimisticGroupsForEdit,
+  rollbackOptimisticPreview
+} from "./ToolbarCustomizeController";
 
 const item = (id: string): ToolbarPaletteItemModel => ({ id }) as unknown as ToolbarPaletteItemModel;
 const groups: ToolbarPaletteGroupModel[] = [
@@ -129,5 +138,57 @@ describe("optimisticGroupsForEdit", () => {
       optimisticGroupsForEdit(groups, { kind: "addCommand", groupId: "g1", index: 0, commandId: "tool.x" })
     ).toBeNull();
     expect(optimisticGroupsForEdit(groups, { kind: "resetToolset" })).toBeNull();
+  });
+});
+
+describe("drag geometry and transport", () => {
+  it("ignores stale pointer history for a keyboard drag", () => {
+    const keyboardEvent = {
+      activatorEvent: new KeyboardEvent("keydown", { key: " " }),
+      delta: { x: 24, y: 0 }
+    } as unknown as Parameters<typeof dragGeometryPoint>[0];
+
+    expect(dragGeometryPoint(keyboardEvent, { x: 999, y: 999 })).toBeNull();
+  });
+
+  it("uses the tracked pointer for a pointer drag and falls back to activator plus delta", () => {
+    const pointerEvent = {
+      activatorEvent: new MouseEvent("pointerdown", { clientX: 10, clientY: 12 }),
+      delta: { x: 5, y: -2 }
+    } as unknown as Parameters<typeof dragGeometryPoint>[0];
+
+    expect(dragGeometryPoint(pointerEvent, { x: 40, y: 50 })).toEqual({ x: 40, y: 50 });
+    expect(dragGeometryPoint(pointerEvent, null)).toEqual({ x: 15, y: 10 });
+  });
+
+  it("reports synchronous and asynchronous edit-send failures", async () => {
+    const edit = { kind: "removeItem", itemId: "a" } as const;
+    const syncFailure = vi.fn();
+    const asyncFailure = vi.fn();
+
+    dispatchCustomizeEdit(edit, () => {
+      throw new Error("sync failed");
+    }, syncFailure);
+    dispatchCustomizeEdit(edit, () => Promise.reject(new Error("async failed")), asyncFailure);
+    await Promise.resolve();
+
+    expect(syncFailure).toHaveBeenCalledTimes(1);
+    expect(asyncFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back the failed optimistic preview without erasing a newer preview", () => {
+    const failedPreview = optimisticGroupsForEdit(groups, { kind: "removeItem", itemId: "a" });
+    const newerPreview = optimisticGroupsForEdit(groups, { kind: "removeItem", itemId: "b" });
+    expect(failedPreview).not.toBeNull();
+    expect(newerPreview).not.toBeNull();
+
+    expect(rollbackOptimisticPreview(failedPreview, failedPreview!)).toBeNull();
+    expect(rollbackOptimisticPreview(newerPreview, failedPreview!)).toBe(newerPreview);
+  });
+
+  it("uses an icon ghost for gallery widgets but not structural entries", () => {
+    const iconItem = item("widget.core.mainStyleControls");
+    expect(galleryOverlayIconItem({ gallery: true, galleryKind: "widget", iconItem })).toBe(iconItem);
+    expect(galleryOverlayIconItem({ gallery: true, galleryKind: "spacer", iconItem })).toBeUndefined();
   });
 });

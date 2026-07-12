@@ -20,7 +20,13 @@ import {
   selectedArtBooleanEligibleObjectIds,
   type NativeSingleLetterElement
 } from "./documentWorkflow";
-import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
+import {
+  desktopToolsetRegistry,
+  getToolsetCommandGroups,
+  getToolsetCommandSpecs,
+  getToolsetToggleActions,
+  type DesktopToolsetRegistry
+} from "./toolsets";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
@@ -28,6 +34,11 @@ import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 export interface CommandAvailability {
   canUndo?: boolean;
   canRedo?: boolean;
+}
+
+export interface ShellCommandOptions {
+  availability?: CommandAvailability;
+  registry?: DesktopToolsetRegistry;
 }
 
 export interface CommandSpec extends CommandDefinition {
@@ -1510,7 +1521,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Left",
       shortcut: "Option+Shift+Cmd+L",
-      shortcutLabel: "â¥â§âL",
+      shortcutLabel: "⌥⇧⌘L",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1523,7 +1534,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Center",
       shortcut: "Option+Shift+Cmd+C",
-      shortcutLabel: "â¥â§âC",
+      shortcutLabel: "⌥⇧⌘C",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1536,7 +1547,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Right",
       shortcut: "Option+Shift+Cmd+R",
-      shortcutLabel: "â¥â§âR",
+      shortcutLabel: "⌥⇧⌘R",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1549,7 +1560,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Top",
       shortcut: "Option+Shift+Cmd+T",
-      shortcutLabel: "â¥â§âT",
+      shortcutLabel: "⌥⇧⌘T",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1562,7 +1573,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Middle",
       shortcut: "Option+Shift+Cmd+M",
-      shortcutLabel: "â¥â§âM",
+      shortcutLabel: "⌥⇧⌘M",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1575,7 +1586,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Bottom",
       shortcut: "Option+Shift+Cmd+B",
-      shortcutLabel: "â¥â§âB",
+      shortcutLabel: "⌥⇧⌘B",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1588,7 +1599,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Horizontal",
       shortcut: "Option+Shift+Cmd+H",
-      shortcutLabel: "â¥â§âH",
+      shortcutLabel: "⌥⇧⌘H",
       source: "core",
       category: "layout",
       enabled: hasDistributableSelection,
@@ -1601,7 +1612,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "align",
       assetName: "Custom_Vertical",
       shortcut: "Option+Shift+Cmd+V",
-      shortcutLabel: "â¥â§âV",
+      shortcutLabel: "⌥⇧⌘V",
       source: "core",
       category: "layout",
       enabled: hasDistributableSelection,
@@ -1630,7 +1641,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Group",
       shortcut: "Cmd+G",
-      shortcutLabel: "âG",
+      shortcutLabel: "⌘G",
       source: "core",
       category: "layout",
       enabled: hasMultiSelection,
@@ -1643,7 +1654,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Ungroup",
       shortcut: "Shift+Cmd+G",
-      shortcutLabel: "â§âG",
+      shortcutLabel: "⇧⌘G",
       source: "core",
       category: "layout",
       enabled: hasSelectedGroup,
@@ -1656,7 +1667,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Front",
       shortcut: "Shift+Cmd+]",
-      shortcutLabel: "â§â]",
+      shortcutLabel: "⇧⌘]",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1668,7 +1679,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Front",
       shortcut: "Cmd+]",
-      shortcutLabel: "â]",
+      shortcutLabel: "⌘]",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1680,7 +1691,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Back",
       shortcut: "Cmd+[",
-      shortcutLabel: "â[",
+      shortcutLabel: "⌘[",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1692,7 +1703,7 @@ export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
       icon: "group",
       assetName: "Custom_Back",
       shortcut: "Shift+Cmd+[",
-      shortcutLabel: "â§â[",
+      shortcutLabel: "⇧⌘[",
       source: "core",
       category: "layout",
       enabled: hasSelection,
@@ -1858,15 +1869,25 @@ export const styleActions: CommandSpec[] = [
   { id: "style.preset.synthetic", title: "ChemDraft Synthetic Style", icon: "style", source: "core", enabled: false }
 ];
 
-export function allPaletteCommands(): CommandSpec[] {
-  return withStandaloneDrawingToolCommands(getToolsetCommandSpecs());
+export function allPaletteCommands(
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): CommandSpec[] {
+  return withStandaloneDrawingToolCommands(getToolsetCommandSpecs(registry));
 }
 
-export function allShellCommands(document: ChemDraftDocument, selectedMolecule?: MoleculeObject): CommandSpec[] {
+export function allShellCommands(
+  document: ChemDraftDocument,
+  selectedMolecule?: MoleculeObject,
+  options: ShellCommandOptions = {}
+): CommandSpec[] {
+  const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
-    ...createQuickActions(document, selectedMolecule),
+    ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document),
-    ...allPaletteCommands(),
+    // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
+    // latter may carry the title from before a user/plugin toolbar was renamed.
+    ...getToolsetToggleActions(registry),
+    ...allPaletteCommands(registry),
     ...editActions,
     ...atomElementActions,
     ...drawerActions,
@@ -1877,7 +1898,6 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...textToolbarActions,
     ...objectStyleActions,
     ...toolbarCustomizationActions,
-    ...getToolsetToggleActions(),
     ...styleActions
   ]);
 }

@@ -1,5 +1,6 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
+import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 
@@ -18,6 +19,8 @@ export const PALETTE_POINTER_LEAVE_EVENT = "chemdraft://palette-pointer-leave";
 export const TOOLSET_LAYOUT_STATE_EVENT = "chemdraft://toolset-layout-state";
 export const TOOLSET_LAYOUT_STATE_REQUEST_EVENT = "chemdraft://toolset-layout-state-request";
 export const TOOLSET_LAYOUT_EDIT_EVENT = "chemdraft://toolset-layout-edit";
+export const TOOLSET_COMMAND_SPECS_EVENT = "chemdraft://toolset-command-specs";
+export const TOOLSET_COMMAND_SPECS_REQUEST_EVENT = "chemdraft://toolset-command-specs-request";
 export const TOOLSET_CUSTOMIZE_MODE_EVENT = "chemdraft://toolset-customize-mode";
 export const TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT = "chemdraft://toolset-customize-mode-request";
 export const PALETTE_TOOLTIP_SHOW_EVENT = "chemdraft://palette-tooltip-show";
@@ -55,6 +58,31 @@ export interface ToolsetTextStylePayload {
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+}
+
+export interface ToolsetCommandSpecsPayload {
+  commands: CommandSpec[];
+}
+
+/** Stable semantic fingerprint for command snapshots. Array order is intentionally significant
+ *  (gallery/shortcut precedence); object insertion order and fresh array identities are not. */
+export function toolsetCommandSpecsSignature(commands: readonly CommandSpec[]): string {
+  return JSON.stringify(commands.map((command) => [
+    command.id,
+    command.title,
+    command.source ?? null,
+    command.pluginId ?? null,
+    command.category ?? null,
+    command.description ?? null,
+    command.requiredPermissions ? [...command.requiredPermissions].sort() : null,
+    command.defaultShortcut ?? null,
+    command.enabled ?? null,
+    command.icon,
+    command.assetName ?? null,
+    command.shortcut ?? null,
+    command.shortcutLabel ?? null,
+    command.disabledReason ?? null
+  ]));
 }
 
 export type ToolsetArtPaintTarget = ArtInspectorPaintTarget;
@@ -664,12 +692,79 @@ export async function listenForToolsetLayoutStateRequests(handler: () => void): 
   return listen(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
 }
 
+// The effective command catalog is runtime state: undo/redo availability changes with history, and
+// user/plugin/renamed toolsets change the generated launcher commands. Persisted toolbar layouts
+// intentionally store command ids only; this channel lets detached native palettes resolve those
+// ids against the main window's current CommandSpec objects instead of freezing metadata in state.
+function isToolsetCommandSpecsPayload(value: unknown): value is ToolsetCommandSpecsPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as ToolsetCommandSpecsPayload).commands) &&
+    (value as ToolsetCommandSpecsPayload).commands.every((command) =>
+      typeof command === "object" &&
+      command !== null &&
+      typeof command.id === "string" &&
+      typeof command.title === "string" &&
+      typeof command.icon === "string" &&
+      (command.source === undefined || typeof command.source === "string")
+    )
+  );
+}
+
+/** Main → palettes: publish the current command metadata and enabled state. */
+export async function broadcastToolsetCommandSpecs(commands: readonly CommandSpec[]): Promise<void> {
+  const payload: ToolsetCommandSpecsPayload = { commands: [...commands] };
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_EVENT, payload);
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, payload);
+}
+
+export async function listenForToolsetCommandSpecs(
+  handler: (commands: CommandSpec[]) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return listenForDomToolsetEvent(TOOLSET_COMMAND_SPECS_EVENT, (event) => {
+      if (isToolsetCommandSpecsPayload(event.detail)) {
+        handler(event.detail.commands);
+      }
+    });
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, (event) => {
+    if (isToolsetCommandSpecsPayload(event.payload)) {
+      handler(event.payload.commands);
+    }
+  });
+}
+
+/** A detached palette asks the main window for a fresh command snapshot after subscribing. */
+export async function requestToolsetCommandSpecs(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, {});
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
+}
+
+export async function listenForToolsetCommandSpecsRequests(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return listenForDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
+}
+
 // ————————————————————————————————————————————————————————————————————————————————————————————————
 // In-place customize mode (core.main): the palette sends single edit ops back to the main window,
 // which applies them against its authoritative layout state and re-broadcasts. Ops (not full state)
-// so a stale palette snapshot can't clobber. Both channels use DUAL dispatch (DOM CustomEvent +
-// Tauri emit) so jsdom tests and the browser build hit the identical path — in the browser the main
-// window hears its own web palette's ops through the DOM event.
+// so a stale palette snapshot can't clobber. Browser builds use a DOM CustomEvent; desktop builds
+// use the Tauri event bus. The channels are mutually exclusive: when the desktop falls back to an
+// in-window palette, dual dispatch would make the main window receive its own edit twice.
 // ————————————————————————————————————————————————————————————————————————————————————————————————
 
 /** One in-place customize edit. Applied in MainWindow via `applyToolsetLayoutEdit`; `exitCustomize`
@@ -716,8 +811,8 @@ function isToolsetCustomizeModePayload(value: unknown): value is ToolsetCustomiz
 
 /** Palette → main: apply one customize edit. */
 export async function sendToolsetLayoutEdit(payload: ToolsetLayoutEditPayload): Promise<void> {
-  dispatchDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, payload);
   if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, payload);
     return;
   }
   const { emit } = await import("@tauri-apps/api/event");
@@ -727,24 +822,19 @@ export async function sendToolsetLayoutEdit(payload: ToolsetLayoutEditPayload): 
 export async function listenForToolsetLayoutEdits(
   handler: (payload: ToolsetLayoutEditPayload) => void
 ): Promise<Unlisten> {
-  const unlistenDom = listenForDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
-    if (isToolsetLayoutEditPayload(event.detail)) {
-      handler(event.detail);
-    }
-  });
   if (!isDesktopRuntime()) {
-    return unlistenDom;
+    return listenForDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
+      if (isToolsetLayoutEditPayload(event.detail)) {
+        handler(event.detail);
+      }
+    });
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
+  return listen<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
     if (isToolsetLayoutEditPayload(event.payload)) {
       handler(event.payload);
     }
   });
-  return () => {
-    unlistenDom();
-    unlistenTauri();
-  };
 }
 
 /** Main → palettes: customize mode turned on/off for a toolset. */

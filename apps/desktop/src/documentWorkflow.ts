@@ -10552,8 +10552,8 @@ export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
  * `relayout` receives the molecule as a V2000 molfile (atoms/bonds in model order) and returns a
  * depiction whose indices align 1:1 with that order — the OCL adapter's `relayoutMolfile2D`.
  * The fresh engine-frame coordinates (y-UP) map back into the document frame by negating y,
- * scaling so the mean bond length matches the drawing's current mean (falling back to the app
- * standard when degenerate), and recentring on the molecule's current centroid. Wedge/hash bonds
+ * scaling so the mean bond length matches the drawing's current mean (clamped to the minimum
+ * drawable length when collapsed), and recentring on the molecule's current centroid. Wedge/hash bonds
  * are REPLACED by the engine's parity-derived assignment (correct for the new geometry); other
  * bond decorations (dashed, bold) are preserved; double-bond sides and perspective depth weights
  * are recomputed/cleared for the new layout. Throws when the depiction cannot be trusted to map
@@ -10564,11 +10564,8 @@ export function applyNativeMoleculeEngineRelayout(
   objectId: string,
   relayout: (molfile: string) => PastedStructureDepiction
 ): ChemDraftDocument {
-  const molecule = firstPage(document).objects.find(
-    (object): object is MoleculeObject =>
-      object.id === objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
-  );
-  if (!molecule || molecule.atoms.length === 0) {
+  const molecule = findMoleculeObject(document, objectId);
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule) || molecule.atoms.length === 0) {
     return document;
   }
 
@@ -10604,7 +10601,12 @@ export function applyNativeMoleculeEngineRelayout(
     .filter((length) => length > 0.001);
   const mean = (values: readonly number[]): number =>
     values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
-  const targetBondLength = mean(currentBondLengths) > 0.001 ? mean(currentBondLengths) : nativeBondLength;
+  const currentBondLength = mean(currentBondLengths);
+  // Repeated resize operations and malformed imports can leave a graph with nonzero but sub-pixel
+  // bonds. Preserving that "scale" makes the clean depiction effectively disappear after rounding.
+  // Clamp only collapsed drawings to the same conservative minimum accepted by freeform drawing;
+  // normal small/large user scales remain unchanged.
+  const targetBondLength = Math.max(currentBondLength, freeformMinimumBondLength);
   const engineBondLength = mean(engineBondLengths);
   const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
 
@@ -10624,8 +10626,8 @@ export function applyNativeMoleculeEngineRelayout(
   // atom indices (bond order in the emitted molfile matches molecule.bonds minus dangling entries,
   // so pair keys are the robust join).
   const atomIndexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
-  const wedgeByPair = new Map(
-    depiction.bonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond.wedge])
+  const engineBondByPair = new Map(
+    depiction.bonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
   );
   const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
     const fromIndex = atomIndexById.get(bond.fromAtomId);
@@ -10634,7 +10636,8 @@ export function applyNativeMoleculeEngineRelayout(
       fromIndex !== undefined && toIndex !== undefined
         ? atomPairKey(`${Math.min(fromIndex, toIndex)}`, `${Math.max(fromIndex, toIndex)}`)
         : undefined;
-    const wedge = pairKey !== undefined ? wedgeByPair.get(pairKey) ?? null : null;
+    const engineBond = pairKey !== undefined ? engineBondByPair.get(pairKey) : undefined;
+    const wedge = engineBond?.wedge ?? null;
     const {
       bondStyle: previousStyle,
       depthWeight: _depthWeight,
@@ -10646,7 +10649,17 @@ export function applyNativeMoleculeEngineRelayout(
       ...restDisplay,
       ...(wedge ? { bondStyle: wedge } : keptStyle ? { bondStyle: keptStyle } : {})
     };
-    return Object.keys(display).length > 0 ? { ...bond, display } : { ...bond, display: undefined };
+    // A wedge/hash is narrow at `from`. OCL may move the stereo marker to a different adjacent bond
+    // and may orient that bond opposite to ChemDraft's pre-existing endpoint order. Preserve the
+    // engine's directed narrow end; an unordered-pair-only transfer can turn R/S into unspecified.
+    const engineFromAtomId = wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
+    const engineToAtomId = wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
+    const directedBond = engineFromAtomId && engineToAtomId
+      ? { ...bond, fromAtomId: engineFromAtomId, toAtomId: engineToAtomId }
+      : bond;
+    return Object.keys(display).length > 0
+      ? { ...directedBond, display }
+      : { ...directedBond, display: undefined };
   });
 
   // Recompute each double bond's drawn side from the new geometry (ring doubles draw inward).
@@ -10662,7 +10675,19 @@ export function applyNativeMoleculeEngineRelayout(
     normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }),
     defaultNativeMoleculeTransform
   );
-  if (!nativeMoleculeGeometryOrTransformChanged(molecule, cleaned)) {
+  const atomMetadataChanged = JSON.stringify(molecule.atoms) !== JSON.stringify(cleaned.atoms);
+  const bondDisplayOrDirectionChanged = JSON.stringify(molecule.bonds) !== JSON.stringify(cleaned.bonds);
+  const normalizedBoundsChanged =
+    molecule.x !== cleaned.x ||
+    molecule.y !== cleaned.y ||
+    molecule.width !== cleaned.width ||
+    molecule.height !== cleaned.height;
+  if (
+    !nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) &&
+    !atomMetadataChanged &&
+    !bondDisplayOrDirectionChanged &&
+    !normalizedBoundsChanged
+  ) {
     return document;
   }
 

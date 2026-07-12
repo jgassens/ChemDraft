@@ -473,6 +473,7 @@ import { TOOLBAR_WIDGET_GRID_SPANS } from "./toolbars/toolbarWidgets";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
+  broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
   broadcastToolsetLayoutState,
   broadcastToolsetTextStyle,
@@ -485,6 +486,7 @@ import {
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
+  listenForToolsetCommandSpecsRequests,
   listenForToolsetCustomizeModeRequests,
   listenForToolsetLayoutEdits,
   listenForToolsetLayoutStateRequests,
@@ -497,6 +499,7 @@ import {
   openToolsetWindow,
   setMenuChecked,
   setToolbarsMenu,
+  toolsetCommandSpecsSignature,
   PREFERENCES_WINDOW_KIND,
   listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
@@ -1249,7 +1252,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.29-fable";
+const CURRENT_BUILD_STAMP = "7.5.30-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2100,10 +2103,6 @@ export function MainWindow({
     [canRedo, canUndo, document, selectedMolecule]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
-  const toolsetCommandOverrides = useMemo(
-    () => new Map(layerActions.map((action) => [action.id, action] as const)),
-    [layerActions]
-  );
   const pageCssVars = useMemo(
     () =>
       ({
@@ -2153,23 +2152,25 @@ export function MainWindow({
     [toolsetRegistry]
   );
   const shellCommandSpecs = useMemo(
-    () => [
-      ...quickActions,
-      ...layerActions,
-      ...toolCommandSpecs,
-      ...viewActions,
-      ...pageSizeActions,
-      pageCustomSizeAction,
-      ...pageOrientationActions,
-      ...toolbarCustomizationActions,
-      ...getToolsetToggleActions(toolsetRegistry)
-    ],
-    [layerActions, quickActions, toolCommandSpecs, toolsetRegistry]
+    () => allShellCommands(document, selectedMolecule, {
+      availability: { canUndo, canRedo },
+      registry: toolsetRegistry
+    }),
+    [canRedo, canUndo, document, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
     () => createDevBrowserCommandMap(shellCommandSpecs),
     [shellCommandSpecs]
   );
+  const shellCommandSpecsRef = useRef(shellCommandSpecs);
+  shellCommandSpecsRef.current = shellCommandSpecs;
+  const shellCommandSpecsSignature = useMemo(
+    () => toolsetCommandSpecsSignature(shellCommandSpecs),
+    [shellCommandSpecs]
+  );
+  useEffect(() => {
+    void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
+  }, [shellCommandSpecsSignature]);
   const devBrowserMenus = useMemo(
     () => createDevBrowserMenuModel(
       shellCommandsById,
@@ -7233,37 +7234,33 @@ export function MainWindow({
   );
 
   // Command catalog (id + title, deduped) offered by the Customize dialog's "add command" palette.
-  // The set of commands is static, so this is computed once.
+  // It follows the effective registry so user/plugin/renamed toolbar launchers appear immediately.
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
-    for (const command of allShellCommands(documentRef.current)) {
+    for (const command of shellCommandSpecs) {
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
       }
     }
     return [...byId].map(([id, title]) => ({ id, title }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [shellCommandSpecs]);
 
-  // Full command specs (with icons) for the in-place customize gallery. Static like the options above.
-  const galleryCommands = useMemo(
-    () => allShellCommands(documentRef.current),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
+  // Full live specs (including current enabled state) for the in-place customize gallery.
+  const galleryCommands = shellCommandSpecs;
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
-  // a no-op). Stable — customizeCommandOptions is built once.
+  // a no-op).
   const commandTitleById = useMemo(
     () => new Map(customizeCommandOptions.map((option) => [option.id, option.title])),
     [customizeCommandOptions]
   );
 
   // Command id → spec, so an added command's synthesized item carries the command's real icon/asset.
-  const commandById = useMemo(
-    () => new Map(galleryCommands.map((command) => [command.id, command])),
-    [galleryCommands]
-  );
+  const commandById = shellCommandsById;
+  const commandTitleByIdRef = useRef(commandTitleById);
+  const commandByIdRef = useRef(commandById);
+  commandTitleByIdRef.current = commandTitleById;
+  commandByIdRef.current = commandById;
 
   useEffect(() => {
     if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
@@ -8055,6 +8052,7 @@ export function MainWindow({
     let unlisten: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
     let unlistenActiveToolRequest: (() => void) | undefined;
+    let unlistenCommandSpecsRequest: (() => void) | undefined;
     let unlistenTextStyleRequest: (() => void) | undefined;
     let unlistenPreview: (() => void) | undefined;
     let unlistenCommit: (() => void) | undefined;
@@ -8094,6 +8092,17 @@ export function MainWindow({
           return;
         }
         unlistenActiveToolRequest = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForToolsetCommandSpecsRequests(() => {
+      void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenCommandSpecsRequest = cleanup;
       })
       .catch(() => undefined);
     void listenForToolsetTextStyleRequests(() => {
@@ -8146,6 +8155,7 @@ export function MainWindow({
       unlisten?.();
       unlistenState?.();
       unlistenActiveToolRequest?.();
+      unlistenCommandSpecsRequest?.();
       unlistenTextStyleRequest?.();
       unlistenPreview?.();
       unlistenCommit?.();
@@ -8193,15 +8203,20 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const presentItemIds = new Set(
-        getToolsetItemGroups(DEFAULT_TOOLSET_ID, registry).flat().map((item) => item.id)
+      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
+      const orderedItemIdsByGroup = new Map(
+        currentGroups.flatMap((group) =>
+          group.id ? [[group.id, group.items.map((item) => item.id)] as const] : []
+        )
       );
       const current = layoutStateRef.current ?? emptyLayoutState();
       const next = applyToolsetLayoutEdit(current, payload, {
         presentItemIds,
-        commandTitle: (commandId) => commandTitleById.get(commandId),
-        commandIcon: (commandId) => commandById.get(commandId)?.icon,
-        commandAssetName: (commandId) => commandById.get(commandId)?.assetName,
+        orderedItemIdsByGroup,
+        commandTitle: (commandId) => commandTitleByIdRef.current.get(commandId),
+        commandIcon: (commandId) => commandByIdRef.current.get(commandId)?.icon,
+        commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
         widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
@@ -8222,7 +8237,7 @@ export function MainWindow({
       active = false;
       unlisten?.();
     };
-  }, [commitToolbarLayout, setCustomizeMode, commandTitleById]);
+  }, [commitToolbarLayout, setCustomizeMode]);
 
   // Answer a late-joining palette's request for the current customize-mode state (mirrors the
   // layout-state responder above).
@@ -8276,10 +8291,10 @@ export function MainWindow({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [customizeMainToolbarActive, setCustomizeMode]);
 
-  // Label the main window/tab by its worktree so builds from different checkouts are distinguishable
-  // in the title bar, cmd-tab, and Mission Control. index.html ships `<title>ChemDraft</title>` and
-  // WKWebView syncs the document title to the NSWindow title — so setting it here (not Rust
-  // set_title, which the webview overrides once the page loads) is what actually wins. See AGENTS.md.
+  // Label the web document by its worktree so browser tabs and accessibility state distinguish
+  // nearby checkouts. On macOS, index.html's initial title can overwrite the Rust setup title without
+  // following this later React update, so the Tauri page-load hook separately reasserts the same
+  // baked label on the native NSWindow title bar. See AGENTS.md.
   useEffect(() => {
     window.document.title = __WORKTREE_LABEL__ ? `ChemDraft — ${__WORKTREE_LABEL__}` : "ChemDraft";
   }, []);
@@ -13768,7 +13783,7 @@ export function MainWindow({
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
-            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides);
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById);
             // Render from a given set of groups — the controller passes an optimistic overlay while a
             // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
             const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
@@ -13836,7 +13851,7 @@ export function MainWindow({
                   <ToolbarCustomizeController
                     toolsetId={toolset.id}
                     groups={paletteGroups}
-                    onEdit={(edit) => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit }).catch(() => undefined)}
+                    onEdit={(edit) => sendToolsetLayoutEdit({ toolsetId: toolset.id, edit })}
                   >
                     {(effectiveGroups) => (
                       <>
