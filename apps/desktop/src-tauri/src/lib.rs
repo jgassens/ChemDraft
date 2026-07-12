@@ -226,6 +226,10 @@ struct PersistedToolsetState {
 struct ToolsetLayoutState {
     version: u32,
     toolsets: HashMap<String, PersistedToolsetState>,
+    /// Last main document window frame. Saved on every move/resize, restored by
+    /// `ensure_main_window_visible`; centering is only the fallback when nothing usable was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    main_window: Option<MainWindowGeometry>,
 }
 
 impl Default for ToolsetLayoutState {
@@ -233,9 +237,24 @@ impl Default for ToolsetLayoutState {
         Self {
             version: 1,
             toolsets: HashMap::new(),
+            main_window: None,
         }
     }
 }
+
+/// Main window frame in logical points: outer (top-left) position + inner content size, matching
+/// what `set_position`/`set_size` take, so a saved frame round-trips exactly.
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MainWindowGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Logical points of title bar that must remain on a monitor for the window to stay grabbable.
+const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -275,6 +294,16 @@ pub fn run() {
                         api.prevent_close();
                         if let Err(error) = window.hide() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
+                        }
+                    }
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                        // Frames changed by quit teardown are not the user's; skip like palettes do.
+                        if !APP_QUITTING.load(Ordering::SeqCst) {
+                            if let Err(error) = persist_main_window_geometry(window) {
+                                eprintln!(
+                                    "Could not persist ChemDraft main window frame: {error}"
+                                );
+                            }
                         }
                     }
                     _ => {}
@@ -418,8 +447,14 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         .set_skip_taskbar(false)
         .map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
+    // Restore the last-used frame; center only when there is nothing to restore (first launch, or
+    // the saved frame is on a display that's gone). This also runs on Reopen and open-document
+    // ensure calls, where the saved frame already equals the live one, so reapplying is a visual
+    // no-op — and it stops those paths from yanking a user-placed window back to center.
+    if !restore_main_window_geometry(&window) {
+        window.center().map_err(|error| error.to_string())?;
+    }
     window.show().map_err(|error| error.to_string())?;
-    window.center().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
 }
 
@@ -2599,6 +2634,106 @@ fn persist_toolset_position<R: Runtime>(
     })
 }
 
+fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
+    // Fullscreen/minimized frames are transient OS states, not a user-chosen frame.
+    if window.is_fullscreen().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return Ok(());
+    }
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return Ok(());
+    };
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    update_toolset_layout_state(window.app_handle(), |layout_state| {
+        layout_state.main_window = Some(MainWindowGeometry {
+            x: position.x as f64 / scale_factor,
+            y: position.y as f64 / scale_factor,
+            width: size.width as f64 / scale_factor,
+            height: size.height as f64 / scale_factor,
+        });
+    })
+}
+
+/// Apply the saved main-window frame. Returns false when nothing usable was saved — first launch,
+/// a degenerate frame, or a frame whose title bar is on no attached monitor — so the caller can
+/// fall back to centering.
+fn restore_main_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    let Some(geometry) = load_toolset_layout_state(window.app_handle()).main_window else {
+        return false;
+    };
+    if !(geometry.width > 0.0
+        && geometry.height > 0.0
+        && geometry.x.is_finite()
+        && geometry.y.is_finite())
+    {
+        return false;
+    }
+    if !main_window_geometry_reachable(window, &geometry) {
+        return false;
+    }
+    // macOS fullscreen owns the frame; report success so the caller doesn't center underneath it.
+    if window.is_fullscreen().unwrap_or(false) {
+        return true;
+    }
+    window
+        .set_position(tauri::LogicalPosition::new(geometry.x, geometry.y))
+        .and_then(|_| window.set_size(tauri::LogicalSize::new(geometry.width, geometry.height)))
+        .is_ok()
+}
+
+/// True when the saved frame's title-bar strip lands on some attached monitor (compared in each
+/// monitor's own logical space), so a frame saved on a since-detached display is rejected rather
+/// than restored somewhere the user can't grab it.
+fn main_window_geometry_reachable<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    geometry: &MainWindowGeometry,
+) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        // Can't enumerate displays — trust the frame rather than discard the user's layout.
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+    monitors.iter().any(|monitor| {
+        let scale_factor = monitor.scale_factor();
+        let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
+        let position = monitor.position();
+        let size = monitor.size();
+        let min_x = position.x as f64 / scale_factor;
+        let min_y = position.y as f64 / scale_factor;
+        title_bar_reachable_in_monitor(
+            geometry,
+            min_x,
+            min_y,
+            min_x + size.width as f64 / scale_factor,
+            min_y + size.height as f64 / scale_factor,
+        )
+    })
+}
+
+fn title_bar_reachable_in_monitor(
+    geometry: &MainWindowGeometry,
+    monitor_min_x: f64,
+    monitor_min_y: f64,
+    monitor_max_x: f64,
+    monitor_max_y: f64,
+) -> bool {
+    let title_center_x = geometry.x + geometry.width / 2.0;
+    title_center_x >= monitor_min_x
+        && title_center_x <= monitor_max_x
+        && geometry.y >= monitor_min_y - 1.0
+        && geometry.y + MAIN_WINDOW_TITLE_GRAB_PT <= monitor_max_y
+}
+
 fn mark_toolset_window_closed<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
@@ -2747,6 +2882,47 @@ mod tests {
             "toolset-plugin-fixture",
             &toolset_window_label("plugin.fixture"),
         );
+    }
+
+    #[test]
+    fn saved_main_window_frame_on_the_monitor_is_reachable() {
+        let geometry = MainWindowGeometry {
+            x: 100.0,
+            y: 50.0,
+            width: 1280.0,
+            height: 820.0,
+        };
+        expect_true(title_bar_reachable_in_monitor(
+            &geometry, 0.0, 0.0, 1728.0, 1117.0,
+        ));
+    }
+
+    #[test]
+    fn saved_main_window_frame_off_a_detached_display_is_rejected() {
+        // Frame saved on a monitor to the left of the (now only) built-in display.
+        let geometry = MainWindowGeometry {
+            x: -2000.0,
+            y: 50.0,
+            width: 1280.0,
+            height: 820.0,
+        };
+        expect_false(title_bar_reachable_in_monitor(
+            &geometry, 0.0, 0.0, 1728.0, 1117.0,
+        ));
+    }
+
+    #[test]
+    fn saved_main_window_frame_below_the_dock_edge_is_rejected() {
+        // Title bar would sit under the bottom of the display — nothing left to grab.
+        let geometry = MainWindowGeometry {
+            x: 100.0,
+            y: 1110.0,
+            width: 1280.0,
+            height: 820.0,
+        };
+        expect_false(title_bar_reachable_in_monitor(
+            &geometry, 0.0, 0.0, 1728.0, 1117.0,
+        ));
     }
 
     #[test]
