@@ -448,3 +448,49 @@ describe("composePredictionReport", () => {
     expect(report.source).toEqual({ objectId: "m1", sourceFingerprint: "fp1" });
   });
 });
+
+describe("measured accuracy in the database section (ADR-0026)", () => {
+  const CORPUS_SHA = "831a31e78b004a308c7c40989e27d30698a34c506e722a91c78b6ed448fc4720";
+  const hoseResult: NmrPredictionResult = {
+    ...result,
+    backend: {
+      id: "chemdraft.ocl-hose",
+      version: "nmrshiftdb2.nmredata.sd",
+      dataVersion: "NMRShiftDB2 (full NMReDATA export)",
+      method: "hose-fragment",
+      license: "nmrshiftdb2 Database License (ODbL-derived)",
+      attribution: "Shift data © nmrshiftdb2 contributors.",
+      source: "https://sourceforge.net/projects/nmrshiftdb2/files/data/",
+      dataChecksum: CORPUS_SHA
+    },
+    resonances: [
+      {
+        ...result.resonances[0],
+        evidence: { method: "hose-fragment", matchedSphere: 4, sampleCount: 12, environmentCode: "x" }
+      }
+    ]
+  };
+
+  it("shows the held-out benchmark line when the database checksum matches the benchmarked corpus", () => {
+    const report = composePredictionReport(source, hoseResult);
+    const body = textBodies(report);
+    expect(body).toContain("Measured accuracy (¹³C)");
+    expect(body).toContain("median |Δ| 1.58 ppm");
+    expect(body).toContain("held-out benchmark, 2026-07-12");
+    // The result has no ¹H resonance, so no ¹H accuracy claim is made.
+    expect(body).not.toContain("Measured accuracy (¹H)");
+  });
+
+  it("drops the accuracy claim entirely for a database built from any other corpus", () => {
+    const rebuilt: NmrPredictionResult = {
+      ...hoseResult,
+      backend: { ...hoseResult.backend, dataChecksum: "0000000000000000000000000000000000000000000000000000000000000000" }
+    };
+    expect(textBodies(composePredictionReport(source, rebuilt))).not.toContain("Measured accuracy");
+    const noChecksum: NmrPredictionResult = {
+      ...hoseResult,
+      backend: { ...hoseResult.backend, dataChecksum: undefined }
+    };
+    expect(textBodies(composePredictionReport(source, noChecksum))).not.toContain("Measured accuracy");
+  });
+});

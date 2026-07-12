@@ -369,6 +369,10 @@ describe("OclHosePredictor", () => {
     expect(result.backend.dataVersion).toContain("NMRShiftDB2");
     expect(result.backend.license).toBeTruthy();
     expect(result.backend.attribution).toBeTruthy();
+    // M30: the refreshed artifact records the exact raw corpus it was compiled from; the backend
+    // surfaces it so the report layer can attach benchmark results to precisely this data.
+    expect(result.backend.dataChecksum).toBe("831a31e78b004a308c7c40989e27d30698a34c506e722a91c78b6ed448fc4720");
+    expect(predictor.provenance).toMatchObject({ minObservations: 5, rawEntryCount: 529738 });
     expect(result.resonances.length).toBeGreaterThan(0);
     expect(result.resonances.some((resonance) => resonance.evidence?.method === "hose-fragment")).toBe(true);
     for (const resonance of result.resonances) {

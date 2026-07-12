@@ -146,6 +146,9 @@ export interface NmrPredictionBackend {
   license?: string;
   attribution?: string;
   source?: string;
+  /** SHA-256 of the raw corpus the active database was compiled from (M28). Lets the report layer
+   * attach measured benchmark results to exactly the data they were measured on (ADR-0026). */
+  dataChecksum?: string;
 }
 
 export interface NmrStructureAtom {

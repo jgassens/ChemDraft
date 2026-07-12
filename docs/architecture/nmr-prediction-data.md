@@ -31,9 +31,14 @@ default **5** — the shipped policy) and embeds reproducibility metadata in the
 artifact's provenance: `minObservations`, `rawEntryCount` (pre-prune), and the
 **SHA-256 + byte length of the exact raw input** (`inputSha256`, `inputBytes`).
 Same input + same flags → the same artifact, and the artifact says which input
-it came from. The currently bundled artifact (generated 2026-07-09) predates
-this mechanism, so its raw-input checksum is unrecorded; the next corpus
-refresh records it automatically.
+it came from. The bundled artifact was regenerated through this pipeline on
+2026-07-12 (M30): its 40,024 entries are byte-identical to the 2026-07-09
+build — proving the original ad hoc prune was exactly `n ≥ 5` — and its
+provenance now records the corpus identity (SHA-256
+`831a31e78b004a308c7c40989e27d30698a34c506e722a91c78b6ed448fc4720`,
+284,380,903 bytes). The held-out benchmark (report 0025) was measured on that
+same corpus; the report layer shows its error figures only while the active
+database's `inputSha256` matches it.
 
 ## NMRShiftDB2 license handling (ADR-0014)
 

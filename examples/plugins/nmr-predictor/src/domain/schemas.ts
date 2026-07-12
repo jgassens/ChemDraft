@@ -95,7 +95,8 @@ const NmrPredictionBackendSchema = z.object({
   method: z.string(),
   license: z.string().optional(),
   attribution: z.string().optional(),
-  source: z.string().optional()
+  source: z.string().optional(),
+  dataChecksum: z.string().optional()
 });
 
 const NmrPredictionWarningSchema = z.object({

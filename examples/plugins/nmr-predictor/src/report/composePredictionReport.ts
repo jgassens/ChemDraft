@@ -9,6 +9,7 @@ import type {
 import { PROTON_HIGH_DISPERSION_CROSS_CHECK_PPM } from "../domain/contracts";
 import type { NmrNucleus, NmrPredictionResult, NmrResonance } from "../domain/contracts";
 import type { CommandError } from "../application/mapSelection";
+import { MEASURED_ACCURACY } from "../providers/ocl/measuredAccuracy";
 
 const PANEL_TITLE = "NMR Prediction";
 const SYNTHETIC_DISCLAIMER =
@@ -371,11 +372,37 @@ function databaseSection(result: NmrPredictionResult): PluginPanelSection[] {
   if (backend.source) {
     rows.push({ label: "Source", value: backend.source });
   }
+  rows.push(...measuredAccuracyRows(result));
   const sections: PluginPanelSection[] = [{ kind: "keyValue", title: "Reference database", rows }];
   if (backend.attribution) {
     sections.push({ kind: "text", body: backend.attribution });
   }
   return sections;
+}
+
+/** Held-out benchmark error for the nuclei in this result — shown only when the active database was
+ * compiled from the exact corpus the benchmark measured (checksum equality). A rebuild from any
+ * other corpus silently drops the claim until the benchmark is rerun (ADR-0026). */
+function measuredAccuracyRows(result: NmrPredictionResult): { label: string; value: string }[] {
+  if (result.backend.dataChecksum !== MEASURED_ACCURACY.corpusSha256) {
+    return [];
+  }
+  const rows: { label: string; value: string }[] = [];
+  for (const nucleus of distinctNuclei(result)) {
+    const measured = MEASURED_ACCURACY.nuclei[nucleus];
+    if (!measured) continue;
+    const tiers = (["high", "medium", "low"] as const)
+      .flatMap((tier) => {
+        const stats = measured.byTier[tier];
+        return stats ? [`${tier} ${stats.medianAe}`] : [];
+      })
+      .join(" / ");
+    rows.push({
+      label: `Measured accuracy (${nucleiLabel([nucleus])})`,
+      value: `median |Δ| ${measured.hose.medianAe} ppm (${tiers}) — held-out benchmark, ${MEASURED_ACCURACY.benchmarkDate}`
+    });
+  }
+  return rows;
 }
 
 /** Exact per-estimate identity for mixed-method results. The overall backend remains the HOSE engine;

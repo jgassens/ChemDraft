@@ -131,7 +131,8 @@ export class OclHosePredictor implements NmrPredictor {
         method: "hose-fragment",
         license: this.database.provenance.license,
         attribution: this.database.provenance.attribution,
-        source: this.database.provenance.source
+        source: this.database.provenance.source,
+        ...(this.database.provenance.inputSha256 ? { dataChecksum: this.database.provenance.inputSha256 } : {})
       },
       resonances,
       warnings,
