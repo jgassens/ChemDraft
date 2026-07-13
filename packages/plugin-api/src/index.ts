@@ -1,6 +1,12 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
 
+// Re-export the chem-core types the SDK's own signatures reference (e.g. `getActiveDocument()` returns
+// a `ChemDraftDocument`, `proposePatch()` takes a `DocumentPatch`). Surfacing them here keeps the plugin
+// boundary a single package: a plugin — and a host merging only the SDK — names these without importing
+// chem-core directly (see docs/plugin-architecture and the M33 boundary guard).
+export type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
+
 export const PluginApiVersion = "0.1.0" as const;
 
 export const pluginPermissions = [

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RecognizedStructureResult } from "./index";
+import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
   PluginPanelReportSchema,
   RecognizedStructureResultSchema,
@@ -290,5 +290,15 @@ describe("linkedFigure panel section (ADR-0015)", () => {
       ]
     };
     expect(() => PluginPanelReportSchema.parse(badBond)).toThrow();
+  });
+});
+
+describe("SDK document-type re-exports (M33 boundary)", () => {
+  it("re-exports ChemDraftDocument and DocumentPatch so plugins never import chem-core directly", () => {
+    // Compile-time guarantee: if the SDK stopped re-exporting these, `tsc` (lint) fails here. The
+    // runtime assertion just keeps the test non-empty; the value is the typed signature above.
+    const identity = (document: ChemDraftDocument | undefined, patch: DocumentPatch | undefined): number =>
+      (document ? 1 : 0) + (patch ? 1 : 0);
+    expect(identity(undefined, undefined)).toBe(0);
   });
 });

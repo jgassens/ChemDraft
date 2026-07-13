@@ -1,6 +1,6 @@
 # Agent Instructions for the ChemDraft NMR Plugin Branch
 
-**Current Build**: 7.12.20.15-codex
+**Current Build**: 7.12.21.40-fable
 
 > [!IMPORTANT]
 > When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`. This is an established repository convention — see the structure-inspector branch's AGENTS.md.
