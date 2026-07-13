@@ -1261,7 +1261,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.33-fable";
+const CURRENT_BUILD_STAMP = "7.5.34-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2305,6 +2305,25 @@ export function MainWindow({
       return nextFileState;
     });
     return true;
+  }, [installDocumentHistory]);
+  /** Drag-session commits install their history entry directly so undo lands on the pre-drag
+   *  document — `commitDocumentChange` would record the last preview frame instead. This is that
+   *  shared install plus the unsaved-changes bookkeeping every document mutation owes. */
+  const commitDocumentHistoryFrom = useCallback((
+    startDocument: ChemDraftDocument,
+    nextDocument: ChemDraftDocument
+  ) => {
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: nextDocument,
+      future: []
+    });
+    setFileState((current) => {
+      const nextFileState = { ...current, dirty: true };
+      fileStateRef.current = nextFileState;
+      return nextFileState;
+    });
   }, [installDocumentHistory]);
   const applyArtTransformQaScene = useCallback(() => {
     const changed = commitDocumentChange((current) => artTransformQaSceneDocument(current, artTransformQaDraft));
@@ -8864,14 +8883,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: placed,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, placed);
     return true;
-  }, [installDocumentHistory, nativePlacementDocumentFromDrag, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const startNativeFreehandArtDrag = useCallback((
     event: ObjectPointerEvent,
@@ -8935,23 +8949,13 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: nextDocument,
-      future: []
-    });
-    setFileState((current) => {
-      const nextFileState = { ...current, dirty: true };
-      fileStateRef.current = nextFileState;
-      return nextFileState;
-    });
+    commitDocumentHistoryFrom(drag.startDocument, nextDocument);
     const selectToolState = createActiveToolState("tool.select");
     activeToolCommandIdRef.current = selectToolState.activeCommandId;
     setActiveToolState(selectToolState);
     void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
     return true;
-  }, [installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const objectDragDocument = useCallback((drag: ObjectDragState, point: ClientPoint): ChemDraftDocument => {
     const dx = point.x - drag.startPoint.x;
@@ -9050,14 +9054,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicMarkerDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicMarkerDocumentFromDrag, replacePresentDocument]);
 
   const commitGraphicGradientDrag = useCallback((drag: GraphicGradientDragState, point: ClientPoint): boolean => {
     const edited = graphicGradientDocumentFromDrag(drag, point);
@@ -9066,14 +9065,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicGradientDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicGradientDocumentFromDrag, replacePresentDocument]);
 
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
@@ -9295,14 +9289,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: moved,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
     const moved = objectDragDocument(drag, point);
@@ -9312,14 +9301,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: moved,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [clearObjectTransformPreview, installDocumentHistory, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -9328,14 +9312,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicCornerRadiusDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicCornerRadiusDocumentFromDrag, replacePresentDocument]);
 
   const commitGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): boolean => {
     const edited = drag.workingDocument === drag.startDocument
@@ -9346,14 +9325,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicPathEditDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicPathEditDocumentFromDrag, replacePresentDocument]);
 
   const commitObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): boolean => {
     const rotated = objectRotateDocumentFromDrag(drag, point);
@@ -9386,14 +9360,9 @@ export function MainWindow({
       });
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: committed,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, committed);
     return true;
-  }, [clearObjectTransformPreview, installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, replacePresentDocument]);
 
   const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
     const result = projectedPlaneTiltFromDrag(drag, point);
@@ -9443,8 +9412,7 @@ export function MainWindow({
         orientation: finalOrientation,
         engine: drag.spin3dModel.engine
       });
-      const currentHistory = documentHistoryRef.current;
-      installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, modeled));
+      commitDocumentHistoryFrom(drag.startDocument, modeled);
       setStatus("3D rotation applied");
       return true;
     }
@@ -9454,10 +9422,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, result.document));
+    commitDocumentHistoryFrom(drag.startDocument, result.document);
     return true;
-  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
+  }, [commitDocumentHistoryFrom, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
   const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
@@ -9837,14 +9804,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: resized,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, resized);
     return true;
-  }, [clearObjectTransformPreview, installDocumentHistory, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
     moveNativeMoleculeParts(drag.startDocument, drag.target, {
@@ -9864,14 +9826,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: moved,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [installDocumentHistory, nativePartDocumentFromDrag, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, nativePartDocumentFromDrag, replacePresentDocument]);
 
   const resizeTextDocumentFromDrag = useCallback((drag: TextResizeState, point: ClientPoint): ChemDraftDocument => {
     const dx = point.x - drag.startPoint.x;
@@ -9909,14 +9866,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: resized,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, resized);
     return true;
-  }, [installDocumentHistory, replacePresentDocument, resizeTextDocumentFromDrag]);
+  }, [commitDocumentHistoryFrom, replacePresentDocument, resizeTextDocumentFromDrag]);
 
   const clearObjectDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectDragRef.current;
@@ -10844,12 +10796,7 @@ export function MainWindow({
           : undefined;
         const next = result?.document ?? groupTransformDocument(groupTransform, point, event.shiftKey);
         if (next !== groupTransform.startDocument) {
-          const currentHistory = documentHistoryRef.current;
-          installDocumentHistory({
-            past: [...currentHistory.past, groupTransform.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-            present: next,
-            future: []
-          });
+          commitDocumentHistoryFrom(groupTransform.startDocument, next);
         }
         setStatus(
           groupTransform.mode === "rotate"
@@ -11212,7 +11159,7 @@ export function MainWindow({
     document.pages,
     groupProjectedPlaneTiltFromDrag,
     groupTransformDocument,
-    installDocumentHistory,
+    commitDocumentHistoryFrom,
     pageRulerUnit,
     pagePointFromPointerEvent,
     replacePresentDocument
@@ -12588,18 +12535,13 @@ export function MainWindow({
       return;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, selectedDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(selectedDocument, edited);
     setGraphicCornerRadiusReadout({
       objectId,
       radius: nextRadius
     });
     setStatus(nextRadius <= 0.001 ? "Reset corner radius" : "Maxed corner radius");
-  }, [activeToolState.activeKind, installDocumentHistory, replacePresentDocument]);
+  }, [activeToolState.activeKind, commitDocumentHistoryFrom, replacePresentDocument]);
 
   const handleGraphicPathEditPointerDown = useCallback((
     objectId: string,
