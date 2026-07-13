@@ -5108,6 +5108,173 @@ textarea:focus-visible,
   right: var(--cd-space-4);
 }
 
+/* Core-owned manager for the statically bundled plugin catalog. Unlike the report surface above,
+   this is a blocking dialog: disabling a plugin changes the live command/menu registry immediately. */
+.plugin-manager-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cd-space-6);
+  background: rgb(12 18 24 / 48%);
+}
+
+.plugin-manager-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, calc(100vw - 2 * var(--cd-space-6)));
+  max-height: min(720px, calc(100vh - 2 * var(--cd-space-6)));
+  overflow: hidden;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+  box-shadow: var(--cd-shadow-panel);
+  color: var(--cd-text-primary);
+  font-size: 12px;
+}
+
+.plugin-manager-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cd-space-6);
+  padding: var(--cd-space-6);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-manager-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.plugin-manager-header p {
+  margin: var(--cd-space-2) 0 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-button {
+  min-height: var(--cd-control-height);
+  padding: 0 var(--cd-space-4);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-secondary);
+  cursor: pointer;
+}
+
+.plugin-manager-button:hover:not(:disabled) {
+  background: var(--cd-bg-hover);
+  color: var(--cd-text-primary);
+}
+
+.plugin-manager-button:disabled {
+  color: var(--cd-text-disabled);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.plugin-manager-error {
+  margin: var(--cd-space-5) var(--cd-space-6) 0;
+  padding: var(--cd-space-4);
+  border: 1px solid var(--cd-stoplight-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+  line-height: 1.4;
+}
+
+.plugin-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-3);
+  min-height: 0;
+  margin: 0;
+  padding: var(--cd-space-6);
+  overflow-y: auto;
+  list-style: none;
+}
+
+.plugin-manager-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--cd-space-6);
+  padding: var(--cd-space-5);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+}
+
+.plugin-manager-details {
+  min-width: 0;
+}
+
+.plugin-manager-name {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.plugin-manager-name span,
+.plugin-manager-id {
+  color: var(--cd-text-muted);
+  font-weight: 400;
+}
+
+.plugin-manager-id {
+  margin-top: var(--cd-space-1);
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.plugin-manager-details p {
+  margin: var(--cd-space-3) 0 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cd-space-3);
+  min-width: 86px;
+  color: var(--cd-text-secondary);
+  cursor: pointer;
+}
+
+.plugin-manager-toggle input {
+  margin: 0;
+  accent-color: var(--cd-accent);
+}
+
+.plugin-manager-package {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--cd-space-5);
+  padding: var(--cd-space-6);
+  border-top: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-manager-package p {
+  margin: 0;
+  color: var(--cd-text-muted);
+  line-height: 1.4;
+}
+
+@media (max-width: 520px) {
+  .plugin-manager-item,
+  .plugin-manager-package {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Interactive linked figure (ADR-0015): zoomable spectrum + annotated structure */
 /* -------------------------------------------------------------------------- */

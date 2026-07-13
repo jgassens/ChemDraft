@@ -95,6 +95,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "structure.cleanup2d",
     "chemistry.validateSelection",
     "structure.openInteractive3d",
+    "plugins.manage",
 ];
 
 /// A plugin's contributed menu item, synced from the webview (which owns the plugin registry) so the
@@ -1675,6 +1676,18 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, toolset_manifest, layout_state)?;
     let analyze_menu = build_analyze_submenu(app, plugin_items)?;
+    let plugins_menu = Submenu::with_items(
+        app,
+        "Plugins",
+        true,
+        &[&MenuItem::with_id(
+            app,
+            "plugins.manage",
+            "Add or Remove Plugins...",
+            true,
+            None::<&str>,
+        )?],
+    )?;
 
     Menu::with_items(
         app,
@@ -1758,6 +1771,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 ],
             )?,
             &analyze_menu,
+            &plugins_menu,
             &Submenu::with_items(
                 app,
                 "Window",
@@ -2698,6 +2712,11 @@ mod tests {
         ));
         expect_true(is_routed_menu_command("plugin.molscribeOcsr.recognizeImage"));
         expect_false(is_routed_menu_command("definitely.not.a.routed.command"));
+    }
+
+    #[test]
+    fn plugin_manager_menu_command_is_routed() {
+        expect_true(is_routed_menu_command("plugins.manage"));
     }
 
     #[test]

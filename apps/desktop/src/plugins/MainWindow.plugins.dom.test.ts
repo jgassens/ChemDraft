@@ -55,6 +55,37 @@ async function click(element: Element): Promise<void> {
 }
 
 describe("MainWindow bundled plugin integration", () => {
+  it("opens the core plugin manager from the Plugins menu", async () => {
+    installDomMocks();
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(
+        createElement(MainWindow, {
+          initialPaletteMode: "hidden",
+          initialRulersVisible: false,
+          nativePalette: false
+        })
+      );
+      await Promise.resolve();
+    });
+
+    await click(container.querySelector('button[data-menu-section="plugins"]')!);
+    const manageItem = container.querySelector<HTMLButtonElement>('button[data-command-id="plugins.manage"]');
+    expect(manageItem?.textContent).toContain("Add or Remove Plugins");
+    await click(manageItem!);
+
+    const dialog = document.querySelector('[data-testid="plugin-manager-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.querySelector(`[data-plugin-id="${nmrPredictorManifest.id}"]`)).not.toBeNull();
+    expect(dialog?.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')?.disabled).toBe(true);
+
+    await click(dialog!.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!);
+    expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();
+  });
+
   it("routes an Analyze menu contribution through PluginHost and opens its rendered panel", async () => {
     installDomMocks();
     container = document.createElement("div");

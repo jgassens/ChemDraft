@@ -475,7 +475,8 @@ import {
   type DesktopToolsetRegistry
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel } from "./appMenu";
+import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
+import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1209,7 +1210,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.12.10.22-fable";
+const CURRENT_BUILD_STAMP = "7.12.20.15-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1811,6 +1812,7 @@ export function MainWindow({
   // Persistent plugin runtime. Providers read refs, so the host is created once and never rebuilt
   // when the document or selection changes (see usePluginRuntime).
   const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
+  const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
     getSelection: () => buildPluginSelectionSnapshot(documentRef.current)
@@ -6345,6 +6347,18 @@ export function MainWindow({
         return { ok: definition.enabled !== false, commandId: definition.id };
       });
     };
+
+    register(
+      {
+        id: PLUGIN_MANAGER_COMMAND_ID,
+        title: "Add or Remove Plugins…",
+        icon: "plugin",
+        source: "core",
+        category: "plugins",
+        description: "Enable or disable bundled ChemDraft plugins"
+      },
+      () => setPluginManagerOpen(true)
+    );
 
     quickActions.forEach((action) => {
       register(action, async () => {
@@ -13187,6 +13201,15 @@ export function MainWindow({
       ) : null}
 
       {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+
+      {pluginManagerOpen ? (
+        <PluginManagerDialog
+          runtime={pluginRuntime.runtime}
+          bundledPlugins={pluginRuntime.bundledPlugins}
+          onClose={() => setPluginManagerOpen(false)}
+          onPluginsChanged={() => setStatus("Plugin settings updated")}
+        />
+      ) : null}
 
       <PluginPanelSurface
         openPanel={pluginRuntime.openPanel}

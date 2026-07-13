@@ -3,12 +3,17 @@ import {
   molscribeOcsrManifest,
   molscribeOcsrPanelId
 } from "@chemdraft/molscribe-ocsr-plugin";
+import { nmrPredictCarbonCommandId, nmrPredictorManifest } from "@chemdraft/plugin-nmr-predictor";
 import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createPluginRuntime, type DesktopPluginRuntimeOptions } from "./createPluginRuntime";
 import { buildPluginMenuItems, PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./pluginMenuModel";
-import { registerBundledPlugins } from "./registerBundledPlugins";
+import {
+  applyEnabledPlugins,
+  createBundledPluginDescriptors,
+  registerBundledPlugins
+} from "./registerBundledPlugins";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
 
@@ -24,8 +29,64 @@ function makeRuntime(overrides: Partial<DesktopPluginRuntimeOptions> = {}) {
 describe("desktop plugin runtime", () => {
   it("registers molscribe-ocsr as a bundled plugin", () => {
     const runtime = makeRuntime();
-    registerBundledPlugins(runtime);
+    const descriptors = registerBundledPlugins(runtime);
     expect(runtime.host.listPlugins().map((manifest) => manifest.id)).toContain(molscribeOcsrManifest.id);
+    expect(descriptors.map((descriptor) => descriptor.manifest.id)).toEqual([
+      "org.chemdraft.ocsr.molscribe",
+      "org.chemdraft.nmr.predictor",
+      "org.chemdraft.mass.fragment"
+    ]);
+  });
+
+  it("skips persisted disabled plugins during startup", () => {
+    const runtime = makeRuntime();
+    registerBundledPlugins(runtime, new Set([nmrPredictorManifest.id]));
+
+    expect(runtime.host.getPlugin(nmrPredictorManifest.id)).toBeUndefined();
+    expect(runtime.host.commands.has(nmrPredictCarbonCommandId)).toBe(false);
+    expect(runtime.host.listPlugins()).toHaveLength(2);
+  });
+
+  it("applies enabled plugins idempotently and updates command and menu contributions live", () => {
+    const runtime = makeRuntime();
+    const descriptors = createBundledPluginDescriptors();
+    const changes = vi.fn();
+    runtime.host.subscribe(changes);
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    expect(runtime.host.listPlugins()).toHaveLength(3);
+    expect(changes).toHaveBeenCalledTimes(3);
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    expect(runtime.host.listPlugins()).toHaveLength(3);
+    expect(changes).toHaveBeenCalledTimes(3);
+
+    applyEnabledPlugins(runtime, new Set([nmrPredictorManifest.id]), descriptors);
+    expect(runtime.host.getPlugin(nmrPredictorManifest.id)).toBeUndefined();
+    expect(runtime.host.commands.has(nmrPredictCarbonCommandId)).toBe(false);
+    expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === nmrPredictorManifest.id)).toBe(false);
+    expect(changes).toHaveBeenCalledTimes(4);
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    expect(runtime.host.getPlugin(nmrPredictorManifest.id)?.manifest.id).toBe(nmrPredictorManifest.id);
+    expect(runtime.host.commands.has(nmrPredictCarbonCommandId)).toBe(true);
+    expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === nmrPredictorManifest.id)).toBe(true);
+    expect(changes).toHaveBeenCalledTimes(5);
+  });
+
+  it("closes a plugin-owned panel before unregistering its close hook", async () => {
+    const runtime = makeRuntime();
+    const descriptors = registerBundledPlugins(runtime);
+    const notifyPanelClosed = vi.spyOn(runtime.host, "notifyPanelClosed");
+
+    await runtime.host.invokeCommand(molscribeOcsrCommandId);
+    expect(runtime.panels.getOpenPanel()?.pluginId).toBe(molscribeOcsrManifest.id);
+
+    applyEnabledPlugins(runtime, new Set([molscribeOcsrManifest.id]), descriptors);
+
+    expect(notifyPanelClosed).toHaveBeenCalledWith(molscribeOcsrManifest.id, molscribeOcsrPanelId);
+    expect(runtime.panels.getOpenPanel()).toBeUndefined();
+    expect(runtime.host.getPlugin(molscribeOcsrManifest.id)).toBeUndefined();
   });
 
   it("runs the canary command through the host and renders its report to the panel controller", async () => {

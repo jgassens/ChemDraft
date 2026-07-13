@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { PluginAppMenuItem } from "../appMenu";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
 import { buildPluginMenuItems } from "./pluginMenuModel";
-import { registerBundledPlugins } from "./registerBundledPlugins";
+import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 
 /**
@@ -27,6 +27,7 @@ export interface PluginRuntimeProviders {
 
 export interface PluginRuntimeView {
   runtime: DesktopPluginRuntime;
+  bundledPlugins: readonly BundledPluginDescriptor[];
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
   openPanel: OpenPluginPanel | undefined;
@@ -46,16 +47,19 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const providersRef = useRef(providers);
   providersRef.current = providers;
 
-  const runtimeRef = useRef<DesktopPluginRuntime | null>(null);
-  if (runtimeRef.current === null) {
+  const ownerRef = useRef<{
+    runtime: DesktopPluginRuntime;
+    bundledPlugins: readonly BundledPluginDescriptor[];
+  } | null>(null);
+  if (ownerRef.current === null) {
     const runtime = createPluginRuntime({
       getActiveDocument: () => providersRef.current.getActiveDocument(),
       getSelection: () => providersRef.current.getSelection()
     });
-    registerBundledPlugins(runtime);
-    runtimeRef.current = runtime;
+    const bundledPlugins = registerBundledPlugins(runtime);
+    ownerRef.current = { runtime, bundledPlugins };
   }
-  const runtime = runtimeRef.current;
+  const { runtime, bundledPlugins } = ownerRef.current;
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
   useEffect(() => {
@@ -84,6 +88,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
 
   return {
     runtime,
+    bundledPlugins,
     plugins,
     pluginMenuItems,
     openPanel,

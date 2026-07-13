@@ -97,6 +97,9 @@ export interface AppMenuContext {
 /** Prefix of the dynamic toolset-toggle command ids (see toolset-registry `createToolsetToggleCommandId`). */
 export const TOOLSET_TOGGLE_COMMAND_PREFIX = "view.toolset.toggle.";
 
+/** Opens the core-owned manager for the bundled plugins available to this desktop build. */
+export const PLUGIN_MANAGER_COMMAND_ID = "plugins.manage";
+
 /**
  * Format a canonical accelerator ("Shift+Cmd+S") as mac glyphs ("⇧⌘S"). Authoring order should
  * follow the mac convention (⌃⌥⇧⌘ then key). Kept pure (no `navigator`) so the model is
@@ -259,6 +262,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       id: "analyze",
       label: "Analyze",
       items: [command("chemistry.validateSelection", "Validate Selected Structure", { enabled: context.hasSelectedMolecule })]
+    },
+    {
+      id: "plugins",
+      label: "Plugins",
+      items: [command(PLUGIN_MANAGER_COMMAND_ID, "Add or Remove Plugins…")]
     }
   ];
 
