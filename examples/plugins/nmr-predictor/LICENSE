@@ -1,0 +1,9 @@
+License not finalized.
+
+The project plan recommends MIT or Apache-2.0 for example plugins. Until the ChemDraft project owner
+chooses and applies a final code license, treat the original source code in this plugin package as not
+licensed for public redistribution.
+
+Third-party dependencies and the bundled NMRShiftDB2-derived data remain subject to their own terms,
+which are identified in THIRD_PARTY_NOTICES.md and src/providers/ocl/NMRSHIFTDB2_LICENSE.md. Nothing
+in this notice grants rights to those third-party materials beyond their respective licenses.

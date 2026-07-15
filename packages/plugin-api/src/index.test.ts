@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import pluginApiPackage from "../package.json";
 import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
+  PluginApiVersion,
   PluginPanelReportSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
@@ -294,6 +296,10 @@ describe("linkedFigure panel section (ADR-0015)", () => {
 });
 
 describe("SDK document-type re-exports (M33 boundary)", () => {
+  it("keeps the published package version aligned with the advertised API contract", () => {
+    expect(pluginApiPackage.version).toBe(PluginApiVersion);
+  });
+
   it("re-exports ChemDraftDocument and DocumentPatch so plugins never import chem-core directly", () => {
     // Compile-time guarantee: if the SDK stopped re-exporting these, `tsc` (lint) fails here. The
     // runtime assertion just keeps the test non-empty; the value is the typed signature above.

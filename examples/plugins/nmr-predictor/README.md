@@ -64,7 +64,7 @@ Rebuild the database (the `n >= 5` bundle-size prune is the default; the raw
 input's SHA-256 is embedded in the artifact's provenance for reproducibility):
 
 ```bash
-npx tsx examples/plugins/nmr-predictor/scripts/build-database.ts \
+pnpm exec tsx examples/plugins/nmr-predictor/scripts/build-database.ts \
   <nmrshiftdb2rawdata.nmredata.sd> \
   examples/plugins/nmr-predictor/src/providers/ocl/nmrshiftdb2.database.json \
   --min-observations 5

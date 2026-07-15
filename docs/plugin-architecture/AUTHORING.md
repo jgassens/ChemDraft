@@ -21,7 +21,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
   "name": "@yourorg/plugin-widget",
   "version": "0.1.0",
   "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
-  "dependencies": { "@chemdraft/plugin-api": "^0.1.0" }
+  "peerDependencies": { "@chemdraft/plugin-api": "^0.1.0" }
 }
 ```
 
@@ -75,10 +75,19 @@ spectrum/structure figure with a generic primary/alternative method model).
 
 ## Extract for distribution
 
+Add an explicit `LICENSE` or `LICENSE.md` to the plugin, commit every file that will ship, then run:
+
 ```bash
-npx tsx tools/plugin-extract/extract.ts examples/plugins/<your-plugin>
-# → dist/plugins/<name>-<version>.zip  (source + pinned-SDK package.json + provenance)
+pnpm plugin:extract -- examples/plugins/<your-plugin>
+# → dist/plugins/<name>-<version>.zip
+# → dist/plugins/<name>-<version>.zip.sha256
 ```
+
+Extraction fails closed for a missing license, a dirty or untracked plugin tree, an import outside
+the public SDK root, or a relative import that escapes the plugin package. The generated manifest
+uses the SDK as a peer dependency, records the clean source commit, and the checksum sidecar makes
+the archive independently verifiable. A successful technical extraction does not override the
+license terms inside the archive.
 
 To host the extracted plugin elsewhere, merge the core-enablement surface
 (`docs/plugin-architecture/CORE-ENABLEMENT.md`) and add one `{ manifest, options }` entry to that

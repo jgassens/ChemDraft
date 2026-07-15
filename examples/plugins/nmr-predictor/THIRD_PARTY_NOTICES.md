@@ -25,9 +25,12 @@ Two providers ship, with separately-tracked data:
   It contains aggregated statistics only, no structures. Rebuild via
   `scripts/build-database.ts`.
 
-The plugin **code** is MIT/open-source; the compiled database is a **separate
-data asset** with its own license, surfaced at runtime in the panel's
-"Reference database" section (see ADR-0014).
+The plugin's **code license is not yet finalized**. The repository is not licensed for public
+redistribution until the project owner chooses and applies explicit terms. The compiled database is
+a **separate data asset** with its own license, surfaced at runtime in the panel's "Reference
+database" section (see ADR-0014). The included `LICENSE` records the current internal-only code
+status. Do not infer public code-redistribution permission from the data license or from a
+dependency's license.
 
 ## Rule-parameter sources
 
