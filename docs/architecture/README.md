@@ -15,5 +15,6 @@ Key architecture notes:
 - `grouped-object-transform-entry.md`
 - `native-art-toolbar-chrome-plan.md`
 - `pointer-picking-hardening.md`
+- `spin3d-performance-handoff.md`
 - `toolbars-and-toolsets.md`
 - `viewport-and-rulers.md`
