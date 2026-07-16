@@ -1,0 +1,394 @@
+/**
+ * M34 isolation-boundary tests (ADR-0029): drive the real {@link PluginWorkerBridge} against the real
+ * `@chemdraft/plugin-api` worker runtime over an in-memory transport that structured-clones every
+ * message (so any non-serializable payload fails loudly, proving the "data only across postMessage"
+ * rule). Node has no `Worker`, so the worker runtime runs in-process here, connected to the bridge by a
+ * linked endpoint pair — exercising the full protocol round-trip without a real thread.
+ *
+ * Covers the acceptance criteria: behavioral equivalence for the mass analyzer and the NMR predictor,
+ * cross-boundary panel-close cancellation, declared-only capability enforcement, the version handshake,
+ * and total teardown via terminate().
+ */
+import {
+  PLUGIN_WORKER_PROTOCOL_VERSION,
+  PluginApiVersion,
+  PluginWorkerErrorCodes,
+  parsePluginManifest,
+  runPluginWorker,
+  type HostToWorkerMessage,
+  type PluginCommandContext,
+  type PluginCommandHandler,
+  type PluginManifest,
+  type PluginPanelReport,
+  type PluginSelectionSnapshot,
+  type PluginWorkerEndpoint,
+  type PluginWorkerHandle,
+  type PluginWorkerRegistration
+} from "@chemdraft/plugin-api";
+import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
+import {
+  createNmrRegistration,
+  FixtureHosePredictor,
+  NmrError,
+  NmrErrorCodes,
+  nmrPredictCarbonCommandId,
+  nmrPredictorManifest,
+  nmrPredictorPanelId,
+  type NmrPredictor
+} from "@chemdraft/plugin-nmr-predictor";
+import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
+import { describe, expect, it } from "vitest";
+
+import { createBundledPluginDescriptors } from "./registerBundledPlugins";
+import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
+
+type MessageListener = (event: { data: unknown }) => void;
+
+/** A message-port fake that mirrors a real Worker boundary: structured-clones on send, delivers on a
+ *  microtask, buffers until a listener attaches (as a real port does before `start()`), and drops
+ *  everything once terminated. Both a bridge (main side) and the worker runtime bind to one of these. */
+class FakeEndpoint {
+  peer!: FakeEndpoint;
+  terminated = false;
+  private readonly messageListeners = new Set<MessageListener>();
+  private buffer: unknown[] = [];
+
+  postMessage(message: unknown): void {
+    if (this.terminated) {
+      return;
+    }
+    const data = structuredClone(message);
+    queueMicrotask(() => this.peer.receive(data));
+  }
+
+  private receive(data: unknown): void {
+    if (this.terminated) {
+      return;
+    }
+    if (this.messageListeners.size === 0) {
+      this.buffer.push(data);
+      return;
+    }
+    for (const listener of this.messageListeners) {
+      listener({ data });
+    }
+  }
+
+  addEventListener(type: string, listener: unknown): void {
+    if (type !== "message") {
+      return; // error/messageerror unused by the fake
+    }
+    const messageListener = listener as MessageListener;
+    this.messageListeners.add(messageListener);
+    if (this.buffer.length > 0) {
+      const pending = this.buffer;
+      this.buffer = [];
+      for (const data of pending) {
+        messageListener({ data });
+      }
+    }
+  }
+
+  removeEventListener(type: string, listener: unknown): void {
+    if (type === "message") {
+      this.messageListeners.delete(listener as MessageListener);
+    }
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+}
+
+function linkedEndpoints(): { mainSide: FakeEndpoint; workerSide: FakeEndpoint } {
+  const mainSide = new FakeEndpoint();
+  const workerSide = new FakeEndpoint();
+  mainSide.peer = workerSide;
+  workerSide.peer = mainSide;
+  return { mainSide, workerSide };
+}
+
+const asHandle = (endpoint: FakeEndpoint): PluginWorkerHandle => endpoint as unknown as PluginWorkerHandle;
+const asEndpoint = (endpoint: FakeEndpoint): PluginWorkerEndpoint => endpoint as unknown as PluginWorkerEndpoint;
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+const BENZENE: PluginSelectionSnapshot = {
+  objectIds: ["m1"],
+  molecules: [
+    { objectId: "m1", documentId: "doc1", pageId: "p1", structureFormat: "smiles", structure: "c1ccccc1", sourceFingerprint: "fp-benzene" }
+  ]
+};
+
+function makeHost(): { host: PluginHost; reports: { panelId: string; report: PluginPanelReport }[] } {
+  const reports: { panelId: string; report: PluginPanelReport }[] = [];
+  const host = new PluginHost({
+    getSelection: () => BENZENE,
+    showPanelReport: (_pluginId, panelId, report) => {
+      reports.push({ panelId, report });
+    },
+    now: () => "2020-01-01T00:00:00.000Z",
+    createId: () => "record-fixed-id"
+  });
+  return { host, reports };
+}
+
+/** The delegating registration the desktop wires: each contributed command runs in the worker via the
+ *  bridge, panel-close forwards to the worker. Mirrors `createWorkerRoutedOptions` in the desktop. */
+function delegatingOptions(manifest: PluginManifest, bridge: PluginWorkerBridge): RegisterPluginOptions {
+  const commandHandlers: Record<string, PluginCommandHandler> = {};
+  for (const command of manifest.contributes.commands) {
+    commandHandlers[command.id] = (context) => bridge.invokeCommand(command.id, context);
+  }
+  return { commandHandlers, onPanelClosed: (panelId) => bridge.notifyPanelClosed(panelId) };
+}
+
+/** Spin up a worker runtime + bridge pair for a plugin, returning the bridge. */
+function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): PluginWorkerBridge {
+  const { mainSide, workerSide } = linkedEndpoints();
+  runPluginWorker(registration, asEndpoint(workerSide));
+  return new PluginWorkerBridge({
+    pluginId: registration.manifest.id,
+    createWorker: () => asHandle(mainSide),
+    hostApiVersion: PluginApiVersion
+  });
+}
+
+describe("PluginWorkerBridge — M34 isolation boundary", () => {
+  it("mass analyzer: the worker path writes the same analysis record and renders the same report as in-process", async () => {
+    const inProcess = makeHost();
+    inProcess.host.registerPlugin(massFragmentManifest, { commandHandlers: createMassRegistration().commandHandlers });
+    const inProcessResult = await inProcess.host.invokeCommand(massAnalyzeCommandId);
+
+    const viaWorker = makeHost();
+    const bridge = startWorkerRoutedPlugin({ manifest: massFragmentManifest, commandHandlers: createMassRegistration().commandHandlers });
+    viaWorker.host.registerPlugin(massFragmentManifest, delegatingOptions(massFragmentManifest, bridge));
+    const workerResult = await viaWorker.host.invokeCommand(massAnalyzeCommandId);
+
+    expect(workerResult).toEqual(inProcessResult);
+    expect(viaWorker.host.listAnalysis()).toEqual(inProcess.host.listAnalysis());
+    expect(viaWorker.reports).toEqual(inProcess.reports);
+    expect(viaWorker.reports.length).toBeGreaterThan(0);
+    bridge.terminate();
+  });
+
+  it("NMR ¹³C: the worker path produces the same analysis record and panel report as in-process", async () => {
+    const predictor = (): NmrPredictor => new FixtureHosePredictor({ now: () => "2020-01-01T00:00:00.000Z" });
+
+    const inProcess = makeHost();
+    const inProcReg = createNmrRegistration({ predictor: predictor() });
+    inProcess.host.registerPlugin(nmrPredictorManifest, { commandHandlers: inProcReg.commandHandlers, onPanelClosed: inProcReg.onPanelClosed });
+    const inProcessResult = await inProcess.host.invokeCommand(nmrPredictCarbonCommandId);
+
+    const viaWorker = makeHost();
+    const workerReg = createNmrRegistration({ predictor: predictor() });
+    const bridge = startWorkerRoutedPlugin({ manifest: nmrPredictorManifest, commandHandlers: workerReg.commandHandlers, onPanelClosed: workerReg.onPanelClosed });
+    viaWorker.host.registerPlugin(nmrPredictorManifest, delegatingOptions(nmrPredictorManifest, bridge));
+    const workerResult = await viaWorker.host.invokeCommand(nmrPredictCarbonCommandId);
+
+    expect(workerResult).toEqual(inProcessResult);
+    expect(viaWorker.host.listAnalysis()).toEqual(inProcess.host.listAnalysis());
+    expect(viaWorker.host.listAnalysis()).toHaveLength(1);
+    expect(viaWorker.reports).toEqual(inProcess.reports);
+    // The report is non-trivial (pending + final for a supported molecule), so this is real equivalence.
+    expect(viaWorker.reports.length).toBeGreaterThanOrEqual(2);
+    bridge.terminate();
+  });
+
+  it("closing the NMR panel across the worker boundary aborts the in-flight prediction (ADR-0012): not-ok, no record", async () => {
+    let observedStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      observedStart = resolve;
+    });
+    // A predictor that hangs until its AbortSignal fires — so the panel-close abort, routed through the
+    // worker, is the only thing that settles it.
+    const gatedPredictor: NmrPredictor = {
+      getCapabilities: () => new FixtureHosePredictor().getCapabilities(),
+      predict: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          observedStart();
+          const fail = (): void => reject(new NmrError(NmrErrorCodes.PredictionCancelled, "Prediction was cancelled."));
+          if (signal?.aborted) {
+            fail();
+            return;
+          }
+          signal?.addEventListener("abort", fail, { once: true });
+        })
+    };
+
+    const viaWorker = makeHost();
+    const registration = createNmrRegistration({ predictor: gatedPredictor });
+    const bridge = startWorkerRoutedPlugin({ manifest: nmrPredictorManifest, commandHandlers: registration.commandHandlers, onPanelClosed: registration.onPanelClosed });
+    viaWorker.host.registerPlugin(nmrPredictorManifest, delegatingOptions(nmrPredictorManifest, bridge));
+
+    const invocation = viaWorker.host.invokeCommand(nmrPredictCarbonCommandId);
+    await started; // the worker has read the selection, shown the pending report, and entered predict()
+
+    bridge.notifyPanelClosed(nmrPredictorPanelId); // host → worker → onPanelClosed → AbortController.abort()
+
+    const result = await invocation;
+    expect(result).toMatchObject({ ok: false, error: { code: NmrErrorCodes.PredictionCancelled } });
+    expect(viaWorker.host.listAnalysis()).toHaveLength(0); // no record written for the cancelled run
+    // The pending report crossed the boundary, but the aborted run never pushed a final report.
+    expect(viaWorker.reports).toHaveLength(1);
+    bridge.terminate();
+  });
+
+  it("provides only declared capabilities: an undeclared capability is refused at the bridge, a declared one succeeds — no consent gate exists", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const sentToWorker: HostToWorkerMessage[] = [];
+    workerSide.addEventListener("message", (event: { data: unknown }) => sentToWorker.push(event.data as HostToWorkerMessage));
+
+    const bridge = new PluginWorkerBridge({ pluginId: "org.test.caps", createWorker: () => asHandle(mainSide), hostApiVersion: PluginApiVersion });
+    const ready = bridge.whenReady();
+    workerSide.postMessage({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: "^0.1.0" });
+    await ready;
+
+    // A context granting selection.read but NOT analysis.write — exactly what the host builds for a
+    // manifest that declares the former and not the latter (permissive: no prompt, just the capability).
+    let selectionCalls = 0;
+    const context = {
+      plugin: { id: "org.test.caps", name: "Caps", version: "0", permissions: ["selection.read"] },
+      documents: { getActiveDocument: async () => undefined, proposePatch: async () => ({}) as never },
+      selection: {
+        getSelection: async () => {
+          selectionCalls += 1;
+          return { objectIds: [], molecules: [] };
+        }
+      },
+      hasPermission: (permission: string) => permission === "selection.read",
+      requirePermission: () => undefined
+    } as unknown as PluginCommandContext;
+
+    const invocation = bridge.invokeCommand("cmd", context);
+    await flush();
+    const invoke = sentToWorker.find((m): m is Extract<HostToWorkerMessage, { kind: "invokeCommand" }> => m.kind === "invokeCommand");
+    expect(invoke).toBeDefined();
+    const commandRequestId = invoke!.commandRequestId;
+
+    // Ungranted capability → the bridge refuses it (no analysis object on the context).
+    workerSide.postMessage({ kind: "capabilityRequest", requestId: 101, commandRequestId, namespace: "analysis", method: "write", args: [{}] });
+    await flush();
+    const denial = sentToWorker.find(
+      (m): m is Extract<HostToWorkerMessage, { kind: "capabilityResult" }> => m.kind === "capabilityResult" && m.requestId === 101
+    );
+    expect(denial).toMatchObject({ ok: false, error: { code: PluginWorkerErrorCodes.CapabilityNotGranted } });
+
+    // A method outside the capability whitelist is also refused.
+    workerSide.postMessage({ kind: "capabilityRequest", requestId: 102, commandRequestId, namespace: "selection", method: "wipe", args: [] });
+    await flush();
+    const badMethod = sentToWorker.find(
+      (m): m is Extract<HostToWorkerMessage, { kind: "capabilityResult" }> => m.kind === "capabilityResult" && m.requestId === 102
+    );
+    expect(badMethod).toMatchObject({ ok: false, error: { code: PluginWorkerErrorCodes.UnknownCapabilityMethod } });
+
+    // Granted capability → serviced against the real implementation.
+    workerSide.postMessage({ kind: "capabilityRequest", requestId: 103, commandRequestId, namespace: "selection", method: "getSelection", args: [] });
+    await flush();
+    const grant = sentToWorker.find(
+      (m): m is Extract<HostToWorkerMessage, { kind: "capabilityResult" }> => m.kind === "capabilityResult" && m.requestId === 103
+    );
+    expect(grant).toMatchObject({ ok: true, value: { objectIds: [], molecules: [] } });
+    expect(selectionCalls).toBe(1);
+
+    workerSide.postMessage({ kind: "commandSettled", commandRequestId, ok: true, value: { ok: true } });
+    await expect(invocation).resolves.toEqual({ ok: true });
+    bridge.terminate();
+  });
+
+  it("fails worker startup loudly on a protocol version mismatch", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const bridge = new PluginWorkerBridge({ pluginId: "org.test.proto", createWorker: () => asHandle(mainSide), hostApiVersion: PluginApiVersion });
+    const ready = bridge.whenReady();
+    workerSide.postMessage({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION + 1, apiVersion: "^0.1.0" });
+    await expect(ready).rejects.toThrow(/protocol version/i);
+  });
+
+  it("fails worker startup loudly on an incompatible plugin apiVersion", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const bridge = new PluginWorkerBridge({ pluginId: "org.test.api", createWorker: () => asHandle(mainSide), hostApiVersion: PluginApiVersion });
+    const ready = bridge.whenReady();
+    workerSide.postMessage({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: "^9.9.9" });
+    await expect(ready).rejects.toThrow(/api version/i);
+  });
+
+  it("terminate() fully stops the plugin: the pending invocation rejects and no later capability call reaches the host", async () => {
+    let reportsSeen = 0;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const manifest = parsePluginManifest({
+      id: "org.test.teardown",
+      name: "Teardown",
+      version: "0",
+      apiVersion: "^0.1.0",
+      entry: "x",
+      permissions: ["ui.panel"],
+      contributes: {
+        commands: [{ id: "cmd", title: "C", requiredPermissions: ["ui.panel"] }],
+        panels: [{ id: "panel.t", title: "P", requiredPermissions: ["ui.panel"] }]
+      }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        cmd: async (context) => {
+          await context.panels!.showReport("panel.t", { title: "first", sections: [] }); // reaches host
+          await gate; // stall until after teardown
+          await context.panels!.showReport("panel.t", { title: "second", sections: [] }); // must NOT reach host
+          return { ok: true };
+        }
+      }
+    };
+    const bridge = startWorkerRoutedPlugin(registration);
+    const context = {
+      plugin: { id: manifest.id, name: "Teardown", version: "0", permissions: ["ui.panel"] },
+      documents: { getActiveDocument: async () => undefined, proposePatch: async () => ({}) as never },
+      panels: {
+        showReport: async () => {
+          reportsSeen += 1;
+        }
+      },
+      hasPermission: () => true,
+      requirePermission: () => undefined
+    } as unknown as PluginCommandContext;
+
+    const invocation = bridge.invokeCommand("cmd", context);
+    // Attach the settlement handler immediately so terminate()'s rejection is never momentarily
+    // unhandled (it fires before the assertion below would otherwise attach a handler).
+    const settled = invocation.then(
+      () => ({ rejected: false }) as const,
+      (error: unknown) => ({ rejected: true, error }) as const
+    );
+    for (let i = 0; i < 50 && reportsSeen === 0; i += 1) {
+      await flush();
+    }
+    expect(reportsSeen).toBe(1);
+
+    bridge.terminate();
+    releaseGate(); // the worker handler proceeds to its second showReport, which must not be serviced
+    await flush();
+    await flush();
+
+    expect(reportsSeen).toBe(1);
+    const outcome = await settled;
+    expect(outcome.rejected).toBe(true);
+    expect(outcome.rejected && outcome.error).toBeInstanceOf(PluginWorkerBridgeError);
+  });
+
+  it("desktop routing: createBundledPluginDescriptors uses a worker bridge when a factory is supplied, and in-process otherwise", () => {
+    const factories = new Map([
+      [nmrPredictorManifest.id, () => asHandle(linkedEndpoints().mainSide)],
+      [massFragmentManifest.id, () => asHandle(linkedEndpoints().mainSide)]
+    ]);
+    const routed = createBundledPluginDescriptors({ pluginWorkerFactories: factories });
+    expect(routed.find((d) => d.manifest.id === nmrPredictorManifest.id)?.bridge).toBeInstanceOf(PluginWorkerBridge);
+    expect(routed.find((d) => d.manifest.id === massFragmentManifest.id)?.bridge).toBeInstanceOf(PluginWorkerBridge);
+
+    // Default path: node has no `Worker`, so the proof plugins run in-process (no bridge), which is why
+    // the existing suite is unaffected.
+    const inProcess = createBundledPluginDescriptors();
+    expect(inProcess.find((d) => d.manifest.id === nmrPredictorManifest.id)?.bridge).toBeUndefined();
+    expect(inProcess.find((d) => d.manifest.id === massFragmentManifest.id)?.bridge).toBeUndefined();
+  });
+});

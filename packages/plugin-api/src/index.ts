@@ -786,3 +786,23 @@ function formatManifestIssue(issue: z.ZodIssue): string {
   const path = issue.path.join(".");
   return path ? `${path}: ${issue.message}` : issue.message;
 }
+
+// --- Per-plugin Web Worker isolation boundary (ADR-0029, M34) --------------------------------------
+// The versioned message protocol and the worker-side runtime that lets a bundled plugin run in its own
+// Worker with its whole capability contract crossing as async request/response messages. Kept behind
+// this single SDK import so a plugin's source needs no new `@chemdraft/*` import to run in a worker.
+export {
+  PLUGIN_WORKER_PROTOCOL_VERSION,
+  PLUGIN_WORKER_CAPABILITY_METHODS,
+  PluginWorkerErrorCodes,
+  isPluginApiVersionCompatible,
+  checkWorkerHandshake,
+  type PluginWorkerCapabilityNamespace,
+  type PluginWorkerErrorPayload,
+  type WorkerToHostMessage,
+  type HostToWorkerMessage,
+  type PluginWorkerEndpoint,
+  type PluginWorkerHandle
+} from "./workerProtocol";
+
+export { runPluginWorker, PluginWorkerCapabilityError, type PluginWorkerRegistration } from "./workerRuntime";

@@ -60,6 +60,15 @@ export default defineConfig({
   // SWC React plugin (replaces the Babel one): no 500KB code-generator deopt on the large
   // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
   plugins: [react()],
+  // ES-module workers are required now that a plugin's *execution* runs in a per-plugin Web Worker
+  // (ADR-0029, M34): those workers either spawn a nested worker (the NMR plugin worker starts its own
+  // OpenChemLib worker) or use dynamic import() (mass analysis, the NMR in-thread fallback), and both
+  // force code-splitting *inside* the worker bundle — which Rollup rejects under the default "iife"
+  // worker format. Every worker is already instantiated with { type: "module" }, so "es" is the correct
+  // and compatible output format.
+  worker: {
+    format: "es"
+  },
   define: {
     __BUILD_STAMP__: JSON.stringify(buildStamp()),
     __WORKTREE_LABEL__: JSON.stringify(worktreeLabel())
