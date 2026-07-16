@@ -5547,3 +5547,809 @@ textarea:focus-visible,
 .plugin-panel-waiting {
   color: var(--cd-text-secondary, #6b6a64);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Plugin panel surface                                                        */
+/* Declarative reports from contributed plugins (e.g. the NMR predictor) render */
+/* here. Docked as a floating card on the right, above the canvas and palettes  */
+/* (z-index 20) but below menu popovers (1300). Without these rules the surface  */
+/* renders unstyled and is painted behind the full-bleed canvas — invisible.     */
+/* -------------------------------------------------------------------------- */
+.plugin-surface {
+  position: fixed;
+  top: 96px;
+  right: var(--cd-space-4);
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-4);
+  width: 430px;
+  max-width: calc(100vw - 2 * var(--cd-space-4));
+  max-height: calc(100vh - 96px - var(--cd-space-4));
+  pointer-events: none; /* container is inert; the cards below re-enable input */
+}
+
+/* Large view for interactive figures (the Expand toggle): stays right-docked but grows left, so the
+   spectrum and structure sit side by side with room to read. */
+.plugin-surface--expanded {
+  width: min(1080px, 94vw);
+}
+
+.plugin-panel,
+.plugin-diagnostics-surface {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+  box-shadow: var(--cd-shadow-panel);
+  color: var(--cd-text-primary);
+  font-size: 12px;
+}
+
+.plugin-panel.is-stale {
+  border-color: var(--cd-stoplight-border);
+}
+
+.plugin-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cd-space-4);
+  padding: var(--cd-space-4) var(--cd-space-5);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.plugin-panel-header:active {
+  cursor: grabbing;
+}
+
+/* Buttons in the header keep their own cursor and never start a drag. */
+.plugin-panel-header button {
+  cursor: pointer;
+}
+
+.plugin-panel-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cd-text-primary);
+}
+
+.plugin-panel-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--cd-space-2);
+}
+
+.plugin-panel-run-again,
+.plugin-panel-expand,
+.plugin-panel-open-window,
+.plugin-panel-close {
+  height: var(--cd-control-height);
+  padding: 0 var(--cd-space-4);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.plugin-panel-run-again:hover,
+.plugin-panel-expand:hover,
+.plugin-panel-open-window:hover,
+.plugin-panel-close:hover {
+  background: var(--cd-bg-hover);
+  color: var(--cd-text-primary);
+}
+
+.plugin-panel-expand[aria-pressed="true"] {
+  background: var(--cd-bg-selected);
+  border-color: var(--cd-accent-border);
+  color: var(--cd-accent-text);
+}
+
+.plugin-panel-stale {
+  padding: var(--cd-space-3) var(--cd-space-5);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.plugin-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-6);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--cd-space-5);
+}
+
+.plugin-report-section {
+  margin: 0;
+}
+
+.plugin-report-section h4 {
+  margin: 0 0 var(--cd-space-3);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cd-text-muted);
+}
+
+.plugin-report-text p {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--cd-text-secondary);
+}
+
+.plugin-report-keyvalue dl {
+  display: grid;
+  gap: var(--cd-space-2);
+  margin: 0;
+}
+
+.plugin-report-kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
+  gap: var(--cd-space-4);
+}
+
+.plugin-report-kv-row dt {
+  margin: 0;
+  color: var(--cd-text-muted);
+}
+
+.plugin-report-kv-row dd {
+  margin: 0;
+  color: var(--cd-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.plugin-report-table-scroll {
+  overflow-x: auto;
+}
+
+.plugin-report-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-report-table th,
+.plugin-report-table td {
+  padding: var(--cd-space-2) var(--cd-space-3);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.plugin-report-table th {
+  color: var(--cd-text-muted);
+  font-weight: 600;
+}
+
+.plugin-report-svg-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-page);
+}
+
+.plugin-report-caption {
+  margin: var(--cd-space-2) 0 0;
+  color: var(--cd-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.plugin-diagnostics-surface {
+  position: relative;
+  padding: var(--cd-space-5);
+  overflow-y: auto;
+}
+
+.plugin-diagnostics-surface .plugin-panel-close {
+  position: absolute;
+  top: var(--cd-space-4);
+  right: var(--cd-space-4);
+}
+
+/* Core-owned manager for the statically bundled plugin catalog. Unlike the report surface above,
+   this is a blocking dialog: disabling a plugin changes the live command/menu registry immediately. */
+.plugin-manager-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cd-space-6);
+  background: rgb(12 18 24 / 48%);
+}
+
+.plugin-manager-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, calc(100vw - 2 * var(--cd-space-6)));
+  max-height: min(720px, calc(100vh - 2 * var(--cd-space-6)));
+  overflow: hidden;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+  box-shadow: var(--cd-shadow-panel);
+  color: var(--cd-text-primary);
+  font-size: 12px;
+}
+
+.plugin-manager-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cd-space-6);
+  padding: var(--cd-space-6);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-manager-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.plugin-manager-header p {
+  margin: var(--cd-space-2) 0 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-button {
+  min-height: var(--cd-control-height);
+  padding: 0 var(--cd-space-4);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-secondary);
+  cursor: pointer;
+}
+
+.plugin-manager-button:hover:not(:disabled) {
+  background: var(--cd-bg-hover);
+  color: var(--cd-text-primary);
+}
+
+.plugin-manager-button:disabled {
+  color: var(--cd-text-disabled);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.plugin-manager-error {
+  margin: var(--cd-space-5) var(--cd-space-6) 0;
+  padding: var(--cd-space-4);
+  border: 1px solid var(--cd-stoplight-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+  line-height: 1.4;
+}
+
+.plugin-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-3);
+  min-height: 0;
+  margin: 0;
+  padding: var(--cd-space-6);
+  overflow-y: auto;
+  list-style: none;
+}
+
+.plugin-manager-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--cd-space-6);
+  padding: var(--cd-space-5);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+}
+
+.plugin-manager-details {
+  min-width: 0;
+}
+
+.plugin-manager-name {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.plugin-manager-name span,
+.plugin-manager-id {
+  color: var(--cd-text-muted);
+  font-weight: 400;
+}
+
+.plugin-manager-id {
+  margin-top: var(--cd-space-1);
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.plugin-manager-details p {
+  margin: var(--cd-space-3) 0 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cd-space-3);
+  min-width: 86px;
+  color: var(--cd-text-secondary);
+  cursor: pointer;
+}
+
+.plugin-manager-toggle input {
+  margin: 0;
+  accent-color: var(--cd-accent);
+}
+
+.plugin-manager-package {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--cd-space-5);
+  padding: var(--cd-space-6);
+  border-top: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-manager-package p {
+  margin: 0;
+  color: var(--cd-text-muted);
+  line-height: 1.4;
+}
+
+/* Installed plugins (M36): badge, per-row actions, and the pre-install disclosure. */
+.plugin-manager-badge {
+  margin-left: var(--cd-space-3);
+  padding: 1px var(--cd-space-2);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  color: var(--cd-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.plugin-manager-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--cd-space-3);
+}
+
+.plugin-manager-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cd-space-2);
+  margin: var(--cd-space-3) 0 0;
+  color: var(--cd-text-muted);
+}
+
+.plugin-manager-permissions ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cd-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-manager-permission {
+  padding: 1px var(--cd-space-2);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.plugin-manager-permission.is-dangerous {
+  border-color: var(--cd-stoplight-border);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+}
+
+.plugin-manager-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-5);
+  padding: var(--cd-space-6);
+  border-top: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-manager-review-body p {
+  margin: var(--cd-space-3) 0 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-provenance {
+  display: grid;
+  gap: var(--cd-space-2);
+  margin: var(--cd-space-4) 0 0;
+}
+
+.plugin-manager-provenance > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: var(--cd-space-3);
+}
+
+.plugin-manager-provenance dt {
+  color: var(--cd-text-muted);
+}
+
+.plugin-manager-provenance dd {
+  margin: 0;
+  color: var(--cd-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-digest {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+@media (max-width: 520px) {
+  .plugin-manager-item,
+  .plugin-manager-package {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Interactive linked figure (ADR-0015): zoomable spectrum + annotated structure */
+/* -------------------------------------------------------------------------- */
+.lf-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-3);
+}
+
+.lf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cd-space-4);
+}
+
+.lf-axis-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cd-text-secondary);
+}
+
+.lf-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cd-space-2);
+}
+
+.lf-toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px var(--cd-space-1);
+  background: var(--cd-border-subtle);
+}
+
+/* Solvent context + rendering-field selector, stacked under the toolbar. */
+.lf-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cd-space-1);
+  padding: 0 var(--cd-space-1) var(--cd-space-2);
+  font-size: 11px;
+  color: var(--cd-text-muted);
+}
+
+.lf-meta-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cd-space-2);
+}
+
+.lf-observe-frequency {
+  color: var(--cd-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.lf-select {
+  height: 20px;
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+}
+
+.lf-select:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.lf-btn {
+  height: 22px;
+  min-width: 26px;
+  padding: 0 var(--cd-space-3);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lf-btn:hover:not(:disabled) {
+  background: var(--cd-bg-hover);
+  color: var(--cd-text-primary);
+}
+
+.lf-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.lf-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cd-space-4);
+}
+
+.lf-spectrum {
+  flex: 2 1 340px;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-page);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.lf-spectrum:active {
+  cursor: grabbing;
+}
+
+.lf-structure {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-page);
+}
+
+.lf-axis {
+  stroke: var(--cd-text-secondary);
+  stroke-width: 1.5;
+}
+
+.lf-tick {
+  stroke: var(--cd-text-muted);
+  stroke-width: 1;
+}
+
+.lf-tick-label,
+.lf-axis-caption {
+  font-size: 13px;
+  fill: var(--cd-text-muted);
+}
+
+/* The spectrum trace: one continuous summed-Lorentzian curve, like a real NMR spectrum. */
+.lf-curve {
+  fill: none;
+  stroke: var(--cd-accent);
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+}
+
+/* Only the hovered peak(s) redraw a highlighted trace on top of the neutral spectrum. */
+.lf-curve.is-active {
+  stroke: var(--cd-accent-strong);
+  stroke-width: 1.75;
+}
+
+/* Method provenance applies to the actual trace; confidence deliberately does not (ADR-0025). */
+.lf-curve.is-estimated {
+  stroke: var(--cd-text-muted);
+  opacity: 0.45;
+  stroke-dasharray: 2 2;
+}
+
+.lf-curve.is-alternative {
+  stroke: #b5651d;
+  opacity: 0.72;
+  stroke-dasharray: 5 3;
+}
+
+.lf-spectrum-note {
+  fill: var(--cd-text-muted);
+  font-size: 9.5px;
+  pointer-events: none;
+}
+
+.lf-peak-label {
+  font-size: 13px;
+  fill: var(--cd-accent-text);
+}
+
+/* Rule-estimated peaks: the number reads muted + italic so a guess never looks measured. */
+.lf-peak-label.is-estimated {
+  fill: var(--cd-text-muted);
+  font-style: italic;
+}
+
+/* Alternative peaks use a distinct color so they read apart from the provider's primary peaks. */
+.lf-peak-label.is-alternative {
+  fill: #b5651d;
+  font-style: italic;
+}
+
+.lf-peak.is-active .lf-peak-label {
+  font-weight: 700;
+  fill: var(--cd-accent-strong);
+}
+
+.lf-bond line {
+  stroke: var(--cd-text-primary);
+  stroke-width: 1.6;
+}
+
+.lf-atom-halo {
+  fill: var(--cd-accent-soft);
+  stroke: var(--cd-accent-border);
+  stroke-width: 1;
+}
+
+.lf-atom-bg {
+  fill: var(--cd-bg-page);
+}
+
+.lf-atom-label {
+  font-size: 15px;
+  font-weight: 600;
+  fill: var(--cd-text-primary);
+}
+
+.lf-shift-label {
+  font-size: 14px;
+  font-weight: 600;
+  fill: var(--cd-accent-text);
+}
+
+/* Estimation quality (ChemDraw-style): a shift's color tells the reader how much to trust it. */
+.lf-shift-label.is-good {
+  fill: #2f6fed;
+}
+.lf-shift-label.is-medium {
+  fill: #c026a8;
+}
+.lf-shift-label.is-rough {
+  fill: #d0421b;
+}
+
+.lf-shift-alternative {
+  fill: #b5651d;
+  font-style: italic;
+}
+
+.lf-atom.is-active .lf-shift-label,
+.lf-atom.is-active .lf-atom-label {
+  fill: var(--cd-accent-strong);
+  font-weight: 700;
+}
+
+/* Quality legend under the figure. */
+.lf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cd-space-3);
+  padding: var(--cd-space-2) var(--cd-space-4) 0;
+  font-size: 11px;
+  color: var(--cd-text-muted);
+}
+.lf-legend-item {
+  font-weight: 600;
+}
+.lf-legend-item.is-good {
+  color: #2f6fed;
+}
+.lf-legend-item.is-medium {
+  color: #c026a8;
+}
+.lf-legend-item.is-rough {
+  color: #d0421b;
+}
+
+/* Full-size spectrum modal (portalled to <body>). */
+.lf-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cd-space-5);
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.lf-modal {
+  position: relative;
+  width: min(1200px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  padding: var(--cd-space-6) var(--cd-space-5) var(--cd-space-5);
+  background: var(--cd-bg-panel-raised);
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  box-shadow: var(--cd-shadow-panel);
+}
+
+.lf-modal-close {
+  position: absolute;
+  top: var(--cd-space-3);
+  right: var(--cd-space-3);
+  z-index: 1;
+}
+
+/* In the modal the spectrum dominates; a wider SVG is proportionally taller (fixed viewBox aspect). */
+.lf-root.is-fullscreen .lf-figures {
+  flex-wrap: nowrap;
+}
+.lf-root.is-fullscreen .lf-spectrum {
+  flex: 3 1 720px;
+}
+.lf-root.is-fullscreen .lf-structure {
+  flex: 1 1 320px;
+}
+
+.lf-peak,
+.lf-atom {
+  cursor: pointer;
+}
+
+.lf-hit {
+  fill: transparent;
+}

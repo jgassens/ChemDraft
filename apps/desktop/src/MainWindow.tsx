@@ -77,7 +77,6 @@ import {
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
-import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
@@ -99,6 +98,10 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { PatchReviewTray } from "./plugins/PatchReviewTray";
 import {
   broadcastPluginPanelReport,
+  broadcastPluginPanelStaleness,
+  hidePluginPanelWindow,
+  listenForPluginPanelCloses,
+  listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
   type PluginPanelReportPayload
@@ -345,7 +348,6 @@ import {
   exportPhase4Pdf,
   exportPhase4Svg,
   getSelectedMolecule,
-  getSelectedMolecules,
   getSelectedTextObject,
   insertNativeTextObject,
   insertNativeArtGraphicObject,
@@ -532,7 +534,13 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel } from "./appMenu";
+import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
+import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
+import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
+import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
+import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
+import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
+import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
@@ -1261,7 +1269,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.34-fable";
+const CURRENT_BUILD_STAMP = "7.16.17.45-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -6658,6 +6666,11 @@ export function MainWindow({
     }
   }, [exportDialog]);
 
+  // Plugin manager dialog (ADR-0027) + bundled-plugin diagnostics view toggles. Declared before the
+  // core bindings memo because "plugins.manage" is a core binding that opens the manager.
+  const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
+  const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
     new Map()
   );
@@ -6676,6 +6689,18 @@ export function MainWindow({
         }
       });
     };
+
+    register(
+      {
+        id: PLUGIN_MANAGER_COMMAND_ID,
+        title: "Add or Remove Plugins…",
+        icon: "plugin",
+        source: "core",
+        category: "plugins",
+        description: "Enable or disable bundled ChemDraft plugins"
+      },
+      () => setPluginManagerOpen(true)
+    );
 
     quickActions.forEach((action) => {
       register(action, async () => {
@@ -7140,50 +7165,43 @@ export function MainWindow({
   const [patchQueueVersion, setPatchQueueVersion] = useState(0);
   const pluginPanelReportsRef = useRef(new Map<string, PluginPanelReportPayload>());
   const pluginPanelRevisionRef = useRef(0);
+  const pluginPanelStalenessSentRef = useRef(new Map<string, { revision: number; stale: boolean }>());
 
-  // Plugins register their commands into the same stable registry; the host is created once,
-  // wired to live selection, disk-backed storage, panel windows, and the patch-review queue.
-  const pluginRuntime = useMemo(
-    () =>
-      createDesktopPluginRuntime({
-        commandRegistry: registry,
-        getActiveDocument: () => documentRef.current,
-        getSelection: () => {
-          const currentDocument = documentRef.current;
-          return {
-            objectIds: [...currentDocument.selection.objectIds],
-            molecules: getSelectedMolecules(currentDocument).map((molecule) => ({
-              objectId: molecule.id,
-              structureFormat: molecule.structureFormat,
-              structure: molecule.structure
-            }))
-          };
-        },
-        createStorage: createPersistentPluginStorage,
-        showPanelReport: async (pluginId, panelId, report) => {
-          const payload: PluginPanelReportPayload = {
-            pluginId,
-            panelId,
-            report,
-            revision: ++pluginPanelRevisionRef.current
-          };
-          pluginPanelReportsRef.current.set(panelId, payload);
-          await openPluginPanelWindow({ panelId, title: report.title }).catch(() => undefined);
-          await broadcastPluginPanelReport(payload).catch(() => undefined);
-        },
-        onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
-      }),
-    [registry]
-  );
+  // The persistent plugin runtime (host + panel controller + toolset stage), created exactly once on
+  // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
+  // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
+  // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
+  const pluginRuntime = usePluginRuntime({
+    getActiveDocument: () => documentRef.current,
+    getSelection: () => buildPluginSelectionSnapshot(documentRef.current),
+    commandRegistry: registry,
+    createStorage: createPersistentPluginStorage,
+    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
+  });
+  const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+
+  // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
+  // from the OS menu bar, not only the in-window (web) bar (ADR-0016). No-op on the web build.
+  useEffect(() => {
+    void syncPluginNativeMenuItems(pluginRuntime.pluginMenuItems);
+  }, [pluginRuntime.pluginMenuItems]);
+
+  // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
+  // if the live molecule no longer matches (edited or removed), flag the panel as out of date.
+  const pluginPanelSource = pluginRuntime.openPanel?.report.source;
+  const pluginPanelStale = pluginPanelSource
+    ? computeObjectFingerprint(document, pluginPanelSource.objectId) !== pluginPanelSource.sourceFingerprint
+    : false;
 
   // Keep the catalog's plugin toolsets in sync with the runtime, and register the dev-only
   // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development.
   useEffect(() => {
-    const syncPluginToolsets = () => toolbarCatalog.setPluginToolsets(pluginRuntime.listPluginToolsets());
-    const unsubscribe = pluginRuntime.onDidChange(syncPluginToolsets);
+    const runtime = pluginRuntime.runtime;
+    const syncPluginToolsets = () => toolbarCatalog.setPluginToolsets(runtime.listPluginToolsets());
+    const unsubscribe = runtime.onDidChange(syncPluginToolsets);
     if (import.meta.env.DEV) {
       try {
-        pluginRuntime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
+        runtime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
       } catch (error) {
         console.warn("Fixture plugin registration failed", error);
       }
@@ -7193,13 +7211,13 @@ export function MainWindow({
       unsubscribe();
       if (import.meta.env.DEV) {
         try {
-          pluginRuntime.unregisterPlugin(FIXTURE_PLUGIN_ID);
+          runtime.unregisterPlugin(FIXTURE_PLUGIN_ID);
         } catch {
           // Already unregistered; nothing to clean up.
         }
       }
     };
-  }, [pluginRuntime, toolbarCatalog]);
+  }, [pluginRuntime.runtime, toolbarCatalog]);
 
   // Panel windows request their content on mount; the main window re-serves the latest
   // report so a reopened or slow-loading panel is never blank.
@@ -7220,29 +7238,131 @@ export function MainWindow({
     };
   }, []);
 
+  // "Open as window" (ADR-0030): move the in-app panel into a floating native window. The controller
+  // detaches it WITHOUT a close notification — the panel is still open, just on another surface — and
+  // the report is served over the panel bridge, so the window holds no plugin code.
+  const popOutOpenPanel = useCallback(() => {
+    const panel = pluginRuntime.runtime.panels.getOpenPanel();
+    if (!panel) {
+      return;
+    }
+    pluginRuntime.runtime.panels.detachPanel(panel.panelId);
+    const payload: PluginPanelReportPayload = {
+      pluginId: panel.pluginId,
+      panelId: panel.panelId,
+      report: panel.report,
+      commandId: panel.commandId,
+      revision: ++pluginPanelRevisionRef.current
+    };
+    pluginPanelReportsRef.current.set(panel.panelId, payload);
+    void openPluginPanelWindow({ panelId: panel.panelId, title: panel.report.title || panel.title })
+      .catch(() => undefined);
+    void broadcastPluginPanelReport(payload).catch(() => undefined);
+  }, [pluginRuntime.runtime]);
+
+  // Detached panel windows: mirror report updates (a plugin may push pending -> result for a detached
+  // panel) and staleness (D-09 recomputed against the live document) over the bridge.
+  useEffect(() => {
+    for (const panel of pluginRuntime.detachedPanels) {
+      let payload = pluginPanelReportsRef.current.get(panel.panelId);
+      if (!payload || payload.report !== panel.report) {
+        payload = {
+          pluginId: panel.pluginId,
+          panelId: panel.panelId,
+          report: panel.report,
+          commandId: panel.commandId,
+          revision: ++pluginPanelRevisionRef.current
+        };
+        pluginPanelReportsRef.current.set(panel.panelId, payload);
+        void broadcastPluginPanelReport(payload).catch(() => undefined);
+      }
+      const source = panel.report.source;
+      const stale = source
+        ? computeObjectFingerprint(document, source.objectId) !== source.sourceFingerprint
+        : false;
+      const sent = pluginPanelStalenessSentRef.current.get(panel.panelId);
+      if (!sent || sent.revision !== payload.revision || sent.stale !== stale) {
+        pluginPanelStalenessSentRef.current.set(panel.panelId, { revision: payload.revision, stale });
+        void broadcastPluginPanelStaleness({ panelId: panel.panelId, stale, revision: payload.revision })
+          .catch(() => undefined);
+      }
+    }
+  }, [document, pluginRuntime.detachedPanels]);
+
+  // A dismissed window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
+  // The stored report stays cached so a reopened window is re-served instantly.
+  useEffect(() => {
+    const runtime = pluginRuntime.runtime;
+    let unlisten: (() => void) | undefined;
+    void listenForPluginPanelCloses((panelId) => {
+      runtime.panels.closeDetachedPanel(panelId);
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+  }, [pluginRuntime.runtime]);
+
+  // Run again from a detached window executes in THIS window (the plugin runtime lives here). The
+  // command id is resolved from the live detached entry, not trusted from the message.
+  useEffect(() => {
+    const runtime = pluginRuntime.runtime;
+    let unlisten: (() => void) | undefined;
+    void listenForPluginPanelReruns((panelId) => {
+      const panel = runtime.panels.getDetachedPanels().find((candidate) => candidate.panelId === panelId);
+      if (panel?.commandId) {
+        void invokeCommandRef.current?.(panel.commandId);
+      }
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+  }, [pluginRuntime.runtime]);
+
+  // When a detached panel leaves the set some other way than its own close button (plugin disabled,
+  // uninstalled, or closed programmatically), hide its native window too.
+  const previouslyDetachedPanelIdsRef = useRef<readonly string[]>([]);
+  useEffect(() => {
+    const current = new Set(pluginRuntime.detachedPanels.map((panel) => panel.panelId));
+    for (const panelId of previouslyDetachedPanelIdsRef.current) {
+      if (!current.has(panelId)) {
+        void hidePluginPanelWindow(panelId).catch(() => undefined);
+        pluginPanelStalenessSentRef.current.delete(panelId);
+      }
+    }
+    previouslyDetachedPanelIdsRef.current = [...current];
+  }, [pluginRuntime.detachedPanels]);
+
   const acceptPluginProposal = useCallback(
     (proposal: QueuedProposedPatch) => {
       try {
-        const updated = pluginRuntime.host.acceptProposedPatch(proposal.id, documentRef.current);
+        const updated = pluginRuntime.runtime.host.acceptProposedPatch(proposal.id, documentRef.current);
         commitDocumentChange(updated);
         setStatus("Applied plugin proposal");
       } catch (error) {
         setStatus(`Plugin proposal failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
-    [commitDocumentChange, pluginRuntime]
+    [commitDocumentChange, pluginRuntime.runtime]
   );
 
   const rejectPluginProposal = useCallback(
     (proposal: QueuedProposedPatch) => {
       try {
-        pluginRuntime.host.rejectProposedPatch(proposal.id);
+        pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
         setStatus("Rejected plugin proposal");
       } catch {
         setStatus("Plugin proposal was already resolved");
       }
     },
-    [pluginRuntime]
+    [pluginRuntime.runtime]
   );
 
   const invoke = useCallback(async (commandId: string) => {
@@ -7278,9 +7398,31 @@ export function MainWindow({
       return;
     }
 
-    // Route through the host so plugin commands run with their permission context; core
-    // commands (no pluginId) dispatch straight through the shared registry as before.
-    void pluginRuntime.host.invokeCommand(commandId).catch((error: unknown) => {
+    if (commandId === PLUGIN_DIAGNOSTICS_COMMAND_ID) {
+      setPluginDiagnosticsOpen((open) => !open);
+      return;
+    }
+
+    // Route through the host so plugin commands run with their permission context; core commands
+    // (no pluginId on the definition) dispatch straight through the shared registry as before.
+    // For plugin-owned commands, ADR-0010 applies: a command may fail by throwing OR by resolving
+    // { ok: false } — surface both on the status line, attributed to the plugin.
+    if (pluginCommandExists(commandId)) {
+      void invokePluginCommand(commandId)
+        .then((result) => {
+          const failure = pluginCommandFailure(result);
+          if (failure) {
+            setStatus(`Plugin command failed: ${failure}`);
+          }
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setStatus(`Plugin command failed: ${message}`);
+        });
+      return;
+    }
+
+    void invokePluginCommand(commandId).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Command failed: ${message}`);
     });
@@ -7290,7 +7432,8 @@ export function MainWindow({
     applyTextStyleCommand,
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
-    pluginRuntime
+    invokePluginCommand,
+    pluginCommandExists
   ]);
 
   invokeCommandRef.current = invoke;
@@ -13758,7 +13901,8 @@ export function MainWindow({
         canRedo,
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
-        toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry)
+        toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
+        pluginMenuItems: pluginRuntime.pluginMenuItems
       }),
     [
       rulersVisible,
@@ -13768,7 +13912,8 @@ export function MainWindow({
       document.selection.objectIds.length,
       selectedMolecule,
       visibleToolsetIds,
-      toolsetRegistry
+      toolsetRegistry,
+      pluginRuntime.pluginMenuItems
     ]
   );
 
@@ -13817,6 +13962,33 @@ export function MainWindow({
       ) : null}
 
       {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+
+      {pluginManagerOpen ? (
+        <PluginManagerDialog
+          runtime={pluginRuntime.runtime}
+          bundledPlugins={pluginRuntime.bundledPlugins}
+          installedPlugins={pluginRuntime.installedPlugins}
+          onPickPackage={pluginRuntime.pickPackage}
+          onInstallPackage={pluginRuntime.installPackage}
+          onUninstallPlugin={pluginRuntime.uninstallInstalledPlugin}
+          onClose={() => setPluginManagerOpen(false)}
+          onPluginsChanged={() => setStatus("Plugin settings updated")}
+        />
+      ) : null}
+
+      <PluginPanelSurface
+        openPanel={pluginRuntime.openPanel}
+        diagnosticsOpen={pluginDiagnosticsOpen}
+        plugins={pluginRuntime.plugins}
+        diagnostics={pluginRuntime.diagnostics}
+        stale={pluginPanelStale}
+        onClose={pluginRuntime.closePanel}
+        onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
+        onRunAgain={(commandId) => invoke(commandId)}
+        onOpenAsWindow={isDesktopRuntime() ? popOutOpenPanel : undefined}
+      />
+
+
 
       {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {
@@ -14337,7 +14509,7 @@ export function MainWindow({
           />
         ) : null}
         <PatchReviewTray
-          host={pluginRuntime.host}
+          host={pluginRuntime.runtime.host}
           queueVersion={patchQueueVersion}
           onAccept={acceptPluginProposal}
           onReject={rejectPluginProposal}

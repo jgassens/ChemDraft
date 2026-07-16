@@ -1,11 +1,50 @@
 import { describe, expect, it } from "vitest";
-import type { RecognizedStructureResult } from "./index";
+import pluginApiPackage from "../package.json";
+import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
+  PluginApiVersion,
+  PluginPanelReportSchema,
   RecognizedStructureResultSchema,
+  createStructureSourceFingerprint,
   dangerousPluginPermissions,
   parsePluginManifest,
   validatePluginManifest
 } from "./index";
+
+describe("createStructureSourceFingerprint", () => {
+  const base = {
+    documentId: "doc1",
+    pageId: "page1",
+    objectId: "mol1",
+    structureFormat: "smiles",
+    structure: "c1ccccc1"
+  };
+
+  it("is deterministic and returns a fixed-width hex digest", () => {
+    const a = createStructureSourceFingerprint(base);
+    const b = createStructureSourceFingerprint({ ...base });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("changes when any identity or payload field changes", () => {
+    const original = createStructureSourceFingerprint(base);
+    expect(createStructureSourceFingerprint({ ...base, structure: "CCO" })).not.toBe(original);
+    expect(createStructureSourceFingerprint({ ...base, objectId: "mol2" })).not.toBe(original);
+    expect(createStructureSourceFingerprint({ ...base, pageId: "page2" })).not.toBe(original);
+    expect(createStructureSourceFingerprint({ ...base, structureFormat: "molfile-v2000" })).not.toBe(original);
+  });
+
+  it("ignores surrounding whitespace in the payload but distinguishes field boundaries", () => {
+    expect(createStructureSourceFingerprint({ ...base, structure: "  c1ccccc1  " })).toBe(
+      createStructureSourceFingerprint(base)
+    );
+    // Field-boundary safety: shifting a character across the id/format boundary changes the hash.
+    const left = createStructureSourceFingerprint({ ...base, objectId: "molX", structureFormat: "smiles" });
+    const right = createStructureSourceFingerprint({ ...base, objectId: "mol", structureFormat: "Xsmiles" });
+    expect(left).not.toBe(right);
+  });
+});
 
 describe("validatePluginManifest", () => {
   it("accepts a manifest with command, menu, panel, toolbar, and recognizer contributions", () => {
@@ -189,5 +228,83 @@ describe("RecognizedStructureResult", () => {
   it("keeps dangerous permission names explicit for host review surfaces", () => {
     expect(dangerousPluginPermissions).toContain("native.execute");
     expect(dangerousPluginPermissions).toContain("model.download");
+  });
+});
+
+describe("linkedFigure panel section (ADR-0015)", () => {
+  const figureReport = {
+    title: "NMR Prediction",
+    sections: [
+      {
+        kind: "linkedFigure" as const,
+        title: "Predicted ¹H NMR",
+        caption: "Hover a peak to highlight its atoms.",
+        spectrum: {
+          nucleus: "1H",
+          domain: { min: 0, max: 8 },
+          reversed: true,
+          comparison: { primaryLabel: "database", alternativeLabel: "rule", alternativeMarker: "ᵣ" },
+          peaks: [
+            { id: "h-0", ppm: 7.34, intensity: 2, label: "7.34", atomIndices: [0, 2] },
+            { id: "h-5", ppm: 2.43, intensity: 2, atomIndices: [5] }
+          ]
+        },
+        structure: {
+          atoms: [
+            { index: 0, x: 0, y: 0, element: "C" },
+            { index: 2, x: 1.2, y: 0.4, element: "C" },
+            { index: 5, x: -0.8, y: 1.1, element: "C" }
+          ],
+          bonds: [{ from: 0, to: 2, order: 2 }]
+        }
+      }
+    ]
+  };
+
+  it("accepts a data-only interactive figure (spectrum + structure geometry)", () => {
+    expect(() => PluginPanelReportSchema.parse(figureReport)).not.toThrow();
+  });
+
+  it("accepts a figure with no structure (fixture backends omit geometry)", () => {
+    const noStructure = {
+      ...figureReport,
+      sections: [{ ...figureReport.sections[0], structure: undefined }]
+    };
+    expect(() => PluginPanelReportSchema.parse(noStructure)).not.toThrow();
+  });
+
+  it("rejects a stray/script-carrying property (strict, data-only)", () => {
+    const withScript = {
+      ...figureReport,
+      sections: [{ ...figureReport.sections[0], onClick: "alert(1)" }]
+    };
+    expect(() => PluginPanelReportSchema.parse(withScript)).toThrow();
+  });
+
+  it("rejects a negative bond order", () => {
+    const badBond = {
+      ...figureReport,
+      sections: [
+        {
+          ...figureReport.sections[0],
+          structure: { atoms: figureReport.sections[0].structure.atoms, bonds: [{ from: 0, to: 2, order: 0 }] }
+        }
+      ]
+    };
+    expect(() => PluginPanelReportSchema.parse(badBond)).toThrow();
+  });
+});
+
+describe("SDK document-type re-exports (M33 boundary)", () => {
+  it("keeps the published package version aligned with the advertised API contract", () => {
+    expect(pluginApiPackage.version).toBe(PluginApiVersion);
+  });
+
+  it("re-exports ChemDraftDocument and DocumentPatch so plugins never import chem-core directly", () => {
+    // Compile-time guarantee: if the SDK stopped re-exporting these, `tsc` (lint) fails here. The
+    // runtime assertion just keeps the test non-empty; the value is the typed signature above.
+    const identity = (document: ChemDraftDocument | undefined, patch: DocumentPatch | undefined): number =>
+      (document ? 1 : 0) + (patch ? 1 : 0);
+    expect(identity(undefined, undefined)).toBe(0);
   });
 });

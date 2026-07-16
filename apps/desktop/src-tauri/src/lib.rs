@@ -1,5 +1,6 @@
 mod export;
 mod fonts;
+mod installed_plugins;
 
 use std::{
     collections::HashMap,
@@ -49,6 +50,9 @@ const PALETTE_POINTER_LEAVE_EVENT: &str = "chemdraft://palette-pointer-leave";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
+/// Namespace for plugin command ids (manifest-enforced). Native menu clicks on ids with this prefix
+/// are routed to the webview, which invokes the plugin command (ADR-0016).
+const PLUGIN_COMMAND_PREFIX: &str = "plugin.";
 const AGENT_BRIDGE_ENV_VAR: &str = "CHEMDRAFT_AGENT_BRIDGE";
 const AGENT_BRIDGE_CLI_ARG: &str = "--chemdraft-agent-bridge";
 const ENGINE3D_PROTOCOL_VERSION: u32 = 2;
@@ -97,7 +101,34 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "structure.cleanup2d",
     "chemistry.validateSelection",
     "structure.openInteractive3d",
+    "plugins.manage",
 ];
+
+/// A plugin's contributed menu item, synced from the webview (which owns the plugin registry) so the
+/// native menu can include it. `id` is the `plugin.*` command id, routed back by prefix (ADR-0016).
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginMenuItemInput {
+    id: String,
+    label: String,
+    #[serde(default = "default_menu_item_enabled")]
+    enabled: bool,
+}
+
+fn default_menu_item_enabled() -> bool {
+    true
+}
+
+/// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
+/// survive toolset-driven rebuilds, not only plugin syncs.
+#[derive(Default)]
+struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
+
+/// The Toolbars-menu rows and View-toggle state last pushed by JS (`set_toolbars_menu`). Stored so a
+/// plugin-menu sync (`sync_plugin_menu_items`) can rebuild the whole native menu from the same model
+/// without waiting for the next toolbar push — the menu's source of truth stays the TS toolbar registry.
+#[derive(Default)]
+struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)>);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -263,6 +294,14 @@ pub fn run() {
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ToolsetWindowDirectory::default())
+        .manage(PluginNativeMenuItems::default())
+        .manage(ToolbarsMenuModel::default())
+        // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
+        // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
+        // handler rather than adding a scheme — a new scheme would be a new origin, and M35 measured
+        // that a plugin package only loads same-origin. The origin is unchanged, so no origin-keyed
+        // state (localStorage, IndexedDB) is disturbed. See `installed_plugins` for the full rationale.
+        .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
@@ -401,6 +440,7 @@ pub fn run() {
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,
+            sync_plugin_menu_items,
             read_clipboard_payload,
             write_clipboard_text_items,
             toggle_spin3d_debugger_window,
@@ -705,9 +745,17 @@ fn set_toolbars_menu(
         rulers_visible,
         crosshairs_visible,
     };
+    // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
+    // (reinstall_app_menu) without waiting for the next toolbar push.
+    {
+        let state = app.state::<ToolbarsMenuModel>();
+        let mut guard = state.0.lock().map_err(|error| error.to_string())?;
+        *guard = (entries.clone(), view_state);
+    }
     app.clone()
         .run_on_main_thread(move || {
-            match create_app_menu_for_toolsets(&app, &entries, view_state)
+            let plugin_items = current_plugin_menu_items(&app);
+            match create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
                 .and_then(|menu| app.set_menu(menu).map(|_| ()))
             {
                 Ok(()) => {}
@@ -1937,20 +1985,119 @@ impl Default for ViewMenuState {
     }
 }
 
+/// Sync the webview's plugin Analyze menu items into the native menu (ADR-0016): store them, then
+/// rebuild + reinstall the app menu so they appear natively. Clicks route back by the `plugin.`
+/// prefix through the existing native→webview command bridge.
+#[tauri::command]
+fn sync_plugin_menu_items(
+    app: tauri::AppHandle,
+    items: Vec<PluginMenuItemInput>,
+) -> Result<(), String> {
+    {
+        let state = app.state::<PluginNativeMenuItems>();
+        let mut guard = state.0.lock().map_err(|error| error.to_string())?;
+        *guard = items;
+    }
+    reinstall_app_menu(&app)
+}
+
+/// Rebuild and install the app menu on the main thread from the last JS-pushed toolbar model plus the
+/// current plugin menu items. Toolbar rows and View-toggle state come from `ToolbarsMenuModel` (what
+/// `set_toolbars_menu` last stored), so a plugin sync never resets the Toolbars submenu or the View
+/// checkmarks while JS remains the source of truth for both.
+fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let app = app.clone();
+    app.clone()
+        .run_on_main_thread(move || {
+            let (entries, view_state) = current_toolbars_menu_model(&app);
+            let plugin_items = current_plugin_menu_items(&app);
+            let result = create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
+                .and_then(|menu| app.set_menu(menu).map(|_| ()));
+            if let Err(error) = result {
+                eprintln!("Could not update ChemDraft plugin menu: {error}");
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Build the Analyze submenu: the static "Validate Selected Structure" item plus any plugin items
+/// (synced from the webview), separated. Plugin `id`s are `plugin.*` command ids routed by prefix.
+fn build_analyze_submenu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    plugin_items: &[PluginMenuItemInput],
+) -> tauri::Result<Submenu<R>> {
+    let validate = MenuItem::with_id(
+        app,
+        "chemistry.validateSelection",
+        "Validate Selected Structure",
+        true,
+        None::<&str>,
+    )?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let plugin_menu_items = plugin_items
+        .iter()
+        .map(|item| {
+            MenuItem::with_id(app, item.id.as_str(), item.label.as_str(), item.enabled, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![&validate];
+    if !plugin_menu_items.is_empty() {
+        items.push(&separator);
+        for item in &plugin_menu_items {
+            items.push(item);
+        }
+    }
+    Submenu::with_items(app, "Analyze", true, &items)
+}
+
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
-    // Empty Toolbars submenu; JS pushes the real rows via set_toolbars_menu once it loads.
-    create_app_menu_for_toolsets(app, &[], ViewMenuState::default())
+    // Empty Toolbars submenu; JS pushes the real rows via set_toolbars_menu once it loads. Plugin
+    // items are read from state so menu rebuilds after a plugin sync keep them (ADR-0016).
+    let plugin_items = current_plugin_menu_items(app);
+    create_app_menu_for_toolsets(app, &[], ViewMenuState::default(), &plugin_items)
+}
+
+/// The plugin menu items last synced from the webview (empty until the first sync). Read on every menu
+/// build so toolset-driven rebuilds keep the plugin items too (ADR-0016).
+fn current_plugin_menu_items<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<PluginMenuItemInput> {
+    app.try_state::<PluginNativeMenuItems>()
+        .and_then(|state| state.0.lock().ok().map(|items| items.clone()))
+        .unwrap_or_default()
+}
+
+/// The toolbar rows + View state last pushed by `set_toolbars_menu` (defaults until the first push).
+fn current_toolbars_menu_model<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> (Vec<ToolbarMenuEntry>, ViewMenuState) {
+    app.try_state::<ToolbarsMenuModel>()
+        .and_then(|state| state.0.lock().ok().map(|model| model.clone()))
+        .unwrap_or_default()
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
     app: &tauri::AppHandle<R>,
     entries: &[ToolbarMenuEntry],
     view_state: ViewMenuState,
+    plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, entries, view_state)?;
+    let analyze_menu = build_analyze_submenu(app, plugin_items)?;
+    let plugins_menu = Submenu::with_items(
+        app,
+        "Plugins",
+        true,
+        &[&MenuItem::with_id(
+            app,
+            "plugins.manage",
+            "Add or Remove Plugins...",
+            true,
+            None::<&str>,
+        )?],
+    )?;
 
     Menu::with_items(
         app,
@@ -2033,18 +2180,8 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                 ],
             )?,
-            &Submenu::with_items(
-                app,
-                "Analyze",
-                true,
-                &[&MenuItem::with_id(
-                    app,
-                    "chemistry.validateSelection",
-                    "Validate Selected Structure",
-                    true,
-                    None::<&str>,
-                )?],
-            )?,
+            &analyze_menu,
+            &plugins_menu,
             &Submenu::with_items(
                 app,
                 "Window",
@@ -2598,7 +2735,9 @@ fn toolset_toggle_command_id(toolset_id: &str) -> String {
 }
 
 fn is_routed_menu_command(command_id: &str) -> bool {
-    MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
+    MENU_COMMAND_IDS.contains(&command_id)
+        || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
+        || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
 }
 
 fn persisted_toolset_position<R: Runtime>(
@@ -3018,6 +3157,19 @@ mod tests {
         expect_true(is_routed_menu_command("export.open"));
         expect_false(is_routed_menu_command("export.pdf"));
         expect_false(is_routed_menu_command("export.png"));
+
+        // Plugin command ids (ADR-0016) route generically by their `plugin.` namespace, so a plugin's
+        // native menu items reach the webview without any core edit.
+        expect_true(is_routed_menu_command(
+            "plugin.nmrPredictor.predictSelectedStructure",
+        ));
+        expect_true(is_routed_menu_command("plugin.molscribeOcsr.recognizeImage"));
+        expect_false(is_routed_menu_command("definitely.not.a.routed.command"));
+    }
+
+    #[test]
+    fn plugin_manager_menu_command_is_routed() {
+        expect_true(is_routed_menu_command("plugins.manage"));
     }
 
     #[test]

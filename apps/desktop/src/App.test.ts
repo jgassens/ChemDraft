@@ -155,7 +155,7 @@ import {
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { CommandRegistry } from "@chemdraft/plugin-host";
-import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
+import { createPluginRuntime } from "./plugins/createPluginRuntime";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import {
   FIXTURE_PLUGIN_PING_COMMAND_ID,
@@ -257,7 +257,7 @@ const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
 // manifest), so tests that assert on it compose it through the runtime + catalog exactly
 // like MainWindow does.
 function buildRegistryWithFixture(): DesktopToolsetRegistry {
-  const runtime = createDesktopPluginRuntime({
+  const runtime = createPluginRuntime({
     commandRegistry: new CommandRegistry(),
     getActiveDocument: () => undefined
   });

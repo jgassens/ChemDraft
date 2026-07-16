@@ -1,3 +1,19 @@
+# ChemDraft Plans
+
+## Runtime union merge (2026-07-16, branch `merge/plugin-union`)
+
+The `codex/nmr-plugin` program (M1–M36: plugin runtime, NMR/mass analyzers, worker isolation,
+packaging, installer, manager) merged into the trunk on this branch per ADR-0030: trunk = `main`,
+plugin architecture = the plugin branch's, with main's four unique plugin pieces (stable command
+registry, toolset-contribution stage, disk-backed plugin storage, patch-review tray) ported onto that
+runtime and one unified panel renderer serving both the in-app surface and floating panel windows.
+That program's full plan and milestone records live in the planning workspace
+(`~/Documents/programming/Chemdraw-NMRplugin`) and in `PLANS.md` on the `codex/nmr-plugin` branch;
+they are not duplicated here. Remaining plugin-separation work (publish the SDK, strip bundled NMR,
+from-zero install test) is queued there as PLAN-plugin-separation Phases 2+.
+
+The sections below are the trunk's active plan, unchanged by the merge.
+
 # Rings Toolbar and Molecule Inspector Tabs
 
 ## Refactor/Toolbars Schema Update

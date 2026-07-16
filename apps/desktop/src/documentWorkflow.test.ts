@@ -19,6 +19,8 @@ import {
   type GraphicObject,
   type GraphicPaint,
   type GroupObject,
+  type MoleculeAtom,
+  type MoleculeBond,
   type MoleculeObject,
   type PlusObject,
   type TextObject,
@@ -197,8 +199,10 @@ import {
   updateNativeGraphicLinearGradientHandle,
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
-  updateNativeGraphicRadialGradientHandle
+  updateNativeGraphicRadialGradientHandle,
+  nativeSingleBondGraphSmiles
 } from "./documentWorkflow";
+import * as OCL from "openchemlib";
 
 function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
   const molecule = getSelectedMolecule(document);
@@ -9981,5 +9985,86 @@ describe("PR #7 review regression fixes", () => {
     });
 
     expect(moleculeById(broken, molecule.id).style.ringStyles).toBeUndefined();
+  });
+});
+
+describe("nativeSingleBondGraphSmiles general graph writer", () => {
+  // Fused bicyclic (naphthalene/decalin) skeleton: two six-membered rings sharing the a05-a10
+  // edge, 10 carbons and 11 bonds. Only the bond orders vary between the aromatic and the
+  // saturated forms, so callers pass the set of edges that should be double bonds.
+  const fusedBicyclicSkeleton = (
+    doubleBondPairs: ReadonlyArray<readonly [string, string]>
+  ): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } => {
+    const atomIds = ["a01", "a02", "a03", "a04", "a05", "a06", "a07", "a08", "a09", "a10"];
+    const atoms: MoleculeAtom[] = atomIds.map((id, index) => ({
+      id,
+      element: "C",
+      x: index * 10,
+      y: 0,
+      formalCharge: 0
+    }));
+    const edges: ReadonlyArray<readonly [string, string]> = [
+      ["a01", "a02"], ["a02", "a03"], ["a03", "a04"], ["a04", "a05"],
+      ["a05", "a10"], ["a05", "a06"], ["a06", "a07"], ["a07", "a08"],
+      ["a08", "a09"], ["a09", "a10"], ["a10", "a01"]
+    ];
+    const pairKey = (from: string, to: string): string => [from, to].sort().join("::");
+    const doubleBonds = new Set(doubleBondPairs.map(([from, to]) => pairKey(from, to)));
+    const bonds: MoleculeBond[] = edges.map(([from, to], index) => ({
+      id: `bond_${String(index + 1).padStart(3, "0")}`,
+      fromAtomId: from,
+      toAtomId: to,
+      order: doubleBonds.has(pairKey(from, to)) ? "double" : "single"
+    }));
+    return { atoms, bonds };
+  };
+
+  const reparse = (smiles: string): { formula: string; ringCount: number } => {
+    const molecule = OCL.Molecule.fromSmiles(smiles);
+    molecule.ensureHelperArrays(OCL.Molecule.cHelperRings);
+    return {
+      formula: molecule.getMolecularFormula().formula,
+      ringCount: molecule.getRingSet().getSize()
+    };
+  };
+
+  it("linearizes fused naphthalene into a two-ring SMILES that OpenChemLib reparses to C10H8", () => {
+    const { atoms, bonds } = fusedBicyclicSkeleton([
+      ["a01", "a02"], ["a03", "a04"], ["a05", "a10"], ["a06", "a07"], ["a08", "a09"]
+    ]);
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    // The old fallback concatenated bare atom symbols, collapsing naphthalene to the decane
+    // chain "CCCCCCCCCC" — no ring closures, no bonds preserved.
+    expect(smiles).not.toBe("CCCCCCCCCC");
+    expect(smiles).toMatch(/\d/);
+    expect(reparse(smiles)).toEqual({ formula: "C10H8", ringCount: 2 });
+  });
+
+  it("linearizes saturated decalin into a two-ring SMILES that OpenChemLib reparses to C10H18", () => {
+    const { atoms, bonds } = fusedBicyclicSkeleton([]);
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    expect(smiles).not.toContain("=");
+    expect(smiles).toMatch(/\d/);
+    expect(reparse(smiles)).toEqual({ formula: "C10H18", ringCount: 2 });
+  });
+
+  it("joins a ringed component and a chain component with a dot instead of fusing them", () => {
+    const { atoms: ringAtoms, bonds: ringBonds } = fusedBicyclicSkeleton([]);
+    const chainAtoms: MoleculeAtom[] = [
+      { id: "z1", element: "C", x: 0, y: 100, formalCharge: 0 },
+      { id: "z2", element: "C", x: 10, y: 100, formalCharge: 0 }
+    ];
+    const chainBonds: MoleculeBond[] = [
+      { id: "chain_bond", fromAtomId: "z1", toAtomId: "z2", order: "single" }
+    ];
+
+    const smiles = nativeSingleBondGraphSmiles([...ringAtoms, ...chainAtoms], [...ringBonds, ...chainBonds]);
+
+    expect(smiles.split(".")).toHaveLength(2);
+    expect(reparse(smiles)).toEqual({ formula: "C12H24", ringCount: 2 });
   });
 });

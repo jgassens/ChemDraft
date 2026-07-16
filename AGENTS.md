@@ -576,6 +576,63 @@ Phase E: confidence overlay and fixture-based accuracy tests
 
 Do not vendor large checkpoints into the repository. Do not present recognized structures as guaranteed correct.
 
+## 8a. Plugin runtime, packaging, and NMR rules (merged from `codex/nmr-plugin`, 2026-07-16)
+
+These are shipped repo truths from the plugin program (M1–M36 + the runtime union merge), not
+branch-scoped guidance. The decision record and milestone reports live in the planning workspace
+(`~/Documents/programming/Chemdraw-NMRplugin`); developer docs live in `docs/plugin-architecture/`.
+
+**Runtime.** There is ONE persistent desktop plugin runtime (`apps/desktop/src/plugins/createPluginRuntime.ts`,
+owned by `usePluginRuntime`). It is created exactly once; document/selection reach it through provider
+callbacks/refs. Never recreate it because the document, selection, page, viewport, or undo state
+changed. Plugin commands register into the SAME stable `CommandRegistry` as core commands
+(`commands/coreCommandRegistrar.ts`); a command is plugin-owned iff its registered definition carries a
+`pluginId`. All desktop registration paths (bundled, installed, fixture) go through the runtime's
+`registerPlugin`/`unregisterPlugin` — never the bare host — so toolset contributions are staged with
+their `ui.toolbar` gate and whole-plugin rollback, and provenance maps stay accurate.
+
+**Panels are declarative and rendered by ONE renderer.** Plugins push `PluginPanelReport` data (text,
+keyValue, table, svg, linkedFigure sections); `PluginReportRenderer` is the single renderer for every
+surface — the in-app panel surface AND the floating `PluginPanelWindow` (ADR-0030). Never reintroduce a
+window-private section switch: an unknown section kind must never be silently dropped. The in-app
+surface keeps single-panel semantics with replacement-close (ADR-0012); popped-out windows are
+per-panelId (several may float); dismissing a window is a real panel close and must notify the plugin.
+Staleness (D-09) and Run again travel with the report over the panel bridge.
+
+**Isolation and installs.** Bundled analyzer plugins execute in per-plugin module Workers
+(`PluginWorkerBridge`, ADR-0029/M34); capability requests are serviced by the permission-gated host
+context, and `terminate()` is total teardown. Installed packages (M35/M36) are staged under
+`$APPDATA/installed-plugins/` and served same-origin: the app pre-empts its own `tauri://` scheme
+(`installed_plugins.rs`; `register_uri_scheme_protocol("tauri", …)` in lib.rs) and the Vite dev server
+carries the mirroring `/installed-plugins/` middleware. Do NOT remove either serving hook, add a new
+URI scheme for plugins (a new scheme is a new origin and the packages stop loading), or bypass the
+fail-closed install gates (checksum/CRC, manifest validation, apiVersion + worker handshake, path
+traversal guards in TS and Rust). `worker.format: "es"` in vite.config.ts is load-bearing.
+
+**Naming conventions (schema-enforced where noted).** Command ids `plugin.<pluginName>.<action>`
+(toolset contribution ids are schema-enforced to start with `plugin.`); menu ids
+`menu.<pluginName>.<action>`; panel ids `panel.<pluginName>.<name>`; analyzer ids
+`analyzer.<pluginName>.<name>`; manifest `apiVersion` `"^0.1.0"` (caret). Register manifests through
+the runtime so schema and permission validation run.
+
+**NMR scientific-claim rules (absolute).** The shipped backend is the OCL-native provider:
+HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental assignments. The shipped
+path must never be described as fixture-backed or synthetic (fixtures survive only in tests/fallbacks
+and must be labeled synthetic wherever used). Accuracy figures shown to a user must stay
+checksum-gated to the benchmarked corpus (M31) and drop for any other database build. ¹H multiplicity
+and J are first-order topology estimates, labeled as estimated — never presented as measured. Stick
+height is predicted equivalent nuclei, not integration; lineshape and spectrometer field are
+simulation parameters. Never fabricate a shift for an unmatched environment — partial results carry
+warnings. No calibrated confidence percentages; honest tiers only (ADR-0020).
+
+**Licensing.** The example plugins' original code is MIT (finalized 2026-07-16 by the project owner) —
+chosen because the nmrshiftdb2 Database License requires prediction software relying on the database to
+be OSI-approved. MIT does NOT cover the bundled reference database: it is a derivative database under
+the nmrshiftdb2 Database License (ODbL-derived) with share-alike and attribution obligations that
+travel with any redistribution, including a packaged plugin zip. Never describe a packaged plugin as
+"MIT" without that carve-out. The root repository `LICENSE` remains unfinalized (`UNLICENSED` in
+package.json) — the project owner's call; do not change it.
+
 ## 9. Command registry rules
 
 Built-in tools and plugin tools should use the same command system whenever practical.

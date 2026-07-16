@@ -8,6 +8,8 @@ import {
   flattenAppMenuCommands,
   formatMenuShortcut,
   nativeRoutedCommandIds,
+  PLUGIN_MANAGER_COMMAND_ID,
+  type AppMenuCommand,
   type AppMenuContext
 } from "./appMenu";
 
@@ -126,7 +128,88 @@ describe("app menu model", () => {
       "Edit",
       "View",
       "Structure",
-      "Analyze"
+      "Analyze",
+      "Plugins"
     ]);
+  });
+
+  it("exposes the core plugin manager in its own native-routed section", () => {
+    const model = buildAppMenuModel(EMPTY_CONTEXT);
+    const plugins = model.find((section) => section.id === "plugins");
+
+    expect(plugins?.label).toBe("Plugins");
+    expect(plugins?.items).toEqual([
+      expect.objectContaining({
+        kind: "command",
+        commandId: PLUGIN_MANAGER_COMMAND_ID,
+        label: "Add or Remove Plugins…",
+        enabled: true
+      })
+    ]);
+    expect(nativeRoutedCommandIds(model)).toContain(PLUGIN_MANAGER_COMMAND_ID);
+  });
+
+  it("appends plugin menu items to their target section without disturbing the native routed set", () => {
+    const pluginItem: AppMenuCommand = {
+      kind: "command",
+      id: "menu.nmrPredictor.predict",
+      commandId: "plugin.nmrPredictor.predict",
+      label: "Predict NMR Spectrum",
+      enabled: true,
+      pluginContributed: true
+    };
+
+    const model = buildAppMenuModel({
+      ...EMPTY_CONTEXT,
+      pluginMenuItems: [{ location: "analyze", command: pluginItem }]
+    });
+
+    // Item lands in Analyze; no new top-level section appears for a known location.
+    expect(model.map((section) => section.label)).toEqual([
+      "File",
+      "Edit",
+      "View",
+      "Structure",
+      "Analyze",
+      "Plugins"
+    ]);
+    const analyze = model.find((section) => section.id === "analyze");
+    const analyzeCommandIds = flattenAppMenuCommands(analyze ? [analyze] : []).map((item) => item.commandId);
+    expect(analyzeCommandIds).toContain("plugin.nmrPredictor.predict");
+
+    // Plugin items are excluded from the native-routed set (native menu does not route them yet),
+    // so the routed set is identical to the pure core menu — the drift test stays meaningful.
+    expect(nativeRoutedCommandIds(model)).not.toContain("plugin.nmrPredictor.predict");
+    expect(nativeRoutedCommandIds(model).sort()).toEqual(
+      nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT)).sort()
+    );
+  });
+
+  it("appends contributed items to the core Plugins section after one separator", () => {
+    const model = buildAppMenuModel({
+      ...EMPTY_CONTEXT,
+      pluginMenuItems: [
+        {
+          location: "plugins",
+          command: {
+            kind: "command",
+            id: "menu.demo.open",
+            commandId: "plugin.demo.open",
+            label: "Open Demo",
+            enabled: true,
+            pluginContributed: true
+          }
+        }
+      ]
+    });
+
+    const plugins = model.find((section) => section.id === "plugins");
+    expect(plugins?.items.map((item) => (item.kind === "command" ? item.commandId : item.kind))).toEqual([
+      PLUGIN_MANAGER_COMMAND_ID,
+      "separator",
+      "plugin.demo.open"
+    ]);
+    expect(nativeRoutedCommandIds(model)).toContain(PLUGIN_MANAGER_COMMAND_ID);
+    expect(nativeRoutedCommandIds(model)).not.toContain("plugin.demo.open");
   });
 });
