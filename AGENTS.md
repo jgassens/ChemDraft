@@ -1,18 +1,21 @@
-# Agent Instructions for ChemDraft `refactor/toolbars`
+# Agent Instructions for ChemDraft
 
-This worktree is for stabilizing schema-backed toolbar buttons before the next
-Rings Toolbar / Molecule Inspector work in `PLANS.md`.
+This file governs how AI coding agents, Codex, and human contributors work in this repository. It
+describes the repo as a whole and is **not** scoped to any one branch or worktree — whatever branch
+you are on, these rules apply. Branch-specific scope belongs in `PLANS.md`, not here. (This file has
+historically been rewritten to describe whichever branch was active, which left `main` carrying a
+header for a worktree that no longer existed; keep it general.)
 
-- Worktree: `/Users/jeremiahgassensmith/Documents/programming/chemdraw-toolbars`
-- Branch: `refactor/toolbars`
-- Planning source: `PLANS.md`
-- Current state: toolbar schema stabilization gate. Do not start Structure Inspector,
-  Molecule Inspector, Ring Inspector, Atom Labels, Templates, or shared-font work
-  until this cleanup is committed.
+ChemDraft is a lightweight, open-source chemical drawing application with a plugin architecture. The
+core app must stay small, stable, testable, legally clean, and focused on drawing workflows.
 
-For this stabilization cleanup, do not update the app build stamp or the `Build`
-string in `apps/desktop/src/MainWindow.tsx` unless the implementation changes
-runtime build identity or a maintainer explicitly requests it.
+Do not use **MolScribe** as the app name. MolScribe refers to the external image-to-graph molecular
+recognition project and, in this repository, only to the optional **MolScribe OCSR** plugin or
+integration.
+
+Bump the build stamp (`CURRENT_BUILD_STAMP` in `apps/desktop/src/MainWindow.tsx`) when you finish a
+slice of work, so a stale build is obvious on sight. Its suffix names the agent that authored the
+work (`-opus`, `-codex`, `-fable`, …), never the branch.
 
 ## Required Reading Before Coding
 
@@ -30,16 +33,15 @@ pnpm-workspace.yaml
 If the work touches a package, also read that package's README or local documentation before editing.
 
 When `PLANS.md` exists, treat it as the active scoped implementation plan unless the user gives
-newer instructions. For the current branch, the immediate `PLANS.md` gate is toolbar
-button schema stabilization; keep edits focused on that gate and do not broaden the slice
-into inspector, chemistry, rendering, UI polish, or format work.
+newer instructions. Keep edits focused on the files, behaviors, and verification listed there; do
+not broaden the slice into adjacent chemistry, rendering, UI polish, or format work.
 
 Notary and app-signing instructions live at `/Users/jeremiahgassensmith/Documents/programming/.notary`.
 Read that directory before signing, notarizing, packaging, or changing release automation.
 
-## 2. Current Stabilization Gate
+## Toolbar Button Contract
 
-Complete one cleanup commit for the schema-backed toolbar button contract:
+The schema-backed toolbar button rules that must keep holding:
 
 - inline schema submenu commands must invoke exactly once from click;
 - disabled submenu commands must not invoke;
@@ -49,10 +51,8 @@ Complete one cleanup commit for the schema-backed toolbar button contract:
 - native palette flyout transport must remain unchanged;
 - generated toolbar command specs must not invent generic tooltip descriptions.
 
-Do not convert the remaining Art toolbar hardcoded arrays in this cleanup commit.
-Do not add, remove, rename, or redesign toolbar buttons.
-Do not change command IDs, chemistry behavior, inspector behavior, package dependencies,
-or app build identity unless a test or build process forces a narrow, explained fix.
+Do not change command IDs, chemistry behavior, inspector behavior, package dependencies, or app
+build identity unless a test or build process forces a narrow, explained fix.
 
 ## Reuse Existing Systems
 
@@ -66,13 +66,12 @@ Verify existing code before adding new code.
 
 ## Hard Boundaries
 
-- Do not change the main checkout. Work only in this worktree for this branch.
+- Work only in the worktree checked out for the branch you are on; never edit another worktree's files.
 - Do not copy proprietary assets, icons, dialog art, help text, sample files, command IDs, trade dress, or branded UI.
-- Keep chemical identity stable. Toolbar schema cleanup must not mutate atoms, bonds, bond order, charges, stereochemistry, reactions, or molecule metadata.
+- Keep chemical identity stable. Toolbar, inspector, and UI work must not mutate atoms, bonds, bond order, charges, stereochemistry, reactions, or molecule metadata.
 - Native flyouts must keep using the existing request/snapshot/window-manager path.
 - Inline submenu ARIA must describe real inline DOM menus only; native flyout owner buttons may advertise `aria-haspopup="menu"` but must not point `aria-controls` at nonexistent DOM.
 - Generated toolbar commands may preserve explicit tooltip descriptions and command overrides, but must not synthesize filler text such as `toolset action`.
-- The remaining Art toolbar hardcoded arrays are a bridge; do not migrate them in this stabilization commit.
 
 ## Verification
 
@@ -886,6 +885,5 @@ This is automatic — nothing to remember, nothing to type. Do NOT strip the lab
 report launch verification, state the label you saw (title bar or build stamp) and confirm it matches
 this worktree.
 
-If this worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed
-on this branch yet — port it in from `refactor/toolbars` (the four files above), or pick it up on the
-next merge from `main`.
+If a worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed on
+that branch yet — pick it up by merging from `main`, which carries all four files above.
