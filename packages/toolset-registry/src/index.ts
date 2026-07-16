@@ -5,6 +5,10 @@ const CommandIdSchema = NonEmptyStringSchema.regex(
   /^[A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*$/,
   "Command IDs must be non-empty identifiers without whitespace."
 );
+const IconDataUriSchema = z
+  .string()
+  .regex(/^data:image\/(png|svg\+xml);base64,/, "Toolset icons must be base64 png or svg+xml data URIs.")
+  .max(64_000);
 
 export const ToolsetSourceSchema = z.enum(["core", "plugin", "user"]);
 export const ToolsetModeSchema = z.enum(["floating", "docked", "hidden"]);
@@ -16,7 +20,9 @@ export const ToolsetGridLayoutSchema = z
     rows: z.number().int().positive().optional(),
     columns: z.number().int().positive().optional(),
     cellWidth: z.number().positive().optional(),
-    cellHeight: z.number().positive().optional()
+    cellHeight: z.number().positive().optional(),
+    gap: z.number().int().nonnegative().optional(),
+    padding: z.number().int().nonnegative().optional()
   })
   .strict();
 
@@ -38,24 +44,91 @@ export const ToolsetWindowSizeSchema = z
   })
   .strict();
 
-export const ToolsetItemSchema = z
+export const ToolsetItemKindSchema = z.enum(["button", "toggle", "control", "separator", "spacer"]);
+
+export const ToolsetPrimaryActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("command"), commandId: CommandIdSchema }).strict(),
+  z.object({ type: z.literal("control"), controlId: NonEmptyStringSchema }).strict(),
+  z.object({ type: z.literal("none") }).strict()
+]);
+
+export const ToolsetTooltipSchema = z
+  .object({
+    title: NonEmptyStringSchema.optional(),
+    description: z.string().nullable().optional(),
+    shortcut: z.string().nullable().optional()
+  })
+  .strict();
+
+export const ToolsetSubmenuItemSchema = z
   .object({
     commandId: CommandIdSchema,
+    label: NonEmptyStringSchema.optional(),
+    title: NonEmptyStringSchema.optional(),
+    icon: NonEmptyStringSchema.optional(),
+    assetName: NonEmptyStringSchema.optional(),
+    iconDataUri: IconDataUriSchema.optional(),
+    tooltip: ToolsetTooltipSchema.optional()
+  })
+  .strict();
+
+export const ToolsetSubmenuSchema = z
+  .object({
+    type: z.literal("command-grid"),
+    id: NonEmptyStringSchema.optional(),
+    title: NonEmptyStringSchema.optional(),
+    columns: z.number().int().positive().optional(),
+    items: z.array(ToolsetSubmenuItemSchema).min(1)
+  })
+  .strict();
+
+export const ToolsetItemLayoutSchema = z
+  .object({
+    colSpan: z.number().int().positive().optional(),
+    rowSpan: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const ToolsetItemSchema = z
+  .object({
+    commandId: CommandIdSchema.optional(),
+    id: NonEmptyStringSchema.optional(),
+    kind: ToolsetItemKindSchema.optional(),
+    label: NonEmptyStringSchema.optional(),
     title: NonEmptyStringSchema.optional(),
     icon: NonEmptyStringSchema.optional(),
     assetName: NonEmptyStringSchema.optional(),
     /** Inline icon for contributions that cannot ship named assets (plugins). */
-    iconDataUri: z
-      .string()
-      .regex(/^data:image\/(png|svg\+xml);base64,/, "Toolset icons must be base64 png or svg+xml data URIs.")
-      .max(64_000)
-      .optional(),
+    iconDataUri: IconDataUriSchema.optional(),
     shortcutDisplay: z.string().optional(),
     disabledReason: z.string().optional(),
     category: z.string().optional(),
-    placement: ToolsetItemPlacementSchema.optional()
+    placement: ToolsetItemPlacementSchema.optional(),
+    primary: ToolsetPrimaryActionSchema.optional(),
+    submenu: ToolsetSubmenuSchema.nullish(),
+    tooltip: ToolsetTooltipSchema.optional(),
+    layout: ToolsetItemLayoutSchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((item, context) => {
+    if (
+      item.primary === undefined &&
+      item.commandId === undefined &&
+      item.kind !== "separator" &&
+      item.kind !== "spacer"
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Toolset items require commandId, primary, or separator/spacer kind."
+      });
+    }
+    if (item.primary?.type === "command" && item.commandId !== undefined && item.primary.commandId !== item.commandId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Toolset item commandId must match primary.commandId."
+      });
+    }
+  });
 
 export const ToolsetGroupSchema = z
   .object({
@@ -84,9 +157,32 @@ export const ToolsetItemOverrideSchema = z
   .object({
     commandId: CommandIdSchema,
     hidden: z.boolean().optional(),
-    placement: ToolsetItemPlacementSchema.optional()
+    placement: ToolsetItemPlacementSchema.optional(),
+    layout: ToolsetItemLayoutSchema.optional()
   })
   .strict();
+
+// The ONE way a CORE (or plugin) toolset gains a *new* item via layout state: an explicit,
+// add-only insertion. Structural edits to core toolsets are otherwise forbidden (only user.*
+// toolsets carry their own groups); an addition never mutates a manifest item, only appends one.
+// The item must yield a customization id (command id / control id / explicit id on a spacer) so
+// itemOrder / hiddenCommandIds can address it and applyUserToolsetOverride can reorder/hide it.
+export const ToolsetItemAdditionSchema = z
+  .object({
+    groupId: NonEmptyStringSchema,
+    index: z.number().int().nonnegative().optional(),
+    item: ToolsetItemSchema
+  })
+  .strict()
+  .superRefine((addition, context) => {
+    if (toolsetItemCustomizationId(addition.item as ToolsetItemDefinition) === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Toolset item additions require a customization id (commandId, control primary, or an explicit id on a spacer/separator)."
+      });
+    }
+  });
 
 export const UserToolsetOverrideSchema = z
   .object({
@@ -98,14 +194,35 @@ export const UserToolsetOverrideSchema = z
     itemOrder: z.record(z.array(CommandIdSchema)).optional(),
     hiddenCommandIds: z.array(CommandIdSchema).optional(),
     itemOverrides: z.array(ToolsetItemOverrideSchema).optional(),
+    itemAdditions: z.array(ToolsetItemAdditionSchema).optional(),
     preferredWindowSize: ToolsetWindowSizeSchema.optional(),
     gridLayout: ToolsetGridLayoutSchema.optional()
   })
   .strict();
 
+// User toolsets may have empty groups (a freshly created toolbar, or one being emptied mid-edit in
+// the Customize dialog). Core/plugin toolsets keep the stricter `items.min(1)` via ToolsetGroupSchema.
+export const UserToolsetGroupSchema = z
+  .object({
+    id: NonEmptyStringSchema.optional(),
+    title: NonEmptyStringSchema.optional(),
+    items: z.array(ToolsetItemSchema)
+  })
+  .strict();
+
 export const UserToolsetDefinitionSchema = ToolsetDefinitionSchema.extend({
   source: z.literal("user"),
-  clonedFromToolsetId: NonEmptyStringSchema.optional()
+  clonedFromToolsetId: NonEmptyStringSchema.optional(),
+  groups: z.array(UserToolsetGroupSchema).min(1)
+}).strict();
+
+// Toolsets handed to a ToolsetRegistry may be DERIVED — the output of applyToolsetLayoutState, where
+// customization can legitimately empty a group (hidden items) or empty a whole toolset (every item
+// hidden, or a freshly-created user toolbar). This lenient schema validates the shape but tolerates
+// those empties. The STRICT non-empty invariant for authored manifests stays in ToolsetManifestSchema
+// (parseToolsetManifest), so registering a derived layout can never crash the way register() did.
+export const RegisteredToolsetSchema = ToolsetDefinitionSchema.extend({
+  groups: z.array(UserToolsetGroupSchema)
 }).strict();
 
 export const ToolsetLayoutStateSchema = z
@@ -129,8 +246,25 @@ export type ToolsetOrientation = z.infer<typeof ToolsetOrientationSchema>;
 export type ToolsetGridLayout = z.infer<typeof ToolsetGridLayoutSchema>;
 export type ToolsetWindowSize = z.infer<typeof ToolsetWindowSizeSchema>;
 export type ToolsetItemPlacement = z.infer<typeof ToolsetItemPlacementSchema>;
+export type ToolsetItemKind = z.infer<typeof ToolsetItemKindSchema>;
+export type ToolsetPrimaryAction = z.infer<typeof ToolsetPrimaryActionSchema>;
+export type ToolsetTooltip = z.infer<typeof ToolsetTooltipSchema>;
+export type ToolsetItemLayout = z.infer<typeof ToolsetItemLayoutSchema>;
 export type ToolsetItemOverride = z.infer<typeof ToolsetItemOverrideSchema>;
 export type UserToolsetOverride = z.infer<typeof UserToolsetOverrideSchema>;
+export type ToolsetItemAddition<TIcon extends string = string, TAssetName extends string = string> =
+  Omit<z.infer<typeof ToolsetItemAdditionSchema>, "item"> & {
+    item: ToolsetItemDefinition<TIcon, TAssetName>;
+  };
+export type ToolsetSubmenuItem<TIcon extends string = string, TAssetName extends string = string> =
+  Omit<z.infer<typeof ToolsetSubmenuItemSchema>, "icon" | "assetName"> & {
+    icon?: TIcon;
+    assetName?: TAssetName;
+  };
+export type ToolsetSubmenu<TIcon extends string = string, TAssetName extends string = string> =
+  Omit<z.infer<typeof ToolsetSubmenuSchema>, "items"> & {
+    items: ToolsetSubmenuItem<TIcon, TAssetName>[];
+  };
 export type UserToolsetDefinition<TIcon extends string = string, TAssetName extends string = string> =
   Omit<z.infer<typeof UserToolsetDefinitionSchema>, "groups"> & {
     groups: ToolsetGroupDefinition<TIcon, TAssetName>[];
@@ -141,9 +275,10 @@ export type ToolsetLayoutState<TIcon extends string = string, TAssetName extends
   };
 
 export type ToolsetItemDefinition<TIcon extends string = string, TAssetName extends string = string> =
-  Omit<z.infer<typeof ToolsetItemSchema>, "icon" | "assetName"> & {
+  Omit<z.infer<typeof ToolsetItemSchema>, "icon" | "assetName" | "submenu"> & {
     icon?: TIcon;
     assetName?: TAssetName;
+    submenu?: ToolsetSubmenu<TIcon, TAssetName> | null;
   };
 
 export type ToolsetGroupDefinition<TIcon extends string = string, TAssetName extends string = string> =
@@ -155,6 +290,64 @@ export type ToolsetDefinition<TIcon extends string = string, TAssetName extends 
   Omit<z.infer<typeof ToolsetDefinitionSchema>, "groups"> & {
     groups: ToolsetGroupDefinition<TIcon, TAssetName>[];
   };
+
+export interface NormalizedToolsetSubmenuItem {
+  commandId: string;
+  label: string;
+  icon?: string;
+  assetName?: string;
+  iconDataUri?: string;
+  tooltip?: {
+    title?: string;
+    description?: string | null;
+    shortcut?: string | null;
+  };
+}
+
+export interface NormalizedToolsetItem {
+  id: string;
+  kind: ToolsetItemKind;
+  label: string;
+  icon?: string;
+  assetName?: string;
+  iconDataUri?: string;
+  primary: ToolsetPrimaryAction;
+  submenu: {
+    type: "command-grid";
+    id?: string;
+    title?: string;
+    columns?: number;
+    items: NormalizedToolsetSubmenuItem[];
+  } | null;
+  tooltip: {
+    title: string;
+    description?: string | null;
+    shortcut?: string | null;
+  };
+  layout: {
+    groupId?: string;
+    row?: number;
+    column?: number;
+    order?: number;
+    colSpan: number;
+    rowSpan: number;
+  };
+  commandId?: string;
+  title?: string;
+  shortcutDisplay?: string;
+  disabledReason?: string;
+  category?: string;
+}
+
+export interface NormalizedToolsetGroup {
+  id?: string;
+  title?: string;
+  items: NormalizedToolsetItem[];
+}
+
+export type NormalizedToolsetDefinition = Omit<ToolsetDefinition, "groups"> & {
+  groups: NormalizedToolsetGroup[];
+};
 
 export interface ToolbarsMenuItem {
   id: string;
@@ -175,6 +368,11 @@ export interface ToolsetToggleCommandDefinition {
 
 export interface ApplyToolsetLayoutStateOptions {
   registeredCommandIds?: ReadonlySet<string> | readonly string[];
+  /** Command ids that are valid override/addition targets IN ADDITION to the toolsets' own commands
+   *  (or to `registeredCommandIds` when that is given). In-place customize can add any shell command
+   *  to a toolbar, not just the ones already in a manifest, so the app passes its full command
+   *  catalog here — without it those additions read as "unknown" and get pruned/thrown on render. */
+  additionalCommandIds?: ReadonlySet<string> | readonly string[];
   /** "throw" (default) rejects layout state referencing unknown commands; "prune" drops the
    *  offending items/overrides instead — persisted customization must never crash startup
    *  just because a plugin was removed — and reports each drop through onWarning. */
@@ -190,7 +388,8 @@ export class ToolsetRegistry<TIcon extends string = string, TAssetName extends s
   }
 
   register(toolset: ToolsetDefinition<TIcon, TAssetName>): ToolsetDefinition<TIcon, TAssetName> {
-    const parsed = ToolsetDefinitionSchema.parse(toolset) as ToolsetDefinition<TIcon, TAssetName>;
+    // Lenient schema: a derived toolset (post-customization) may have empty groups/items.
+    const parsed = RegisteredToolsetSchema.parse(toolset) as ToolsetDefinition<TIcon, TAssetName>;
     if (this.#toolsets.has(parsed.id)) {
       throw new Error(`Toolset "${parsed.id}" is already registered.`);
     }
@@ -225,13 +424,7 @@ export class ToolsetRegistry<TIcon extends string = string, TAssetName extends s
   }
 
   listCommandIds(): string[] {
-    return [
-      ...new Set(
-        this.listToolsets().flatMap((toolset) =>
-          toolset.groups.flatMap((group) => group.items.map((item) => item.commandId))
-        )
-      )
-    ];
+    return [...new Set(this.listToolsets().flatMap(toolsetCommandIds))];
   }
 }
 
@@ -239,6 +432,107 @@ export function parseToolsetManifest<TIcon extends string = string, TAssetName e
   manifest: unknown
 ): ToolsetDefinition<TIcon, TAssetName>[] {
   return ToolsetManifestSchema.parse(manifest).toolsets as ToolsetDefinition<TIcon, TAssetName>[];
+}
+
+export interface NormalizeToolsetItemContext {
+  toolsetId?: string;
+  groupId?: string;
+  itemIndex?: number;
+}
+
+export function normalizeToolsetItem<TIcon extends string = string, TAssetName extends string = string>(
+  item: ToolsetItemDefinition<TIcon, TAssetName>,
+  context: NormalizeToolsetItemContext = {}
+): NormalizedToolsetItem {
+  if (item.primary?.type === "command" && item.commandId && item.primary.commandId !== item.commandId) {
+    throw new Error(
+      `Toolset item "${item.id ?? item.commandId}" declares commandId "${item.commandId}" but primary command "${item.primary.commandId}".`
+    );
+  }
+
+  const primary: ToolsetPrimaryAction = item.primary ?? (item.commandId
+    ? { type: "command", commandId: item.commandId }
+    : { type: "none" });
+  const id = item.id
+    ?? item.commandId
+    ?? (primary.type === "control" ? primary.controlId : undefined)
+    // A separator has no command/control id, so synthesize a stable one from its position. Never
+    // require context.groupId here — a schema-valid separator in an id-less group must not crash.
+    ?? (primary.type === "none"
+      ? `${context.toolsetId ?? "toolset"}.${context.groupId ?? "group"}.separator.${context.itemIndex ?? 0}`
+      : undefined);
+  if (!id) {
+    throw new Error("Toolset item requires an id, commandId, or a control/separator primary.");
+  }
+
+  const kind: ToolsetItemKind = item.kind
+    ?? (item.commandId || primary.type === "command"
+      ? "button"
+      : primary.type === "control"
+        ? "control"
+        : primary.type === "none"
+          ? "separator"
+          : "button");
+  const label = item.label ?? item.title ?? item.commandId ?? id;
+
+  return {
+    id,
+    kind,
+    label,
+    icon: item.icon,
+    assetName: item.assetName,
+    iconDataUri: item.iconDataUri,
+    primary,
+    submenu: normalizeToolsetSubmenu(item.submenu ?? null),
+    tooltip: {
+      title: item.tooltip?.title ?? label ?? item.title ?? item.commandId ?? id,
+      description: item.tooltip && "description" in item.tooltip ? item.tooltip.description ?? null : null,
+      shortcut: item.tooltip && "shortcut" in item.tooltip ? item.tooltip.shortcut ?? null : item.shortcutDisplay ?? null
+    },
+    layout: {
+      groupId: item.placement?.groupId,
+      row: item.placement?.row,
+      column: item.placement?.column,
+      order: item.placement?.order,
+      colSpan: item.layout?.colSpan ?? 1,
+      rowSpan: item.layout?.rowSpan ?? 1
+    },
+    commandId: item.commandId,
+    title: item.title,
+    shortcutDisplay: item.shortcutDisplay,
+    disabledReason: item.disabledReason,
+    category: item.category
+  };
+}
+
+export function normalizeToolsetGroup<TIcon extends string = string, TAssetName extends string = string>(
+  group: ToolsetGroupDefinition<TIcon, TAssetName>,
+  context: Omit<NormalizeToolsetItemContext, "itemIndex"> = {}
+): NormalizedToolsetGroup {
+  return {
+    id: group.id,
+    title: group.title,
+    items: group.items.map((item, itemIndex) =>
+      normalizeToolsetItem(item, { ...context, groupId: group.id ?? context.groupId, itemIndex })
+    )
+  };
+}
+
+export function normalizeToolsetDefinition<TIcon extends string = string, TAssetName extends string = string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>
+): NormalizedToolsetDefinition {
+  return {
+    ...toolset,
+    groups: toolset.groups.map((group, groupIndex) =>
+      normalizeToolsetGroup(group, { toolsetId: toolset.id, groupId: group.id ?? `group-${groupIndex}` })
+    )
+  };
+}
+
+export function normalizeToolsetDefinitions<TIcon extends string = string, TAssetName extends string = string>(
+  toolsets: readonly ToolsetDefinition<TIcon, TAssetName>[]
+): NormalizedToolsetDefinition[] {
+  return toolsets.map(normalizeToolsetDefinition);
 }
 
 export function parseToolsetLayoutState<TIcon extends string = string, TAssetName extends string = string>(
@@ -253,7 +547,13 @@ export function applyToolsetLayoutState<TIcon extends string = string, TAssetNam
   options: ApplyToolsetLayoutStateOptions = {}
 ): ToolsetDefinition<TIcon, TAssetName>[] {
   const parsed = parseToolsetLayoutState<TIcon, TAssetName>(state);
-  const commandIds = commandIdSetFromOptions(toolsets, options);
+  const commandIds = new Set(commandIdSetFromOptions(toolsets, options));
+  // Toolbar-launcher commands are generated by the registry itself rather than declared by a
+  // manifest item or the app's static shell catalog. They are nevertheless valid toolbar targets
+  // for every base/plugin toolset and every user toolset in this state.
+  for (const toolset of [...toolsets, ...parsed.userToolsets]) {
+    commandIds.add(createToolsetToggleCommandId(toolset.id));
+  }
   const onUnknownCommand = options.onUnknownCommand ?? "throw";
   const warn = options.onWarning ?? (() => undefined);
   const baseToolsets = toolsets.map(cloneToolset);
@@ -280,11 +580,14 @@ export function applyToolsetLayoutState<TIcon extends string = string, TAssetNam
       continue;
     }
 
+    // The override may target the toolset's own commandless items (a manifest divider's explicit id)
+    // in hiddenCommandIds/itemOrder — those ids are as legitimate as registered commands.
+    const toolsetItemIds = toolsetItemCustomizationIds(toolset);
     let safeOverride = override;
     if (onUnknownCommand === "prune") {
-      safeOverride = pruneUnknownOverrideCommands(override, commandIds, warn);
+      safeOverride = pruneUnknownOverrideCommands(override, commandIds, warn, toolsetItemIds);
     } else {
-      assertOverrideCommandsRegistered(override, commandIds);
+      assertOverrideCommandsRegistered(override, commandIds, toolsetItemIds);
     }
     toolsetsById.set(override.toolsetId, applyUserToolsetOverride(toolset, safeOverride));
   }
@@ -296,35 +599,106 @@ function pruneUnknownToolsetCommands<TIcon extends string, TAssetName extends st
   toolset: ToolsetDefinition<TIcon, TAssetName>,
   registeredCommandIds: ReadonlySet<string>,
   warn: (warning: string) => void
-): ToolsetDefinition<TIcon, TAssetName> | undefined {
-  const groups = toolset.groups
-    .map((group) => ({
-      ...group,
-      items: group.items.filter((item) => {
-        if (registeredCommandIds.has(item.commandId)) {
-          return true;
-        }
-        warn(`User toolset "${toolset.id}" dropped unknown command "${item.commandId}".`);
-        return false;
-      })
-    }))
-    .filter((group) => group.items.length > 0);
+): ToolsetDefinition<TIcon, TAssetName> {
+  const groups = toolset.groups.map((group) => ({
+    ...group,
+    items: group.items.flatMap((item) => {
+      const unknownPrimaryIds = toolsetItemPrimaryCommandIds(item).filter(
+        (commandId) => !registeredCommandIds.has(commandId)
+      );
+      if (unknownPrimaryIds.length > 0) {
+        // The item's own command is gone — drop the whole item.
+        unknownPrimaryIds.forEach((commandId) => {
+          warn(`User toolset "${toolset.id}" dropped unknown command "${commandId}".`);
+        });
+        return [];
+      }
+      // Primary is registered — keep the button and prune only unknown submenu entries.
+      const submenu = pruneUnknownSubmenuCommands(toolset.id, item, registeredCommandIds, warn);
+      return [{ ...item, submenu }];
+    })
+  }));
 
-  if (groups.length === 0) {
-    warn(`User toolset "${toolset.id}" was dropped: none of its commands are registered.`);
-    return undefined;
+  // Keep the toolset even when it ends up empty (freshly created in the Customize dialog, or all of
+  // its commands came from a removed plugin) — dropping it would silently delete the user's toolbar.
+  // It renders as an empty palette; the user can re-add commands.
+  return { ...toolset, groups };
+}
+
+function pruneUnknownSubmenuCommands<TIcon extends string, TAssetName extends string>(
+  toolsetId: string,
+  item: ToolsetItemDefinition<TIcon, TAssetName>,
+  registeredCommandIds: ReadonlySet<string>,
+  warn: (warning: string) => void
+): ToolsetSubmenu<TIcon, TAssetName> | null | undefined {
+  if (!item.submenu) {
+    return item.submenu;
   }
 
-  return { ...toolset, groups };
+  const items = item.submenu.items.filter((submenuItem) => {
+    if (registeredCommandIds.has(submenuItem.commandId)) {
+      return true;
+    }
+    warn(`User toolset "${toolsetId}" dropped unknown submenu command "${submenuItem.commandId}".`);
+    return false;
+  });
+
+  return items.length > 0 ? { ...item.submenu, items } : null;
+}
+
+/** All customization ids a toolset's own manifest items expose (command ids, control ids, explicit
+ *  separator/spacer ids). Overrides may legitimately target these — e.g. hiding a manifest divider —
+ *  so they join the keep-set alongside registered commands and surviving addition ids. */
+function toolsetItemCustomizationIds<TIcon extends string, TAssetName extends string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const group of toolset.groups) {
+    for (const item of group.items) {
+      const id = toolsetItemCustomizationId(item as ToolsetItemDefinition);
+      if (id !== undefined) {
+        ids.add(id);
+      }
+    }
+  }
+  return ids;
 }
 
 function pruneUnknownOverrideCommands(
   override: UserToolsetOverride,
   registeredCommandIds: ReadonlySet<string>,
-  warn: (warning: string) => void
+  warn: (warning: string) => void,
+  toolsetItemIds: ReadonlySet<string> = new Set()
 ): UserToolsetOverride {
+  // Prune additions first, by their OWN primary command id(s): a spacer has none so it always
+  // survives (same mechanism that keeps user-toolset separators), while a command addition whose
+  // command came from a removed plugin is dropped.
+  const itemAdditions = override.itemAdditions?.filter((addition) => {
+    const unknownPrimaryIds = toolsetItemPrimaryCommandIds(addition.item as ToolsetItemDefinition).filter(
+      (commandId) => !registeredCommandIds.has(commandId)
+    );
+    if (unknownPrimaryIds.length > 0) {
+      unknownPrimaryIds.forEach((commandId) => {
+        warn(`Toolbar customization for "${override.toolsetId}" dropped addition with unknown command "${commandId}".`);
+      });
+      return false;
+    }
+    return true;
+  });
+
+  // Ids introduced by surviving additions (a spacer id, a widget controlId) are legitimate override
+  // targets even though they are not registered commands — union them into the keep-set so an
+  // addition's own id in itemOrder / hiddenCommandIds / itemOverrides is not pruned as "unknown".
+  const survivingAdditionIds = new Set<string>();
+  for (const addition of itemAdditions ?? []) {
+    const id = toolsetItemCustomizationId(addition.item as ToolsetItemDefinition);
+    if (id !== undefined) {
+      survivingAdditionIds.add(id);
+    }
+  }
+
   const keep = (commandId: string, context: string): boolean => {
-    if (registeredCommandIds.has(commandId)) {
+    if (registeredCommandIds.has(commandId) || survivingAdditionIds.has(commandId) || toolsetItemIds.has(commandId)) {
       return true;
     }
     warn(`Toolbar customization for "${override.toolsetId}" dropped unknown command "${commandId}" (${context}).`);
@@ -333,6 +707,7 @@ function pruneUnknownOverrideCommands(
 
   return {
     ...override,
+    itemAdditions,
     hiddenCommandIds: override.hiddenCommandIds?.filter((commandId) => keep(commandId, "hidden command")),
     itemOverrides: override.itemOverrides?.filter((itemOverride) => keep(itemOverride.commandId, "item override")),
     itemOrder: override.itemOrder
@@ -381,6 +756,55 @@ export function createToolsetToggleCommandDefinitions(
   }));
 }
 
+/**
+ * Merge add-only items into a toolset's groups using the same semantics as live customization.
+ *
+ * `itemAdditions` is an append-only event list: each stored index was measured against the toolbar
+ * produced by every earlier entry, so entries MUST be replayed in saved (chronological) order. The
+ * customization id is unique across the entire toolset; a manifest item or the first earlier
+ * addition wins, even when a later duplicate names another group.
+ *
+ * Exported so the Customize Toolbars dialog can render the exact same pre-order item set as the
+ * registry instead of maintaining a subtly different copy of this state transition.
+ */
+export function mergeToolsetItemAdditions<TIcon extends string = string, TAssetName extends string = string>(
+  groups: readonly ToolsetGroupDefinition<TIcon, TAssetName>[],
+  additions: readonly ToolsetItemAddition<TIcon, TAssetName>[] | undefined
+): ToolsetGroupDefinition<TIcon, TAssetName>[] {
+  const merged = groups.map((group) => ({ ...group, items: [...group.items] }));
+  if (!additions || additions.length === 0) {
+    return merged;
+  }
+
+  const takenIds = new Set<string>();
+  for (const group of groups) {
+    for (const item of group.items) {
+      const id = toolsetItemCustomizationId(item);
+      if (id !== undefined) {
+        takenIds.add(id);
+      }
+    }
+  }
+
+  for (const addition of additions) {
+    const id = toolsetItemCustomizationId(addition.item);
+    if (id === undefined || takenIds.has(id)) {
+      continue;
+    }
+    // First wins toolset-wide, matching the prior registry contract even when the winning entry
+    // targets a group that no longer exists.
+    takenIds.add(id);
+    const group = merged.find((candidate) => candidate.id === addition.groupId);
+    if (!group) {
+      continue;
+    }
+    const index = Math.max(0, Math.min(addition.index ?? group.items.length, group.items.length));
+    group.items.splice(index, 0, addition.item);
+  }
+
+  return merged;
+}
+
 function applyUserToolsetOverride<TIcon extends string, TAssetName extends string>(
   toolset: ToolsetDefinition<TIcon, TAssetName>,
   override: UserToolsetOverride
@@ -396,12 +820,29 @@ function applyUserToolsetOverride<TIcon extends string, TAssetName extends strin
     }
   });
 
-  const groups = reorderById(toolset.groups, override.groupOrder ?? [], (group) => group.id).map((group) => {
-    const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], (item) => item.commandId)
-      .filter((item) => !hiddenCommandIds.has(item.commandId))
+  // Insert add-only item additions BEFORE reorder/hide runs, so itemOrder can address an added id and
+  // a group that is otherwise all-hidden but holds an addition survives the empty-group filter below.
+  const groupsWithAdditions = mergeToolsetItemAdditions(
+    toolset.groups,
+    override.itemAdditions as readonly ToolsetItemAddition<TIcon, TAssetName>[] | undefined
+  );
+  const groups = reorderById(groupsWithAdditions, override.groupOrder ?? [], (group) => group.id).map((group) => {
+    const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], toolsetItemCustomizationId)
+      .filter((item) => {
+        const commandId = toolsetItemCustomizationId(item);
+        return commandId === undefined || !hiddenCommandIds.has(commandId);
+      })
       .map((item) => {
-        const placement = itemOverrides.get(item.commandId)?.placement;
-        return placement ? { ...item, placement } : item;
+        const commandId = toolsetItemCustomizationId(item);
+        const itemOverride = commandId === undefined ? undefined : itemOverrides.get(commandId);
+        if (!itemOverride) {
+          return item;
+        }
+        return {
+          ...item,
+          placement: itemOverride.placement ?? item.placement,
+          layout: itemOverride.layout ? { ...item.layout, ...itemOverride.layout } : item.layout
+        };
       });
 
     return { ...group, items: orderedItems };
@@ -454,7 +895,19 @@ function cloneToolset<TIcon extends string, TAssetName extends string>(
       ...group,
       items: group.items.map((item) => ({
         ...item,
-        placement: item.placement ? { ...item.placement } : undefined
+        placement: item.placement ? { ...item.placement } : undefined,
+        primary: item.primary ? { ...item.primary } : undefined,
+        submenu: item.submenu
+          ? {
+              ...item.submenu,
+              items: item.submenu.items.map((submenuItem) => ({
+                ...submenuItem,
+                tooltip: submenuItem.tooltip ? { ...submenuItem.tooltip } : undefined
+              }))
+            }
+          : item.submenu,
+        tooltip: item.tooltip ? { ...item.tooltip } : undefined,
+        layout: item.layout ? { ...item.layout } : undefined
       }))
     }))
   };
@@ -464,14 +917,35 @@ function commandIdSetFromOptions<TIcon extends string, TAssetName extends string
   toolsets: readonly ToolsetDefinition<TIcon, TAssetName>[],
   options: ApplyToolsetLayoutStateOptions
 ): ReadonlySet<string> {
-  if (options.registeredCommandIds) {
-    return "has" in options.registeredCommandIds
-      ? options.registeredCommandIds
-      : new Set(options.registeredCommandIds);
+  const base = options.registeredCommandIds
+    ? new Set(options.registeredCommandIds)
+    : new Set(toolsets.flatMap(toolsetOverrideTargetIds));
+  if (options.additionalCommandIds) {
+    for (const id of options.additionalCommandIds) {
+      base.add(id);
+    }
   }
+  return base;
+}
 
-  return new Set(
-    toolsets.flatMap((toolset) => toolset.groups.flatMap((group) => group.items.map((item) => item.commandId)))
+/** Ids an override may legitimately target: command ids PLUS `control` (widget) ids, since widgets
+ *  are customizable (hide/reorder) by their controlId. Kept separate from {@link toolsetCommandIds}
+ *  so the public `commandIds()` surface stays commands-only. */
+function toolsetOverrideTargetIds<TIcon extends string, TAssetName extends string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>
+): string[] {
+  return toolset.groups.flatMap((group) =>
+    group.items.flatMap((item) => {
+      const ids = toolsetItemCommandIds(item);
+      // Only expose the control id when it IS the item's customization key — i.e. no commandId wins
+      // over it (toolsetItemCustomizationId returns commandId first). Otherwise an override could
+      // "validate" against a control id that applyUserToolsetOverride can never match, silently
+      // dropping the edit.
+      if (item.primary?.type === "control" && item.commandId === undefined) {
+        ids.push(item.primary.controlId);
+      }
+      return ids;
+    })
   );
 }
 
@@ -493,18 +967,34 @@ function assertToolsetCommandsRegistered<TIcon extends string, TAssetName extend
   registeredCommandIds: ReadonlySet<string>
 ): void {
   toolset.groups.forEach((group) => {
-    group.items.forEach((item) => assertCommandRegistered(item.commandId, registeredCommandIds));
+    group.items.forEach((item) => {
+      toolsetItemCommandIds(item).forEach((commandId) => assertCommandRegistered(commandId, registeredCommandIds));
+    });
   });
 }
 
 function assertOverrideCommandsRegistered(
   override: UserToolsetOverride,
-  registeredCommandIds: ReadonlySet<string>
+  registeredCommandIds: ReadonlySet<string>,
+  toolsetItemIds: ReadonlySet<string> = new Set()
 ): void {
-  override.hiddenCommandIds?.forEach((commandId) => assertCommandRegistered(commandId, registeredCommandIds));
-  override.itemOverrides?.forEach((itemOverride) => assertCommandRegistered(itemOverride.commandId, registeredCommandIds));
+  // Additions must reference registered commands (a spacer references none); their own ids — and the
+  // toolset's own item ids (e.g. a manifest divider) — are then valid targets for the command-keyed
+  // lists below, alongside the registered commands.
+  const allowed = new Set([...registeredCommandIds, ...toolsetItemIds]);
+  override.itemAdditions?.forEach((addition) => {
+    toolsetItemPrimaryCommandIds(addition.item as ToolsetItemDefinition).forEach((commandId) =>
+      assertCommandRegistered(commandId, registeredCommandIds)
+    );
+    const id = toolsetItemCustomizationId(addition.item as ToolsetItemDefinition);
+    if (id !== undefined) {
+      allowed.add(id);
+    }
+  });
+  override.hiddenCommandIds?.forEach((commandId) => assertCommandRegistered(commandId, allowed));
+  override.itemOverrides?.forEach((itemOverride) => assertCommandRegistered(itemOverride.commandId, allowed));
   Object.values(override.itemOrder ?? {}).forEach((commandIds) => {
-    commandIds.forEach((commandId) => assertCommandRegistered(commandId, registeredCommandIds));
+    commandIds.forEach((commandId) => assertCommandRegistered(commandId, allowed));
   });
 }
 
@@ -512,4 +1002,92 @@ function assertCommandRegistered(commandId: string, registeredCommandIds: Readon
   if (!registeredCommandIds.has(commandId)) {
     throw new Error(`Toolbar customization references unregistered command "${commandId}".`);
   }
+}
+
+function normalizeToolsetSubmenu<TIcon extends string = string, TAssetName extends string = string>(
+  submenu: ToolsetSubmenu<TIcon, TAssetName> | null | undefined
+): NormalizedToolsetItem["submenu"] {
+  if (!submenu) {
+    return null;
+  }
+
+  return {
+    type: submenu.type,
+    id: submenu.id,
+    title: submenu.title,
+    columns: submenu.columns,
+    items: submenu.items.map((item) => {
+      const label = item.label ?? item.title ?? item.commandId;
+      return {
+        commandId: item.commandId,
+        label,
+        icon: item.icon,
+        assetName: item.assetName,
+        iconDataUri: item.iconDataUri,
+        tooltip: item.tooltip
+          ? {
+              title: item.tooltip.title ?? label,
+              description: item.tooltip.description ?? null,
+              shortcut: item.tooltip.shortcut ?? null
+            }
+          : undefined
+      };
+    })
+  };
+}
+
+function toolsetCommandIds<TIcon extends string, TAssetName extends string>(
+  toolset: ToolsetDefinition<TIcon, TAssetName>
+): string[] {
+  return toolset.groups.flatMap((group) => group.items.flatMap(toolsetItemCommandIds));
+}
+
+function toolsetItemCommandIds<TIcon extends string, TAssetName extends string>(
+  item: ToolsetItemDefinition<TIcon, TAssetName>
+): string[] {
+  const ids = item.commandId ? [item.commandId] : [];
+  if (item.primary?.type === "command") {
+    ids.push(item.primary.commandId);
+  }
+  item.submenu?.items.forEach((submenuItem) => ids.push(submenuItem.commandId));
+  return [...new Set(ids)];
+}
+
+/** The item's OWN command id(s) (top-level + primary), excluding submenu commands. */
+function toolsetItemPrimaryCommandIds<TIcon extends string, TAssetName extends string>(
+  item: ToolsetItemDefinition<TIcon, TAssetName>
+): string[] {
+  const ids = item.commandId ? [item.commandId] : [];
+  if (item.primary?.type === "command") {
+    ids.push(item.primary.commandId);
+  }
+  return [...new Set(ids)];
+}
+
+/**
+ * The command id used to match an item against command-keyed user customizations (reorder / hide /
+ * overrides). Falls back from the legacy top-level `commandId` to `primary.commandId`, so items
+ * authored in the new primary-only form are still reorderable/hideable.
+ */
+export function toolsetItemCustomizationId<TIcon extends string, TAssetName extends string>(
+  item: ToolsetItemDefinition<TIcon, TAssetName>
+): string | undefined {
+  if (item.commandId !== undefined) {
+    return item.commandId;
+  }
+  if (item.primary?.type === "command") {
+    return item.primary.commandId;
+  }
+  // Control (widget) items are customizable by their controlId, so the editor can hide/reorder them
+  // like commands (a `widget.*` controlId is a valid CommandId per CommandIdSchema).
+  if (item.primary?.type === "control") {
+    return item.primary.controlId;
+  }
+  // A spacer/separator carrying an EXPLICIT id (as customize-added items always do) is addressable
+  // by that id — so it can be reordered and removed like any other item. Position-synthesized
+  // separator ids (no explicit item.id) stay unaddressable, exactly as before.
+  if ((item.kind === "spacer" || item.kind === "separator") && item.id !== undefined) {
+    return item.id;
+  }
+  return undefined;
 }

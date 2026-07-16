@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
@@ -7,14 +8,49 @@ import { defineConfig } from "vite";
 // ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one
 // that ENOENTs at build time.
 const workspacePackage = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+const optionalRealpath = (path: string): string | undefined => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+};
+const workspaceRoot = workspacePackage("../..");
+const dependencyRoots = [
+  optionalRealpath(workspacePackage("../../node_modules"))
+].filter((path): path is string => path !== undefined && path !== workspaceRoot);
 const gitStampCommandOptions = {
   encoding: "utf8",
   stdio: ["ignore", "pipe", "ignore"],
   timeout: 750
 } as const;
 
+// Which worktree/branch this build came from. With several ChemDraft worktrees checked out at once
+// (all building an app named "ChemDraft"), the on-screen stamp is the only thing telling them apart,
+// so the worktree name goes FIRST. Prefer the label run-app exports (single source of truth), else
+// derive it from git here so a bare `vite build`/`vite dev` still stamps it. See AGENTS.md.
+function worktreeLabel(): string {
+  const fromEnv = process.env.CHEMDRAFT_WORKTREE_LABEL?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  try {
+    const toplevel = execSync("git rev-parse --show-toplevel", gitStampCommandOptions).trim();
+    const base = toplevel.split("/").pop() ?? "";
+    let branch = "";
+    try {
+      branch = execSync("git rev-parse --abbrev-ref HEAD", gitStampCommandOptions).trim();
+    } catch {
+      // Detached HEAD or no branch — the directory name alone still disambiguates.
+    }
+    return branch && base ? `${base} [${branch}]` : base;
+  } catch {
+    return "";
+  }
+}
+
 // Computed once per `vite build` / `vite dev` start, so the on-screen stamp always reflects
-// the actual source that was bundled. Format: "YYYY-MM-DD HH:MM:SS <shortSha>[+dirty]".
+// the actual source that was bundled. Format: "<worktree [branch]> · YYYY-MM-DD HH:MM:SS <shortSha>[+dirty]".
 function buildStamp(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -29,7 +65,8 @@ function buildStamp(): string {
   } catch {
     // Not a git checkout, git unavailable, or a damaged shared object store. Keep dev startup moving.
   }
-  return `${when} ${sha}${dirty}`;
+  const label = worktreeLabel();
+  return `${label ? `${label} · ` : ""}${when} ${sha}${dirty}`;
 }
 
 export default defineConfig({
@@ -37,7 +74,8 @@ export default defineConfig({
   // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
   plugins: [react()],
   define: {
-    __BUILD_STAMP__: JSON.stringify(buildStamp())
+    __BUILD_STAMP__: JSON.stringify(buildStamp()),
+    __WORKTREE_LABEL__: JSON.stringify(worktreeLabel())
   },
   resolve: {
     alias: {
@@ -54,6 +92,14 @@ export default defineConfig({
       "@chemdraft/toolset-registry": workspacePackage("../../packages/toolset-registry/src/index.ts"),
       "@chemdraft/shortcut-engine": workspacePackage("../../packages/shortcut-engine/src/index.ts"),
       "@chemdraft/viewport-engine": workspacePackage("../../packages/viewport-engine/src/index.ts")
+    }
+  },
+  server: {
+    fs: {
+      allow: [
+        workspaceRoot,
+        ...dependencyRoots
+      ]
     }
   }
 });

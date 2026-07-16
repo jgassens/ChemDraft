@@ -1,5 +1,28 @@
 # Rings Toolbar and Molecule Inspector Tabs
 
+## Refactor/Toolbars Schema Update
+
+The `refactor/toolbars` branch now has a schema-backed toolbar item contract in
+`packages/toolset-registry` and `apps/desktop/src/toolsets/desktop-toolsets.json`.
+Toolbar items explicitly carry `id`, `kind`, `label`, `primary`, `submenu`, `tooltip`,
+and `layout` metadata, while preserving the legacy command-backed item shape through
+normalization. The desktop palette now consumes normalized item models so manifest-defined
+submenus, submenu column counts, and grid spans are available to both native palette
+windows and the web fallback. Command-backed items still use real command IDs; commandless
+control and separator items are legal for future toolbar customization work.
+
+The durable schema notes live in:
+
+- `docs/architecture/toolbars-and-toolsets.md`
+- `packages/toolset-registry/README.md`
+
+## Toolbar Stabilization Gate
+
+Before starting the Rings Toolbar / Molecule Inspector delivery sequence, complete
+one cleanup commit that stabilizes schema-backed toolbar button invocation, inline
+submenu ARIA, generated tooltip descriptions, and branch docs. This gate must not
+change Molecule Inspector behavior.
+
 ## Objective
 
 Split ring appearance out of the Molecule Inspector. The existing hidden-by-default ring appearance work becomes its own compact `core.ringInspector` toolbar, while `core.moleculeInspector` remains hidden by default and contains three tabs:

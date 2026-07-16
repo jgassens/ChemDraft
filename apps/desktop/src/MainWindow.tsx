@@ -55,7 +55,12 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
-import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
+import {
+  createToolsetToggleCommandId,
+  parseToolsetLayoutState,
+  parseToolsetToggleCommandId,
+  type ToolsetLayoutState
+} from "@chemdraft/toolset-registry";
 import {
   buildCrosshairTicks,
   centimeterRulerUnit,
@@ -71,6 +76,34 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
+import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
+import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
+import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
+import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
+import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
+import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
+import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
+import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
+import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
+import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
+import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
+import {
+  DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
+  buildDocumentSessionEnvelope,
+  documentIsBlank,
+  parseDocumentSessionEnvelope,
+  shouldRestoreDocumentSession
+} from "./documentSession";
+import { createPersistentPluginStorage } from "./plugins/pluginStorage";
+import { PatchReviewTray } from "./plugins/PatchReviewTray";
+import {
+  broadcastPluginPanelReport,
+  listenForPluginPanelRequests,
+  openPluginPanelWindow,
+  type PluginPanelReportPayload
+} from "./plugins/panelBridge";
+import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomDisplayLabel,
@@ -209,6 +242,7 @@ import {
   PREFERENCES_COMMAND_ID,
   toggleMoleculeInspectorCommandId,
   moleculeStructureNumberRanges,
+  allShellCommands,
   type CommandSpec
 } from "./commands";
 import {
@@ -292,7 +326,9 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   createSelectionClipboardPayload,
+  applyNativeMoleculeEngineRelayout,
   cleanUpNativeMolecules2d,
+  moleculeHasFusedRingSystem,
   attachSpin3dModelFromConformer,
   conformerGraphSignature,
   deleteNativeGraphicPathNode,
@@ -309,6 +345,7 @@ import {
   exportPhase4Pdf,
   exportPhase4Svg,
   getSelectedMolecule,
+  getSelectedMolecules,
   getSelectedTextObject,
   insertNativeTextObject,
   insertNativeArtGraphicObject,
@@ -438,12 +475,17 @@ import {
 } from "./documentWorkflow";
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
-import { ToolPalette } from "./ToolPalette";
+import { APPENDABLE_TOOLBAR_WIDGETS, TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
+import { TOOLBAR_WIDGET_GRID_SPANS } from "./toolbars/toolbarWidgets";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
+  broadcastToolsetCommandSpecs,
+  broadcastToolsetCustomizeMode,
+  broadcastToolsetLayoutState,
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
+  dismissToolsetPopovers,
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
@@ -451,28 +493,43 @@ import {
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
+  listenForToolsetCommandSpecsRequests,
+  listenForToolsetCustomizeModeRequests,
+  listenForToolsetLayoutEdits,
+  listenForToolsetLayoutStateRequests,
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
+  saveToolsetLayoutState,
+  loadDocumentSession,
+  saveDocumentSession,
+  sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
+  openToolsetWindow,
+  setMenuChecked,
+  setToolbarsMenu,
+  toolsetCommandSpecsSignature,
   PREFERENCES_WINDOW_KIND,
   listenForSpin3dSettings,
   toggleSpin3dDebuggerWindow,
   togglePreferencesWindow,
-  toggleToolsetWindow,
+  closeToolsetWindow,
+  type ToolsetWindowGeometry,
   type ToolsetArtPaintTarget
 } from "./window-manager";
 import {
   createDefaultVisibleToolsetIds,
-  createDesktopToolsetRegistry,
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
   getToolbarsMenuModel,
-  getToolsetCommandGroups,
   getToolsetCommandSpecs,
+  getToolsetItemGroups,
+  getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
-  type DesktopToolsetRegistry
+  migrateLegacyMainToolbarLayoutState,
+  type DesktopToolsetRegistry,
+  type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel } from "./appMenu";
@@ -1204,7 +1261,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.5.18.24-fable";
+const CURRENT_BUILD_STAMP = "7.5.34-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1338,7 +1395,8 @@ function createDevBrowserMenuModel(
         command(SPIN3D_DEBUGGER_COMMAND_ID, "3D Debugger"),
         separator(),
         group("Toolbars", toolbarItems),
-        command("view.customizeToolbars", "Customize Toolbars...")
+        command("view.customizeToolbars", "Customize Toolbars..."),
+        command("view.customizeMainToolbar", "Customize Main Toolbar...")
       ]
     },
     {
@@ -1519,13 +1577,27 @@ export interface MainWindowProps {
   nativePalette?: boolean;
 }
 
+// Native floating NSPanel palettes are the desktop renderer; the browser build always uses
+// in-window web palettes. `localStorage["chemdraft.forceWebPalettes"] = "1"` is a runtime
+// escape hatch (no rebuild) if native palettes misbehave on a given machine.
+function shouldDefaultToNativePalettes(): boolean {
+  if (!isDesktopRuntime()) {
+    return false;
+  }
+  try {
+    return globalThis.localStorage?.getItem("chemdraft.forceWebPalettes") !== "1";
+  } catch {
+    return true;
+  }
+}
+
 export function MainWindow({
   initialPaletteMode = "floating",
   initialRulersVisible = true,
   initialCrosshairsVisible = true,
   initialDocument,
   initialActiveToolCommandId,
-  nativePalette = false
+  nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
@@ -1628,9 +1700,29 @@ export function MainWindow({
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
+
+  // The toolbar catalog is the single data brain: it composes the core manifest with live
+  // plugin toolsets and the user's saved layout, and hands out immutable registry snapshots.
+  // `toolsetRegistry` simply follows it.
+  const toolbarCatalog = useMemo(() => createToolbarCatalog(), []);
+  useEffect(() => {
+    const applyRegistry = () => setToolsetRegistry(toolbarCatalog.registry());
+    applyRegistry();
+    return toolbarCatalog.onDidChange(applyRegistry);
+  }, [toolbarCatalog]);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
+  const [customizeToolbarsOpen, setCustomizeToolbarsOpen] = useState(
+    // Dev/test seam: open the Customize dialog directly in the browser (where the menu item is not
+    // wired) with ?forceCustomize=1, so its drag/hide behavior can be exercised without the native app.
+    () => import.meta.env.DEV && new URLSearchParams(globalThis.location?.search ?? "").get("forceCustomize") === "1"
+  );
+  // In-place customize mode for the Main toolbar (Safari-style). MainWindow owns the flag and
+  // broadcasts it to the palettes; the ref lets late effects read it without re-subscribing.
+  const [customizeMainToolbarActive, setCustomizeMainToolbarActive] = useState(false);
+  const customizeMainToolbarActiveRef = useRef(false);
+  customizeMainToolbarActiveRef.current = customizeMainToolbarActive;
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [devBrowserMenuOpenId, setDevBrowserMenuOpenId] = useState<string | null>(null);
@@ -1715,6 +1807,8 @@ export function MainWindow({
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const fileStateRef = useRef<NativeFileState>(fileState);
+  // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
+  const documentSessionHydratedRef = useRef(false);
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
@@ -1762,6 +1856,31 @@ export function MainWindow({
   // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
   // on a possibly-stale render closure.
   const visibleToolsetIdsRef = useRef(visibleToolsetIds);
+  // Current View-toggle state, read (not depended on) by the menu-structure push so a full menu
+  // rebuild preserves the Show Rulers / Show Crosshairs checkmarks without the push re-firing on
+  // every ruler/crosshair toggle.
+  const rulersVisibleRef = useRef(rulersVisible);
+  const crosshairsVisibleRef = useRef(crosshairsVisible);
+  // Last layout/customization state loaded from (or saved to) disk, so a visibility save merges onto
+  // any other customization instead of clobbering it. `layoutHydratedRef` gates the visibility save
+  // effect until the initial load has run, so the first render's default set can't overwrite the
+  // saved file before we've read it.
+  const layoutStateRef = useRef<ToolsetLayoutState | undefined>(undefined);
+  // Live registry, read by the customize-edit listener so it never holds a stale snapshot.
+  const toolsetRegistryRef = useRef(toolsetRegistry);
+  const layoutHydratedRef = useRef(false);
+  // Only persist visibility once we've SUCCESSFULLY read the existing layout file. If the load
+  // failed (unreadable file, or a newer build's file that fails our strict schema), overwriting it
+  // with defaults would silently destroy the user's saved customization — so we leave it untouched.
+  const layoutSaveEnabledRef = useRef(false);
+  // The toolsets whose visibility `visibleToolsetIds` is authoritative for: everything present at
+  // load, plus anything the user has since toggled. A toolset that appears LATER (e.g. a plugin
+  // contribution) is excluded until it's resolved, so a visibility save can't clobber its saved
+  // `visible: true` down to `false` just because it isn't in the current visible set yet.
+  const resolvedToolsetIdsRef = useRef<Set<string>>(new Set());
+  // Serializes the fire-and-forget layout saves so two rapid visibility changes can't have their
+  // disk writes complete out of order and leave the file disagreeing with the in-memory state.
+  const layoutSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const shiftKeyPressedRef = useRef(false);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
@@ -1794,6 +1913,9 @@ export function MainWindow({
   selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
   selectedNativeMoleculePartsRef.current = selectedNativeMoleculeParts;
   visibleToolsetIdsRef.current = visibleToolsetIds;
+  rulersVisibleRef.current = rulersVisible;
+  crosshairsVisibleRef.current = crosshairsVisible;
+  toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
   const selectedTextObject = getSelectedTextObject(document);
@@ -1992,10 +2114,6 @@ export function MainWindow({
     [canRedo, canUndo, document, selectedMolecule]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
-  const toolsetCommandOverrides = useMemo(
-    () => new Map(layerActions.map((action) => [action.id, action] as const)),
-    [layerActions]
-  );
   const pageCssVars = useMemo(
     () =>
       ({
@@ -2045,23 +2163,25 @@ export function MainWindow({
     [toolsetRegistry]
   );
   const shellCommandSpecs = useMemo(
-    () => [
-      ...quickActions,
-      ...layerActions,
-      ...toolCommandSpecs,
-      ...viewActions,
-      ...pageSizeActions,
-      pageCustomSizeAction,
-      ...pageOrientationActions,
-      ...toolbarCustomizationActions,
-      ...getToolsetToggleActions(toolsetRegistry)
-    ],
-    [layerActions, quickActions, toolCommandSpecs, toolsetRegistry]
+    () => allShellCommands(document, selectedMolecule, {
+      availability: { canUndo, canRedo },
+      registry: toolsetRegistry
+    }),
+    [canRedo, canUndo, document, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
     () => createDevBrowserCommandMap(shellCommandSpecs),
     [shellCommandSpecs]
   );
+  const shellCommandSpecsRef = useRef(shellCommandSpecs);
+  shellCommandSpecsRef.current = shellCommandSpecs;
+  const shellCommandSpecsSignature = useMemo(
+    () => toolsetCommandSpecsSignature(shellCommandSpecs),
+    [shellCommandSpecs]
+  );
+  useEffect(() => {
+    void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
+  }, [shellCommandSpecsSignature]);
   const devBrowserMenus = useMemo(
     () => createDevBrowserMenuModel(
       shellCommandsById,
@@ -2186,6 +2306,25 @@ export function MainWindow({
     });
     return true;
   }, [installDocumentHistory]);
+  /** Drag-session commits install their history entry directly so undo lands on the pre-drag
+   *  document — `commitDocumentChange` would record the last preview frame instead. This is that
+   *  shared install plus the unsaved-changes bookkeeping every document mutation owes. */
+  const commitDocumentHistoryFrom = useCallback((
+    startDocument: ChemDraftDocument,
+    nextDocument: ChemDraftDocument
+  ) => {
+    const currentHistory = documentHistoryRef.current;
+    installDocumentHistory({
+      past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      present: nextDocument,
+      future: []
+    });
+    setFileState((current) => {
+      const nextFileState = { ...current, dirty: true };
+      fileStateRef.current = nextFileState;
+      return nextFileState;
+    });
+  }, [installDocumentHistory]);
   const applyArtTransformQaScene = useCallback(() => {
     const changed = commitDocumentChange((current) => artTransformQaSceneDocument(current, artTransformQaDraft));
     if (changed) {
@@ -2267,33 +2406,75 @@ export function MainWindow({
     let active = true;
     void loadToolsetLayoutState()
       .then((layoutState) => {
-        if (!active || layoutState === undefined) {
+        if (!active) {
           return;
         }
 
-        const nextRegistry = createDesktopToolsetRegistry(layoutState);
-        setToolsetRegistry(nextRegistry);
-        setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
-        setVisibleToolsetIds((current) => {
-          const knownVisibleIds = [...current].filter((toolsetId) => nextRegistry.get(toolsetId));
-          if (current.size === 0) {
-            return createDefaultVisibleToolsetIds(nextRegistry);
+        if (layoutState !== undefined) {
+          // Fold pre-flatten (7-group) Main-toolbar state onto the single-group manifest before anything
+          // consumes it; the next save persists the migrated shape.
+          const migrated = migrateLegacyMainToolbarLayoutState(layoutState);
+          toolbarCatalog.setLayoutState(migrated);
+          const nextRegistry = toolbarCatalog.registry();
+          setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
+          // The registry's default-visible set already reflects the saved toolsetOverrides[].visible,
+          // so this restores exactly the palettes the user last had open.
+          setVisibleToolsetIds(createDefaultVisibleToolsetIds(nextRegistry));
+          try {
+            layoutStateRef.current = parseToolsetLayoutState(migrated);
+          } catch {
+            layoutStateRef.current = undefined;
           }
-          return current.size === knownVisibleIds.length
-            ? current
-            : new Set(knownVisibleIds.length > 0 ? knownVisibleIds : createDefaultVisibleToolsetIds(nextRegistry));
-        });
+        }
+
+        // Initial load finished and the file read cleanly. Record which toolsets we've resolved
+        // visibility for, and allow saves to persist — a save now merges onto the file we just read
+        // rather than replacing it.
+        resolvedToolsetIdsRef.current = new Set(toolbarCatalog.registry().listToolsets().map((toolset) => toolset.id));
+        layoutSaveEnabledRef.current = true;
+        layoutHydratedRef.current = true;
       })
       .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
         setWebPaletteFallback(true);
         setVisibleToolsetIds(createDefaultVisibleToolsetIds(desktopToolsetRegistry));
         setStatus(`Native toolbar layout unavailable; using in-window toolbars (${error instanceof Error ? error.message : String(error)})`);
+        resolvedToolsetIdsRef.current = new Set(desktopToolsetRegistry.listToolsets().map((toolset) => toolset.id));
+        // layoutSaveEnabledRef stays FALSE on purpose: the existing file didn't read/parse cleanly
+        // (unreadable, or a newer build's schema), so persisting defaults over it would destroy the
+        // user's saved customization. Leave the file untouched until a launch reads it successfully.
+        layoutHydratedRef.current = true;
       });
 
     return () => {
       active = false;
     };
-  }, [nativePalette]);
+  }, [nativePalette, toolbarCatalog]);
+
+  // Persist palette visibility whenever it changes so the set of open palettes is restored next
+  // launch. Gated on layoutHydratedRef so the first render's default set can't overwrite the saved
+  // file before the load above has read it; merges onto the last known layout state so other
+  // customization isn't clobbered.
+  useEffect(() => {
+    if (!nativePalette || !layoutHydratedRef.current || !layoutSaveEnabledRef.current) {
+      return;
+    }
+    // Only record visibility for toolsets we've actually resolved (present at load or user-toggled).
+    // A just-appeared toolset (e.g. a plugin contribution not yet reflected in visibleToolsetIds) is
+    // left to `preserved` in the merge, so its saved `visible: true` isn't clobbered to `false`.
+    const resolvedToolsetIds = toolsetRegistry
+      .listToolsets()
+      .map((toolset) => toolset.id)
+      .filter((id) => resolvedToolsetIdsRef.current.has(id));
+    const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
+    layoutStateRef.current = nextState;
+    // Chain the writes so their completion order matches the order the states were produced.
+    layoutSaveChainRef.current = layoutSaveChainRef.current
+      .then(() => saveToolsetLayoutState(nextState))
+      .catch(() => undefined);
+  }, [visibleToolsetIds, nativePalette, toolsetRegistry]);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -2557,14 +2738,40 @@ export function MainWindow({
     });
   }, []);
 
+  // Window title/size for a palette, from the TS registry, so Rust doesn't read the manifest to open it.
+  const toolsetWindowGeometry = useCallback((toolsetId: string): ToolsetWindowGeometry | undefined => {
+    const toolset = toolsetRegistry.get(toolsetId);
+    if (!toolset) {
+      return undefined;
+    }
+    const size = toolset.preferredWindowSize;
+    // Stagger a first-ever placement by the toolset's position in the registry (Rust used to derive
+    // this from the manifest order); a persisted position overrides it in Rust.
+    const offset = toolsetStaggerIndex(toolsetId, toolsetRegistry) * TOOLSET_STAGGER_STEP_PX;
+    return {
+      title: toolset.title,
+      width: size?.width ?? 96,
+      height: size?.height ?? 420,
+      x: 88 + offset,
+      y: 154 + offset
+    };
+  }, [toolsetRegistry]);
+
   const toggleToolset = useCallback(async (toolsetId: string) => {
     if (!toolsetRegistry.get(toolsetId)) {
       setStatus(`Unknown toolbar ${toolsetId}`);
       return;
     }
+    // An explicit toggle makes this toolset's visibility authoritative (see resolvedToolsetIdsRef),
+    // so a later-appearing plugin toolset the user opens is persisted normally from here on.
+    resolvedToolsetIdsRef.current.add(toolsetId);
 
     if (effectiveNativePalette) {
-      const nextState = await toggleToolsetWindow(toolsetId);
+      // JS owns visibility, so JS decides open vs close (and passes the window geometry on open)
+      // rather than routing through Rust's toggle command.
+      const nextState = visibleToolsetIdsRef.current.has(toolsetId)
+        ? await closeToolsetWindow(toolsetId)
+        : await openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId));
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
       // Deliberately closing the Rings toolbar clears the ring selection. The pruning effect no
       // longer does this off `ringInspectorOpen`, so a spurious async "closed" window event can
@@ -2582,7 +2789,50 @@ export function MainWindow({
       clearNativeRingParts();
     }
     setStatus(`Toggled ${toolsetRegistry.require(toolsetId).title}`);
-  }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry]);
+  }, [clearNativeRingParts, effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
+
+  // Enter/exit in-place customize mode for the Main toolbar. On enter, ensure the Main palette is
+  // open (you can't customize a hidden toolbar); broadcast the flag so the palette renders customize
+  // chrome (Phase 4). The palette echoes an `exitCustomize` edit op back to flip this off.
+  const setCustomizeMode = useCallback((active: boolean) => {
+    setCustomizeMainToolbarActive(active);
+    if (active && !visibleToolsetIdsRef.current.has(DEFAULT_TOOLSET_ID)) {
+      if (effectiveNativePalette) {
+        resolvedToolsetIdsRef.current.add(DEFAULT_TOOLSET_ID);
+        void openToolsetWindow(DEFAULT_TOOLSET_ID, toolsetWindowGeometry(DEFAULT_TOOLSET_ID))
+          .then((nextState) => setVisibleToolsetIds((current) => updateVisibleToolsets(current, DEFAULT_TOOLSET_ID, nextState.open)))
+          .catch(() => undefined);
+      } else {
+        setVisibleToolsetIds((current) => updateVisibleToolsets(current, DEFAULT_TOOLSET_ID, true));
+      }
+    }
+    void broadcastToolsetCustomizeMode({ toolsetId: DEFAULT_TOOLSET_ID, active }).catch(() => undefined);
+  }, [effectiveNativePalette, toolsetWindowGeometry]);
+
+  // JS owns toolset visibility, so it also owns the native menu's checkmarks. Mirror the
+  // current visible set onto every toggle item after each change (no-op in the browser).
+  // This is what keeps View > Toolbars accurate now that Rust no longer toggles windows.
+  useEffect(() => {
+    for (const toolset of toolsetRegistry.listToolsets()) {
+      void setMenuChecked(createToolsetToggleCommandId(toolset.id), visibleToolsetIds.has(toolset.id));
+    }
+  }, [toolsetRegistry, visibleToolsetIds]);
+
+  // Push the Toolbars menu STRUCTURE (which toolsets + their titles) to the native menu whenever the
+  // toolset set changes, so the menu comes from the TS registry rather than Rust's manifest copy —
+  // this is what lets Rust stop parsing the manifest. Rebuilding resets checkmarks, so include the
+  // current visibility; between rebuilds the checkmark effect above keeps them in sync in place.
+  useEffect(() => {
+    if (!nativePalette) {
+      return;
+    }
+    const entries = toolsetRegistry.listToolsets().map((toolset) => ({
+      toolsetId: toolset.id,
+      title: toolset.title,
+      visible: visibleToolsetIdsRef.current.has(toolset.id)
+    }));
+    void setToolbarsMenu(entries, rulersVisibleRef.current, crosshairsVisibleRef.current).catch(() => undefined);
+  }, [toolsetRegistry, nativePalette]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -2886,7 +3136,14 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
-    setStatus(changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`);
+    // Multi-ring systems are deliberately left as drawn by the 2D pass (its polygon+tree layout
+    // would shear them) — tell the user where the full re-layout lives.
+    const hasFusedTarget = targetObjectIds.some((targetId) => {
+      const target = findDocumentObject(documentRef.current, targetId);
+      return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
+    });
+    const fusedHint = hasFusedTarget ? " — fused rings kept as drawn; use 3D Cleanup for a full re-layout" : "";
+    setStatus(changed ? `Cleaned up selected ${targetLabel}${fusedHint}` : `Selected ${targetLabel} already clean${fusedHint}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
@@ -3822,7 +4079,7 @@ export function MainWindow({
 
     const objectId = selectedObjectIds[0];
     const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
-    if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
+    if (!objectId || object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
       setStatus("3D cleanup needs an editable native molecule");
       return;
     }
@@ -3835,8 +4092,20 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
-    setStatus("3D cleanup requires the conformer-backed cleanup engine");
-  }, [assignHoveredNativeDeleteTarget, selectedNativeMoleculePart]);
+    setStatus("Rebuilding clean 2D layout…");
+    // Engine lazy-loads (same pattern as Spin 3D): the whole re-layout is pure once the module is in.
+    void (async () => {
+      try {
+        const { relayoutMolfile2D } = await import("@chemdraft/ocl-adapter");
+        const changed = commitDocumentChange((current) =>
+          applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D)
+        );
+        setStatus(changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout");
+      } catch (error) {
+        setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    })();
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const cancelInteractive3dDragScheduler = useCallback((): Interactive3dDragSchedulerState | undefined => {
     const scheduler = interactive3dDragSchedulerRef.current;
@@ -5998,7 +6267,13 @@ export function MainWindow({
   const openDocumentContents = useCallback((
     contents: string,
     displayName: string,
-    path?: string
+    path?: string,
+    options?: {
+      /** Restore-session path: the contents hold edits never written to `path`. */
+      dirty?: boolean;
+      /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
+      statusOverride?: string;
+    }
   ) => {
     const opened = openNativeDocument(contents);
     const resolvedOpen = resolveOpenResultDocument(opened);
@@ -6008,14 +6283,17 @@ export function MainWindow({
     const fitRecommendation = resolvedOpen.source === "external-cdxml"
       ? recommendImportedPageFit(resolvedOpen.document)
       : undefined;
+    const dirty = options?.dirty ?? false;
     resetDocumentHistory(resolvedOpen.document, {
       path,
-      dirty: false,
-      lastSavedPayloadHash: sha256Utf8Hex(contents)
+      dirty,
+      // Dirty contents were never saved anywhere, so they must not pose as the on-disk state.
+      lastSavedPayloadHash: dirty ? undefined : sha256Utf8Hex(contents)
     });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
-    const openStatus = formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
+    const openStatus = options?.statusOverride
+      ?? formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
@@ -6155,6 +6433,83 @@ export function MainWindow({
       unlisten?.();
     };
   }, [openDocumentContents]);
+
+  // Restore the last edited document at startup (see documentSession.ts). Anything that landed
+  // first wins: an OS "open with" or an early edit leaves the canvas non-pristine, and the restore
+  // backs off. A corrupt/future envelope restores nothing — the blank document stands.
+  useEffect(() => {
+    if (documentSessionHydratedRef.current) {
+      return undefined;
+    }
+    if (!isDesktopRuntime()) {
+      documentSessionHydratedRef.current = true;
+      return undefined;
+    }
+
+    let active = true;
+    void loadDocumentSession()
+      .then((raw) => {
+        if (!active) {
+          return;
+        }
+        const envelope = parseDocumentSessionEnvelope(raw);
+        if (!envelope || !shouldRestoreDocumentSession(envelope)) {
+          return;
+        }
+        const pristine = !fileStateRef.current.path
+          && !fileStateRef.current.dirty
+          && documentIsBlank(documentRef.current);
+        if (!pristine) {
+          return;
+        }
+        try {
+          openDocumentContents(envelope.contents, envelope.displayName, envelope.path, {
+            dirty: envelope.dirty,
+            statusOverride: `Restored last session — ${envelope.displayName}${envelope.dirty ? " (unsaved changes)" : ""}`
+          });
+        } catch {
+          // Never block startup on a bad autosave; the next edit overwrites it.
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) {
+          documentSessionHydratedRef.current = true;
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [openDocumentContents]);
+
+  // Autosave the working document + file association (debounced) so a relaunch — or a crash —
+  // resumes the last edited state with no explicit save. Gated on hydration so the startup blank
+  // can't clobber the previous session before the restore above has read it.
+  useEffect(() => {
+    if (!isDesktopRuntime()) {
+      return undefined;
+    }
+    const handle = window.setTimeout(() => {
+      if (!documentSessionHydratedRef.current) {
+        return;
+      }
+      try {
+        const payload = createNativeSavePayload(documentRef.current);
+        const path = fileStateRef.current.path;
+        const envelope = buildDocumentSessionEnvelope(
+          payload,
+          fileStateRef.current,
+          path ? nativePathBasename(path) : payload.filename,
+          documentIsBlank(documentRef.current)
+        );
+        void saveDocumentSession(envelope).catch(() => undefined);
+      } catch {
+        // Serialization must never break editing; the previous autosave stays.
+      }
+    }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [document, fileState]);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
     const payload = createNativeSavePayload(documentRef.current);
@@ -6303,12 +6658,22 @@ export function MainWindow({
     }
   }, [exportDialog]);
 
-  const registry = useMemo(() => {
-    const commandRegistry = new CommandRegistry();
+  const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
+    new Map()
+  );
+
+  // Core command handlers are rebuilt every render (they close over live state), but they
+  // now populate a plain Map instead of a fresh CommandRegistry. The registry instance
+  // itself is created once (below) and its handlers delegate to this ref, so plugin
+  // commands registered into the same registry survive re-renders (Phase 2 depends on this).
+  const coreCommandBindings = useMemo(() => {
+    const bindings = new Map<string, { spec: CommandSpec; run: () => Promise<void> }>();
     const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
-      commandRegistry.register(definition, async () => {
-        await handler?.();
-        return { ok: definition.enabled !== false, commandId: definition.id };
+      bindings.set(definition.id, {
+        spec: definition,
+        run: async () => {
+          await handler?.();
+        }
       });
     };
 
@@ -6528,7 +6893,11 @@ export function MainWindow({
         isLayerCommandId(tool.id) ||
         objectStyleCommandIds.has(tool.id) ||
         tool.id === toggleRingInspectorCommandId ||
-        tool.id === toggleMoleculeInspectorCommandId
+        tool.id === toggleMoleculeInspectorCommandId ||
+        // Plugin commands are owned by PluginHost, which registers them into the same
+        // registry with their permission context. Registering a core binding here too
+        // would collide (duplicate id) and strip the plugin's permission checks.
+        tool.source === "plugin"
       ) {
         return;
       }
@@ -6536,10 +6905,6 @@ export function MainWindow({
       register(tool, () => {
         if (isDisabledPlaceholderCommand(tool)) {
           setStatus(tool.disabledReason ?? "Tool unavailable");
-          return;
-        }
-        if (tool.id === "plugin.fixture.toolset.ping") {
-          setStatus("Fixture plugin toolset command routed");
           return;
         }
 
@@ -6711,7 +7076,7 @@ export function MainWindow({
       });
     });
 
-    return commandRegistry;
+    return bindings;
   }, [
     activeToolState,
     addChargeToHoveredNativeAtom,
@@ -6755,7 +7120,142 @@ export function MainWindow({
     toolsetRegistry
   ]);
 
+  coreCommandBindingsRef.current = coreCommandBindings;
+
+  // The registry and its core-command registrar are created exactly once. Handlers delegate
+  // to the live bindings ref, so plugin commands registered into the same stable instance in
+  // Phase 2 are never wiped when core bindings change. See createCoreCommandRegistrar.
+  const { registry, syncCoreCommands } = useMemo(() => {
+    const commandRegistry = new CommandRegistry();
+    return {
+      registry: commandRegistry,
+      syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
+    };
+  }, []);
+
+  useEffect(() => {
+    syncCoreCommands(coreCommandBindings);
+  }, [syncCoreCommands, coreCommandBindings]);
+
+  const [patchQueueVersion, setPatchQueueVersion] = useState(0);
+  const pluginPanelReportsRef = useRef(new Map<string, PluginPanelReportPayload>());
+  const pluginPanelRevisionRef = useRef(0);
+
+  // Plugins register their commands into the same stable registry; the host is created once,
+  // wired to live selection, disk-backed storage, panel windows, and the patch-review queue.
+  const pluginRuntime = useMemo(
+    () =>
+      createDesktopPluginRuntime({
+        commandRegistry: registry,
+        getActiveDocument: () => documentRef.current,
+        getSelection: () => {
+          const currentDocument = documentRef.current;
+          return {
+            objectIds: [...currentDocument.selection.objectIds],
+            molecules: getSelectedMolecules(currentDocument).map((molecule) => ({
+              objectId: molecule.id,
+              structureFormat: molecule.structureFormat,
+              structure: molecule.structure
+            }))
+          };
+        },
+        createStorage: createPersistentPluginStorage,
+        showPanelReport: async (pluginId, panelId, report) => {
+          const payload: PluginPanelReportPayload = {
+            pluginId,
+            panelId,
+            report,
+            revision: ++pluginPanelRevisionRef.current
+          };
+          pluginPanelReportsRef.current.set(panelId, payload);
+          await openPluginPanelWindow({ panelId, title: report.title }).catch(() => undefined);
+          await broadcastPluginPanelReport(payload).catch(() => undefined);
+        },
+        onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
+      }),
+    [registry]
+  );
+
+  // Keep the catalog's plugin toolsets in sync with the runtime, and register the dev-only
+  // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development.
+  useEffect(() => {
+    const syncPluginToolsets = () => toolbarCatalog.setPluginToolsets(pluginRuntime.listPluginToolsets());
+    const unsubscribe = pluginRuntime.onDidChange(syncPluginToolsets);
+    if (import.meta.env.DEV) {
+      try {
+        pluginRuntime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
+      } catch (error) {
+        console.warn("Fixture plugin registration failed", error);
+      }
+    }
+    syncPluginToolsets();
+    return () => {
+      unsubscribe();
+      if (import.meta.env.DEV) {
+        try {
+          pluginRuntime.unregisterPlugin(FIXTURE_PLUGIN_ID);
+        } catch {
+          // Already unregistered; nothing to clean up.
+        }
+      }
+    };
+  }, [pluginRuntime, toolbarCatalog]);
+
+  // Panel windows request their content on mount; the main window re-serves the latest
+  // report so a reopened or slow-loading panel is never blank.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenForPluginPanelRequests((panelId) => {
+      const payload = pluginPanelReportsRef.current.get(panelId);
+      if (payload) {
+        void broadcastPluginPanelReport(payload).catch(() => undefined);
+      }
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const acceptPluginProposal = useCallback(
+    (proposal: QueuedProposedPatch) => {
+      try {
+        const updated = pluginRuntime.host.acceptProposedPatch(proposal.id, documentRef.current);
+        commitDocumentChange(updated);
+        setStatus("Applied plugin proposal");
+      } catch (error) {
+        setStatus(`Plugin proposal failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    [commitDocumentChange, pluginRuntime]
+  );
+
+  const rejectPluginProposal = useCallback(
+    (proposal: QueuedProposedPatch) => {
+      try {
+        pluginRuntime.host.rejectProposedPatch(proposal.id);
+        setStatus("Rejected plugin proposal");
+      } catch {
+        setStatus("Plugin proposal was already resolved");
+      }
+    },
+    [pluginRuntime]
+  );
+
   const invoke = useCallback(async (commandId: string) => {
+    if (commandId === "view.customizeToolbars") {
+      setCustomizeToolbarsOpen(true);
+      return;
+    }
+
+    if (commandId === "view.customizeMainToolbar") {
+      setCustomizeMode(!customizeMainToolbarActiveRef.current);
+      return;
+    }
+
     if (commandId === moleculeInspectorTemplateImportCommandId) {
       await importMoleculeInspectorTemplate();
       return;
@@ -6778,7 +7278,9 @@ export function MainWindow({
       return;
     }
 
-    void registry.invoke(commandId).catch((error: unknown) => {
+    // Route through the host so plugin commands run with their permission context; core
+    // commands (no pluginId) dispatch straight through the shared registry as before.
+    void pluginRuntime.host.invokeCommand(commandId).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Command failed: ${message}`);
     });
@@ -6788,10 +7290,93 @@ export function MainWindow({
     applyTextStyleCommand,
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
-    registry
+    pluginRuntime
   ]);
 
   invokeCommandRef.current = invoke;
+
+  // Apply the Customize Toolbars dialog's edited layout: feed it to the catalog (which rebuilds the
+  // registry + fires onDidChange -> setToolsetRegistry), re-derive visibility, and persist. Mirrors
+  // the startup load path so the palettes + menu refresh live.
+  // Commit a toolbar layout state: rebuild the registry, reconcile which palettes are open, and
+  // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
+  // applies immediately — no draft that can drift out of sync) from a final close.
+  const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
+    toolbarCatalog.setLayoutState(next);
+    const nextRegistry = toolbarCatalog.registry();
+    const nextVisible = createDefaultVisibleToolsetIds(nextRegistry);
+    // The native reconciler only OPENS desired windows; it never closes. So a toolset hidden in the
+    // Customize dialog must be closed explicitly here (mirrors toggleToolset), or its floating window
+    // lingers. Web palettes just re-render from visibleToolsetIds, so no close is needed.
+    if (effectiveNativePalette) {
+      const stillVisible = new Set(nextVisible);
+      for (const toolsetId of visibleToolsetIdsRef.current) {
+        if (!stillVisible.has(toolsetId)) {
+          void closeToolsetWindow(toolsetId).catch(() => undefined);
+        }
+      }
+    }
+    setVisibleToolsetIds(nextVisible);
+    try {
+      layoutStateRef.current = parseToolsetLayoutState(next);
+    } catch {
+      layoutStateRef.current = undefined;
+    }
+    resolvedToolsetIdsRef.current = new Set(nextRegistry.listToolsets().map((toolset) => toolset.id));
+    layoutSaveEnabledRef.current = true;
+    // Push the new state into the open palette webviews NOW (they built their toolbar once, at
+    // window creation — without this, item hides/reorders/renames never reach them), and again once
+    // the save has flushed so a palette window created mid-save can't be left on the stale disk copy.
+    void broadcastToolsetLayoutState(next).catch(() => undefined);
+    layoutSaveChainRef.current = layoutSaveChainRef.current
+      .then(() => saveToolsetLayoutState(next))
+      .then(() => broadcastToolsetLayoutState(next))
+      .catch(() => undefined);
+    if (closeDialog) {
+      setCustomizeToolbarsOpen(false);
+    }
+  }, [toolbarCatalog, effectiveNativePalette]);
+
+  // Live edits from the Customize dialog (visibility toggles, hides, reorders) apply immediately so
+  // palettes appear/disappear as you click — no Apply-then-reopen round trip, and no long-lived draft
+  // that can revert a hidden toolset back to visible.
+  const liveApplyCustomizeToolbars = useCallback(
+    (next: ToolsetLayoutState) => commitToolbarLayout(next, false),
+    [commitToolbarLayout]
+  );
+  const applyCustomizeToolbars = useCallback(
+    (next: ToolsetLayoutState) => commitToolbarLayout(next, true),
+    [commitToolbarLayout]
+  );
+
+  // Command catalog (id + title, deduped) offered by the Customize dialog's "add command" palette.
+  // It follows the effective registry so user/plugin/renamed toolbar launchers appear immediately.
+  const customizeCommandOptions = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const command of shellCommandSpecs) {
+      if (!byId.has(command.id)) {
+        byId.set(command.id, command.title ?? command.id);
+      }
+    }
+    return [...byId].map(([id, title]) => ({ id, title }));
+  }, [shellCommandSpecs]);
+
+  // Full live specs (including current enabled state) for the in-place customize gallery.
+  const galleryCommands = shellCommandSpecs;
+
+  // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
+  // a no-op).
+  const commandTitleById = useMemo(
+    () => new Map(customizeCommandOptions.map((option) => [option.id, option.title])),
+    [customizeCommandOptions]
+  );
+
+  // Command id → spec, so an added command's synthesized item carries the command's real icon/asset.
+  const commandById = shellCommandsById;
+  const commandTitleByIdRef = useRef(commandTitleById);
+  const commandByIdRef = useRef(commandById);
+  commandTitleByIdRef.current = commandTitleById;
+  commandByIdRef.current = commandById;
 
   useEffect(() => {
     if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
@@ -7521,36 +8106,69 @@ export function MainWindow({
   // above (cancelSpin3dSession) and the detach effect tears the sidecar session down when the
   // overlay ends. No separate Esc listener is needed.
 
+  // Native mode: JS is the sole initiator. On startup it opens the toolsets that should be
+  // visible as floating NSPanels (reusing any the OS already restored), then tracks the real
+  // window state. If none can be opened, fall back to in-window web palettes so the app is
+  // never left with no toolbars.
   useEffect(() => {
     if (!effectiveNativePalette) {
       return;
     }
 
-    void listToolsetWindowStates()
-      .then((states) => {
-        const openToolsetIds = states
-          .filter((state) => state.open && toolsetRegistry.get(state.toolsetId))
-          .map((state) => state.toolsetId);
-        if (openToolsetIds.length === 0) {
-          setWebPaletteFallback(true);
-          setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
-          setStatus("Native toolset windows unavailable; using in-window toolbars");
-          return;
-        }
-        setVisibleToolsetIds(new Set(openToolsetIds));
-      })
-      .catch(() => {
-        setWebPaletteFallback(true);
-        setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
-        setStatus("Native toolset windows unavailable; using in-window toolbars");
-      });
-  }, [effectiveNativePalette, toolsetRegistry]);
+    let cancelled = false;
+    void reconcileNativePaletteWindows({
+      listToolsetWindowStates,
+      openToolsetWindow: (toolsetId) => openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId)),
+      isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
+      desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
+      defaultVisibleToolsetIds: () => [...createDefaultVisibleToolsetIds(toolsetRegistry)],
+      isCancelled: () => cancelled
+    }).then((result) => {
+      if (cancelled || result.outcome === "cancelled") {
+        return;
+      }
+      if (result.outcome === "native") {
+        // Do NOT narrow visibleToolsetIds to the set that actually opened. If one palette missed its
+        // creating frame (is_visible() briefly false) while others opened, the reconciler returns a
+        // partial openedToolsetIds; overwriting the desired set with it — and then persisting that —
+        // would permanently drop that palette. The desired set stays authoritative; a later
+        // reconcile pass reopens anything that missed.
+        return;
+      }
+      // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars
+      // rather than leaving the app with no toolbars at all. (A transient startup miss no longer
+      // lands here; reconcileNativePaletteWindows retries first so it can't permanently trap the
+      // palettes in the viewport.)
+      setWebPaletteFallback(true);
+      setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
+      setStatus("Native toolset windows unavailable; using in-window toolbars");
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
+
+  // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
+  // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the
+  // in-window fallback there is no separate popover window to dismiss.
+  useEffect(() => {
+    if (!effectiveNativePalette) {
+      return;
+    }
+    const handlePointerDown = () => {
+      void dismissToolsetPopovers().catch(() => undefined);
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [effectiveNativePalette]);
 
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
     let unlistenActiveToolRequest: (() => void) | undefined;
+    let unlistenCommandSpecsRequest: (() => void) | undefined;
     let unlistenTextStyleRequest: (() => void) | undefined;
     let unlistenPreview: (() => void) | undefined;
     let unlistenCommit: (() => void) | undefined;
@@ -7590,6 +8208,17 @@ export function MainWindow({
           return;
         }
         unlistenActiveToolRequest = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForToolsetCommandSpecsRequests(() => {
+      void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenCommandSpecsRequest = cleanup;
       })
       .catch(() => undefined);
     void listenForToolsetTextStyleRequests(() => {
@@ -7642,11 +8271,148 @@ export function MainWindow({
       unlisten?.();
       unlistenState?.();
       unlistenActiveToolRequest?.();
+      unlistenCommandSpecsRequest?.();
       unlistenTextStyleRequest?.();
       unlistenPreview?.();
       unlistenCommit?.();
       unlistenCancel?.();
     };
+  }, []);
+
+  // A freshly created palette window asks for the current layout state (its disk copy can be stale
+  // while the save chain is flushing); answer with the live state so it never renders an old layout.
+  useEffect(() => {
+    let active = true;
+    let unlistenLayoutStateRequest: (() => void) | undefined;
+    void listenForToolsetLayoutStateRequests(() => {
+      const layoutState = layoutStateRef.current;
+      if (layoutState !== undefined) {
+        void broadcastToolsetLayoutState(layoutState).catch(() => undefined);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenLayoutStateRequest = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlistenLayoutStateRequest?.();
+    };
+  }, []);
+
+  // Apply in-place customize edit ops from the Main palette against the authoritative layout state.
+  // Ops (not full state) so a stale palette snapshot can't clobber; the resulting commit re-broadcasts
+  // and the palette repaints. `exitCustomize` is a mode signal, not a layout edit.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetLayoutEdits((payload) => {
+      if (payload.toolsetId !== DEFAULT_TOOLSET_ID) {
+        return;
+      }
+      if (payload.edit.kind === "exitCustomize") {
+        setCustomizeMode(false);
+        return;
+      }
+      const registry = toolsetRegistryRef.current;
+      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
+      const orderedItemIdsByGroup = new Map(
+        currentGroups.flatMap((group) =>
+          group.id ? [[group.id, group.items.map((item) => item.id)] as const] : []
+        )
+      );
+      const current = layoutStateRef.current ?? emptyLayoutState();
+      const next = applyToolsetLayoutEdit(current, payload, {
+        presentItemIds,
+        orderedItemIdsByGroup,
+        commandTitle: (commandId) => commandTitleByIdRef.current.get(commandId),
+        commandIcon: (commandId) => commandByIdRef.current.get(commandId)?.icon,
+        commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
+        widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
+        widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
+        gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
+      });
+      if (next !== current) {
+        commitToolbarLayout(next, false);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [commitToolbarLayout, setCustomizeMode]);
+
+  // Answer a late-joining palette's request for the current customize-mode state (mirrors the
+  // layout-state responder above).
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetCustomizeModeRequests(() => {
+      void broadcastToolsetCustomizeMode({
+        toolsetId: DEFAULT_TOOLSET_ID,
+        active: customizeMainToolbarActiveRef.current
+      }).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Exit customize mode if the Customize Toolbars dialog opens (they'd fight over the same state) or
+  // the Main palette is closed out from under it.
+  useEffect(() => {
+    if (!customizeMainToolbarActive) {
+      return;
+    }
+    if (customizeToolbarsOpen || !visibleToolsetIds.has(DEFAULT_TOOLSET_ID)) {
+      setCustomizeMode(false);
+    }
+  }, [customizeMainToolbarActive, customizeToolbarsOpen, visibleToolsetIds, setCustomizeMode]);
+
+  // Esc exits customize mode. The palette panels are non-focusable, so the key event lands on the
+  // main window (the key window) — this is where Esc must be handled.
+  useEffect(() => {
+    if (!customizeMainToolbarActive) {
+      return;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCustomizeMode(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [customizeMainToolbarActive, setCustomizeMode]);
+
+  // Label the web document by its worktree so browser tabs and accessibility state distinguish
+  // nearby checkouts. On macOS, index.html's initial title can overwrite the Rust setup title without
+  // following this later React update, so the Tauri page-load hook separately reasserts the same
+  // baked label on the native NSWindow title bar. See AGENTS.md.
+  useEffect(() => {
+    window.document.title = __WORKTREE_LABEL__ ? `ChemDraft — ${__WORKTREE_LABEL__}` : "ChemDraft";
   }, []);
 
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -8117,14 +8883,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: placed,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, placed);
     return true;
-  }, [installDocumentHistory, nativePlacementDocumentFromDrag, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const startNativeFreehandArtDrag = useCallback((
     event: ObjectPointerEvent,
@@ -8188,23 +8949,13 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: nextDocument,
-      future: []
-    });
-    setFileState((current) => {
-      const nextFileState = { ...current, dirty: true };
-      fileStateRef.current = nextFileState;
-      return nextFileState;
-    });
+    commitDocumentHistoryFrom(drag.startDocument, nextDocument);
     const selectToolState = createActiveToolState("tool.select");
     activeToolCommandIdRef.current = selectToolState.activeCommandId;
     setActiveToolState(selectToolState);
     void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
     return true;
-  }, [installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const objectDragDocument = useCallback((drag: ObjectDragState, point: ClientPoint): ChemDraftDocument => {
     const dx = point.x - drag.startPoint.x;
@@ -8303,14 +9054,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicMarkerDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicMarkerDocumentFromDrag, replacePresentDocument]);
 
   const commitGraphicGradientDrag = useCallback((drag: GraphicGradientDragState, point: ClientPoint): boolean => {
     const edited = graphicGradientDocumentFromDrag(drag, point);
@@ -8319,14 +9065,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicGradientDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicGradientDocumentFromDrag, replacePresentDocument]);
 
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
@@ -8548,14 +9289,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: moved,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
     const moved = objectDragDocument(drag, point);
@@ -8565,14 +9301,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: moved,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [clearObjectTransformPreview, installDocumentHistory, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -8581,14 +9312,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicCornerRadiusDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicCornerRadiusDocumentFromDrag, replacePresentDocument]);
 
   const commitGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): boolean => {
     const edited = drag.workingDocument === drag.startDocument
@@ -8599,14 +9325,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, edited);
     return true;
-  }, [graphicPathEditDocumentFromDrag, installDocumentHistory, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, graphicPathEditDocumentFromDrag, replacePresentDocument]);
 
   const commitObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): boolean => {
     const rotated = objectRotateDocumentFromDrag(drag, point);
@@ -8639,14 +9360,9 @@ export function MainWindow({
       });
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: committed,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, committed);
     return true;
-  }, [clearObjectTransformPreview, installDocumentHistory, objectRotateDocumentFromDrag, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, replacePresentDocument]);
 
   const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
     const result = projectedPlaneTiltFromDrag(drag, point);
@@ -8696,8 +9412,7 @@ export function MainWindow({
         orientation: finalOrientation,
         engine: drag.spin3dModel.engine
       });
-      const currentHistory = documentHistoryRef.current;
-      installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, modeled));
+      commitDocumentHistoryFrom(drag.startDocument, modeled);
       setStatus("3D rotation applied");
       return true;
     }
@@ -8707,10 +9422,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory(projectedPlaneTiltCommitHistory(currentHistory, drag.startDocument, result.document));
+    commitDocumentHistoryFrom(drag.startDocument, result.document);
     return true;
-  }, [installDocumentHistory, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
+  }, [commitDocumentHistoryFrom, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
   const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
@@ -9090,14 +9804,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: resized,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, resized);
     return true;
-  }, [clearObjectTransformPreview, installDocumentHistory, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
     moveNativeMoleculeParts(drag.startDocument, drag.target, {
@@ -9117,14 +9826,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: moved,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [installDocumentHistory, nativePartDocumentFromDrag, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, nativePartDocumentFromDrag, replacePresentDocument]);
 
   const resizeTextDocumentFromDrag = useCallback((drag: TextResizeState, point: ClientPoint): ChemDraftDocument => {
     const dx = point.x - drag.startPoint.x;
@@ -9162,14 +9866,9 @@ export function MainWindow({
       return false;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, drag.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: resized,
-      future: []
-    });
+    commitDocumentHistoryFrom(drag.startDocument, resized);
     return true;
-  }, [installDocumentHistory, replacePresentDocument, resizeTextDocumentFromDrag]);
+  }, [commitDocumentHistoryFrom, replacePresentDocument, resizeTextDocumentFromDrag]);
 
   const clearObjectDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectDragRef.current;
@@ -10097,12 +10796,7 @@ export function MainWindow({
           : undefined;
         const next = result?.document ?? groupTransformDocument(groupTransform, point, event.shiftKey);
         if (next !== groupTransform.startDocument) {
-          const currentHistory = documentHistoryRef.current;
-          installDocumentHistory({
-            past: [...currentHistory.past, groupTransform.startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-            present: next,
-            future: []
-          });
+          commitDocumentHistoryFrom(groupTransform.startDocument, next);
         }
         setStatus(
           groupTransform.mode === "rotate"
@@ -10465,7 +11159,7 @@ export function MainWindow({
     document.pages,
     groupProjectedPlaneTiltFromDrag,
     groupTransformDocument,
-    installDocumentHistory,
+    commitDocumentHistoryFrom,
     pageRulerUnit,
     pagePointFromPointerEvent,
     replacePresentDocument
@@ -11841,18 +12535,13 @@ export function MainWindow({
       return;
     }
 
-    const currentHistory = documentHistoryRef.current;
-    installDocumentHistory({
-      past: [...currentHistory.past, selectedDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: edited,
-      future: []
-    });
+    commitDocumentHistoryFrom(selectedDocument, edited);
     setGraphicCornerRadiusReadout({
       objectId,
       radius: nextRadius
     });
     setStatus(nextRadius <= 0.001 ? "Reset corner radius" : "Maxed corner radius");
-  }, [activeToolState.activeKind, installDocumentHistory, replacePresentDocument]);
+  }, [activeToolState.activeKind, commitDocumentHistoryFrom, replacePresentDocument]);
 
   const handleGraphicPathEditPointerDown = useCallback((
     objectId: string,
@@ -13132,6 +13821,38 @@ export function MainWindow({
       {!effectiveNativePalette
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
+            const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById);
+            // Render from a given set of groups — the controller passes an optimistic overlay while a
+            // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
+            const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
+              <ToolPalette
+                itemGroups={renderGroups.map((group) => group.items)}
+                gridLayout={toolset.gridLayout}
+                activeTool={activeTool}
+                currentDistributeMode={distributeMode}
+                mode="floating"
+                orientation={toolset.gridLayout?.orientation ?? "vertical"}
+                title={toolset.title}
+                onInvoke={invoke}
+                customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
+                widgetState={{
+                  currentObjectColor: currentToolbarObjectColor,
+                  currentArtStyle,
+                  currentArtStyleTarget: activeArtPaintTarget,
+                  currentMoleculeInspector,
+                  currentTextStyle: currentToolbarTextStyle,
+                  currentTextScript: currentToolbarTextScript,
+                  onArtStylePreview: previewObjectStyleCommand,
+                  onArtStyleCommit: commitObjectStylePreview,
+                  onArtStyleCancel: cancelObjectStylePreview,
+                  onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
+                  onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
+                  onMoleculeInspectorCancel: cancelMoleculeInspectorPreview,
+                  onInvoke: invoke
+                }}
+              />
+            );
             return (
               <section
                 className="web-floating-palette"
@@ -13165,32 +13886,30 @@ export function MainWindow({
                 >
                   <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
                 </div>
-                <ToolPalette
-                  groups={getToolsetCommandGroups(toolset.id, toolsetRegistry, toolsetCommandOverrides)}
-                  activeTool={activeTool}
-                  currentDistributeMode={distributeMode}
-                  mode="floating"
-                  orientation={toolset.gridLayout?.orientation ?? "vertical"}
-                  title={toolset.title}
-                  showMainStyleControls={toolset.id === "core.main"}
-                  showTextStyleControls={toolset.id === "core.text"}
-                  showArtStyleControls={toolset.id === "core.art"}
-                  showRingInspectorControls={toolset.id === ringInspectorToolsetId}
-                  showMoleculeInspectorControls={toolset.id === moleculeInspectorToolsetId}
-                  currentObjectColor={currentToolbarObjectColor}
-                  currentArtStyle={currentArtStyle}
-                  currentArtStyleTarget={activeArtPaintTarget}
-                  currentMoleculeInspector={currentMoleculeInspector}
-                  currentTextStyle={currentToolbarTextStyle}
-                  currentTextScript={currentToolbarTextScript}
-                  onArtStylePreview={previewObjectStyleCommand}
-                  onArtStyleCommit={commitObjectStylePreview}
-                  onArtStyleCancel={cancelObjectStylePreview}
-                  onMoleculeInspectorPreview={previewMoleculeInspectorCommand}
-                  onMoleculeInspectorCommit={commitMoleculeInspectorPreview}
-                  onMoleculeInspectorCancel={cancelMoleculeInspectorPreview}
-                  onInvoke={invoke}
-                />
+                {customizingThis ? (
+                  <ToolbarCustomizeController
+                    toolsetId={toolset.id}
+                    groups={paletteGroups}
+                    onEdit={(edit) => sendToolsetLayoutEdit({ toolsetId: toolset.id, edit })}
+                  >
+                    {(effectiveGroups) => (
+                      <>
+                        {renderPalette(effectiveGroups)}
+                        <CustomizeBar
+                          onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
+                          onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+                        />
+                        <GalleryTray
+                          commands={galleryCommands}
+                          widgets={APPENDABLE_TOOLBAR_WIDGETS}
+                          presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
+                        />
+                      </>
+                    )}
+                  </ToolbarCustomizeController>
+                ) : (
+                  renderPalette(paletteGroups)
+                )}
               </section>
             );
           })
@@ -13615,6 +14334,22 @@ export function MainWindow({
             onKeep={() => applyPendingMoleculeStyleOverrideChoice("keep")}
             onClear={() => applyPendingMoleculeStyleOverrideChoice("clear")}
             onCancel={() => applyPendingMoleculeStyleOverrideChoice("cancel")}
+          />
+        ) : null}
+        <PatchReviewTray
+          host={pluginRuntime.host}
+          queueVersion={patchQueueVersion}
+          onAccept={acceptPluginProposal}
+          onReject={rejectPluginProposal}
+        />
+        {customizeToolbarsOpen ? (
+          <CustomizeToolbarsDialog
+            baseToolsets={toolbarCatalog.baseToolsets()}
+            layoutState={layoutStateRef.current ?? emptyLayoutState()}
+            availableCommands={customizeCommandOptions}
+            onApply={applyCustomizeToolbars}
+            onLiveApply={liveApplyCustomizeToolbars}
+            onClose={() => setCustomizeToolbarsOpen(false)}
           />
         ) : null}
         <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
@@ -16213,18 +16948,27 @@ function distributeAxisForCommandId(commandId: string): DocumentDistributeAxis |
   }
 }
 
+const TOOLSET_STAGGER_STEP_PX = 18;
+
+// Registry-order index used to stagger a palette's first-ever placement. Shared by the native window
+// geometry (toolsetWindowGeometry) and the in-window web-palette default so the two can't silently
+// diverge on how they stagger (only their base anchor differs).
+function toolsetStaggerIndex(toolsetId: string, registry: DesktopToolsetRegistry): number {
+  return Math.max(0, registry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
+}
+
 function createDefaultToolsetPositions(registry: DesktopToolsetRegistry): Record<string, PalettePosition> {
   return Object.fromEntries(
     registry.listToolsets().map((toolset, index) => [
       toolset.id,
-      { x: 34 + index * 18, y: 116 + index * 18 }
+      { x: 34 + index * TOOLSET_STAGGER_STEP_PX, y: 116 + index * TOOLSET_STAGGER_STEP_PX }
     ])
   );
 }
 
 function defaultToolsetPosition(toolsetId: string, registry: DesktopToolsetRegistry): PalettePosition {
-  const index = Math.max(0, registry.listToolsets().findIndex((toolset) => toolset.id === toolsetId));
-  return { x: 34 + index * 18, y: 116 + index * 18 };
+  const offset = toolsetStaggerIndex(toolsetId, registry) * TOOLSET_STAGGER_STEP_PX;
+  return { x: 34 + offset, y: 116 + offset };
 }
 
 function clientPointFromElementCenter(element: HTMLElement): ClientPoint {

@@ -154,6 +154,16 @@ import {
   shouldUseViewportWheelZoom
 } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
+import { CommandRegistry } from "@chemdraft/plugin-host";
+import { createDesktopPluginRuntime } from "./plugins/pluginRuntime";
+import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import {
+  FIXTURE_PLUGIN_PING_COMMAND_ID,
+  FIXTURE_PLUGIN_TOOLSET_ID,
+  createFixturePluginOptions,
+  fixturePluginManifest
+} from "./plugins/fixturePlugin";
+import type { DesktopToolsetRegistry } from "./toolsets";
 import { ToolPalette, cmykToRgbColor, hexToRgbColor, rgbToCmykColor, rgbToHexColor } from "./ToolPalette";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
@@ -179,8 +189,17 @@ import {
   getToolbarsMenuModel,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
-  getToolsetToggleActions
+  getToolsetItemGroups,
+  getToolsetToggleActions,
+  type ToolbarPaletteItemModel
 } from "./toolsets";
+
+// Phase 5: widgets are declared as manifest `control` items and read state from context. This
+// isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
+// `show*Controls` props rendered only the widget section.
+function widgetOnlyItemGroups(toolsetId: string): ToolbarPaletteItemModel[][] {
+  return [getToolsetItemGroups(toolsetId).flat().filter((item) => item.primary.type === "control")];
+}
 
 function svgLineNumberAttribute(lineMarkup: string, attribute: "x1" | "y1" | "x2" | "y2"): number {
   const match = lineMarkup.match(new RegExp(`${attribute}="([^"]+)"`));
@@ -233,6 +252,20 @@ const sevenCarbonVisibleCdxml = `<?xml version="1.0" encoding="UTF-8"?>
     </fragment>
   </page>
 </CDXML>`;
+
+// The fixture toolset is contributed by a real plugin now (not baked into the core
+// manifest), so tests that assert on it compose it through the runtime + catalog exactly
+// like MainWindow does.
+function buildRegistryWithFixture(): DesktopToolsetRegistry {
+  const runtime = createDesktopPluginRuntime({
+    commandRegistry: new CommandRegistry(),
+    getActiveDocument: () => undefined
+  });
+  runtime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
+  const catalog = createToolbarCatalog();
+  catalog.setPluginToolsets(runtime.listPluginToolsets());
+  return catalog.registry();
+}
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
@@ -288,11 +321,14 @@ describe("ChemDraft desktop shell", () => {
 
     expect(desktopToolsetsSource).toContain(structureCleanup3dCommandId);
     expect(desktopToolsetsSource).toContain('"title": "3D Cleanup"');
-    expect(desktopToolsetsSource).toContain('"disabledReason": "requires conformer-backed 3D cleanup engine"');
+    // 3D Cleanup is wired now: the manifest no longer disables it, and the handler routes through
+    // the lazy engine re-layout instead of the old stub status.
+    expect(desktopToolsetsSource).not.toContain('"disabledReason": "requires conformer-backed 3D cleanup engine"');
     expect(desktopToolsetsSource).not.toContain('"commandId": "structure.rotate3d"');
     expect(desktopToolsetsSource).not.toContain('"title": "3D Rotate"');
     expect(mainWindowSource).toContain("cleanUpSelectedStructure3d");
-    expect(mainWindowSource).toContain("3D cleanup requires the conformer-backed cleanup engine");
+    expect(mainWindowSource).toContain("applyNativeMoleculeEngineRelayout");
+    expect(mainWindowSource).toContain("relayoutMolfile2D");
     expect(mainWindowSource).not.toContain("tool.id === structureRotate3dCommandId");
     expect(implementationSource).toContain("tiltNativeMoleculeProjectedPlane");
     expect(implementationSource).toContain("tiltNativeMoleculePartsProjectedPlane");
@@ -303,8 +339,8 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain(".object-tilt3d-arrowhead");
     // NOTE: a blanket "no conformer imports" assertion used to live here, but the Spin 3D
     // feature now legitimately uses the conformer worker/OCL adapter in MainWindow's overlay
-    // path (and SMILES paste references OpenChemLib in a status message). The 3D-cleanup item
-    // remains a stub — that invariant is covered by the status-string assertions above.
+    // path (and SMILES paste references OpenChemLib in a status message). 3D Cleanup itself now
+    // lazy-loads the same adapter for its clean re-layout — asserted above.
   });
 
   it("renders compact web-preview workspace regions with a floating fallback palette", () => {
@@ -488,7 +524,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("app-shell");
     expect(markup).not.toContain("canvas-region");
     expect(markup).not.toContain("utility-drawer");
-    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 70px max-content;");
+    expect(appCss).toContain("width: calc(var(--cd-control-height) * 4 + var(--cd-space-2) * 3);");
     expect(appCss).toContain("grid-template-columns: 170px 70px auto;");
     expect(appCss).toContain("appearance: none;");
     expect(appCss).toContain("linear-gradient(45deg, transparent 50%, var(--cd-text-secondary) 50%)");
@@ -1722,14 +1758,12 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("<CustomPageSizeDialog");
   });
 
-  it("defines disabled toolbar customization command placeholders", () => {
+  it("enables the customize-toolbars command; reset/create/clone remain dialog-driven placeholders", () => {
+    // view.customizeToolbars now opens the editor; the reset/create/clone actions are performed
+    // inside that dialog, so their standalone command entries stay disabled placeholders for now.
     expect(toolbarCustomizationActions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          id: "view.customizeToolbars",
-          enabled: false,
-          disabledReason: "Toolbar customization UI is not implemented yet"
-        }),
+        expect.objectContaining({ id: "view.customizeToolbars", enabled: true }),
         expect.objectContaining({ id: "view.toolset.resetLayout", enabled: false }),
         expect.objectContaining({ id: "view.toolset.resetAllLayouts", enabled: false }),
         expect.objectContaining({ id: "view.toolset.createUserToolset", enabled: false }),
@@ -1796,8 +1830,8 @@ describe("ChemDraft desktop shell", () => {
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.reverseStops")).toBe(true);
     expect(allShellCommands(createPhase4Document()).some((command) => command.id === "object.gradient.rotateStops")).toBe(true);
     expect(mainWindowSource).toContain("const currentToolbarObjectColor = useMemo");
-    expect(mainWindowSource).toContain("currentObjectColor={currentToolbarObjectColor}");
-    expect(mainWindowSource).not.toContain("currentObjectColor={currentToolbarTextStyle.color}");
+    expect(mainWindowSource).toContain("currentObjectColor: currentToolbarObjectColor");
+    expect(mainWindowSource).not.toContain("currentObjectColor: currentToolbarTextStyle.color");
     expect(mainWindowSource).toContain("const objectStyleObjectIds = currentDocument.selection.objectIds.filter");
     expect(mainWindowSource).toContain("findDocumentObject(currentDocument, objectId)?.type !== \"text\"");
     expect(mainWindowSource).toContain("const objectStyleTarget = toolbarStyleTarget");
@@ -1808,17 +1842,19 @@ describe("ChemDraft desktop shell", () => {
   it("renders mutually exclusive text toolbar active states from current style", () => {
     const markup = renderToStaticMarkup(
       createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.main"),
         mode: "floating",
         orientation: "horizontal",
-        showMainStyleControls: true,
-        currentTextStyle: {
-          ...DefaultNativeTextStyle,
-          color: "#1f5fbf",
-          textAlign: "right"
-        },
-        currentTextScript: "superscript",
-        onInvoke: () => undefined
+        onInvoke: () => undefined,
+        widgetState: {
+          currentTextStyle: {
+            ...DefaultNativeTextStyle,
+            color: "#1f5fbf",
+            textAlign: "right"
+          },
+          currentTextScript: "superscript",
+          onInvoke: () => undefined
+        }
       })
     );
 
@@ -1858,6 +1894,7 @@ describe("ChemDraft desktop shell", () => {
       structureCleanupCommandId,
       structureSpin3dCommandId,
       structureInteractive3dCommandId,
+      structureCleanup3dCommandId,
       "tool.plus",
       "tool.minus",
       "layout.bringToFront",
@@ -1877,15 +1914,14 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.text")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
-      enabled: false,
-      disabledReason: "requires conformer-backed 3D cleanup engine"
+      enabled: true
     });
     expect(paletteGroups.flat().find((command) => command.id === "tool.plus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
-    expect(disabledTools.length).toBeGreaterThan(20);
+    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
 
@@ -2339,72 +2375,29 @@ describe("ChemDraft desktop shell", () => {
       selectedGraphicObjects: selectedGraphicObjectsForArtInspector(effectDocument),
       requestedPaintTarget: "fill"
     });
-    const rectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: rectArtStyle,
-      onInvoke: () => undefined
-    }));
-    const rectStrokeInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "stroke",
-      currentArtStyle: rectStrokeArtStyle,
-      onInvoke: () => undefined
-    }));
-    const lineInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: lineArtStyle,
-      onInvoke: () => undefined
-    }));
-    const freehandInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: freehandArtStyle,
-      onInvoke: () => undefined
-    }));
-    const gradientInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: gradientArtStyle,
-      onInvoke: () => undefined
-    }));
-    const effectInspectorMarkup = renderToStaticMarkup(createElement(ToolPalette, {
-      groups: artGroups,
-      activeTool: "tool.select",
-      orientation: "horizontal",
-      title: "ChemDraft floating Art Toolbar",
-      showArtStyleControls: true,
-      currentObjectColor: "#111111",
-      currentArtStyleTarget: "fill",
-      currentArtStyle: effectArtStyle,
-      onInvoke: () => undefined
-    }));
+    const artInspectorMarkup = (
+      currentArtStyle: ReturnType<typeof createArtInspectorModel>,
+      currentArtStyleTarget: "fill" | "stroke" = "fill"
+    ) =>
+      renderToStaticMarkup(createElement(ToolPalette, {
+        itemGroups: widgetOnlyItemGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        title: "ChemDraft floating Art Toolbar",
+        onInvoke: () => undefined,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget,
+          currentArtStyle,
+          onInvoke: () => undefined
+        }
+      }));
+    const rectInspectorMarkup = artInspectorMarkup(rectArtStyle, "fill");
+    const rectStrokeInspectorMarkup = artInspectorMarkup(rectStrokeArtStyle, "stroke");
+    const lineInspectorMarkup = artInspectorMarkup(lineArtStyle, "fill");
+    const freehandInspectorMarkup = artInspectorMarkup(freehandArtStyle, "fill");
+    const gradientInspectorMarkup = artInspectorMarkup(gradientArtStyle, "fill");
+    const effectInspectorMarkup = artInspectorMarkup(effectArtStyle, "fill");
 
     expect(markup).toContain('aria-label="ChemDraft floating Art Toolbar"');
     expect(markup).toContain('data-toolset-id="core.art"');
@@ -2654,10 +2647,10 @@ describe("ChemDraft desktop shell", () => {
         "core.style",
         "core.text",
         "core.ringInspector",
-        "core.moleculeInspector",
-        "plugin.fixture"
+        "core.moleculeInspector"
       ])
     );
+    expect(ids).not.toContain(FIXTURE_PLUGIN_TOOLSET_ID);
     expect(desktopToolsetRegistry.require("core.main").defaultVisible).toBe(true);
     expect(desktopToolsetRegistry.require("core.art").preferredWindowSize).toMatchObject({
       width: 420,
@@ -2667,7 +2660,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.art.pencil",
       "tool.art.brush"
     ]);
-    expect(desktopToolsetRegistry.require("plugin.fixture").source).toBe("plugin");
+    // The fixture toolset comes from the plugin runtime, not the core manifest.
+    expect(buildRegistryWithFixture().require(FIXTURE_PLUGIN_TOOLSET_ID).source).toBe("plugin");
   });
 
   it("keeps duplicated toolbar commands on a shared material-style asset", () => {
@@ -2675,7 +2669,7 @@ describe("ChemDraft desktop shell", () => {
     desktopToolsetRegistry.listToolsets().forEach((toolset) => {
       toolset.groups.forEach((group) => {
         group.items.forEach((item) => {
-          if (!item.assetName) {
+          if (!item.assetName || !item.commandId) {
             return;
           }
           const assetNames = assetNamesByCommandId.get(item.commandId) ?? new Set<string>();
@@ -2691,7 +2685,7 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("tool.select") ?? []]).toEqual(["Art_Select"]);
     expect([...assetNamesByCommandId.get("tool.text") ?? []]).toEqual(["Art_Text"]);
     expect([...assetNamesByCommandId.get("tool.eraser") ?? []]).toEqual(["Art_Eraser"]);
-    expect([...assetNamesByCommandId.get("tool.art.rect") ?? []]).toEqual(["Art_Rectangle"]);
+    expect([...assetNamesByCommandId.get("tool.art.rect") ?? []]).toEqual(["Art_Shapes"]);
     expect([...assetNamesByCommandId.get("layout.alignLeft") ?? []]).toEqual(["Custom_Left"]);
     expect([...assetNamesByCommandId.get("layout.alignCenter") ?? []]).toEqual(["Custom_Center"]);
     expect([...assetNamesByCommandId.get("layout.alignRight") ?? []]).toEqual(["Custom_Right"]);
@@ -2709,12 +2703,13 @@ describe("ChemDraft desktop shell", () => {
     expect([...assetNamesByCommandId.get("layout.group") ?? []]).toEqual(["Custom_Group"]);
     expect([...assetNamesByCommandId.get("layout.ungroup") ?? []]).toEqual(["Custom_Ungroup"]);
     expect([...assetNamesByCommandId.get(structureSpin3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
-    expect([...assetNamesByCommandId.get(structureInteractive3dCommandId) ?? []]).toEqual(["Custom_Spin_3D"]);
+    // Interactive 3D Workspace no longer shares Spin 3D's asset — it renders a title-generated "3D"
+    // monogram so the two 3D buttons are visually distinct.
+    expect(assetNamesByCommandId.has(structureInteractive3dCommandId)).toBe(false);
   });
 
   it("keeps sparse floating toolsets compact", () => {
     const mainToolset = desktopToolsetRegistry.require("core.main");
-    const fixtureSize = desktopToolsetRegistry.require("plugin.fixture").preferredWindowSize;
     const textToolset = desktopToolsetRegistry.require("core.text");
     const verticalSizes = desktopToolsetRegistry
       .listToolsets()
@@ -2722,7 +2717,6 @@ describe("ChemDraft desktop shell", () => {
       .map((toolset) => toolset.preferredWindowSize?.height ?? 0);
 
     expect(mainToolset.preferredWindowSize).toMatchObject({ width: 1138, height: 128, minWidth: 860, minHeight: 124 });
-    expect(fixtureSize).toMatchObject({ width: 112, height: 58, minWidth: 112, minHeight: 58 });
     expect(textToolset.gridLayout).toMatchObject({ orientation: "horizontal" });
     expect(textToolset.preferredWindowSize).toMatchObject({ width: 590, height: 112, minWidth: 520, minHeight: 104 });
     expect(Math.max(...verticalSizes)).toBeLessThanOrEqual(224);
@@ -2735,12 +2729,23 @@ describe("ChemDraft desktop shell", () => {
 
     expect(fontIndex).toBeGreaterThan(-1);
     expect(boldIndex).toBeGreaterThan(fontIndex);
-    expect(appCss).toContain("--cd-main-toolbar-style-width: 344px;");
-    expect(appCss).toContain("grid-template-columns: max-content minmax(0, 1fr) max-content;");
-    expect(appCss).toContain("grid-template-columns: minmax(0, 1fr) 70px max-content;");
-    expect(appCss).toContain("justify-self: end;");
+    // Two 24px rows, content-sized (no fixed 344px width / `1fr` filler), with the font box exactly
+    // 4 grid cells and the size box 3 — so both rows are the same width and columns line up.
+    expect(appCss).toContain("grid-template-rows: 24px 24px;");
+    expect(appCss).toContain("width: calc(var(--cd-control-height) * 4 + var(--cd-space-2) * 3);");
+    expect(appCss).toContain("width: calc(var(--cd-control-height) * 3 + var(--cd-space-2) * 2);");
     expect(appCss).toContain(".tool-palette.floating.horizontal.main-style-palette");
     expect(appCss).toContain("max-height: 64px;");
+    expect(appCss).toContain(".tool-palette.horizontal.main-style-palette .tool-group:last-of-type");
+    expect(appCss).toContain(
+      ".tool-palette.horizontal.main-style-palette,\n.tool-palette.floating.horizontal.main-style-palette {\n  padding-right: 10px;"
+    );
+    expect(appCss).not.toContain(
+      ".tool-palette.horizontal .tool-group:last-of-type,\n.tool-palette.floating.horizontal .tool-group:last-of-type {"
+    );
+    expect(appCss).not.toContain(
+      ".tool-palette.horizontal,\n.tool-palette.floating.horizontal {\n  padding-right: 10px;"
+    );
   });
 
   it("clips narrow palette titles away from the close control", () => {
@@ -2753,7 +2758,7 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("builds View > Toolbars menu items from registered toolsets", () => {
-    const menu = getToolbarsMenuModel(new Set(["core.main"]));
+    const menu = getToolbarsMenuModel(new Set(["core.main"]), buildRegistryWithFixture());
 
     expect(menu).toEqual(
       expect.arrayContaining([
@@ -2785,7 +2790,7 @@ describe("ChemDraft desktop shell", () => {
   it("applies persisted toolbar layout state to startup registry and menu models", () => {
     const registry = createDesktopToolsetRegistry({
       version: 1,
-      toolsetOrder: ["user.quick", "plugin.fixture", "core.main"],
+      toolsetOrder: ["user.quick", "core.text", "core.main"],
       toolsetOverrides: [
         {
           toolsetId: "core.main",
@@ -2809,7 +2814,7 @@ describe("ChemDraft desktop shell", () => {
               id: "user.quick.tools",
               items: [
                 { commandId: "tool.select", title: "Selection Tool" },
-                { commandId: "plugin.fixture.toolset.ping", title: "Fixture Toolset Command" }
+                { commandId: "tool.eraser", title: "Eraser Tool" }
               ]
             }
           ]
@@ -2820,7 +2825,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(registry.listToolsets().map((toolset) => toolset.id).slice(0, 3)).toEqual([
       "user.quick",
-      "plugin.fixture",
+      "core.text",
       "core.main"
     ]);
     expect(registry.require("core.main").title).toBe("My Main Toolbar");
@@ -2831,15 +2836,15 @@ describe("ChemDraft desktop shell", () => {
       checked: true,
       source: "user"
     });
-    expect(getToolsetCommandGroups("core.main", registry)[0].map((command) => command.id)).toEqual([
-      "tool.text",
-      "tool.select",
-      "tool.eraser"
-    ]);
+    const mainCommands = getToolsetCommandGroups("core.main", registry)[0].map((command) => command.id);
+    // The legacy per-group order folds onto the flattened single-group Main toolbar: the listed ids
+    // lead, the hidden lasso is gone, and the rest of the toolbar follows in manifest order.
+    expect(mainCommands.slice(0, 3)).toEqual(["tool.text", "tool.select", "tool.eraser"]);
+    expect(mainCommands).not.toContain("tool.lasso");
   });
 
   it("creates toggle commands for every registered toolset", () => {
-    const toggles = getToolsetToggleActions();
+    const toggles = getToolsetToggleActions(buildRegistryWithFixture());
 
     expect(toggles.map((command) => command.id)).toEqual(
       expect.arrayContaining(["view.toolset.toggle.core.structure", "view.toolset.toggle.plugin.fixture"])
@@ -2847,12 +2852,62 @@ describe("ChemDraft desktop shell", () => {
     expect(toggles.every((command) => command.category === "view")).toBe(true);
   });
 
-  it("renders an independent plugin fixture toolset surface", () => {
-    const markup = renderToStaticMarkup(createElement(PaletteWindow, { toolsetId: "plugin.fixture" }));
+  it("builds the shell catalog from the effective registry and current history availability", () => {
+    const pluginCommands = allShellCommands(createPhase4Document(), undefined, {
+      registry: buildRegistryWithFixture()
+    });
+    expect(pluginCommands).toContainEqual(
+      expect.objectContaining({
+        id: "view.toolset.toggle.plugin.fixture",
+        title: "Toggle Fixture Plugin Toolbar"
+      })
+    );
 
-    expect(markup).toContain('data-toolset-id="plugin.fixture"');
-    expect(markup).toContain('data-command-id="plugin.fixture.toolset.ping"');
-    expect(markup).toContain("Fixture");
+    const customizedRegistry = createDesktopToolsetRegistry({
+      version: 1,
+      toolsetOverrides: [{ toolsetId: "core.main", title: "My Lab Toolbar" }],
+      userToolsets: [
+        {
+          id: "user.quick",
+          title: "My Quick Tools",
+          source: "user",
+          defaultVisible: false,
+          defaultMode: "floating",
+          groups: [
+            {
+              id: "user.quick.items",
+              items: [{ commandId: "tool.select", title: "Selection Tool" }]
+            }
+          ]
+        }
+      ]
+    });
+    const commands = allShellCommands(createPhase4Document(), undefined, {
+      availability: { canUndo: true, canRedo: false },
+      registry: customizedRegistry
+    });
+
+    expect(commands).toContainEqual(
+      expect.objectContaining({ id: "view.toolset.toggle.core.main", title: "Toggle My Lab Toolbar" })
+    );
+    expect(commands).toContainEqual(
+      expect.objectContaining({ id: "view.toolset.toggle.user.quick", title: "Toggle My Quick Tools" })
+    );
+    expect(commands.find((command) => command.id === "edit.undo")?.enabled).toBe(true);
+    expect(commands.find((command) => command.id === "edit.redo")?.enabled).toBe(false);
+  });
+
+  it("renders an independent plugin fixture toolset surface", () => {
+    const markup = renderToStaticMarkup(
+      createElement(PaletteWindow, {
+        toolsetId: FIXTURE_PLUGIN_TOOLSET_ID,
+        initialRegistry: buildRegistryWithFixture()
+      })
+    );
+
+    expect(markup).toContain(`data-toolset-id="${FIXTURE_PLUGIN_TOOLSET_ID}"`);
+    expect(markup).toContain(`data-command-id="${FIXTURE_PLUGIN_PING_COMMAND_ID}"`);
+    expect(markup).toContain("Ping");
     expect(markup).not.toContain("canvas-region");
   });
 
@@ -2871,7 +2926,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.chairCyclohexaneB"
     ];
 
-    expect(disabledTools.length).toBeGreaterThan(20);
+    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
     expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
     enabledNativeStructureTools.forEach((commandId) => {
       expect(disabledTools.some((command) => command.id === commandId)).toBe(false);
@@ -2932,28 +2987,34 @@ describe("ChemDraft desktop shell", () => {
 
     expect(bondMarkup).toContain('data-command-id="tool.bond"');
     expect(bondMarkup).toContain('data-shortcut-label="M"');
-    expect(bondMarkup).toContain('data-tooltip="Single Bond (M)"');
+    expect(bondMarkup).toContain('data-tooltip="Single Bond: Draw a bond. Long-press for bond variants. (M)"');
     expect(bondMarkup).toContain('class="tool-tooltip"');
-    expect(bondMarkup).toContain(">Single Bond (M)</span>");
+    expect(bondMarkup).toContain(">Single Bond</span>");
+    expect(bondMarkup).toContain(">Draw a bond. Long-press for bond variants.</span>");
+    expect(bondMarkup).toContain(">M</span>");
+    expect(bondMarkup).not.toContain("toolset action");
     expect(wedgeMarkup).toContain('data-shortcut-label="No shortcut"');
-    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond (No shortcut)"');
-    expect(wedgeMarkup).toContain(">Solid Wedge Bond (No shortcut)</span>");
+    expect(wedgeMarkup).toContain('data-tooltip="Solid Wedge Bond"');
+    expect(wedgeMarkup).toContain(">Solid Wedge Bond</span>");
+    expect(wedgeMarkup).not.toContain("toolset action");
     expect(pOrbitalMarkup).toContain('data-shortcut-label="No shortcut"');
     expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool: Requires an active structure editor"');
-    expect(pOrbitalMarkup).toContain(">p Orbital Tool: Requires an active structure editor</span>");
+    expect(pOrbitalMarkup).toContain(">Requires an active structure editor</span>");
     expect(pOrbitalMarkup).not.toContain("EditorAdapter");
     expect(pOrbitalMarkup).not.toContain("p Orbital Tool (No shortcut)");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');
     expect(verticalBondMarkup).not.toContain('title="Single Bond (M)"');
     expect(bondMarkup).not.toContain("with-shortcut");
     expect(markup).not.toContain('class="shortcut"');
-    expect(markup).toContain('class="icon-button-shell"');
+    expect(markup).toContain("icon-button-shell");
     expect(markup).toContain('data-tooltip-delay-ms="500"');
     expect(markup).toContain('data-tooltip-owner-id="');
     expect(markup).not.toContain("data-tooltip-visible");
     expect(cleanupMarkup).toContain('class="icon-button structure-cleanup-button"');
     expect(cleanupMarkup).toContain('data-tooltip="Clean up Structure 2D (⇧⌘K)"');
-    expect(cleanupMarkup).toContain(">Clean up Structure 2D (⇧⌘K)</span>");
+    expect(cleanupMarkup).toContain(">Clean up Structure 2D</span>");
+    expect(cleanupMarkup).toContain(">⇧⌘K</span>");
+    expect(cleanupMarkup).not.toContain("toolset action");
     expect(appCss).toContain(".tool-tooltip");
     expect(appCss).not.toContain("@keyframes cd-tooltip-auto-hide");
     expect(appCss).not.toContain(".icon-button-shell:hover .tool-tooltip");
@@ -2986,7 +3047,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(assetCommands.length).toBeGreaterThanOrEqual(50);
     expect(assetCommands.every((command) => command.category)).toBe(true);
-    expect(assetCommands.every((command) => command.description)).toBe(true);
+    expect(assetCommands.some((command) => command.description?.includes("toolset action"))).toBe(false);
     expect(eyedropperCommand).toMatchObject({
       id: "tool.art.eyedropper",
       title: "Eyedropper",
@@ -3017,12 +3078,9 @@ describe("ChemDraft desktop shell", () => {
       assetName: "Custom_Spin_3D",
       category: "structure"
     });
-    expect(assetCommands.find((command) => command.id === structureInteractive3dCommandId)).toMatchObject({
-      id: structureInteractive3dCommandId,
-      title: "Interactive 3D Workspace",
-      assetName: "Custom_Spin_3D",
-      category: "structure"
-    });
+    // Interactive 3D Workspace is asset-less now (title-generated "3D" monogram), so it isn't among
+    // the asset-backed commands.
+    expect(assetCommands.find((command) => command.id === structureInteractive3dCommandId)).toBeUndefined();
     expect(assetCommands.find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
       id: structureCleanup3dCommandId,
       title: "3D Cleanup",
@@ -3033,10 +3091,10 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("places cleanup in the main toolbar chrome cluster instead of a vague disabled options button", () => {
-    const mainGroups = getToolsetCommandGroups("core.main");
-    const styleGroupIds = mainGroups.at(-1)?.map((command) => command.id) ?? [];
-
-    expect(styleGroupIds).toEqual([
+    // The Main toolbar is one flattened group now; the chrome cluster is its tail segment (after the
+    // last divider), so assert its contiguous order at the end instead of indexing a per-section group.
+    const mainCommandIds = getToolsetCommandGroups("core.main")[0].map((command) => command.id);
+    const chromeCluster = [
       "style.color",
       "tool.settings",
       structureCleanupCommandId,
@@ -3044,12 +3102,14 @@ describe("ChemDraft desktop shell", () => {
       structureInteractive3dCommandId,
       structureCleanup3dCommandId,
       "tool.templateGrid"
-    ]);
-    expect(styleGroupIds).not.toContain("tool.toolOptions");
-    expect(mainGroups.flat().filter((command) => command.id === structureCleanupCommandId)).toHaveLength(1);
-    expect(mainGroups.flat().filter((command) => command.id === structureInteractive3dCommandId)).toHaveLength(1);
-    expect(mainGroups.flat().filter((command) => command.id === structureCleanup3dCommandId)).toHaveLength(1);
-    expect(mainGroups.flat().filter((command) => command.id === structureRotate3dCommandId)).toHaveLength(0);
+    ];
+
+    expect(mainCommandIds.slice(-chromeCluster.length)).toEqual(chromeCluster);
+    expect(mainCommandIds).not.toContain("tool.toolOptions");
+    expect(mainCommandIds.filter((id) => id === structureCleanupCommandId)).toHaveLength(1);
+    expect(mainCommandIds.filter((id) => id === structureInteractive3dCommandId)).toHaveLength(1);
+    expect(mainCommandIds.filter((id) => id === structureCleanup3dCommandId)).toHaveLength(1);
+    expect(mainCommandIds.filter((id) => id === structureRotate3dCommandId)).toHaveLength(0);
   });
 
   it("routes palette events as command ids only", () => {

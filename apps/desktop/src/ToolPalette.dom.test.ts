@@ -6,7 +6,7 @@ import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
-import { ToolPalette } from "./ToolPalette";
+import { ToolPalette, titleMonogram } from "./ToolPalette";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import {
   objectEffectDisableCommandId,
@@ -19,9 +19,17 @@ import {
   moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
-import { getToolsetCommandGroups } from "./toolsets";
+import { getToolsetCommandGroups, getToolsetItemGroups, type ToolbarPaletteGroupModel, type ToolbarPaletteItemModel } from "./toolsets";
+import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Phase 5: widgets are declared as manifest `control` items and read their state from context. This
+// isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
+// `show*Controls` props used to render only the widget section.
+function widgetOnlyItemGroups(toolsetId: string): ToolbarPaletteItemModel[][] {
+  return [getToolsetItemGroups(toolsetId).flat().filter((item) => item.primary.type === "control")];
+}
 
 function artInspectorModelFor(commandId: string) {
   const document = insertNativeArtGraphicObject(
@@ -83,6 +91,23 @@ function artToolsetGroupsWith(overrides: Record<string, Partial<CommandSpec>>) {
   ));
 }
 
+function artToolsetItemGroupsWith(overrides: Record<string, Partial<CommandSpec>>) {
+  return getToolsetItemGroups(
+    "core.art",
+    undefined,
+    new Map(Object.entries(overrides).map(([commandId, override]) => [
+      commandId,
+      {
+        id: commandId,
+        title: override.title ?? commandId,
+        icon: override.icon ?? "palette",
+        source: override.source ?? "core",
+        ...override
+      } as CommandSpec
+    ]))
+  );
+}
+
 function effectArtInspectorModel() {
   const document = insertNativeArtGraphicObject(
     createPhase4Document("Palette effect controls"),
@@ -129,28 +154,33 @@ describe("ToolPalette art color popover", () => {
   function renderPalette({
     commandId = "tool.art.rect",
     currentArtStyle = artInspectorModelFor(commandId),
-    onCancel = vi.fn()
+    onCancel = vi.fn(),
+    onRequestColorPopover
   }: {
     commandId?: string;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
+    onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
   } = {}) {
     const onInvoke = vi.fn();
     const onPreview = vi.fn();
     const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
-        currentObjectColor: "#111111",
-        currentArtStyleTarget: "fill",
-        currentArtStyle,
-        onArtStylePreview: onPreview,
-        onArtStyleCommit: onCommit,
-        onArtStyleCancel: onCancel,
-        onInvoke
+        onInvoke,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget: "fill",
+          currentArtStyle,
+          onArtStylePreview: onPreview,
+          onArtStyleCommit: onCommit,
+          onArtStyleCancel: onCancel,
+          onRequestColorPopover,
+          onInvoke
+        }
       }));
     });
     return { onCommit, onInvoke, onPreview };
@@ -248,6 +278,37 @@ describe("ToolPalette art color popover", () => {
     expect(container.querySelector(".art-color-popover")).toBeNull();
   });
 
+  it("redirects the art color picker to its own window when onRequestColorPopover is provided", () => {
+    const onRequestColorPopover = vi.fn();
+    renderPalette({ onRequestColorPopover });
+
+    const trigger = colorTrigger();
+    Object.defineProperty(trigger, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 12,
+        top: 34,
+        right: 60,
+        bottom: 58,
+        x: 12,
+        y: 34,
+        width: 48,
+        height: 24,
+        toJSON: () => undefined
+      })
+    });
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The swatch hands its screen anchor up so a floating popover window can open there…
+    expect(onRequestColorPopover).toHaveBeenCalledTimes(1);
+    expect(onRequestColorPopover).toHaveBeenCalledWith({ left: 12, top: 34, right: 60, bottom: 58 });
+    // …and the inline (clipped) popover must NOT render — the window hosts it instead.
+    expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
   it("uses shared color picker palettes for art colors", () => {
     const { onCommit, onPreview } = renderPalette();
     const popover = openPicker();
@@ -296,14 +357,16 @@ describe("ToolPalette art color popover", () => {
 
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
-        currentObjectColor: "#111111",
-        currentArtStyleTarget: "stroke",
-        currentArtStyle: artInspectorModelFor("tool.art.line"),
-        onInvoke
+        onInvoke,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget: "stroke",
+          currentArtStyle: artInspectorModelFor("tool.art.line"),
+          onInvoke
+        }
       }));
     });
 
@@ -317,14 +380,16 @@ describe("ToolPalette art color popover", () => {
 
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
-        currentObjectColor: "#111111",
-        currentArtStyleTarget: "fill",
-        currentArtStyle: artInspectorModelFor("tool.art.rect"),
-        onInvoke
+        onInvoke,
+        widgetState: {
+          currentObjectColor: "#111111",
+          currentArtStyleTarget: "fill",
+          currentArtStyle: artInspectorModelFor("tool.art.rect"),
+          onInvoke
+        }
       }));
     });
 
@@ -482,12 +547,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -518,12 +582,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -563,12 +626,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -608,12 +670,11 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: [],
+        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showMoleculeInspectorControls: true,
-        currentMoleculeInspector: model,
-        onInvoke
+        onInvoke,
+        widgetState: { currentMoleculeInspector: model, onInvoke }
       }));
     });
 
@@ -704,9 +765,9 @@ describe("ToolPalette arrange flyouts", () => {
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onInvoke
       }));
     });
@@ -715,8 +776,10 @@ describe("ToolPalette arrange flyouts", () => {
     if (!transformButton) {
       throw new Error("Expected transform flyout button.");
     }
-    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
-    expect(transformMenu?.hidden).toBe(true);
+	    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
+	    expect(transformMenu?.hidden).toBe(true);
+	    expect(transformMenu?.getAttribute("data-toolbar-command-grid-columns")).toBe("2");
+	    expect(transformMenu?.style.getPropertyValue("--toolbar-command-flyout-columns")).toBe("2");
 
     act(() => {
       transformButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -735,7 +798,93 @@ describe("ToolPalette arrange flyouts", () => {
     expect(transformMenu?.hidden).toBe(true);
   });
 
-  it("uses ungroup as the group flyout primary action when a group is selected", () => {
+  it("redirects arrange flyouts to their own window when onRequestFlyout is provided", () => {
+    const onRequestFlyout = vi.fn();
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        onRequestFlyout,
+        onInvoke
+      }));
+    });
+
+    const transformButton = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="transform"]');
+    if (!transformButton) {
+      throw new Error("Expected transform flyout button.");
+    }
+    expect(transformButton.getAttribute("aria-haspopup")).toBe("menu");
+    expect(transformButton.getAttribute("aria-controls")).toBeNull();
+    expect(transformButton.getAttribute("aria-expanded")).toBeNull();
+
+    act(() => {
+      transformButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+
+    // The inline (clipping) menu must NOT open — a floating window hosts the flyout instead.
+    const transformMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="transform"]');
+    expect(transformMenu?.hidden).toBe(true);
+    expect(transformButton.getAttribute("aria-controls")).toBeNull();
+    expect(transformButton.getAttribute("aria-expanded")).toBeNull();
+
+    // …and the palette hands up the flyout's id + a command snapshot to open in that window.
+    expect(onRequestFlyout).toHaveBeenCalledTimes(1);
+	    const request = onRequestFlyout.mock.calls[0][0] as {
+	      flyout: { flyoutId: string; columns?: number; commands: Array<{ id: string }> };
+	    };
+	    expect(request.flyout.flyoutId).toBe("transform");
+	    expect(request.flyout.columns).toBe(2);
+	    expect(request.flyout.commands.map((command) => command.id)).toContain("layout.flipVertical");
+  });
+
+  // Regression guard for the "C…" / "E…" truncation bug: distribute-mode commands are icon-less
+  // plain-text choices, so PalettePopoverWindow must render them via the flex-based
+  // toolbar-distribute-menu layout — NOT the icon+label grid the other flyouts use, which places a
+  // lone icon-less label in its narrow 20px icon column and ellipsizes it. The palette's job is
+  // just to tag the snapshot so the popover window picks the right layout.
+  it("tags the distribute-mode flyout snapshot so the popover renders full labels, not icons", () => {
+    const onRequestFlyout = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        onRequestFlyout,
+        onInvoke: vi.fn()
+      }));
+    });
+
+    const distributeButton = container.querySelector<HTMLButtonElement>(".distribute-mode-button");
+    if (!distributeButton) {
+      throw new Error("Expected distribute-mode button.");
+    }
+
+    act(() => {
+      distributeButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+
+    expect(onRequestFlyout).toHaveBeenCalledTimes(1);
+    const request = onRequestFlyout.mock.calls[0][0] as {
+      flyout: {
+        variant?: string;
+        commands: Array<{ id: string; title: string; assetName?: string; icon?: string }>;
+      };
+    };
+    expect(request.flyout.variant).toBe("distribute");
+    expect(request.flyout.commands.map((command) => command.title)).toEqual(["Centers", "Equal gaps"]);
+    // Confirms these really are icon-less — the exact condition that trips the grid-column bug if
+    // the popover window ever renders a "distribute" flyout through the icon+label layout again.
+    for (const command of request.flyout.commands) {
+      expect(command.assetName).toBeUndefined();
+      expect(command.icon).toBeUndefined();
+    }
+  });
+
+  it("keeps the declared group primary action while allowing enabled submenu commands", () => {
     const onInvoke = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
@@ -750,9 +899,19 @@ describe("ToolPalette arrange flyouts", () => {
             shortcutLabel: "⇧⌘G"
           }
         }),
+        itemGroups: artToolsetItemGroupsWith({
+          "layout.group": {
+            enabled: false,
+            disabledReason: "Select at least two objects"
+          },
+          "layout.ungroup": {
+            enabled: true,
+            shortcut: "Shift+Cmd+G",
+            shortcutLabel: "⇧⌘G"
+          }
+        }),
         activeTool: "tool.select",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onInvoke
       }));
     });
@@ -762,14 +921,25 @@ describe("ToolPalette arrange flyouts", () => {
       throw new Error("Expected group flyout button.");
     }
 
-    expect(groupButton.getAttribute("data-command-id")).toBe("layout.ungroup");
-    expect(groupButton.getAttribute("data-toolbar-asset")).toBe("Custom_Ungroup");
-    expect(groupButton.getAttribute("data-shortcut-label")).toBe("⇧⌘G");
-    expect(groupButton.getAttribute("data-disabled")).toBeNull();
-    expect(groupButton.getAttribute("aria-label")).toContain("Ungroup");
+    expect(groupButton.getAttribute("data-command-id")).toBe("layout.group");
+    expect(groupButton.getAttribute("data-toolbar-asset")).toBe("Custom_Group");
+    expect(groupButton.getAttribute("data-disabled")).toBe("true");
+    expect(groupButton.getAttribute("aria-label")).toContain("Select at least two objects");
 
     act(() => {
       groupButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
+
+    act(() => {
+      groupButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    const ungroup = container.querySelector<HTMLButtonElement>('[data-command-flyout-menu="group"] [data-command-id="layout.ungroup"]');
+    if (!ungroup) {
+      throw new Error("Expected ungroup submenu command.");
+    }
+    act(() => {
+      ungroup.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onInvoke).toHaveBeenCalledWith("layout.ungroup");
   });
@@ -779,9 +949,9 @@ describe("ToolPalette arrange flyouts", () => {
     act(() => {
       root.render(createElement(ToolPalette, {
         groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
         activeTool: "tool.art.circle",
         orientation: "horizontal",
-        showArtStyleControls: true,
         onInvoke
       }));
     });
@@ -813,5 +983,129 @@ describe("ToolPalette arrange flyouts", () => {
 
     expect(onInvoke).toHaveBeenCalledWith("tool.art.ellipse");
     expect(shapeMenu?.hidden).toBe(true);
+  });
+});
+
+describe("ToolPalette spacer items", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("renders a spacer as an inert slot (no button) carrying its item id", () => {
+    const spacer: ToolbarPaletteItemModel = {
+      id: "user.spacer.1",
+      kind: "spacer",
+      label: "Spacer",
+      primary: { type: "none" },
+      submenu: null,
+      tooltip: { title: "Spacer" },
+      layout: { colSpan: 1, rowSpan: 2 }
+    };
+    const button: ToolbarPaletteItemModel = {
+      id: "tool.bond",
+      kind: "button",
+      label: "Bond",
+      primary: { type: "command", command: { id: "tool.bond", title: "Bond", icon: "bond", source: "core", category: "tool" } as CommandSpec },
+      submenu: null,
+      tooltip: { title: "Bond" },
+      layout: { colSpan: 1, rowSpan: 1 }
+    };
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, { itemGroups: [[button, spacer]], orientation: "horizontal", onInvoke }));
+    });
+
+    const spacerSlot = container.querySelector<HTMLElement>('.toolbar-item-spacer[data-toolbar-item-id="user.spacer.1"]');
+    expect(spacerSlot).not.toBeNull();
+    expect(spacerSlot?.querySelector("button")).toBeNull();
+    // The command button still renders normally alongside it.
+    expect(container.querySelector('button[data-command-id="tool.bond"]')).not.toBeNull();
+  });
+});
+
+describe("titleMonogram", () => {
+  it("prefers a dimension token, else word initials, else lone-word prefix", () => {
+    expect(titleMonogram("Interactive 3D Workspace")).toBe("3D");
+    expect(titleMonogram("Molecule Inspector")).toBe("MI");
+    expect(titleMonogram("Toggle Art Toolbar")).toBe("Ar"); // stopwords Toggle/Toolbar skipped
+    expect(titleMonogram("Rings")).toBe("Ri");
+    expect(titleMonogram("2D Cleanup")).toBe("2D");
+  });
+});
+
+describe("ToolPalette customize mode", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const button = (id: string): ToolbarPaletteItemModel => ({
+    id,
+    kind: "button",
+    label: id,
+    primary: { type: "command", command: { id, title: id, icon: "palette", source: "core", category: "tool" } as CommandSpec },
+    submenu: null,
+    tooltip: { title: id },
+    layout: { colSpan: 1, rowSpan: 1 }
+  });
+
+  it("renders sortable slots (no invoking buttons, no drag grip) and marks the palette customizing", () => {
+    const itemGroups: ToolbarPaletteItemModel[][] = [[button("tool.a"), button("tool.b")]];
+    const groups: ToolbarPaletteGroupModel[] = [{ id: "core.main.selection", items: itemGroups[0] }];
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(
+        createElement(ToolbarCustomizeController, {
+          toolsetId: "core.main",
+          groups,
+          onEdit: vi.fn(),
+          children: (effectiveGroups: readonly ToolbarPaletteGroupModel[]) =>
+            createElement(ToolPalette, {
+              itemGroups: effectiveGroups.map((group) => group.items),
+              gridLayout: { orientation: "horizontal", rows: 2 },
+              orientation: "horizontal",
+              mode: "floating",
+              onInvoke,
+              customize: { groupIds: effectiveGroups.map((group) => group.id) }
+            })
+        })
+      );
+    });
+
+    expect(container.querySelector(".tool-palette.customizing")).not.toBeNull();
+    expect(container.querySelector(".palette-content-drag-grip")).toBeNull();
+    const slots = container.querySelectorAll(".customize-slot[data-toolbar-item-id]");
+    expect(slots.length).toBe(2);
+    // A customize slot is not an invoking button.
+    const slot = container.querySelector<HTMLElement>('.customize-slot[data-toolbar-item-id="tool.a"]');
+    expect(slot?.getAttribute("data-palette-control")).toBe("true");
+    act(() => {
+      slot?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      slot?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
   });
 });

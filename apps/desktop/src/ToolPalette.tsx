@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -11,8 +12,21 @@ import {
   type ReactNode
 } from "react";
 import iro from "@jaames/iro";
+import { useDraggable } from "@dnd-kit/core";
+import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
+import {
+  ToolbarWidgetStateContext,
+  TOOLBAR_WIDGET_IDS,
+  isGridWidgetItem,
+  isToolbarWidgetItem,
+  useToolbarWidgetState,
+  type ToolbarWidgetGridMode,
+  type ToolbarWidgetState
+} from "./toolbars/toolbarWidgets";
 import {
   normalizeHexColor,
   distributeModeCommandIds,
@@ -79,12 +93,13 @@ import {
   moleculeAtomLabelAlignmentCommandId,
   moleculeAtomLabelPlacementCommandId,
   moleculeAtomLabelShowTerminalCarbonsCommandId,
-  moleculeAtomLabelHideImplicitHydrogensCommandId,
-  moleculeAtomLabelNumberRanges,
-  moleculeInspectorTemplateExportCommandId,
-  moleculeInspectorTemplateImportCommandId,
-  textCustomColorCommandId,
-  textAlignmentCommands,
+	  moleculeAtomLabelHideImplicitHydrogensCommandId,
+	  moleculeAtomLabelNumberRanges,
+	  moleculeInspectorTemplateExportCommandId,
+	  moleculeInspectorTemplateImportCommandId,
+	  structureCleanupCommandId,
+	  textCustomColorCommandId,
+	  textAlignmentCommands,
   textColorCommands,
   textFontCommands,
   textFontFamilyCommandId,
@@ -95,14 +110,34 @@ import {
   textSizeCommands
 } from "./commands";
 import { Icon } from "./icons";
-import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
+import { toolbarAsset } from "./toolbarAssets";
+import { PALETTE_GRID_METRIC_DEFAULTS, type ToolbarPaletteItemModel } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import type { ToolsetArtPaintTarget, ToolsetArtStylePayload, ToolsetMoleculeInspectorPayload } from "./window-manager";
+import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
 export type ToolPaletteDistributeMode = "centers" | "spacing";
+
+/**
+ * Client-rect of a popover trigger (relative to the palette webview's viewport), handed up so
+ * the native palette can open the popover in its own floating window at the anchor. When a
+ * consumer supplies `onRequestColorPopover`, the color picker opens as a separate window instead
+ * of an inline (clipped) popover.
+ */
+export type ToolbarPopoverAnchor = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+/** A flyout dropdown asking to open in its own floating window: where to anchor + what to render. */
+export type ToolbarFlyoutRequest = {
+  anchor: ToolbarPopoverAnchor;
+  flyout: ToolsetFlyoutSnapshot;
+};
 
 const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
   command.id === "text.color.black"
@@ -116,61 +151,6 @@ const TOOLTIP_DELAY_MS = 500;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
 const DISTRIBUTE_MENU_HOLD_MS = 420;
 const COMMAND_FLYOUT_HOLD_MS = 420;
-
-const ART_ARRANGE_FLYOUTS = [
-  {
-    id: "align",
-    title: "Align",
-    commandIds: [
-      "layout.alignLeft",
-      "layout.alignCenter",
-      "layout.alignRight",
-      "layout.alignTop",
-      "layout.alignMiddle",
-      "layout.alignBottom"
-    ]
-  },
-  {
-    id: "layer",
-    title: "Layer",
-    commandIds: [
-      "layout.bringToFront",
-      "layout.bringForward",
-      "layout.sendBackward",
-      "layout.sendToBack"
-    ]
-  },
-  {
-    id: "transform",
-    title: "Flip",
-    commandIds: [
-      "layout.flipHorizontal",
-      "layout.flipVertical",
-      "layout.rotate90",
-      "layout.duplicate"
-    ]
-  },
-  {
-    id: "group",
-    title: "Group",
-    commandIds: [
-      "layout.group",
-      "layout.ungroup"
-    ]
-  }
-] as const;
-
-const ART_ARRANGE_STANDALONE_COMMAND_IDS = [
-  "layout.distributeHorizontal",
-  "layout.distributeVertical"
-] as const;
-
-const ART_ARRANGE_COMMAND_IDS: ReadonlySet<string> = new Set<string>(
-  [
-    ...ART_ARRANGE_FLYOUTS.flatMap((flyout) => flyout.commandIds),
-    ...ART_ARRANGE_STANDALONE_COMMAND_IDS
-  ]
-);
 
 const ART_SHAPE_COMMAND_IDS = [
   "tool.art.rect",
@@ -208,66 +188,45 @@ const ART_BOOLEAN_COMMAND_IDS = [
 ] as const;
 
 const ART_ARRANGE_COLUMN_ITEM_IDS = [
-  "align",
+  "layout.alignLeft",
   "layout.distributeHorizontal",
   "layout.distributeVertical",
-  "layer",
-  "transform",
-  "group"
+  "layout.bringToFront",
+  "layout.flipHorizontal",
+  "layout.group"
 ] as const;
 
 export function ToolPalette({
   groups,
+  itemGroups,
+  gridLayout,
   activeTool = "tool.select",
   mode = "docked",
   orientation = "vertical",
   title = "Drawing tools",
-  showMainStyleControls = false,
-  showTextStyleControls = false,
-  showArtStyleControls = false,
-  showRingInspectorControls = false,
-  showMoleculeInspectorControls = false,
   currentDistributeMode = "centers",
-  currentObjectColor,
-  currentArtStyle,
-  currentArtStyleTarget = "fill",
-  currentMoleculeInspector,
-  currentTextStyle,
-  currentTextScript,
-  onColorPickerOpenChange,
-  onArtStylePreview,
-  onArtStyleCommit,
-  onArtStyleCancel,
-  onMoleculeInspectorPreview,
-  onMoleculeInspectorCommit,
-  onMoleculeInspectorCancel,
-  onInvoke
+  onRequestFlyout,
+  onInvoke,
+  widgetState,
+  customize
 }: {
-  groups: CommandSpec[][];
+  groups?: CommandSpec[][];
+  itemGroups?: ToolbarPaletteItemModel[][];
+  gridLayout?: ToolsetGridLayout;
   activeTool?: string;
   mode?: ToolPaletteMode;
   orientation?: ToolPaletteOrientation;
   title?: string;
-  showMainStyleControls?: boolean;
-  showTextStyleControls?: boolean;
-  showArtStyleControls?: boolean;
-  showRingInspectorControls?: boolean;
-  showMoleculeInspectorControls?: boolean;
   currentDistributeMode?: ToolPaletteDistributeMode;
-  currentObjectColor?: string;
-  currentArtStyle?: ToolsetArtStylePayload;
-  currentArtStyleTarget?: ToolsetArtPaintTarget;
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
-  currentTextStyle?: NativeTextStyle;
-  currentTextScript?: TextSpan["script"];
-  onColorPickerOpenChange?: (open: boolean) => void;
-  onArtStylePreview?: (commandId: string) => void;
-  onArtStyleCommit?: (commandId: string) => void;
-  onArtStyleCancel?: () => void;
-  onMoleculeInspectorPreview?: (commandId: string) => void;
-  onMoleculeInspectorCommit?: (commandId: string) => void;
-  onMoleculeInspectorCancel?: () => void;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
+  /** Live state + callbacks for the widget sections (style controls, inspectors), provided via
+   *  context to the widgets declared as manifest `control` items. */
+  widgetState?: ToolbarWidgetState;
+  /** When set, render in-place customize mode: each grid item becomes a dnd-kit sortable slot (no
+   *  invoke/flyout/tooltip handlers), grouped by these group ids (aligned with the item groups,
+   *  BEFORE the widget filter). A DndContext must wrap this component (ToolbarCustomizeController). */
+  customize?: { groupIds: readonly (string | undefined)[] };
 }) {
   const {
     visibleTooltipId,
@@ -275,80 +234,101 @@ export function ToolPalette({
     clearTooltip
   } = usePaletteTooltipState();
 
-  const renderCommandButton = (
-    command: CommandSpec,
+  const effectiveItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
+  const renderPaletteItem = (
+    item: ToolbarPaletteItemModel,
     tooltipId: string,
     key: string | number
   ) => (
-    <CommandIconButton
+    <ToolbarPaletteItem
       key={key}
-      command={command}
-      active={command.enabled !== false && activeTool === command.id}
+      item={item}
+      activeTool={activeTool}
       tooltipId={tooltipId}
       tooltipVisible={visibleTooltipId === tooltipId}
       distributeMode={currentDistributeMode}
       onTooltipEnter={() => requestTooltip(tooltipId)}
       onTooltipLeave={() => clearTooltip(tooltipId)}
+      onRequestFlyout={onRequestFlyout}
       onInvoke={onInvoke}
     />
   );
 
-  const renderCommandFlyout = ({
-    commands,
-    flyoutId,
-    key,
-    primaryAssetName,
-    title,
-    tooltipId
-  }: {
-    commands: CommandSpec[];
-    flyoutId: string;
-    key: string | number;
-    primaryAssetName?: ToolbarAssetName;
-    title: string;
-    tooltipId: string;
-  }) => (
-    <CommandFlyoutButton
-      key={key}
-      commands={commands}
-      distributeMode={currentDistributeMode}
-      flyoutId={flyoutId}
-      title={title}
-      primaryAssetName={primaryAssetName}
-      activeCommandId={activeTool}
-      tooltipId={tooltipId}
-      tooltipVisible={visibleTooltipId === tooltipId}
-      onInvoke={onInvoke}
-      onTooltipEnter={() => requestTooltip(tooltipId)}
-      onTooltipLeave={() => clearTooltip(tooltipId)}
-    />
-  );
+  const gridStyle = toolPaletteGridStyle(gridLayout);
+  // Widget items (manifest `control` items) don't render as grid slots — they drive the widget
+  // sections below and can replace/hide the grid. Strip them from the grid content + sizing so a
+  // widget placeholder never shows as a disabled button. Pair each group's id (from `customize`,
+  // aligned to the UNFILTERED groups) BEFORE filtering so per-group reorder edits address the right
+  // group even when a widget-only group drops out.
+  const gridGroups = effectiveItemGroups
+    .map((group, index) => ({
+      id: customize?.groupIds[index],
+      // Widgets with declared grid spans stay IN the grid (grid citizens, freely placeable); only
+      // span-less widgets drop out to the appended-section path below.
+      items: group.filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item))
+    }))
+    .filter((group) => group.items.length > 0);
+  const gridItemGroups = gridGroups.map((group) => group.items);
+  // Pair each present widget with the id of the group it lives in (from `customize`, aligned to the
+  // UNFILTERED groups), so a customize drag-out can address it. Deduped, first-seen order.
+  const presentWidgets = effectiveItemGroups
+    .flatMap((group, index) =>
+      group
+        .filter((item) => isToolbarWidgetItem(item) && !isGridWidgetItem(item) && item.primary.type === "control")
+        .map((item) => ({
+          widgetId: item.primary.type === "control" ? item.primary.controlId : item.id,
+          groupId: customize?.groupIds[index]
+        }))
+    )
+    .filter(
+      (widget, index, all): widget is { widgetId: keyof typeof TOOLBAR_WIDGET_REGISTRY; groupId: string | undefined } =>
+        widget.widgetId in TOOLBAR_WIDGET_REGISTRY && all.findIndex((other) => other.widgetId === widget.widgetId) === index
+    )
+    .map((widget) => ({ ...widget, ...TOOLBAR_WIDGET_REGISTRY[widget.widgetId] }));
+  const hidesGrid = presentWidgets.some((widget) => widget.gridMode === "hide-grid");
+  const replacesGrid = presentWidgets.some((widget) => widget.gridMode === "replace-grid");
+  // Palette-level class hooks (main-style-palette height cap, tooltip direction) follow ALL present
+  // widgets — including grid citizens, which presentWidgets deliberately excludes from rendering.
+  const widgetClassNames = [
+    ...new Set(
+      effectiveItemGroups
+        .flatMap((group) => group.filter((item) => isToolbarWidgetItem(item) && item.primary.type === "control"))
+        .map((item) =>
+          item.primary.type === "control" ? TOOLBAR_WIDGET_REGISTRY[item.primary.controlId]?.className : undefined
+        )
+        .filter((className): className is string => Boolean(className))
+    )
+  ];
 
-  const toolGroupElements = groups.map((group, groupIndex) => (
-    <div className="tool-group" key={group.map((tool) => tool.id).join("-")}>
-      {group.map((tool, toolIndex) => {
-        const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
-        return renderCommandButton(tool, tooltipId, tool.id);
-      })}
-    </div>
-  ));
+  const toolGroupElements = gridGroups.map((group, groupIndex) => {
+    const content = group.items.map((tool, toolIndex) => {
+      const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
+      return customize
+        ? <CustomizeSortableSlot key={tool.id} item={tool} groupId={group.id} />
+        : renderPaletteItem(tool, tooltipId, tool.id);
+    });
+    return (
+      <div
+        className={["tool-group", gridStyle ? "tool-group-grid" : ""].filter(Boolean).join(" ")}
+        key={group.id ?? group.items.map((tool) => tool.id).join("-")}
+        style={gridStyle}
+      >
+        {customize ? (
+          <SortableContext items={group.items.map((tool) => tool.id)} strategy={rectSortingStrategy}>
+            {content}
+          </SortableContext>
+        ) : (
+          content
+        )}
+      </div>
+    );
+  });
 
-  const artCommandColumnElements = showArtStyleControls
-    ? artToolbarCommandColumns(groups).map((column, columnIndex) => {
+  const artCommandColumnElements = replacesGrid
+    ? artToolbarCommandColumns(gridItemGroups).map((column, columnIndex) => {
         const elements = column.items.map((item, itemIndex) => {
           const tooltipId = `art-column-${columnIndex}-${itemIndex}-${item.id}`;
-          if (item.kind === "command") {
-            return renderCommandButton(item.command, tooltipId, item.id);
-          }
-
-          return renderCommandFlyout({
-            commands: item.flyout.commands,
-            flyoutId: item.flyout.id,
-            key: item.id,
-            primaryAssetName: item.primaryAssetName,
-            title: item.flyout.title,
-            tooltipId
-          });
+          return renderPaletteItem(item, tooltipId, item.id);
         });
 
         return (
@@ -366,84 +346,272 @@ export function ToolPalette({
     : [];
 
   return (
-    <aside
-      className={[
-        "tool-palette",
-        mode,
-        orientation,
-        showMainStyleControls ? "main-style-palette" : "",
-        showTextStyleControls ? "text-style-palette" : "",
-        showArtStyleControls ? "art-style-palette" : "",
-        showRingInspectorControls ? "ring-inspector-palette" : "",
-        showMoleculeInspectorControls ? "molecule-inspector-palette" : ""
-      ].filter(Boolean).join(" ")}
-      aria-label={title}
-      data-tool-palette-orientation={orientation}
-      data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
-    >
-      {mode === "floating" ? (
-        <span
-          className="palette-content-drag-grip"
-          aria-hidden="true"
-          data-palette-content-drag-grip="true"
-          data-tauri-drag-region="true"
-        />
-      ) : null}
-      {showRingInspectorControls || showMoleculeInspectorControls ? null : showArtStyleControls ? (
-        <div className="art-toolbar-command-band" data-art-command-band="true">
-          <div className="art-toolbar-command-grid" data-art-command-grid="true">
-            {artCommandColumnElements}
+    <ToolbarWidgetStateContext.Provider value={widgetState ?? { onInvoke }}>
+      <aside
+        className={[
+          "tool-palette",
+          mode,
+          orientation,
+          customize ? "customizing" : "",
+          ...widgetClassNames
+        ].filter(Boolean).join(" ")}
+        aria-label={title}
+        data-tool-palette-orientation={orientation}
+        data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
+      >
+        {mode === "floating" && !customize ? (
+          // The OS-drag grip would hijack a customize drag, so it's removed in customize mode.
+          <span
+            className="palette-content-drag-grip"
+            aria-hidden="true"
+            data-palette-content-drag-grip="true"
+            data-tauri-drag-region="true"
+          />
+        ) : null}
+        {hidesGrid ? null : replacesGrid ? (
+          <div className="art-toolbar-command-band" data-art-command-band="true">
+            <div className="art-toolbar-command-grid" data-art-command-grid="true">
+              {artCommandColumnElements}
+            </div>
           </div>
-        </div>
-      ) : toolGroupElements}
-      {showMainStyleControls ? (
-        <MainToolbarStyleControls
-          currentTextStyle={currentTextStyle}
-          currentTextScript={currentTextScript}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showTextStyleControls ? (
-        <TextToolbarStyleControls
-          currentTextStyle={currentTextStyle}
-          currentTextScript={currentTextScript}
-          onColorPickerOpenChange={onColorPickerOpenChange}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showArtStyleControls ? (
-        <ArtToolbarStyleControls
-          currentObjectColor={currentObjectColor}
-          currentArtStyle={currentArtStyle}
-          currentArtStyleTarget={currentArtStyleTarget}
-          onColorPickerOpenChange={onColorPickerOpenChange}
-          onPreview={onArtStylePreview}
-          onCommit={onArtStyleCommit}
-          onCancel={onArtStyleCancel}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showRingInspectorControls ? (
-        <MoleculeInspectorControls
-          currentMoleculeInspector={currentMoleculeInspector}
-          ringOnly={true}
-          onPreview={onMoleculeInspectorPreview}
-          onCommit={onMoleculeInspectorCommit}
-          onCancel={onMoleculeInspectorCancel}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-      {showMoleculeInspectorControls ? (
-        <MoleculeInspectorControls
-          currentMoleculeInspector={currentMoleculeInspector}
-          onPreview={onMoleculeInspectorPreview}
-          onCommit={onMoleculeInspectorCommit}
-          onCancel={onMoleculeInspectorCancel}
-          onInvoke={onInvoke}
-        />
-      ) : null}
-    </aside>
+        ) : toolGroupElements}
+        {presentWidgets.map((widget) =>
+          customize ? (
+            <CustomizeWidgetSlot
+              key={widget.widgetId}
+              widgetId={widget.widgetId}
+              groupId={widget.groupId}
+              title={widget.title}
+            >
+              {widget.render()}
+            </CustomizeWidgetSlot>
+          ) : (
+            <Fragment key={widget.widgetId}>{widget.render()}</Fragment>
+          )
+        )}
+      </aside>
+    </ToolbarWidgetStateContext.Provider>
   );
+}
+
+/**
+ * A grid item rendered as a dnd-kit sortable in customize mode. Deliberately a SEPARATE component
+ * from ToolbarPaletteItem: none of that component's interactive handlers (invoke-on-pointerdown,
+ * setPointerCapture, 420ms hold-to-flyout timers, tooltips) are mounted here, which is what keeps a
+ * drag from firing the tool's command. Carries `data-palette-control` so PaletteWindow's shell-drag
+ * and popover-dismiss `closest()` checks skip it (else pressing it would move the whole window).
+ */
+function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemModel; groupId?: string }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.id,
+    data: { groupId, kind: item.kind }
+  });
+  const isSeparator = item.kind === "separator";
+  const isBlank = item.kind === "spacer" || isSeparator;
+  // A grid-citizen widget rides inside its sortable slot, inert (the slot owns the drag; the
+  // customize-mode CSS already turns the widget's own controls off).
+  const gridWidget =
+    isGridWidgetItem(item) && item.primary.type === "control" ? TOOLBAR_WIDGET_REGISTRY[item.primary.controlId] : undefined;
+  const style: CSSProperties = {
+    ...toolbarItemGridStyle(item.layout),
+    transform: CSS.Translate.toString(transform),
+    transition,
+    touchAction: "none",
+    opacity: isDragging ? 0.4 : undefined
+  };
+  return (
+    <span
+      ref={setNodeRef}
+      className={[
+        "toolbar-item-grid-slot",
+        "customize-slot",
+        isBlank ? "customize-slot-blank" : "",
+        isSeparator ? "customize-slot-separator" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      style={style}
+      data-toolbar-item-id={item.id}
+      data-palette-control="true"
+      data-toolbar-layout-col-span={item.layout.colSpan}
+      data-toolbar-layout-row-span={item.layout.rowSpan}
+      title={item.label}
+      {...attributes}
+      {...listeners}
+    >
+      {gridWidget ? (
+        <span className="customize-widget-grid-content">{gridWidget.render()}</span>
+      ) : isSeparator ? (
+        // Show the actual divider line, so a Divider and a Space are tellable apart while editing.
+        <span className="customize-slot-divider-line" aria-hidden="true" />
+      ) : isBlank ? (
+        <span className="customize-slot-placeholder" aria-hidden="true" />
+      ) : (
+        <span className="icon-button customize-slot-icon" aria-label={item.label}>
+          <ToolbarItemIcon item={item} command={item.primary.type === "command" ? item.primary.command : undefined} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * A section-widget (style controls, inspector) wrapped for customize mode: a drag handle overlays the
+ * (inert, dimmed) widget so it can be grabbed and dragged out of the palette to remove it. Uses
+ * `useDraggable` (not sortable) — the widget renders as an appended panel, not a grid slot, so it
+ * doesn't reorder among the icons; dropping it back inside the palette is a no-op (see the controller).
+ * Carries `data-palette-control` so the shell-drag / popover-dismiss `closest()` checks skip it.
+ */
+function CustomizeWidgetSlot({
+  widgetId,
+  groupId,
+  title,
+  children
+}: {
+  widgetId: string;
+  groupId?: string;
+  title: string;
+  children: ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: widgetId,
+    data: { widget: true, widgetId, groupId, kind: "control" }
+  });
+  const style: CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    touchAction: "none",
+    opacity: isDragging ? 0.4 : undefined
+  };
+  return (
+    <div
+      ref={setNodeRef}
+      className="customize-widget-slot"
+      style={style}
+      data-toolbar-item-id={widgetId}
+      data-palette-control="true"
+    >
+      <button
+        type="button"
+        className="customize-widget-handle"
+        data-palette-control="true"
+        title={`${title} — drag out to remove`}
+        aria-label={`${title} — drag out to remove`}
+        {...attributes}
+        {...listeners}
+      >
+        <span className="customize-widget-handle-grip" aria-hidden="true">⠿</span>
+        <span className="customize-widget-handle-label">{title}</span>
+      </button>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Maps a manifest widget id (a `control` item's `controlId`) to the component that renders it and how
+ * it sits relative to the tool grid. Components read their live state from {@link ToolbarWidgetStateContext};
+ * ring vs. molecule share MoleculeInspectorControls (ring passes `ringOnly`).
+ */
+const TOOLBAR_WIDGET_REGISTRY: Record<
+  string,
+  { gridMode: ToolbarWidgetGridMode; className: string; title: string; render: () => ReactNode }
+> = {
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: {
+    gridMode: "append",
+    className: "main-style-palette",
+    title: "Style Controls",
+    render: () => <MainToolbarStyleControls />
+  },
+  [TOOLBAR_WIDGET_IDS.textStyleControls]: {
+    gridMode: "append",
+    className: "text-style-palette",
+    title: "Text Style",
+    render: () => <TextToolbarStyleControls />
+  },
+  [TOOLBAR_WIDGET_IDS.artStyleControls]: {
+    gridMode: "replace-grid",
+    className: "art-style-palette",
+    title: "Art Style",
+    render: () => <ArtToolbarStyleControls />
+  },
+  [TOOLBAR_WIDGET_IDS.ringInspector]: {
+    gridMode: "hide-grid",
+    className: "ring-inspector-palette",
+    title: "Ring Inspector",
+    render: () => <MoleculeInspectorControls ringOnly />
+  },
+  [TOOLBAR_WIDGET_IDS.moleculeInspector]: {
+    gridMode: "hide-grid",
+    className: "molecule-inspector-palette",
+    title: "Molecule Inspector",
+    render: () => <MoleculeInspectorControls />
+  }
+};
+
+/** Public widget catalog (id + title) for the customize gallery's "Widgets" tiles. */
+export const TOOLBAR_WIDGET_TITLES: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(TOOLBAR_WIDGET_REGISTRY).map(([id, entry]) => [id, entry.title])
+);
+
+/** Widgets the customize gallery can add to a grid toolbar: only `append`-mode sections (they render
+ *  below the grid). `hide-grid` / `replace-grid` widgets (inspectors, art style) ARE that toolbar's
+ *  whole content — adding one to the Main grid would erase it — so they're not offered here. */
+export const APPENDABLE_TOOLBAR_WIDGETS: ReadonlyArray<{ id: string; title: string }> = Object.entries(
+  TOOLBAR_WIDGET_REGISTRY
+)
+  .filter(([, entry]) => entry.gridMode === "append")
+  .map(([id, entry]) => ({ id, title: entry.title }));
+
+function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPaletteItemModel[][] {
+  return groups.map((group) => group.map((command) => ({
+    id: command.id,
+    kind: "button",
+    label: command.title ?? command.id,
+    icon: command.icon,
+    assetName: command.assetName,
+    primary: { type: "command", command },
+    submenu: null,
+    tooltip: {
+      title: command.title ?? command.id,
+      description: command.description ?? null,
+      shortcut: command.shortcut ?? command.defaultShortcut ?? null,
+      shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut ?? null
+    },
+    layout: { colSpan: 1, rowSpan: 1 },
+    disabledReason: command.disabledReason,
+    category: command.category
+  })));
+}
+
+function toolPaletteGridStyle(gridLayout: ToolsetGridLayout | undefined): CSSProperties | undefined {
+  if (!gridLayout) {
+    return undefined;
+  }
+
+  const cellWidth = gridLayout.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
+  const cellHeight = gridLayout.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
+  const gap = gridLayout.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
+  const padding = gridLayout.padding ?? PALETTE_GRID_METRIC_DEFAULTS.padding;
+
+  return {
+    "--toolbar-cell-width": `${cellWidth}px`,
+    "--toolbar-cell-height": `${cellHeight}px`,
+    "--toolbar-grid-gap": `${gap}px`,
+    "--toolbar-grid-padding": `${padding}px`,
+    gridTemplateColumns: gridLayout.columns ? `repeat(${gridLayout.columns}, var(--toolbar-cell-width))` : undefined,
+    gridAutoRows: "var(--toolbar-cell-height)"
+  } as CSSProperties;
+}
+
+function toolbarItemGridStyle(layout: ToolbarPaletteItemModel["layout"]): CSSProperties {
+  return {
+    gridColumn: layout.column !== undefined
+      ? `${layout.column + 1} / span ${layout.colSpan}`
+      : `span ${layout.colSpan}`,
+    gridRow: layout.row !== undefined
+      ? `${layout.row + 1} / span ${layout.rowSpan}`
+      : `span ${layout.rowSpan}`
+  };
 }
 
 function usePaletteTooltipState() {
@@ -543,6 +711,83 @@ function usePaletteTooltipState() {
   };
 }
 
+/** Tooltip visibility announcement from a shell to its hosting window. In the native palette
+ *  windows the in-DOM tooltip span is hidden (a content-fit window clips anything outside it), and
+ *  PaletteWindow relays these events into the shared floating tooltip window instead. A DOM event
+ *  keeps ToolPalette runtime-agnostic — no desktop imports in the shared component. */
+export const PALETTE_TOOLTIP_DOM_EVENT = "chemdraft:palette-tooltip";
+
+export interface PaletteTooltipDomDetail {
+  visible: boolean;
+  title?: string;
+  description?: string;
+  shortcut?: string;
+  anchor?: { left: number; top: number; right: number; bottom: number };
+}
+
+/** Pull the structured tooltip parts back out of the (hidden) in-DOM span. The span holds the
+ *  title as plain text/an unclassed span plus optional description/shortcut sub-spans AND a
+ *  visually-hidden flat copy for screen readers — flattening the whole thing with textContent
+ *  would concatenate all of them into garbage. */
+function extractTooltipParts(tooltip: Element): { title: string; description?: string; shortcut?: string } {
+  const description = tooltip.querySelector(".tool-tooltip-description")?.textContent ?? undefined;
+  const shortcut = tooltip.querySelector(".tool-tooltip-shortcut")?.textContent ?? undefined;
+  let title = "";
+  for (const node of Array.from(tooltip.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      title += node.textContent ?? "";
+    } else if (node instanceof Element && node.tagName === "SPAN" && node.classList.length === 0) {
+      title += node.textContent ?? "";
+    }
+  }
+  return { title: title.trim(), description: description || undefined, shortcut: shortcut || undefined };
+}
+
+/**
+ * Announce this shell's tooltip to the hosting native palette window. The default in-DOM span is
+ * unusable there: the content-fit palette window clips anything positioned outside it (a webview
+ * cannot paint past its window), so the span is display:none in palette windows (App.css) and the
+ * visible tooltip is the shared floating tooltip window, which can overflow the palette freely —
+ * the same reason popovers/flyouts live in their own windows. Browser and in-window palettes keep
+ * the pure-CSS span; this hook is a no-op for them.
+ */
+function useNativeFloatingTooltip(shellRef: { current: HTMLElement | null }, visible: boolean) {
+  useEffect(() => {
+    if (!document.body.classList.contains("palette-window-body")) {
+      return;
+    }
+    const shell = shellRef.current;
+    if (!visible || !shell) {
+      return;
+    }
+    const tooltip = shell.querySelector(".tool-tooltip");
+    if (!tooltip) {
+      return;
+    }
+    const { title, description, shortcut } = extractTooltipParts(tooltip);
+    if (!title && !description) {
+      return;
+    }
+    const rect = shell.getBoundingClientRect();
+    window.dispatchEvent(
+      new CustomEvent<PaletteTooltipDomDetail>(PALETTE_TOOLTIP_DOM_EVENT, {
+        detail: {
+          visible: true,
+          title,
+          description,
+          shortcut,
+          anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+        }
+      })
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent<PaletteTooltipDomDetail>(PALETTE_TOOLTIP_DOM_EVENT, { detail: { visible: false } })
+      );
+    };
+  }, [shellRef, visible]);
+}
+
 // Text objects can use any installed font. The four legacy presets stay pinned at the
 // top for quick access; the full system catalog (shared with the atom-label picker via
 // loadSystemFonts) follows. A non-preset family round-trips through a dynamic
@@ -615,21 +860,19 @@ function TextFontSelect({
   );
 }
 
-function MainToolbarStyleControls({
-  currentTextStyle,
-  currentTextScript = "normal",
-  onInvoke
-}: {
-  currentTextStyle?: NativeTextStyle;
-  currentTextScript?: TextSpan["script"];
-  onInvoke: (commandId: string) => void;
-}) {
+function MainToolbarStyleControls() {
+  const { currentTextStyle, currentTextScript = "normal", onInvoke } = useToolbarWidgetState();
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
   const textAlign = currentTextStyle?.textAlign ?? "left";
   const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
   const boldActive = (currentTextStyle?.fontWeight ?? 400) >= 600;
   const italicActive = currentTextStyle?.fontStyle === "italic";
   const underlineActive = currentTextStyle?.textDecoration === "underline";
+  // Superscript rides the top row (above subscript on the bottom row — they stack in the last
+  // column); subscript stays with the B/I/U toggles on the bottom row. Both rows are the same total
+  // cell count, so their right edges align and the x²/x₂ pair lines up vertically.
+  const superscriptCommand = textScriptCommands.find((command) => command.script === "superscript");
+  const subscriptCommand = textScriptCommands.find((command) => command.script === "subscript");
 
   return (
     <div className="main-toolbar-style-controls" data-toolbar-style-controls="main">
@@ -654,6 +897,18 @@ function MainToolbarStyleControls({
             />
           ))}
         </div>
+        {superscriptCommand ? (
+          <ToolbarTextButton
+            commandId={superscriptCommand.id}
+            label={superscriptCommand.title}
+            active={currentTextScript === "superscript"}
+            onInvoke={onInvoke}
+          >
+            <span className="toolbar-script-glyph" data-text-script="superscript">
+              x<span>2</span>
+            </span>
+          </ToolbarTextButton>
+        ) : null}
       </div>
       <div className="toolbar-style-row toolbar-style-row-secondary">
         <TextFontSelect
@@ -703,36 +958,26 @@ function MainToolbarStyleControls({
           >
             U
           </ToolbarTextButton>
-          {textScriptCommands.filter((command) => command.script !== "normal").map((command) => (
+          {subscriptCommand ? (
             <ToolbarTextButton
-              commandId={command.id}
-              label={command.title}
-              active={currentTextScript === command.script}
-              key={command.id}
+              commandId={subscriptCommand.id}
+              label={subscriptCommand.title}
+              active={currentTextScript === "subscript"}
               onInvoke={onInvoke}
             >
-              <span className="toolbar-script-glyph" data-text-script={command.script}>
-                x<span>{command.script === "subscript" ? "2" : "2"}</span>
+              <span className="toolbar-script-glyph" data-text-script="subscript">
+                x<span>2</span>
               </span>
             </ToolbarTextButton>
-          ))}
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
 
-function TextToolbarStyleControls({
-  currentTextStyle,
-  currentTextScript = "normal",
-  onColorPickerOpenChange,
-  onInvoke
-}: {
-  currentTextStyle?: NativeTextStyle;
-  currentTextScript?: TextSpan["script"];
-  onColorPickerOpenChange?: (open: boolean) => void;
-  onInvoke: (commandId: string) => void;
-}) {
+function TextToolbarStyleControls() {
+  const { currentTextStyle, currentTextScript = "normal", onColorPickerOpenChange, onInvoke } = useToolbarWidgetState();
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
   const textAlign = currentTextStyle?.textAlign ?? "left";
   const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
@@ -871,21 +1116,14 @@ function objectStrokeDashCommandId(strokeDasharray: string | undefined): string 
 
 const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;
 
-function MoleculeInspectorControls({
-  currentMoleculeInspector,
-  ringOnly = false,
-  onPreview,
-  onCommit,
-  onCancel,
-  onInvoke
-}: {
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
-  ringOnly?: boolean;
-  onPreview?: (commandId: string) => void;
-  onCommit?: (commandId: string) => void;
-  onCancel?: () => void;
-  onInvoke: (commandId: string) => void;
-}) {
+function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean }) {
+  const {
+    currentMoleculeInspector,
+    onMoleculeInspectorPreview: onPreview,
+    onMoleculeInspectorCommit: onCommit,
+    onMoleculeInspectorCancel: onCancel,
+    onInvoke
+  } = useToolbarWidgetState();
   const ringsModel = currentMoleculeInspector?.rings;
   const selectedRing = ringsModel?.selectedRing;
   const selectedRingKeys = ringsModel?.selectedRings.map((ring) => ring.ringKey) ?? [];
@@ -1779,25 +2017,18 @@ function fontFaceLabel(weight: number, style: "normal" | "italic"): string {
   return style === "italic" ? `${weightLabel} Italic` : weightLabel;
 }
 
-function ArtToolbarStyleControls({
-  currentObjectColor,
-  currentArtStyle,
-  currentArtStyleTarget,
-  onColorPickerOpenChange,
-  onPreview,
-  onCommit,
-  onCancel,
-  onInvoke
-}: {
-  currentObjectColor?: string;
-  currentArtStyle?: ToolsetArtStylePayload;
-  currentArtStyleTarget: ToolsetArtPaintTarget;
-  onColorPickerOpenChange?: (open: boolean) => void;
-  onPreview?: (commandId: string) => void;
-  onCommit?: (commandId: string) => void;
-  onCancel?: () => void;
-  onInvoke: (commandId: string) => void;
-}) {
+function ArtToolbarStyleControls() {
+  const {
+    currentObjectColor,
+    currentArtStyle,
+    currentArtStyleTarget = "fill",
+    onColorPickerOpenChange,
+    onRequestColorPopover,
+    onArtStylePreview: onPreview,
+    onArtStyleCommit: onCommit,
+    onArtStyleCancel: onCancel,
+    onInvoke
+  } = useToolbarWidgetState();
   const selectedCount = currentArtStyle?.selectedCount ?? 0;
   const selected = selectedCount > 0;
   const fillSupportedCount = currentArtStyle?.fillSupportedCount ?? 0;
@@ -2382,7 +2613,20 @@ function ArtToolbarStyleControls({
               effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
             )} color`}
             style={{ "--picker-color": currentColor } as CSSProperties}
-            onClick={() => {
+            onClick={(event) => {
+              // Native palettes hand the swatch's client rect up so the picker opens in its own
+              // floating window (overflows the little palette, floats over the document). Web /
+              // docked palettes fall through to the inline popover.
+              if (onRequestColorPopover) {
+                const rect = event.currentTarget.getBoundingClientRect();
+                onRequestColorPopover({
+                  left: rect.left,
+                  top: rect.top,
+                  right: rect.right,
+                  bottom: rect.bottom
+                });
+                return;
+              }
               setEffectColorOpen(false);
               setGradientStopColorOpen(false);
               setColorOpen((open) => !open);
@@ -2391,7 +2635,7 @@ function ArtToolbarStyleControls({
             <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
             <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
           </button>
-          {colorOpen ? (
+          {colorOpen && !onRequestColorPopover ? (
             <div className="art-color-popover" role="dialog" aria-label="Art color picker">
               <ColorPickerPopoverBody
                 activeColor={currentColor}
@@ -3058,7 +3302,7 @@ function ColorPickerControl({
   );
 }
 
-function ColorPickerPopoverBody({
+export function ColorPickerPopoverBody({
   activeColor,
   value,
   onCommitColor,
@@ -3626,6 +3870,566 @@ function closestParagraphSpacingCommandId(paragraphSpacingPx: number | undefined
   ), textParagraphSpacingCommands[0]).id;
 }
 
+function ToolbarPaletteItem({
+  item,
+  activeTool,
+  tooltipId,
+  tooltipVisible,
+  distributeMode,
+  onTooltipEnter,
+  onTooltipLeave,
+  onRequestFlyout,
+  onInvoke
+}: {
+  item: ToolbarPaletteItemModel;
+  activeTool?: string;
+  tooltipId?: string;
+  tooltipVisible?: boolean;
+  distributeMode: ToolPaletteDistributeMode;
+  onTooltipEnter?: () => void;
+  onTooltipLeave?: () => void;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
+  onInvoke: (commandId: string) => void;
+}) {
+  const primaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const shellRef = useRef<HTMLSpanElement | null>(null);
+  useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdOpenedRef = useRef(false);
+  const pointerInvokedRef = useRef(false);
+  const submenu = item.submenu;
+  const submenuCommands = submenu?.items ?? [];
+  const hasSubmenu = submenu !== null && submenuCommands.length > 0;
+  const hasEnabledSubmenuCommand = submenuCommands.some((command) => command.enabled !== false);
+  const primaryDisabled = primaryCommand ? primaryCommand.enabled === false : true;
+  const buttonDisabled = primaryDisabled && (!hasSubmenu || !hasEnabledSubmenuCommand);
+  const usesNativeFlyout = hasSubmenu && Boolean(onRequestFlyout);
+  const activeState = primaryCommand?.enabled !== false && (
+    primaryCommand?.id === activeTool
+    || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
+  );
+  const tooltipText = toolbarTooltipText(item, primaryCommand);
+  // Injective sanitization: encode each disallowed char by code point so ids differing only in
+  // punctuation (e.g. "plugin.foo:bar" vs "plugin.foo.bar") don't collapse to the same DOM id.
+  const menuId = hasSubmenu
+    ? `toolbar-submenu-${item.id.replace(/[^A-Za-z0-9_-]/g, (char) => `_${char.charCodeAt(0)}_`)}`
+    : undefined;
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current !== undefined) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = undefined;
+    }
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+  }, []);
+
+  const openMenu = useCallback(() => {
+    if (!hasSubmenu) {
+      return;
+    }
+
+    holdOpenedRef.current = true;
+    onTooltipLeave?.();
+    if (onRequestFlyout) {
+      const rect = shellRef.current?.getBoundingClientRect();
+      if (!rect || !submenu) {
+        return;
+      }
+      onRequestFlyout({
+        anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+        flyout: {
+          flyoutId: submenu.id,
+          id: submenu.id,
+          type: submenu.type,
+          title: submenu.title ?? item.label,
+          columns: submenu.columns,
+          commands: submenu.items.map((command) => ({
+            id: command.id,
+            title: command.title,
+            assetName: command.assetName,
+            icon: command.icon,
+            enabled: command.enabled !== false,
+            active: command.id === activeTool,
+            disabledReason: command.disabledReason,
+            shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut
+          }))
+        }
+      });
+      return;
+    }
+    setMenuOpen(true);
+  }, [activeTool, hasSubmenu, item.label, onRequestFlyout, onTooltipLeave, submenu]);
+
+  const invokePrimary = useCallback(() => {
+    if (!primaryCommand || primaryCommand.enabled === false) {
+      return;
+    }
+    onInvoke(primaryCommand.id);
+    onTooltipLeave?.();
+  }, [onInvoke, onTooltipLeave, primaryCommand]);
+
+  const chooseCommand = useCallback((command: CommandSpec) => {
+    if (command.enabled === false) {
+      return;
+    }
+    onInvoke(command.id);
+    setMenuOpen(false);
+    onTooltipLeave?.();
+  }, [onInvoke, onTooltipLeave]);
+
+  useEffect(() => () => {
+    clearHoldTimer();
+  }, [clearHoldTimer]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (shellRef.current?.contains(target)) {
+        return;
+      }
+      if (target instanceof Element && target.closest("[data-palette-control]")) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [menuOpen]);
+
+  if (primaryCommand && item.submenu === null && isDistributeCommandId(primaryCommand.id)) {
+    return (
+      <span
+        className="toolbar-item-grid-slot"
+        style={toolbarItemGridStyle(item.layout)}
+        data-toolbar-item-id={item.id}
+        data-toolbar-layout-col-span={item.layout.colSpan}
+        data-toolbar-layout-row-span={item.layout.rowSpan}
+      >
+        <DistributeCommandIconButton
+          active={primaryCommand.enabled !== false && activeTool === primaryCommand.id}
+          command={primaryCommand}
+          disabled={primaryCommand.enabled === false}
+          distributeMode={distributeMode}
+          tooltipId={tooltipId}
+          tooltipVisible={tooltipVisible}
+          onInvoke={onInvoke}
+          onRequestFlyout={onRequestFlyout}
+          onTooltipEnter={onTooltipEnter}
+          onTooltipLeave={onTooltipLeave}
+        />
+      </span>
+    );
+  }
+
+  if (item.kind === "separator") {
+    return (
+      <span
+        className="toolbar-item-grid-slot toolbar-item-separator"
+        role="separator"
+        style={toolbarItemGridStyle(item.layout)}
+        data-toolbar-item-id={item.id}
+        data-toolbar-layout-col-span={item.layout.colSpan}
+        data-toolbar-layout-row-span={item.layout.rowSpan}
+      />
+    );
+  }
+
+  // A spacer is deliberate empty space (Safari's "Space") — it occupies its grid cells but paints
+  // nothing and carries no semantics. Customize mode gives it a visible dashed outline via CSS.
+  if (item.kind === "spacer") {
+    return (
+      <span
+        className="toolbar-item-grid-slot toolbar-item-spacer"
+        aria-hidden="true"
+        style={toolbarItemGridStyle(item.layout)}
+        data-toolbar-item-id={item.id}
+        data-toolbar-layout-col-span={item.layout.colSpan}
+        data-toolbar-layout-row-span={item.layout.rowSpan}
+      />
+    );
+  }
+
+  // A grid-citizen widget renders its live component inside its spanning slot (it occupies
+  // colSpan×rowSpan cells like any other item, so it moves freely in customize mode).
+  if (isGridWidgetItem(item) && item.primary.type === "control") {
+    const gridWidget = TOOLBAR_WIDGET_REGISTRY[item.primary.controlId];
+    if (gridWidget) {
+      return (
+        <span
+          className="toolbar-item-grid-slot toolbar-widget-grid-slot"
+          style={toolbarItemGridStyle(item.layout)}
+          data-toolbar-item-id={item.id}
+          data-toolbar-layout-col-span={item.layout.colSpan}
+          data-toolbar-layout-row-span={item.layout.rowSpan}
+        >
+          {gridWidget.render()}
+        </span>
+      );
+    }
+  }
+
+  if (item.primary.type === "control") {
+    return (
+      <span
+        className="toolbar-item-grid-slot"
+        style={toolbarItemGridStyle(item.layout)}
+        data-toolbar-item-id={item.id}
+        data-toolbar-layout-col-span={item.layout.colSpan}
+        data-toolbar-layout-row-span={item.layout.rowSpan}
+      >
+        <button type="button" className="icon-button" disabled aria-label={`${item.label} control unavailable`}>
+          <ToolbarItemIcon item={item} />
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={["toolbar-item-grid-slot", "icon-button-shell", hasSubmenu ? "command-flyout-shell" : ""].filter(Boolean).join(" ")}
+      data-command-flyout={hasSubmenu ? submenu?.id : undefined}
+      data-command-tooltip-owner={primaryCommand?.id ?? item.id}
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
+      data-toolbar-has-submenu={hasSubmenu ? "true" : undefined}
+      data-toolbar-item-id={item.id}
+      data-toolbar-layout-col-span={item.layout.colSpan}
+      data-toolbar-layout-row-span={item.layout.rowSpan}
+      ref={shellRef}
+      style={toolbarItemGridStyle(item.layout)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setMenuOpen(false);
+          onTooltipLeave?.();
+        }
+      }}
+      onClickCapture={() => onTooltipLeave?.()}
+      onPointerCancel={() => {
+        clearHoldTimer();
+        onTooltipLeave?.();
+      }}
+      onPointerDownCapture={() => onTooltipLeave?.()}
+      onPointerEnter={() => onTooltipEnter?.()}
+      onPointerLeave={() => {
+        clearHoldTimer();
+        onTooltipLeave?.();
+      }}
+    >
+      <button
+        type="button"
+        className={[
+          "icon-button",
+          hasSubmenu ? "command-flyout-button" : "",
+          activeState ? "active" : "",
+          primaryCommand?.id === structureCleanupCommandId ? "structure-cleanup-button" : ""
+        ].filter(Boolean).join(" ")}
+        aria-controls={hasSubmenu && !usesNativeFlyout && menuOpen ? menuId : undefined}
+        aria-describedby={tooltipVisible ? tooltipId : undefined}
+        aria-disabled={primaryDisabled && hasEnabledSubmenuCommand ? "true" : undefined}
+        aria-expanded={hasSubmenu && !usesNativeFlyout ? menuOpen : undefined}
+        aria-haspopup={hasSubmenu ? "menu" : undefined}
+        aria-label={tooltipText}
+        aria-pressed={activeState || undefined}
+        disabled={buttonDisabled}
+        data-active={activeState ? "true" : undefined}
+        data-command-flyout-button={hasSubmenu ? submenu?.id : undefined}
+        data-command-flyout-ids={hasSubmenu ? submenuCommands.map((command) => command.id).join(" ") : undefined}
+        data-command-id={primaryCommand?.id}
+        data-disabled={primaryDisabled ? "true" : undefined}
+        data-distribute-mode={primaryCommand && isDistributeCommandId(primaryCommand.id) ? distributeMode : undefined}
+        data-shortcut-label={item.tooltip.shortcutLabel ?? item.tooltip.shortcut ?? "No shortcut"}
+        data-toolbar-asset={item.assetName ?? primaryCommand?.assetName}
+        data-tooltip={tooltipText}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0) {
+            return;
+          }
+          holdOpenedRef.current = false;
+          pointerInvokedRef.current = false;
+          if (hasSubmenu) {
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            clearHoldTimer();
+            holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
+          }
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+          if (holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          if (!primaryDisabled) {
+            pointerInvokedRef.current = true;
+          }
+          invokePrimary();
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          clearHoldTimer();
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (pointerInvokedRef.current) {
+            pointerInvokedRef.current = false;
+            return;
+          }
+          if (holdOpenedRef.current || menuOpen) {
+            return;
+          }
+          invokePrimary();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && menuOpen) {
+            event.preventDefault();
+            closeMenu();
+            return;
+          }
+          if (hasSubmenu && (event.key === "ArrowDown" || (event.altKey && event.key === "ArrowDown"))) {
+            event.preventDefault();
+            openMenu();
+            return;
+          }
+          if ((event.key === "Enter" || event.key === " ") && !primaryDisabled) {
+            event.preventDefault();
+            // Claim the invoke so the synthesized click (Space activates on keyup; preventDefault on
+            // keydown doesn't reliably cancel it in WKWebView) is suppressed by onClick's guard
+            // instead of firing the command a second time.
+            pointerInvokedRef.current = true;
+            invokePrimary();
+          }
+        }}
+      >
+        <ToolbarItemIcon item={item} command={primaryCommand} />
+        {hasSubmenu ? <span className="command-flyout-indicator" aria-hidden="true" /> : null}
+        <ToolbarItemTooltip
+          disabledReason={primaryDisabled ? primaryCommand?.disabledReason ?? "unavailable" : undefined}
+          id={tooltipId}
+          item={item}
+          text={tooltipText}
+        />
+      </button>
+      {hasSubmenu ? (
+        <div
+          className="toolbar-command-flyout-menu"
+          role="menu"
+          aria-label={submenu?.title ?? item.label}
+          data-command-flyout-menu={submenu?.id}
+          data-toolbar-command-grid-columns={submenu?.columns && submenu.columns > 1 ? submenu.columns : undefined}
+          data-toolbar-submenu="true"
+          data-toolbar-submenu-owner-id={item.id}
+          hidden={!menuOpen}
+          id={menuId}
+          style={toolbarCommandFlyoutGridStyle(submenu?.columns)}
+        >
+          {submenuCommands.map((command) => {
+            const disabled = command.enabled === false;
+            const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
+            const itemText = disabled
+              ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
+              : command.title;
+            return (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={disabled}
+                aria-disabled={disabled ? "true" : undefined}
+                data-command-id={command.id}
+                data-disabled={disabled ? "true" : undefined}
+                data-shortcut-label={itemShortcut ?? "No shortcut"}
+                data-toolbar-asset={command.assetName}
+                data-tooltip={itemText}
+                key={command.id}
+                title={itemText}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onMouseDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  chooseCommand(command);
+                }}
+              >
+                <ToolbarCommandIcon command={command} />
+                <span>{command.title}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+export function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
+  if (columns === undefined || columns <= 1) {
+    return undefined;
+  }
+  return {
+    "--toolbar-command-flyout-columns": String(columns)
+  } as CSSProperties;
+}
+
+function ToolbarItemTooltip({
+  disabledReason,
+  id,
+  item,
+  text
+}: {
+  disabledReason?: string;
+  id?: string;
+  item: ToolbarPaletteItemModel;
+  text: string;
+}) {
+  const description = disabledReason ?? item.tooltip.description;
+  const shortcut = disabledReason ? undefined : item.tooltip.shortcutLabel ?? item.tooltip.shortcut;
+  return (
+    <span className="tool-tooltip" id={id} role="tooltip" aria-hidden="true">
+      <span>{item.tooltip.title}</span>
+      {description ? <span className="tool-tooltip-description">{description}</span> : null}
+      {shortcut ? (
+        <span className="tool-tooltip-shortcut">{shortcut}</span>
+      ) : null}
+      <span className="visually-hidden">{text}</span>
+    </span>
+  );
+}
+
+export function ToolbarItemIcon({
+  item,
+  command
+}: {
+  item: ToolbarPaletteItemModel;
+  command?: CommandSpec;
+}) {
+  if (item.iconDataUri) {
+    return <img className="tool-icon-image" src={item.iconDataUri} alt="" aria-hidden="true" />;
+  }
+  // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
+  // only render the image when it resolves, otherwise fall through to a real icon.
+  const assetSrc = item.assetName ? toolbarAsset(item.assetName) : undefined;
+  if (assetSrc) {
+    return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
+  }
+  if (command) {
+    return <ToolbarCommandIcon command={command} />;
+  }
+  if (item.icon && item.icon !== "palette") {
+    return <Icon name={item.icon} />;
+  }
+  // No distinctive icon — derive one from the title (user ask): a boxed 1–2 letter monogram keeps
+  // otherwise-identical fallback glyphs (toolbar launchers, widgets, unknowns) tellable apart.
+  return <TitleGlyphIcon title={item.tooltip?.title || item.label || item.id} />;
+}
+
+function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
+  const assetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
+  if (assetSrc) {
+    return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
+  }
+  if (command.id.startsWith("tool.art.")) {
+    return <ArtToolIcon commandId={command.id} />;
+  }
+  if (!command.icon || command.icon === "palette") {
+    return <TitleGlyphIcon title={command.title || command.id} />;
+  }
+  return <Icon name={command.icon} />;
+}
+
+const TITLE_GLYPH_STOPWORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "of",
+  "to",
+  "and",
+  "or",
+  "for",
+  "tool",
+  "tools",
+  "toolbar",
+  "toggle",
+  "show",
+  "hide",
+  "set",
+  "native"
+]);
+
+/** 1–2 char monogram from a title. A dimension token ("3D", "2D") reads far clearer as the whole
+ *  glyph than its initial, so it wins ("Interactive 3D Workspace" → "3D"); otherwise the initials of
+ *  the first two meaningful words ("Molecule Inspector" → "MI"), or the first two letters of a lone
+ *  word ("Rings" → "Ri"). */
+export function titleMonogram(title: string): string {
+  const words = title.split(/[^A-Za-z0-9]+/).filter((word) => word.length > 0 && !TITLE_GLYPH_STOPWORDS.has(word.toLowerCase()));
+  if (words.length === 0) {
+    return title.trim().slice(0, 2) || "?";
+  }
+  const dimensionToken = words.find((word) => /^\d+D$/i.test(word));
+  if (dimensionToken) {
+    return dimensionToken.toUpperCase();
+  }
+  if (words.length === 1) {
+    return words[0].slice(0, 2);
+  }
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+/** Deterministic fallback glyph: a boxed monogram derived from the command title, in the same visual
+ *  family as the B/I/U/x² text buttons. */
+export function TitleGlyphIcon({ title }: { title: string }) {
+  return (
+    <span className="title-glyph-icon" aria-hidden="true">
+      {titleMonogram(title)}
+    </span>
+  );
+}
+
+function toolbarTooltipText(item: ToolbarPaletteItemModel, primaryCommand: CommandSpec | undefined): string {
+  const hasSubmenuChoices = Boolean(item.submenu && item.submenu.items.length > 0);
+  if (primaryCommand?.enabled === false) {
+    // The disabled reason replaces the description, so re-add the long-press affordance for flyouts.
+    const holdHint = hasSubmenuChoices ? "; hold for choices" : "";
+    return `${item.tooltip.title}: ${primaryCommand.disabledReason ?? "unavailable"}${holdHint}`;
+  }
+  const shortcut = item.tooltip.shortcutLabel ?? item.tooltip.shortcut ?? primaryCommand?.shortcutLabel ?? primaryCommand?.shortcut;
+  const shortcutText = !shortcut ? "" : ` (${shortcut})`;
+  const description = item.tooltip.description ? `: ${item.tooltip.description}` : "";
+  // A flyout with no manifest description of its own (e.g. a plugin item) still needs to signal it
+  // is long-pressable; a hand-written description is assumed to cover it already.
+  const holdHint = hasSubmenuChoices && !item.tooltip.description ? "; hold for choices" : "";
+  return `${item.tooltip.title}${description}${holdHint}${shortcutText}`;
+}
+
 export function CommandIconButton({
   command,
   active = false,
@@ -3635,6 +4439,7 @@ export function CommandIconButton({
   onTooltipEnter,
   onTooltipLeave,
   separated = false,
+  onRequestFlyout,
   onInvoke
 }: {
   command: CommandSpec;
@@ -3645,6 +4450,7 @@ export function CommandIconButton({
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
   separated?: boolean;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
   const disabled = command.enabled === false;
@@ -3659,6 +4465,7 @@ export function CommandIconButton({
         tooltipId={tooltipId}
         tooltipVisible={tooltipVisible}
         onInvoke={onInvoke}
+        onRequestFlyout={onRequestFlyout}
         onTooltipEnter={onTooltipEnter}
         onTooltipLeave={onTooltipLeave}
       />
@@ -3717,62 +4524,32 @@ export function CommandIconButton({
   );
 }
 
-type ArtArrangeFlyout = {
-  id: string;
-  title: string;
-  commands: CommandSpec[];
-};
-
-type ArtArrangeToolbarItem =
-  | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout }
-  | { kind: "command"; id: string; command: CommandSpec };
-
-type ArtToolbarCommandItem =
-  | { kind: "flyout"; id: string; flyout: ArtArrangeFlyout; primaryAssetName?: ToolbarAssetName }
-  | { kind: "command"; id: string; command: CommandSpec };
-
 type ArtToolbarCommandColumn = {
   id: string;
   containsArrangeItems?: boolean;
   containsShapeFlyout?: boolean;
-  items: ArtToolbarCommandItem[];
+  items: ToolbarPaletteItemModel[];
 };
 
-function artToolbarCommandColumns(groups: CommandSpec[][]): ArtToolbarCommandColumn[] {
-  const commands = groups.flat();
-  const commandById = new Map(commands.map((command) => [command.id, command] as const));
-  const shapeFlyout = artShapeFlyoutForGroup(commands);
-  const arrangeItemById = new Map(artArrangeToolbarItemsForGroup(commands).map((item) => [item.id, item] as const));
-  const commandItems = (commandIds: readonly string[]): ArtToolbarCommandItem[] =>
+function artToolbarCommandColumns(groups: ToolbarPaletteItemModel[][]): ArtToolbarCommandColumn[] {
+  const items = groups.flat();
+  const itemByCommandId = new Map<string, ToolbarPaletteItemModel>();
+  items.forEach((item) => {
+    const commandId = primaryCommandIdForToolbarItem(item);
+    if (commandId) {
+      itemByCommandId.set(commandId, item);
+    }
+  });
+  const commandItems = (commandIds: readonly string[]): ToolbarPaletteItemModel[] =>
     commandIds.flatMap((commandId) => {
-      const command = commandById.get(commandId);
-      return command ? [{ kind: "command" as const, id: command.id, command }] : [];
+      const item = itemByCommandId.get(commandId);
+      return item ? [item] : [];
     });
-  const arrangeItems = (itemIds: readonly string[]): ArtToolbarCommandItem[] => {
-    const items: ArtToolbarCommandItem[] = [];
-    itemIds.forEach((itemId) => {
-      const item = arrangeItemById.get(itemId);
-      if (!item) {
-        return;
-      }
 
-      items.push(
-        item.kind === "command"
-          ? { kind: "command", id: item.command.id, command: item.command }
-          : { kind: "flyout", id: item.flyout.id, flyout: item.flyout }
-      );
-    });
-    return items;
-  };
-
-  const drawingItems: ArtToolbarCommandItem[] = commandItems(ART_PATH_COMMAND_IDS);
-  if (shapeFlyout) {
-    drawingItems.push({
-      kind: "flyout",
-      id: `art-shape-${shapeFlyout.id}`,
-      flyout: shapeFlyout,
-      primaryAssetName: "Art_Shapes"
-    });
+  const shapeItem = commandItems([ART_SHAPE_COMMAND_IDS[0]])[0];
+  const drawingItems: ToolbarPaletteItemModel[] = commandItems(ART_PATH_COMMAND_IDS);
+  if (shapeItem) {
+    drawingItems.push(shapeItem);
   }
 
   return [
@@ -3782,13 +4559,13 @@ function artToolbarCommandColumns(groups: CommandSpec[][]): ArtToolbarCommandCol
     },
     {
       id: "drawing",
-      containsShapeFlyout: Boolean(shapeFlyout),
+      containsShapeFlyout: Boolean(shapeItem?.submenu),
       items: drawingItems
     },
     {
       id: "arrange",
       containsArrangeItems: true,
-      items: arrangeItems(ART_ARRANGE_COLUMN_ITEM_IDS)
+      items: commandItems(ART_ARRANGE_COLUMN_ITEM_IDS)
     },
     {
       id: "boolean",
@@ -3797,290 +4574,8 @@ function artToolbarCommandColumns(groups: CommandSpec[][]): ArtToolbarCommandCol
   ];
 }
 
-function artArrangeToolbarItemsForGroup(group: CommandSpec[]): ArtArrangeToolbarItem[] {
-  if (!group.some((command) => ART_ARRANGE_COMMAND_IDS.has(command.id))) {
-    return [];
-  }
-
-  const commandById = new Map(group.map((command) => [command.id, command] as const));
-  const flyoutById = new Map<string, ArtArrangeFlyout>(ART_ARRANGE_FLYOUTS.map((flyout) => [flyout.id, {
-    id: flyout.id,
-    title: flyout.title,
-    commands: flyout.commandIds.flatMap((commandId) => {
-      const command = commandById.get(commandId);
-      return command ? [command] : [];
-    })
-  }] as const).filter(([, flyout]) => flyout.commands.length > 0));
-  const items: ArtArrangeToolbarItem[] = [];
-  const pushFlyout = (id: string) => {
-    const flyout = flyoutById.get(id);
-    if (flyout) {
-      items.push({ kind: "flyout", id, flyout });
-    }
-  };
-
-  pushFlyout("align");
-  ART_ARRANGE_STANDALONE_COMMAND_IDS.forEach((commandId) => {
-    const command = commandById.get(commandId);
-    if (command) {
-      items.push({ kind: "command", id: command.id, command });
-    }
-  });
-  pushFlyout("layer");
-  pushFlyout("transform");
-  pushFlyout("group");
-
-  return items;
-}
-
-function artShapeFlyoutForGroup(group: CommandSpec[]): ArtArrangeFlyout | undefined {
-  if (!group.some((command) => ART_SHAPE_COMMAND_IDS.includes(command.id as typeof ART_SHAPE_COMMAND_IDS[number]))) {
-    return undefined;
-  }
-
-  const commandById = new Map(group.map((command) => [command.id, command] as const));
-  const commands = ART_SHAPE_COMMAND_IDS.flatMap((commandId) => {
-    const command = commandById.get(commandId);
-    return command ? [command] : [];
-  });
-
-  return commands.length > 0 ? { id: "shapes", title: "Shapes", commands } : undefined;
-}
-
-function CommandFlyoutButton({
-  commands,
-  distributeMode,
-  flyoutId,
-  title,
-  primaryAssetName,
-  activeCommandId,
-  tooltipId,
-  tooltipVisible,
-  onTooltipEnter,
-  onTooltipLeave,
-  onInvoke
-}: {
-  commands: CommandSpec[];
-  distributeMode: ToolPaletteDistributeMode;
-  flyoutId: string;
-  title: string;
-  primaryAssetName?: ToolbarAssetName;
-  activeCommandId?: string;
-  tooltipId?: string;
-  tooltipVisible?: boolean;
-  onTooltipEnter?: () => void;
-  onTooltipLeave?: () => void;
-  onInvoke: (commandId: string) => void;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const shellRef = useRef<HTMLSpanElement | null>(null);
-  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const holdOpenedRef = useRef(false);
-  const primaryCommand = commands.find((command) => command.enabled !== false) ?? commands[0];
-  const primaryDisabled = primaryCommand.enabled === false;
-  const flyoutAssetName = primaryAssetName ?? primaryCommand.assetName;
-  const activeState = commands.some((command) => command.enabled !== false && command.id === activeCommandId);
-  const shortcut = primaryCommand.shortcut ?? primaryCommand.defaultShortcut;
-  const shortcutLabel = primaryCommand.shortcutLabel ?? shortcut;
-  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
-  const shortcutText = primaryDisabled ? "" : ` (${visibleShortcutLabel})`;
-  const stateText = primaryDisabled ? `: ${primaryCommand.disabledReason ?? "unavailable"}` : "";
-  const distributeText = commands.some((command) => isDistributeCommandId(command.id))
-    ? `: ${distributeMode === "spacing" ? "equal gaps" : "centers"}`
-    : "";
-  const tooltipText = `${title}${distributeText}: ${primaryCommand.title}; hold for choices${shortcutText}${stateText}`;
-
-  const clearHoldTimer = useCallback(() => {
-    if (holdTimerRef.current !== undefined) {
-      clearTimeout(holdTimerRef.current);
-      holdTimerRef.current = undefined;
-    }
-  }, []);
-
-  const openMenu = useCallback(() => {
-    holdOpenedRef.current = true;
-    setMenuOpen(true);
-    onTooltipLeave?.();
-  }, [onTooltipLeave]);
-
-  const chooseCommand = useCallback((command: CommandSpec) => {
-    if (command.enabled === false) {
-      return;
-    }
-    onInvoke(command.id);
-    setMenuOpen(false);
-    onTooltipLeave?.();
-  }, [onInvoke, onTooltipLeave]);
-
-  useEffect(() => () => {
-    clearHoldTimer();
-  }, [clearHoldTimer]);
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return undefined;
-    }
-
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && shellRef.current?.contains(target)) {
-        return;
-      }
-      setMenuOpen(false);
-    };
-
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
-    document.addEventListener("keydown", closeOnEscape, true);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
-      document.removeEventListener("keydown", closeOnEscape, true);
-    };
-  }, [menuOpen]);
-
-  return (
-    <span
-      className="icon-button-shell command-flyout-shell"
-      data-command-flyout={flyoutId}
-      data-command-tooltip-owner={primaryCommand.id}
-      data-tooltip-owner-id={tooltipId}
-      data-tooltip-visible={tooltipVisible && !menuOpen ? "true" : undefined}
-      ref={shellRef}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget) && !menuOpen) {
-          onTooltipLeave?.();
-        }
-      }}
-      onClickCapture={() => onTooltipLeave?.()}
-      onPointerCancel={() => onTooltipLeave?.()}
-      onPointerDownCapture={() => onTooltipLeave?.()}
-      onPointerEnter={() => onTooltipEnter?.()}
-      onPointerLeave={() => onTooltipLeave?.()}
-    >
-      <button
-        type="button"
-        className={[
-          "icon-button",
-          "command-flyout-button",
-          activeState ? "active" : ""
-        ].filter(Boolean).join(" ")}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        aria-label={tooltipText}
-        aria-pressed={activeState || undefined}
-        data-command-id={primaryCommand.id}
-        data-active={activeState ? "true" : undefined}
-        data-command-flyout-button={flyoutId}
-        data-command-flyout-ids={commands.map((command) => command.id).join(" ")}
-        data-disabled={primaryDisabled ? "true" : undefined}
-        data-shortcut-label={visibleShortcutLabel}
-        data-toolbar-asset={flyoutAssetName}
-        data-tooltip={tooltipText}
-        onPointerDown={(event) => {
-          event.stopPropagation();
-          if (event.button !== 0) {
-            return;
-          }
-          holdOpenedRef.current = false;
-          event.currentTarget.setPointerCapture?.(event.pointerId);
-          clearHoldTimer();
-          holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
-        }}
-        onPointerUp={(event) => {
-          event.stopPropagation();
-          clearHoldTimer();
-          event.currentTarget.releasePointerCapture?.(event.pointerId);
-          if (primaryDisabled || holdOpenedRef.current || menuOpen) {
-            return;
-          }
-          onInvoke(primaryCommand.id);
-        }}
-        onPointerCancel={(event) => {
-          event.stopPropagation();
-          clearHoldTimer();
-          event.currentTarget.releasePointerCapture?.(event.pointerId);
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
-            openMenu();
-            return;
-          }
-          if ((event.key === "Enter" || event.key === " ") && !primaryDisabled) {
-            event.preventDefault();
-            onInvoke(primaryCommand.id);
-          }
-        }}
-      >
-        {flyoutAssetName ? (
-          <img className="tool-icon-image" src={toolbarAsset(flyoutAssetName)} alt="" aria-hidden="true" />
-        ) : (
-          <Icon name={primaryCommand.icon} />
-        )}
-        <span className="command-flyout-indicator" aria-hidden="true" />
-        <span className="tool-tooltip" id={tooltipId} aria-hidden="true">{tooltipText}</span>
-      </button>
-      <div
-        className="toolbar-command-flyout-menu"
-        role="menu"
-        aria-label={`${title} commands`}
-        data-command-flyout-menu={flyoutId}
-        hidden={!menuOpen}
-      >
-        {commands.map((command) => {
-          const disabled = command.enabled === false;
-          const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
-          const itemText = disabled
-            ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
-            : command.title;
-          return (
-            <button
-              type="button"
-              role="menuitem"
-              disabled={disabled}
-              data-command-id={command.id}
-              data-shortcut-label={itemShortcut ?? "No shortcut"}
-              data-toolbar-asset={command.assetName}
-              data-tooltip={itemText}
-              key={command.id}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                chooseCommand(command);
-              }}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                chooseCommand(command);
-              }}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                chooseCommand(command);
-              }}
-            >
-              {command.assetName ? (
-                <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
-              ) : (
-                <Icon name={command.icon} />
-              )}
-              <span>{command.title}</span>
-            </button>
-          );
-        })}
-      </div>
-    </span>
-  );
+function primaryCommandIdForToolbarItem(item: ToolbarPaletteItemModel): string | undefined {
+  return item.primary.type === "command" ? item.primary.command.id : undefined;
 }
 
 function DistributeCommandIconButton({
@@ -4093,6 +4588,7 @@ function DistributeCommandIconButton({
   onTooltipEnter,
   onTooltipLeave,
   separated,
+  onRequestFlyout,
   onInvoke
 }: {
   command: CommandSpec;
@@ -4104,10 +4600,12 @@ function DistributeCommandIconButton({
   onTooltipEnter?: () => void;
   onTooltipLeave?: () => void;
   separated?: boolean;
+  onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
+  useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
   const activeState = active && !disabled;
@@ -4128,9 +4626,39 @@ function DistributeCommandIconButton({
 
   const openMenu = useCallback(() => {
     holdOpenedRef.current = true;
-    setMenuOpen(true);
     onTooltipLeave?.();
-  }, [onTooltipLeave]);
+    // Native palettes open the mode chooser in its own floating window (overflows the palette).
+    if (onRequestFlyout) {
+      const rect = shellRef.current?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      onRequestFlyout({
+        anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+        flyout: {
+          flyoutId: `distribute.${command.id}`,
+          title: command.title,
+          variant: "distribute",
+          commands: [
+            {
+              id: distributeModeCommandIds.centers,
+              title: "Centers",
+              enabled: true,
+              active: distributeMode === "centers"
+            },
+            {
+              id: distributeModeCommandIds.spacing,
+              title: "Equal gaps",
+              enabled: true,
+              active: distributeMode === "spacing"
+            }
+          ]
+        }
+      });
+      return;
+    }
+    setMenuOpen(true);
+  }, [onRequestFlyout, onTooltipLeave, command.id, command.title, distributeMode]);
 
   const chooseMode = useCallback((commandId: string) => {
     onInvoke(commandId);

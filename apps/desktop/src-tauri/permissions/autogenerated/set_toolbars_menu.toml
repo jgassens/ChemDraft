@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-toolbars-menu"
+description = "Enables the set_toolbars_menu command without any pre-configured scope."
+commands.allow = ["set_toolbars_menu"]
+
+[[permission]]
+identifier = "deny-set-toolbars-menu"
+description = "Denies the set_toolbars_menu command without any pre-configured scope."
+commands.deny = ["set_toolbars_menu"]

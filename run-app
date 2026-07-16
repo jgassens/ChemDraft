@@ -6,6 +6,13 @@ APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
 DEV_PORT="${CHEMDRAFT_DEV_PORT:-5173}"
 RUN_MODE="${1:-app}"
+# Which worktree/branch this launch is from. With several ChemDraft worktrees checked out (all
+# building an app literally named "ChemDraft"), this is exported so the build bakes it into the
+# window title (Rust option_env!) and the on-screen build stamp (vite), and it's printed in a banner
+# at launch — so you can never again mistake which build is running. Auto-derived; see AGENTS.md.
+CHEMDRAFT_WORKTREE_BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+CHEMDRAFT_WORKTREE_LABEL="$(basename "$ROOT_DIR")${CHEMDRAFT_WORKTREE_BRANCH:+ [$CHEMDRAFT_WORKTREE_BRANCH]}"
+export CHEMDRAFT_WORKTREE_LABEL
 LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
 TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
 RUN_APP_BUNDLE="$TAURI_OUTPUT_BUNDLE"
@@ -14,6 +21,17 @@ RUN_APP_BUNDLE_ID="org.chemdraft.desktop"
 LEGACY_RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
 RUN_APP_DISPLAY_NAME="ChemDraft"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+print_launch_banner() {
+  local mode="$1"
+  echo ""
+  echo "============================================================"
+  echo "  ChemDraft  ▸  $CHEMDRAFT_WORKTREE_LABEL"
+  echo "  worktree:  $ROOT_DIR"
+  echo "  mode:      $mode"
+  echo "============================================================"
+  echo ""
+}
 
 usage() {
   cat <<EOF
@@ -198,6 +216,19 @@ stop_existing_dev_server() {
         exit 1
         ;;
     esac
+  done
+}
+
+stop_stale_dev_servers_for_this_checkout() {
+  # select_dev_port stops scanning at the FIRST free port, so a same-checkout dev server left
+  # running on a higher port from an earlier `--dev` session (one you forgot to close) is never
+  # even inspected, let alone stopped — it just orphans forever and the next run picks a new port
+  # instead of reclaiming the old one. Sweep the same candidate range unconditionally, in both
+  # launch modes, so leftovers from this checkout are always reaped before anything else runs.
+  local candidate start
+  start="$DEV_PORT"
+  for ((candidate = start; candidate <= start + 20; candidate++)); do
+    stop_existing_dev_server "$candidate" ignore-unrelated
   done
 }
 
@@ -396,6 +427,7 @@ fi
 
 stop_existing_dev_apps
 unregister_stale_chem_draft_bundles
+stop_stale_dev_servers_for_this_checkout
 
 if [ -z "${CHEMDRAFT_ENGINE3D_SIDECAR:-}" ] && [ -x "$LOCAL_ENGINE3D_SIDECAR" ]; then
   export CHEMDRAFT_ENGINE3D_SIDECAR="$LOCAL_ENGINE3D_SIDECAR"
@@ -405,6 +437,7 @@ fi
 if [ "$RUN_MODE" = "--dev" ]; then
   select_dev_port
   prime_tauri_context_rebuild_for_dev
+  print_launch_banner "dev (Vite HMR)"
   exec npm run dev:tauri
 fi
 
@@ -425,6 +458,7 @@ stage_run_app_bundle
 resign_local_bundle "$RUN_APP_BUNDLE"
 clear_saved_window_state
 
+print_launch_banner "packaged app"
 echo "Launching $RUN_APP_DISPLAY_NAME from $RUN_APP_BUNDLE"
 launch_bundle "$RUN_APP_BUNDLE"
 activate_launched_bundle

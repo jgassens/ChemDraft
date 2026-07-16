@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
         Arc, Mutex,
     },
@@ -20,12 +20,15 @@ use tauri::{
     menu::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
     },
+    webview::PageLoadEvent,
     Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 #[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
+    NSEvent, NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
     NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
 };
 #[cfg(target_os = "macos")]
@@ -38,11 +41,11 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-const DEFAULT_TOOLSET_ID: &str = "core.main";
-const MOLECULE_INSPECTOR_TOOLSET_ID: &str = "core.moleculeInspector";
-const MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID: &str = "view.toggleMoleculeInspector";
-const TOOLSET_COMMAND_EVENT: &str = "chemdraft://palette-command";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
+#[cfg(target_os = "macos")]
+const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
+#[cfg(target_os = "macos")]
+const PALETTE_POINTER_LEAVE_EVENT: &str = "chemdraft://palette-pointer-leave";
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
@@ -59,13 +62,13 @@ const ENGINE3D_SESSION_OUTPUT_QUIET: Duration = Duration::from_millis(20);
 // timeout, so idle client polling never ties up a worker thread (or a session lock) for 250ms.
 const ENGINE3D_SESSION_POLL_EMPTY_TIMEOUT: Duration = Duration::from_millis(30);
 static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-const TOOLSET_MANIFEST_JSON: &str = include_str!("../../src/toolsets/desktop-toolsets.json");
+/// Set once app exit begins. Quit teardown destroys every palette window; without this guard those
+/// Destroyed events would be recorded as user closes (visible: false) and clobber the saved
+/// open-palette set that the next launch restores.
+static APP_QUITTING: AtomicBool = AtomicBool::new(false);
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
-// Native (separate-window) toolset palettes are parked while the in-document toolbar chrome is the
-// shipping UI. The restore/sync plumbing is kept compiled and tested behind this flag so the feature
-// can be re-enabled without resurrecting deleted code; flip to `true` to bring the windows back.
-const RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP: bool = false;
+const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "document.new",
     "document.open",
@@ -85,6 +88,8 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setOrientation.landscape",
     "view.toggleRulers",
     "view.toggleCrosshairs",
+    "view.customizeToolbars",
+    "view.customizeMainToolbar",
     "layout.group",
     "layout.ungroup",
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
@@ -93,31 +98,6 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "chemistry.validateSelection",
     "structure.openInteractive3d",
 ];
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetManifest {
-    toolsets: Vec<ToolsetDefinition>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetDefinition {
-    id: String,
-    title: String,
-    default_visible: bool,
-    default_mode: String,
-    preferred_window_size: Option<ToolsetWindowSize>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetWindowSize {
-    width: f64,
-    height: f64,
-    min_width: Option<f64>,
-    min_height: Option<f64>,
-}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +140,14 @@ struct Engine3dSidecarSessions {
     // lookup + clone — never across the (up to 250ms) output wait. That keeps start/stop and
     // other sessions from serializing behind one session's blocking collect.
     sessions: Mutex<HashMap<String, Arc<Mutex<Engine3dManagedSession>>>>,
+}
+
+#[derive(Default)]
+struct ToolsetWindowDirectory {
+    // Palette window LABEL -> real toolset id. The label is lossy (non-alphanumerics collapse to
+    // '-'), so it can't be reversed by parsing — we record the mapping when the window is created.
+    // This lets label->id resolution and window enumeration stop scanning the manifest.
+    labels: Mutex<HashMap<String, String>>,
 }
 
 struct Engine3dManagedSession {
@@ -225,8 +213,9 @@ struct Engine3dSidecarSessionOutput {
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedToolsetState {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    visible: Option<bool>,
+    // Window geometry only. Palette *visibility* is owned by the TypeScript side and persisted to
+    // toolbar-layout-state.json (toolsetOverrides[].visible); Rust must not write a second, stale
+    // copy here. Old files may still carry a `visible` key — serde ignores it on read.
     #[serde(skip_serializing_if = "Option::is_none")]
     x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,6 +227,10 @@ struct PersistedToolsetState {
 struct ToolsetLayoutState {
     version: u32,
     toolsets: HashMap<String, PersistedToolsetState>,
+    /// Last main document window frame. Saved on every move/resize, restored by
+    /// `ensure_main_window_visible`; centering is only the fallback when nothing usable was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    main_window: Option<MainWindowGeometry>,
 }
 
 impl Default for ToolsetLayoutState {
@@ -245,56 +238,50 @@ impl Default for ToolsetLayoutState {
         Self {
             version: 1,
             toolsets: HashMap::new(),
+            main_window: None,
         }
     }
 }
 
-#[derive(Clone, Default, serde::Deserialize)]
+/// Main window frame in logical points: outer (top-left) position + inner content size, matching
+/// what `set_position`/`set_size` take, so a saved frame round-trips exactly.
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ToolsetCustomizationState {
-    version: u32,
-    #[serde(default)]
-    toolset_order: Vec<String>,
-    #[serde(default)]
-    toolset_overrides: Vec<ToolsetCustomizationOverride>,
-    #[serde(default)]
-    user_toolsets: Vec<ToolsetDefinition>,
+struct MainWindowGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 }
 
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolsetCustomizationOverride {
-    toolset_id: String,
-    title: Option<String>,
-    visible: Option<bool>,
-    mode: Option<String>,
-    preferred_window_size: Option<ToolsetWindowSize>,
-}
+/// Logical points of title bar that must remain on a monitor for the window to stay grabbable.
+const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
+        .manage(ToolsetWindowDirectory::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)
-        .on_menu_event(|app, event| {
-            let command_id = event.id().as_ref();
-            if let Some(toolset_id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
-                if toolset_id == MOLECULE_INSPECTOR_TOOLSET_ID {
-                    if let Err(error) =
-                        emit_command_to_main(app, MOLECULE_INSPECTOR_TOGGLE_COMMAND_ID)
-                    {
-                        eprintln!("Could not route ChemDraft Molecule Inspector command: {error}");
-                    }
-                    return;
-                }
-                if let Err(error) = toggle_toolset_window(app.clone(), toolset_id.to_string()) {
-                    eprintln!("Could not toggle ChemDraft toolbar {toolset_id}: {error}");
-                }
-                return;
+        .on_page_load(|webview, payload| {
+            if webview.label() == MAIN_WINDOW_LABEL
+                && matches!(payload.event(), PageLoadEvent::Finished)
+            {
+                // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
+                // overwriting the label set by ensure_main_window_visible. Reassert the baked
+                // worktree title at the page-load boundary so the actual macOS title bar, not only
+                // the web document/build stamp, identifies this checkout.
+                let _ = webview.window().set_title(&main_window_title());
             }
+        })
+        .on_menu_event(|app, event| {
+            // Single brain: every menu click (toolset toggles included) routes to the JS
+            // command dispatcher, which owns visibility and pushes checkmarks back via
+            // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
+            let command_id = event.id().as_ref();
             if is_routed_menu_command(command_id) {
                 if let Err(error) = emit_command_to_main(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
@@ -304,18 +291,27 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
-                    WindowEvent::Focused(true) => {
-                        if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
-                            if let Err(error) = restore_visible_toolset_windows(window.app_handle())
-                            {
-                                eprintln!("Could not restore ChemDraft toolbar windows: {error}");
-                            }
-                        }
-                    }
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if let Err(error) = window.hide() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
+                        }
+                    }
+                    WindowEvent::Destroyed => {
+                        // The close button only hides the main window, so its actual destruction
+                        // means the app is dying — including SIGTERM teardowns that never fire
+                        // ExitRequested. Raise the quit flag so palette destruction that follows
+                        // isn't recorded as user closes.
+                        APP_QUITTING.store(true, Ordering::SeqCst);
+                    }
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                        // Frames changed by quit teardown are not the user's; skip like palettes do.
+                        if !APP_QUITTING.load(Ordering::SeqCst) {
+                            if let Err(error) = persist_main_window_geometry(window) {
+                                eprintln!(
+                                    "Could not persist ChemDraft main window frame: {error}"
+                                );
+                            }
                         }
                     }
                     _ => {}
@@ -347,6 +343,10 @@ pub fn run() {
                     }
                 }
                 WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                    // Only a user close reaches the saved layout state; quit teardown must not.
+                    if APP_QUITTING.load(Ordering::SeqCst) {
+                        return;
+                    }
                     if let Err(error) = mark_toolset_window_closed(app, &toolset_id) {
                         eprintln!(
                             "Could not update ChemDraft toolbar menu state {toolset_id}: {error}"
@@ -358,24 +358,8 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
-            let layout_state = load_toolset_layout_state(app);
-            let customization_state = load_toolset_customization_state_from_disk(app);
-            let startup_manifest = ToolsetManifest {
-                toolsets: apply_toolset_customization(
-                    toolset_manifest().toolsets,
-                    customization_state.as_ref(),
-                ),
-            };
-            if customization_state.is_some() {
-                if let Err(error) = schedule_customized_toolset_menu(
-                    app,
-                    startup_manifest.clone(),
-                    layout_state.clone(),
-                ) {
-                    eprintln!("Could not install customized ChemDraft toolbar menu: {error}");
-                }
-            }
-
+            // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
+            // window loads; Rust no longer parses the manifest or applies customization for it.
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
             }
@@ -384,20 +368,16 @@ pub fn run() {
                 eprintln!("Could not show ChemDraft main window: {error}");
             }
 
-            if RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP {
-                for toolset in startup_manifest.toolsets {
-                    let visible = toolset_visible(&toolset, &layout_state);
-                    if let Err(error) = sync_toolset_window_from_layout(app, &toolset, visible) {
-                        eprintln!(
-                            "Could not initialize ChemDraft toolbar state {}: {error}",
-                            toolset.id
-                        );
-                    }
-                }
-            }
-
             if let Err(error) = focus_main_document_window_impl(app) {
                 eprintln!("Could not focus ChemDraft document window: {error}");
+            }
+
+            // Palettes never become key, so hover must be fed to their webviews (see
+            // start_palette_pointer_feed's doc for why the OS won't deliver it).
+            start_palette_pointer_feed(app.clone());
+
+            if let Err(error) = build_toolset_tooltip_window(app) {
+                eprintln!("Could not build the ChemDraft tooltip window: {error}");
             }
 
             Ok(())
@@ -405,20 +385,24 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_toolset_window,
             close_toolset_window,
-            focus_toolset_window,
-            toggle_toolset_window,
             list_toolset_window_states,
             load_toolset_customization_state,
+            save_toolset_customization_state,
+            load_document_session,
+            save_document_session,
+            set_toolbars_menu,
             focus_main_document_window,
+            set_menu_checked,
+            plugin_storage_read,
+            plugin_storage_write,
+            open_plugin_panel_window,
+            open_toolset_popover,
+            show_toolset_tooltip_window,
+            close_toolset_popover,
+            set_toolset_window_focusable,
             route_toolset_command,
             read_clipboard_payload,
             write_clipboard_text_items,
-            open_tool_palette,
-            close_tool_palette,
-            focus_tool_palette,
-            toggle_tool_palette,
-            tool_palette_state,
-            route_palette_command,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
             agent_bridge_status,
@@ -434,6 +418,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
+            RunEvent::ExitRequested { .. } => {
+                APP_QUITTING.store(true, Ordering::SeqCst);
+            }
             RunEvent::Reopen { .. } => {
                 if let Err(error) = ensure_main_window_visible(app) {
                     eprintln!("Could not reopen ChemDraft main window: {error}");
@@ -455,6 +442,10 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         None => create_main_window(app)?,
     };
 
+    // Tauri auto-creates the config "main" window at startup (title "ChemDraft" from tauri.conf.json),
+    // so create_main_window's set_title never runs on that path — apply the worktree-labeled title
+    // here on the window we actually resolved, so every worktree's window is distinguishable.
+    let _ = window.set_title(&main_window_title());
     window
         .set_decorations(true)
         .map_err(|error| error.to_string())?;
@@ -466,8 +457,14 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         .set_skip_taskbar(false)
         .map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
+    // Restore the last-used frame; center only when there is nothing to restore (first launch, or
+    // the saved frame is on a display that's gone). This also runs on Reopen and open-document
+    // ensure calls, where the saved frame already equals the live one, so reapplying is a visual
+    // no-op — and it stops those paths from yanking a user-placed window back to center.
+    if !restore_main_window_geometry(&window) {
+        window.center().map_err(|error| error.to_string())?;
+    }
     window.show().map_err(|error| error.to_string())?;
-    window.center().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
 }
 
@@ -526,9 +523,21 @@ fn focus_native_document_window<R: Runtime>(
     Ok(())
 }
 
+/// The main window title, suffixed with the worktree label run-app baked in at build time (e.g.
+/// "ChemDraft — chemdraw-toolbars [refactor/toolbars]"). With several ChemDraft worktrees building
+/// an identically-named app, this is what tells the running windows apart in the title bar,
+/// Mission Control, and cmd-tab. Falls back to plain "ChemDraft" when unlabeled. See AGENTS.md.
+fn main_window_title() -> String {
+    match option_env!("CHEMDRAFT_WORKTREE_LABEL") {
+        Some(label) if !label.trim().is_empty() => format!("ChemDraft — {}", label.trim()),
+        _ => "ChemDraft".to_string(),
+    }
+}
+
 fn create_main_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    let title = main_window_title();
     if let Some(config) = app
         .config()
         .app
@@ -536,14 +545,18 @@ fn create_main_window<R: Runtime>(
         .iter()
         .find(|window| window.label == MAIN_WINDOW_LABEL)
     {
-        return WebviewWindowBuilder::from_config(app, config)
+        // The config (tauri.conf.json) fixes the title to "ChemDraft"; override it post-build so the
+        // worktree label shows even on this primary path.
+        let window = WebviewWindowBuilder::from_config(app, config)
             .map_err(|error| error.to_string())?
             .build()
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string())?;
+        let _ = window.set_title(&title);
+        return Ok(window);
     }
 
     WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
-        .title("ChemDraft")
+        .title(&title)
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 640.0)
         .resizable(true)
@@ -554,13 +567,28 @@ fn create_main_window<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
+/// Window geometry supplied by JS (which owns the toolbar registry) when opening a palette, so Rust
+/// doesn't have to read the manifest for the title/size. `title` is the toolset title; Rust adds the
+/// "ChemDraft " prefix. The initial size is a starting point — PaletteWindow resizes to fit content.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsetWindowGeometry {
+    title: String,
+    width: f64,
+    height: f64,
+    // Default top-left for a first-ever placement (JS staggers by registry order); a persisted
+    // position overrides it.
+    x: f64,
+    y: f64,
+}
+
 #[tauri::command]
 fn open_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
+    window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
-    ensure_toolset_window(&app, &toolset_id)?;
-    persist_toolset_visibility(&app, &toolset_id, true)?;
+    ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
     let state = toolset_state(&app, &toolset_id)?;
@@ -590,36 +618,18 @@ fn close_toolset_window(
 }
 
 #[tauri::command]
-fn focus_toolset_window(
-    app: tauri::AppHandle,
-    toolset_id: String,
-) -> Result<ToolsetWindowState, String> {
-    ensure_toolset_window(&app, &toolset_id)?;
-
-    toolset_state(&app, &toolset_id)
-}
-
-#[tauri::command]
-fn toggle_toolset_window(
-    app: tauri::AppHandle,
-    toolset_id: String,
-) -> Result<ToolsetWindowState, String> {
-    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
-        if window.is_visible().unwrap_or(false) {
-            return close_toolset_window(app, toolset_id);
-        }
-    }
-
-    open_toolset_window(app, toolset_id)
-}
-
-#[tauri::command]
 fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindowState>, String> {
-    Ok(toolset_manifest_for_startup(&app)
-        .toolsets
-        .into_iter()
-        .map(|toolset| toolset_state(&app, &toolset.id))
-        .collect::<Result<Vec<_>, _>>()?)
+    // Report the state of every palette window we've opened this session (from the directory),
+    // rather than scanning the manifest. The JS reconciler only cares about which are open.
+    let toolset_ids: Vec<String> = {
+        let directory = app.state::<ToolsetWindowDirectory>();
+        let labels = directory.labels.lock().map_err(|error| error.to_string())?;
+        labels.values().cloned().collect()
+    };
+    toolset_ids
+        .iter()
+        .map(|toolset_id| toolset_state(&app, toolset_id))
+        .collect()
 }
 
 #[tauri::command]
@@ -636,9 +646,400 @@ fn load_toolset_customization_state(
         .map_err(|error| format!("Toolbar customization state is invalid: {error}"))
 }
 
+/// JS owns toolbar customization now (visibility, layout, user toolsets). It serializes the whole
+/// `ToolsetLayoutState` and persists it here; Rust just writes the opaque JSON to disk.
+#[tauri::command]
+fn save_toolset_customization_state(
+    app: tauri::AppHandle,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let path = toolset_customization_state_path(&app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+    fs::write(path, contents).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let path = document_session_path(&app)?;
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Ok(None);
+    };
+
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| format!("Document session is invalid: {error}"))
+}
+
+/// The working document's autosave (serialized contents + file association). JS owns the envelope
+/// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
+/// opaque JSON, exactly like the toolbar customization state.
+#[tauri::command]
+fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
+    let path = document_session_path(&app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+    fs::write(path, contents).map_err(|error| error.to_string())
+}
+
+/// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
+/// Rust rebuilds the app menu with that Toolbars submenu — so the menu's source of truth is the TS
+/// toolbar registry, not Rust's manifest copy. Runs on the main thread; per-toggle checkmark flips
+/// still go through set_menu_checked (in place, no rebuild).
+#[tauri::command]
+fn set_toolbars_menu(
+    app: tauri::AppHandle,
+    entries: Vec<ToolbarMenuEntry>,
+    rulers_visible: bool,
+    crosshairs_visible: bool,
+) -> Result<(), String> {
+    // JS carries the current View-toggle state so the whole-menu rebuild preserves the Show Rulers /
+    // Show Crosshairs checkmarks (they aren't re-mirrored by set_menu_checked like toolset toggles).
+    let view_state = ViewMenuState {
+        rulers_visible,
+        crosshairs_visible,
+    };
+    app.clone()
+        .run_on_main_thread(move || {
+            match create_app_menu_for_toolsets(&app, &entries, view_state)
+                .and_then(|menu| app.set_menu(menu).map(|_| ()))
+            {
+                Ok(()) => {}
+                Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
     focus_main_document_window_impl(&app).map(|_| ())
+}
+
+/// JS owns menu check state now: after the main window changes toolset visibility it
+/// pushes each toggle's checkmark here. Takes the full menu command id
+/// (e.g. `view.toolset.toggle.core.main`) so it works for any check menu item.
+#[tauri::command]
+fn set_menu_checked(
+    app: tauri::AppHandle,
+    command_id: String,
+    checked: bool,
+) -> Result<(), String> {
+    let command_id = command_id.trim();
+    if command_id.is_empty() {
+        return Err("Menu command id cannot be empty.".to_string());
+    }
+    set_check_menu_item_checked(&app, command_id, checked)
+}
+
+/// Guards the storage path against traversal: plugin ids become directory names, so the
+/// charset is restricted and dot-leading names (".", "..", hidden dirs) are rejected.
+fn is_valid_plugin_storage_id(plugin_id: &str) -> bool {
+    !plugin_id.is_empty()
+        && !plugin_id.starts_with('.')
+        && plugin_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+#[cfg(test)]
+mod plugin_storage_id_tests {
+    use super::is_valid_plugin_storage_id;
+
+    #[test]
+    fn accepts_reverse_domain_plugin_ids() {
+        assert!(is_valid_plugin_storage_id("org.chemdraft.fixture"));
+        assert!(is_valid_plugin_storage_id("nmr-predictor_v2"));
+    }
+
+    #[test]
+    fn rejects_path_traversal_shapes() {
+        assert!(!is_valid_plugin_storage_id(""));
+        assert!(!is_valid_plugin_storage_id(".."));
+        assert!(!is_valid_plugin_storage_id(".hidden"));
+        assert!(!is_valid_plugin_storage_id("a/b"));
+        assert!(!is_valid_plugin_storage_id("a\\b"));
+        assert!(!is_valid_plugin_storage_id("a b"));
+    }
+}
+
+const PLUGIN_STORAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+fn plugin_storage_path<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    plugin_id: &str,
+) -> Result<PathBuf, String> {
+    if !is_valid_plugin_storage_id(plugin_id) {
+        return Err(format!("Invalid plugin id \"{plugin_id}\"."));
+    }
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("plugins")
+        .join(plugin_id)
+        .join("storage.json"))
+}
+
+#[tauri::command]
+fn plugin_storage_read(app: tauri::AppHandle, plugin_id: String) -> Result<Option<String>, String> {
+    let path = plugin_storage_path(&app, &plugin_id)?;
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn plugin_storage_write(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    contents: String,
+) -> Result<(), String> {
+    if contents.len() > PLUGIN_STORAGE_MAX_BYTES {
+        return Err(format!(
+            "Plugin storage payload exceeds {PLUGIN_STORAGE_MAX_BYTES} bytes."
+        ));
+    }
+    let path = plugin_storage_path(&app, &plugin_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(&path, contents).map_err(|error| error.to_string())
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenPluginPanelRequest {
+    panel_id: String,
+    title: String,
+    width: Option<f64>,
+    height: Option<f64>,
+}
+
+/// Plugin panel windows get the same floating-utility treatment as toolset palettes: they
+/// float above the document while the app is active and hide with it on deactivate.
+#[tauri::command]
+fn open_plugin_panel_window(
+    app: tauri::AppHandle,
+    request: OpenPluginPanelRequest,
+) -> Result<(), String> {
+    if !is_valid_plugin_storage_id(&request.panel_id) {
+        return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
+    }
+
+    let label = format!("plugin-panel-{}", request.panel_id.replace('.', "-"));
+    if let Some(window) = app.get_webview_window(&label) {
+        window.show().map_err(|error| error.to_string())?;
+        configure_toolset_utility_window(&window, true)?;
+        return Ok(());
+    }
+
+    let width = request.width.unwrap_or(380.0);
+    let height = request.height.unwrap_or(520.0);
+    let window = WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("/?window=pluginPanel&panelId={}", request.panel_id).into()),
+    )
+    .title(format!("ChemDraft {}", request.title))
+    .inner_size(width, height)
+    .min_inner_size(280.0, 200.0)
+    .accept_first_mouse(true)
+    .focusable(toolset_window_focusable())
+    .resizable(true)
+    .decorations(false)
+    .shadow(false)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_utility_window(&window, true)?;
+    Ok(())
+}
+
+/// Opens (or repositions + reshows) a small floating popover window for a palette — e.g. the
+/// Art color picker. A webview can't paint outside its own window, so palette popovers that are
+/// taller/wider than the little palette window clip at its edge; giving the popover its OWN
+/// floating window lets it overflow and float over the document, the native macOS way. The
+/// window is opaque (a transparent one gets re-clipped to the main window on macOS) with a real
+/// drop shadow so it reads as a panel drawn over the palette. `x`/`y` are logical screen
+/// coordinates of the anchor (the palette computes them from its own window position + the
+/// swatch's client rect).
+#[tauri::command]
+fn open_toolset_popover(
+    app: tauri::AppHandle,
+    toolset_id: String,
+    kind: String,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let label = toolset_popover_window_label(&toolset_id);
+    if let Some(window) = app.get_webview_window(&label) {
+        // Warm reuse: the webview already has content, so position + show immediately.
+        window
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        configure_toolset_popover_window(&window, true)?;
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(
+            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}").into(),
+        ),
+    )
+    .title("ChemDraft color picker")
+    // The JS side sizes this to the popover content (setCurrentWindowLogicalSize); start with a
+    // sensible color-picker footprint so the first paint isn't jarringly wrong.
+    .inner_size(320.0, 300.0)
+    .min_inner_size(96.0, 56.0)
+    .accept_first_mouse(true)
+    // Unlike the button-only palettes, the color picker has hex/RGB text inputs, so its window
+    // must be able to take keyboard focus. It stays a NonactivatingPanel (see below), so
+    // becoming key doesn't yank the app's activation away from the document.
+    .focusable(true)
+    .resizable(false)
+    .decorations(false)
+    .skip_taskbar(true)
+    // Build hidden on the FIRST open so the cold webview doesn't flash a blank 320x300 window while
+    // it loads. The popover reveals itself (getCurrentWindow().show()) once it has painted its real
+    // content at the right size — see PalettePopoverWindow.
+    .visible(false)
+    .position(x, y)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_popover_window(&window, false)?;
+    Ok(())
+}
+
+/// Same floating NonactivatingPanel treatment as the palettes, but focusable so the color
+/// picker's text inputs work. `configure_toolset_utility_window` force-sets focusable(false),
+/// so re-assert focusable(true) afterwards.
+fn configure_toolset_popover_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    order_front: bool,
+) -> Result<(), String> {
+    configure_toolset_utility_window(window, order_front)?;
+    window
+        .set_focusable(true)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn toolset_popover_window_label(toolset_id: &str) -> String {
+    format!("toolset-popover-{}", toolset_id.replace('.', "-"))
+}
+
+/// Toggle a palette window's focusability. Palettes ship `focusable(false)` (they never steal key
+/// status — see `toolset_window_focusable`), but the in-place customize gallery's search field needs
+/// keyboard focus. Mirrors the popover precedent: `configure_toolset_popover_window` re-asserts
+/// `set_focusable(true)` on a NonactivatingPanel and the color-picker hex input proves a text field
+/// then receives input without the panel activating the app. The palette re-asserts `false` on exit.
+#[tauri::command]
+fn set_toolset_window_focusable(
+    app: tauri::AppHandle,
+    toolset_id: String,
+    focusable: bool,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
+        window
+            .set_focusable(focusable)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
+
+/// Order the (pre-built, hidden) tooltip window front. The tooltip webview invokes this after
+/// sizing + positioning itself: palettes and popovers become visible through this same
+/// NSWindow::orderFront path, whereas Tauri's JS `show()` did not reliably display the
+/// focusable(false) panel.
+#[tauri::command]
+fn show_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        if let Some(ns_window) = unsafe { ns_window_ptr.as_ref() } {
+            ns_window.orderFront(None);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.show().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Pre-build the single shared floating tooltip window, hidden. Palettes can't paint a tooltip
+/// outside their content-fit windows (same constraint that gives popovers their own window), so
+/// all of them share this one: a palette broadcasts text + anchor, the tooltip webview sizes and
+/// positions itself, shows, and hides again on the hide broadcast (see PaletteTooltipWindow).
+/// Built at startup so the first hover doesn't pay the cold-webview load. The `toolset-` label
+/// prefix gives it the palette capability set; it is NOT in the ToolsetWindowDirectory, so the
+/// pointer feed never treats it as a hoverable palette.
+fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if app
+        .get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL)
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        TOOLSET_TOOLTIP_WINDOW_LABEL,
+        WebviewUrl::App("/?window=toolsetTooltip".into()),
+    )
+    .title("ChemDraft tooltip")
+    // The JS side sizes this to the rendered text before every show.
+    .inner_size(120.0, 26.0)
+    .min_inner_size(16.0, 14.0)
+    .accept_first_mouse(false)
+    .focusable(false)
+    .resizable(false)
+    .decorations(false)
+    .skip_taskbar(true)
+    .visible(false)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_toolset_utility_window(&window, false)?;
+    // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
+    // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
+    // palette", hide itself, and flicker.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(ns_window_ptr) = window.ns_window() {
+            if let Some(ns_window) = unsafe { (ns_window_ptr as *mut NSWindow).as_ref() } {
+                ns_window.setIgnoresMouseEvents(true);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -865,36 +1266,6 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 #[cfg(not(target_os = "macos"))]
 fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
     Err("Native clipboard writes are only implemented for macOS.".to_string())
-}
-
-#[tauri::command]
-fn open_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    open_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn close_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    close_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn focus_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    focus_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn toggle_tool_palette(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    toggle_toolset_window(app, DEFAULT_TOOLSET_ID.to_string())
-}
-
-#[tauri::command]
-fn tool_palette_state(app: tauri::AppHandle) -> Result<ToolsetWindowState, String> {
-    toolset_state(&app, DEFAULT_TOOLSET_ID)
-}
-
-#[tauri::command]
-fn route_palette_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
-    route_toolset_command(app, command_id)
 }
 
 #[tauri::command]
@@ -1454,8 +1825,9 @@ fn emit_command_to_main<R: Runtime>(
         command_id: command_id.to_string(),
     };
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_COMMAND_EVENT, payload.clone())
-        .map_err(|error| error.to_string())?;
+    // Single delivery: dispatch the `native-command` DOM event straight into the main webview, which
+    // the JS `listenForToolsetCommands` DOM listener consumes exactly once. (We used to also emit over
+    // the tauri event bus, which fanned out to several listeners and required a JS-side deduper.)
     dispatch_dom_command_event(&main, &payload)
 }
 
@@ -1545,21 +1917,40 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
+/// The checkable View-menu toggle states that must survive a full menu rebuild. `set_toolbars_menu`
+/// rebuilds the whole bar via `set_menu`, which recreates the Show Rulers / Show Crosshairs items;
+/// carrying their real state here keeps them from snapping back to a hardcoded default (the checkmark
+/// would otherwise desync and then invert on the next click). JS is the source of truth and passes
+/// the current values; the startup menu uses the defaults, which match the app's initial state.
+#[derive(Clone, Copy)]
+struct ViewMenuState {
+    rulers_visible: bool,
+    crosshairs_visible: bool,
+}
+
+impl Default for ViewMenuState {
+    fn default() -> Self {
+        Self {
+            rulers_visible: true,
+            crosshairs_visible: true,
+        }
+    }
+}
+
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let manifest = toolset_manifest();
-    let layout_state = ToolsetLayoutState::default();
-    create_app_menu_for_toolsets(app, &manifest, &layout_state)
+    // Empty Toolbars submenu; JS pushes the real rows via set_toolbars_menu once it loads.
+    create_app_menu_for_toolsets(app, &[], ViewMenuState::default())
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    toolset_manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
+    entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
 ) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
-    let view_menu = create_view_menu(app, toolset_manifest, layout_state)?;
+    let view_menu = create_view_menu(app, entries, view_state)?;
 
     Menu::with_items(
         app,
@@ -1760,8 +2151,8 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
 
 fn create_view_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    toolset_manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
+    entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
 ) -> tauri::Result<Submenu<R>> {
     let preferences = MenuItem::with_id(
         app,
@@ -1771,12 +2162,14 @@ fn create_view_menu<R: Runtime>(
         Some("CmdOrCtrl+,"),
     )?;
     let preferences_separator = PredefinedMenuItem::separator(app)?;
+    // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
+    // re-check these while the feature is off, desyncing the menu from the document.
     let show_rulers = CheckMenuItem::with_id(
         app,
         "view.toggleRulers",
         "Show Rulers",
         true,
-        true,
+        view_state.rulers_visible,
         Some("CmdOrCtrl+R"),
     )?;
     let show_crosshairs = CheckMenuItem::with_id(
@@ -1784,7 +2177,7 @@ fn create_view_menu<R: Runtime>(
         "view.toggleCrosshairs",
         "Show Crosshairs",
         true,
-        true,
+        view_state.crosshairs_visible,
         Some("CmdOrCtrl+Shift+R"),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -1796,12 +2189,19 @@ fn create_view_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
-    let toolbars_menu = create_toolbars_menu(app, toolset_manifest, layout_state)?;
+    let toolbars_menu = create_toolbars_menu(app, entries)?;
     let customize_toolbars = MenuItem::with_id(
         app,
         "view.customizeToolbars",
         "Customize Toolbars...",
-        false,
+        true,
+        None::<&str>,
+    )?;
+    let customize_main_toolbar = MenuItem::with_id(
+        app,
+        "view.customizeMainToolbar",
+        "Customize Main Toolbar...",
+        true,
         None::<&str>,
     )?;
 
@@ -1819,24 +2219,35 @@ fn create_view_menu<R: Runtime>(
             &debugger_separator,
             &toolbars_menu,
             &customize_toolbars,
+            &customize_main_toolbar,
         ],
     )
 }
 
+/// One Toolbars-menu row. JS is the source of truth for the toolset set + titles now and pushes
+/// these via `set_toolbars_menu`; the startup menu derives the same shape from the manifest until
+/// the manifest is removed from Rust.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarMenuEntry {
+    toolset_id: String,
+    title: String,
+    visible: bool,
+}
+
 fn create_toolbars_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    toolset_manifest: &ToolsetManifest,
-    layout_state: &ToolsetLayoutState,
+    entries: &[ToolbarMenuEntry],
 ) -> tauri::Result<Submenu<R>> {
     let menu = Submenu::new(app, "Toolbars", true)?;
 
-    for toolset in &toolset_manifest.toolsets {
+    for entry in entries {
         let item = CheckMenuItem::with_id(
             app,
-            toolset_toggle_command_id(&toolset.id),
-            &toolset.title,
+            toolset_toggle_command_id(&entry.toolset_id),
+            &entry.title,
             true,
-            toolset_visible(&toolset, &layout_state),
+            entry.visible,
             None::<&str>,
         )?;
         menu.append(&item)?;
@@ -1845,60 +2256,60 @@ fn create_toolbars_menu<R: Runtime>(
     Ok(menu)
 }
 
-fn schedule_customized_toolset_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_manifest: ToolsetManifest,
-    layout_state: ToolsetLayoutState,
-) -> Result<(), String> {
-    let app = app.clone();
-    app.clone()
-        .run_on_main_thread(move || {
-            let menu = create_app_menu_for_toolsets(&app, &toolset_manifest, &layout_state);
-            match menu.and_then(|menu| app.set_menu(menu).map(|_| ())) {
-                Ok(()) => {}
-                Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
-            }
-        })
-        .map_err(|error| error.to_string())
-}
-
 fn ensure_toolset_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
+    geometry: Option<&ToolsetWindowGeometry>,
 ) -> Result<(), String> {
-    let Some(toolset) = toolset_definition(app, toolset_id) else {
-        return Err(format!("Toolset {toolset_id} is not registered."));
-    };
     let label = toolset_window_label(toolset_id);
 
     if let Some(window) = app.get_webview_window(&label) {
         window.show().map_err(|error| error.to_string())?;
-        configure_toolset_utility_window(&window)?;
+        configure_toolset_utility_window(&window, true)?;
         return Ok(());
     }
 
-    let size = toolset
-        .preferred_window_size
-        .clone()
-        .unwrap_or(ToolsetWindowSize {
-            width: 96.0,
-            height: 420.0,
-            min_width: Some(96.0),
-            min_height: Some(240.0),
-        });
-    let position = preferred_toolset_position(app, toolset_id);
+    // Title / size / default position all come from JS (which owns the toolbar registry). A None
+    // geometry means a caller that isn't a normal open (focus of a not-yet-created window, or a
+    // legacy alias); give it a generic placeholder instead of reading the manifest.
+    let (title, width, height, default_position) = match geometry {
+        Some(geometry) => (
+            format!("ChemDraft {}", geometry.title),
+            geometry.width,
+            geometry.height,
+            ToolsetWindowPosition {
+                x: geometry.x,
+                y: geometry.y,
+            },
+        ),
+        None => (
+            "ChemDraft Toolbar".to_string(),
+            200.0,
+            400.0,
+            ToolsetWindowPosition { x: 88.0, y: 154.0 },
+        ),
+    };
+    // A persisted position wins (the user moved it before); otherwise the JS-supplied default.
+    let position = persisted_toolset_position(app, toolset_id).unwrap_or(default_position);
 
-    let window = WebviewWindowBuilder::new(
+    // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
+    // without the manifest (the label itself is lossy).
+    if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+        labels.insert(label.clone(), toolset_id.to_string());
+    }
+
+    let window = match WebviewWindowBuilder::new(
         app,
-        label,
+        label.clone(),
         WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
     )
-    .title(format!("ChemDraft {}", toolset.title))
-    .inner_size(size.width, size.height)
-    .min_inner_size(
-        size.min_width.unwrap_or(size.width),
-        size.min_height.unwrap_or(size.height),
-    )
+    .title(title)
+    .inner_size(width, height)
+    // The window is sized to its actual palette content by the JS side (PaletteWindow
+    // applySize). The manifest's min sizes were tuned for the old docked/web layout and are far too
+    // large for a content-fit floating window (e.g. Art's 760), which left a big blank area beside
+    // the tools — so keep only a tiny hard floor here.
+    .min_inner_size(96.0, 56.0)
     .accept_first_mouse(true)
     .focusable(toolset_window_focusable())
     .resizable(true)
@@ -1907,43 +2318,27 @@ fn ensure_toolset_window<R: Runtime>(
     .skip_taskbar(true)
     .position(position.x, position.y)
     .build()
-    .map_err(|error| error.to_string())?;
+    {
+        Ok(window) => window,
+        Err(error) => {
+            // Roll back the directory entry we optimistically inserted above, so a failed build
+            // doesn't leave a phantom label -> id mapping that enumeration and label resolution
+            // would treat as a real (but nonexistent) window.
+            if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+                labels.remove(&label);
+            }
+            return Err(error.to_string());
+        }
+    };
 
-    configure_toolset_utility_window(&window)?;
+    configure_toolset_utility_window(&window, true)?;
     Ok(())
-}
-
-fn restore_visible_toolset_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let layout_state = load_toolset_layout_state(app);
-
-    for toolset in toolset_manifest_for_startup(app).toolsets {
-        let visible = toolset_visible(&toolset, &layout_state);
-        sync_toolset_window_from_layout(app, &toolset, visible)?;
-    }
-
-    Ok(())
-}
-
-fn sync_toolset_window_from_layout<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset: &ToolsetDefinition,
-    visible: bool,
-) -> Result<(), String> {
-    if visible && toolset.default_mode == "floating" {
-        ensure_toolset_window(app, &toolset.id)?;
-        let state = toolset_state(app, &toolset.id)?;
-        persist_toolset_visibility(app, &toolset.id, state.open)?;
-        set_toolset_menu_checked(app, &toolset.id, state.open)?;
-        let _ = emit_toolset_window_state_to_main(app, &state);
-        return Ok(());
-    }
-
-    set_toolset_menu_checked(app, &toolset.id, false)
 }
 
 #[cfg(target_os = "macos")]
 fn configure_toolset_utility_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
+    order_front: bool,
 ) -> Result<(), String> {
     let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
@@ -1973,10 +2368,158 @@ fn configure_toolset_utility_window<R: Runtime>(
     window
         .set_focusable(toolset_window_focusable())
         .map_err(|error| error.to_string())?;
-    ns_window.orderFront(None);
+    // A hidden pre-warm build (the popover's first creation) sets its NSPanel traits here but must
+    // NOT be ordered front yet — it reveals itself once its webview has painted real content, so the
+    // user never sees a blank window loading. Every other caller shows immediately.
+    if order_front {
+        ns_window.orderFront(None);
+    }
 
     Ok(())
 }
+
+/// Local (top-left origin, logical px) pointer position inside a palette window. Tagged with the
+/// toolset id because a plain JS `listen()` receives events regardless of the emit target — each
+/// palette filters to its own id (the same pattern the popover-content events use).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PalettePointerPayload {
+    toolset_id: String,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PalettePointerLeavePayload {
+    toolset_id: String,
+}
+
+/// Feed hover into the palette webviews. The palettes are non-activating panels that never become
+/// the key window (deliberately — clicking them must not steal the document's focus), and macOS
+/// only routes mouseMoved/hover to the key window; WKWebView's own tracking is key-window-scoped
+/// too, so CSS :hover, pointerenter, and therefore tooltips simply never fire in them (adding our
+/// own NSTrackingArea was tried and WebKit still swallowed it). Instead: poll the real cursor on
+/// the main thread, hit-test which palette window is frontmost under it (windowNumberAtPoint sees
+/// every on-screen window, so anything overlapping a palette correctly suppresses hover), and push
+/// window-local coordinates into that palette; PaletteWindow synthesizes pointerover/out from them.
+#[cfg(target_os = "macos")]
+fn start_palette_pointer_feed(app: tauri::AppHandle) {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct FeedState {
+        /// (window label, toolset id) currently under the cursor.
+        last: Option<(String, String)>,
+        last_x: f64,
+        last_y: f64,
+    }
+
+    fn emit_leave(app: &tauri::AppHandle, label: &str, toolset_id: String) {
+        let _ = app.emit_to(
+            label,
+            PALETTE_POINTER_LEAVE_EVENT,
+            PalettePointerLeavePayload { toolset_id },
+        );
+    }
+
+    let state: Arc<Mutex<FeedState>> = Arc::new(Mutex::new(FeedState::default()));
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let app_handle = app.clone();
+        let state = Arc::clone(&state);
+        let _ = app.run_on_main_thread(move || {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            // Bottom-left-origin global screen points; NSWindow frames share the same space.
+            let mouse = NSEvent::mouseLocation();
+            let front_window_number =
+                NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(mouse, 0, mtm);
+
+            let entries: Vec<(String, String)> = app_handle
+                .state::<ToolsetWindowDirectory>()
+                .labels
+                .lock()
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .map(|(label, toolset_id)| (label.clone(), toolset_id.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut hovered: Option<(String, PalettePointerPayload)> = None;
+            for (label, toolset_id) in entries {
+                let Some(window) = app_handle.get_webview_window(&label) else {
+                    continue;
+                };
+                if !window.is_visible().unwrap_or(false) {
+                    continue;
+                }
+                let Ok(ns_window_ptr) = window.ns_window() else {
+                    continue;
+                };
+                let Some(ns_window) = (unsafe { (ns_window_ptr as *mut NSWindow).as_ref() }) else {
+                    continue;
+                };
+                if ns_window.windowNumber() != front_window_number {
+                    continue;
+                }
+                // Borderless panel: content rect == frame, so frame-local is webview-local. Flip
+                // the y axis to the web's top-left origin; points == CSS px.
+                let frame = ns_window.frame();
+                hovered = Some((
+                    label,
+                    PalettePointerPayload {
+                        toolset_id,
+                        x: mouse.x - frame.origin.x,
+                        y: frame.size.height - (mouse.y - frame.origin.y),
+                    },
+                ));
+                break;
+            }
+
+            let Ok(mut state) = state.lock() else {
+                return;
+            };
+            match hovered {
+                Some((label, payload)) => {
+                    let changed = state
+                        .last
+                        .as_ref()
+                        .map(|(last_label, _)| last_label != &label)
+                        .unwrap_or(true);
+                    let moved = (payload.x - state.last_x).abs() >= 1.0
+                        || (payload.y - state.last_y).abs() >= 1.0;
+                    if changed {
+                        if let Some((previous_label, previous_toolset)) = state.last.take() {
+                            emit_leave(&app_handle, &previous_label, previous_toolset);
+                        }
+                    }
+                    if changed || moved {
+                        let _ = app_handle.emit_to(
+                            label.as_str(),
+                            PALETTE_POINTER_EVENT,
+                            payload.clone(),
+                        );
+                        state.last_x = payload.x;
+                        state.last_y = payload.y;
+                        state.last = Some((label, payload.toolset_id));
+                    }
+                }
+                None => {
+                    if let Some((previous_label, previous_toolset)) = state.last.take() {
+                        emit_leave(&app_handle, &previous_label, previous_toolset);
+                    }
+                }
+            }
+        });
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_palette_pointer_feed(_app: tauri::AppHandle) {}
 
 fn toolset_window_focusable() -> bool {
     false
@@ -1995,6 +2538,7 @@ fn toolset_window_hides_on_deactivate() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn configure_toolset_utility_window<R: Runtime>(
     _window: &tauri::WebviewWindow<R>,
+    _order_front: bool,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -2023,97 +2567,6 @@ fn toolset_state<R: Runtime>(
     }
 }
 
-fn toolset_manifest() -> ToolsetManifest {
-    serde_json::from_str(TOOLSET_MANIFEST_JSON)
-        .expect("desktop toolset manifest should be valid JSON")
-}
-
-fn toolset_manifest_for_startup<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetManifest {
-    ToolsetManifest {
-        toolsets: apply_toolset_customization(
-            toolset_manifest().toolsets,
-            load_toolset_customization_state_from_disk(app).as_ref(),
-        ),
-    }
-}
-
-fn apply_toolset_customization(
-    mut toolsets: Vec<ToolsetDefinition>,
-    customization: Option<&ToolsetCustomizationState>,
-) -> Vec<ToolsetDefinition> {
-    let Some(customization) = customization else {
-        return toolsets;
-    };
-
-    for user_toolset in &customization.user_toolsets {
-        if !toolsets.iter().any(|toolset| toolset.id == user_toolset.id) {
-            toolsets.push(user_toolset.clone());
-        }
-    }
-
-    for override_state in &customization.toolset_overrides {
-        let Some(toolset) = toolsets
-            .iter_mut()
-            .find(|toolset| toolset.id == override_state.toolset_id)
-        else {
-            continue;
-        };
-
-        if let Some(title) = override_state.title.as_ref() {
-            toolset.title = title.clone();
-        }
-        if let Some(visible) = override_state.visible {
-            toolset.default_visible = visible;
-        }
-        if let Some(mode) = override_state.mode.as_ref() {
-            toolset.default_mode = mode.clone();
-        }
-        if let Some(size) = override_state.preferred_window_size.as_ref() {
-            toolset.preferred_window_size = Some(size.clone());
-        }
-    }
-
-    order_toolsets(toolsets, &customization.toolset_order)
-}
-
-fn order_toolsets(
-    mut toolsets: Vec<ToolsetDefinition>,
-    preferred_order: &[String],
-) -> Vec<ToolsetDefinition> {
-    if preferred_order.is_empty() {
-        return toolsets;
-    }
-
-    let mut ordered = Vec::with_capacity(toolsets.len());
-    for toolset_id in preferred_order {
-        if let Some(index) = toolsets
-            .iter()
-            .position(|toolset| &toolset.id == toolset_id)
-        {
-            ordered.push(toolsets.remove(index));
-        }
-    }
-    ordered.extend(toolsets);
-    ordered
-}
-
-fn toolset_definition<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-) -> Option<ToolsetDefinition> {
-    toolset_manifest_for_startup(app)
-        .toolsets
-        .into_iter()
-        .find(|toolset| toolset.id == toolset_id)
-}
-
-fn toolset_index<R: Runtime>(app: &tauri::AppHandle<R>, toolset_id: &str) -> Option<usize> {
-    toolset_manifest_for_startup(app)
-        .toolsets
-        .iter()
-        .position(|toolset| toolset.id == toolset_id)
-}
-
 fn toolset_window_label(toolset_id: &str) -> String {
     let suffix: String = toolset_id
         .chars()
@@ -2132,17 +2585,12 @@ fn toolset_id_for_window_label<R: Runtime>(
     app: &tauri::AppHandle<R>,
     label: &str,
 ) -> Option<String> {
-    toolset_id_for_window_label_from_toolsets(&toolset_manifest_for_startup(app).toolsets, label)
-}
-
-fn toolset_id_for_window_label_from_toolsets(
-    toolsets: &[ToolsetDefinition],
-    label: &str,
-) -> Option<String> {
-    toolsets
-        .iter()
-        .find(|toolset| toolset_window_label(&toolset.id) == label)
-        .map(|toolset| toolset.id.clone())
+    app.state::<ToolsetWindowDirectory>()
+        .labels
+        .lock()
+        .ok()?
+        .get(label)
+        .cloned()
 }
 
 fn toolset_toggle_command_id(toolset_id: &str) -> String {
@@ -2151,37 +2599,6 @@ fn toolset_toggle_command_id(toolset_id: &str) -> String {
 
 fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id) || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
-}
-
-fn toolset_visible(toolset: &ToolsetDefinition, layout_state: &ToolsetLayoutState) -> bool {
-    layout_state
-        .toolsets
-        .get(&toolset.id)
-        .and_then(|state| state.visible)
-        .unwrap_or(toolset.default_visible)
-}
-
-fn preferred_toolset_position<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-) -> ToolsetWindowPosition {
-    persisted_toolset_position(app, toolset_id)
-        .unwrap_or_else(|| default_toolset_position(app, toolset_id))
-}
-
-fn default_toolset_position<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-) -> ToolsetWindowPosition {
-    default_toolset_position_for_index(toolset_index(app, toolset_id).unwrap_or(0))
-}
-
-fn default_toolset_position_for_index(index: usize) -> ToolsetWindowPosition {
-    let offset = index as f64 * 18.0;
-    ToolsetWindowPosition {
-        x: 88.0 + offset,
-        y: 154.0 + offset,
-    }
 }
 
 fn persisted_toolset_position<R: Runtime>(
@@ -2237,20 +2654,6 @@ fn logical_toolset_position_from_physical(
     }
 }
 
-fn persist_toolset_visibility<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    toolset_id: &str,
-    visible: bool,
-) -> Result<(), String> {
-    update_toolset_layout_state(app, |layout_state| {
-        layout_state
-            .toolsets
-            .entry(toolset_id.to_string())
-            .or_default()
-            .visible = Some(visible);
-    })
-}
-
 fn persist_toolset_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
@@ -2267,11 +2670,110 @@ fn persist_toolset_position<R: Runtime>(
     })
 }
 
+fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
+    // Fullscreen/minimized frames are transient OS states, not a user-chosen frame.
+    if window.is_fullscreen().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return Ok(());
+    }
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return Ok(());
+    };
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    update_toolset_layout_state(window.app_handle(), |layout_state| {
+        layout_state.main_window = Some(MainWindowGeometry {
+            x: position.x as f64 / scale_factor,
+            y: position.y as f64 / scale_factor,
+            width: size.width as f64 / scale_factor,
+            height: size.height as f64 / scale_factor,
+        });
+    })
+}
+
+/// Apply the saved main-window frame. Returns false when nothing usable was saved — first launch,
+/// a degenerate frame, or a frame whose title bar is on no attached monitor — so the caller can
+/// fall back to centering.
+fn restore_main_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    let Some(geometry) = load_toolset_layout_state(window.app_handle()).main_window else {
+        return false;
+    };
+    if !(geometry.width > 0.0
+        && geometry.height > 0.0
+        && geometry.x.is_finite()
+        && geometry.y.is_finite())
+    {
+        return false;
+    }
+    if !main_window_geometry_reachable(window, &geometry) {
+        return false;
+    }
+    // macOS fullscreen owns the frame; report success so the caller doesn't center underneath it.
+    if window.is_fullscreen().unwrap_or(false) {
+        return true;
+    }
+    window
+        .set_position(tauri::LogicalPosition::new(geometry.x, geometry.y))
+        .and_then(|_| window.set_size(tauri::LogicalSize::new(geometry.width, geometry.height)))
+        .is_ok()
+}
+
+/// True when the saved frame's title-bar strip lands on some attached monitor (compared in each
+/// monitor's own logical space), so a frame saved on a since-detached display is rejected rather
+/// than restored somewhere the user can't grab it.
+fn main_window_geometry_reachable<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    geometry: &MainWindowGeometry,
+) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        // Can't enumerate displays — trust the frame rather than discard the user's layout.
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+    monitors.iter().any(|monitor| {
+        let scale_factor = monitor.scale_factor();
+        let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
+        let position = monitor.position();
+        let size = monitor.size();
+        let min_x = position.x as f64 / scale_factor;
+        let min_y = position.y as f64 / scale_factor;
+        title_bar_reachable_in_monitor(
+            geometry,
+            min_x,
+            min_y,
+            min_x + size.width as f64 / scale_factor,
+            min_y + size.height as f64 / scale_factor,
+        )
+    })
+}
+
+fn title_bar_reachable_in_monitor(
+    geometry: &MainWindowGeometry,
+    monitor_min_x: f64,
+    monitor_min_y: f64,
+    monitor_max_x: f64,
+    monitor_max_y: f64,
+) -> bool {
+    let title_center_x = geometry.x + geometry.width / 2.0;
+    title_center_x >= monitor_min_x
+        && title_center_x <= monitor_max_x
+        && geometry.y >= monitor_min_y - 1.0
+        && geometry.y + MAIN_WINDOW_TITLE_GRAB_PT <= monitor_max_y
+}
+
 fn mark_toolset_window_closed<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
 ) -> Result<ToolsetWindowState, String> {
-    persist_toolset_visibility(app, toolset_id, false)?;
     set_toolset_menu_checked(app, toolset_id, false)?;
 
     let state = ToolsetWindowState {
@@ -2305,19 +2807,6 @@ fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLa
     serde_json::from_str(&contents).unwrap_or_default()
 }
 
-fn load_toolset_customization_state_from_disk<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Option<ToolsetCustomizationState> {
-    let path = toolset_customization_state_path(app).ok()?;
-    let contents = fs::read_to_string(path).ok()?;
-    let state: ToolsetCustomizationState = serde_json::from_str(&contents).ok()?;
-    if state.version == 1 {
-        Some(state)
-    } else {
-        None
-    }
-}
-
 fn save_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     layout_state: &ToolsetLayoutState,
@@ -2347,6 +2836,14 @@ fn toolset_customization_state_path<R: Runtime>(
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join(TOOLSET_CUSTOMIZATION_STATE_FILENAME))
+}
+
+fn document_session_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join(DOCUMENT_SESSION_FILENAME))
 }
 
 fn set_toolset_menu_checked<R: Runtime>(
@@ -2422,54 +2919,54 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
     use super::*;
 
-    fn toolset(id: &str, default_visible: bool) -> ToolsetDefinition {
-        ToolsetDefinition {
-            id: id.to_string(),
-            title: "Fixture Toolbar".to_string(),
-            default_visible,
-            default_mode: "floating".to_string(),
-            preferred_window_size: None,
-        }
-    }
-
     #[test]
-    fn persisted_visibility_overrides_manifest_defaults() {
-        let mut state = ToolsetLayoutState::default();
-        state.toolsets.insert(
-            "core.fixture".to_string(),
-            PersistedToolsetState {
-                visible: Some(false),
-                ..PersistedToolsetState::default()
-            },
-        );
-
-        expect_false(toolset_visible(&toolset("core.fixture", true), &state));
-        expect_true(toolset_visible(&toolset("core.other", true), &state));
-    }
-
-    #[test]
-    fn toolset_labels_round_trip_to_ids() {
-        let toolsets = vec![toolset("core.main", true)];
+    fn toolset_window_labels_are_stable_and_sanitized() {
         expect_eq("toolset-core-main", &toolset_window_label("core.main"));
         expect_eq(
-            Some("core.main".to_string()),
-            toolset_id_for_window_label_from_toolsets(&toolsets, "toolset-core-main"),
-        );
-        expect_eq(
-            None,
-            toolset_id_for_window_label_from_toolsets(&toolsets, "main"),
+            "toolset-plugin-fixture",
+            &toolset_window_label("plugin.fixture"),
         );
     }
 
     #[test]
-    fn default_positions_are_staggered_by_manifest_order() {
-        let main = default_toolset_position_for_index(0);
-        let structure = default_toolset_position_for_index(1);
+    fn saved_main_window_frame_on_the_monitor_is_reachable() {
+        let geometry = MainWindowGeometry {
+            x: 100.0,
+            y: 50.0,
+            width: 1280.0,
+            height: 820.0,
+        };
+        expect_true(title_bar_reachable_in_monitor(
+            &geometry, 0.0, 0.0, 1728.0, 1117.0,
+        ));
+    }
 
-        expect_eq(88.0, main.x);
-        expect_eq(154.0, main.y);
-        expect_true(structure.x > main.x);
-        expect_true(structure.y > main.y);
+    #[test]
+    fn saved_main_window_frame_off_a_detached_display_is_rejected() {
+        // Frame saved on a monitor to the left of the (now only) built-in display.
+        let geometry = MainWindowGeometry {
+            x: -2000.0,
+            y: 50.0,
+            width: 1280.0,
+            height: 820.0,
+        };
+        expect_false(title_bar_reachable_in_monitor(
+            &geometry, 0.0, 0.0, 1728.0, 1117.0,
+        ));
+    }
+
+    #[test]
+    fn saved_main_window_frame_below_the_dock_edge_is_rejected() {
+        // Title bar would sit under the bottom of the display — nothing left to grab.
+        let geometry = MainWindowGeometry {
+            x: 100.0,
+            y: 1110.0,
+            width: 1280.0,
+            height: 820.0,
+        };
+        expect_false(title_bar_reachable_in_monitor(
+            &geometry, 0.0, 0.0, 1728.0, 1117.0,
+        ));
     }
 
     #[test]
@@ -2487,67 +2984,6 @@ mod tests {
     #[test]
     fn toolset_utility_windows_hide_when_app_deactivates() {
         expect_true(toolset_window_hides_on_deactivate());
-    }
-
-    #[test]
-    fn native_toolset_windows_do_not_restore_on_startup_by_default() {
-        expect_false(RESTORE_NATIVE_TOOLSET_WINDOWS_ON_STARTUP);
-    }
-
-    #[test]
-    fn customization_state_adds_and_orders_user_toolsets() {
-        let toolsets = vec![toolset("core.main", true), toolset("plugin.fixture", false)];
-        let customization = ToolsetCustomizationState {
-            version: 1,
-            toolset_order: vec![
-                "user.quick".to_string(),
-                "plugin.fixture".to_string(),
-                "core.main".to_string(),
-            ],
-            user_toolsets: vec![toolset("user.quick", true)],
-            ..ToolsetCustomizationState::default()
-        };
-
-        let customized = apply_toolset_customization(toolsets, Some(&customization));
-
-        expect_eq("user.quick", customized[0].id.as_str());
-        expect_eq("plugin.fixture", customized[1].id.as_str());
-        expect_eq("core.main", customized[2].id.as_str());
-    }
-
-    #[test]
-    fn customization_overrides_title_visibility_mode_and_size() {
-        let toolsets = vec![toolset("core.main", true)];
-        let customization = ToolsetCustomizationState {
-            version: 1,
-            toolset_overrides: vec![ToolsetCustomizationOverride {
-                toolset_id: "core.main".to_string(),
-                title: Some("My Main Toolbar".to_string()),
-                visible: Some(false),
-                mode: Some("hidden".to_string()),
-                preferred_window_size: Some(ToolsetWindowSize {
-                    width: 120.0,
-                    height: 240.0,
-                    min_width: Some(100.0),
-                    min_height: Some(200.0),
-                }),
-            }],
-            ..ToolsetCustomizationState::default()
-        };
-
-        let customized = apply_toolset_customization(toolsets, Some(&customization));
-
-        expect_eq("My Main Toolbar", customized[0].title.as_str());
-        expect_false(customized[0].default_visible);
-        expect_eq("hidden", customized[0].default_mode.as_str());
-        expect_eq(
-            120.0,
-            customized[0]
-                .preferred_window_size
-                .as_ref()
-                .expect("size should be applied")
-                .width,
-        );
     }
 
     #[test]
@@ -2640,7 +3076,7 @@ mod tests {
             "allow-read-clipboard-payload",
             "allow-write-clipboard-text-items",
             "allow-open-toolset-window",
-            "allow-toggle-toolset-window",
+            "allow-close-toolset-window",
         ] {
             expect_true(permissions.iter().any(|permission| {
                 permission
@@ -2774,14 +3210,11 @@ mod tests {
 
     #[test]
     fn spin3d_debugger_window_route_is_not_a_toolset_window() {
-        let toolsets = vec![toolset("core.main", true)];
-
         expect_eq(SPIN3D_DEBUGGER_WINDOW_LABEL, spin3d_debugger_window_label());
         expect_eq(SPIN3D_DEBUGGER_WINDOW_ROUTE, spin3d_debugger_window_route());
-        expect_eq(
-            None,
-            toolset_id_for_window_label_from_toolsets(&toolsets, spin3d_debugger_window_label()),
-        );
+        // The debugger window must never be mistaken for a toolset palette window:
+        // every toolset window label carries the `toolset-` prefix (see toolset_window_label).
+        expect_false(spin3d_debugger_window_label().starts_with("toolset-"));
     }
 
     #[test]

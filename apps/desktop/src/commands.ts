@@ -20,7 +20,13 @@ import {
   selectedArtBooleanEligibleObjectIds,
   type NativeSingleLetterElement
 } from "./documentWorkflow";
-import { getToolsetCommandGroups, getToolsetCommandSpecs, getToolsetToggleActions } from "./toolsets";
+import {
+  desktopToolsetRegistry,
+  getToolsetCommandGroups,
+  getToolsetCommandSpecs,
+  getToolsetToggleActions,
+  type DesktopToolsetRegistry
+} from "./toolsets";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
@@ -28,6 +34,11 @@ import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 export interface CommandAvailability {
   canUndo?: boolean;
   canRedo?: boolean;
+}
+
+export interface ShellCommandOptions {
+  availability?: CommandAvailability;
+  registry?: DesktopToolsetRegistry;
 }
 
 export interface CommandSpec extends CommandDefinition {
@@ -193,7 +204,7 @@ export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
 export const viewActions: CommandSpec[] = [
   {
     id: PREFERENCES_COMMAND_ID,
-    title: "Preferences…",
+    title: "Preferencesâ¦",
     icon: "inspector",
     source: "core",
     shortcut: "Cmd+,",
@@ -256,12 +267,12 @@ export const pageSizeActions: CommandSpec[] = MinimalPageSizePresetIds.map((pres
   };
 });
 
-/** Opens the custom page-size dialog (File ▸ Page Setup ▸ Custom Size…). */
+/** Opens the custom page-size dialog (File â¸ Page Setup â¸ Custom Sizeâ¦). */
 export const PAGE_CUSTOM_SIZE_COMMAND_ID = "page.setSizeCustom";
 
 export const pageCustomSizeAction: CommandSpec = {
   id: PAGE_CUSTOM_SIZE_COMMAND_ID,
-  title: "Set Page Size: Custom…",
+  title: "Set Page Size: Customâ¦",
   icon: "grid",
   source: "core",
   category: "page",
@@ -1788,9 +1799,17 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     icon: "palette",
     source: "core",
     category: "view",
-    enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Open the future toolbar customization editor"
+    enabled: true,
+    description: "Open the toolbar customization editor"
+  },
+  {
+    id: "view.customizeMainToolbar",
+    title: "Customize Main Toolbar",
+    icon: "palette",
+    source: "core",
+    category: "view",
+    enabled: true,
+    description: "Customize the Main toolbar in place — drag to reorder, add, or remove items"
   },
   {
     id: "view.toolset.resetLayout",
@@ -1799,8 +1818,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Reset the selected toolbar layout after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Reset the selected toolbar layout (also available in the Customize Toolbars dialog)"
   },
   {
     id: "view.toolset.resetAllLayouts",
@@ -1809,8 +1828,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Reset all toolbar customization state after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Reset all toolbar customization (also available in the Customize Toolbars dialog)"
   },
   {
     id: "view.toolset.createUserToolset",
@@ -1819,8 +1838,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Create a user toolbar after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Create a user toolbar (also available in the Customize Toolbars dialog)"
   },
   {
     id: "view.toolset.cloneToolset",
@@ -1829,8 +1848,8 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     source: "core",
     category: "view",
     enabled: false,
-    disabledReason: "Toolbar customization UI is not implemented yet",
-    description: "Clone a built-in or plugin toolbar after customization support is implemented"
+    disabledReason: "Use View ‣ Customize Toolbars",
+    description: "Clone a built-in or plugin toolbar (also available in the Customize Toolbars dialog)"
   }
 ];
 
@@ -1850,15 +1869,25 @@ export const styleActions: CommandSpec[] = [
   { id: "style.preset.synthetic", title: "ChemDraft Synthetic Style", icon: "style", source: "core", enabled: false }
 ];
 
-export function allPaletteCommands(): CommandSpec[] {
-  return withStandaloneDrawingToolCommands(getToolsetCommandSpecs());
+export function allPaletteCommands(
+  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+): CommandSpec[] {
+  return withStandaloneDrawingToolCommands(getToolsetCommandSpecs(registry));
 }
 
-export function allShellCommands(document: ChemDraftDocument, selectedMolecule?: MoleculeObject): CommandSpec[] {
+export function allShellCommands(
+  document: ChemDraftDocument,
+  selectedMolecule?: MoleculeObject,
+  options: ShellCommandOptions = {}
+): CommandSpec[] {
+  const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
-    ...createQuickActions(document, selectedMolecule),
+    ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document),
-    ...allPaletteCommands(),
+    // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
+    // latter may carry the title from before a user/plugin toolbar was renamed.
+    ...getToolsetToggleActions(registry),
+    ...allPaletteCommands(registry),
     ...editActions,
     ...atomElementActions,
     ...drawerActions,
@@ -1869,7 +1898,6 @@ export function allShellCommands(document: ChemDraftDocument, selectedMolecule?:
     ...textToolbarActions,
     ...objectStyleActions,
     ...toolbarCustomizationActions,
-    ...getToolsetToggleActions(),
     ...styleActions
   ]);
 }
