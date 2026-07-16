@@ -73,22 +73,66 @@ const runWidget: PluginCommandHandler = async (context) => {
 Report section kinds: `text`, `keyValue`, `table`, `svg`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
 
-## Extract for distribution
+## Worker entry
 
-Add an explicit `LICENSE` or `LICENSE.md` to the plugin, commit every file that will ship, then run:
+A plugin that ships as an **installable package** also exports a worker entry at `src/workerEntry.ts`.
+It runs inside the plugin's own Web Worker, wires whatever services the command handlers need, and
+hands the finished registration to `runPluginWorker`:
+
+```ts
+import { runPluginWorker } from "@chemdraft/plugin-api";
+
+import { widgetManifest } from "./manifest";
+import { createWidgetRegistration } from "./register";
+
+runPluginWorker({
+  manifest: widgetManifest,
+  commandHandlers: createWidgetRegistration().commandHandlers
+  // onPanelClosed?: cancel in-flight work when your panel closes
+});
+```
+
+The plugin owns this file because only the plugin knows how to construct its own runtime (the NMR
+predictor, for instance, must first stand up its nested OpenChemLib worker). Two rules:
+
+- it has a **top-level side effect**, so never re-export it from `src/index.ts` — importing your public
+  surface must not start a worker runtime;
+- it obeys the one rule above: `@chemdraft/plugin-api` plus your own relative modules. In particular
+  import your own files relatively (`./providers/…`), never by your package's own name.
+
+## Distribute
+
+Two artifacts, both fail-closed on a missing license, a dirty or untracked plugin tree, an import
+outside the public SDK root, or a relative import that escapes the plugin package. Add an explicit
+`LICENSE` or `LICENSE.md` and commit every file that will ship, then run either:
 
 ```bash
+# Built, installable package — the zip a user downloads and the app loads into a Worker.
+pnpm plugin:package -- examples/plugins/<your-plugin>
+# → dist/plugin-packages/<name>-<version>.zip          {manifest.json, entry.js + chunks/assets, LICENSE}
+# → dist/plugin-packages/<name>-<version>.zip.sha256
+
+# Source distribution — for hosts that compose plugins at build time.
 pnpm plugin:extract -- examples/plugins/<your-plugin>
 # → dist/plugins/<name>-<version>.zip
 # → dist/plugins/<name>-<version>.zip.sha256
 ```
 
-Extraction fails closed for a missing license, a dirty or untracked plugin tree, an import outside
-the public SDK root, or a relative import that escapes the plugin package. The generated manifest
-uses the SDK as a peer dependency, records the clean source commit, and the checksum sidecar makes
-the archive independently verifiable. A successful technical extraction does not override the
-license terms inside the archive.
+`plugin:package` builds `src/workerEntry.ts` (override with `--entry`) into an ES-module worker and
+emits its chunks and assets alongside it. Its `manifest.json` is your manifest plus the built entry
+filename and provenance — enough for a host to identify, permission, and load the plugin with no
+ChemDraft monorepo present.
 
-To host the extracted plugin elsewhere, merge the core-enablement surface
+**A built package is relocatable but not a single file.** Its internal references (nested workers,
+code-split chunks, data assets) resolve relative to each module's own URL, so a host must keep the
+unpacked files **co-located** and serve them from a real directory URL on its **own origin**. A blob
+URL cannot host one: a blob has no siblings, so nothing relative can resolve. See
+`reports/0030` in the planning workspace for the measured evidence.
+
+The checksum sidecar makes either archive independently verifiable. It is an **integrity** check, not
+a signature and not a trust decision — and a successful technical build does not override the license
+terms inside the archive.
+
+To host the *extracted source* elsewhere, merge the core-enablement surface
 (`docs/plugin-architecture/CORE-ENABLEMENT.md`) and add one `{ manifest, options }` entry to that
 host's `registerBundledPlugins` catalog.

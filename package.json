@@ -11,6 +11,7 @@
     "build": "pnpm lint && pnpm --filter @chemdraft/desktop build",
     "lint": "tsc -p tsconfig.json --noEmit",
     "plugin:extract": "tsx tools/plugin-extract/extract.ts",
+    "plugin:package": "tsx tools/plugin-package/package.ts",
     "audit:engine3d-sidecar": "node scripts/audit-avogadro3d-sidecar.mjs",
     "smoke:engine3d-real-structure": "node scripts/smoke-engine3d-real-structure.mjs",
     "smoke:engine3d-hold-steady": "node scripts/smoke-engine3d-hold-steady.mjs",

@@ -101,8 +101,12 @@ export function createBundledPluginDescriptors(
 
 /** Delegating command handlers + panel-close forwarding for a worker-routed plugin: each contributed
  *  command runs in the worker via the bridge, and the host's real per-invocation context services its
- *  capability calls (which is also where declared-only enforcement happens). */
-function createWorkerRoutedOptions(manifest: PluginManifest, bridge: PluginWorkerBridge): RegisterPluginOptions {
+ *  capability calls (which is also where declared-only enforcement happens).
+ *
+ *  Exported because a plugin loaded from a built package (M35, `loadPackagedPlugin`) must reach the host
+ *  through exactly this path — that identity is what makes a packaged plugin behave the same as a
+ *  bundled one, rather than merely similarly. */
+export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: PluginWorkerBridge): RegisterPluginOptions {
   const commandHandlers: Record<string, PluginCommandHandler> = {};
   for (const command of manifest.contributes.commands) {
     commandHandlers[command.id] = (context) => bridge.invokeCommand(command.id, context);

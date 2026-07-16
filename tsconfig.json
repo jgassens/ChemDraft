@@ -6,6 +6,7 @@
     "examples/plugins/*/src",
     "packages/*/src",
     "tools/plugin-extract",
+    "tools/plugin-package",
     "vitest.config.ts"
   ]
 }

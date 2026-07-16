@@ -1,30 +1,39 @@
 /**
- * Extract a bundled ChemDraft plugin into a standalone, host-agnostic source-distribution zip.
+ * Extract a bundled ChemDraft plugin into a standalone, host-agnostic **source**-distribution zip.
  *
  *   pnpm plugin:extract -- <plugin-dir> [--out dist/plugins]
  *
  * The command fails closed when the plugin crosses the SDK boundary, has no explicit license, or
  * contains uncommitted files. A successful archive therefore has a meaningful source commit and
- * carries the terms under which its contents may be distributed.
+ * carries the terms under which its contents may be distributed. Those gates are shared with the
+ * built-package tool — see `./gates`.
+ *
+ * This is ADR-0028's artifact, for hosts that compose plugins **at build time**: the recipient bundles
+ * the TypeScript in `src/` the way the ChemDraft desktop does. ADR-0029 §5 reverses ADR-0028 §3 only for
+ * the *installer* path, and adds `pnpm plugin:package` (`tools/plugin-package/`) alongside this tool —
+ * it emits the **built**, installable package a user downloads and the app loads into a Worker. Both
+ * remain supported; neither replaces the other.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { basename, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { checkPluginBoundary, PLUGIN_SDK_PACKAGE } from "./checkBoundary";
+import { PLUGIN_SDK_PACKAGE } from "./checkBoundary";
+import {
+  assertPluginBoundary,
+  canonicalPath,
+  distributionName,
+  findLicense,
+  PluginGateError,
+  readPluginGitState,
+  readPluginPackageJson,
+  repositoryRoot,
+  sdkVersionFrom
+} from "./gates";
 
-export const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-
-interface PluginPackageJson {
-  name: string;
-  version: string;
-  dependencies?: Record<string, string>;
-  peerDependencies?: Record<string, string>;
-  optionalDependencies?: Record<string, string>;
-  exports?: unknown;
-}
+export { repositoryRoot };
 
 export interface ExtractPluginOptions {
   pluginRoot: string;
@@ -42,65 +51,15 @@ export interface ExtractionResult {
   sha256: string;
 }
 
-export class PluginExtractionError extends Error {
+/** A gate (or an extraction-specific check) refused to build the source distribution. */
+export class PluginExtractionError extends PluginGateError {
   constructor(message: string) {
     super(message);
     this.name = "PluginExtractionError";
   }
 }
 
-function run(command: string, args: string[], cwd: string): string {
-  return execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trimEnd();
-}
-
-/** Resolve symlinked existing ancestors too (macOS exposes `/var` as `/private/var`). */
-function canonicalPath(path: string): string {
-  let existing = resolve(path);
-  const missingSegments: string[] = [];
-  while (!existsSync(existing)) {
-    const parent = dirname(existing);
-    if (parent === existing) break;
-    missingSegments.unshift(basename(existing));
-    existing = parent;
-  }
-  return join(realpathSync(existing), ...missingSegments);
-}
-
-function readPluginGitState(pluginRoot: string): { sourceCommit: string; repository: string } {
-  let repository: string;
-  let sourceCommit: string;
-  try {
-    repository = realpathSync(run("git", ["rev-parse", "--show-toplevel"], pluginRoot));
-    sourceCommit = run("git", ["rev-parse", "HEAD"], pluginRoot);
-  } catch {
-    throw new PluginExtractionError("plugin must belong to a Git repository so source provenance can be recorded");
-  }
-
-  const pathspec = relative(repository, realpathSync(pluginRoot)) || ".";
-  const status = run("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", pathspec], repository);
-  if (status) {
-    throw new PluginExtractionError(
-      `plugin has uncommitted or untracked files; commit or clean them before extracting:\n${status}`
-    );
-  }
-  return { sourceCommit, repository };
-}
-
-function sdkVersionFrom(repoRoot: string): string {
-  const source = readFileSync(join(repoRoot, "packages/plugin-api/src/index.ts"), "utf8");
-  const match = source.match(/PluginApiVersion\s*=\s*"([^"]+)"/);
-  if (!match) throw new PluginExtractionError("could not read PluginApiVersion from plugin-api");
-  return match[1];
-}
-
-function findLicense(pluginRoot: string): string {
-  for (const candidate of ["LICENSE", "LICENSE.md"]) {
-    if (existsSync(join(pluginRoot, candidate))) return candidate;
-  }
-  throw new PluginExtractionError(
-    "plugin has no LICENSE or LICENSE.md; refusing to create a distributable archive without explicit terms"
-  );
-}
+const gateError = (message: string): PluginGateError => new PluginExtractionError(message);
 
 function externalDependencies(dependencies: Record<string, string> | undefined): Record<string, string> {
   return Object.fromEntries(
@@ -129,30 +88,12 @@ export function extractPlugin(options: ExtractPluginOptions): ExtractionResult {
   const pluginRoot = realpathSync(resolve(options.pluginRoot));
   const outDir = canonicalPath(options.outDir ?? join(repoRoot, "dist/plugins"));
 
-  const violations = checkPluginBoundary(pluginRoot);
-  if (violations.length > 0) {
-    const details = violations.map((violation) => `${violation.file} imports ${violation.specifier}`).join("\n");
-    throw new PluginExtractionError(
-      `plugin imports outside the SDK (${PLUGIN_SDK_PACKAGE}); refusing to extract:\n${details}`
-    );
-  }
-
-  const licenseFile = findLicense(pluginRoot);
-  const { sourceCommit } = readPluginGitState(pluginRoot);
-  const pkg = JSON.parse(readFileSync(join(pluginRoot, "package.json"), "utf8")) as PluginPackageJson;
-  if (typeof pkg.name !== "string" || pkg.name.length === 0) {
-    throw new PluginExtractionError("plugin package.json must contain a non-empty name");
-  }
-  if (typeof pkg.version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(pkg.version)) {
-    throw new PluginExtractionError("plugin package.json must contain a filename-safe version");
-  }
-
-  const name = basename(pluginRoot);
-  if (!/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(name)) {
-    throw new PluginExtractionError("plugin directory name must be filename-safe");
-  }
-
-  const sdkVersion = sdkVersionFrom(repoRoot);
+  assertPluginBoundary(pluginRoot, gateError);
+  const licenseFile = findLicense(pluginRoot, gateError);
+  const { sourceCommit } = readPluginGitState(pluginRoot, gateError);
+  const pkg = readPluginPackageJson(pluginRoot, gateError);
+  const name = distributionName(pluginRoot, gateError);
+  const sdkVersion = sdkVersionFrom(repoRoot, gateError);
   const staging = join(outDir, name);
   const zipPath = join(outDir, `${name}-${pkg.version}.zip`);
   const checksumPath = `${zipPath}.sha256`;

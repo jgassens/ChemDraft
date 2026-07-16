@@ -806,3 +806,19 @@ export {
 } from "./workerProtocol";
 
 export { runPluginWorker, PluginWorkerCapabilityError, type PluginWorkerRegistration } from "./workerRuntime";
+
+// --- Built plugin package (ADR-0029 §5, M35) -------------------------------------------------------
+// The `manifest.json` contract of the installable zip: a superset of PluginManifest carrying the built
+// entry filename plus packaging provenance. Shared by the `plugin:package` tool that writes it and the
+// host that reads it, so a package stays loadable without this monorepo.
+export {
+  PACKAGED_PLUGIN_MANIFEST_FILE,
+  PACKAGED_PLUGIN_PROVENANCE_KEY,
+  PackagedPluginProvenanceSchema,
+  createPackagedPluginManifestDocument,
+  isPackagedPluginManifestDocument,
+  parsePackagedPluginManifest,
+  type PackagedPluginManifest,
+  type PackagedPluginManifestDocument,
+  type PackagedPluginProvenance
+} from "./packageManifest";

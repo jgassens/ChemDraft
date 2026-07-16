@@ -1,6 +1,6 @@
 # Agent Instructions for the ChemDraft NMR Plugin Branch
 
-**Current Build**: 7.15.22.36-codex
+**Current Build**: 7.16.09.05-claude
 
 > [!IMPORTANT]
 > When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`. This is an established repository convention — see the structure-inspector branch's AGENTS.md.
@@ -291,29 +291,30 @@ Do not introduce an RPC framework merely to avoid a small amount of repeated wor
 
 ## Chemistry and scientific-claim rules
 
-The Phase 1 predictor is an architecture test, not a validated scientific product.
+**The shipped backend is the OCL-native provider: HOSE-fragment lookup over shift statistics derived from NMRShiftDB2 experimental assignments** (M10; data license in ADR-0014). It is the default wherever the desktop or the packaged plugin wires a predictor. `FixtureHosePredictor` survives only for tests and as an offline / no-`Worker` fallback — **it is not what ships to a user, and the shipped path must never be described as fixture-backed or synthetic.**
 
-The required working backend is a ChemDraft-owned deterministic fixture-fragment provider.
+It is a benchmarked lookup predictor with disclosed limits — not a substitute for measurement, and not a validated scientific product. Accuracy **is** benchmarked (M29/ADR-0026, leakage-free held-out split; as of the seed-1 run: ¹H median 0.17 ppm, ¹³C median 1.6 ppm), so "not benchmarked" is no longer a reason to suppress an accuracy figure — but any figure shown to a user must stay **checksum-gated to the benchmarked corpus** (M31) and must drop for any other database build.
 
 Required labeling:
 
 - ¹³C is enabled by default;
 - ¹H is disabled by default or visibly marked experimental;
-- fixture values are identified as synthetic architecture-test data;
+- fixture values, wherever they are used, are identified as synthetic architecture-test data;
+- the active backend's data provenance is stated (NMRShiftDB2-derived statistics; nmrshiftdb2 Database License, ODbL-derived). Code licensing and data licensing are separate;
+- ¹H multiplicity and J are **first-order topology estimates, labeled as estimated** — never presented as measured (ADR-0017/0018; ADR-0021 settled this as the honest ceiling, since measured J is not freely bundleable);
 - stick height is identified as predicted equivalent nuclei, not integration;
+- lineshape/linewidth and the spectrometer field are **simulation parameters** (M20/M23), not measured quantities;
+- potentially nonequivalent CH₂ hydrogens receive a disclosure, never fabricated separate shifts (M25);
 - unsupported atom environments produce warnings and omitted resonances.
 
 Do not claim or display:
 
-- experimental accuracy that has not been benchmarked;
-- multiplicity;
-- J coupling;
-- line width;
-- realistic multiplets;
+- an accuracy figure detached from its checksum gate, or accuracy for an unbenchmarked corpus;
+- **measured** multiplicity or J coupling (estimated, explicitly-labeled values are permitted — see above);
 - experimental integration;
-- solvent correction;
+- solvent correction — the CDCl₃-predominant corpus is *disclosed*, not corrected for (M23);
 - conformational averaging;
-- calibrated confidence percentages;
+- calibrated confidence percentages — honest tiers derived from HOSE sphere depth + reference `n` are the supported form (M17a/ADR-0020);
 - stable ChemDraft atom identity from provider atom indices.
 
 Never fabricate a chemical shift for an unmatched environment. Do not silently substitute zero, a molecule average, or an undisclosed generic atom average.
@@ -369,9 +370,9 @@ Treat `nmr-predictor` as an optional compatibility investigation. Reject it as t
 - weakened bundler checks;
 - undocumented database redistribution.
 
-A failed compatibility investigation is a valid result. Record the exact reason and retain the fixture-backed provider.
+A failed compatibility investigation is a valid result. Record the exact reason and retain the working default provider.
 
-Code licensing and data licensing are separate. Do not assume an MIT package license covers an included or downloaded NMR database.
+Code licensing and data licensing are separate. Do not assume the plugin's code license covers an included or downloaded NMR database — and note that the plugin's own code license is **not yet finalized** (see its `LICENSE`); earlier docs claiming "MIT" were wrong and have been corrected. Do not reintroduce that claim.
 
 ## Coding practices
 
