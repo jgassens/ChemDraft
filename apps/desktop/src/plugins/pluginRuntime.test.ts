@@ -5,6 +5,7 @@ import {
 } from "@chemdraft/molscribe-ocsr-plugin";
 import { nmrPredictCarbonCommandId, nmrPredictorManifest } from "@chemdraft/plugin-nmr-predictor";
 import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
+import { CommandRegistry } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPluginRuntime, type DesktopPluginRuntimeOptions } from "./createPluginRuntime";
@@ -150,6 +151,41 @@ describe("desktop plugin runtime", () => {
 
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
     expect(runtime.panels.getDiagnostics().map((diagnostic) => diagnostic.code)).toContain("panel-unknown");
+  });
+
+  it("shares an injected CommandRegistry with core commands and keeps plugin ownership distinguishable", async () => {
+    // The union runtime registers plugin commands into the SAME registry MainWindow's core commands
+    // live in (commands/coreCommandRegistrar). Presence in the registry therefore no longer implies
+    // "plugin command" — ownership is the pluginId stamped on the definition (study R3).
+    const shared = new CommandRegistry();
+    let coreRan = 0;
+    shared.register({ id: "core.probe", title: "Probe", source: "core" }, () => {
+      coreRan += 1;
+      return undefined;
+    });
+
+    const runtime = makeRuntime({ commandRegistry: shared });
+    registerBundledPlugins(runtime);
+
+    // One registry serves both worlds.
+    expect(runtime.host.commands).toBe(shared);
+    expect(runtime.host.commands.has("core.probe")).toBe(true);
+    expect(runtime.host.commands.has(molscribeOcsrCommandId)).toBe(true);
+
+    // Ownership: core commands carry no pluginId; plugin commands carry their manifest id.
+    expect(runtime.host.commands.get("core.probe")?.pluginId).toBeUndefined();
+    expect(runtime.host.commands.get(molscribeOcsrCommandId)?.pluginId).toBe(molscribeOcsrManifest.id);
+
+    // Single dispatch handles both: plain for core, permission context for plugin-owned.
+    await runtime.host.invokeCommand("core.probe");
+    expect(coreRan).toBe(1);
+    await runtime.host.invokeCommand(molscribeOcsrCommandId);
+    expect(runtime.panels.getOpenPanel()?.panelId).toBe(molscribeOcsrPanelId);
+
+    // Unregistering a plugin removes only its own commands from the shared registry.
+    runtime.unregisterPlugin(molscribeOcsrManifest.id);
+    expect(runtime.host.commands.has(molscribeOcsrCommandId)).toBe(false);
+    expect(runtime.host.commands.has("core.probe")).toBe(true);
   });
 
   it("builds Analyze menu items for registered contributions plus the diagnostics opener", () => {

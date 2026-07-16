@@ -80,4 +80,58 @@ describe("PluginPanelController", () => {
     expect(notifyPanelClosed).toHaveBeenCalledWith("plugin.a", "panel.a");
     expect(controller.getOpenPanel()).toBeUndefined();
   });
+
+  it("detaches a panel without a close notification and frees the in-app slot (ADR-0030)", () => {
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
+    controller.detachPanel("panel.a");
+
+    // Detaching is a surface change, not a close: the plugin must NOT get a cancellation signal.
+    expect(notifyPanelClosed).not.toHaveBeenCalled();
+    expect(controller.getOpenPanel()).toBeUndefined();
+    expect(controller.getDetachedPanels().map((panel) => panel.panelId)).toEqual(["panel.a"]);
+
+    // The freed slot serves another plugin without touching the detached panel.
+    controller.showReport("plugin.b", "panel.b", { title: "B", sections: [] });
+    expect(notifyPanelClosed).not.toHaveBeenCalled();
+    expect(controller.getOpenPanel()?.panelId).toBe("panel.b");
+    expect(controller.getDetachedPanels()).toHaveLength(1);
+  });
+
+  it("routes new reports for a detached panel to the detached entry, not the in-app slot", () => {
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "Pending", sections: [] });
+    controller.detachPanel("panel.a");
+    controller.showReport("plugin.b", "panel.b", { title: "B", sections: [] });
+
+    // The detached panel's plugin pushes its result; the in-app panel (plugin.b) must be untouched.
+    controller.showReport("plugin.a", "panel.a", { title: "Result", sections: [], rerunCommandId: "cmd.proton" });
+
+    expect(controller.getOpenPanel()?.panelId).toBe("panel.b");
+    const detached = controller.getDetachedPanels().find((panel) => panel.panelId === "panel.a");
+    expect(detached?.report.title).toBe("Result");
+    expect(detached?.commandId).toBe("cmd.proton");
+    expect(notifyPanelClosed).not.toHaveBeenCalled();
+  });
+
+  it("treats closing a detached panel as a real ADR-0012 close", () => {
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
+    controller.detachPanel("panel.a");
+    controller.closeDetachedPanel("panel.a");
+
+    expect(notifyPanelClosed).toHaveBeenCalledOnce();
+    expect(notifyPanelClosed).toHaveBeenCalledWith("plugin.a", "panel.a");
+    expect(controller.getDetachedPanels()).toHaveLength(0);
+
+    // Unknown/already-closed ids are no-ops, not throws.
+    controller.closeDetachedPanel("panel.a");
+    expect(notifyPanelClosed).toHaveBeenCalledOnce();
+  });
 });

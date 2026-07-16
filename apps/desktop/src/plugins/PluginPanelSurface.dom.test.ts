@@ -157,6 +157,25 @@ describe("PluginPanelSurface", () => {
     expect(container!.querySelector("svg")).toBeNull();
   });
 
+  it("offers Open as window only when the desktop provides the handler (ADR-0030 chrome)", () => {
+    // Browser build: no handler, no control — the in-app surface is the only panel surface.
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel })));
+    expect(container!.querySelector(".plugin-panel-open-window")).toBeNull();
+    act(() => {
+      root?.unmount();
+    });
+    container?.remove();
+
+    const onOpenAsWindow = vi.fn();
+    mount(createElement(PluginPanelSurface, surfaceProps({ openPanel, onOpenAsWindow })));
+    const openAsWindow = container!.querySelector<HTMLButtonElement>(".plugin-panel-open-window");
+    expect(openAsWindow).not.toBeNull();
+    act(() => {
+      openAsWindow!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onOpenAsWindow).toHaveBeenCalledTimes(1);
+  });
+
   it("renders an interactive linked figure and offers an Expand toggle that grows the surface", () => {
     mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: linkedFigurePanel })));
 
