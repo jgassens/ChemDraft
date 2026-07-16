@@ -74,6 +74,17 @@ export class PluginPanelController {
     return this.diagnostics;
   }
 
+  /**
+   * Record a controlled runtime diagnostic from desktop code.
+   *
+   * Used by the installed-plugin reload (M36): an install whose staged files are missing or unloadable
+   * must be *reported*, not thrown, so one broken install cannot stop the app — or the other plugins —
+   * from starting. Same contract as the internal unknown-panel path, just reachable from outside.
+   */
+  reportDiagnostic(code: string, message: string): void {
+    this.recordDiagnostic(code, message);
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => {

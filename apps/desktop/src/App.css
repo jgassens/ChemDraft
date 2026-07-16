@@ -5268,6 +5268,100 @@ textarea:focus-visible,
   line-height: 1.4;
 }
 
+/* Installed plugins (M36): badge, per-row actions, and the pre-install disclosure. */
+.plugin-manager-badge {
+  margin-left: var(--cd-space-3);
+  padding: 1px var(--cd-space-2);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  color: var(--cd-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.plugin-manager-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--cd-space-3);
+}
+
+.plugin-manager-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cd-space-2);
+  margin: var(--cd-space-3) 0 0;
+  color: var(--cd-text-muted);
+}
+
+.plugin-manager-permissions ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cd-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-manager-permission {
+  padding: 1px var(--cd-space-2);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.plugin-manager-permission.is-dangerous {
+  border-color: var(--cd-stoplight-border);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+}
+
+.plugin-manager-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-space-5);
+  padding: var(--cd-space-6);
+  border-top: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-manager-review-body p {
+  margin: var(--cd-space-3) 0 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-provenance {
+  display: grid;
+  gap: var(--cd-space-2);
+  margin: var(--cd-space-4) 0 0;
+}
+
+.plugin-manager-provenance > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: var(--cd-space-3);
+}
+
+.plugin-manager-provenance dt {
+  color: var(--cd-text-muted);
+}
+
+.plugin-manager-provenance dd {
+  margin: 0;
+  color: var(--cd-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-digest {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
 @media (max-width: 520px) {
   .plugin-manager-item,
   .plugin-manager-package {

@@ -1,6 +1,6 @@
 # Agent Instructions for the ChemDraft NMR Plugin Branch
 
-**Current Build**: 7.16.09.05-claude
+**Current Build**: 7.16.12.05-claude
 
 > [!IMPORTANT]
 > When implementation work starts or a significant slice is finished, update this build stamp and the corresponding `Build` string in `apps/desktop/src/MainWindow.tsx`. Use `[month].[day].[hour].[minute]-[agent_name]`. This is an established repository convention — see the structure-inspector branch's AGENTS.md.
@@ -372,7 +372,11 @@ Treat `nmr-predictor` as an optional compatibility investigation. Reject it as t
 
 A failed compatibility investigation is a valid result. Record the exact reason and retain the working default provider.
 
-Code licensing and data licensing are separate. Do not assume the plugin's code license covers an included or downloaded NMR database — and note that the plugin's own code license is **not yet finalized** (see its `LICENSE`); earlier docs claiming "MIT" were wrong and have been corrected. Do not reintroduce that claim.
+Code licensing and data licensing are separate. **The example plugins' original code is MIT** (`examples/plugins/*/LICENSE`, `license` field in each `package.json`), finalized 2026-07-16 by the project owner. MIT was chosen deliberately, not as a default: the nmrshiftdb2 Database License requires that prediction software relying on the database be under an OSI-approved license, and MIT satisfies that.
+
+**MIT does not cover the bundled reference database.** That database is a *derivative database* under the nmrshiftdb2 Database License (ODbL-derived) and carries **share-alike and attribution** obligations that travel with any redistribution — including a packaged plugin `.zip`, which contains it. Never describe a packaged plugin as "MIT" without that carve-out, and do not assume the code license covers an included or downloaded NMR database.
+
+The **root repository** `LICENSE` is a separate matter: it remains unfinalized and the root `package.json` says `UNLICENSED`. That is the project owner's call — do not change it, and do not infer the plugins' MIT applies to the core app.
 
 ## Coding practices
 

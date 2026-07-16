@@ -1,9 +1,48 @@
-License not finalized.
+MIT License
 
-The project plan recommends MIT or Apache-2.0 for example plugins. Until the ChemDraft project owner
-chooses and applies a final code license, treat the original source code in this plugin package as not
-licensed for public redistribution.
+Copyright (c) 2026 Jeremiah J. Gassensmith
 
-Third-party dependencies and the bundled NMRShiftDB2-derived data remain subject to their own terms,
-which are identified in THIRD_PARTY_NOTICES.md and src/providers/ocl/NMRSHIFTDB2_LICENSE.md. Nothing
-in this notice grants rights to those third-party materials beyond their respective licenses.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## Scope: the MIT grant above covers this plugin's original code only
+
+Code licensing and data licensing are separate. This plugin ships a bundled data
+asset and depends on third-party software. Neither is relicensed by the grant
+above:
+
+- **The bundled reference database** — `src/providers/ocl/nmrshiftdb2.database.json`,
+  and the built `assets/nmrWorker-*.js` chunk that embeds it — is a **derivative
+  database** under the **nmrshiftdb2 Database License** (ODbL-derived). It permits
+  use including commercial use, but carries **share-alike and attribution**
+  obligations that travel with any redistribution — including redistribution of a
+  packaged `.zip` of this plugin, which contains that database. See
+  `src/providers/ocl/NMRSHIFTDB2_LICENSE.md` for the provenance record and the
+  upstream license text, which governs.
+
+- **Third-party dependencies** — openchemlib (BSD-3-Clause), zod (MIT) — remain
+  under their own terms. See `THIRD_PARTY_NOTICES.md`.
+
+Nothing in the MIT grant above conveys any right to those materials beyond their
+respective licenses.
+
+MIT was chosen deliberately rather than as a default: the nmrshiftdb2 Database
+License requires that prediction software relying on the database be under an
+OSI-approved license. MIT is OSI-approved and satisfies that condition.

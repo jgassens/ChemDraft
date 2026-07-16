@@ -1,5 +1,6 @@
 mod export;
 mod fonts;
+mod installed_plugins;
 
 use std::{
     collections::HashMap,
@@ -301,6 +302,12 @@ pub fn run() {
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(PluginNativeMenuItems::default())
+        // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
+        // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
+        // handler rather than adding a scheme — a new scheme would be a new origin, and M35 measured
+        // that a plugin package only loads same-origin. The origin is unchanged, so no origin-keyed
+        // state (localStorage, IndexedDB) is disturbed. See `installed_plugins` for the full rationale.
+        .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .menu(create_app_menu)

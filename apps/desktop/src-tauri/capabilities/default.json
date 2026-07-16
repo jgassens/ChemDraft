@@ -59,6 +59,10 @@
     "fs:allow-read-file",
     "fs:allow-write-text-file",
     "fs:allow-write-file",
+    "fs:allow-mkdir",
+    "fs:allow-remove",
+    "fs:allow-exists",
+    "fs:allow-read-dir",
     {
       "identifier": "fs:scope",
       "allow": [
@@ -66,7 +70,10 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DESKTOP/**" },
         { "path": "$DOWNLOAD/**" },
-        { "path": "$TEMP/**" }
+        { "path": "$TEMP/**" },
+        { "path": "$APPDATA/installed-plugins.json" },
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
       ]
     }
   ]
