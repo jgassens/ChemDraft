@@ -4,10 +4,9 @@
 were made by the pass that produced this. The recommendations below were never implemented — treat
 them as an open backlog, and re-check the code before acting on any of them.
 
-**Provenance:** Recovered verbatim from an uncommitted `handoff.md` in the `chemdraw-3d-advanced2`
-worktree while pruning it on 2026-07-15. The worktree and its `codex/3d-advanced2` branch were
-deleted after PR #8 merged; this document existed nowhere else, so it is committed here to keep the
-findings. Body text is the original author's, unedited. Related: `3d-spin-flatten.md`.
+**Provenance:** Moved here from a stray `handoff.md` at the repository root, where it had sat since
+the `f94dc617` baseline commit. Body text is the original author's, unedited — only this header was
+added. Related: `3d-spin-flatten.md`.
 
 The headline result is the non-obvious one: **first-3D-generation cost tracks graph *shape*, not
 size** — a branched 63-atom chain takes ~8.1 s to embed while a straight 63-atom chain takes ~0.5 s.
