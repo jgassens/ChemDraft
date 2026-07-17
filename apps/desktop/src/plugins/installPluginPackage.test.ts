@@ -383,9 +383,9 @@ describe("installPluginPackage", () => {
   });
 
   /**
-   * A package keeps the id of the plugin it was built from, so installing `nmr-predictor-0.0.0.zip` on a
-   * build that already bundles the NMR predictor is the ordinary case — both are
-   * `org.chemdraft.nmr.predictor`. The install therefore *replaces* the bundled registration rather than
+   * A package keeps the id of the plugin it was built from, so installing `mass-fragment-demo-0.0.0.zip`
+   * on a build that already bundles the mass analyzer is the ordinary case — both are
+   * `org.chemdraft.mass.fragment`. The install therefore *replaces* the bundled registration rather than
    * being refused, and uninstall gives the id back.
    */
   it("replaces a bundled plugin of the same id, and restores it on uninstall", async () => {

@@ -6,7 +6,7 @@ export const FIXTURE_PLUGIN_PING_COMMAND_ID = "plugin.fixture.ping";
 
 /**
  * Dev/test-only plugin. It exercises the real plugin runtime end to end — contributing a
- * command and a toolset exactly the way a shipped extension (e.g. the NMR predictor) will,
+ * command and a toolset exactly the way a shipped extension (e.g. the mass analyzer) will,
  * so the same pipeline is proven before any real extension exists. Registered only under
  * import.meta.env.DEV; never present in production builds.
  *

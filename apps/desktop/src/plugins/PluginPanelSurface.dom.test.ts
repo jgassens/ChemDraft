@@ -93,11 +93,11 @@ const openPanel: OpenPluginPanel = {
 const linkedFigurePanel: OpenPluginPanel = {
   ...openPanel,
   report: {
-    title: "NMR Prediction",
+    title: "Analysis Result",
     sections: [
       {
         kind: "linkedFigure",
-        title: "Predicted ¹H NMR",
+        title: "Predicted ¹H spectrum",
         spectrum: {
           nucleus: "1H",
           domain: { min: 0, max: 8 },
@@ -240,7 +240,7 @@ describe("PluginPanelSurface", () => {
     });
     const pendingPanel: OpenPluginPanel = {
       ...linkedFigurePanel,
-      report: { title: "Predicting NMR", sections: [{ kind: "text", body: "Working…" }] }
+      report: { title: "Predicting spectrum", sections: [{ kind: "text", body: "Working…" }] }
     };
     act(() => {
       root!.render(createElement(PluginPanelSurface, surfaceProps({ openPanel: pendingPanel })));

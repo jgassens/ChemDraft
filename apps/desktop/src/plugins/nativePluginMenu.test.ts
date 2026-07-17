@@ -13,12 +13,12 @@ function analyzeItem(commandId: string, label: string, enabled = true): PluginAp
 describe("pluginAnalyzeItemsForNativeMenu", () => {
   it("maps analyze-location plugin commands to native menu items keyed by command id", () => {
     const items = pluginAnalyzeItemsForNativeMenu([
-      analyzeItem("plugin.nmrPredictor.predictSelectedStructure", "Predict ¹³C NMR Shifts"),
+      analyzeItem("plugin.massFragment.analyzeSelectedStructure", "Analyze Mass / m/z"),
       analyzeItem("plugin.runtime.showDiagnostics", "Bundled Plugins…", false)
     ]);
 
     expect(items).toEqual([
-      { id: "plugin.nmrPredictor.predictSelectedStructure", label: "Predict ¹³C NMR Shifts", enabled: true },
+      { id: "plugin.massFragment.analyzeSelectedStructure", label: "Analyze Mass / m/z", enabled: true },
       { id: "plugin.runtime.showDiagnostics", label: "Bundled Plugins…", enabled: false }
     ]);
   });

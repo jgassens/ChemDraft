@@ -27,7 +27,7 @@ afterEach(() => {
   container = undefined;
 });
 
-const PANEL_ID = "panel.nmrPredictor.result";
+const PANEL_ID = "panel.exampleAnalyzer.result";
 
 async function mountWindow(): Promise<void> {
   container = document.createElement("div");
@@ -43,16 +43,16 @@ async function mountWindow(): Promise<void> {
 function reportPayload(overrides: Partial<PluginPanelReportPayload> = {}): PluginPanelReportPayload {
   return {
     panelId: PANEL_ID,
-    pluginId: "org.chemdraft.nmr.predictor",
+    pluginId: "org.test.exampleAnalyzer",
     revision: 1,
-    commandId: "plugin.nmrPredictor.predictSelectedStructure",
+    commandId: "plugin.exampleAnalyzer.run",
     report: {
-      title: "NMR Prediction",
+      title: "Analysis Result",
       sections: [
-        { kind: "keyValue", title: "Runtime", rows: [{ label: "Backend", value: "chemdraft.ocl-hose" }] },
+        { kind: "keyValue", title: "Runtime", rows: [{ label: "Backend", value: "chemdraft.demo-engine" }] },
         {
           kind: "linkedFigure",
-          title: "Predicted ¹H NMR",
+          title: "Predicted ¹H spectrum",
           spectrum: {
             nucleus: "1H",
             domain: { min: 0, max: 8 },
@@ -84,9 +84,9 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     // window switch silently dropped unknown kinds, losing this entire section).
     expect(container!.querySelector(".plugin-report")).not.toBeNull();
     expect(container!.textContent).toContain("Backend");
-    expect(container!.textContent).toContain("chemdraft.ocl-hose");
+    expect(container!.textContent).toContain("chemdraft.demo-engine");
     expect(container!.querySelector(".lf-root")).not.toBeNull();
-    expect(container!.textContent).toContain("Predicted ¹H NMR");
+    expect(container!.textContent).toContain("Predicted ¹H spectrum");
   });
 
   it("applies the revision guard so a late broadcast never regresses the panel", async () => {

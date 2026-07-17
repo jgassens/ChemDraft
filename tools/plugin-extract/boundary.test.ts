@@ -28,8 +28,10 @@ function temporaryPlugin(source: string): string {
   return root;
 }
 
-/** Plugins that are contracted to depend only on the plugin SDK and are therefore extractable (M33). */
-const EXTRACTABLE_PLUGINS = ["nmr-predictor", "mass-fragment-demo"];
+/** Plugins that are contracted to depend only on the plugin SDK and are therefore extractable (M33).
+ *  The NMR predictor left this list when it was stripped from the core build (M39); it is packaged
+ *  and installed as a zip from its own repo, so its boundary is enforced there. */
+const EXTRACTABLE_PLUGINS = ["mass-fragment-demo"];
 
 describe("plugin import boundary", () => {
   it.each(EXTRACTABLE_PLUGINS)(`%s runtime source imports only ${PLUGIN_SDK_PACKAGE}`, (name) => {
@@ -37,17 +39,17 @@ describe("plugin import boundary", () => {
   });
 
   it("is not vacuously passing — it scans real source files", () => {
-    const files = listRuntimeSourceFiles(pluginDir("nmr-predictor"));
-    expect(files.length).toBeGreaterThan(10);
+    const files = listRuntimeSourceFiles(pluginDir("mass-fragment-demo"));
+    expect(files.length).toBeGreaterThan(5);
     expect(files.some((file) => file.endsWith(".ts"))).toBe(true);
-    // The known self-referential doc comment in index.ts must NOT be read as an import violation.
-    expect(checkPluginBoundary(pluginDir("nmr-predictor"))).toEqual([]);
+    // Doc comments that merely mention package names must NOT be read as import violations.
+    expect(checkPluginBoundary(pluginDir("mass-fragment-demo"))).toEqual([]);
   });
 
   it("catches a disallowed core import when the SDK is narrowed to nothing", () => {
     // Feeding an impossible SDK package proves the checker actually flags @chemdraft/* imports
     // rather than silently returning [] (a guard that can't fail is worthless).
-    const violations = checkPluginBoundary(pluginDir("nmr-predictor"), "@chemdraft/__none__");
+    const violations = checkPluginBoundary(pluginDir("mass-fragment-demo"), "@chemdraft/__none__");
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.every((violation) => violation.specifier === PLUGIN_SDK_PACKAGE)).toBe(true);
   });

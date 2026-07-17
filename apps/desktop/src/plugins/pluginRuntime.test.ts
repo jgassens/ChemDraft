@@ -3,7 +3,7 @@ import {
   molscribeOcsrManifest,
   molscribeOcsrPanelId
 } from "@chemdraft/molscribe-ocsr-plugin";
-import { nmrPredictCarbonCommandId, nmrPredictorManifest } from "@chemdraft/plugin-nmr-predictor";
+import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
@@ -34,18 +34,17 @@ describe("desktop plugin runtime", () => {
     expect(runtime.host.listPlugins().map((manifest) => manifest.id)).toContain(molscribeOcsrManifest.id);
     expect(descriptors.map((descriptor) => descriptor.manifest.id)).toEqual([
       "org.chemdraft.ocsr.molscribe",
-      "org.chemdraft.nmr.predictor",
       "org.chemdraft.mass.fragment"
     ]);
   });
 
   it("skips persisted disabled plugins during startup", () => {
     const runtime = makeRuntime();
-    registerBundledPlugins(runtime, new Set([nmrPredictorManifest.id]));
+    registerBundledPlugins(runtime, new Set([massFragmentManifest.id]));
 
-    expect(runtime.host.getPlugin(nmrPredictorManifest.id)).toBeUndefined();
-    expect(runtime.host.commands.has(nmrPredictCarbonCommandId)).toBe(false);
-    expect(runtime.host.listPlugins()).toHaveLength(2);
+    expect(runtime.host.getPlugin(massFragmentManifest.id)).toBeUndefined();
+    expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(false);
+    expect(runtime.host.listPlugins()).toHaveLength(1);
   });
 
   it("applies enabled plugins idempotently and updates command and menu contributions live", () => {
@@ -55,24 +54,24 @@ describe("desktop plugin runtime", () => {
     runtime.host.subscribe(changes);
 
     applyEnabledPlugins(runtime, new Set(), descriptors);
-    expect(runtime.host.listPlugins()).toHaveLength(3);
+    expect(runtime.host.listPlugins()).toHaveLength(2);
+    expect(changes).toHaveBeenCalledTimes(2);
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    expect(runtime.host.listPlugins()).toHaveLength(2);
+    expect(changes).toHaveBeenCalledTimes(2);
+
+    applyEnabledPlugins(runtime, new Set([massFragmentManifest.id]), descriptors);
+    expect(runtime.host.getPlugin(massFragmentManifest.id)).toBeUndefined();
+    expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(false);
+    expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === massFragmentManifest.id)).toBe(false);
     expect(changes).toHaveBeenCalledTimes(3);
 
     applyEnabledPlugins(runtime, new Set(), descriptors);
-    expect(runtime.host.listPlugins()).toHaveLength(3);
-    expect(changes).toHaveBeenCalledTimes(3);
-
-    applyEnabledPlugins(runtime, new Set([nmrPredictorManifest.id]), descriptors);
-    expect(runtime.host.getPlugin(nmrPredictorManifest.id)).toBeUndefined();
-    expect(runtime.host.commands.has(nmrPredictCarbonCommandId)).toBe(false);
-    expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === nmrPredictorManifest.id)).toBe(false);
+    expect(runtime.host.getPlugin(massFragmentManifest.id)?.manifest.id).toBe(massFragmentManifest.id);
+    expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(true);
+    expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === massFragmentManifest.id)).toBe(true);
     expect(changes).toHaveBeenCalledTimes(4);
-
-    applyEnabledPlugins(runtime, new Set(), descriptors);
-    expect(runtime.host.getPlugin(nmrPredictorManifest.id)?.manifest.id).toBe(nmrPredictorManifest.id);
-    expect(runtime.host.commands.has(nmrPredictCarbonCommandId)).toBe(true);
-    expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === nmrPredictorManifest.id)).toBe(true);
-    expect(changes).toHaveBeenCalledTimes(5);
   });
 
   it("closes a plugin-owned panel before unregistering its close hook", async () => {
@@ -196,8 +195,13 @@ describe("desktop plugin runtime", () => {
     const commandIds = items.map((item) => item.command.commandId);
 
     expect(commandIds).toContain(molscribeOcsrCommandId);
+    expect(commandIds).toContain(massAnalyzeCommandId);
     expect(commandIds).toContain(PLUGIN_DIAGNOSTICS_COMMAND_ID);
     expect(items.every((item) => item.command.pluginContributed === true)).toBe(true);
     expect(items.find((item) => item.command.commandId === molscribeOcsrCommandId)?.location).toBe("analyze");
+
+    // Core-only build (M39): no bundled contribution may put an NMR item in any menu — NMR features
+    // can arrive only through the installer.
+    expect(items.some((item) => /nmr/i.test(item.command.commandId) || /nmr/i.test(item.command.label))).toBe(false);
   });
 });

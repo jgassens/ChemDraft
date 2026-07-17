@@ -256,13 +256,13 @@ mod tests {
     #[test]
     fn accepts_a_plain_plugin_relative_path() {
         assert_eq!(
-            safe_relative_path("org.chemdraft.nmr.predictor/entry.js"),
-            Some(PathBuf::from("org.chemdraft.nmr.predictor/entry.js"))
+            safe_relative_path("org.chemdraft.mass.fragment/entry.js"),
+            Some(PathBuf::from("org.chemdraft.mass.fragment/entry.js"))
         );
         assert_eq!(
-            safe_relative_path("org.chemdraft.nmr.predictor/assets/nmrWorker-BcY5tkZR.js"),
+            safe_relative_path("org.chemdraft.mass.fragment/assets/worker-BcY5tkZR.js"),
             Some(PathBuf::from(
-                "org.chemdraft.nmr.predictor/assets/nmrWorker-BcY5tkZR.js"
+                "org.chemdraft.mass.fragment/assets/worker-BcY5tkZR.js"
             ))
         );
     }
@@ -284,7 +284,7 @@ mod tests {
     fn refuses_empty_bare_and_nul_paths() {
         assert_eq!(safe_relative_path(""), None);
         // A bare plugin id addresses a directory, not an asset.
-        assert_eq!(safe_relative_path("org.chemdraft.nmr.predictor"), None);
+        assert_eq!(safe_relative_path("org.chemdraft.mass.fragment"), None);
         assert_eq!(safe_relative_path("plugin/entry\0.js"), None);
     }
 

@@ -5550,7 +5550,7 @@ textarea:focus-visible,
 
 /* -------------------------------------------------------------------------- */
 /* Plugin panel surface                                                        */
-/* Declarative reports from contributed plugins (e.g. the NMR predictor) render */
+/* Declarative reports from contributed plugins (e.g. the mass analyzer) render  */
 /* here. Docked as a floating card on the right, above the canvas and palettes  */
 /* (z-index 20) but below menu popovers (1300). Without these rules the surface  */
 /* renders unstyled and is painted behind the full-bleed canvas — invisible.     */

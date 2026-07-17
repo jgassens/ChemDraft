@@ -803,7 +803,7 @@ mod plugin_storage_id_tests {
     #[test]
     fn accepts_reverse_domain_plugin_ids() {
         assert!(is_valid_plugin_storage_id("org.chemdraft.fixture"));
-        assert!(is_valid_plugin_storage_id("nmr-predictor_v2"));
+        assert!(is_valid_plugin_storage_id("mass-fragment_v2"));
     }
 
     #[test]
@@ -3161,7 +3161,7 @@ mod tests {
         // Plugin command ids (ADR-0016) route generically by their `plugin.` namespace, so a plugin's
         // native menu items reach the webview without any core edit.
         expect_true(is_routed_menu_command(
-            "plugin.nmrPredictor.predictSelectedStructure",
+            "plugin.massFragment.analyzeSelectedStructure",
         ));
         expect_true(is_routed_menu_command("plugin.molscribeOcsr.recognizeImage"));
         expect_false(is_routed_menu_command("definitely.not.a.routed.command"));

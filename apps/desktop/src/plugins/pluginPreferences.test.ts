@@ -18,13 +18,13 @@ afterEach(() => {
 
 describe("plugin preferences", () => {
   it("round-trips disabled plugin ids as a sorted, de-duplicated JSON array", () => {
-    saveDisabledPluginIds(new Set(["org.chemdraft.nmr.predictor", "org.chemdraft.ocsr.molscribe"]));
+    saveDisabledPluginIds(new Set(["org.chemdraft.mass.fragment", "org.chemdraft.ocsr.molscribe"]));
 
     expect(storage.getItem(STORAGE_KEY)).toBe(
-      '["org.chemdraft.nmr.predictor","org.chemdraft.ocsr.molscribe"]'
+      '["org.chemdraft.mass.fragment","org.chemdraft.ocsr.molscribe"]'
     );
     expect([...loadDisabledPluginIds()]).toEqual([
-      "org.chemdraft.nmr.predictor",
+      "org.chemdraft.mass.fragment",
       "org.chemdraft.ocsr.molscribe"
     ]);
   });

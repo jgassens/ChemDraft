@@ -52,8 +52,8 @@ export class PluginPanelController {
     const updatesOpenPanel = previous?.pluginId === pluginId && previous.panelId === panelId;
     if (previous && !updatesOpenPanel) {
       // The surface supports one contributed panel at a time. Replacing it is therefore a real
-      // close for the previous plugin, even though the user did not click Close. This lets an NMR
-      // panel abort in-flight work before a different analyzer takes over the surface.
+      // close for the previous plugin, even though the user did not click Close. This lets an
+      // analyzer's panel abort in-flight work before a different analyzer takes over the surface.
       this.host.notifyPanelClosed(previous.pluginId, previous.panelId);
     }
 

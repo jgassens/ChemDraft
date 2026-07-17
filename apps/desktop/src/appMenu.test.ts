@@ -152,9 +152,9 @@ describe("app menu model", () => {
   it("appends plugin menu items to their target section without disturbing the native routed set", () => {
     const pluginItem: AppMenuCommand = {
       kind: "command",
-      id: "menu.nmrPredictor.predict",
-      commandId: "plugin.nmrPredictor.predict",
-      label: "Predict NMR Spectrum",
+      id: "menu.massFragment.analyze",
+      commandId: "plugin.massFragment.analyzeSelectedStructure",
+      label: "Analyze Mass / m/z",
       enabled: true,
       pluginContributed: true
     };
@@ -175,14 +175,22 @@ describe("app menu model", () => {
     ]);
     const analyze = model.find((section) => section.id === "analyze");
     const analyzeCommandIds = flattenAppMenuCommands(analyze ? [analyze] : []).map((item) => item.commandId);
-    expect(analyzeCommandIds).toContain("plugin.nmrPredictor.predict");
+    expect(analyzeCommandIds).toContain("plugin.massFragment.analyzeSelectedStructure");
 
     // Plugin items are excluded from the native-routed set (native menu does not route them yet),
     // so the routed set is identical to the pure core menu — the drift test stays meaningful.
-    expect(nativeRoutedCommandIds(model)).not.toContain("plugin.nmrPredictor.predict");
+    expect(nativeRoutedCommandIds(model)).not.toContain("plugin.massFragment.analyzeSelectedStructure");
     expect(nativeRoutedCommandIds(model).sort()).toEqual(
       nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT)).sort()
     );
+  });
+
+  it("contains no NMR entry anywhere in the core menu model (M39 core-only build)", () => {
+    // The core-only ChemDraft must not know the NMR plugin exists: no core command id or label may
+    // reference it. NMR menu items can appear only as pluginMenuItems supplied by an installed plugin.
+    const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
+    expect(commands.length).toBeGreaterThan(20);
+    expect(commands.some((command) => /nmr/i.test(command.commandId) || /nmr/i.test(command.label))).toBe(false);
   });
 
   it("appends contributed items to the core Plugins section after one separator", () => {

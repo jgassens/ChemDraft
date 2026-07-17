@@ -137,11 +137,11 @@ export default defineConfig({
   // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
   plugins: [react(), serveInstalledPluginsInDev()],
   // ES-module workers are required now that a plugin's *execution* runs in a per-plugin Web Worker
-  // (ADR-0029, M34): those workers either spawn a nested worker (the NMR plugin worker starts its own
-  // OpenChemLib worker) or use dynamic import() (mass analysis, the NMR in-thread fallback), and both
-  // force code-splitting *inside* the worker bundle — which Rollup rejects under the default "iife"
-  // worker format. Every worker is already instantiated with { type: "module" }, so "es" is the correct
-  // and compatible output format.
+  // (ADR-0029, M34): such workers may spawn a nested worker or use dynamic import() (mass analysis
+  // does the latter for OpenChemLib), and both force code-splitting *inside* the worker bundle —
+  // which Rollup rejects under the default "iife" worker format. Every worker is already instantiated
+  // with { type: "module" }, so "es" is the correct and compatible output format. Do not remove: the
+  // packaged-plugin pipeline (M35/M36) depends on module workers too.
   worker: {
     format: "es"
   },

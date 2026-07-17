@@ -4,8 +4,8 @@ ChemDraft hosts bundled plugins through a persistent, domain-neutral runtime.
 Start with the manifest types in `@chemdraft/plugin-api` and registration in
 `@chemdraft/plugin-host`; the full runtime is documented in
 [`../architecture/plugin-runtime.md`](../architecture/plugin-runtime.md), and the
-NMR predictor is a complete worked example
-([`../architecture/nmr-predictor-plugin.md`](../architecture/nmr-predictor-plugin.md)).
+mass-fragment analyzer (`examples/plugins/mass-fragment-demo`) is a complete
+worked example in this repo.
 
 ## Model in one paragraph
 
@@ -37,7 +37,7 @@ are declarative `PluginPanelReport`s that the desktop renders with core UI.
 - **Panels are declarative**; SVG is a string rendered via `<img>` (script-inert). Stamp `report.source` for staleness detection.
 - **Long work belongs in a Web Worker** behind the request-id protocol; support `AbortSignal` and `onPanelClosed` cancellation.
 - **Commands return `PluginCommandResult`** (`{ ok:false, error }`) or throw — both surface to the user.
-- **Bundle third-party data as a separate, attributed asset** with its own license (see [`../architecture/nmr-prediction-data.md`](../architecture/nmr-prediction-data.md)); keep plugin code open-source.
+- **Bundle third-party data as a separate, attributed asset** with its own license; keep plugin code open-source.
 
 Not yet enabled for third-party (non-bundled) plugins: isolated execution and
 gated filesystem/network/native-execution/clipboard access. Bundled plugins are

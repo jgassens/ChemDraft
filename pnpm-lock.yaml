@@ -74,9 +74,6 @@ importers:
       '@chemdraft/plugin-mass-fragment':
         specifier: workspace:*
         version: link:../../examples/plugins/mass-fragment-demo
-      '@chemdraft/plugin-nmr-predictor':
-        specifier: workspace:*
-        version: link:../../examples/plugins/nmr-predictor
       '@chemdraft/rdkit-adapter':
         specifier: workspace:*
         version: link:../../packages/rdkit-adapter
@@ -172,22 +169,6 @@ importers:
       '@chemdraft/plugin-api':
         specifier: workspace:*
         version: link:../../../packages/plugin-api
-    devDependencies:
-      '@chemdraft/plugin-host':
-        specifier: workspace:*
-        version: link:../../../packages/plugin-host
-
-  examples/plugins/nmr-predictor:
-    dependencies:
-      '@chemdraft/plugin-api':
-        specifier: workspace:*
-        version: link:../../../packages/plugin-api
-      openchemlib:
-        specifier: ^9.22.1
-        version: 9.22.1
-      zod:
-        specifier: ^3.25.76
-        version: 3.25.76
     devDependencies:
       '@chemdraft/plugin-host':
         specifier: workspace:*

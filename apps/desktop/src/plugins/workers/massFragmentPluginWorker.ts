@@ -1,7 +1,7 @@
 /**
  * Worker entry that hosts the bundled mass-fragment analyzer inside a per-plugin Web Worker
  * (ADR-0029, M34). Instantiated as `new Worker(new URL("./massFragmentPluginWorker.ts",
- * import.meta.url), { type: "module" })`, so Vite bundles it exactly like the conformer/NMR workers.
+ * import.meta.url), { type: "module" })`, so Vite bundles it exactly like the core conformer worker.
  *
  * The plugin's own source is imported unchanged and behind the single `@chemdraft/plugin-api` SDK
  * import ({@link runPluginWorker}); its command handler runs here, and every capability call it makes

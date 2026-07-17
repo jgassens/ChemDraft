@@ -1,11 +1,7 @@
 // @vitest-environment jsdom
 
 import { molscribeOcsrCommandId, molscribeOcsrManifest } from "@chemdraft/molscribe-ocsr-plugin";
-import {
-  nmrPredictCarbonCommandId,
-  nmrPredictProtonCommandId,
-  nmrPredictorManifest
-} from "@chemdraft/plugin-nmr-predictor";
+import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -79,7 +75,7 @@ describe("MainWindow bundled plugin integration", () => {
 
     const dialog = document.querySelector('[data-testid="plugin-manager-dialog"]');
     expect(dialog).not.toBeNull();
-    expect(dialog?.querySelector(`[data-plugin-id="${nmrPredictorManifest.id}"]`)).not.toBeNull();
+    expect(dialog?.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
     expect(dialog?.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')?.disabled).toBe(true);
 
     await click(dialog!.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!);
@@ -165,7 +161,7 @@ describe("MainWindow bundled plugin integration", () => {
     expect(container.textContent).toContain(molscribeOcsrManifest.name);
   });
 
-  it("registers the NMR predictor: both nucleus commands in Analyze, listed in diagnostics", async () => {
+  it("registers the mass analyzer in Analyze and lists it in diagnostics — and no NMR item exists anywhere (M39)", async () => {
     installDomMocks();
     container = document.createElement("div");
     document.body.append(container);
@@ -179,19 +175,24 @@ describe("MainWindow bundled plugin integration", () => {
     });
 
     await click(container.querySelector('button[data-menu-section="analyze"]')!);
-    const carbon = container.querySelector<HTMLButtonElement>(`button[data-command-id="${nmrPredictCarbonCommandId}"]`);
-    const proton = container.querySelector<HTMLButtonElement>(`button[data-command-id="${nmrPredictProtonCommandId}"]`);
-    expect(carbon?.textContent).toContain("¹³C");
-    expect(proton?.textContent).toContain("¹H");
+    const massItem = container.querySelector<HTMLButtonElement>(`button[data-command-id="${massAnalyzeCommandId}"]`);
+    expect(massItem?.textContent).toContain("Analyze Mass / m/z");
+
+    // Core-only build: the open Analyze menu offers no NMR item by command id or label. NMR features
+    // can only arrive through the plugin installer (Phase 4).
+    const analyzeItems = [...container.querySelectorAll<HTMLButtonElement>("button[data-command-id]")];
+    expect(analyzeItems.length).toBeGreaterThan(0);
+    expect(analyzeItems.some((item) => /nmr/i.test(item.dataset.commandId ?? "") || /nmr/i.test(item.textContent ?? ""))).toBe(false);
 
     // Invoking with nothing selected must not crash or open a panel (it returns ok:false).
-    await click(carbon!);
+    await click(massItem!);
     expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
 
-    // The plugin is registered and listed in the bundled-plugin diagnostics.
+    // The plugin is registered and listed in the bundled-plugin diagnostics — where no NMR plugin appears.
     await click(container.querySelector('button[data-menu-section="analyze"]')!);
     await click(container.querySelector<HTMLButtonElement>('button[data-command-id="plugin.runtime.showDiagnostics"]')!);
-    expect(container.querySelector(`[data-plugin-id="${nmrPredictorManifest.id}"]`)).not.toBeNull();
-    expect(container.textContent).toContain(nmrPredictorManifest.name);
+    expect(container.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
+    expect(container.textContent).toContain(massFragmentManifest.name);
+    expect([...container.querySelectorAll("[data-plugin-id]")].some((node) => /nmr/i.test(node.getAttribute("data-plugin-id") ?? ""))).toBe(false);
   });
 });

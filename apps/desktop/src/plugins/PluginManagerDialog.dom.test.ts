@@ -177,7 +177,7 @@ function installedEntry(): InstalledPluginCatalogEntry {
 
 function pickedPackage(): PickedPluginPackage {
   return {
-    sourcePath: "/Users/someone/Downloads/nmr-predictor-0.0.0.zip",
+    sourcePath: "/Users/someone/Downloads/installed-test-plugin-2.0.1.zip",
     checksumVerified: true,
     inspection: {
       manifest: installedManifest,

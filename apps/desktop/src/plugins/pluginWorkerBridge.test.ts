@@ -5,9 +5,9 @@
  * rule). Node has no `Worker`, so the worker runtime runs in-process here, connected to the bridge by a
  * linked endpoint pair — exercising the full protocol round-trip without a real thread.
  *
- * Covers the acceptance criteria: behavioral equivalence for the mass analyzer and the NMR predictor,
- * cross-boundary panel-close cancellation, declared-only capability enforcement, the version handshake,
- * and total teardown via terminate().
+ * Covers the acceptance criteria: behavioral equivalence for the mass analyzer, cross-boundary
+ * panel-close cancellation, declared-only capability enforcement, the version handshake, and total
+ * teardown via terminate().
  */
 import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
@@ -26,16 +26,6 @@ import {
   type PluginWorkerRegistration
 } from "@chemdraft/plugin-api";
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
-import {
-  createNmrRegistration,
-  FixtureHosePredictor,
-  NmrError,
-  NmrErrorCodes,
-  nmrPredictCarbonCommandId,
-  nmrPredictorManifest,
-  nmrPredictorPanelId,
-  type NmrPredictor
-} from "@chemdraft/plugin-nmr-predictor";
 import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import { describe, expect, it } from "vitest";
 
@@ -171,62 +161,67 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     bridge.terminate();
   });
 
-  it("NMR ¹³C: the worker path produces the same analysis record and panel report as in-process", async () => {
-    const predictor = (): NmrPredictor => new FixtureHosePredictor({ now: () => "2020-01-01T00:00:00.000Z" });
-
-    const inProcess = makeHost();
-    const inProcReg = createNmrRegistration({ predictor: predictor() });
-    inProcess.host.registerPlugin(nmrPredictorManifest, { commandHandlers: inProcReg.commandHandlers, onPanelClosed: inProcReg.onPanelClosed });
-    const inProcessResult = await inProcess.host.invokeCommand(nmrPredictCarbonCommandId);
-
-    const viaWorker = makeHost();
-    const workerReg = createNmrRegistration({ predictor: predictor() });
-    const bridge = startWorkerRoutedPlugin({ manifest: nmrPredictorManifest, commandHandlers: workerReg.commandHandlers, onPanelClosed: workerReg.onPanelClosed });
-    viaWorker.host.registerPlugin(nmrPredictorManifest, delegatingOptions(nmrPredictorManifest, bridge));
-    const workerResult = await viaWorker.host.invokeCommand(nmrPredictCarbonCommandId);
-
-    expect(workerResult).toEqual(inProcessResult);
-    expect(viaWorker.host.listAnalysis()).toEqual(inProcess.host.listAnalysis());
-    expect(viaWorker.host.listAnalysis()).toHaveLength(1);
-    expect(viaWorker.reports).toEqual(inProcess.reports);
-    // The report is non-trivial (pending + final for a supported molecule), so this is real equivalence.
-    expect(viaWorker.reports.length).toBeGreaterThanOrEqual(2);
-    bridge.terminate();
-  });
-
-  it("closing the NMR panel across the worker boundary aborts the in-flight prediction (ADR-0012): not-ok, no record", async () => {
+  it("closing a panel across the worker boundary aborts the in-flight command (ADR-0012): not-ok, no record", async () => {
     let observedStart!: () => void;
     const started = new Promise<void>((resolve) => {
       observedStart = resolve;
     });
-    // A predictor that hangs until its AbortSignal fires — so the panel-close abort, routed through the
-    // worker, is the only thing that settles it.
-    const gatedPredictor: NmrPredictor = {
-      getCapabilities: () => new FixtureHosePredictor().getCapabilities(),
-      predict: (_request, signal) =>
-        new Promise((_resolve, reject) => {
-          observedStart();
-          const fail = (): void => reject(new NmrError(NmrErrorCodes.PredictionCancelled, "Prediction was cancelled."));
-          if (signal?.aborted) {
-            fail();
-            return;
+    // A worker-side registration whose command hangs until the panel-close abort — routed through the
+    // bridge — is the only thing that settles it. This is the shape every cancellable analyzer (e.g.
+    // an installed long-running predictor) follows: onPanelClosed fires an AbortController.
+    const manifest = parsePluginManifest({
+      id: "org.test.cancellable",
+      name: "Cancellable Analyzer",
+      version: "0",
+      apiVersion: "^0.1.0",
+      entry: "x",
+      permissions: ["selection.read", "analysis.write", "ui.panel"],
+      contributes: {
+        commands: [{ id: "plugin.cancellable.run", title: "Run", requiredPermissions: ["selection.read"] }],
+        panels: [{ id: "panel.cancellable.result", title: "Result", requiredPermissions: ["ui.panel"] }]
+      }
+    });
+    let abort: AbortController | undefined;
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.cancellable.run": async (context) => {
+          abort = new AbortController();
+          await context.panels!.showReport("panel.cancellable.result", { title: "Working…", sections: [] });
+          try {
+            await new Promise((_resolve, reject) => {
+              const fail = (): void => reject(new Error("Command was cancelled."));
+              if (abort!.signal.aborted) {
+                fail();
+                return;
+              }
+              abort!.signal.addEventListener("abort", fail, { once: true });
+              observedStart();
+            });
+            return { ok: true };
+          } catch {
+            return { ok: false, error: { code: "command-cancelled", message: "Command was cancelled." } };
           }
-          signal?.addEventListener("abort", fail, { once: true });
-        })
+        }
+      },
+      onPanelClosed: (panelId) => {
+        if (panelId === "panel.cancellable.result") {
+          abort?.abort();
+        }
+      }
     };
 
     const viaWorker = makeHost();
-    const registration = createNmrRegistration({ predictor: gatedPredictor });
-    const bridge = startWorkerRoutedPlugin({ manifest: nmrPredictorManifest, commandHandlers: registration.commandHandlers, onPanelClosed: registration.onPanelClosed });
-    viaWorker.host.registerPlugin(nmrPredictorManifest, delegatingOptions(nmrPredictorManifest, bridge));
+    const bridge = startWorkerRoutedPlugin(registration);
+    viaWorker.host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
 
-    const invocation = viaWorker.host.invokeCommand(nmrPredictCarbonCommandId);
-    await started; // the worker has read the selection, shown the pending report, and entered predict()
+    const invocation = viaWorker.host.invokeCommand("plugin.cancellable.run");
+    await started; // the worker has shown the pending report and is awaiting the abort
 
-    bridge.notifyPanelClosed(nmrPredictorPanelId); // host → worker → onPanelClosed → AbortController.abort()
+    bridge.notifyPanelClosed("panel.cancellable.result"); // host → worker → onPanelClosed → AbortController.abort()
 
     const result = await invocation;
-    expect(result).toMatchObject({ ok: false, error: { code: NmrErrorCodes.PredictionCancelled } });
+    expect(result).toMatchObject({ ok: false, error: { code: "command-cancelled" } });
     expect(viaWorker.host.listAnalysis()).toHaveLength(0); // no record written for the cancelled run
     // The pending report crossed the boundary, but the aborted run never pushed a final report.
     expect(viaWorker.reports).toHaveLength(1);
@@ -377,18 +372,13 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
   });
 
   it("desktop routing: createBundledPluginDescriptors uses a worker bridge when a factory is supplied, and in-process otherwise", () => {
-    const factories = new Map([
-      [nmrPredictorManifest.id, () => asHandle(linkedEndpoints().mainSide)],
-      [massFragmentManifest.id, () => asHandle(linkedEndpoints().mainSide)]
-    ]);
+    const factories = new Map([[massFragmentManifest.id, () => asHandle(linkedEndpoints().mainSide)]]);
     const routed = createBundledPluginDescriptors({ pluginWorkerFactories: factories });
-    expect(routed.find((d) => d.manifest.id === nmrPredictorManifest.id)?.bridge).toBeInstanceOf(PluginWorkerBridge);
     expect(routed.find((d) => d.manifest.id === massFragmentManifest.id)?.bridge).toBeInstanceOf(PluginWorkerBridge);
 
-    // Default path: node has no `Worker`, so the proof plugins run in-process (no bridge), which is why
+    // Default path: node has no `Worker`, so the analyzer runs in-process (no bridge), which is why
     // the existing suite is unaffected.
     const inProcess = createBundledPluginDescriptors();
-    expect(inProcess.find((d) => d.manifest.id === nmrPredictorManifest.id)?.bridge).toBeUndefined();
     expect(inProcess.find((d) => d.manifest.id === massFragmentManifest.id)?.bridge).toBeUndefined();
   });
 });

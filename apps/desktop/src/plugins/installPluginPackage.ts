@@ -299,9 +299,9 @@ async function loadAndRegisterInstalledPlugin(options: {
  * Register a plugin, replacing any existing registration of the same id.
  *
  * That existing registration is the **bundled** copy: a package is built from a plugin whose id it
- * keeps, so installing `nmr-predictor-0.0.0.zip` on a build that already bundles the NMR predictor is
- * the normal case, not an error. The host keys plugins by id and refuses a duplicate registration, so
- * the installed copy takes the id over — and {@link uninstallPlugin} hands it back.
+ * keeps, so installing `mass-fragment-demo-0.0.0.zip` on a build that already bundles the mass
+ * analyzer is the normal case, not an error. The host keys plugins by id and refuses a duplicate
+ * registration, so the installed copy takes the id over — and {@link uninstallPlugin} hands it back.
  *
  * The handshake has already passed by the time this runs, so the bundled copy is only dropped once the
  * replacement is known to work.
@@ -421,9 +421,9 @@ export async function uninstallPlugin(options: {
  * Refuse a second copy of an id that is already installed.
  *
  * Note what this deliberately does *not* refuse: an id that is also **bundled**. A packaged plugin
- * legitimately shares its id with the compiled-in copy it was built from — `nmr-predictor-0.0.0.zip` and
- * this build's bundled NMR predictor are both `org.chemdraft.nmr.predictor` — so refusing that would
- * make every package this repo can currently produce uninstallable. Instead the install **replaces** the
+ * legitimately shares its id with the compiled-in copy it was built from — `mass-fragment-demo-0.0.0.zip`
+ * and this build's bundled mass analyzer are both `org.chemdraft.mass.fragment` — so refusing that
+ * would make a package built from a bundled plugin uninstallable. Instead the install **replaces** the
  * bundled registration for as long as it is installed (see {@link installPluginPackage}), and uninstall
  * restores it.
  */

@@ -15,7 +15,9 @@ import {
 } from "./pluginPackageArchive";
 
 /** The real artifact `plugin:package` emits. A build output (gitignored), so tests using it skip when absent. */
-const realPackagePath = fileURLToPath(new URL("../../../../dist/plugin-packages/nmr-predictor-0.0.0.zip", import.meta.url));
+const realPackagePath = fileURLToPath(
+  new URL("../../../../dist/plugin-packages/mass-fragment-demo-0.0.0.zip", import.meta.url)
+);
 const hasRealPackage = existsSync(realPackagePath);
 
 async function expectPackageError(promise: Promise<unknown>, code: string): Promise<PluginPackageError> {
@@ -113,7 +115,7 @@ describe("readPluginPackageArchive", () => {
 describe("safeEntryPath", () => {
   it("accepts ordinary package paths and normalizes harmless noise", () => {
     expect(safeEntryPath("entry.js")).toBe("entry.js");
-    expect(safeEntryPath("assets/nmrWorker-BcY5tkZR.js")).toBe("assets/nmrWorker-BcY5tkZR.js");
+    expect(safeEntryPath("assets/worker-BcY5tkZR.js")).toBe("assets/worker-BcY5tkZR.js");
     // `.` and doubled separators do not change where a file lands, so they are cleaned rather than refused.
     expect(safeEntryPath("./assets//worker.js")).toBe("assets/worker.js");
   });
@@ -148,7 +150,7 @@ describe("checksums", () => {
 
   it("parses a shasum-format sidecar", () => {
     const digest = "9d83a901d94764d60bc4ba2c7aaf1bac90f9b8fc5e5577cd9aaeac182a56d8c9";
-    expect(parseChecksumSidecar(`${digest}  nmr-predictor-0.0.0.zip\n`)).toBe(digest);
+    expect(parseChecksumSidecar(`${digest}  mass-fragment-demo-0.0.0.zip\n`)).toBe(digest);
     expect(parseChecksumSidecar(`${digest.toUpperCase()}  x.zip`)).toBe(digest);
   });
 
@@ -167,25 +169,26 @@ describe("crc32", () => {
 });
 
 // Proving the reader against the artifact M36 must actually install — not only against fixtures the
-// same test file invented. Skipped when the package has not been built (dist/ is gitignored).
-describe.skipIf(!hasRealPackage)("the real nmr-predictor package", () => {
-  it("unpacks, verifies, and matches the checksum recorded in the M35 report", async () => {
+// same test file invented. Skipped when the package has not been built (dist/ is gitignored); build it
+// with `pnpm plugin:package -- examples/plugins/mass-fragment-demo`.
+describe.skipIf(!hasRealPackage)("the real mass-fragment-demo package", () => {
+  it("unpacks, verifies against its own sidecar, and carries the mass analyzer's manifest", async () => {
     const zip = new Uint8Array(readFileSync(realPackagePath));
     const sidecar = readFileSync(`${realPackagePath}.sha256`, "utf8");
 
+    // The sidecar digest describes the artifact's actual bytes. (No pinned constant: the zip embeds
+    // its sourceCommit, so the digest legitimately changes with every commit.)
     await expect(verifyPackageChecksum(zip, sidecar)).resolves.toBeUndefined();
-    expect(await sha256Hex(zip)).toBe("9d83a901d94764d60bc4ba2c7aaf1bac90f9b8fc5e5577cd9aaeac182a56d8c9");
+    expect(await sha256Hex(zip)).toBe(parseChecksumSidecar(sidecar));
 
     const entries = await readPluginPackageArchive(zip);
     const paths = entries.map((entry) => entry.path).sort();
     expect(paths).toContain("manifest.json");
     expect(paths).toContain("entry.js");
-    // The nested OCL worker chunk: the file whose sibling resolution this whole milestone turns on.
-    expect(paths.some((path) => /^assets\/nmrWorker-.*\.js$/.test(path))).toBe(true);
-    expect(entries).toHaveLength(7);
+    expect(paths).toContain("LICENSE");
 
     const manifest = JSON.parse(new TextDecoder().decode(entries.find((entry) => entry.path === "manifest.json")!.bytes));
-    expect(manifest.id).toBe("org.chemdraft.nmr.predictor");
+    expect(manifest.id).toBe("org.chemdraft.mass.fragment");
     expect(manifest.entry).toBe("entry.js");
     expect(manifest.permissions).toEqual(["selection.read", "analysis.write", "ui.menu", "ui.panel"]);
   });

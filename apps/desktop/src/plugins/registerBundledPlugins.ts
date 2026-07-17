@@ -7,13 +7,6 @@ import {
 } from "@chemdraft/molscribe-ocsr-plugin";
 import { createMassRegistration, massFragmentManifest, massFragmentPluginId } from "@chemdraft/plugin-mass-fragment";
 import {
-  createNmrRegistration,
-  createWorkerBackedPredictor,
-  nmrPredictorManifest,
-  nmrPredictorPluginId,
-  type NmrPredictor
-} from "@chemdraft/plugin-nmr-predictor";
-import {
   PluginApiVersion,
   type PluginCommandHandler,
   type PluginManifest,
@@ -23,7 +16,6 @@ import {
 import type { RegisterPluginOptions } from "@chemdraft/plugin-host";
 
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
-import { getNmrWorkerClient } from "./nmrWorkerClient";
 import { PluginWorkerBridge } from "./PluginWorkerBridge";
 import { loadDisabledPluginIds } from "./pluginPreferences";
 
@@ -46,20 +38,13 @@ export interface BundledPluginRuntimeOptions {
   pluginWorkerFactories?: ReadonlyMap<string, PluginWorkerFactory>;
 }
 
-/** The desktop's real module-worker factories for the two M34 proof plugins. Empty where `Worker` is
- *  unavailable, so tests and unrelated environments transparently take the in-process path. */
+/** The desktop's real module-worker factories for the worker-isolated bundled plugins. Empty where
+ *  `Worker` is unavailable, so tests and unrelated environments transparently take the in-process path. */
 export function defaultPluginWorkerFactories(): ReadonlyMap<string, PluginWorkerFactory> {
   const factories = new Map<string, PluginWorkerFactory>();
   if (typeof Worker === "undefined") {
     return factories;
   }
-  factories.set(
-    nmrPredictorPluginId,
-    () =>
-      new Worker(new URL("./workers/nmrPredictorPluginWorker.ts", import.meta.url), {
-        type: "module"
-      }) as unknown as PluginWorkerHandle
-  );
   factories.set(
     massFragmentPluginId,
     () =>
@@ -72,14 +57,14 @@ export function defaultPluginWorkerFactories(): ReadonlyMap<string, PluginWorker
 
 /**
  * Build the ordered catalog of plugins statically bundled with the desktop. A factory, not a module
- * singleton, because the worker bridges (and the in-process NMR registration's cancellation state) must
- * belong to one desktop runtime.
+ * singleton, because the worker bridges (and any in-process registration state) must belong to one
+ * desktop runtime.
  *
- * The two analyzer plugins (NMR, mass) run in a per-plugin Web Worker when a factory is available
- * (ADR-0029, M34); their manifest command handlers delegate to a {@link PluginWorkerBridge} that
- * services their capability calls against the real host context. Where no factory is available
- * (node/jsdom), they run in-process exactly as before, so existing behavior and tests are unaffected.
- * The MolScribe canary deliberately stays in-process — proof that unrelated plugins are untouched.
+ * The mass analyzer runs in a per-plugin Web Worker when a factory is available (ADR-0029, M34); its
+ * manifest command handlers delegate to a {@link PluginWorkerBridge} that services its capability
+ * calls against the real host context. Where no factory is available (node/jsdom), it runs in-process
+ * exactly as before, so existing behavior and tests are unaffected. The MolScribe canary deliberately
+ * stays in-process — proof that unrelated plugins are untouched.
  */
 export function createBundledPluginDescriptors(
   options: BundledPluginRuntimeOptions = {}
@@ -94,7 +79,6 @@ export function createBundledPluginDescriptors(
         }
       }
     },
-    buildNmrDescriptor(factories.get(nmrPredictorPluginId)),
     buildMassDescriptor(factories.get(massFragmentPluginId))
   ];
 }
@@ -118,33 +102,9 @@ export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: Plug
 }
 
 /**
- * The NMR predictor (hard case): worker-routed when a factory exists — its command handler runs in the
- * plugin worker, which spawns its own nested OCL worker. Otherwise in-process, driving the fixture/OCL
- * predictor through the main-thread worker client (or a lazy in-thread OCL fallback) exactly as before.
- */
-function buildNmrDescriptor(factory: PluginWorkerFactory | undefined): BundledPluginDescriptor {
-  if (factory) {
-    const bridge = new PluginWorkerBridge({
-      pluginId: nmrPredictorManifest.id,
-      createWorker: factory,
-      hostApiVersion: PluginApiVersion
-    });
-    return { manifest: nmrPredictorManifest, options: createWorkerRoutedOptions(nmrPredictorManifest, bridge), bridge };
-  }
-
-  const workerClient = getNmrWorkerClient();
-  const predictor: NmrPredictor = workerClient ? createWorkerBackedPredictor(workerClient) : createLazyOclPredictor();
-  const nmr = createNmrRegistration({ predictor });
-  return {
-    manifest: nmrPredictorManifest,
-    options: { commandHandlers: nmr.commandHandlers, onPanelClosed: nmr.onPanelClosed }
-  };
-}
-
-/**
- * The mass analyzer (simple baseline): worker-routed when a factory exists, else in-process. Pure
- * computation, no worker of its own — proof that a second, unrelated analyzer crosses the boundary
- * with no NMR machinery.
+ * The mass analyzer: worker-routed when a factory exists, else in-process. Pure computation with no
+ * nested worker of its own — proof that an analyzer crosses the isolation boundary on nothing but the
+ * generic bridge machinery.
  */
 function buildMassDescriptor(factory: PluginWorkerFactory | undefined): BundledPluginDescriptor {
   if (factory) {
@@ -171,8 +131,8 @@ export function applyEnabledPlugins(
 
     if (disabledIds.has(pluginId)) {
       if (registered) {
-        // Closing first invokes the plugin's panel-close hook while it is still registered. For NMR
-        // this aborts in-flight prediction and prevents a late result from reviving a disabled panel.
+        // Closing first invokes the plugin's panel-close hook while it is still registered, so an
+        // analyzer can abort in-flight work and a late result cannot revive a disabled panel.
         // Detached (windowed) panels are real closes too (ADR-0012).
         if (runtime.panels.getOpenPanel()?.pluginId === pluginId) {
           runtime.panels.closePanel();
@@ -204,22 +164,6 @@ export function registerBundledPlugins(
   const descriptors = createBundledPluginDescriptors();
   applyEnabledPlugins(runtime, disabledIds, descriptors);
   return descriptors;
-}
-
-/**
- * In-thread OCL predictor for environments without a `Worker` (jsdom, exotic webviews). Loaded via
- * dynamic import so the ~800 KB reference database is a code-split chunk fetched on first prediction,
- * rather than statically pulled into the desktop's main bundle. The normal desktop uses the worker,
- * where the database is bundled eagerly and this path is never taken.
- */
-function createLazyOclPredictor(): NmrPredictor {
-  let loaded: Promise<NmrPredictor> | undefined;
-  const load = (): Promise<NmrPredictor> =>
-    (loaded ??= import("@chemdraft/plugin-nmr-predictor").then((module) => new module.OclHosePredictor()));
-  return {
-    getCapabilities: async () => (await load()).getCapabilities(),
-    predict: async (request, signal) => (await load()).predict(request, signal)
-  };
 }
 
 /**
