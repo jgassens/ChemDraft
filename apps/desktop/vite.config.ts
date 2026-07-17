@@ -160,6 +160,11 @@ export default defineConfig({
       "@chemdraft/export-engine/pdf": workspacePackage("../../packages/export-engine/src/pdf.ts"),
       "@chemdraft/export-engine": workspacePackage("../../packages/export-engine/src/index.ts"),
       "@chemdraft/layout-engine": workspacePackage("../../packages/layout-engine/src/index.ts"),
+      // plugin-api/plugin-host now publish `exports` pointing at `dist` (ADR-0031). These aliases keep
+      // the desktop build resolving them to `src` — as vitest and tsconfig `paths` already do — so the
+      // tauri build never depends on a prior `pnpm --filter ... build` having run. Do not remove.
+      "@chemdraft/plugin-api": workspacePackage("../../packages/plugin-api/src/index.ts"),
+      "@chemdraft/plugin-host": workspacePackage("../../packages/plugin-host/src/index.ts"),
       "@chemdraft/style-compat": workspacePackage("../../packages/style-compat/src/index.ts"),
       "@chemdraft/toolset-registry": workspacePackage("../../packages/toolset-registry/src/index.ts"),
       "@chemdraft/shortcut-engine": workspacePackage("../../packages/shortcut-engine/src/index.ts"),

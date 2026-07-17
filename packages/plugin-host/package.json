@@ -1,16 +1,35 @@
 {
   "name": "@chemdraft/plugin-host",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "The ChemDraft plugin host: command registry, permission-gated capability context, proposed-patch queue, and analysis store that run a plugin against the SDK.",
+  "license": "MIT",
   "type": "module",
-  "dependencies": {
-    "@chemdraft/chem-core": "workspace:*",
-    "@chemdraft/plugin-api": "workspace:*"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jgassens/ChemDraft.git",
+    "directory": "packages/plugin-host"
   },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-sdk.mjs plugin-host"
+  },
+  "dependencies": {
+    "@chemdraft/plugin-api": "workspace:^",
+    "zod": "^3.25.76"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

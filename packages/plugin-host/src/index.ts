@@ -1,5 +1,10 @@
-import type { ApplyPatchOptions, ChemDraftDocument } from "@chemdraft/chem-core";
+// `applyPatch` (and its `ApplyPatchOptions`) are the chem-core RUNTIME the host calls; tsup bundles them
+// into this package's dist so no `@chemdraft/chem-core` dependency ships (ADR-0031). `ChemDraftDocument`,
+// however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
+// document type — not a second, structurally-identical copy inlined here.
+import type { ApplyPatchOptions } from "@chemdraft/chem-core";
 import { applyPatch } from "@chemdraft/chem-core";
+import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   PluginAnalysisAPI,
   PluginAnalysisQuery,
