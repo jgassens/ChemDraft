@@ -1,0 +1,111 @@
+{
+  "protocol": {
+    "inputSha256": "831a31e78b004a308c7c40989e27d30698a34c506e722a91c78b6ed448fc4720",
+    "inputBytes": 284380903,
+    "holdOutPerMille": 20,
+    "seed": 1,
+    "minObservations": 5,
+    "statistic": "median",
+    "usableRecords": 64710,
+    "train": 63372,
+    "heldOut": 1338,
+    "unparseable": 6,
+    "trainDatabaseEntries": 39231
+  },
+  "summary": {
+    "1H": {
+      "assigned": 2513,
+      "matched": 2491,
+      "coverage": 0.991,
+      "structures": 375,
+      "hose": {
+        "count": 2491,
+        "mae": 0.358,
+        "medianAe": 0.17,
+        "p90Ae": 0.93
+      },
+      "byTier": {
+        "high": {
+          "count": 820,
+          "mae": 0.183,
+          "medianAe": 0.079,
+          "p90Ae": 0.47
+        },
+        "medium": {
+          "count": 1162,
+          "mae": 0.337,
+          "medianAe": 0.17,
+          "p90Ae": 0.77
+        },
+        "low": {
+          "count": 509,
+          "mae": 0.685,
+          "medianAe": 0.48,
+          "p90Ae": 1.51
+        }
+      },
+      "incrementComparison": {
+        "count": 915,
+        "hose": {
+          "count": 915,
+          "mae": 0.224,
+          "medianAe": 0.107,
+          "p90Ae": 0.587
+        },
+        "increment": {
+          "count": 915,
+          "mae": 0.364,
+          "medianAe": 0.2,
+          "p90Ae": 0.904
+        },
+        "lowTier": {
+          "count": 109,
+          "hose": {
+            "count": 109,
+            "mae": 0.596,
+            "medianAe": 0.46,
+            "p90Ae": 1.29
+          },
+          "increment": {
+            "count": 109,
+            "mae": 0.581,
+            "medianAe": 0.4,
+            "p90Ae": 1.359
+          }
+        }
+      }
+    },
+    "13C": {
+      "assigned": 7149,
+      "matched": 7103,
+      "coverage": 0.994,
+      "structures": 795,
+      "hose": {
+        "count": 7103,
+        "mae": 3.577,
+        "medianAe": 1.58,
+        "p90Ae": 8.8
+      },
+      "byTier": {
+        "high": {
+          "count": 2472,
+          "mae": 1.508,
+          "medianAe": 0.66,
+          "p90Ae": 4.36
+        },
+        "medium": {
+          "count": 3216,
+          "mae": 3.154,
+          "medianAe": 1.77,
+          "p90Ae": 7.45
+        },
+        "low": {
+          "count": 1415,
+          "mae": 8.152,
+          "medianAe": 5.55,
+          "p90Ae": 18.22
+        }
+      }
+    }
+  }
+}
