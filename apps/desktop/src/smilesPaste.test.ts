@@ -5,10 +5,6 @@
  * stereocenters, and enantiomers land with opposite CIP (no accidental racemization or
  * mirroring through the y-frame negation).
  */
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as OCL from "openchemlib";
 
@@ -18,13 +14,13 @@ import {
   ensureOclResources,
   type Depiction2D
 } from "@chemdraft/ocl-adapter";
-import { planPageSvgRender, type PageSvgElementFragment, type PageSvgFragment } from "@chemdraft/layout-engine";
+import { planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
 import {
   generateSmiles2DMolfile,
-  resetRdkitForTesting,
-  setRdkitModuleLoader,
-  type RdkitMinimalModule
+  resetRdkitForTesting
 } from "@chemdraft/rdkit-adapter";
+import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
 
 import {
   createPhase4Document,
@@ -76,10 +72,6 @@ function pasteSmiles(smiles: string): MoleculeObject {
   return placed;
 }
 
-function elementFragments(fragment: PageSvgFragment): PageSvgElementFragment[] {
-  return fragment.kind === "text" ? [] : [fragment, ...fragment.children.flatMap(elementFragments)];
-}
-
 const isWedge = (bond: MoleculeObject["bonds"][number]) =>
   bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed";
 
@@ -97,21 +89,7 @@ function definedStereocenters(molfile: string): Array<{ atom: number; cip: numbe
 
 beforeAll(async () => {
   await ensureOclResources();
-  const glueUrl = new URL("../../../packages/rdkit-adapter/vendor/RDKit_minimal.js", import.meta.url);
-  const wasmUrl = new URL("../../../packages/rdkit-adapter/vendor/RDKit_minimal.wasm", import.meta.url);
-  const glueSource = readFileSync(glueUrl, "utf8");
-  const wasmBinary = new Uint8Array(readFileSync(wasmUrl));
-  const factory = new Function("require", "__dirname", `${glueSource}\n;return initRDKitModule;`)(
-    createRequire(import.meta.url),
-    dirname(fileURLToPath(glueUrl))
-  ) as (options: {
-    locateFile: (file: string) => string;
-    wasmBinary: Uint8Array;
-  }) => Promise<RdkitMinimalModule>;
-  setRdkitModuleLoader(() => factory({
-    locateFile: () => fileURLToPath(wasmUrl),
-    wasmBinary
-  }));
+  installRealRdkitModuleLoader();
 });
 
 afterAll(() => resetRdkitForTesting());
@@ -187,13 +165,18 @@ describe("insertSmilesMolecule — renders pasted SMILES with stereochemistry", 
       if (!tip || !wideLeft || !wideRight) {
         throw new Error("Expected a three-point stereo wedge.");
       }
-      const wideCenter = {
-        x: (wideLeft.x + wideRight.x) / 2,
-        y: (wideLeft.y + wideRight.y) / 2
-      };
-      const length = Math.hypot(wideCenter.x - tip.x, wideCenter.y - tip.y);
+      // Restrained flare, measured against the bond's own length. A crossing can gap-split a
+      // wedge into shorter visible fragments that deliberately keep the whole bond's base width,
+      // so the fragment's own tip-to-base length is not the right denominator.
+      const bond = molecule.bonds.find((candidate) => candidate.id === wedge.attrs["data-bond-id"]);
+      const from = bond && atomById.get(bond.fromAtomId);
+      const to = bond && atomById.get(bond.toAtomId);
+      if (!from || !to) {
+        throw new Error("Expected the wedge polygon to reference a molecule bond.");
+      }
+      const bondLength = Math.hypot(to.x - from.x, to.y - from.y);
       const width = Math.hypot(wideRight.x - wideLeft.x, wideRight.y - wideLeft.y);
-      expect(width / length).toBeLessThanOrEqual(0.281);
+      expect(width / bondLength).toBeLessThanOrEqual(0.281);
     });
 
     const hashedBondIds = molecule.bonds

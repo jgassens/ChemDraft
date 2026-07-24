@@ -1,17 +1,12 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   ensureRdkit,
   generateSmiles2DMolfile,
   resetRdkitForTesting,
-  setRdkitModuleLoader,
-  type RdkitJsMol,
-  type RdkitMinimalModule
+  type RdkitJsMol
 } from "./conformer";
+import { installRealRdkitModuleLoader } from "./testing";
 
 const CROWDED_STEREO_SMILES =
   "C1CN2CC3=CCO[C@H]4CC(=O)N5[C@H]6[C@H]4[C@H]3C[C@H]2[C@@]61C7=CC=CC=C75";
@@ -132,21 +127,7 @@ async function canonicalIsomericSmiles(structure: string): Promise<string> {
 }
 
 beforeAll(() => {
-  const glueUrl = new URL("../vendor/RDKit_minimal.js", import.meta.url);
-  const wasmUrl = new URL("../vendor/RDKit_minimal.wasm", import.meta.url);
-  const glueSource = readFileSync(glueUrl, "utf8");
-  const wasmBinary = new Uint8Array(readFileSync(wasmUrl));
-  const factory = new Function("require", "__dirname", `${glueSource}\n;return initRDKitModule;`)(
-    createRequire(import.meta.url),
-    dirname(fileURLToPath(glueUrl))
-  ) as (options: {
-    locateFile: (file: string) => string;
-    wasmBinary: Uint8Array;
-  }) => Promise<RdkitMinimalModule>;
-  setRdkitModuleLoader(() => factory({
-    locateFile: () => fileURLToPath(wasmUrl),
-    wasmBinary
-  }));
+  installRealRdkitModuleLoader();
 });
 
 afterAll(() => resetRdkitForTesting());

@@ -32,6 +32,7 @@ import {
   type PageSvgElementFragment,
   type PageSvgFragment
 } from "./index";
+import { elementFragments } from "./testing";
 
 const baseInput = {
   atoms: [
@@ -578,14 +579,6 @@ function fusedAceneMolecule(ringCount: 2 | 3, overrides: Partial<MoleculeObject>
     bonds,
     ...overrides
   });
-}
-
-function elementFragments(fragment: PageSvgFragment): PageSvgElementFragment[] {
-  if (fragment.kind === "text") {
-    return [];
-  }
-
-  return [fragment, ...fragment.children.flatMap(elementFragments)];
 }
 
 function topLevelObjectRuns(fragments: readonly PageSvgElementFragment[]): string[] {
@@ -1646,6 +1639,190 @@ describe("layout-engine page SVG planner", () => {
       sharedMiterPoints[0]!.x - shared.x,
       sharedMiterPoints[0]!.y - shared.y
     )).toBeGreaterThan(0.001);
+  });
+
+  it("keeps a centered base when the adjacent broad wedge is trimmed by an atom label", () => {
+    const shared = { x: 160, y: 160 };
+    const molecule = moleculeObject({
+      id: "mol_shared_wide_trimmed",
+      structure: "CC(N)C",
+      atoms: [
+        { id: "atom_left", element: "C", x: 130, y: 160, formalCharge: 0 },
+        { id: "atom_top", element: "N", x: 160, y: 130, formalCharge: 0 },
+        { id: "atom_shared", element: "C", ...shared, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_wedge_left",
+          fromAtomId: "atom_left",
+          toAtomId: "atom_shared",
+          order: "single",
+          display: { bondStyle: "wedge" }
+        },
+        {
+          id: "bond_wedge_top",
+          fromAtomId: "atom_top",
+          toAtomId: "atom_shared",
+          order: "single",
+          display: { bondStyle: "wedge" }
+        }
+      ]
+    });
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments);
+
+    const wedgePoints = ["bond_wedge_left", "bond_wedge_top"].map((bondId) => {
+      const wedge = fragments.find((fragment) =>
+        fragment.tag === "polygon" &&
+        fragment.attrs["data-bond-id"] === bondId &&
+        fragment.attrs["data-bond-style"] === "wedge"
+      );
+      expect(wedge, bondId).toBeDefined();
+      return String(wedge?.attrs.points ?? "").split(/\s+/).map((point) => {
+        const [x, y] = point.split(",").map(Number);
+        return { x, y };
+      });
+    });
+
+    // The N label trims the top wedge's narrow end, so its own render skips mitering and shrinks
+    // its base. A shared miter computed from the top wedge's full atom-to-atom geometry would
+    // never meet an edge that is actually drawn: the untrimmed left wedge must fall back to a
+    // plain base centered on the shared carbon, and the polygons share no corner.
+    expect(wedgePoints[0]).toHaveLength(3);
+    expect(wedgePoints[0]![0]).toEqual({ x: 130, y: 160 });
+    const baseMidpoint = {
+      x: (wedgePoints[0]![1]!.x + wedgePoints[0]![2]!.x) / 2,
+      y: (wedgePoints[0]![1]!.y + wedgePoints[0]![2]!.y) / 2
+    };
+    expect(baseMidpoint.x).toBeCloseTo(shared.x, 6);
+    expect(baseMidpoint.y).toBeCloseTo(shared.y, 6);
+    const commonPoints = wedgePoints[0]!.filter((leftPoint) =>
+      wedgePoints[1]!.some((topPoint) =>
+        Math.hypot(leftPoint.x - topPoint.x, leftPoint.y - topPoint.y) < 0.001
+      )
+    );
+    expect(commonPoints).toHaveLength(0);
+  });
+
+  it("splits a crossed solid wedge into fragments with one shared base width", () => {
+    const wedgeBonds = (bondsWithOptionalCrossing: boolean) => {
+      const molecule = moleculeObject({
+        id: "mol_crossed_wedge",
+        structure: "CC.CC",
+        atoms: [
+          { id: "atom_tip", element: "C", x: 140, y: 180, formalCharge: 0 },
+          { id: "atom_wide", element: "C", x: 196, y: 180, formalCharge: 0 },
+          { id: "atom_cross_up", element: "C", x: 185, y: 150, formalCharge: 0 },
+          { id: "atom_cross_down", element: "C", x: 185, y: 210, formalCharge: 0 }
+        ],
+        bonds: [
+          {
+            id: "bond_wedge",
+            fromAtomId: "atom_tip",
+            toAtomId: "atom_wide",
+            order: "single",
+            display: { bondStyle: "wedge" }
+          },
+          ...(bondsWithOptionalCrossing
+            ? [{
+                id: "bond_cross",
+                fromAtomId: "atom_cross_up",
+                toAtomId: "atom_cross_down",
+                order: "single" as const
+              }]
+            : [])
+        ]
+      });
+      return planPageSvgRender(pageWithObjects([molecule])).fragments
+        .flatMap(elementFragments)
+        .filter((fragment) =>
+          fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "bond_wedge"
+        )
+        .map((fragment) =>
+          String(fragment.attrs.points ?? "").split(/\s+/).map((point) => {
+            const [x, y] = point.split(",").map(Number);
+            return { x, y };
+          })
+        );
+    };
+
+    const [controlPoints] = wedgeBonds(false);
+    const controlBaseWidth = Math.hypot(
+      controlPoints![1]!.x - controlPoints![2]!.x,
+      controlPoints![1]!.y - controlPoints![2]!.y
+    );
+    const crossedFragments = wedgeBonds(true);
+    expect(crossedFragments).toHaveLength(2);
+
+    // The later bond crosses near the wide end, gap-splitting the wedge. Each fragment's base
+    // width must come from the whole trimmed segment, not from its own shorter visible length,
+    // or the short wide-end fragment renders a narrower flare than the tip fragment.
+    for (const fragmentPoints of crossedFragments) {
+      const baseWidth = Math.hypot(
+        fragmentPoints[1]!.x - fragmentPoints[2]!.x,
+        fragmentPoints[1]!.y - fragmentPoints[2]!.y
+      );
+      expect(baseWidth).toBeCloseTo(controlBaseWidth, 6);
+    }
+  });
+
+  it("drops the hashed-wedge terminal band when a crossing gaps the wide end", () => {
+    const buildFragments = (withCrossing: boolean) => {
+      const molecule = moleculeObject({
+        id: "mol_crossed_hash_terminal",
+        structure: "CCC.CC",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondLengthPx: 28,
+          bondHashSpacingPx: 9,
+          source: "clipboard-smiles"
+        },
+        atoms: [
+          { id: "atom_tip", element: "C", x: 275.1499818530336, y: 337.37075656112074, formalCharge: 0 },
+          { id: "atom_junction", element: "C", x: 292.3483233769756, y: 359.4537761410923, formalCharge: 0 },
+          { id: "atom_next", element: "C", x: 320.3566949143234, y: 359.68028607004834, formalCharge: 0 },
+          { id: "atom_cross_up", element: "C", x: 291, y: 340, formalCharge: 0 },
+          { id: "atom_cross_down", element: "C", x: 291, y: 375, formalCharge: 0 }
+        ],
+        bonds: [
+          {
+            id: "bond_hash",
+            fromAtomId: "atom_tip",
+            toAtomId: "atom_junction",
+            order: "single",
+            display: { bondStyle: "hashed" }
+          },
+          { id: "bond_next", fromAtomId: "atom_junction", toAtomId: "atom_next", order: "single" },
+          ...(withCrossing
+            ? [{
+                id: "bond_cross",
+                fromAtomId: "atom_cross_up",
+                toAtomId: "atom_cross_down",
+                order: "single" as const
+              }]
+            : [])
+        ]
+      });
+      const plan = planPageSvgRender(pageWithObjects([molecule]));
+      return {
+        crossings: plan.crossings,
+        hashFragments: plan.fragments
+          .flatMap(elementFragments)
+          .filter((fragment) => fragment.attrs.class === "native-bond-hash")
+      };
+    };
+
+    // Without the crossing this junction absorbs the terminal hash into a solid band.
+    expect(buildFragments(false).hashFragments.some((fragment) => fragment.tag === "polygon"))
+      .toBe(true);
+
+    // A later bond crossing right at the wide end gaps the individual hashes; the solid terminal
+    // band must not paint straight across that same gap, so the plan falls back to a plain
+    // terminal crossbar that participates in the normal gap splitting.
+    const crossed = buildFragments(true);
+    expect(crossed.crossings).toHaveLength(1);
+    expect(crossed.hashFragments.length).toBeGreaterThan(0);
+    expect(crossed.hashFragments.every((fragment) => fragment.tag === "line")).toBe(true);
   });
 
   it("miters a solid wedge into the single bond leaving its wide-end carbon", () => {

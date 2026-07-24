@@ -24,11 +24,8 @@ import {
   perceiveStereoCentersFromMolfile,
   type Depiction2D
 } from "@chemdraft/ocl-adapter";
-import {
-  planPageSvgRender,
-  type PageSvgElementFragment,
-  type PageSvgFragment
-} from "@chemdraft/layout-engine";
+import { planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
 import { Molecule } from "openchemlib";
 
 import {
@@ -325,9 +322,6 @@ const molOf = (document: ReturnType<typeof insertSmilesMolecule>, id: string): M
 };
 const mf = (mol: MoleculeObject) => moleculeToMolfileV2000(mol, { fromDocFrame: true });
 const isoSmiles = (mol: MoleculeObject) => Molecule.fromMolfile(mf(mol)).toIsomericSmiles();
-const elementFragments = (fragment: PageSvgFragment): PageSvgElementFragment[] =>
-  fragment.kind === "text" ? [] : [fragment, ...fragment.children.flatMap(elementFragments)];
-
 function renderedStereoStyleByBond(
   document: ReturnType<typeof insertSmilesMolecule>
 ): Map<string, "wedge" | "hashed"> {
@@ -381,6 +375,7 @@ describe("flattenSpunMolecule — stereo preserved end-to-end (real perceiver)",
     it(`${name}: no committed flatten changes the stereoisomer`, async () => {
       const { document, molId, start } = placeSmiles(smiles);
       const startIso = isoSmiles(start);
+      let depthCueChecks = 0;
       const centerIds = new Set(
         start.atoms.filter((_, i) => perceiveStereoCentersFromMolfile(mf(start))[i]?.isStereoCenter).map((a) => a.id)
       );
@@ -415,35 +410,32 @@ describe("flattenSpunMolecule — stereo preserved end-to-end (real perceiver)",
             `${name} committed view #${committed} rendered duplicate hashes at ${atom.id}`
           ).toBeLessThanOrEqual(1);
         }
-        if (name === "strychnine" && committed === 1) {
+        if (name === "strychnine") {
           const benzylicBonds = flattened.bonds
             .filter((bond) => bond.fromAtomId === "a12" || bond.toAtomId === "a12")
             .filter((bond) => visualStyleByBond.has(bond.id));
-          expect(benzylicBonds.length).toBeGreaterThan(0);
-          const atomIndex = new Map(flattened.atoms.map((atom, index) => [atom.id, index] as const));
-          const depthOf = (atomId: string): number => {
-            const index = atomIndex.get(atomId);
-            if (index === undefined) throw new Error(`Missing atom ${atomId}`);
-            return (
-              viewMatrix[8] * coords[index * 3] +
-              viewMatrix[9] * coords[index * 3 + 1] +
-              viewMatrix[10] * coords[index * 3 + 2] +
-              viewMatrix[11]
-            );
-          };
           if (benzylicBonds.length > 1) {
-            const depthOrdered = [...benzylicBonds].sort((left, right) =>
-              ((depthOf(right.fromAtomId) + depthOf(right.toAtomId)) / 2) -
-              ((depthOf(left.fromAtomId) + depthOf(left.toAtomId)) / 2)
-            );
-            expect(new Set(depthOrdered.map((bond) => visualStyleByBond.get(bond.id))))
+            depthCueChecks += 1;
+            // A two-mark benzylic center must read as one toward-cue and one away-cue. The strict
+            // near-bond-gets-the-wedge preference is NOT asserted here: CIP revalidation outranks
+            // the depth ranker, and on these committed views the only assignments that read back
+            // as strychnine put the wedge on the farther bond. The depth preference itself is
+            // pinned by the scripted-reader unit test "uses depth to rank CIP-valid alternatives".
+            expect(new Set(benzylicBonds.map((bond) => visualStyleByBond.get(bond.id))))
               .toEqual(new Set(["wedge", "hashed"]));
-            expect(visualStyleByBond.get(depthOrdered[0]!.id)).toBe("wedge");
-            expect(visualStyleByBond.get(depthOrdered.at(-1)!.id)).toBe("hashed");
           }
         }
       }
       expect(committed, `${name}: expected some legible committing orientation`).toBeGreaterThan(0);
+      if (name === "strychnine") {
+        // The depth-cue assertions above are conditional on the benzylic center rendering two
+        // stereo marks. The orientation sweep is a seeded PRNG, so this is deterministic: if no
+        // committed view ever exercises the check, fail loudly instead of silently passing.
+        expect(
+          depthCueChecks,
+          "strychnine: no committed view exercised the benzylic depth-cue assertions"
+        ).toBeGreaterThan(0);
+      }
     }, 180_000);
   }
 });
