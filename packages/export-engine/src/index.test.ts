@@ -471,7 +471,7 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain('stroke-width="2"');
   });
 
-  it("exports terminal heteroatom double bonds as centered equal-length pairs", () => {
+  it("exports terminal heteroatom double bonds with a centerline primary and short secondary", () => {
     const styledMolecule = {
       ...moleculeObject(),
       style: {
@@ -510,9 +510,9 @@ describe("exportDocumentToSvg", () => {
     expect(carbonylLineMarkups).toHaveLength(2);
     expect(primaryLineMarkup).not.toBe("");
     expect(secondaryLineMarkup).not.toBe("");
-    expect(svgLineLength(primaryLineMarkup)).toBeCloseTo(svgLineLength(secondaryLineMarkup), 3);
-    expect(svgLineNumberAttribute(primaryLineMarkup, "x1")).toBeCloseTo(svgLineNumberAttribute(secondaryLineMarkup, "x1"), 3);
-    expect(svgLineNumberAttribute(primaryLineMarkup, "x2")).toBeCloseTo(svgLineNumberAttribute(secondaryLineMarkup, "x2"), 3);
+    expect(svgLineLength(primaryLineMarkup)).toBeGreaterThan(svgLineLength(secondaryLineMarkup));
+    expect(svgLineNumberAttribute(primaryLineMarkup, "x1")).toBeLessThan(svgLineNumberAttribute(secondaryLineMarkup, "x1"));
+    expect(svgLineNumberAttribute(primaryLineMarkup, "x2")).toBeGreaterThan(svgLineNumberAttribute(secondaryLineMarkup, "x2"));
     expect(Math.abs(svgLineNumberAttribute(primaryLineMarkup, "y1") - svgLineNumberAttribute(secondaryLineMarkup, "y1"))).toBeGreaterThan(0);
   });
 

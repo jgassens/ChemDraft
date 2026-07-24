@@ -389,7 +389,16 @@ describe("flattenPerspectiveFrom3D — vicinal centers share a bond (CSP)", () =
     const wedgeBondIds = encoded.map((c) => c.wedgeBondId);
     // No bond claimed by two centers.
     expect(new Set(wedgeBondIds).size).toBe(2);
-    expect(stereoBonds(result.mol2dProjected as MoleculeObject)).toHaveLength(2);
+    const projected = result.mol2dProjected as MoleculeObject;
+    const markers = stereoBonds(projected);
+    expect(markers).toHaveLength(2);
+    for (const atom of projected.atoms) {
+      const incident = markers.filter(
+        (bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id
+      );
+      expect(incident.filter((bond) => bond.display?.bondStyle === "wedge").length).toBeLessThanOrEqual(1);
+      expect(incident.filter((bond) => bond.display?.bondStyle === "hashed").length).toBeLessThanOrEqual(1);
+    }
   });
 });
 

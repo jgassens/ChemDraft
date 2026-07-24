@@ -844,6 +844,14 @@ interface PageMoleculeBondSegmentGroup {
   segments: PageMoleculeBondSegment[];
 }
 
+interface NativeCarbonJunctionPlan {
+  atomId: string;
+  x: number;
+  y: number;
+  radius: number;
+  fill: string;
+}
+
 export interface BondDepthCandidate {
   ref: BondRef;
   objectLayerIndex: number;
@@ -1356,6 +1364,11 @@ function planNativeMoleculeGraphSvg(
   const primitive = moleculeDrawingPrimitive(object) === "single-bond"
     ? "single-bond"
     : "connected-carbon-chain";
+  const carbonJunctionPlans = nativeCarbonJunctionPlans(
+    object,
+    new Set(atomLabels.map((plan) => plan.atom.id)),
+    drawingStyle
+  );
   const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
     ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey)
     : undefined;
@@ -1473,6 +1486,7 @@ function planNativeMoleculeGraphSvg(
     effects,
     effectFilterId,
     bondSegmentGroups,
+    carbonJunctionPlans,
     drawingStyle,
     gapsByBondKey
   );
@@ -1495,6 +1509,11 @@ function planNativeMoleculeGraphSvg(
     ...(effectSource ? [effectSource] : []),
     ...moleculeRingHitTargetFragments(object),
     ...bondLayerFragments,
+    ...nativeCarbonJunctionFragments(
+      object.id,
+      carbonJunctionPlans,
+      moleculeStrokeOpacity
+    ),
     ...labelFragments,
     ...indicatorFragments,
     ...svgSketchEffectFragmentsForEffects(effects, object.id, {
@@ -2080,6 +2099,7 @@ function moleculeEffectSourceFragment(
   effects: readonly NativeArtEffectPlan[],
   effectFilterId: string,
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
+  carbonJunctionPlans: readonly NativeCarbonJunctionPlan[],
   drawingStyle: NativeDrawingStyle,
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
 ): PageSvgElementFragment | undefined {
@@ -2098,7 +2118,8 @@ function moleculeEffectSourceFragment(
           gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
         )
       )
-    )
+    ),
+    ...nativeCarbonJunctionFragments(object.id, carbonJunctionPlans, 1, true)
   ];
   if (children.length === 0) {
     return undefined;
@@ -2122,7 +2143,7 @@ function moleculeBondEffectSourceFragments(
   if (bondStyle === "wedge" && segment.segment === "primary") {
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
-        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle),
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond),
         fill: "#000000",
         stroke: "none"
       })
@@ -2130,7 +2151,8 @@ function moleculeBondEffectSourceFragments(
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
-    return nativeHashedWedgeSegments(segment, drawingStyle).flatMap((hash, index) =>
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond);
+    const hashes = hashedWedge.hashes.flatMap((hash, index) =>
       splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
         elementFragment("line", `molecule-effect-source-bond-hash-${object.id}-${segment.key}-${index}-${visibleIndex}`, {
           x1: visibleHash.x1,
@@ -2138,11 +2160,21 @@ function moleculeBondEffectSourceFragments(
           x2: visibleHash.x2,
           y2: visibleHash.y2,
           stroke: "#000000",
-          "stroke-width": drawingStyle.bondStrokeWidthPx,
+          "stroke-width": hashedWedge.strokeWidth,
           "stroke-linecap": "butt"
         })
       )
     );
+    return hashedWedge.terminalJoin
+      ? [
+          ...hashes,
+          elementFragment("polygon", `molecule-effect-source-bond-hash-${object.id}-${segment.key}-terminal`, {
+            points: hashedWedge.terminalJoin.points,
+            fill: "#000000",
+            stroke: "none"
+          })
+        ]
+      : hashes;
   }
 
   return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
@@ -2177,6 +2209,84 @@ function moleculeEffectSketchBasePathD(
 
 function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
   return `M ${formatNumber(segment.x1)} ${formatNumber(segment.y1)} L ${formatNumber(segment.x2)} ${formatNumber(segment.y2)}`;
+}
+
+function nativeCarbonJunctionPlans(
+  object: MoleculeObject,
+  labeledAtomIds: ReadonlySet<string>,
+  drawingStyle: NativeDrawingStyle
+): NativeCarbonJunctionPlan[] {
+  return object.atoms.flatMap((atom) => {
+    if (
+      nativeElementFromAtomLabel(atom.element) !== "C" ||
+      labeledAtomIds.has(atom.id)
+    ) {
+      return [];
+    }
+
+    const incidentBonds = object.bonds.filter((bond) =>
+      bond.fromAtomId === atom.id || bond.toAtomId === atom.id
+    );
+    const continuousBonds = incidentBonds.filter((bond) => {
+      const bondStyle = nativeBondDisplayStyle(bond);
+      return bondStyle !== "dashed" && bondStyle !== "hashed";
+    });
+    if (continuousBonds.length < 2) {
+      return [];
+    }
+
+    const incidentStyles = continuousBonds.map((bond) => {
+      const bondDrawingStyle = nativeMoleculeBondDrawingStyle(object, bond.id, drawingStyle);
+      return {
+        bond,
+        drawingStyle: bondDrawingStyle,
+        strokeWidth: nativeBondStrokeWidth(bond, bondDrawingStyle)
+      };
+    });
+    const topmost = incidentStyles[incidentStyles.length - 1]!;
+    const maximumStrokeWidth = Math.max(...incidentStyles.map(({ strokeWidth }) => strokeWidth));
+
+    return [{
+      atomId: atom.id,
+      x: atom.x,
+      y: atom.y,
+      // SVG paints every bond as an independent flat-ended stroke. A small overlap at the
+      // unlabeled carbon center removes the antialiasing slit without changing any exposed bond
+      // terminal. The extra fraction of a pixel keeps the overlap solid at high canvas zoom.
+      radius: maximumStrokeWidth / 2 + Math.max(0.15, maximumStrokeWidth * 0.08),
+      // Junctions paint after the bond layers, so use the same color as the last incident bond in
+      // the molecule's paint order. Ordinary structures therefore become one continuous black
+      // network, while intentional per-bond color/depth styling retains deterministic stacking.
+      fill: nativeMoleculeBondColor(object, topmost.bond, topmost.drawingStyle)
+    }];
+  });
+}
+
+function nativeCarbonJunctionFragments(
+  objectId: string,
+  plans: readonly NativeCarbonJunctionPlan[],
+  moleculeStrokeOpacity: number,
+  effectSource = false
+): PageSvgElementFragment[] {
+  return plans.map((plan) =>
+    elementFragment(
+      "circle",
+      `${effectSource ? "molecule-effect-source-" : ""}carbon-junction-${objectId}-${plan.atomId}`,
+      {
+        class: effectSource
+          ? "native-carbon-junction-effect-source"
+          : "native-carbon-junction",
+        "data-atom-id": plan.atomId,
+        cx: plan.x,
+        cy: plan.y,
+        r: formatNumber(plan.radius),
+        fill: effectSource ? "#000000" : plan.fill,
+        "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+        stroke: "none",
+        "pointer-events": "none"
+      }
+    )
+  );
 }
 
 function nativeBondHoverDecoratorFragments(
@@ -2223,7 +2333,7 @@ function nativeBondSegmentFragments(
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `bond-${object.id}-${segment.key}-${index}`, {
         ...commonAttrs,
-        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle),
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond),
         fill: stroke,
         "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
         stroke: "none"
@@ -2232,9 +2342,11 @@ function nativeBondSegmentFragments(
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond);
     return [
-      elementFragment("g", `bond-${object.id}-${segment.key}`, commonAttrs, nativeHashedWedgeSegments(segment, drawingStyle).flatMap((hash, index) =>
-        splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
+      elementFragment("g", `bond-${object.id}-${segment.key}`, commonAttrs, [
+        ...hashedWedge.hashes.flatMap((hash, index) =>
+          splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
           elementFragment("line", `bond-hash-${object.id}-${segment.key}-${index}-${visibleIndex}`, {
             class: "native-bond-hash",
             "data-bond-hash-index": index,
@@ -2244,11 +2356,24 @@ function nativeBondSegmentFragments(
             y2: visibleHash.y2,
             stroke,
             "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
-            "stroke-width": drawingStyle.bondStrokeWidthPx,
+            "stroke-width": hashedWedge.strokeWidth,
             "stroke-linecap": "butt"
           })
         )
-      ))
+        ),
+        ...(hashedWedge.terminalJoin
+          ? [
+              elementFragment("polygon", `bond-hash-${object.id}-${segment.key}-terminal`, {
+                class: "native-bond-hash",
+                "data-bond-hash-index": hashedWedge.terminalJoin.index,
+                points: hashedWedge.terminalJoin.points,
+                fill: stroke,
+                "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+                stroke: "none"
+              })
+            ]
+          : [])
+      ])
     ];
   }
 
@@ -3865,30 +3990,22 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
+    const terminalHeteroatomSide = terminalHeteroatomDoubleBondInnerSide(
+      fromAtom,
+      toAtom,
+      object,
+      bond
+    );
     // Default a ring double bond's inner line to the ring interior; the user's explicit side
-    // (bond.display.doubleBondSide) always wins, and non-ring bonds keep the legacy default.
-    const doubleBondSide = bond.display?.doubleBondSide ?? ringInteriorSide ?? "left";
-    if (isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
-      const offset = gap / 2;
-      return [
-        {
-          x1: x1 + normal.x * offset,
-          y1: y1 + normal.y * offset,
-          x2: x2 + normal.x * offset,
-          y2: y2 + normal.y * offset,
-          segment: "primary",
-          doubleBondSide
-        },
-        {
-          x1: x1 - normal.x * offset,
-          y1: y1 - normal.y * offset,
-          x2: x2 - normal.x * offset,
-          y2: y2 - normal.y * offset,
-          segment: "secondary",
-          doubleBondSide
-        }
-      ];
-    }
+    // (bond.display.doubleBondSide) always wins. A terminal heteroatom double bond (such as an
+    // aldehyde C=O) follows the same publication convention as a ring: the primary line stays on
+    // the bond centerline and meets the backbone junction, while the short secondary line sits on
+    // the side facing the adjacent backbone bond.
+    const doubleBondSide =
+      bond.display?.doubleBondSide ??
+      ringInteriorSide ??
+      terminalHeteroatomSide ??
+      "left";
 
     const offset = doubleBondSide === "left" ? gap : -gap;
     const minimumSecondaryLength = Math.min(doubleBondMinimumVisibleSegmentPx, trimmedLength);
@@ -3896,13 +4013,16 @@ function bondLineSegments(
       drawingStyle.doubleBondInsetPx,
       Math.max(0, (trimmedLength - minimumSecondaryLength) / 2)
     );
+    const terminalMethyleneAtom = terminalMethyleneCarbon(fromAtom, toAtom, object, bond);
+    const secondaryFromInset = terminalMethyleneAtom?.id === fromAtom.id ? 0 : inset;
+    const secondaryToInset = terminalMethyleneAtom?.id === toAtom.id ? 0 : inset;
     return [
       { x1, y1, x2, y2, segment: "primary", doubleBondSide },
       {
-        x1: x1 + unit.x * inset + normal.x * offset,
-        y1: y1 + unit.y * inset + normal.y * offset,
-        x2: x2 - unit.x * inset + normal.x * offset,
-        y2: y2 - unit.y * inset + normal.y * offset,
+        x1: x1 + unit.x * secondaryFromInset + normal.x * offset,
+        y1: y1 + unit.y * secondaryFromInset + normal.y * offset,
+        x2: x2 - unit.x * secondaryToInset + normal.x * offset,
+        y2: y2 - unit.y * secondaryToInset + normal.y * offset,
         segment: "secondary",
         doubleBondSide
       }
@@ -4128,6 +4248,14 @@ export function planAtomLabel(
 
 export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
   const { bodyRuns, chargeRun } = atomLabelParts(label);
+  const leadingHydrogenElement = leadingImplicitHydrogenElement(label);
+  if (leadingHydrogenElement) {
+    return leadingImplicitHydrogenAtomLabelLayout(
+      leadingHydrogenElement,
+      chargeRun,
+      drawingStyle
+    );
+  }
   const baseText = bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label;
   const suffixRuns = bodyRuns.filter((run) => run.script !== "normal");
   const baseWidth = atomLabelRunWidth({ text: baseText, script: "normal" }, drawingStyle);
@@ -4192,6 +4320,92 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
       x: -baseHalfWidth + horizontalShift - padding,
       y: top - padding,
       width: right + baseHalfWidth + padding * 2,
+      height: bottom - top + padding * 2
+    },
+    runs: horizontalShift === 0
+      ? runs
+      : runs.map((run) => ({ ...run, x: run.x + horizontalShift }))
+  };
+}
+
+function leadingImplicitHydrogenElement(label: string): NativeElementSymbol | undefined {
+  const { body } = splitAtomLabelCharge(label);
+  const match = body.match(/^H([A-Z][a-z]?)$/);
+  if (!match?.[1] || match[1] === "H") {
+    return undefined;
+  }
+
+  return nativeElementSymbolSet.has(match[1])
+    ? match[1] as NativeElementSymbol
+    : undefined;
+}
+
+function leadingImplicitHydrogenAtomLabelLayout(
+  element: NativeElementSymbol,
+  chargeRun: AtomLabelRun | undefined,
+  drawingStyle: NativeDrawingStyle
+): AtomLabelLayout {
+  const hydrogenRun: AtomLabelRun = { text: "H", script: "normal" };
+  const elementRun: AtomLabelRun = { text: element, script: "normal" };
+  const hydrogenWidth = atomLabelRunWidth(hydrogenRun, drawingStyle);
+  const elementWidth = atomLabelRunWidth(elementRun, drawingStyle);
+  // SVG text is anchored at the glyph baseline, while this layout helper only has an estimated
+  // advance width. Round element glyphs (especially O) extend farther left than half that estimate.
+  // Reserve their cap-width plus a small publication-style gap so a leading H reads as "HO"
+  // instead of visually running into the element.
+  const elementHalfWidth = Math.max(
+    elementWidth / 2,
+    drawingStyle.atomLabelFontSizePx * 0.38
+  );
+  const hydrogenElementGap = drawingStyle.atomLabelFontSizePx * 0.12;
+  const hydrogenRight = -elementHalfWidth - hydrogenElementGap;
+  const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
+  const runs: AtomLabelLayoutRun[] = [
+    {
+      ...hydrogenRun,
+      x: hydrogenRight,
+      y: 0,
+      textAnchor: "end"
+    },
+    {
+      ...elementRun,
+      x: 0,
+      y: 0,
+      textAnchor: "middle"
+    }
+  ];
+  let left = hydrogenRight - hydrogenWidth;
+  let right = elementHalfWidth;
+  let top = -baseHalfHeight;
+  let bottom = baseHalfHeight;
+
+  if (chargeRun) {
+    const fontSize = atomLabelRunFontSize(chargeRun.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+    const width = atomLabelRunWidth(chargeRun, drawingStyle);
+    const x = right + drawingStyle.atomLabelFontSizePx * 0.08;
+    const y = -drawingStyle.atomLabelFontSizePx * 0.48;
+    runs.push({
+      ...chargeRun,
+      x,
+      y,
+      textAnchor: "start"
+    });
+    right = x + width;
+    top = Math.min(top, y - fontSize * 0.52);
+    bottom = Math.max(bottom, y + fontSize * 0.52);
+  }
+
+  const horizontalShift = drawingStyle.atomLabelAlignment === "left"
+    ? -left
+    : drawingStyle.atomLabelAlignment === "right"
+      ? -right
+      : 0;
+  const padding = drawingStyle.atomLabelPaddingPx;
+  return {
+    bounds: {
+      x: left + horizontalShift - padding,
+      y: top - padding,
+      width: right - left + padding * 2,
       height: bottom - top + padding * 2
     },
     runs: horizontalShift === 0
@@ -4293,7 +4507,15 @@ export function atomDisplayLabel(
     }
   }
 
-  return `${element}${implicitHydrogens}${chargeLabelSuffix(formalCharge)}`;
+  const singleHeavyNeighbor = singleHeavyAtomNeighbor(atom.id, bonds, atoms);
+  const hydrogenBeforeElement =
+    implicitHydrogens === "H" &&
+    element !== "H" &&
+    singleHeavyNeighbor !== undefined &&
+    singleHeavyNeighbor.x > atom.x + 0.001;
+  return hydrogenBeforeElement
+    ? `${implicitHydrogens}${element}${chargeLabelSuffix(formalCharge)}`
+    : `${element}${implicitHydrogens}${chargeLabelSuffix(formalCharge)}`;
 }
 
 const nativeElementSymbols = [
@@ -4376,6 +4598,28 @@ function heavyAtomNeighborCount(
   return neighborIds.size;
 }
 
+function singleHeavyAtomNeighbor(
+  atomId: string,
+  bonds: readonly CoreMoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): MoleculeAtom | undefined {
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const neighbors = new Map<string, MoleculeAtom>();
+  for (const bond of bonds) {
+    const neighborId = bond.fromAtomId === atomId
+      ? bond.toAtomId
+      : bond.toAtomId === atomId
+        ? bond.fromAtomId
+        : undefined;
+    const neighbor = neighborId ? atomById.get(neighborId) : undefined;
+    if (neighbor && nativeElementFromAtomLabel(neighbor.element) !== "H") {
+      neighbors.set(neighbor.id, neighbor);
+    }
+  }
+
+  return neighbors.size === 1 ? [...neighbors.values()][0] : undefined;
+}
+
 function implicitHydrogenLabel(count: number): string {
   if (count <= 0) {
     return "";
@@ -4422,8 +4666,21 @@ function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
   return `${formatNumber(dash)} ${formatNumber(gap)}`;
 }
 
-function nativeWedgeWidth(drawingStyle: NativeDrawingStyle): number {
-  return Math.max(8, drawingStyle.bondBoldWidthPx * 2.2);
+function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
+  // Keep the wide end proportional to the document's bond length. This matters for pasted SMILES,
+  // which use a 28 px bond instead of the 22 px drawing default: a fixed 5.04 px base shrank from
+  // 23% to 18% of a bond. The 24% profile matches the ruler-normalized reference while remaining
+  // far narrower than the old 48% wedge. Cap label-trimmed wedges by their visible length so they
+  // cannot turn into squat triangles.
+  const nominalWidth = Math.max(
+    4,
+    drawingStyle.bondStrokeWidthPx * 2.2,
+    drawingStyle.bondBoldWidthPx * 1.05,
+    drawingStyle.bondLengthPx * 0.24
+  );
+  return visibleLength === undefined
+    ? nominalWidth
+    : Math.min(nominalWidth, visibleLength * 0.28);
 }
 
 export function nativeMultipleBondGapPx(drawingStyle: NativeDrawingStyle): number {
@@ -4435,14 +4692,37 @@ export function nativeMultipleBondGapPx(drawingStyle: NativeDrawingStyle): numbe
 
 function nativeWedgePolygonPoints(
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
-  drawingStyle: NativeDrawingStyle
+  drawingStyle: NativeDrawingStyle,
+  object?: MoleculeObject,
+  bond?: CoreMoleculeBond
 ): string {
   const geometry = nativeSegmentVectorGeometry(segment);
   if (!geometry) {
     return `${formatNumber(segment.x1)},${formatNumber(segment.y1)} ${formatNumber(segment.x2)},${formatNumber(segment.y2)}`;
   }
 
-  const halfWidth = nativeWedgeWidth(drawingStyle) / 2;
+  const width = nativeWedgeWidth(drawingStyle, geometry.length);
+  const miteredWideEnd = object && bond
+    ? nativeWedgeWideEndMiter(object, bond, segment, geometry, width)
+    : undefined;
+  if (miteredWideEnd) {
+    const points = [
+      `${formatNumber(segment.x1)},${formatNumber(segment.y1)}`,
+      `${formatNumber(miteredWideEnd.wideLeft.x)},${formatNumber(miteredWideEnd.wideLeft.y)}`
+    ];
+    if (miteredWideEnd.leftContinuation && miteredWideEnd.rightContinuation) {
+      points.push(
+        `${formatNumber(miteredWideEnd.leftContinuation.x)},${formatNumber(miteredWideEnd.leftContinuation.y)}`,
+        `${formatNumber(miteredWideEnd.rightContinuation.x)},${formatNumber(miteredWideEnd.rightContinuation.y)}`
+      );
+    }
+    points.push(
+      `${formatNumber(miteredWideEnd.wideRight.x)},${formatNumber(miteredWideEnd.wideRight.y)}`
+    );
+    return points.join(" ");
+  }
+
+  const halfWidth = width / 2;
   const wideLeft = {
     x: segment.x2 + geometry.normal.x * halfWidth,
     y: segment.y2 + geometry.normal.y * halfWidth
@@ -4459,25 +4739,414 @@ function nativeWedgePolygonPoints(
   ].join(" ");
 }
 
-function nativeHashedWedgeSegments(
+function nativeWedgeWideEndMiter(
+  object: MoleculeObject,
+  bond: CoreMoleculeBond,
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
-  drawingStyle: NativeDrawingStyle
-): Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[] {
-  const geometry = nativeSegmentVectorGeometry(segment);
-  if (!geometry) {
-    return [];
+  geometry: NonNullable<ReturnType<typeof nativeSegmentVectorGeometry>>,
+  width: number
+): {
+  wideLeft: LayoutPoint;
+  wideRight: LayoutPoint;
+  leftContinuation?: LayoutPoint;
+  rightContinuation?: LayoutPoint;
+} | undefined {
+  const narrowAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const wideAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (
+    !narrowAtom ||
+    !wideAtom ||
+    distance(narrowAtom, { x: segment.x1, y: segment.y1 }) > 0.001 ||
+    distance(wideAtom, { x: segment.x2, y: segment.y2 }) > 0.001
+  ) {
+    return undefined;
   }
 
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const adjacentConnections = object.bonds
+    .filter((candidate) => candidate.id !== bond.id)
+    .flatMap((candidate) => {
+      const neighborId = candidate.fromAtomId === wideAtom.id
+        ? candidate.toAtomId
+        : candidate.toAtomId === wideAtom.id
+          ? candidate.fromAtomId
+          : undefined;
+      const neighbor = neighborId ? atomById.get(neighborId) : undefined;
+      if (!neighbor) {
+        return [];
+      }
+      const dx = neighbor.x - wideAtom.x;
+      const dy = neighbor.y - wideAtom.y;
+      const length = Math.hypot(dx, dy);
+      return length > 0.001
+        ? [{
+            bond: candidate,
+            length,
+            unit: { x: dx / length, y: dy / length }
+          }]
+        : [];
+    });
+  // Changing a regular bond into a wedge must retain the regular bond's centerline as the wedge
+  // axis. ChemDraw's toggle behavior makes this especially clear: the broad end expands equally to
+  // both sides while every neighboring bond remains fixed. Keep the full 24%-of-bond base centered
+  // on the atom instead of pushing the entire flare toward the outside of the turn.
+  const halfWidth = width / 2;
+  const wideLeft = {
+    x: wideAtom.x + geometry.normal.x * halfWidth,
+    y: wideAtom.y + geometry.normal.y * halfWidth
+  };
+  const wideRight = {
+    x: wideAtom.x - geometry.normal.x * halfWidth,
+    y: wideAtom.y - geometry.normal.y * halfWidth
+  };
+  const result: {
+    wideLeft: LayoutPoint;
+    wideRight: LayoutPoint;
+    leftContinuation?: LayoutPoint;
+    rightContinuation?: LayoutPoint;
+  } = { wideLeft, wideRight };
+
+  // Two wedges that are both broad at the same carbon must share one outside corner. Rendering
+  // their centered bases independently leaves two visible horns ("twin peaks") at the turn.
+  // Intersect the two outside taper edges and give both polygons that same miter point, just as a
+  // continuous stroked path would do. The inside corners remain centered on the atom and are
+  // covered by the normal carbon-junction fill.
+  const adjacentWideEndWedges = adjacentConnections.filter((connection) =>
+    nativeBondDisplayStyle(connection.bond) === "wedge" &&
+    connection.bond.toAtomId === wideAtom.id
+  );
+  if (adjacentWideEndWedges.length === 1) {
+    const adjacentConnection = adjacentWideEndWedges[0]!;
+    const adjacentDrawingStyle = nativeMoleculeBondDrawingStyle(
+      object,
+      adjacentConnection.bond.id
+    );
+    const adjacentWidth = nativeWedgeWidth(
+      adjacentDrawingStyle,
+      adjacentConnection.length
+    );
+    const sharedMiter = nativeSharedWideEndWedgeMiter(
+      { x: segment.x1, y: segment.y1 },
+      wideAtom,
+      geometry,
+      width,
+      adjacentConnection.unit,
+      adjacentConnection.length,
+      adjacentWidth
+    );
+    if (sharedMiter) {
+      if (sharedMiter.currentSide === "left") {
+        result.wideLeft = sharedMiter.point;
+      } else {
+        result.wideRight = sharedMiter.point;
+      }
+    }
+    return result;
+  }
+
+  // A narrow-end stereo bond does not own either outside corner at this carbon. It may therefore
+  // coexist with one ordinary bond without forcing the broad solid wedge back to an isolated,
+  // centered base. This is the common wedge + hash + plain-bond stereocenter: the ordinary bond
+  // still owns the visible continuation, while the narrow hash emerges from the carbon center.
+  const plainSingleConnections = adjacentConnections.filter((connection) =>
+    connection.bond.order === "single" &&
+    nativeBondDisplayStyle(connection.bond) === undefined
+  );
+  const nonPlainConnectionsAreNarrowStereo = adjacentConnections.every((connection) => {
+    if (plainSingleConnections.includes(connection)) {
+      return true;
+    }
+    const style = nativeBondDisplayStyle(connection.bond);
+    return (
+      (style === "wedge" || style === "hashed") &&
+      connection.bond.fromAtomId === wideAtom.id
+    );
+  });
+  if (
+    plainSingleConnections.length !== 1 ||
+    !nonPlainConnectionsAreNarrowStereo
+  ) {
+    return result;
+  }
+  const adjacentConnection = plainSingleConnections[0]!;
+
+  // A plain single bond must cover the wedge's entire broad edge. Continue both wedge corners only
+  // far enough to meet the unchanged neighboring stroke. This overlap is fully inside that stroke:
+  // visually, only the selected bond changes from a centerline into a taper.
+  const adjacentDrawingStyle = nativeMoleculeBondDrawingStyle(
+    object,
+    adjacentConnection.bond.id
+  );
+  const adjacentHalfStroke = nativeBondStrokeWidth(
+    adjacentConnection.bond,
+    adjacentDrawingStyle
+  ) / 2;
+  const adjacentNormal = {
+    x: -adjacentConnection.unit.y,
+    y: adjacentConnection.unit.x
+  };
+  const adjacentEdgeLeftAtAtom = {
+    x: wideAtom.x + adjacentNormal.x * adjacentHalfStroke,
+    y: wideAtom.y + adjacentNormal.y * adjacentHalfStroke
+  };
+  const adjacentEdgeRightAtAtom = {
+    x: wideAtom.x - adjacentNormal.x * adjacentHalfStroke,
+    y: wideAtom.y - adjacentNormal.y * adjacentHalfStroke
+  };
+  const leftAssignment =
+    distance(wideLeft, adjacentEdgeLeftAtAtom) + distance(wideRight, adjacentEdgeRightAtAtom);
+  const rightAssignment =
+    distance(wideLeft, adjacentEdgeRightAtAtom) + distance(wideRight, adjacentEdgeLeftAtAtom);
+  let leftEdgeAtAtom: LayoutPoint;
+  let rightEdgeAtAtom: LayoutPoint;
+  if (leftAssignment <= rightAssignment) {
+    leftEdgeAtAtom = adjacentEdgeLeftAtAtom;
+    rightEdgeAtAtom = adjacentEdgeRightAtAtom;
+  } else {
+    leftEdgeAtAtom = adjacentEdgeRightAtAtom;
+    rightEdgeAtAtom = adjacentEdgeLeftAtAtom;
+  }
+
+  // The visible wedge edges must flow directly into the two parallel edges of the ordinary bond.
+  // Keeping the old centered base corners made each edge take a short diagonal step before it
+  // reached the regular stroke, producing a little roof/bump. Intersect each taper edge with its
+  // assigned regular-bond edge instead. The continuation remains as overlap inside the unchanged
+  // regular stroke, while the outside silhouette becomes one clean publication-style miter.
+  const leftMiter = infiniteLineIntersection(
+    { x: segment.x1, y: segment.y1 },
+    wideLeft,
+    leftEdgeAtAtom,
+    {
+      x: leftEdgeAtAtom.x + adjacentConnection.unit.x,
+      y: leftEdgeAtAtom.y + adjacentConnection.unit.y
+    }
+  );
+  const rightMiter = infiniteLineIntersection(
+    { x: segment.x1, y: segment.y1 },
+    wideRight,
+    rightEdgeAtAtom,
+    {
+      x: rightEdgeAtAtom.x + adjacentConnection.unit.x,
+      y: rightEdgeAtAtom.y + adjacentConnection.unit.y
+    }
+  );
+  const miterLimit = Math.max(width, adjacentHalfStroke * 2) * 2;
+  if (
+    leftMiter &&
+    rightMiter &&
+    distance(leftMiter, wideAtom) <= miterLimit &&
+    distance(rightMiter, wideAtom) <= miterLimit
+  ) {
+    result.wideLeft = leftMiter;
+    result.wideRight = rightMiter;
+  }
+
+  // Carry the overlap slightly beyond whichever miter lands farther along the regular bond. This
+  // keeps the five-point fill ordered and prevents a sub-pixel fold-back on the inside edge, while
+  // remaining entirely hidden under the unchanged regular-bond stroke.
+  const leftForward = (
+    (result.wideLeft.x - wideAtom.x) * adjacentConnection.unit.x +
+    (result.wideLeft.y - wideAtom.y) * adjacentConnection.unit.y
+  );
+  const rightForward = (
+    (result.wideRight.x - wideAtom.x) * adjacentConnection.unit.x +
+    (result.wideRight.y - wideAtom.y) * adjacentConnection.unit.y
+  );
+  const continuationLength = Math.min(
+    adjacentConnection.length * 0.5,
+    Math.max(halfWidth, leftForward, rightForward, 0) + adjacentHalfStroke
+  );
+  result.leftContinuation = {
+    x: leftEdgeAtAtom.x + adjacentConnection.unit.x * continuationLength,
+    y: leftEdgeAtAtom.y + adjacentConnection.unit.y * continuationLength
+  };
+  result.rightContinuation = {
+    x: rightEdgeAtAtom.x + adjacentConnection.unit.x * continuationLength,
+    y: rightEdgeAtAtom.y + adjacentConnection.unit.y * continuationLength
+  };
+  return result;
+}
+
+function nativeSharedWideEndWedgeMiter(
+  currentTip: LayoutPoint,
+  wideAtom: LayoutPoint,
+  currentGeometry: NonNullable<ReturnType<typeof nativeSegmentVectorGeometry>>,
+  currentWidth: number,
+  adjacentRay: LayoutPoint,
+  adjacentLength: number,
+  adjacentWidth: number
+): { point: LayoutPoint; currentSide: "left" | "right" } | undefined {
+  const currentRay = {
+    x: currentTip.x - wideAtom.x,
+    y: currentTip.y - wideAtom.y
+  };
+  const turn = cross(currentRay, adjacentRay);
+  if (Math.abs(turn) <= crossingIntersectionEpsilon) {
+    return undefined;
+  }
+
+  const currentHalfWidth = currentWidth / 2;
+  const currentWideLeft = {
+    x: wideAtom.x + currentGeometry.normal.x * currentHalfWidth,
+    y: wideAtom.y + currentGeometry.normal.y * currentHalfWidth
+  };
+  const currentWideRight = {
+    x: wideAtom.x - currentGeometry.normal.x * currentHalfWidth,
+    y: wideAtom.y - currentGeometry.normal.y * currentHalfWidth
+  };
+
+  // adjacentRay points from the shared atom toward the other wedge's narrow end. Its wedge axis
+  // runs in the opposite direction, so this is the normal for the adjacent tip-to-atom segment.
+  const adjacentNormal = {
+    x: adjacentRay.y,
+    y: -adjacentRay.x
+  };
+  const adjacentHalfWidth = adjacentWidth / 2;
+  const adjacentWideLeft = {
+    x: wideAtom.x + adjacentNormal.x * adjacentHalfWidth,
+    y: wideAtom.y + adjacentNormal.y * adjacentHalfWidth
+  };
+  const adjacentWideRight = {
+    x: wideAtom.x - adjacentNormal.x * adjacentHalfWidth,
+    y: wideAtom.y - adjacentNormal.y * adjacentHalfWidth
+  };
+  const adjacentTip = {
+    x: wideAtom.x + adjacentRay.x * adjacentLength,
+    y: wideAtom.y + adjacentRay.y * adjacentLength
+  };
+
+  const currentSide = turn > 0 ? "left" : "right";
+  const currentOutside = currentSide === "left" ? currentWideLeft : currentWideRight;
+  const adjacentOutside = turn > 0 ? adjacentWideRight : adjacentWideLeft;
+  const point = infiniteLineIntersection(
+    currentTip,
+    currentOutside,
+    adjacentTip,
+    adjacentOutside
+  );
+  if (
+    !point ||
+    distance(point, wideAtom) > Math.max(currentWidth, adjacentWidth) * 2
+  ) {
+    return undefined;
+  }
+  return { point, currentSide };
+}
+
+function infiniteLineIntersection(
+  leftStart: LayoutPoint,
+  leftThrough: LayoutPoint,
+  rightStart: LayoutPoint,
+  rightThrough: LayoutPoint
+): LayoutPoint | undefined {
+  const leftVector = {
+    x: leftThrough.x - leftStart.x,
+    y: leftThrough.y - leftStart.y
+  };
+  const rightVector = {
+    x: rightThrough.x - rightStart.x,
+    y: rightThrough.y - rightStart.y
+  };
+  const denominator = cross(leftVector, rightVector);
+  if (Math.abs(denominator) <= crossingIntersectionEpsilon) {
+    return undefined;
+  }
+  const originDelta = {
+    x: rightStart.x - leftStart.x,
+    y: rightStart.y - leftStart.y
+  };
+  const leftT = cross(originDelta, rightVector) / denominator;
+  const point = {
+    x: leftStart.x + leftVector.x * leftT,
+    y: leftStart.y + leftVector.y * leftT
+  };
+  return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : undefined;
+}
+
+function nativeHashedWedgePlan(
+  segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
+  drawingStyle: NativeDrawingStyle,
+  object?: MoleculeObject,
+  bond?: CoreMoleculeBond
+): {
+  hashes: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[];
+  strokeWidth: number;
+  terminalJoin?: { index: number; points: string };
+} {
+  const strokeWidth = bond
+    ? nativeBondStrokeWidth(bond, drawingStyle)
+    : drawingStyle.bondStrokeWidthPx;
+  const geometry = nativeSegmentVectorGeometry(segment);
+  if (!geometry) {
+    return { hashes: [], strokeWidth };
+  }
+
+  const profileLength = nativeStereoBondProfileLength(
+    geometry.length,
+    object,
+    bond
+  );
   const hashSpacing = Math.max(2, drawingStyle.bondHashSpacingPx);
-  const hashCount = Math.max(5, Math.min(24, Math.round(geometry.length / hashSpacing)));
-  const maxWidth = nativeWedgeWidth(drawingStyle);
-  return Array.from({ length: hashCount }, (_, index) => {
-    const t = (index + 1) / (hashCount + 1);
+  const nominalBondLength = Math.max(hashSpacing, drawingStyle.bondLengthPx);
+  const nominalHashCount = Math.max(5, Math.round(nominalBondLength / hashSpacing));
+  const wideEndCollides = Boolean(
+    object && bond && nativeHashedWedgeWideEndCollides(object, bond, segment)
+  );
+  // Collision handling omits the terminal bar at the shared broad endpoint. Start with at least
+  // three bars in that case so even a short wedge retains the two marks needed to read as hashed.
+  const minimumHashCount = wideEndCollides ? 3 : 2;
+  const minimumWhiteGap = Math.max(1, strokeWidth);
+  const maximumReadableHashCount = Math.max(
+    minimumHashCount,
+    Math.floor(
+      geometry.length /
+        (strokeWidth + minimumWhiteGap)
+    )
+  );
+  const hashCount = Math.max(
+    minimumHashCount,
+    // White space is part of a hashed wedge's meaning. Count bars from the visible ink length and
+    // keep each white interval at least one stroke wide, so antialiasing cannot fuse a short bond
+    // into a solid wedge at fit-to-page zoom. The independent profileLength below still preserves
+    // the full atom-to-atom flare.
+    Math.min(
+      24,
+      maximumReadableHashCount,
+      Math.round(nominalHashCount * geometry.length / nominalBondLength)
+    )
+  );
+  const maxWidth = nativeWedgeWidth(drawingStyle, profileLength);
+  const minWidth = Math.min(maxWidth, strokeWidth);
+  const visibleHashCount = wideEndCollides ? hashCount - 1 : hashCount;
+  const nominalCenterSpacing = geometry.length / hashCount;
+  const requiredCenterSpacing = strokeWidth + minimumWhiteGap;
+  const maximumFittingCenterSpacing = visibleHashCount > 1
+    ? Math.max(0, (geometry.length - strokeWidth) / (visibleHashCount - 1))
+    : geometry.length;
+  const collisionCenterSpacing = Math.min(
+    maximumFittingCenterSpacing,
+    Math.max(nominalCenterSpacing, requiredCenterSpacing)
+  );
+  const collisionFirstCenter = (
+    geometry.length - collisionCenterSpacing * (visibleHashCount - 1)
+  ) / 2;
+  const hashes = Array.from({ length: visibleHashCount }, (_, index) => {
+    // Do not put a bar at the narrow stereocenter endpoint: it merges into the adjoining bond
+    // strokes and turns a five-element hash into four visible stripes. Publication-style wedges
+    // place five bars at 20/40/60/80/100% of a full bond; shorter visible segments use fewer bars,
+    // leaving every interval distinct while the wide base still meets the far atom. When another
+    // broad stereo bond owns that endpoint, center the surviving bars after reserving an omitted
+    // terminal position. Expand their axial spacing to one ink width plus one white ink-width gap
+    // whenever that physically fits inside the bond.
+    const distance = wideEndCollides
+      ? collisionFirstCenter + collisionCenterSpacing * index
+      : nominalCenterSpacing * (index + 1);
+    const progress = distance / geometry.length;
     const center = {
-      x: segment.x1 + geometry.unit.x * geometry.length * t,
-      y: segment.y1 + geometry.unit.y * geometry.length * t
+      x: segment.x1 + geometry.unit.x * distance,
+      y: segment.y1 + geometry.unit.y * distance
     };
-    const halfWidth = maxWidth * t / 2;
+    const halfWidth = (minWidth + (maxWidth - minWidth) * progress) / 2;
     return {
       x1: center.x + geometry.normal.x * halfWidth,
       y1: center.y + geometry.normal.y * halfWidth,
@@ -4485,6 +5154,90 @@ function nativeHashedWedgeSegments(
       y2: center.y - geometry.normal.y * halfWidth
     };
   });
+  if (wideEndCollides) {
+    return { hashes, strokeWidth };
+  }
+
+  const wideEndMiter = object && bond
+    ? nativeWedgeWideEndMiter(object, bond, segment, geometry, maxWidth)
+    : undefined;
+  const terminalHash = hashes.at(-1);
+  if (
+    !terminalHash ||
+    !wideEndMiter?.leftContinuation ||
+    !wideEndMiter.rightContinuation
+  ) {
+    return { hashes, strokeWidth };
+  }
+
+  // A complete terminal crossbar sticks out on both sides of the ordinary bond leaving the wide
+  // carbon. Replace only that last bar with a filled band: its tip-side edge is exactly the leading
+  // edge of the old hash stroke, while its two taper edges meet the same clean miters used by a
+  // solid wedge and continue beneath the regular bond. The fifth stripe remains visible, but its
+  // root is absorbed into the backbone instead of reading as a hook or tiny letter.
+  const halfStroke = strokeWidth / 2;
+  const terminalNearLeft = {
+    x: terminalHash.x1 - geometry.unit.x * halfStroke,
+    y: terminalHash.y1 - geometry.unit.y * halfStroke
+  };
+  const terminalNearRight = {
+    x: terminalHash.x2 - geometry.unit.x * halfStroke,
+    y: terminalHash.y2 - geometry.unit.y * halfStroke
+  };
+  const terminalJoinPoints = [
+    terminalNearLeft,
+    wideEndMiter.wideLeft,
+    wideEndMiter.leftContinuation,
+    wideEndMiter.rightContinuation,
+    wideEndMiter.wideRight,
+    terminalNearRight
+  ].map((point) => `${formatNumber(point.x)},${formatNumber(point.y)}`).join(" ");
+  return {
+    hashes: hashes.slice(0, -1),
+    strokeWidth,
+    terminalJoin: {
+      index: hashes.length - 1,
+      points: terminalJoinPoints
+    }
+  };
+}
+
+function nativeStereoBondProfileLength(
+  visibleLength: number,
+  object?: MoleculeObject,
+  bond?: CoreMoleculeBond
+): number {
+  if (!object || !bond) {
+    return visibleLength;
+  }
+  const fromAtom = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const toAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!fromAtom || !toAtom) {
+    return visibleLength;
+  }
+
+  // Atom labels shorten only the amount of stereo ink that remains visible; they must not change
+  // the stereochemical profile itself. Base hash count and flare on the complete atom-to-atom
+  // length so an N/O label cannot collapse a hashed wedge into four nearly equal dashes.
+  return Math.max(visibleLength, distance(fromAtom, toAtom));
+}
+
+function nativeHashedWedgeWideEndCollides(
+  object: MoleculeObject,
+  bond: CoreMoleculeBond,
+  segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">
+): boolean {
+  const wideAtom = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!wideAtom || distance(wideAtom, { x: segment.x2, y: segment.y2 }) > 0.001) {
+    return false;
+  }
+
+  // When two hashed wedges widen toward the same atom, their terminal bars cross and read as the
+  // letter X. Publication drawings omit those two colliding bars while keeping the preceding taper.
+  // Do this only at the shared wide endpoint; ordinary five-bar hashes remain unchanged.
+  return object.bonds.filter((candidate) =>
+    candidate.toAtomId === wideAtom.id && nativeBondDisplayStyle(candidate) === "hashed"
+  ).length > 1;
 }
 
 function nativeSegmentVectorGeometry(
@@ -4516,6 +5269,78 @@ export function isTerminalHeteroatomDoubleBond(
   }
 
   return isTerminalHeteroatom(fromAtom, object) || isTerminalHeteroatom(toAtom, object);
+}
+
+function terminalHeteroatomDoubleBondInnerSide(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond
+): DoubleBondSide | undefined {
+  if (!isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)) {
+    return undefined;
+  }
+
+  const terminalAtom = isTerminalHeteroatom(fromAtom, object) ? fromAtom : toAtom;
+  const junctionAtom = terminalAtom.id === fromAtom.id ? toAtom : fromAtom;
+  const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
+  const adjacentAtoms = object.bonds
+    .filter((candidate) => candidate.id !== bond.id)
+    .flatMap((candidate) => {
+      const neighborId = candidate.fromAtomId === junctionAtom.id
+        ? candidate.toAtomId
+        : candidate.toAtomId === junctionAtom.id
+          ? candidate.fromAtomId
+          : undefined;
+      const neighbor = neighborId ? atomById.get(neighborId) : undefined;
+      return neighbor && nativeElementFromAtomLabel(neighbor.element) !== "H"
+        ? [neighbor]
+        : [];
+    });
+  if (adjacentAtoms.length !== 1) {
+    return undefined;
+  }
+
+  const bondDx = toAtom.x - fromAtom.x;
+  const bondDy = toAtom.y - fromAtom.y;
+  const bondLength = Math.hypot(bondDx, bondDy);
+  if (bondLength <= 0.001) {
+    return undefined;
+  }
+
+  const normal = { x: -bondDy / bondLength, y: bondDx / bondLength };
+  const adjacentDirection = {
+    x: adjacentAtoms[0]!.x - junctionAtom.x,
+    y: adjacentAtoms[0]!.y - junctionAtom.y
+  };
+  const adjacentSide = adjacentDirection.x * normal.x + adjacentDirection.y * normal.y;
+  if (Math.abs(adjacentSide) <= 0.001) {
+    return undefined;
+  }
+
+  return adjacentSide > 0 ? "left" : "right";
+}
+
+function terminalMethyleneCarbon(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond
+): MoleculeAtom | undefined {
+  if (bond.order !== "double") {
+    return undefined;
+  }
+  if (
+    nativeElementFromAtomLabel(fromAtom.element) !== "C" ||
+    nativeElementFromAtomLabel(toAtom.element) !== "C"
+  ) {
+    return undefined;
+  }
+
+  return [fromAtom, toAtom].find((atom) =>
+    atom.formalCharge === 0 &&
+    atomBondCount(object, atom.id) === 1
+  );
 }
 
 function isTerminalHeteroatom(atom: MoleculeAtom, object: MoleculeObject): boolean {

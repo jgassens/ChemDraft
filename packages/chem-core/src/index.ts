@@ -198,6 +198,7 @@ export {
 } from "./identity";
 
 export {
+  DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION,
   flattenPerspectiveFrom3D,
   type FlattenOptions,
   type FlattenResult,

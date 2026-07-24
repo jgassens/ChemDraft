@@ -107,8 +107,10 @@ export interface FlattenOptions {
 
 type Required<T> = { [K in keyof T]-?: T[K] };
 
+export const DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION = 0.2;
+
 const DEFAULTS: Required<Omit<FlattenOptions, "objectId" | "stereoCenterAtomIds">> = {
-  minProjectedBondLengthFraction: 0.2,
+  minProjectedBondLengthFraction: DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION,
   parityVolumeEpsilon: 0.05,
   crossingDepthEpsilonFraction: 0.04,
   ezEdgeOnAngleDeg: 12
@@ -622,22 +624,55 @@ function medianBondLength(bonds: readonly MoleculeBond[], projected: Map<string,
   return lengths.length % 2 === 0 ? (lengths[mid - 1] + lengths[mid]) / 2 : lengths[mid];
 }
 
-/** MRV backtracking: assign each center one bond, no bond reused, prefer high score. */
+/**
+ * MRV backtracking: assign each center one bond, no bond reused, prefer high score.
+ *
+ * A carbon must not end up with two solid wedges or two hashed wedges meeting at it.
+ * Even when opposite bond directions make that depiction encoding-sound, the repeated
+ * glyph reads as an accidental double wedge/hash. Treat endpoint style uniqueness as a
+ * hard legibility constraint and let the CSP move one center's marker to another
+ * encoding-sound bond.
+ */
 function solveSharedBondCsp(plans: readonly CenterPlan[]): Map<string, Candidate> | null {
   if (plans.length === 0) return new Map();
   const order = [...plans].sort((a, b) => a.candidates.length - b.candidates.length);
   const used = new Set<string>();
+  const usedStylesByAtom = new Map<string, Set<StereoMarkerStyle>>();
   const result = new Map<string, Candidate>();
+
+  const styleIsUsedAt = (atomId: string, style: StereoMarkerStyle): boolean =>
+    usedStylesByAtom.get(atomId)?.has(style) ?? false;
+  const addStyleAt = (atomId: string, style: StereoMarkerStyle): void => {
+    const styles = usedStylesByAtom.get(atomId) ?? new Set<StereoMarkerStyle>();
+    styles.add(style);
+    usedStylesByAtom.set(atomId, styles);
+  };
+  const removeStyleAt = (atomId: string, style: StereoMarkerStyle): void => {
+    const styles = usedStylesByAtom.get(atomId);
+    if (!styles) return;
+    styles.delete(style);
+    if (styles.size === 0) usedStylesByAtom.delete(atomId);
+  };
 
   const backtrack = (index: number): boolean => {
     if (index === order.length) return true;
     const plan = order[index];
     for (const candidate of plan.candidates) {
       if (used.has(candidate.bondId)) continue;
+      if (
+        styleIsUsedAt(plan.atomId, candidate.style) ||
+        styleIsUsedAt(candidate.neighborId, candidate.style)
+      ) {
+        continue;
+      }
       used.add(candidate.bondId);
+      addStyleAt(plan.atomId, candidate.style);
+      addStyleAt(candidate.neighborId, candidate.style);
       result.set(plan.atomId, candidate);
       if (backtrack(index + 1)) return true;
       used.delete(candidate.bondId);
+      removeStyleAt(plan.atomId, candidate.style);
+      removeStyleAt(candidate.neighborId, candidate.style);
       result.delete(plan.atomId);
     }
     return false;

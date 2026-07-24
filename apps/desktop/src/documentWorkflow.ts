@@ -37,6 +37,7 @@ import {
   createPageLayout,
   createCustomPageLayout,
   cssPxToPageSize,
+  DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION,
   pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
   moleculeToMolfileV2000,
@@ -549,6 +550,11 @@ export const nativeTextObjectMinimumDimensions = {
 } as const;
 
 export const nativeBondLengthPx = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+// Coordinate-free SMILES need a little more room than hand-drawn/native structures. At the
+// 22 px drawing default, a 15 px heteroatom label and a stereobond consume most of a fused-ring
+// bond. A 28 px target keeps the normal line/font weights while giving generated polycycles the
+// same open proportions users expect from a chemical depiction engine.
+export const smilesPasteBondLengthPx = 28;
 export const nativeAtomHitRadiusPx = 8;
 export const nativeChargeMarkSizePx = 18;
 export const nativeChargeAssociationRadiusPx = nativeBondLengthPx * 1.15;
@@ -3406,6 +3412,35 @@ export interface PastedStructureDepiction {
 }
 
 /**
+ * Read a generated 2D molfile into the structural depiction consumed by SMILES paste. Keeping
+ * this conversion beside `insertSmilesMolecule` means RDKit and the OpenChemLib fallback share
+ * the app's existing molfile parser, including its fixed-column and wedge-direction handling.
+ */
+export function pastedStructureDepictionFromMolfile(molfile: string): PastedStructureDepiction {
+  const graph = parseMolfileGraph(molfile);
+  const atomIndexById = new Map(graph.atoms.map((atom, index) => [atom.id, index]));
+  return {
+    atoms: graph.atoms.map((atom) => ({
+      element: atom.element,
+      x: atom.x,
+      y: atom.y,
+      charge: atom.formalCharge
+    })),
+    bonds: graph.bonds.flatMap((bond) => {
+      const from = atomIndexById.get(bond.fromAtomId);
+      const to = atomIndexById.get(bond.toAtomId);
+      if (from === undefined || to === undefined) return [];
+      return [{
+        from,
+        to,
+        order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+        wedge: bond.bondStyle ?? null
+      }];
+    })
+  };
+}
+
+/**
  * Place a SMILES-derived 2D depiction as an editable native molecule, preserving
  * stereochemistry. The depiction is engine-frame y-UP with wedge/hash bonds; the
  * molfile scaler negates y (→ document y-down) and KEEPS the wedges unchanged —
@@ -3442,7 +3477,12 @@ export function insertSmilesMolecule(
     warnings: []
   };
 
-  const atoms: MoleculeAtom[] = scaleParsedMolfileAtoms(pseudoGraph, point, page).map((atom) => ({
+  const atoms: MoleculeAtom[] = scaleParsedMolfileAtoms(
+    pseudoGraph,
+    point,
+    page,
+    smilesPasteBondLengthPx
+  ).map((atom) => ({
     id: atom.id,
     element: atom.element,
     x: atom.x,
@@ -3496,6 +3536,7 @@ export function insertSmilesMolecule(
     transform: defaultNativeMoleculeTransform,
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      bondLengthPx: smilesPasteBondLengthPx,
       source: "clipboard-smiles"
     },
     compatibility: {
@@ -3503,7 +3544,7 @@ export function insertSmilesMolecule(
       warnings: [
         {
           code: "clipboard.smiles_imported",
-          message: "Generated an editable 2D structure from pasted SMILES (OpenChemLib layout)."
+          message: "Generated an editable 2D structure from pasted SMILES."
         }
       ],
       unknown: { smiles: smilesText }
@@ -10933,7 +10974,11 @@ export function reconcileFlattenedStereo(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[],
   reference: ReadonlyMap<number, "R" | "S">,
-  perceive: StereoPerceiver
+  perceive: StereoPerceiver,
+  options: {
+    /** Rotated conformer depth by atom id; larger values are nearer the viewer. */
+    depthByAtomId?: ReadonlyMap<string, number>;
+  } = {}
 ): { ok: boolean; bonds: MoleculeBond[]; unresolved: number[] } {
   const cloneBonds = (source: readonly MoleculeBond[]): MoleculeBond[] =>
     source.map((bond) => ({ ...bond, display: bond.display ? { ...bond.display } : undefined }));
@@ -10961,7 +11006,24 @@ export function reconcileFlattenedStereo(
       const got = perceived[index];
       if (!got || !got.isStereoCenter || got.descriptor !== want) wrong.push(index);
     }
-    if (wrong.length === 0) return { ok: true, bonds: current, unresolved: [] }; // validated-correct
+    if (wrong.length === 0) {
+      // CIP correctness is necessary but not sufficient for a readable perspective drawing:
+      // two identical stereo glyphs meeting at one atom look like an accidental double wedge/hash.
+      // Relocate one marker only through whole-molecule CIP-validated trials. This is deliberately
+      // done here, not in the renderer, because swapping stereo endpoints during paint can change
+      // or erase a stereocenter while leaving the stored molecule untouched.
+      const readable = relocateRepeatedStereoMarkers(
+        templateMolecule,
+        atoms,
+        current,
+        reference,
+        perceive,
+        options.depthByAtomId
+      );
+      return readable
+        ? { ok: true, bonds: readable, unresolved: [] }
+        : { ok: false, bonds: current, unresolved: [...reference.keys()] };
+    }
 
     const next = cloneBonds(current);
     const unfixable: number[] = [];
@@ -10981,6 +11043,336 @@ export function reconcileFlattenedStereo(
     current = next;
   }
   return { ok: false, bonds: current, unresolved: [...reference.keys()] };
+}
+
+type RepeatedStereoMarker = {
+  atomId: string;
+  style: "wedge" | "hashed";
+  bondIds: string[];
+};
+
+function repeatedStereoMarkers(bonds: readonly MoleculeBond[]): RepeatedStereoMarker[] {
+  const byEndpointAndStyle = new Map<string, RepeatedStereoMarker>();
+  for (const bond of bonds) {
+    const style = bond.display?.bondStyle;
+    if (style !== "wedge" && style !== "hashed") continue;
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      const key = `${atomId}:${style}`;
+      const entry = byEndpointAndStyle.get(key) ?? { atomId, style, bondIds: [] };
+      entry.bondIds.push(bond.id);
+      byEndpointAndStyle.set(key, entry);
+    }
+  }
+  return [...byEndpointAndStyle.values()].filter((entry) => entry.bondIds.length > 1);
+}
+
+function relocateRepeatedStereoMarkers(
+  templateMolecule: MoleculeObject,
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  reference: ReadonlyMap<number, "R" | "S">,
+  perceive: StereoPerceiver,
+  depthByAtomId?: ReadonlyMap<string, number>
+): MoleculeBond[] | undefined {
+  const cloneBonds = (source: readonly MoleculeBond[]): MoleculeBond[] =>
+    source.map((bond) => ({ ...bond, display: bond.display ? { ...bond.display } : undefined }));
+  const atomIndexById = new Map(atoms.map((atom, index) => [atom.id, index] as const));
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom] as const));
+  const projectedBondLengths = bonds
+    .map((bond) => {
+      const from = atomById.get(bond.fromAtomId);
+      const to = atomById.get(bond.toAtomId);
+      return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
+    })
+    .filter((length) => length > 0)
+    .sort((left, right) => left - right);
+  const projectedBondLengthMid = Math.floor(projectedBondLengths.length / 2);
+  const medianProjectedBondLength = projectedBondLengths.length === 0
+    ? 1
+    : projectedBondLengths.length % 2 === 0
+      ? (
+        projectedBondLengths[projectedBondLengthMid - 1] +
+        projectedBondLengths[projectedBondLengthMid]
+      ) / 2
+      : projectedBondLengths[projectedBondLengthMid];
+  const minLegibleStereoBondLength =
+    DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION * medianProjectedBondLength;
+  const projectedLength = (fromAtomId: string, toAtomId: string): number => {
+    const from = atomById.get(fromAtomId);
+    const to = atomById.get(toAtomId);
+    return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
+  };
+  const isStereo = (bond: MoleculeBond): boolean =>
+    bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed";
+  const signature = (source: readonly MoleculeBond[]): string =>
+    JSON.stringify(source.map((bond) => [
+      bond.id,
+      bond.fromAtomId,
+      bond.toAtomId,
+      bond.display?.bondStyle ?? null
+    ]));
+  const referenceMatchCache = new Map<string, boolean>();
+  let perceptionCalls = 0;
+  let visitedStates = 1;
+  let budgetExhausted = false;
+  const maxPerceptionCalls = Math.max(64, Math.min(256, reference.size * 24));
+  const maxVisitedStates = Math.max(96, Math.min(384, reference.size * 32));
+  const referenceMatches = (source: readonly MoleculeBond[]): boolean => {
+    const sourceSignature = signature(source);
+    const cached = referenceMatchCache.get(sourceSignature);
+    if (cached !== undefined) return cached;
+    if (perceptionCalls >= maxPerceptionCalls) {
+      budgetExhausted = true;
+      return false;
+    }
+    perceptionCalls += 1;
+    const perceived = perceive(
+      moleculeToMolfileV2000(
+        { ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() },
+        { fromDocFrame: true }
+      )
+    );
+    for (const [index, descriptor] of reference) {
+      const result = perceived[index];
+      if (!result?.isStereoCenter || result.descriptor !== descriptor) {
+        referenceMatchCache.set(sourceSignature, false);
+        return false;
+      }
+    }
+    referenceMatchCache.set(sourceSignature, true);
+    return true;
+  };
+  const removeStereoStyle = (bond: MoleculeBond): void => {
+    if (!bond.display) return;
+    const { bondStyle: _removed, ...rest } = bond.display;
+    void _removed;
+    bond.display = Object.keys(rest).length > 0 ? rest : undefined;
+  };
+  const collisionPenalty = (source: readonly MoleculeBond[]): number =>
+    repeatedStereoMarkers(source).reduce((sum, entry) => sum + entry.bondIds.length - 1, 0);
+
+  type Trial = {
+    bonds: MoleculeBond[];
+    collisionPenalty: number;
+    depthScore: number;
+  };
+  const maxDepth = Math.min(24, Math.max(12, reference.size * 3));
+  const greatestRemainingDepthBySignature = new Map<string, number>([
+    [signature(bonds), maxDepth]
+  ]);
+
+  const search = (source: MoleculeBond[], remainingDepth: number): MoleculeBond[] | undefined => {
+    const collision = repeatedStereoMarkers(source)[0];
+    if (!collision) return source;
+    if (remainingDepth <= 0) return undefined;
+
+    const stereoBondIds = new Set(source.filter(isStereo).map((bond) => bond.id));
+    const trials: Trial[] = [];
+    for (const sourceBondId of collision.bondIds) {
+      const sourceBond = source.find((bond) => bond.id === sourceBondId);
+      if (!sourceBond || !isStereo(sourceBond)) continue;
+      // ChemDraft's stereo contract is narrow-end-at-center, so only that atom owns this marker.
+      const centerId = sourceBond.fromAtomId;
+      const centerIndex = atomIndexById.get(centerId);
+      if (centerIndex === undefined || !reference.has(centerIndex)) continue;
+      const centerAtom = atomById.get(centerId);
+      if (!centerAtom) continue;
+
+      for (const candidate of source) {
+        if (candidate.order !== "single") continue;
+        const neighborId = candidate.fromAtomId === centerId
+          ? candidate.toAtomId
+          : candidate.toAtomId === centerId
+            ? candidate.fromAtomId
+            : undefined;
+        if (!neighborId) continue;
+        if (candidate.id !== sourceBond.id && stereoBondIds.has(candidate.id)) continue;
+        const neighborAtom = atomById.get(neighborId);
+        if (!neighborAtom) continue;
+        const candidateProjectedLength = projectedLength(centerId, neighborId);
+        if (candidateProjectedLength < minLegibleStereoBondLength) continue;
+
+        for (const style of ["wedge", "hashed"] as const) {
+          if (
+            candidate.id === sourceBond.id &&
+            sourceBond.fromAtomId === centerId &&
+            sourceBond.display?.bondStyle === style
+          ) {
+            continue;
+          }
+          const next = cloneBonds(source);
+          const nextSource = next.find((bond) => bond.id === sourceBond.id);
+          const nextCandidate = next.find((bond) => bond.id === candidate.id);
+          if (!nextSource || !nextCandidate) continue;
+          removeStereoStyle(nextSource);
+          nextCandidate.fromAtomId = centerId;
+          nextCandidate.toAtomId = neighborId;
+          nextCandidate.display = { ...(nextCandidate.display ?? {}), bondStyle: style };
+
+          const nextSignature = signature(next);
+          const nextRemainingDepth = remainingDepth - 1;
+          const greatestSeenRemaining =
+            greatestRemainingDepthBySignature.get(nextSignature);
+          if (
+            greatestSeenRemaining !== undefined &&
+            greatestSeenRemaining >= nextRemainingDepth
+          ) {
+            continue;
+          }
+          const centerDepth = depthByAtomId?.get(centerId);
+          const neighborDepth = depthByAtomId?.get(neighborId);
+          const signedDepth =
+            centerDepth !== undefined && neighborDepth !== undefined
+              ? neighborDepth - centerDepth
+              : 0;
+          const depthAlignment = style === "wedge" ? signedDepth : -signedDepth;
+          trials.push({
+            bonds: next,
+            // Repeated glyph removal is a hard, lexicographically first requirement. Depth only
+            // ranks equally readable, chemistry-valid depictions.
+            collisionPenalty: collisionPenalty(next),
+            depthScore:
+              depthAlignment * 10 +
+              Math.abs(signedDepth) +
+              candidateProjectedLength * 0.01
+          });
+        }
+      }
+    }
+
+    trials.sort((left, right) =>
+      left.collisionPenalty - right.collisionPenalty ||
+      right.depthScore - left.depthScore
+    );
+    for (const trial of trials) {
+      if (budgetExhausted) return undefined;
+      const trialSignature = signature(trial.bonds);
+      const nextRemainingDepth = remainingDepth - 1;
+      const greatestSeenRemaining =
+        greatestRemainingDepthBySignature.get(trialSignature);
+      if (
+        greatestSeenRemaining !== undefined &&
+        greatestSeenRemaining >= nextRemainingDepth
+      ) {
+        continue;
+      }
+      if (visitedStates >= maxVisitedStates) {
+        budgetExhausted = true;
+        return undefined;
+      }
+      visitedStates += 1;
+      greatestRemainingDepthBySignature.set(trialSignature, nextRemainingDepth);
+      if (!referenceMatches(trial.bonds)) continue;
+      const resolved = search(trial.bonds, nextRemainingDepth);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  };
+
+  const readable = search(cloneBonds(bonds), maxDepth);
+  if (!readable || !depthByAtomId) return readable;
+
+  // Once repeated glyphs are gone, improve each center's perspective cue without weakening the
+  // chemistry guard. A solid wedge should preferentially point to a nearer substituent and a hash
+  // to a farther one. Every proposed relocation is reparsed and must preserve all reference CIP
+  // descriptors, so depth can rank safe alternatives but can never manufacture stereochemistry.
+  let depthAligned = readable;
+  const ownedMarkers = () => depthAligned.filter((bond) => {
+    if (!isStereo(bond)) return false;
+    const centerIndex = atomIndexById.get(bond.fromAtomId);
+    return centerIndex !== undefined && reference.has(centerIndex);
+  });
+  const depthCueScore = (
+    centerId: string,
+    neighborId: string,
+    style: "wedge" | "hashed"
+  ): number => {
+    const centerDepth = depthByAtomId.get(centerId);
+    const neighborDepth = depthByAtomId.get(neighborId);
+    const centerAtom = atomById.get(centerId);
+    const neighborAtom = atomById.get(neighborId);
+    if (
+      centerDepth === undefined ||
+      neighborDepth === undefined ||
+      !centerAtom ||
+      !neighborAtom
+    ) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    const signedDepth = neighborDepth - centerDepth;
+    const alignment = style === "wedge" ? signedDepth : -signedDepth;
+    return (
+      alignment * 10 +
+      Math.abs(signedDepth) +
+      Math.hypot(neighborAtom.x - centerAtom.x, neighborAtom.y - centerAtom.y) * 0.01
+    );
+  };
+
+  const markersByWorstCue = ownedMarkers().sort((left, right) => {
+    const leftStyle = left.display?.bondStyle;
+    const rightStyle = right.display?.bondStyle;
+    return depthCueScore(
+      left.fromAtomId,
+      left.toAtomId,
+      leftStyle === "hashed" ? "hashed" : "wedge"
+    ) - depthCueScore(
+      right.fromAtomId,
+      right.toAtomId,
+      rightStyle === "hashed" ? "hashed" : "wedge"
+    );
+  });
+  for (const markerSnapshot of markersByWorstCue) {
+    const currentMarker = depthAligned.find((bond) => bond.id === markerSnapshot.id);
+    const currentStyle = currentMarker?.display?.bondStyle;
+    if (
+      !currentMarker ||
+      (currentStyle !== "wedge" && currentStyle !== "hashed")
+    ) {
+      continue;
+    }
+    const centerId = currentMarker.fromAtomId;
+    const currentScore = depthCueScore(centerId, currentMarker.toAtomId, currentStyle);
+    const stereoBondIds = new Set(depthAligned.filter(isStereo).map((bond) => bond.id));
+    let best: { bonds: MoleculeBond[]; score: number } | undefined;
+
+    for (const candidate of depthAligned) {
+      if (candidate.order !== "single") continue;
+      const neighborId = candidate.fromAtomId === centerId
+        ? candidate.toAtomId
+        : candidate.toAtomId === centerId
+          ? candidate.fromAtomId
+          : undefined;
+      if (!neighborId) continue;
+      if (candidate.id !== currentMarker.id && stereoBondIds.has(candidate.id)) continue;
+      if (projectedLength(centerId, neighborId) < minLegibleStereoBondLength) continue;
+
+      for (const style of ["wedge", "hashed"] as const) {
+        const score = depthCueScore(centerId, neighborId, style);
+        if (score <= currentScore + 1e-6 || score <= (best?.score ?? Number.NEGATIVE_INFINITY)) {
+          continue;
+        }
+        const trial = cloneBonds(depthAligned);
+        const trialCurrent = trial.find((bond) => bond.id === currentMarker.id);
+        const trialCandidate = trial.find((bond) => bond.id === candidate.id);
+        if (!trialCurrent || !trialCandidate) continue;
+        removeStereoStyle(trialCurrent);
+        trialCandidate.fromAtomId = centerId;
+        trialCandidate.toAtomId = neighborId;
+        trialCandidate.display = { ...(trialCandidate.display ?? {}), bondStyle: style };
+        if (budgetExhausted) return depthAligned;
+        if (repeatedStereoMarkers(trial).length > 0) continue;
+        const trialMatchesReference = referenceMatches(trial);
+        // This second pass is optional perspective polish. If its private budget is spent, keep
+        // the already collision-free, CIP-validated depiction instead of rejecting safe work.
+        if (budgetExhausted) return depthAligned;
+        if (!trialMatchesReference) continue;
+        best = { bonds: trial, score };
+      }
+    }
+    if (best) depthAligned = best.bonds;
+  }
+
+  return depthAligned;
 }
 
 /**
@@ -11174,7 +11566,19 @@ export function flattenSpunMolecule(
         reference.set(index, entry.descriptor);
       }
     });
-    const reconciled = reconcileFlattenedStereo(molecule, nextAtoms, nextBonds, reference, perceive);
+    const depthByAtomId = new Map<string, number>();
+    for (const atom of molecule.atoms) {
+      const depth = depthOf(atom.id);
+      if (depth !== undefined) depthByAtomId.set(atom.id, depth);
+    }
+    const reconciled = reconcileFlattenedStereo(
+      molecule,
+      nextAtoms,
+      nextBonds,
+      reference,
+      perceive,
+      { depthByAtomId }
+    );
     if (!reconciled.ok) {
       return {
         document,
@@ -12262,10 +12666,11 @@ function createClipboardTextStructureMolecule(
 function scaleParsedMolfileAtoms(
   graph: ParsedMolfileGraph,
   point: PagePoint,
-  page: ChemDraftDocument["pages"][number]
+  page: ChemDraftDocument["pages"][number],
+  targetBondLengthPx: number = nativeBondLengthPx
 ): ParsedMolfileGraph["atoms"] {
   const averageBondLength = averageParsedMolfileBondLength(graph);
-  const scale = averageBondLength > 0 ? nativeBondLengthPx / averageBondLength : nativeBondLengthPx / 1.5;
+  const scale = averageBondLength > 0 ? targetBondLengthPx / averageBondLength : targetBondLengthPx / 1.5;
   const scaledAtoms = graph.atoms.map((atom) => ({
     ...atom,
     x: atom.x * scale,
