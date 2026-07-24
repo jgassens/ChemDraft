@@ -438,6 +438,8 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+"$ROOT_DIR/scripts/prepare-sparkle.sh"
+
 stop_existing_dev_apps
 unregister_stale_chem_draft_bundles
 stop_stale_dev_servers_for_this_checkout
