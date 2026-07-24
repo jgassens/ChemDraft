@@ -8,6 +8,8 @@ fn main() {
     if let Ok(label) = std::env::var("CHEMDRAFT_WORKTREE_LABEL") {
         println!("cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL={label}");
     }
+    #[cfg(target_os = "macos")]
+    stage_sparkle_framework_for_cargo_executables();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "open_toolset_window",
@@ -37,4 +39,33 @@ fn main() {
         ]),
     ))
     .expect("failed to run Tauri build script");
+}
+
+/// Cargo test binaries are launched from `target/<profile>/deps`, not from an app bundle. The
+/// Sparkle bridge links with `@executable_path/../Frameworks`, so expose the prepared framework at
+/// that build-only location as well. Tauri still copies the real framework into packaged apps.
+#[cfg(target_os = "macos")]
+fn stage_sparkle_framework_for_cargo_executables() {
+    use std::os::unix::fs::symlink;
+
+    let Ok(out_dir) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    let Some(profile_dir) = std::path::Path::new(&out_dir).ancestors().nth(3) else {
+        return;
+    };
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Sparkle.framework");
+    if !source.is_dir() {
+        return;
+    }
+
+    let frameworks_dir = profile_dir.join("Frameworks");
+    std::fs::create_dir_all(&frameworks_dir)
+        .expect("failed to create the Cargo test Frameworks directory");
+    let destination = frameworks_dir.join("Sparkle.framework");
+    if !destination.exists() {
+        symlink(&source, &destination).expect("failed to link Sparkle for Cargo test executables");
+    }
+
+    println!("cargo:rerun-if-changed={}", source.display());
 }

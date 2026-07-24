@@ -34,6 +34,8 @@ use objc2_app_kit::{
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
+#[cfg(target_os = "macos")]
+use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
@@ -42,6 +44,8 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
+#[cfg(target_os = "macos")]
+const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
@@ -290,7 +294,7 @@ const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ToolsetWindowDirectory::default())
@@ -303,7 +307,12 @@ pub fn run() {
         // state (localStorage, IndexedDB) is disturbed. See `installed_plugins` for the full rationale.
         .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request)
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_sparkle_updater::init());
+
+    builder
         .menu(create_app_menu)
         .on_page_load(|webview, payload| {
             if webview.label() == MAIN_WINDOW_LABEL
@@ -321,6 +330,11 @@ pub fn run() {
             // command dispatcher, which owns visibility and pushes checkmarks back via
             // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
             let command_id = event.id().as_ref();
+            #[cfg(target_os = "macos")]
+            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
+                check_for_updates(app);
+                return;
+            }
             if is_routed_menu_command(command_id) {
                 if let Err(error) = emit_command_to_main(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
@@ -347,9 +361,7 @@ pub fn run() {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
                         if !APP_QUITTING.load(Ordering::SeqCst) {
                             if let Err(error) = persist_main_window_geometry(window) {
-                                eprintln!(
-                                    "Could not persist ChemDraft main window frame: {error}"
-                                );
+                                eprintln!("Could not persist ChemDraft main window frame: {error}");
                             }
                         }
                     }
@@ -474,6 +486,20 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(target_os = "macos")]
+fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(updater) = app.sparkle_updater() else {
+        // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately does
+        // not start there. Packaged builds always have an updater unless their Info.plist is broken.
+        eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
+        return;
+    };
+
+    if let Err(error) = updater.check_for_updates() {
+        eprintln!("Could not check for a ChemDraft update: {error}");
+    }
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
@@ -2037,7 +2063,13 @@ fn build_analyze_submenu<R: Runtime>(
     let plugin_menu_items = plugin_items
         .iter()
         .map(|item| {
-            MenuItem::with_id(app, item.id.as_str(), item.label.as_str(), item.enabled, None::<&str>)
+            MenuItem::with_id(
+                app,
+                item.id.as_str(),
+                item.label.as_str(),
+                item.enabled,
+                None::<&str>,
+            )
         })
         .collect::<tauri::Result<Vec<_>>>()?;
 
@@ -2129,6 +2161,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         true,
                         Some("CmdOrCtrl+Shift+E"),
                     )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    #[cfg(target_os = "macos")]
+                    &MenuItem::with_id(
+                        app,
+                        CHECK_FOR_UPDATES_COMMAND_ID,
+                        "Check for Updates…",
+                        true,
+                        None::<&str>,
+                    )?,
+                    #[cfg(target_os = "macos")]
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::close_window(app, None)?,
                     #[cfg(not(target_os = "macos"))]
@@ -3163,7 +3205,9 @@ mod tests {
         expect_true(is_routed_menu_command(
             "plugin.massFragment.analyzeSelectedStructure",
         ));
-        expect_true(is_routed_menu_command("plugin.molscribeOcsr.recognizeImage"));
+        expect_true(is_routed_menu_command(
+            "plugin.molscribeOcsr.recognizeImage",
+        ));
         expect_false(is_routed_menu_command("definitely.not.a.routed.command"));
     }
 

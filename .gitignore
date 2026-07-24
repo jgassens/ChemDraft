@@ -14,6 +14,11 @@ Custom_Toolbar/
 native/avogadro3d-sidecar/build/
 native/avogadro3d-sidecar/_deps/
 
+# Downloaded by scripts/prepare-sparkle.sh. The framework and release tools are verified against a
+# pinned checksum but stay out of Git because the upstream universal binary distribution is large.
+apps/desktop/src-tauri/Sparkle.framework/
+apps/desktop/src-tauri/sparkle-bin/
+
 # Dev-only native RDKit oracle (never shipped; recreate from tools/rdkit-oracle/requirements-rdkit-oracle.txt)
 .venv-rdkit-oracle/
 .venv-oracle/
