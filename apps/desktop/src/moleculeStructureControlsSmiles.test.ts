@@ -9,7 +9,8 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { depictSmiles2D, ensureOclResources, type Depiction2D } from "@chemdraft/ocl-adapter";
-import { planPageSvgRender, type PageSvgElementFragment, type PageSvgFragment } from "@chemdraft/layout-engine";
+import { planPageSvgRender, type PageSvgElementFragment } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
 
 import {
   applyMoleculeTargetBondLength,
@@ -53,13 +54,6 @@ function pasteSmilesDocument(smiles: string): { document: ChemDraftDocument; mol
 function pageFragments(molecule: MoleculeObject): PageSvgElementFragment[] {
   const page = createEmptyDocument({ now: "2026-06-24T00:00:00.000Z" }).pages[0];
   return planPageSvgRender({ ...page, objects: [molecule] }).fragments.flatMap(elementFragments);
-}
-
-function elementFragments(fragment: PageSvgFragment): PageSvgElementFragment[] {
-  if (fragment.kind === "text") {
-    return [];
-  }
-  return [fragment, ...fragment.children.flatMap(elementFragments)];
 }
 
 function styledMolecule(molecule: MoleculeObject, style: Record<string, unknown>): MoleculeObject {

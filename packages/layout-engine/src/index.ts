@@ -2141,9 +2141,10 @@ function moleculeBondEffectSourceFragments(
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
   if (bondStyle === "wedge" && segment.segment === "primary") {
+    const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
-        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond),
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength),
         fill: "#000000",
         stroke: "none"
       })
@@ -2151,7 +2152,7 @@ function moleculeBondEffectSourceFragments(
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
-    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond);
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps);
     const hashes = hashedWedge.hashes.flatMap((hash, index) =>
       splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
         elementFragment("line", `molecule-effect-source-bond-hash-${object.id}-${segment.key}-${index}-${visibleIndex}`, {
@@ -2330,10 +2331,11 @@ function nativeBondSegmentFragments(
   const stroke = nativeMoleculeBondColor(object, segment.bond, drawingStyle);
 
   if (bondStyle === "wedge" && segment.segment === "primary") {
+    const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `bond-${object.id}-${segment.key}-${index}`, {
         ...commonAttrs,
-        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond),
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength),
         fill: stroke,
         "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
         stroke: "none"
@@ -2342,7 +2344,7 @@ function nativeBondSegmentFragments(
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
-    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond);
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps);
     return [
       elementFragment("g", `bond-${object.id}-${segment.key}`, commonAttrs, [
         ...hashedWedge.hashes.flatMap((hash, index) =>
@@ -4725,14 +4727,17 @@ function nativeWedgePolygonPoints(
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
   drawingStyle: NativeDrawingStyle,
   object?: MoleculeObject,
-  bond?: CoreMoleculeBond
+  bond?: CoreMoleculeBond,
+  // Length used for the width cap. Crossing gaps split one wedge into several fragments; each
+  // fragment must inherit the whole segment's base width or the pieces flare at different rates.
+  widthCapLength?: number
 ): string {
   const geometry = nativeSegmentVectorGeometry(segment);
   if (!geometry) {
     return `${formatNumber(segment.x1)},${formatNumber(segment.y1)} ${formatNumber(segment.x2)},${formatNumber(segment.y2)}`;
   }
 
-  const width = nativeWedgeWidth(drawingStyle, geometry.length);
+  const width = nativeWedgeWidth(drawingStyle, widthCapLength ?? geometry.length);
   const miteredWideEnd = object && bond
     ? nativeWedgeWideEndMiter(object, bond, segment, geometry, width)
     : undefined;
@@ -4848,6 +4853,26 @@ function nativeWedgeWideEndMiter(
   );
   if (adjacentWideEndWedges.length === 1) {
     const adjacentConnection = adjacentWideEndWedges[0]!;
+    // A label at the adjacent wedge's narrow end trims its rendered segment, so that wedge fails
+    // the exact-endpoint guard above: it skips mitering and caps its base width by the shorter
+    // visible length. A shared corner computed here from its full atom-to-atom flare would never
+    // meet any edge it actually draws, so keep the plain centered base instead.
+    const adjacentNarrowAtom = atomById.get(adjacentConnection.bond.fromAtomId);
+    const adjacentNarrowLabel = adjacentNarrowAtom
+      ? atomDisplayLabel(
+          adjacentNarrowAtom,
+          object.bonds,
+          nativeMoleculeAtomLabelStyle(
+            object,
+            adjacentNarrowAtom.id,
+            nativeDrawingStyleFromObjectStyle(object.style)
+          ),
+          object.atoms
+        )
+      : undefined;
+    if (adjacentNarrowLabel !== undefined) {
+      return result;
+    }
     const adjacentDrawingStyle = nativeMoleculeBondDrawingStyle(
       object,
       adjacentConnection.bond.id
@@ -5102,7 +5127,8 @@ function nativeHashedWedgePlan(
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
   drawingStyle: NativeDrawingStyle,
   object?: MoleculeObject,
-  bond?: CoreMoleculeBond
+  bond?: CoreMoleculeBond,
+  crossingGaps: readonly BondCrossingGap[] = []
 ): {
   hashes: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[];
   strokeWidth: number;
@@ -5202,6 +5228,21 @@ function nativeHashedWedgePlan(
     !wideEndMiter?.leftContinuation ||
     !wideEndMiter.rightContinuation
   ) {
+    return { hashes, strokeWidth };
+  }
+
+  // Individual hash bars are split by crossing gaps at the call sites, but the solid terminal
+  // band is a polygon and would paint straight across a gap at the wide end. Run the same
+  // splitter over the band's axial extent; if a gap touches it, keep the plain terminal crossbar
+  // (which then participates in normal gap splitting) instead of the band.
+  const bandAxis = {
+    x1: segment.x2 - geometry.unit.x * strokeWidth,
+    y1: segment.y2 - geometry.unit.y * strokeWidth,
+    x2: segment.x2,
+    y2: segment.y2
+  };
+  const bandAxisPieces = splitSegmentByCrossingGaps(bandAxis, crossingGaps);
+  if (bandAxisPieces.length !== 1 || bandAxisPieces[0] !== bandAxis) {
     return { hashes, strokeWidth };
   }
 
