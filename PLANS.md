@@ -1,5 +1,14 @@
 # ChemDraft Plans
 
+## Sparkle macOS updates (2026-07-24)
+
+The desktop app uses Sparkle 2 to check the signed macOS appcast automatically and offer newer
+versions through Sparkle's native UI. File > Check for Updates… triggers a visible user-initiated
+check. Sparkle replaces the application bundle only; installed plugin packages remain in the stable
+Application Support `installed-plugins` directory and are revalidated by the normal runtime after
+relaunch. Plugin/API incompatibility remains the plugin author's responsibility and must not block or
+rewrite an app update.
+
 ## Runtime union merge (2026-07-16, branch `merge/plugin-union`)
 
 The `codex/nmr-plugin` program (M1–M36: plugin runtime, NMR/mass analyzers, worker isolation,

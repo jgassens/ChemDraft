@@ -13,7 +13,9 @@
  *
  * Deliberately omitted from the web bar (they are OS-level, not in-document actions): the macOS
  * application menu (About/Services/Hide/Quit), the Window menu (minimize/maximize), and File ▸
- * Close Window / Quit. The native Help menu is empty, so it is omitted too.
+ * Close Window / Quit. File ▸ Check for Updates is also native-only because Sparkle owns its UI and
+ * lifecycle rather than the frontend command registry. The native Help menu is empty, so it is
+ * omitted too.
  */
 
 /** A leaf item that invokes a registry command when clicked. */

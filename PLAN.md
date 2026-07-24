@@ -431,7 +431,7 @@ Use Tauri/Rust for:
 - Clipboard interoperability
 - Platform-specific clipboard flavors
 - Native plugin execution controls
-- App updates later
+- Sparkle-powered app updates on macOS
 - Signing/distribution later
 - Secure access to local resources
 

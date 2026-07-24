@@ -153,7 +153,9 @@ fn serve_installed_plugin_asset<R: Runtime>(
                 .body(Cow::Owned(bytes))
                 .unwrap_or_else(|_| internal_error("could not build staged plugin response"))
         }
-        Err(error) => not_found(format!("Staged plugin asset not found: {relative} ({error})")),
+        Err(error) => not_found(format!(
+            "Staged plugin asset not found: {relative} ({error})"
+        )),
     }
 }
 
@@ -292,8 +294,14 @@ mod tests {
     fn percent_decodes_before_the_traversal_check() {
         // The decisive case: an encoded traversal must be decoded *first*, then refused — otherwise
         // `%2e%2e%2f` would sail through `safe_relative_path` as an innocuous opaque segment.
-        assert_eq!(percent_decode("plugin/%2e%2e%2fetc/passwd"), "plugin/../etc/passwd");
-        assert_eq!(safe_relative_path(&percent_decode("%2e%2e%2f%2e%2e%2fetc/passwd")), None);
+        assert_eq!(
+            percent_decode("plugin/%2e%2e%2fetc/passwd"),
+            "plugin/../etc/passwd"
+        );
+        assert_eq!(
+            safe_relative_path(&percent_decode("%2e%2e%2f%2e%2e%2fetc/passwd")),
+            None
+        );
 
         assert_eq!(percent_decode("plugin/a%20file.js"), "plugin/a file.js");
         // Invalid or truncated escapes are left verbatim rather than guessed at.
