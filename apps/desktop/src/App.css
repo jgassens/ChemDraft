@@ -51,6 +51,12 @@
   --cd-focus-ring: 0 0 0 2px rgb(29 127 104 / 28%);
   --cd-shadow-floating: 0 8px 18px rgb(34 40 44 / 14%);
   --cd-shadow-panel: 0 10px 24px rgb(34 40 44 / 16%);
+  /* One explicit overlay scale: panels < menus < context menus < blocking modals. */
+  --cd-z-floating-panel: 1200;
+  --cd-z-menu: 1300;
+  --cd-z-context-menu: 1400;
+  --cd-z-modal: 2000;
+  --cd-z-modal-priority: 2100;
 
   /* Compatibility aliases for existing shell CSS; keep values flowing from canonical tokens. */
   --chrome: var(--cd-bg-panel-raised);
@@ -488,10 +494,6 @@ textarea:focus-visible,
   grid-template-rows: minmax(0, 1fr);
 }
 
-.app-shell.dev-browser-menu-shell {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
 .menu-bar,
 .command-bar,
 .statusbar {
@@ -539,87 +541,6 @@ textarea:focus-visible,
   background: var(--cd-bg-hover);
 }
 
-.dev-browser-menu-bar {
-  position: relative;
-  z-index: 1300;
-  min-height: 28px;
-  user-select: none;
-}
-
-.dev-browser-menu-list {
-  overflow: visible;
-}
-
-.dev-browser-menu {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.dev-browser-menu-button[aria-expanded="true"] {
-  background: var(--cd-bg-hover);
-}
-
-.dev-browser-menu-popover {
-  position: absolute;
-  top: calc(100% + 3px);
-  left: 0;
-  display: grid;
-  min-width: 230px;
-  max-height: min(72vh, 640px);
-  overflow: auto;
-  padding: 5px;
-  border: 1px solid var(--line);
-  border-radius: var(--cd-radius-panel);
-  background: var(--cd-bg-panel-raised);
-  box-shadow: var(--cd-shadow-panel);
-}
-
-.dev-browser-menu-group {
-  display: grid;
-  gap: 2px;
-}
-
-.dev-browser-menu-group + .dev-browser-menu-group {
-  margin-top: 4px;
-}
-
-.dev-browser-menu-group-label {
-  padding: 5px 8px 2px;
-  color: var(--cd-text-secondary);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.dev-browser-menu-group-items {
-  display: grid;
-  gap: 1px;
-}
-
-.dev-browser-menu-separator {
-  height: 1px;
-  margin: 5px 6px;
-  background: var(--line-soft);
-}
-
-.dev-browser-menu-item {
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 26px;
-  padding: 0 9px 0 4px;
-  border: 0;
-  border-radius: var(--cd-radius-control);
-  background: transparent;
-  color: var(--cd-text-primary);
-  font-size: 12px;
-  line-height: 1.2;
-  text-align: left;
-}
-
 /* In-viewport application menu bar (browser build; the desktop build uses the native OS menu). */
 .app-shell.has-app-menu-bar {
   grid-template-rows: auto minmax(0, 1fr);
@@ -627,7 +548,7 @@ textarea:focus-visible,
 
 .menu-bar {
   position: relative;
-  z-index: 90;
+  z-index: var(--cd-z-menu);
   height: 28px;
   flex: 0 0 auto;
 }
@@ -646,37 +567,6 @@ textarea:focus-visible,
   background: transparent;
   color: var(--cd-text-primary);
   font-size: 12px;
-  line-height: 1;
-  cursor: default;
-}
-
-.dev-browser-menu-item:hover:not(:disabled),
-.dev-browser-menu-item:focus-visible {
-  background: var(--cd-bg-hover);
-}
-
-.dev-browser-menu-item:disabled {
-  color: var(--cd-text-disabled);
-  cursor: default;
-}
-
-.dev-browser-menu-item-state {
-  color: var(--cd-accent);
-  font-size: 10px;
-  font-weight: 700;
-  text-align: center;
-}
-
-.dev-browser-menu-item-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dev-browser-menu-item-shortcut {
-  color: var(--cd-text-secondary);
-  font-size: 11px;
-  white-space: nowrap;
   line-height: 1;
   cursor: default;
 }
@@ -4906,7 +4796,7 @@ textarea:focus-visible,
 
 .object-context-menu {
   position: fixed;
-  z-index: 200;
+  z-index: var(--cd-z-context-menu);
   display: grid;
   min-width: 152px;
   padding: var(--cd-space-2);
@@ -5371,10 +5261,6 @@ textarea:focus-visible,
     padding-bottom: 4px;
   }
 
-  .dev-browser-menu-list {
-    overflow: visible;
-  }
-
   .command-bar {
     gap: 6px;
   }
@@ -5414,7 +5300,7 @@ textarea:focus-visible,
   position: absolute;
   bottom: 28px;
   left: 8px;
-  z-index: 1200;
+  z-index: var(--cd-z-floating-panel);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -5559,7 +5445,7 @@ textarea:focus-visible,
   position: fixed;
   top: 96px;
   right: var(--cd-space-4);
-  z-index: 1200;
+  z-index: var(--cd-z-floating-panel);
   display: flex;
   flex-direction: column;
   gap: var(--cd-space-4);
@@ -5764,9 +5650,12 @@ textarea:focus-visible,
 }
 
 .plugin-diagnostics-surface .plugin-panel-close {
-  position: absolute;
-  top: var(--cd-space-4);
-  right: var(--cd-space-4);
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  align-self: flex-end;
+  flex: 0 0 auto;
+  background: var(--cd-bg-panel-raised);
 }
 
 /* Core-owned manager for the statically bundled plugin catalog. Unlike the report surface above,
@@ -5774,7 +5663,7 @@ textarea:focus-visible,
 .plugin-manager-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2100;
+  z-index: var(--cd-z-modal-priority);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5979,6 +5868,20 @@ textarea:focus-visible,
   border-color: var(--cd-stoplight-border);
   background: var(--cd-bg-danger);
   color: var(--cd-danger-strong);
+}
+
+.plugin-manager-permission.is-unavailable {
+  border-style: dashed;
+  font-weight: 700;
+}
+
+.plugin-manager-review-body .plugin-manager-unavailable {
+  padding: var(--cd-space-3);
+  border: 1px solid var(--cd-stoplight-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+  font-weight: 600;
 }
 
 .plugin-manager-review {
@@ -6307,7 +6210,7 @@ textarea:focus-visible,
 .lf-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: var(--cd-z-modal);
   display: flex;
   align-items: center;
   justify-content: center;

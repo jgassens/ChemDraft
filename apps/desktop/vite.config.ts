@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig, type Plugin } from "vite";
+import {
+  INSTALLED_PLUGIN_URL_PREFIX,
+  INSTALLED_PLUGIN_WORKER_CSP,
+  installedPluginContentType,
+  resolveInstalledPluginAssetSegments
+} from "./src/plugins/installedPluginAssetPath";
 
 // fileURLToPath (not URL.pathname) so a checkout path containing spaces — e.g. a git worktree at
 // ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one
@@ -85,17 +91,12 @@ function buildStamp(): string {
  * app and mysteriously 404 under `./run-app --dev`.
  */
 function serveInstalledPluginsInDev(): Plugin {
-  const urlPrefix = "/installed-plugins/";
+  // Prefix, CSP, and the path-refusal rule are shared with the packaged app's contract and covered by
+  // `installedPluginAssetPath.test.ts`, so dev and production cannot drift apart silently.
+  const urlPrefix = INSTALLED_PLUGIN_URL_PREFIX;
+  const installedPluginWorkerCsp = INSTALLED_PLUGIN_WORKER_CSP;
   // Mirrors `installed_plugins::installed_plugins_root` and `tauri.conf.json`'s identifier.
   const root = join(homedir(), "Library", "Application Support", "org.chemdraft.desktop", "installed-plugins");
-  const contentTypes: Record<string, string> = {
-    ".js": "text/javascript",
-    ".mjs": "text/javascript",
-    ".json": "application/json",
-    ".wasm": "application/wasm",
-    ".css": "text/css",
-    ".map": "application/json"
-  };
 
   return {
     name: "chemdraft-serve-installed-plugins",
@@ -107,10 +108,10 @@ function serveInstalledPluginsInDev(): Plugin {
           return next();
         }
 
-        const relative = decodeURIComponent(url.slice(urlPrefix.length));
-        const segments = relative.split("/");
-        // Refuse traversal rather than normalizing it, exactly as the Rust handler does.
-        if (segments.length < 2 || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+        // Refusal logic is shared with the Rust handler's contract and unit-tested; see
+        // `src/plugins/installedPluginAssetPath.ts`.
+        const segments = resolveInstalledPluginAssetSegments(url);
+        if (!segments) {
           response.statusCode = 403;
           response.end("Unsafe staged plugin path");
           return;
@@ -123,9 +124,9 @@ function serveInstalledPluginsInDev(): Plugin {
           return;
         }
 
-        const extension = file.slice(file.lastIndexOf("."));
-        response.setHeader("Content-Type", contentTypes[extension] ?? "application/octet-stream");
+        response.setHeader("Content-Type", installedPluginContentType(file));
         response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("Content-Security-Policy", installedPluginWorkerCsp);
         response.end(readFileSync(file));
       });
     }

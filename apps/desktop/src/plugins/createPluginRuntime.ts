@@ -1,11 +1,17 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   PluginManifest,
+  PluginPermission,
   PluginSelectionSnapshot,
   PluginStorage,
   PluginToolsetContribution
 } from "@chemdraft/plugin-api";
-import { PluginHost, type CommandRegistry, type RegisterPluginOptions } from "@chemdraft/plugin-host";
+import {
+  PluginHost,
+  validateTrustedPluginManifest,
+  type CommandRegistry,
+  type RegisterPluginOptions
+} from "@chemdraft/plugin-host";
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
@@ -31,6 +37,34 @@ export interface DesktopPluginRuntimeOptions {
 }
 
 /**
+ * Manifest permissions that exist in the SDK but do not yet have a safe desktop capability broker.
+ *
+ * In particular, installed workers run under a CSP that blocks arbitrary external egress. Claiming
+ * `network.fetch` in a manifest therefore cannot truthfully make that capability available yet. Keep
+ * the permission name reserved for the future broker, but fail closed instead of reporting a grant the
+ * worker cannot use.
+ */
+export const unavailableDesktopPluginPermissions = ["network.fetch"] as const satisfies readonly PluginPermission[];
+
+export function getUnavailableDesktopPluginPermissions(
+  manifest: Pick<PluginManifest, "permissions">
+): PluginPermission[] {
+  const unavailable = new Set<PluginPermission>(unavailableDesktopPluginPermissions);
+  return manifest.permissions.filter((permission) => unavailable.has(permission));
+}
+
+function assertDesktopPluginPermissionsAvailable(manifest: PluginManifest): void {
+  const unavailable = getUnavailableDesktopPluginPermissions(manifest);
+  if (unavailable.length > 0) {
+    throw new Error(
+      `Plugin "${manifest.id}" declares ${unavailable.join(", ")}, but ${
+        unavailable.length === 1 ? "that permission is" : "those permissions are"
+      } reserved and unavailable in this ChemDraft build.`
+    );
+  }
+}
+
+/**
  * The persistent desktop plugin runtime: one {@link PluginHost}, the panel controller that renders
  * its reports, and the toolset-contribution stage that turns `contributes.toolsets` into desktop
  * toolbar definitions. Create it once (see `usePluginRuntime`) and feed current document/selection
@@ -51,6 +85,8 @@ export interface DesktopPluginRuntime {
    * Provenance is tracked by explicit maps, never by sniffing id prefixes.
    */
   registerPlugin(candidate: unknown, options?: RegisterPluginOptions): PluginManifest;
+  /** Replace one registration transactionally; if the new contribution fails, restore the prior one. */
+  replacePlugin(pluginId: string, candidate: unknown, options?: RegisterPluginOptions): PluginManifest;
   unregisterPlugin(pluginId: string): void;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
@@ -84,14 +120,20 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
 
   const toolsetsByPluginId = new Map<string, DesktopToolsetDefinition[]>();
   const pluginIdByToolsetId = new Map<string, string>();
+  const registrations = new Map<string, { manifest: PluginManifest; options: RegisterPluginOptions }>();
   const listeners = new Set<() => void>();
   const notify = () => listeners.forEach((listener) => listener());
 
-  return {
+  const runtime: DesktopPluginRuntime = {
     host,
     panels: controller,
     registerPlugin(candidate, registerOptions = {}) {
-      const { manifest } = host.registerPlugin(candidate, registerOptions);
+      // Validate before touching the shared command registry, then apply the desktop capability policy.
+      // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered
+      // plugin and momentarily appear granted.
+      const validated = validateTrustedPluginManifest(candidate);
+      assertDesktopPluginPermissionsAvailable(validated);
+      const { manifest } = host.registerPlugin(validated, registerOptions);
       try {
         const contributed = manifest.contributes.toolsets;
         if (contributed.length > 0) {
@@ -111,13 +153,30 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         host.unregisterPlugin(manifest.id);
         throw error;
       }
+      registrations.set(manifest.id, { manifest, options: registerOptions });
       notify();
       return manifest;
+    },
+    replacePlugin(pluginId, candidate, registerOptions = {}) {
+      const previous = registrations.get(pluginId);
+      if (!host.getPlugin(pluginId)) {
+        return runtime.registerPlugin(candidate, registerOptions);
+      }
+      runtime.unregisterPlugin(pluginId);
+      try {
+        return runtime.registerPlugin(candidate, registerOptions);
+      } catch (error) {
+        if (previous) {
+          runtime.registerPlugin(previous.manifest, previous.options);
+        }
+        throw error;
+      }
     },
     unregisterPlugin(pluginId) {
       host.unregisterPlugin(pluginId);
       (toolsetsByPluginId.get(pluginId) ?? []).forEach((toolset) => pluginIdByToolsetId.delete(toolset.id));
       toolsetsByPluginId.delete(pluginId);
+      registrations.delete(pluginId);
       notify();
     },
     listPluginToolsets: () => [...toolsetsByPluginId.values()].flat(),
@@ -129,6 +188,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       };
     }
   };
+  return runtime;
 }
 
 function pluginToolsetToDefinition(contribution: PluginToolsetContribution): DesktopToolsetDefinition {

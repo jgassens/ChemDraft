@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -126,6 +126,49 @@ describe("plugin extraction integrity", () => {
     expect(() =>
       extractPlugin({ pluginRoot: fixture.pluginRoot, outDir: join(fixture.caseRoot, "out") })
     ).toThrow(/uncommitted or untracked files/);
+  });
+
+  it("refuses a committed symlink rather than dereferencing local bytes into the archive", () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.caseRoot, "outside-secret.txt"), "must not ship\n");
+    symlinkSync(join(fixture.caseRoot, "outside-secret.txt"), join(fixture.pluginRoot, "src/local-secret.txt"));
+    git(fixture.pluginRoot, ["add", "src/local-secret.txt"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "symlink fixture"
+    ]);
+
+    expect(() =>
+      extractPlugin({ pluginRoot: fixture.pluginRoot, outDir: join(fixture.caseRoot, "out") })
+    ).toThrow(/symbolic link.*src[/\\]local-secret\.txt/);
+  });
+
+  it("builds from the recorded commit, so ignored source cannot enter the archive", () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.pluginRoot, ".gitignore"), "src/private.mjs\n");
+    git(fixture.pluginRoot, ["add", ".gitignore"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "ignore fixture"
+    ]);
+    writeFileSync(join(fixture.pluginRoot, "src/private.mjs"), "export const secret = true;\n");
+
+    const outDir = join(fixture.caseRoot, "out");
+    const result = extractPlugin({ pluginRoot: fixture.pluginRoot, outDir });
+    expect(existsSync(join(outDir, "plugin-fixture/src/private.mjs"))).toBe(false);
+    expect(execFileSync("unzip", ["-Z1", result.zipPath], { encoding: "utf8" })).not.toContain("private.mjs");
   });
 
   it("refuses to make a distributable archive without an explicit plugin license", () => {

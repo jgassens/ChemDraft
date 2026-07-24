@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "plugin-panel",
+  "description": "Minimal capability for plugin panel windows. A panel renders a declarative PluginPanelReport through the app's own trusted renderer and holds NO plugin code, so it needs window geometry and the event bridge only. It deliberately grants no filesystem, dialog, clipboard, or command-routing permission: if plugin-authored markup or script is ever loaded into a panel webview, this boundary is what keeps that from becoming ambient read/write access to the user's home directory. Panel content arrives over chemdraft://plugin-panel-* events from the main window; the plugin itself executes in a CSP-restricted worker with no IPC.",
+  "windows": ["plugin-panel-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-start-dragging",
+    "core:window:allow-outer-position",
+    "core:window:allow-scale-factor",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:webview:allow-set-webview-focus"
+  ]
+}

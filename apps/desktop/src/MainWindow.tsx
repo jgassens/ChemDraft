@@ -104,6 +104,8 @@ import {
   listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
+  pluginPanelIdentityKey,
+  type PluginPanelIdentity,
   type PluginPanelReportPayload
 } from "./plugins/panelBridge";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
@@ -638,28 +640,6 @@ type WebKitGestureEvent = Event & {
   clientX?: number;
   clientY?: number;
   scale?: number;
-};
-type DevBrowserMenuCommandItem = {
-  kind: "command";
-  commandId: string;
-  label: string;
-  shortcut?: string;
-  checked?: boolean;
-  disabled?: boolean;
-};
-type DevBrowserMenuSeparatorItem = {
-  kind: "separator";
-};
-type DevBrowserMenuGroupItem = {
-  kind: "group";
-  label: string;
-  items: DevBrowserMenuEntry[];
-};
-type DevBrowserMenuEntry = DevBrowserMenuCommandItem | DevBrowserMenuSeparatorItem | DevBrowserMenuGroupItem;
-type DevBrowserMenuDefinition = {
-  id: string;
-  label: string;
-  items: DevBrowserMenuEntry[];
 };
 type RulerFrame = {
   horizontalScrollPx: number;
@@ -1300,7 +1280,7 @@ const ART_TRANSFORM_DRAG_PREVIEW_MAX_RASTER_PX = 2048;
 const ART_TRANSFORM_QA_OBJECT_IDS = ["art_qa_rect", "art_qa_ellipse"] as const;
 const ART_STYLE_QA_OBJECT_IDS = ["art_style_qa_rect", "art_style_qa_ellipse", "art_style_qa_line", "art_style_qa_arc"] as const;
 
-function createDevBrowserCommandMap(commands: readonly CommandSpec[]): ReadonlyMap<string, CommandSpec> {
+function createShellCommandMap(commands: readonly CommandSpec[]): ReadonlyMap<string, CommandSpec> {
   const byId = new Map<string, CommandSpec>();
   commands.forEach((command) => {
     if (!byId.has(command.id)) {
@@ -1308,121 +1288,6 @@ function createDevBrowserCommandMap(commands: readonly CommandSpec[]): ReadonlyM
     }
   });
   return byId;
-}
-
-function createDevBrowserMenuCommand(
-  commandsById: ReadonlyMap<string, CommandSpec>,
-  commandId: string,
-  label: string,
-  options: Pick<DevBrowserMenuCommandItem, "checked" | "disabled" | "shortcut"> = {}
-): DevBrowserMenuCommandItem {
-  const command = commandsById.get(commandId);
-  return {
-    kind: "command",
-    commandId,
-    label,
-    shortcut: options.shortcut ?? command?.shortcutLabel ?? command?.shortcut,
-    checked: options.checked,
-    disabled: options.disabled ?? (command ? command.enabled === false : true)
-  };
-}
-
-function createDevBrowserMenuModel(
-  commandsById: ReadonlyMap<string, CommandSpec>,
-  toolsetRegistry: DesktopToolsetRegistry,
-  visibleToolsetIds: ReadonlySet<string>,
-  rulersVisible: boolean,
-  crosshairsVisible: boolean
-): DevBrowserMenuDefinition[] {
-  const command = (
-    commandId: string,
-    label: string,
-    options?: Pick<DevBrowserMenuCommandItem, "checked" | "disabled" | "shortcut">
-  ) => createDevBrowserMenuCommand(commandsById, commandId, label, options);
-  const separator = (): DevBrowserMenuSeparatorItem => ({ kind: "separator" });
-  const group = (label: string, items: DevBrowserMenuEntry[]): DevBrowserMenuGroupItem => ({
-    kind: "group",
-    label,
-    items
-  });
-  const pageSizeItems = pageSizeActions.map((action) =>
-    command(action.id, action.title.replace(/^Set Page Size: /, ""))
-  );
-  const toolbarItems = getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry).map((item) =>
-    command(item.commandId, item.title, { checked: item.checked })
-  );
-
-  return [
-    {
-      id: "file",
-      label: "File",
-      items: [
-        command("document.new", "New", { shortcut: "Cmd+N" }),
-        command("document.open", "Open...", { shortcut: "Cmd+O" }),
-        command("document.save", "Save", { shortcut: "Cmd+S" }),
-        command("document.saveAs", "Save As...", { shortcut: "Shift+Cmd+S" }),
-        separator(),
-        group("Paper Size", [
-          ...pageSizeItems,
-          command(PAGE_CUSTOM_SIZE_COMMAND_ID, "Custom Size...")
-        ]),
-        group("Orientation", [
-          command("page.setOrientation.portrait", "Portrait"),
-          command("page.setOrientation.landscape", "Landscape")
-        ]),
-        separator(),
-        command("export.open", "Export...", { shortcut: "Shift+Cmd+E" })
-      ]
-    },
-    {
-      id: "edit",
-      label: "Edit",
-      items: [
-        command("edit.undo", "Undo", { shortcut: "Cmd+Z" }),
-        command("edit.redo", "Redo", { shortcut: "Shift+Cmd+Z" }),
-        separator(),
-        command("clipboard.cut", "Cut", { shortcut: "Cmd+X" }),
-        command("clipboard.copy", "Copy", { shortcut: "Cmd+C" }),
-        command("clipboard.paste", "Paste", { shortcut: "Cmd+V" }),
-        separator(),
-        command("layout.group", "Group", { shortcut: "Cmd+G" }),
-        command("layout.ungroup", "Ungroup", { shortcut: "Shift+Cmd+G" })
-      ]
-    },
-    {
-      id: "view",
-      label: "View",
-      items: [
-        command(PREFERENCES_COMMAND_ID, "Preferences...", { shortcut: "Cmd+," }),
-        separator(),
-        command("view.toggleRulers", "Show Rulers", { checked: rulersVisible, shortcut: "Cmd+R" }),
-        command("view.toggleCrosshairs", "Show Crosshairs", {
-          checked: crosshairsVisible,
-          shortcut: "Shift+Cmd+R"
-        }),
-        separator(),
-        command(SPIN3D_DEBUGGER_COMMAND_ID, "3D Debugger"),
-        separator(),
-        group("Toolbars", toolbarItems),
-        command("view.customizeToolbars", "Customize Toolbars..."),
-        command("view.customizeMainToolbar", "Customize Main Toolbar...")
-      ]
-    },
-    {
-      id: "structure",
-      label: "Structure",
-      items: [
-        command(structureCleanupCommandId, "Clean up Structure 2D", { shortcut: "Shift+Cmd+K" })
-      ]
-    },
-    {
-      id: "analyze",
-      label: "Analyze",
-      items: [
-        command("chemistry.validateSelection", "Validate Selected Structure")
-      ]
-    }
-  ];
 }
 
 // Spin 3D speculative-work cap. RDKit ETKDG embeds even large polycyclics in ~1-2 s, so
@@ -1734,7 +1599,6 @@ export function MainWindow({
   customizeMainToolbarActiveRef.current = customizeMainToolbarActive;
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
-  const [devBrowserMenuOpenId, setDevBrowserMenuOpenId] = useState<string | null>(null);
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
@@ -1865,11 +1729,6 @@ export function MainWindow({
   // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
   // on a possibly-stale render closure.
   const visibleToolsetIdsRef = useRef(visibleToolsetIds);
-  // Current View-toggle state, read (not depended on) by the menu-structure push so a full menu
-  // rebuild preserves the Show Rulers / Show Crosshairs checkmarks without the push re-firing on
-  // every ruler/crosshair toggle.
-  const rulersVisibleRef = useRef(rulersVisible);
-  const crosshairsVisibleRef = useRef(crosshairsVisible);
   // Last layout/customization state loaded from (or saved to) disk, so a visibility save merges onto
   // any other customization instead of clobbering it. `layoutHydratedRef` gates the visibility save
   // effect until the initial load has run, so the first render's default set can't overwrite the
@@ -1922,8 +1781,6 @@ export function MainWindow({
   selectedNativeMoleculePartRef.current = selectedNativeMoleculePart;
   selectedNativeMoleculePartsRef.current = selectedNativeMoleculeParts;
   visibleToolsetIdsRef.current = visibleToolsetIds;
-  rulersVisibleRef.current = rulersVisible;
-  crosshairsVisibleRef.current = crosshairsVisible;
   toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
@@ -2179,7 +2036,7 @@ export function MainWindow({
     [canRedo, canUndo, document, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
-    () => createDevBrowserCommandMap(shellCommandSpecs),
+    () => createShellCommandMap(shellCommandSpecs),
     [shellCommandSpecs]
   );
   const shellCommandSpecsRef = useRef(shellCommandSpecs);
@@ -2191,17 +2048,6 @@ export function MainWindow({
   useEffect(() => {
     void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
   }, [shellCommandSpecsSignature]);
-  const devBrowserMenus = useMemo(
-    () => createDevBrowserMenuModel(
-      shellCommandsById,
-      toolsetRegistry,
-      visibleToolsetIds,
-      rulersVisible,
-      crosshairsVisible
-    ),
-    [crosshairsVisible, rulersVisible, shellCommandsById, toolsetRegistry, visibleToolsetIds]
-  );
-  const showDevBrowserMenuBar = import.meta.env.DEV && !effectiveNativePalette && !isDesktopRuntime();
   const shortcutCommands = useMemo(
     () => [
       ...quickActions,
@@ -2838,10 +2684,10 @@ export function MainWindow({
     const entries = toolsetRegistry.listToolsets().map((toolset) => ({
       toolsetId: toolset.id,
       title: toolset.title,
-      visible: visibleToolsetIdsRef.current.has(toolset.id)
+      visible: visibleToolsetIds.has(toolset.id)
     }));
-    void setToolbarsMenu(entries, rulersVisibleRef.current, crosshairsVisibleRef.current).catch(() => undefined);
-  }, [toolsetRegistry, nativePalette]);
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible).catch(() => undefined);
+  }, [crosshairsVisible, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -7209,6 +7055,12 @@ export function MainWindow({
   const pluginPanelReportsRef = useRef(new Map<string, PluginPanelReportPayload>());
   const pluginPanelRevisionRef = useRef(0);
   const pluginPanelStalenessSentRef = useRef(new Map<string, { revision: number; stale: boolean }>());
+  // Serialize repeated analyzer requests per owning plugin. Reports do not expose an invocation id,
+  // so overlapping runs cannot otherwise prove which late result is older. A monotonic generation
+  // suppresses obsolete status updates while the queue guarantees the newest requested run settles
+  // last; ordinary commands remain serialized only with repeats of that same command.
+  const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
+  const pluginCommandGenerationsRef = useRef(new Map<string, number>());
 
   // The persistent plugin runtime (host + panel controller + toolset stage), created exactly once on
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
@@ -7265,20 +7117,22 @@ export function MainWindow({
   // Panel windows request their content on mount; the main window re-serves the latest
   // report so a reopened or slow-loading panel is never blank.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listenForPluginPanelRequests((panelId) => {
-      const payload = pluginPanelReportsRef.current.get(panelId);
+    const unlisten = listenForPluginPanelRequests((identity) => {
+      const key = pluginPanelIdentityKey(identity.pluginId, identity.panelId);
+      const payload = pluginPanelReportsRef.current.get(key);
       if (payload) {
         void broadcastPluginPanelReport(payload).catch(() => undefined);
+        const staleness = pluginPanelStalenessSentRef.current.get(key);
+        if (staleness?.revision === payload.revision) {
+          void broadcastPluginPanelStaleness({
+            ...identity,
+            stale: staleness.stale,
+            revision: staleness.revision
+          }).catch(() => undefined);
+        }
       }
-    })
-      .then((cleanup) => {
-        unlisten = cleanup;
-      })
-      .catch(() => undefined);
-    return () => {
-      unlisten?.();
-    };
+    });
+    return unlisten;
   }, []);
 
   // "Open as window" (ADR-0030): move the in-app panel into a floating native window. The controller
@@ -7289,7 +7143,7 @@ export function MainWindow({
     if (!panel) {
       return;
     }
-    pluginRuntime.runtime.panels.detachPanel(panel.panelId);
+    pluginRuntime.runtime.panels.detachPanel(panel.pluginId, panel.panelId);
     const payload: PluginPanelReportPayload = {
       pluginId: panel.pluginId,
       panelId: panel.panelId,
@@ -7297,8 +7151,13 @@ export function MainWindow({
       commandId: panel.commandId,
       revision: ++pluginPanelRevisionRef.current
     };
-    pluginPanelReportsRef.current.set(panel.panelId, payload);
-    void openPluginPanelWindow({ panelId: panel.panelId, title: panel.report.title || panel.title })
+    const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
+    pluginPanelReportsRef.current.set(key, payload);
+    void openPluginPanelWindow({
+      pluginId: panel.pluginId,
+      panelId: panel.panelId,
+      title: panel.report.title || panel.title
+    })
       .catch(() => undefined);
     void broadcastPluginPanelReport(payload).catch(() => undefined);
   }, [pluginRuntime.runtime]);
@@ -7307,7 +7166,8 @@ export function MainWindow({
   // panel) and staleness (D-09 recomputed against the live document) over the bridge.
   useEffect(() => {
     for (const panel of pluginRuntime.detachedPanels) {
-      let payload = pluginPanelReportsRef.current.get(panel.panelId);
+      const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
+      let payload = pluginPanelReportsRef.current.get(key);
       if (!payload || payload.report !== panel.report) {
         payload = {
           pluginId: panel.pluginId,
@@ -7316,17 +7176,22 @@ export function MainWindow({
           commandId: panel.commandId,
           revision: ++pluginPanelRevisionRef.current
         };
-        pluginPanelReportsRef.current.set(panel.panelId, payload);
+        pluginPanelReportsRef.current.set(key, payload);
         void broadcastPluginPanelReport(payload).catch(() => undefined);
       }
       const source = panel.report.source;
       const stale = source
         ? computeObjectFingerprint(document, source.objectId) !== source.sourceFingerprint
         : false;
-      const sent = pluginPanelStalenessSentRef.current.get(panel.panelId);
+      const sent = pluginPanelStalenessSentRef.current.get(key);
       if (!sent || sent.revision !== payload.revision || sent.stale !== stale) {
-        pluginPanelStalenessSentRef.current.set(panel.panelId, { revision: payload.revision, stale });
-        void broadcastPluginPanelStaleness({ panelId: panel.panelId, stale, revision: payload.revision })
+        pluginPanelStalenessSentRef.current.set(key, { revision: payload.revision, stale });
+        void broadcastPluginPanelStaleness({
+          pluginId: panel.pluginId,
+          panelId: panel.panelId,
+          stale,
+          revision: payload.revision
+        })
           .catch(() => undefined);
       }
     }
@@ -7336,51 +7201,42 @@ export function MainWindow({
   // The stored report stays cached so a reopened window is re-served instantly.
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
-    let unlisten: (() => void) | undefined;
-    void listenForPluginPanelCloses((panelId) => {
-      runtime.panels.closeDetachedPanel(panelId);
-    })
-      .then((cleanup) => {
-        unlisten = cleanup;
-      })
-      .catch(() => undefined);
-    return () => {
-      unlisten?.();
-    };
+    return listenForPluginPanelCloses(({ pluginId, panelId }) => {
+      runtime.panels.closeDetachedPanel(pluginId, panelId);
+    });
   }, [pluginRuntime.runtime]);
 
   // Run again from a detached window executes in THIS window (the plugin runtime lives here). The
   // command id is resolved from the live detached entry, not trusted from the message.
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
-    let unlisten: (() => void) | undefined;
-    void listenForPluginPanelReruns((panelId) => {
-      const panel = runtime.panels.getDetachedPanels().find((candidate) => candidate.panelId === panelId);
+    return listenForPluginPanelReruns(({ pluginId, panelId }) => {
+      const panel = runtime.panels
+        .getDetachedPanels()
+        .find((candidate) => candidate.pluginId === pluginId && candidate.panelId === panelId);
       if (panel?.commandId) {
         void invokeCommandRef.current?.(panel.commandId);
       }
-    })
-      .then((cleanup) => {
-        unlisten = cleanup;
-      })
-      .catch(() => undefined);
-    return () => {
-      unlisten?.();
-    };
+    });
   }, [pluginRuntime.runtime]);
 
   // When a detached panel leaves the set some other way than its own close button (plugin disabled,
   // uninstalled, or closed programmatically), hide its native window too.
-  const previouslyDetachedPanelIdsRef = useRef<readonly string[]>([]);
+  const previouslyDetachedPanelsRef = useRef(new Map<string, PluginPanelIdentity>());
   useEffect(() => {
-    const current = new Set(pluginRuntime.detachedPanels.map((panel) => panel.panelId));
-    for (const panelId of previouslyDetachedPanelIdsRef.current) {
-      if (!current.has(panelId)) {
-        void hidePluginPanelWindow(panelId).catch(() => undefined);
-        pluginPanelStalenessSentRef.current.delete(panelId);
+    const current = new Map(
+      pluginRuntime.detachedPanels.map((panel) => [
+        pluginPanelIdentityKey(panel.pluginId, panel.panelId),
+        { pluginId: panel.pluginId, panelId: panel.panelId }
+      ])
+    );
+    for (const [key, identity] of previouslyDetachedPanelsRef.current) {
+      if (!current.has(key)) {
+        void hidePluginPanelWindow(identity.pluginId, identity.panelId).catch(() => undefined);
+        pluginPanelStalenessSentRef.current.delete(key);
       }
     }
-    previouslyDetachedPanelIdsRef.current = [...current];
+    previouslyDetachedPanelsRef.current = current;
   }, [pluginRuntime.detachedPanels]);
 
   const acceptPluginProposal = useCallback(
@@ -7451,17 +7307,42 @@ export function MainWindow({
     // For plugin-owned commands, ADR-0010 applies: a command may fail by throwing OR by resolving
     // { ok: false } — surface both on the status line, attributed to the plugin.
     if (pluginCommandExists(commandId)) {
-      void invokePluginCommand(commandId)
-        .then((result) => {
+      const owner = pluginRuntime.plugins.find((manifest) =>
+        manifest.contributes.commands.some((command) => command.id === commandId)
+      );
+      const analyzerOwned = owner?.contributes.analyzers.some((analyzer) => analyzer.commandId === commandId) ?? false;
+      const queueKey = analyzerOwned && owner ? `analyzer:${owner.id}` : `command:${commandId}`;
+      const generation = (pluginCommandGenerationsRef.current.get(queueKey) ?? 0) + 1;
+      pluginCommandGenerationsRef.current.set(queueKey, generation);
+      const previous = pluginCommandQueuesRef.current.get(queueKey) ?? Promise.resolve();
+      const run = previous
+        .catch(() => undefined)
+        .then(async () => {
+          const result = await invokePluginCommand(commandId);
+          if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
+            return;
+          }
           const failure = pluginCommandFailure(result);
           if (failure) {
             setStatus(`Plugin command failed: ${failure}`);
           }
         })
         .catch((error: unknown) => {
+          if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
+            return;
+          }
           const message = error instanceof Error ? error.message : String(error);
           setStatus(`Plugin command failed: ${message}`);
         });
+      let tracked: Promise<void>;
+      tracked = run.finally(() => {
+        if (pluginCommandQueuesRef.current.get(queueKey) === tracked) {
+          pluginCommandQueuesRef.current.delete(queueKey);
+          pluginCommandGenerationsRef.current.delete(queueKey);
+        }
+      });
+      pluginCommandQueuesRef.current.set(queueKey, tracked);
+      void tracked;
       return;
     }
 
@@ -7476,7 +7357,8 @@ export function MainWindow({
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
     invokePluginCommand,
-    pluginCommandExists
+    pluginCommandExists,
+    pluginRuntime.plugins
   ]);
 
   invokeCommandRef.current = invoke;
@@ -7563,38 +7445,6 @@ export function MainWindow({
   const commandByIdRef = useRef(commandById);
   commandTitleByIdRef.current = commandTitleById;
   commandByIdRef.current = commandById;
-
-  useEffect(() => {
-    if (!showDevBrowserMenuBar && devBrowserMenuOpenId !== null) {
-      setDevBrowserMenuOpenId(null);
-    }
-  }, [devBrowserMenuOpenId, showDevBrowserMenuBar]);
-
-  useEffect(() => {
-    if (devBrowserMenuOpenId === null) {
-      return;
-    }
-
-    const handlePointerDown = (event: globalThis.PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest("[data-dev-browser-menu-bar]")) {
-        return;
-      }
-      setDevBrowserMenuOpenId(null);
-    };
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setDevBrowserMenuOpenId(null);
-      }
-    };
-
-    globalThis.document.addEventListener("pointerdown", handlePointerDown);
-    globalThis.document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      globalThis.document.removeEventListener("pointerdown", handlePointerDown);
-      globalThis.document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [devBrowserMenuOpenId]);
 
   useEffect(() => {
     if (!activeTextEditObjectId) {
@@ -13966,8 +13816,7 @@ export function MainWindow({
       className={[
         "app-shell",
         effectiveNativePalette ? "native-shell" : "web-shell",
-        showAppMenuBar ? "has-app-menu-bar" : "",
-        showDevBrowserMenuBar ? "dev-browser-menu-shell" : ""
+        showAppMenuBar ? "has-app-menu-bar" : ""
       ].filter(Boolean).join(" ")}
       aria-label="ChemDraft desktop workspace"
       data-active-tool={activeToolState.activeCommandId}
@@ -13992,18 +13841,6 @@ export function MainWindow({
         aria-label="Import Molecule Inspector template"
         onChange={handleMoleculeTemplateFile}
       />
-
-      {showDevBrowserMenuBar ? (
-        <DevBrowserMenuBar
-          menus={devBrowserMenus}
-          openMenuId={devBrowserMenuOpenId}
-          onOpenMenuIdChange={setDevBrowserMenuOpenId}
-          onInvoke={(commandId) => {
-            setDevBrowserMenuOpenId(null);
-            invoke(commandId);
-          }}
-        />
-      ) : null}
 
       {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
@@ -14621,145 +14458,6 @@ export function MainWindow({
         />
       ) : null}
     </main>
-  );
-}
-
-interface DevBrowserMenuBarProps {
-  menus: readonly DevBrowserMenuDefinition[];
-  openMenuId: string | null;
-  onOpenMenuIdChange(openMenuId: string | null): void;
-  onInvoke(commandId: string): void;
-}
-
-function DevBrowserMenuBar({
-  menus,
-  openMenuId,
-  onOpenMenuIdChange,
-  onInvoke
-}: DevBrowserMenuBarProps) {
-  const openMenuIndex = menus.findIndex((menu) => menu.id === openMenuId);
-
-  const handleTopLevelKeyDown = (
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-    menuIndex: number
-  ) => {
-    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onOpenMenuIdChange(menus[menuIndex]?.id ?? null);
-      return;
-    }
-    if (event.key === "Escape") {
-      onOpenMenuIdChange(null);
-      return;
-    }
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-      return;
-    }
-
-    event.preventDefault();
-    const direction = event.key === "ArrowRight" ? 1 : -1;
-    const nextIndex = (menuIndex + direction + menus.length) % menus.length;
-    onOpenMenuIdChange(menus[nextIndex]?.id ?? null);
-  };
-
-  return (
-    <nav
-      className="menu-bar dev-browser-menu-bar"
-      aria-label="Dev browser menu bar"
-      data-dev-browser-menu-bar="true"
-    >
-      <div className="brand">ChemDraft</div>
-      <div className="menu dev-browser-menu-list" role="menubar">
-        {menus.map((menu, index) => {
-          const open = menu.id === openMenuId;
-          const menuElementId = `dev-browser-menu-${menu.id}`;
-          return (
-            <div
-              className="dev-browser-menu"
-              key={menu.id}
-              onMouseEnter={() => {
-                if (openMenuIndex !== -1) {
-                  onOpenMenuIdChange(menu.id);
-                }
-              }}
-            >
-              <button
-                type="button"
-                className="dev-browser-menu-button"
-                role="menuitem"
-                aria-haspopup="menu"
-                aria-expanded={open}
-                aria-controls={menuElementId}
-                data-dev-browser-menu-button={menu.id}
-                onClick={() => onOpenMenuIdChange(open ? null : menu.id)}
-                onKeyDown={(event) => handleTopLevelKeyDown(event, index)}
-              >
-                {menu.label}
-              </button>
-              {open ? (
-                <div
-                  id={menuElementId}
-                  className="dev-browser-menu-popover"
-                  role="menu"
-                  aria-label={menu.label}
-                >
-                  {menu.items.map((item, itemIndex) =>
-                    renderDevBrowserMenuEntry(item, `${menu.id}-${itemIndex}`, onInvoke)
-                  )}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    </nav>
-  );
-}
-
-function renderDevBrowserMenuEntry(
-  entry: DevBrowserMenuEntry,
-  key: string,
-  onInvoke: (commandId: string) => void
-) {
-  if (entry.kind === "separator") {
-    return <div className="dev-browser-menu-separator" role="separator" key={key} />;
-  }
-
-  if (entry.kind === "group") {
-    return (
-      <div className="dev-browser-menu-group" role="presentation" key={key}>
-        <div className="dev-browser-menu-group-label">{entry.label}</div>
-        <div className="dev-browser-menu-group-items">
-          {entry.items.map((item, index) => renderDevBrowserMenuEntry(item, `${key}-${index}`, onInvoke))}
-        </div>
-      </div>
-    );
-  }
-
-  const checkboxRole = entry.checked === undefined ? "menuitem" : "menuitemcheckbox";
-  return (
-    <button
-      type="button"
-      role={checkboxRole}
-      aria-checked={entry.checked === undefined ? undefined : entry.checked}
-      className="dev-browser-menu-item"
-      data-command-id={entry.commandId}
-      disabled={entry.disabled}
-      key={key}
-      onClick={() => {
-        if (!entry.disabled) {
-          onInvoke(entry.commandId);
-        }
-      }}
-    >
-      <span className="dev-browser-menu-item-state" aria-hidden="true">
-        {entry.checked ? "On" : ""}
-      </span>
-      <span className="dev-browser-menu-item-label">{entry.label}</span>
-      {entry.shortcut ? (
-        <span className="dev-browser-menu-item-shortcut">{entry.shortcut}</span>
-      ) : null}
-    </button>
   );
 }
 

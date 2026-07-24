@@ -126,9 +126,10 @@ function defaultWorkerFactory(entryUrl: URL): PluginWorkerHandle {
  * the `ready`/`apiVersion` handshake is enforced there, and `bridge.terminate()` is the full teardown
  * M36's uninstall will call.
  *
- * Declared permissions are honored exactly as the manifest states them — auto-granted, no consent gate
- * (ADR-0029 §3). The host still builds the context, so a capability the manifest did not declare is
- * simply never available to the worker.
+ * Supported declared permissions are honored exactly as the manifest states them — auto-granted, no
+ * consent gate (ADR-0029 §3). The desktop runtime rejects reserved permissions for which it has no safe
+ * capability broker; the host still builds the context, so an undeclared capability is never available
+ * to the worker.
  */
 export function loadPackagedPlugin(
   location: PackagedPluginLocation,
@@ -138,17 +139,30 @@ export function loadPackagedPlugin(
   const entryUrl = packagedPluginEntryUrl(location, packaged);
   const createWorker = options.createWorker ?? defaultWorkerFactory;
 
-  const bridge = new PluginWorkerBridge({
-    pluginId: packaged.manifest.id,
-    createWorker: () => createWorker(entryUrl),
-    hostApiVersion: options.hostApiVersion ?? PluginApiVersion
-  });
-
-  return {
+  const descriptor = {
     manifest: packaged.manifest,
-    options: createWorkerRoutedOptions(packaged.manifest, bridge),
-    bridge,
+    options: { commandHandlers: {} },
+    bridge: undefined as unknown as PluginWorkerBridge,
     entryUrl,
     provenance: packaged.provenance
+  } as PackagedPluginDescriptor;
+  let active = false;
+  descriptor.activate = () => {
+    if (active) return;
+    const bridge = new PluginWorkerBridge({
+      pluginId: packaged.manifest.id,
+      createWorker: () => createWorker(entryUrl),
+      hostApiVersion: options.hostApiVersion ?? PluginApiVersion
+    });
+    descriptor.bridge = bridge;
+    descriptor.options = createWorkerRoutedOptions(packaged.manifest, bridge);
+    active = true;
   };
+  descriptor.deactivate = () => {
+    if (!active) return;
+    descriptor.bridge.terminate();
+    active = false;
+  };
+  descriptor.activate();
+  return descriptor;
 }

@@ -30,6 +30,8 @@ import type {
 import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
   PluginWorkerErrorCodes,
+  asHostToWorkerMessage,
+  toPluginWorkerErrorPayload,
   type HostToWorkerMessage,
   type PluginWorkerCapabilityNamespace,
   type PluginWorkerEndpoint,
@@ -51,12 +53,19 @@ export interface PluginWorkerRegistration {
 export class PluginWorkerCapabilityError extends Error {
   readonly code: string;
 
-  constructor(payload: PluginWorkerErrorPayload) {
-    super(payload.message);
+  constructor(payload: PluginWorkerErrorPayload | unknown) {
+    // Normalized rather than destructured: a malformed failure frame must not throw here, because
+    // the construction happens on the settle path and a throw would strand the pending capability.
+    const normalized = toPluginWorkerErrorPayload(payload);
+    super(normalized.message);
     this.name = "PluginWorkerCapabilityError";
-    this.code = payload.code;
+    this.code = normalized.code;
   }
 }
+
+/** Upper bound on remembered aborted command ids (see `abortedCommands`). Large enough that a real
+ *  abort/settle race always finds its id, small enough that a leak stays bounded. */
+const MAX_REMEMBERED_ABORTED_COMMANDS = 1024;
 
 function toErrorPayload(error: unknown): PluginWorkerErrorPayload {
   if (error instanceof Error) {
@@ -85,10 +94,29 @@ export function runPluginWorker(
   const has = (permission: PluginPermission): boolean => permissions.has(permission);
 
   let nextCapabilityId = 1;
-  const pendingCapabilities = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
+  const pendingCapabilities = new Map<
+    number,
+    { commandRequestId: number; resolve: (value: unknown) => void; reject: (error: unknown) => void }
+  >();
   /** Commands the host aborted/terminated: their eventual settlement is suppressed, and their pending
-   *  capability calls are rejected so a handler cannot hang forever. */
+   *  capability calls are rejected so a handler cannot hang forever.
+   *
+   *  Entries are normally removed when the aborted handler finally settles, but a handler that
+   *  swallows its rejection and never settles would leak its id forever. The set is therefore bounded
+   *  and evicts oldest-first (`Set` preserves insertion order): over a long session of misbehaving
+   *  handlers it stays flat instead of growing without limit. Eviction is safe because the host mints
+   *  `commandRequestId` monotonically, so an evicted id is never reissued. */
   const abortedCommands = new Set<number>();
+  const rememberAbortedCommand = (commandRequestId: number): void => {
+    abortedCommands.add(commandRequestId);
+    while (abortedCommands.size > MAX_REMEMBERED_ABORTED_COMMANDS) {
+      const oldest = abortedCommands.values().next();
+      if (oldest.done) {
+        break;
+      }
+      abortedCommands.delete(oldest.value);
+    }
+  };
 
   const post = (message: WorkerToHostMessage): void => {
     endpoint.postMessage(message);
@@ -106,7 +134,7 @@ export function runPluginWorker(
         return;
       }
       const requestId = nextCapabilityId++;
-      pendingCapabilities.set(requestId, { resolve, reject });
+      pendingCapabilities.set(requestId, { commandRequestId, resolve, reject });
       post({ kind: "capabilityRequest", requestId, commandRequestId, namespace, method, args });
     });
 
@@ -192,7 +220,25 @@ export function runPluginWorker(
             abortedCommands.delete(commandRequestId);
             return; // host already settled this command (abort/terminate); suppress the late result
           }
-          post({ kind: "commandSettled", commandRequestId, ok: true, value });
+          try {
+            post({ kind: "commandSettled", commandRequestId, ok: true, value });
+          } catch (error) {
+            // `postMessage` synchronously throws DataCloneError for functions, symbols, and other
+            // non-cloneable results. Report a clone-safe failure so the host invocation rejects
+            // instead of waiting forever for a settlement that could never cross the boundary.
+            post({
+              kind: "commandSettled",
+              commandRequestId,
+              ok: false,
+              error: {
+                code: PluginWorkerErrorCodes.UncloneableResult,
+                message:
+                  error instanceof Error && error.message
+                    ? `Plugin command result could not be serialized: ${error.message}`
+                    : "Plugin command result could not be serialized."
+              }
+            });
+          }
         },
         (error: unknown) => {
           if (abortedCommands.has(commandRequestId)) {
@@ -226,9 +272,12 @@ export function runPluginWorker(
         registration.onPanelClosed?.(message.panelId);
         return;
       case "abort":
-        abortedCommands.add(message.commandRequestId);
+        rememberAbortedCommand(message.commandRequestId);
         // Reject any capability calls still in flight for this command so the handler unwinds.
         for (const [requestId, pending] of pendingCapabilities) {
+          if (pending.commandRequestId !== message.commandRequestId) {
+            continue;
+          }
           pending.reject(new PluginWorkerCapabilityError({ code: PluginWorkerErrorCodes.Terminated, message: "Command was aborted." }));
           pendingCapabilities.delete(requestId);
         }
@@ -237,7 +286,11 @@ export function runPluginWorker(
   };
 
   endpoint.addEventListener("message", (event: { data: unknown }) => {
-    handle(event.data as HostToWorkerMessage);
+    const message = asHostToWorkerMessage(event.data);
+    if (!message) {
+      return; // not a protocol frame: drop it rather than throwing inside the message listener
+    }
+    handle(message);
   });
 
   // Announce readiness last, so the listener is attached before the host can send an invocation.

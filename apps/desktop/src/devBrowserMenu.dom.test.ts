@@ -13,7 +13,7 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-describe("dev browser menu bar", () => {
+describe("shared browser menu bar", () => {
   let container: HTMLDivElement;
   let root: Root;
   let originalResizeObserver: typeof ResizeObserver | undefined;
@@ -62,26 +62,42 @@ describe("dev browser menu bar", () => {
     return element;
   }
 
+  function buttonWithText(text: string): HTMLButtonElement {
+    const element = [...container.querySelectorAll<HTMLButtonElement>("button")].find((candidate) =>
+      candidate.textContent?.includes(text)
+    );
+    if (!element) {
+      throw new Error(`Expected button containing ${text}.`);
+    }
+    return element;
+  }
+
   it("opens routed File commands and closes after invoking a page setup item", async () => {
     await renderBrowserPreview();
 
-    expect(container.querySelector('[data-dev-browser-menu-bar="true"]')).not.toBeNull();
+    expect(container.querySelectorAll('[role="menubar"]')).toHaveLength(1);
+    expect(container.querySelector('[data-dev-browser-menu-bar="true"]')).toBeNull();
 
     await act(async () => {
-      button('[data-dev-browser-menu-button="file"]').click();
+      button('[data-menu-section="file"]').click();
     });
 
-    expect(container.querySelector('[role="menu"][aria-label="File"]')).not.toBeNull();
+    expect(container.querySelector('.menu-section.is-open > [role="menu"]')).not.toBeNull();
     expect(button('[data-command-id="document.open"]').textContent).toContain("Open");
+    await act(async () => {
+      buttonWithText("Page Setup").click();
+    });
+    await act(async () => {
+      buttonWithText("Paper Size").click();
+    });
     expect(button('[data-command-id="page.setSize.a4"]').textContent).toContain("A4");
-    expect(button('[data-command-id="export.open"]').textContent).toContain("Export");
 
     await act(async () => {
       button('[data-command-id="page.setSize.a4"]').click();
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[role="menu"][aria-label="File"]')).toBeNull();
+    expect(container.querySelector('.menu-section.is-open > [role="menu"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Page size: A4");
   });
 
@@ -89,12 +105,15 @@ describe("dev browser menu bar", () => {
     await renderBrowserPreview();
 
     await act(async () => {
-      button('[data-dev-browser-menu-button="view"]').click();
+      button('[data-menu-section="view"]').click();
     });
 
-    expect(container.querySelector('[role="menu"][aria-label="View"]')).not.toBeNull();
+    expect(container.querySelector('.menu-section.is-open > [role="menu"]')).not.toBeNull();
     expect(button('[data-command-id="view.toggleRulers"]').getAttribute("aria-checked")).toBe("false");
     expect(button('[data-command-id="view.toggleCrosshairs"]').getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      buttonWithText("Toolbars").click();
+    });
     expect(button('[data-command-id="view.toolset.toggle.core.ringInspector"]').textContent).toContain("Rings");
     expect(button('[data-command-id="view.toolset.toggle.core.moleculeInspector"]').textContent).toContain("Molecule");
   });

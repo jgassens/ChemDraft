@@ -5,6 +5,7 @@ import {
   listenForPluginPanelReports,
   listenForPluginPanelStaleness,
   notifyPluginPanelClosed,
+  parsePluginPanelWindowId,
   requestPluginPanelRerun,
   requestPluginPanelReport,
   type PluginPanelReportPayload
@@ -24,6 +25,9 @@ import { PluginReportRenderer } from "./PluginReportRenderer";
  * window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
  */
 export function PluginPanelWindow({ panelId }: { panelId: string }) {
+  // The Rust window route still calls this query field `panelId`, but the value is the reversible
+  // composite window id produced by panelBridge. Decode it before filtering any messages.
+  const identity = parsePluginPanelWindowId(panelId);
   const [payload, setPayload] = useState<PluginPanelReportPayload | undefined>();
   const [staleness, setStaleness] = useState<{ revision: number; stale: boolean } | undefined>();
 
@@ -37,43 +41,43 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   }, []);
 
   useEffect(() => {
-    let unlistenReports: (() => void) | undefined;
-    let unlistenStaleness: (() => void) | undefined;
-    void listenForPluginPanelReports((next) => {
-      if (next.panelId !== panelId) {
+    if (!identity) {
+      return;
+    }
+    const unlistenReports = listenForPluginPanelReports((next) => {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
         return;
       }
       setPayload((current) => (current && current.revision >= next.revision ? current : next));
-    })
-      .then((cleanup) => {
-        unlistenReports = cleanup;
-        void requestPluginPanelReport(panelId).catch(() => undefined);
-      })
-      .catch(() => undefined);
-    void listenForPluginPanelStaleness((next) => {
-      if (next.panelId !== panelId) {
+    });
+    const unlistenStaleness = listenForPluginPanelStaleness((next) => {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
         return;
       }
       // Keyed to the report revision it was computed for, so a late push can never mark a newer report.
       setStaleness((current) =>
         current && current.revision > next.revision ? current : { revision: next.revision, stale: next.stale }
       );
-    })
-      .then((cleanup) => {
-        unlistenStaleness = cleanup;
-      })
-      .catch(() => undefined);
+    });
+    // Request only after both listeners exist: the response replays the report and its staleness
+    // verdict, so neither can be lost while a newly created webview is still mounting.
+    void requestPluginPanelReport(identity).catch(() => undefined);
 
     return () => {
-      unlistenReports?.();
-      unlistenStaleness?.();
+      unlistenReports();
+      unlistenStaleness();
     };
-  }, [panelId]);
+  }, [identity?.panelId, identity?.pluginId]);
 
   const stale = payload !== undefined && staleness?.revision === payload.revision && staleness.stale;
 
   return (
-    <aside className="plugin-panel-shell" aria-label={payload?.report.title ?? "Plugin panel"} data-panel-id={panelId}>
+    <aside
+      className="plugin-panel-shell"
+      aria-label={payload?.report.title ?? "Plugin panel"}
+      data-panel-id={identity?.panelId}
+      data-plugin-id={identity?.pluginId}
+    >
       <div
         className="palette-title"
         data-palette-title-drag-surface="true"
@@ -88,7 +92,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           <button
             type="button"
             className="plugin-panel-run-again"
-            onClick={() => void requestPluginPanelRerun(panelId).catch(() => undefined)}
+            onClick={() => identity && void requestPluginPanelRerun(identity).catch(() => undefined)}
           >
             Run again
           </button>
@@ -99,7 +103,9 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           aria-label="Close panel"
           onClick={() => {
             // Notify first (a real ADR-0012 close — the plugin cancels in-flight work), then hide.
-            void notifyPluginPanelClosed(panelId).catch(() => undefined);
+            if (identity) {
+              void notifyPluginPanelClosed(identity).catch(() => undefined);
+            }
             void hideCurrentPanelWindow().catch(() => undefined);
           }}
         >

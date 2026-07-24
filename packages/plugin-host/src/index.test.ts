@@ -152,6 +152,42 @@ describe("PluginHost", () => {
     expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(PluginHostError);
   });
 
+  // The proposal queue is the one place plugin-authored data is held pending a trusted `applyPatch`.
+  // Handing out the stored object let a caller flip `status` behind the host's back, so that the
+  // queue and `requirePendingProposal` disagreed about what was still pending.
+  it("hands out proposals as frozen copies, so a caller cannot mutate the queue's own state", () => {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({
+      id: "org.chemdraft.patch.demo",
+      name: "Patch Demo",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.proposePatch"]
+    });
+    const queued = host.proposePatch("org.chemdraft.patch.demo", {
+      reason: "recognized-structure",
+      patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+    });
+
+    expect(Object.isFrozen(queued)).toBe(true);
+    expect(() => {
+      (queued as { status: string }).status = "accepted";
+    }).toThrow(TypeError);
+
+    // Mutating a listed copy must not reach the queue either.
+    const [listed] = host.listProposedPatches("pending");
+    expect(() => {
+      (listed as { status: string }).status = "rejected";
+    }).toThrow(TypeError);
+    expect(host.listProposedPatches("pending")).toHaveLength(1);
+
+    // The host's own transitions still work on its internal copy.
+    expect(host.rejectProposedPatch(queued.id).status).toBe("rejected");
+    expect(host.listProposedPatches("pending")).toHaveLength(0);
+  });
+
   it("rejects proposed patches from plugins without document.proposePatch", () => {
     const host = new PluginHost();
     host.registerPlugin({
@@ -260,6 +296,103 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     const host = new PluginHost();
     host.registerPlugin(minimalManifest("org.test.dup"));
     expect(() => host.registerPlugin(minimalManifest("org.test.dup"))).toThrow(PluginHostError);
+  });
+
+  it("rejects core command ids at the manifest boundary without leaving a ghost plugin", async () => {
+    const registry = new CommandRegistry();
+    registry.register({ id: "document.save", title: "Save", source: "core" }, () => "core-save");
+    const host = new PluginHost({ commandRegistry: registry });
+
+    expect(() =>
+      host.registerPlugin({
+        id: "org.test.command-impersonation",
+        name: "Command Impersonation",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: [],
+        contributes: { commands: [{ id: "document.save", title: "Fake Save" }] }
+      })
+    ).toThrow(/Plugin command ids must use/);
+
+    expect(host.getPlugin("org.test.command-impersonation")).toBeUndefined();
+    await expect(registry.invoke("document.save")).resolves.toBe("core-save");
+  });
+
+  it("preflights shared-registry collisions before exposing plugin state", async () => {
+    const registry = new CommandRegistry();
+    registry.register({ id: "plugin.shared.run", title: "Existing", source: "core" }, () => "existing");
+    const host = new PluginHost({ commandRegistry: registry });
+
+    expect(() =>
+      host.registerPlugin({
+        id: "org.test.collision",
+        name: "Collision",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: [],
+        contributes: { commands: [{ id: "plugin.shared.run", title: "Colliding command" }] }
+      })
+    ).toThrow(CommandRegistryError);
+
+    expect(host.getPlugin("org.test.collision")).toBeUndefined();
+    expect(host.listPlugins()).toEqual([]);
+    await expect(registry.invoke("plugin.shared.run")).resolves.toBe("existing");
+  });
+
+  it("rolls back only commands it registered when an unexpected registration failure occurs", () => {
+    class FailingRegistry extends CommandRegistry {
+      override register(definition: Parameters<CommandRegistry["register"]>[0], handler: Parameters<CommandRegistry["register"]>[1]): void {
+        super.register(definition, handler);
+        if (definition.id === "plugin.rollback.second") {
+          throw new CommandRegistryError("synthetic registration failure");
+        }
+      }
+    }
+
+    const registry = new FailingRegistry();
+    const host = new PluginHost({ commandRegistry: registry });
+    expect(() =>
+      host.registerPlugin({
+        id: "org.test.rollback",
+        name: "Rollback",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: [],
+        contributes: {
+          commands: [
+            { id: "plugin.rollback.first", title: "First" },
+            { id: "plugin.rollback.second", title: "Second" }
+          ]
+        }
+      })
+    ).toThrow("synthetic registration failure");
+
+    expect(registry.has("plugin.rollback.first")).toBe(false);
+    expect(registry.has("plugin.rollback.second")).toBe(false);
+    expect(host.getPlugin("org.test.rollback")).toBeUndefined();
+  });
+
+  it("does not remove a command that is no longer owned by the plugin during unregister", async () => {
+    const registry = new CommandRegistry();
+    const host = new PluginHost({ commandRegistry: registry });
+    host.registerPlugin({
+      id: "org.test.ownership",
+      name: "Ownership",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions: [],
+      contributes: { commands: [{ id: "plugin.ownership.run", title: "Run" }] }
+    });
+
+    registry.unregister("plugin.ownership.run");
+    registry.register({ id: "plugin.ownership.run", title: "Replacement", source: "core" }, () => "replacement");
+    host.unregisterPlugin("org.test.ownership");
+
+    await expect(registry.invoke("plugin.ownership.run")).resolves.toBe("replacement");
   });
 
   it("notifies subscribers when plugins register and unregister, and stops after unsubscribe", () => {

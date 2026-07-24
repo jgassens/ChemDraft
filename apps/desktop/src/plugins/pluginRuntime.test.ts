@@ -28,6 +28,22 @@ function makeRuntime(overrides: Partial<DesktopPluginRuntimeOptions> = {}) {
 }
 
 describe("desktop plugin runtime", () => {
+  it("rejects reserved desktop permissions before registration, so hasPermission never reports a false grant", () => {
+    const runtime = makeRuntime();
+    const candidate = {
+      id: "org.test.network",
+      name: "Network Test",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions: ["network.fetch"]
+    };
+
+    expect(() => runtime.registerPlugin(candidate)).toThrow(/network\.fetch.*unavailable/i);
+    expect(runtime.host.getPlugin(candidate.id)).toBeUndefined();
+    expect(runtime.host.hasPermission(candidate.id, "network.fetch")).toBe(false);
+  });
+
   it("registers molscribe-ocsr as a bundled plugin", () => {
     const runtime = makeRuntime();
     const descriptors = registerBundledPlugins(runtime);
@@ -72,6 +88,27 @@ describe("desktop plugin runtime", () => {
     expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(true);
     expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === massFragmentManifest.id)).toBe(true);
     expect(changes).toHaveBeenCalledTimes(4);
+  });
+
+  it("totally tears down a disabled worker plugin and creates a fresh bridge when re-enabled", () => {
+    const runtime = makeRuntime();
+    const descriptors = createBundledPluginDescriptors({
+      pluginWorkerFactories: new Map([[massFragmentManifest.id, () => ({}) as never]])
+    });
+    const mass = descriptors.find((descriptor) => descriptor.manifest.id === massFragmentManifest.id)!;
+    const firstBridge = mass.bridge!;
+    const terminate = vi.spyOn(firstBridge, "terminate");
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    applyEnabledPlugins(runtime, new Set([massFragmentManifest.id]), descriptors);
+
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(runtime.host.getPlugin(massFragmentManifest.id)).toBeUndefined();
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    expect(mass.bridge).toBeDefined();
+    expect(mass.bridge).not.toBe(firstBridge);
+    expect(runtime.host.getPlugin(massFragmentManifest.id)).toBeDefined();
   });
 
   it("closes a plugin-owned panel before unregistering its close hook", async () => {

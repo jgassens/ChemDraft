@@ -12,7 +12,13 @@ function hostWithPanels() {
         { id: "panel.a.secondary", title: "Panel A Secondary", commandId: "cmd.a.secondary" }
       ]
     ],
-    ["plugin.b", [{ id: "panel.b", title: "Panel B", commandId: "cmd.b" }]]
+    [
+      "plugin.b",
+      [
+        { id: "panel.b", title: "Panel B", commandId: "cmd.b" },
+        { id: "panel.a", title: "Plugin B Shared ID", commandId: "cmd.b.shared" }
+      ]
+    ]
   ]);
   const notifyPanelClosed = vi.fn();
   const host = {
@@ -86,7 +92,7 @@ describe("PluginPanelController", () => {
     const controller = new PluginPanelController(host, () => "t");
 
     controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
-    controller.detachPanel("panel.a");
+    controller.detachPanel("plugin.a", "panel.a");
 
     // Detaching is a surface change, not a close: the plugin must NOT get a cancellation signal.
     expect(notifyPanelClosed).not.toHaveBeenCalled();
@@ -105,7 +111,7 @@ describe("PluginPanelController", () => {
     const controller = new PluginPanelController(host, () => "t");
 
     controller.showReport("plugin.a", "panel.a", { title: "Pending", sections: [] });
-    controller.detachPanel("panel.a");
+    controller.detachPanel("plugin.a", "panel.a");
     controller.showReport("plugin.b", "panel.b", { title: "B", sections: [] });
 
     // The detached panel's plugin pushes its result; the in-app panel (plugin.b) must be untouched.
@@ -123,15 +129,36 @@ describe("PluginPanelController", () => {
     const controller = new PluginPanelController(host, () => "t");
 
     controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
-    controller.detachPanel("panel.a");
-    controller.closeDetachedPanel("panel.a");
+    controller.detachPanel("plugin.a", "panel.a");
+    controller.closeDetachedPanel("plugin.a", "panel.a");
 
     expect(notifyPanelClosed).toHaveBeenCalledOnce();
     expect(notifyPanelClosed).toHaveBeenCalledWith("plugin.a", "panel.a");
     expect(controller.getDetachedPanels()).toHaveLength(0);
 
     // Unknown/already-closed ids are no-ops, not throws.
-    controller.closeDetachedPanel("panel.a");
+    controller.closeDetachedPanel("plugin.a", "panel.a");
     expect(notifyPanelClosed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps same-named panels from different plugins as distinct detached owners", () => {
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
+    controller.detachPanel("plugin.a", "panel.a");
+    controller.showReport("plugin.b", "panel.a", { title: "B", sections: [] });
+    controller.detachPanel("plugin.b", "panel.a");
+
+    expect(controller.getDetachedPanels()).toEqual([
+      expect.objectContaining({ pluginId: "plugin.a", panelId: "panel.a", report: { title: "A", sections: [] } }),
+      expect.objectContaining({ pluginId: "plugin.b", panelId: "panel.a", report: { title: "B", sections: [] } })
+    ]);
+
+    controller.closeDetachedPanel("plugin.a", "panel.a");
+    expect(controller.getDetachedPanels()).toEqual([
+      expect.objectContaining({ pluginId: "plugin.b", panelId: "panel.a" })
+    ]);
+    expect(notifyPanelClosed).toHaveBeenCalledExactlyOnceWith("plugin.a", "panel.a");
   });
 });

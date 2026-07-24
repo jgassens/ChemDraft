@@ -7,27 +7,32 @@ export interface NativePluginMenuItem {
   id: string;
   label: string;
   enabled: boolean;
+  location: PluginAppMenuItem["location"];
 }
 
 /**
- * The plugin items the native Analyze menu should show: every plugin-contributed command in the
- * `analyze` location, as `{ id: commandId, label, enabled }`. Pure so it is unit-testable without a
- * Tauri runtime.
+ * Every plugin item the native menu should show, preserving its schema-validated target location.
+ * Pure so it is unit-testable without a Tauri runtime.
  */
-export function pluginAnalyzeItemsForNativeMenu(
+export function pluginItemsForNativeMenu(
   items: readonly PluginAppMenuItem[]
 ): NativePluginMenuItem[] {
   return items
-    .filter((item) => item.location === "analyze")
     .map((item) => ({
       id: item.command.commandId,
       label: item.command.label,
-      enabled: item.command.enabled
+      enabled: item.command.enabled,
+      location: item.location
     }));
 }
 
+/** Backward-compatible pure helper retained for callers that intentionally need only Analyze. */
+export function pluginAnalyzeItemsForNativeMenu(items: readonly PluginAppMenuItem[]): NativePluginMenuItem[] {
+  return pluginItemsForNativeMenu(items).filter((item) => item.location === "analyze");
+}
+
 /**
- * Push the plugin Analyze items into the native macOS menu (desktop only). A no-op on the web build,
+ * Push plugin items into their native macOS menu locations (desktop only). A no-op on the web build,
  * where the in-window menu bar already renders them. Failures are swallowed — the native menu is a
  * convenience and must never break the app if the bridge command is unavailable.
  */
@@ -37,7 +42,7 @@ export async function syncPluginNativeMenuItems(items: readonly PluginAppMenuIte
   }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("sync_plugin_menu_items", { items: pluginAnalyzeItemsForNativeMenu(items) });
+    await invoke("sync_plugin_menu_items", { items: pluginItemsForNativeMenu(items) });
   } catch (error) {
     console.warn("Could not sync plugin menu items into the native menu:", error);
   }

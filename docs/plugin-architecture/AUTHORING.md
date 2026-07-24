@@ -1,8 +1,8 @@
 # Authoring a ChemDraft plugin
 
 A plugin is a TypeScript package that imports **only `@chemdraft/plugin-api`** and exports a manifest
-plus command handlers. ChemDraft consumes it as source (the desktop's Vite build transpiles it), so
-there is no plugin build step to maintain.
+plus command handlers. Bundled examples are composed from source by the desktop build; an installable
+plugin is compiled into a verified multi-file worker package by `pnpm plugin:package`.
 
 ## The one rule
 
@@ -51,7 +51,10 @@ export const widgetManifest = parsePluginManifest({
 });
 ```
 
-Command ids are `plugin.<name>.<action>`, menus `menu.<name>.<action>`, panels `panel.<name>.<name>`.
+Command ids are `plugin.<name>.<action>`, menus `menu.<name>.<action>`, panels
+`panel.<name>.<name>`, and analyzers `analyzer.<name>.<name>`. The parser normalizes the older
+`plugin.<name>.<name>` analyzer-id spelling only so already-built NMR packages remain loadable; new
+source must use the canonical analyzer namespace.
 
 ## Command handler
 
@@ -99,6 +102,12 @@ predictor, for instance, must first stand up its nested OpenChemLib worker). Two
   surface must not start a worker runtime;
 - it obeys the one rule above: `@chemdraft/plugin-api` plus your own relative modules. In particular
   import your own files relatively (`./providers/…`), never by your package's own name.
+
+Installed worker responses carry a restrictive CSP: code, nested workers, WASM, and reference data
+may load from the package's own origin, but arbitrary external `fetch`, XHR, WebSocket, and remote
+module loads are blocked. `network.fetch` remains a declared future capability; it does not grant an
+ambient browser network primitive. External access must eventually travel through a permission-gated
+host broker rather than bypassing the command context.
 
 ## Distribute
 

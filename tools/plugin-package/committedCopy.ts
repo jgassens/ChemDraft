@@ -49,7 +49,9 @@ export function createCommittedPluginCopy(pluginRoot: string, label = "chemdraft
   if (existsSync(dependencies)) {
     symlinkSync(dependencies, join(copy, "node_modules"), "dir");
   }
-  writeFileSync(join(copy, ".gitignore"), "node_modules/\n");
+  // No trailing slash: this test helper intentionally uses a directory symlink, and Git's
+  // directory-only `node_modules/` pattern does not match a symlink filesystem entry.
+  writeFileSync(join(copy, ".gitignore"), "node_modules\n");
 
   git(copy, ["init", "-q"]);
   git(copy, ["add", "."]);

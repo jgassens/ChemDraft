@@ -8,9 +8,11 @@ concepts, no worker, and no reference database.
 For the selected molecule it computes:
 
 - **Molecular formula** (Hill notation) and **monoisotopic** + **average** mass (via OpenChemLib).
-- **Common ESI adduct m/z** — `[M+H]⁺`, `[M+Na]⁺`, `[M+NH₄]⁺`, `[M+K]⁺`, `[M+H−H₂O]⁺`, `[M−H]⁻`.
+- **Ion m/z** — common ESI adducts (`[M+H]⁺`, `[M+Na]⁺`, `[M+NH₄]⁺`, `[M+K]⁺`,
+  `[M+H−H₂O]⁺`, `[M−H]⁻`) for neutral structures; an already charged structure instead reports
+  its native `[M]` ion and net charge, without inventing neutral-precursor adducts.
 - A **first-order isotope pattern** (M / M+1 / M+2) from ¹³C/¹⁵N and ³⁷Cl/⁸¹Br/³⁴S abundances —
-  a labelled approximation, not a full isotopic convolution.
+  normalized to the monoisotopic isotopologue and labelled as an approximation, not a full isotopic convolution.
 
 ## What it demonstrates
 

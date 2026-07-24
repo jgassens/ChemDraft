@@ -23,6 +23,8 @@ export interface MassIsotopePeak {
 
 export interface MassReport {
   formula: string;
+  /** Sum of explicit atomic formal charges in the parsed structure. */
+  netCharge: number;
   monoisotopicMass: number;
   averageMass: number;
   ions: MassIon[];
@@ -50,12 +52,23 @@ const ADDUCTS: readonly { species: string; delta: number; charge: number }[] = [
   { species: "[M-H]-", delta: -1.007276, charge: -1 }
 ];
 
-/** First-order relative isotopic abundances (%) of the heavier isotopes, per atom of the element
- *  (IUPAC/NIST). M+1 is dominated by ¹³C; M+2 by ³⁷Cl / ⁸¹Br / ³⁴S. Higher combinatorial terms beyond
- *  the ¹³C₂ contribution are omitted — this is a labelled approximation, not a full convolution. */
-const M1_PER_ATOM: Record<string, number> = { C: 1.07, N: 0.369, H: 0.0115, O: 0.038, S: 0.75, Si: 5.08 };
-const M2_PER_ATOM: Record<string, number> = { O: 0.205, S: 4.25, Cl: 31.96, Br: 97.28, Si: 3.35 };
-const C13 = 0.0107; // fraction, for the ¹³C₂ M+2 combinatorial term
+/** Electron rest mass in unified atomic mass units. Formula weights are sums of neutral atomic
+ *  masses, so a positive ion loses this mass per charge and a negative ion gains it. */
+const ELECTRON_MASS_U = 0.000548579909065;
+
+/** Natural abundances (%) used by this deliberately first-order approximation. Store absolute
+ *  abundances together and derive heavy/light ratios uniformly: report intensities are relative to
+ *  the all-light (monoisotopic) peak, never a mixture of absolute percentages and ratios. */
+const ISOTOPE_ABUNDANCES: Record<string, { light: number; m1?: number; m2?: number }> = {
+  H: { light: 99.9885, m1: 0.0115 },
+  C: { light: 98.93, m1: 1.07 },
+  N: { light: 99.631, m1: 0.369 },
+  O: { light: 99.757, m1: 0.038, m2: 0.205 },
+  Si: { light: 92.23, m1: 4.67, m2: 3.1 },
+  S: { light: 94.99, m1: 0.75, m2: 4.25 },
+  Cl: { light: 75.78, m2: 24.22 },
+  Br: { light: 50.69, m2: 49.31 }
+};
 
 /**
  * Compute the mass fingerprint of a structure: molecular formula, monoisotopic and average mass,
@@ -78,17 +91,43 @@ export function analyzeMass(input: MassAnalysisInput): MassReport {
   }
 
   const mf = molecule.getMolecularFormula();
-  const monoisotopicMass = mf.absoluteWeight;
-  const averageMass = mf.relativeWeight;
+  const netCharge = totalFormalCharge(molecule);
+  const monoisotopicMass = mf.absoluteWeight - netCharge * ELECTRON_MASS_U;
+  const averageMass = mf.relativeWeight - netCharge * ELECTRON_MASS_U;
   const counts = parseFormulaCounts(mf.formula);
 
-  const ions = ADDUCTS.map((adduct) => ({
-    species: adduct.species,
-    mz: round4((monoisotopicMass + adduct.delta) / Math.abs(adduct.charge)),
-    charge: adduct.charge
-  }));
+  // Adduct constants are defined for a neutral precursor and already include electron-mass
+  // corrections. Applying them to an input that is already charged invents misleading ions (for
+  // example [M+H]+ for tetramethylammonium), so charged inputs report their native ion only.
+  const ions = netCharge === 0
+    ? ADDUCTS.map((adduct) => ({
+        species: adduct.species,
+        mz: round4((monoisotopicMass + adduct.delta) / Math.abs(adduct.charge)),
+        charge: adduct.charge
+      }))
+    : [{ species: nativeIonLabel(netCharge), mz: round4(monoisotopicMass / Math.abs(netCharge)), charge: netCharge }];
 
-  return { formula: mf.formula, monoisotopicMass: round4(monoisotopicMass), averageMass: round2(averageMass), ions, isotopePattern: isotopePattern(counts) };
+  return {
+    formula: mf.formula,
+    netCharge,
+    monoisotopicMass: round4(monoisotopicMass),
+    averageMass: round2(averageMass),
+    ions,
+    isotopePattern: isotopePattern(counts)
+  };
+}
+
+function totalFormalCharge(molecule: OCL.Molecule): number {
+  let charge = 0;
+  for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+    charge += molecule.getAtomCharge(atom);
+  }
+  return charge;
+}
+
+function nativeIonLabel(charge: number): string {
+  const magnitude = Math.abs(charge);
+  return `[M]${magnitude === 1 ? "" : magnitude}${charge > 0 ? "+" : "-"}`;
 }
 
 /** Parse Hill-notation formula ("C9H8O4", "CHCl3") into element counts; bare symbol ⇒ count 1. */
@@ -105,12 +144,16 @@ function isotopePattern(counts: Record<string, number>): MassIsotopePeak[] {
   let m1 = 0;
   let m2 = 0;
   for (const [element, n] of Object.entries(counts)) {
-    m1 += (M1_PER_ATOM[element] ?? 0) * n;
-    m2 += (M2_PER_ATOM[element] ?? 0) * n;
+    const abundance = ISOTOPE_ABUNDANCES[element];
+    if (!abundance) continue;
+    m1 += ((abundance.m1 ?? 0) / abundance.light) * 100 * n;
+    m2 += ((abundance.m2 ?? 0) / abundance.light) * 100 * n;
   }
   // ¹³C₂ combinatorial contribution to M+2 (two heavy carbons in one molecule).
   const nC = counts.C ?? 0;
-  m2 += ((nC * (nC - 1)) / 2) * C13 * C13 * 100;
+  const carbon = ISOTOPE_ABUNDANCES.C!;
+  const c13ToC12 = (carbon.m1 ?? 0) / carbon.light;
+  m2 += ((nC * (nC - 1)) / 2) * c13ToC12 * c13ToC12 * 100;
 
   const peaks: MassIsotopePeak[] = [{ label: "M", relativeIntensity: 100 }];
   if (m1 > 0.05) peaks.push({ label: "M+1", relativeIntensity: round2(m1) });

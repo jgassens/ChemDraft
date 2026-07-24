@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   broadcastPluginPanelReport,
   broadcastPluginPanelStaleness,
+  listenForPluginPanelReruns,
   PLUGIN_PANEL_CLOSED_EVENT,
   PLUGIN_PANEL_RERUN_EVENT,
+  parsePluginPanelWindowId,
+  pluginPanelWindowId,
   type PluginPanelReportPayload
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
@@ -28,14 +31,15 @@ afterEach(() => {
 });
 
 const PANEL_ID = "panel.exampleAnalyzer.result";
+const PLUGIN_ID = "org.test.exampleAnalyzer";
+const WINDOW_ID = pluginPanelWindowId(PLUGIN_ID, PANEL_ID);
 
 async function mountWindow(): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(createElement(PluginPanelWindow, { panelId: PANEL_ID }));
-    // Bridge listeners attach in an async then-chain; flush microtasks before broadcasting.
+    root!.render(createElement(PluginPanelWindow, { panelId: WINDOW_ID }));
     await Promise.resolve();
   });
 }
@@ -43,7 +47,7 @@ async function mountWindow(): Promise<void> {
 function reportPayload(overrides: Partial<PluginPanelReportPayload> = {}): PluginPanelReportPayload {
   return {
     panelId: PANEL_ID,
-    pluginId: "org.test.exampleAnalyzer",
+    pluginId: PLUGIN_ID,
     revision: 1,
     commandId: "plugin.exampleAnalyzer.run",
     report: {
@@ -73,6 +77,26 @@ async function broadcast(payload: PluginPanelReportPayload): Promise<void> {
 }
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  it("returns listener cleanup synchronously so an immediate effect cleanup cannot leak", () => {
+    const handler = vi.fn();
+    const cleanup = listenForPluginPanelReruns(handler);
+    cleanup();
+
+    window.dispatchEvent(
+      new CustomEvent(PLUGIN_PANEL_RERUN_EVENT, { detail: { pluginId: PLUGIN_ID, panelId: PANEL_ID } })
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("uses a reversible collision-free native identity instead of lossy panel-id punctuation", () => {
+    const dotted = pluginPanelWindowId("org.test.a", "panel.shared.a-b");
+    const dashed = pluginPanelWindowId("org.test.a", "panel.shared.a.b");
+    const otherOwner = pluginPanelWindowId("org.test.b", "panel.shared.a-b");
+
+    expect(new Set([dotted, dashed, otherOwner]).size).toBe(3);
+    expect(parsePluginPanelWindowId(dotted)).toEqual({ pluginId: "org.test.a", panelId: "panel.shared.a-b" });
+  });
+
   it("renders reports through the shared PluginReportRenderer — the linkedFigure survives in the window", async () => {
     await mountWindow();
     expect(container!.textContent).toContain("Waiting for plugin content…");
@@ -102,8 +126,8 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await mountWindow();
     const reruns: string[] = [];
     const onRerun = (event: Event) => {
-      const detail = (event as CustomEvent<{ panelId?: unknown }>).detail;
-      if (typeof detail?.panelId === "string") {
+      const detail = (event as CustomEvent<{ pluginId?: unknown; panelId?: unknown }>).detail;
+      if (detail?.pluginId === PLUGIN_ID && typeof detail.panelId === "string") {
         reruns.push(detail.panelId);
       }
     };
@@ -134,7 +158,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).toBeNull();
 
     await act(async () => {
-      await broadcastPluginPanelStaleness({ panelId: PANEL_ID, stale: true, revision: 1 });
+      await broadcastPluginPanelStaleness({ pluginId: PLUGIN_ID, panelId: PANEL_ID, stale: true, revision: 1 });
     });
     expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).not.toBeNull();
 
@@ -143,8 +167,23 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).toBeNull();
 
     await act(async () => {
-      await broadcastPluginPanelStaleness({ panelId: PANEL_ID, stale: true, revision: 2 });
+      await broadcastPluginPanelStaleness({ pluginId: PLUGIN_ID, panelId: PANEL_ID, stale: true, revision: 2 });
     });
+    expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).not.toBeNull();
+  });
+
+  it("retains a replayed staleness verdict that arrives before its matching report", async () => {
+    await mountWindow();
+    await act(async () => {
+      await broadcastPluginPanelStaleness({
+        pluginId: PLUGIN_ID,
+        panelId: PANEL_ID,
+        stale: true,
+        revision: 7
+      });
+    });
+    await broadcast(reportPayload({ revision: 7 }));
+
     expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).not.toBeNull();
   });
 
@@ -152,8 +191,8 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await mountWindow();
     const closes: string[] = [];
     const onClosed = (event: Event) => {
-      const detail = (event as CustomEvent<{ panelId?: unknown }>).detail;
-      if (typeof detail?.panelId === "string") {
+      const detail = (event as CustomEvent<{ pluginId?: unknown; panelId?: unknown }>).detail;
+      if (detail?.pluginId === PLUGIN_ID && typeof detail.panelId === "string") {
         closes.push(detail.panelId);
       }
     };
@@ -170,5 +209,32 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     } finally {
       window.removeEventListener(PLUGIN_PANEL_CLOSED_EVENT, onClosed);
     }
+  });
+
+  it("does not retain duplicate bridge listeners through StrictMode's setup/cleanup probe", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(StrictMode, null, createElement(PluginPanelWindow, { panelId: WINDOW_ID })));
+      await Promise.resolve();
+    });
+
+    await broadcast(reportPayload({ revision: 1, report: { title: "First", sections: [] } }));
+    await broadcast(reportPayload({ revision: 2, report: { title: "Second", sections: [] } }));
+
+    expect(container.querySelectorAll(".plugin-report")).toHaveLength(1);
+    expect(container.textContent).toContain("Second");
+    expect(container.textContent).not.toContain("First");
+  });
+
+  it("ignores a same-named panel report owned by a different plugin", async () => {
+    await mountWindow();
+    await broadcast(reportPayload({ pluginId: "org.test.other", report: { title: "Wrong owner", sections: [] } }));
+    expect(container!.textContent).toContain("Waiting for plugin content…");
+
+    await broadcast(reportPayload({ report: { title: "Correct owner", sections: [] } }));
+    expect(container!.textContent).toContain("Correct owner");
+    expect(container!.textContent).not.toContain("Wrong owner");
   });
 });

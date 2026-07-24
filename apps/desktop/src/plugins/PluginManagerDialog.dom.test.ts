@@ -10,7 +10,7 @@ import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./ins
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { buildPluginMenuItems } from "./pluginMenuModel";
 import { PluginManagerDialog } from "./PluginManagerDialog";
-import { loadDisabledPluginIds } from "./pluginPreferences";
+import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 
@@ -130,7 +130,7 @@ const installedManifest: PluginManifest = {
   name: "Installed Test Plugin",
   version: "2.0.1",
   description: "A packaged plugin installed at runtime.",
-  permissions: ["ui.menu", "network.fetch"],
+  permissions: ["ui.menu"],
   contributes: {
     ...manifest.contributes,
     commands: [{ id: installedCommandId, title: "Run Installed", requiredPermissions: [], enabled: true }],
@@ -146,8 +146,16 @@ const installedManifest: PluginManifest = {
   }
 };
 
+const networkPluginManifest: PluginManifest = {
+  ...installedManifest,
+  permissions: ["ui.menu", "network.fetch"]
+};
+
 /** A catalog entry shaped like a real install, with a descriptor carrying real command handlers. */
-function installedEntry(): InstalledPluginCatalogEntry {
+function installedEntry(
+  entryManifest: PluginManifest = installedManifest,
+  loadable = true
+): InstalledPluginCatalogEntry {
   return {
     record: {
       id: installedPluginId,
@@ -157,31 +165,34 @@ function installedEntry(): InstalledPluginCatalogEntry {
       sourceChecksum: "a".repeat(64),
       installedAt: "2026-07-16T00:00:00.000Z"
     },
-    manifest: installedManifest,
-    descriptor: {
-      manifest: installedManifest,
-      options: { commandHandlers: { [installedCommandId]: async () => ({ ok: true }) } },
-      bridge: { terminate: () => {} } as never,
-      entryUrl: new URL(`tauri://localhost/installed-plugins/${installedPluginId}/entry.js`),
-      provenance: {
-        sdk: "@chemdraft/plugin-api",
-        sdkVersion: "0.1.0",
-        sourceCommit: "0fd3eceec674f207fe2651fe7a19f6438a55fb17",
-        sourceTree: "clean",
-        licenseFile: "LICENSE",
-        packagedAt: "2026-07-16T14:07:19.768Z"
-      }
-    } as never
+    manifest: entryManifest,
+    descriptor: loadable
+      ? ({
+          manifest: entryManifest,
+          options: { commandHandlers: { [installedCommandId]: async () => ({ ok: true }) } },
+          bridge: { terminate: () => {} } as never,
+          entryUrl: new URL(`tauri://localhost/installed-plugins/${installedPluginId}/entry.js`),
+          provenance: {
+            sdk: "@chemdraft/plugin-api",
+            sdkVersion: "0.1.0",
+            sourceCommit: "0fd3eceec674f207fe2651fe7a19f6438a55fb17",
+            sourceTree: "clean",
+            licenseFile: "LICENSE",
+            packagedAt: "2026-07-16T14:07:19.768Z"
+          }
+        } as never)
+      : undefined
   };
 }
 
-function pickedPackage(): PickedPluginPackage {
+function pickedPackage(packageManifest: PluginManifest = installedManifest): PickedPluginPackage {
+  const provenance = installedEntry().descriptor!.provenance;
   return {
     sourcePath: "/Users/someone/Downloads/installed-test-plugin-2.0.1.zip",
     checksumVerified: true,
     inspection: {
-      manifest: installedManifest,
-      provenance: installedEntry().descriptor!.provenance,
+      manifest: packageManifest,
+      provenance,
       sourceChecksum: "b".repeat(64),
       entries: [],
       unpackedBytes: 17_834_630
@@ -263,13 +274,97 @@ describe("PluginManagerDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
 
     act(() => {
-      document.querySelector<HTMLElement>('[data-testid="plugin-manager-backdrop"]')!.click();
+      const backdrop = document.querySelector<HTMLElement>('[data-testid="plugin-manager-backdrop"]')!;
+      backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      backdrop.click();
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // Criterion 2: the UI displays what the package declares, and nothing gates the install on it.
-  it("displays a picked package's description and declared permissions, then installs with no consent gate", async () => {
+  it("does not treat a text-selection drag that ends on the backdrop as a dismissal", () => {
+    const runtime = createRuntime();
+    const onClose = vi.fn();
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(createElement(Harness, { runtime, onClose, onPluginsChanged: vi.fn() }));
+
+    const dialog = document.querySelector<HTMLElement>('[data-testid="plugin-manager-dialog"]')!;
+    const backdrop = document.querySelector<HTMLElement>('[data-testid="plugin-manager-backdrop"]')!;
+    act(() => {
+      dialog.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      backdrop.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      backdrop.click();
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("cannot be dismissed or toggled while an install is in progress", async () => {
+    const runtime = createRuntime();
+    const onClose = vi.fn();
+    let finishInstall: (() => void) | undefined;
+    const install = vi.fn(
+      () => new Promise<void>((resolve) => {
+        finishInstall = resolve;
+      })
+    );
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose,
+        onPluginsChanged: vi.fn(),
+        onPickPackage: vi.fn(async () => pickedPackage()),
+        onInstallPackage: install
+      })
+    );
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')!.click();
+    });
+    act(() => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
+    });
+    expect(install).toHaveBeenCalledOnce();
+    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLInputElement>(`[data-plugin-id="${pluginId}"] input`)?.disabled).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      const backdrop = document.querySelector<HTMLElement>('[data-testid="plugin-manager-backdrop"]')!;
+      backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      backdrop.click();
+      document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!.click();
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(runtime.host.getPlugin(pluginId)).toBeDefined();
+
+    await act(async () => {
+      finishInstall?.();
+      await Promise.resolve();
+    });
+    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(false);
+  });
+
+  it("preserves disabled ids that are absent from the visible catalog", () => {
+    const runtime = createRuntime();
+    const absentPluginId = "org.chemdraft.missing.install";
+    saveDisabledPluginIds(new Set([absentPluginId]));
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(createElement(Harness, { runtime, onClose: vi.fn(), onPluginsChanged: vi.fn() }));
+
+    act(() => {
+      (document.querySelector(`[data-plugin-id="${pluginId}"] input`) as HTMLInputElement).click();
+    });
+    expect(loadDisabledPluginIds()).toEqual(new Set([absentPluginId, pluginId]));
+
+    act(() => {
+      (document.querySelector(`[data-plugin-id="${pluginId}"] input`) as HTMLInputElement).click();
+    });
+    expect(loadDisabledPluginIds()).toEqual(new Set([absentPluginId]));
+  });
+
+  // Criterion 2: the UI discloses supported permissions, without adding a per-permission consent gate.
+  it("displays a picked package's description and declared permissions, then installs it", async () => {
     const runtime = createRuntime();
     const onPickPackage = vi.fn(async () => pickedPackage());
     const onInstallPackage = vi.fn(async (_inspection: PluginPackageInspection) => {});
@@ -299,11 +394,10 @@ describe("PluginManagerDialog", () => {
       "A packaged plugin installed at runtime."
     );
 
-    // Every declared permission is shown; the dangerous one is marked but still simply granted.
+    // Every declared permission is shown without calling a reserved capability "granted".
     const permissions = document.querySelector('[data-testid="plugin-package-permissions"]');
     expect(permissions?.querySelector('[data-permission="ui.menu"]')).not.toBeNull();
-    expect(permissions?.querySelector('[data-permission="network.fetch"]')?.className).toContain("is-dangerous");
-    expect(permissions?.textContent).toContain("Granted permissions:");
+    expect(permissions?.textContent).toContain("Declared permissions:");
 
     // Provenance and integrity are disclosed too.
     expect(review?.textContent).toContain("checksum verified");
@@ -320,6 +414,39 @@ describe("PluginManagerDialog", () => {
     expect(onInstallPackage).toHaveBeenCalledTimes(1);
     expect(onInstallPackage.mock.calls[0][0]).toMatchObject({ manifest: { id: installedPluginId } });
     expect(document.querySelector('[data-testid="plugin-package-review"]')).toBeNull();
+  });
+
+  it("identifies network.fetch as unavailable and refuses to install the package", async () => {
+    const runtime = createRuntime();
+    const onInstallPackage = vi.fn(async (_inspection: PluginPackageInspection) => {});
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        onPickPackage: vi.fn(async () => pickedPackage(networkPluginManifest)),
+        onInstallPackage
+      })
+    );
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')!.click();
+    });
+
+    const permission = document.querySelector('[data-permission="network.fetch"]');
+    expect(permission?.className).toContain("is-dangerous");
+    expect(permission?.className).toContain("is-unavailable");
+    expect(permission?.textContent).toContain("unavailable in this build");
+    expect(document.querySelector('[data-testid="plugin-package-unavailable"]')?.textContent).toContain(
+      "Cannot install this package"
+    );
+
+    const install = document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!;
+    expect(install.disabled).toBe(true);
+    expect(install.textContent).toBe("Cannot install");
+    install.click();
+    expect(onInstallPackage).not.toHaveBeenCalled();
   });
 
   it("treats a cancelled picker as a no-op, not a failure", async () => {
@@ -386,7 +513,7 @@ describe("PluginManagerDialog", () => {
     const row = document.querySelector(`[data-plugin-id="${installedPluginId}"]`);
     expect(row).not.toBeNull();
     expect(row?.textContent).toContain("Installed");
-    expect(row?.querySelector('[data-permission="network.fetch"]')).not.toBeNull();
+    expect(row?.querySelector('[data-permission="ui.menu"]')).not.toBeNull();
     expect(document.querySelector(`[data-command-id="${installedCommandId}"]`)).not.toBeNull();
 
     // Disabling an installed plugin keeps it listed and re-enableable — the bundled rule, inherited.
@@ -410,5 +537,41 @@ describe("PluginManagerDialog", () => {
 
     // A bundled plugin never offers Uninstall — it is not installed, it is compiled in.
     expect(document.querySelector(`[data-action="uninstall-plugin"][data-plugin-id="${pluginId}"]`)).toBeNull();
+  });
+
+  it("keeps an older install with an unavailable permission visible and uninstallable, but not enableable", async () => {
+    const runtime = createRuntime();
+    const onUninstallPlugin = vi.fn(async () => {});
+    const entry = installedEntry(networkPluginManifest, false);
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins: [entry],
+        onPickPackage: vi.fn(async () => undefined),
+        onInstallPackage: vi.fn(async () => {}),
+        onUninstallPlugin
+      })
+    );
+
+    const rowSelector = `[data-plugin-id="${installedPluginId}"]`;
+    const toggle = document.querySelector<HTMLInputElement>(`${rowSelector} input`)!;
+    expect(toggle.disabled).toBe(true);
+    expect(document.querySelector(rowSelector)?.textContent).toContain("Unavailable");
+    expect(document.querySelector(`${rowSelector} [data-permission="network.fetch"]`)?.textContent).toContain(
+      "unavailable in this build"
+    );
+    expect(runtime.host.getPlugin(installedPluginId)).toBeUndefined();
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="uninstall-plugin"][data-plugin-id="${installedPluginId}"]`
+        )!
+        .click();
+    });
+    expect(onUninstallPlugin).toHaveBeenCalledWith(installedPluginId);
   });
 });

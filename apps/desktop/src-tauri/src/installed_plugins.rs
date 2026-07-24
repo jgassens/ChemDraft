@@ -56,6 +56,14 @@ pub const INSTALLED_PLUGINS_URL_PREFIX: &str = "/installed-plugins/";
 /// `INSTALLED_PLUGINS_DIR` in `apps/desktop/src/plugins/installedPluginPaths.ts`.
 pub const INSTALLED_PLUGINS_DIR: &str = "installed-plugins";
 
+/// Worker-specific CSP for every installed-plugin asset.
+///
+/// A plugin package must be allowed to load its own code-split modules, nested workers, WASM, and
+/// same-origin reference data. It must *not* inherit an unrestricted worker environment where a plain
+/// `fetch("https://…")` can bypass the manifest's `network.fetch` capability. External networking is
+/// deliberately unavailable until it is routed through a permission-gated host broker.
+pub const INSTALLED_PLUGIN_WORKER_CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'";
+
 /// Root directory holding every staged package.
 pub fn installed_plugins_root<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path()
@@ -147,6 +155,7 @@ fn serve_installed_plugin_asset<R: Runtime>(
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, mime_type)
                 .header("Access-Control-Allow-Origin", APP_ORIGIN)
+                .header("Content-Security-Policy", INSTALLED_PLUGIN_WORKER_CSP)
                 // A staged package is immutable for the life of an install: its directory is replaced
                 // wholesale on reinstall, never edited in place.
                 .header("Cache-Control", "no-cache")
@@ -314,5 +323,13 @@ mod tests {
     fn containment_rejects_a_missing_root() {
         let root = PathBuf::from("/definitely/not/a/real/chemdraft/staging/root");
         assert!(!is_contained_in(&root, &root.join("plugin/entry.js")));
+    }
+
+    #[test]
+    fn installed_plugin_worker_csp_blocks_external_networks_but_keeps_local_assets() {
+        assert!(INSTALLED_PLUGIN_WORKER_CSP.contains("connect-src 'self'"));
+        assert!(!INSTALLED_PLUGIN_WORKER_CSP.contains("connect-src *"));
+        assert!(INSTALLED_PLUGIN_WORKER_CSP.contains("script-src 'self'"));
+        assert!(INSTALLED_PLUGIN_WORKER_CSP.contains("worker-src 'self' blob:"));
     }
 }

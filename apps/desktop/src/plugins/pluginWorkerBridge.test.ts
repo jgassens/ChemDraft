@@ -306,6 +306,87 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     await expect(ready).rejects.toThrow(/api version/i);
   });
 
+  it("times out and terminates a worker that never completes its startup handshake", async () => {
+    const { mainSide } = linkedEndpoints();
+    const bridge = new PluginWorkerBridge({
+      pluginId: "org.test.silent",
+      createWorker: () => asHandle(mainSide),
+      hostApiVersion: PluginApiVersion,
+      startupTimeoutMs: 5
+    });
+
+    await expect(bridge.whenReady()).rejects.toThrow(/startup handshake within 5 ms/i);
+    expect(mainSide.terminated).toBe(true);
+  });
+
+  it("terminate() settles a readiness wait even when the worker has not handshaken", async () => {
+    const { mainSide } = linkedEndpoints();
+    const bridge = new PluginWorkerBridge({
+      pluginId: "org.test.terminated-during-startup",
+      createWorker: () => asHandle(mainSide),
+      hostApiVersion: PluginApiVersion,
+      startupTimeoutMs: 1_000
+    });
+    const ready = bridge.whenReady();
+
+    bridge.terminate();
+
+    await expect(ready).rejects.toMatchObject({ code: PluginWorkerErrorCodes.Terminated });
+    expect(mainSide.terminated).toBe(true);
+  });
+
+  it("returns a cancellation handle that aborts without exposing the private request id", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const sentToWorker: HostToWorkerMessage[] = [];
+    workerSide.addEventListener("message", (event: { data: unknown }) => {
+      sentToWorker.push(event.data as HostToWorkerMessage);
+    });
+    const bridge = new PluginWorkerBridge({
+      pluginId: "org.test.cancellable-handle",
+      createWorker: () => asHandle(mainSide),
+      hostApiVersion: PluginApiVersion
+    });
+    const invocation = bridge.invokeCommandCancellable("plugin.cancellableHandle.run", {} as PluginCommandContext);
+    workerSide.postMessage({
+      kind: "ready",
+      protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION,
+      apiVersion: "^0.1.0"
+    });
+    await flush();
+    expect(sentToWorker.some((message) => message.kind === "invokeCommand")).toBe(true);
+
+    invocation.abort();
+
+    await expect(invocation.promise).rejects.toMatchObject({ code: PluginWorkerErrorCodes.Terminated });
+    expect(sentToWorker.some((message) => message.kind === "abort")).toBe(true);
+    bridge.terminate();
+  });
+
+  it("cancels immediately during startup and never dispatches the command after a late handshake", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const sentToWorker: HostToWorkerMessage[] = [];
+    workerSide.addEventListener("message", (event: { data: unknown }) => {
+      sentToWorker.push(event.data as HostToWorkerMessage);
+    });
+    const bridge = new PluginWorkerBridge({
+      pluginId: "org.test.cancel-before-ready",
+      createWorker: () => asHandle(mainSide),
+      hostApiVersion: PluginApiVersion
+    });
+    const invocation = bridge.invokeCommandCancellable("plugin.cancelBeforeReady.run", {} as PluginCommandContext);
+    invocation.abort();
+    await expect(invocation.promise).rejects.toMatchObject({ code: PluginWorkerErrorCodes.Terminated });
+
+    workerSide.postMessage({
+      kind: "ready",
+      protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION,
+      apiVersion: "^0.1.0"
+    });
+    await flush();
+    expect(sentToWorker.some((message) => message.kind === "invokeCommand")).toBe(false);
+    bridge.terminate();
+  });
+
   it("terminate() fully stops the plugin: the pending invocation rejects and no later capability call reaches the host", async () => {
     let reportsSeen = 0;
     let releaseGate!: () => void;
@@ -320,17 +401,17 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       entry: "x",
       permissions: ["ui.panel"],
       contributes: {
-        commands: [{ id: "cmd", title: "C", requiredPermissions: ["ui.panel"] }],
-        panels: [{ id: "panel.t", title: "P", requiredPermissions: ["ui.panel"] }]
+        commands: [{ id: "plugin.teardown.run", title: "C", requiredPermissions: ["ui.panel"] }],
+        panels: [{ id: "panel.teardown.result", title: "P", requiredPermissions: ["ui.panel"] }]
       }
     });
     const registration: PluginWorkerRegistration = {
       manifest,
       commandHandlers: {
-        cmd: async (context) => {
-          await context.panels!.showReport("panel.t", { title: "first", sections: [] }); // reaches host
+        "plugin.teardown.run": async (context) => {
+          await context.panels!.showReport("panel.teardown.result", { title: "first", sections: [] }); // reaches host
           await gate; // stall until after teardown
-          await context.panels!.showReport("panel.t", { title: "second", sections: [] }); // must NOT reach host
+          await context.panels!.showReport("panel.teardown.result", { title: "second", sections: [] }); // must NOT reach host
           return { ok: true };
         }
       }
@@ -348,7 +429,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       requirePermission: () => undefined
     } as unknown as PluginCommandContext;
 
-    const invocation = bridge.invokeCommand("cmd", context);
+    const invocation = bridge.invokeCommand("plugin.teardown.run", context);
     // Attach the settlement handler immediately so terminate()'s rejection is never momentarily
     // unhandled (it fires before the assertion below would otherwise attach a handler).
     const settled = invocation.then(

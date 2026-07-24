@@ -122,6 +122,56 @@ describe("validatePluginManifest", () => {
     expect(result.errors).toContain('Unsupported plugin permission "document.teleport".');
   });
 
+  it("rejects contribution ids outside their documented namespaces", () => {
+    const result = validatePluginManifest({
+      id: "org.chemdraft.bad-names",
+      name: "Bad Names",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions: [],
+      contributes: {
+        commands: [{ id: "document.save", title: "Impersonate Save" }],
+        menus: [{ id: "plugin.demo.menu", title: "Menu", commandId: "plugin.demo.run" }],
+        panels: [{ id: "nmr.results", title: "Results" }],
+        analyzers: [{ id: "analysis.demo.main", title: "Analysis", commandId: "plugin.demo.run" }]
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Plugin command ids must use the form "plugin.<pluginName>.<name>"'),
+        expect.stringContaining('Plugin menu ids must use the form "menu.<pluginName>.<name>"'),
+        expect.stringContaining('Plugin panel ids must use the form "panel.<pluginName>.<name>"'),
+        expect.stringContaining('Plugin analyzer ids must use the form "analyzer.<pluginName>.<name>"')
+      ])
+    );
+  });
+
+  it("normalizes the legacy analyzer id in already-packaged standalone plugins", () => {
+    const manifest = parsePluginManifest({
+      id: "org.chemdraft.nmr.predictor",
+      name: "NMR Shift Predictor",
+      version: "0.1.0",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions: [],
+      contributes: {
+        commands: [{ id: "plugin.nmrPredictor.predictSelectedStructure", title: "Predict" }],
+        analyzers: [
+          {
+            id: "plugin.nmrPredictor.forwardPrediction",
+            title: "NMR Forward Prediction",
+            commandId: "plugin.nmrPredictor.predictSelectedStructure"
+          }
+        ]
+      }
+    });
+
+    expect(manifest.contributes.analyzers[0]?.id).toBe("analyzer.nmrPredictor.forwardPrediction");
+  });
+
   it("rejects contribution permissions that are not declared by the manifest", () => {
     const result = validatePluginManifest({
       id: "org.chemdraft.bad",
@@ -168,6 +218,41 @@ describe("validatePluginManifest", () => {
       expect.stringContaining("Duplicate permission"),
       expect.stringContaining("Duplicate command id")
     ]);
+  });
+
+  it("rejects duplicate menu, panel, and analyzer ids", () => {
+    const result = validatePluginManifest({
+      id: "org.chemdraft.duplicate-surfaces",
+      name: "Duplicate Surfaces",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions: [],
+      contributes: {
+        commands: [{ id: "plugin.duplicate.run", title: "Run" }],
+        menus: [
+          { id: "menu.duplicate.run", title: "Run", commandId: "plugin.duplicate.run" },
+          { id: "menu.duplicate.run", title: "Run again", commandId: "plugin.duplicate.run" }
+        ],
+        panels: [
+          { id: "panel.duplicate.result", title: "Result" },
+          { id: "panel.duplicate.result", title: "Another result" }
+        ],
+        analyzers: [
+          { id: "analyzer.duplicate.main", title: "Analyze", commandId: "plugin.duplicate.run" },
+          { id: "analyzer.duplicate.main", title: "Analyze again", commandId: "plugin.duplicate.run" }
+        ]
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Duplicate menu id"),
+        expect.stringContaining("Duplicate panel id"),
+        expect.stringContaining("Duplicate analyzer id")
+      ])
+    );
   });
 
   it("parses default contribution collections for a minimal manifest", () => {
@@ -228,6 +313,42 @@ describe("RecognizedStructureResult", () => {
   it("keeps dangerous permission names explicit for host review surfaces", () => {
     expect(dangerousPluginPermissions).toContain("native.execute");
     expect(dangerousPluginPermissions).toContain("model.download");
+  });
+
+  // The patch interior is deliberately `passthrough()` (chem-core owns its shape, and the SDK boundary
+  // forbids a runtime chem-core dependency here), which makes this schema the only checkpoint between
+  // untrusted worker output and a trusted `applyPatch`. It must at least refuse keys that are dangerous
+  // purely by being copied onto a target. `JSON.parse` and `structuredClone` both produce these as real
+  // own keys, so a worker really can send one.
+  it("refuses a proposed patch carrying a prototype-polluting key", () => {
+    const polluted = (patch: unknown) => () =>
+      RecognizedStructureResultSchema.parse({
+        sourceImageRef: "fixture://x.png",
+        confidence: 0.5,
+        proposedPatch: { reason: "recognized-structure", patch }
+      });
+
+    // Top level, nested in an object, and nested inside an array element.
+    expect(polluted(JSON.parse('{"op":"addObject","__proto__":{"polluted":true}}'))).toThrow(/prototype-polluting/);
+    expect(polluted(JSON.parse('{"op":"addObject","object":{"__proto__":{"polluted":true}}}'))).toThrow(/prototype-polluting/);
+    expect(polluted(JSON.parse('{"op":"addObject","objects":[{"constructor":{"prototype":{}}}]}'))).toThrow(
+      /prototype-polluting/
+    );
+
+    // Object.prototype must be intact regardless — the guard rejects, it does not merge.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    // An ordinary patch with the same shape but no dangerous key still parses.
+    expect(
+      RecognizedStructureResultSchema.parse({
+        sourceImageRef: "fixture://x.png",
+        confidence: 0.5,
+        proposedPatch: {
+          reason: "recognized-structure",
+          patch: JSON.parse('{"op":"addObject","pageId":"page_001","object":{"id":"mol_001"}}')
+        }
+      }).proposedPatch?.patch.op
+    ).toBe("addObject");
   });
 });
 

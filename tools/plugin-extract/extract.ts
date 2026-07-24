@@ -20,10 +20,11 @@ import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writ
 import { basename, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { PLUGIN_SDK_PACKAGE } from "./checkBoundary";
+import { isRuntimeTestSourcePath, PLUGIN_SDK_PACKAGE } from "./checkBoundary";
 import {
   assertPluginBoundary,
   canonicalPath,
+  createPluginSourceSnapshot,
   distributionName,
   findLicense,
   PluginGateError,
@@ -85,19 +86,34 @@ function assertSafeDistributionPaths(pluginRoot: string, staging: string, zipPat
 
 export function extractPlugin(options: ExtractPluginOptions): ExtractionResult {
   const repoRoot = resolve(options.repoRoot ?? repositoryRoot);
-  const pluginRoot = realpathSync(resolve(options.pluginRoot));
+  const sourcePluginRoot = realpathSync(resolve(options.pluginRoot));
   const outDir = canonicalPath(options.outDir ?? join(repoRoot, "dist/plugins"));
 
+  const gitState = readPluginGitState(sourcePluginRoot, gateError);
+  const snapshot = createPluginSourceSnapshot(gitState, gateError);
+  try {
+    return extractCommittedPlugin(snapshot.pluginRoot, sourcePluginRoot, repoRoot, outDir, gitState.sourceCommit);
+  } finally {
+    snapshot.dispose();
+  }
+}
+
+function extractCommittedPlugin(
+  pluginRoot: string,
+  sourcePluginRoot: string,
+  repoRoot: string,
+  outDir: string,
+  sourceCommit: string
+): ExtractionResult {
   assertPluginBoundary(pluginRoot, gateError);
   const licenseFile = findLicense(pluginRoot, gateError);
-  const { sourceCommit } = readPluginGitState(pluginRoot, gateError);
   const pkg = readPluginPackageJson(pluginRoot, gateError);
-  const name = distributionName(pluginRoot, gateError);
+  const name = distributionName(sourcePluginRoot, gateError);
   const sdkVersion = sdkVersionFrom(repoRoot, gateError);
   const staging = join(outDir, name);
   const zipPath = join(outDir, `${name}-${pkg.version}.zip`);
   const checksumPath = `${zipPath}.sha256`;
-  assertSafeDistributionPaths(pluginRoot, staging, zipPath);
+  assertSafeDistributionPaths(sourcePluginRoot, staging, zipPath);
 
   const extractedPkg = {
     name: pkg.name,
@@ -124,7 +140,7 @@ export function extractPlugin(options: ExtractPluginOptions): ExtractionResult {
   mkdirSync(staging, { recursive: true });
   cpSync(join(pluginRoot, "src"), join(staging, "src"), {
     recursive: true,
-    filter: (source) => !/[/\\](tests|__tests__)([/\\]|$)/.test(source) && !/\.test\.tsx?$/.test(source)
+    filter: (source) => !/[/\\](tests|__tests__)([/\\]|$)/.test(source) && !isRuntimeTestSourcePath(source)
   });
   for (const doc of ["README.md", "THIRD_PARTY_NOTICES.md", licenseFile]) {
     if (existsSync(join(pluginRoot, doc))) cpSync(join(pluginRoot, doc), join(staging, doc));

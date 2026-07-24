@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import ts from "typescript";
 
@@ -20,6 +20,17 @@ export interface BoundaryViolation {
   specifier: string;
 }
 
+/** Every JavaScript/TypeScript source extension Vite accepts without an additional language plugin. */
+export const RUNTIME_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
+
+export function isRuntimeSourcePath(path: string): boolean {
+  return RUNTIME_SOURCE_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+export function isRuntimeTestSourcePath(path: string): boolean {
+  return /\.test\.(?:[cm]?[jt]s|[jt]sx)$/i.test(path);
+}
+
 function stringLiteralText(node: ts.Node | undefined): string | undefined {
   return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined;
 }
@@ -30,12 +41,19 @@ function stringLiteralText(node: ts.Node | undefined): string | undefined {
  * static import, re-export, `require()`, or dynamic `import()` is.
  */
 export function listModuleSpecifiers(sourceText: string, fileName = "plugin.ts"): string[] {
+  const extension = extname(fileName).toLowerCase();
+  let scriptKind = ts.ScriptKind.TS;
+  if (extension === ".tsx") scriptKind = ts.ScriptKind.TSX;
+  else if (extension === ".jsx") scriptKind = ts.ScriptKind.JSX;
+  else if (extension === ".js" || extension === ".mjs" || extension === ".cjs") {
+    scriptKind = ts.ScriptKind.JS;
+  }
   const sourceFile = ts.createSourceFile(
     fileName,
     sourceText,
     ts.ScriptTarget.Latest,
     true,
-    fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    scriptKind
   );
   const specifiers: string[] = [];
 
@@ -64,8 +82,8 @@ export function listModuleSpecifiers(sourceText: string, fileName = "plugin.ts")
   return specifiers;
 }
 
-/** Runtime source files of a plugin: every `.ts`/`.tsx` under `src/` except tests. Tests are excluded
- * because they never ship in the extraction and may legitimately use the host to drive the plugin. */
+/** Runtime JS/TS source files under `src/`, except tests. Tests are excluded because they never ship
+ * in the extraction and may legitimately use the host to drive the plugin. */
 export function listRuntimeSourceFiles(pluginRoot: string): string[] {
   const out: string[] = [];
   const walk = (dir: string): void => {
@@ -74,7 +92,7 @@ export function listRuntimeSourceFiles(pluginRoot: string): string[] {
       const full = join(dir, entry);
       if (statSync(full).isDirectory()) {
         walk(full);
-      } else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
+      } else if (isRuntimeSourcePath(entry) && !isRuntimeTestSourcePath(entry)) {
         out.push(full);
       }
     }
@@ -83,13 +101,13 @@ export function listRuntimeSourceFiles(pluginRoot: string): string[] {
   return out;
 }
 
-function escapesPluginRoot(file: string, pluginRoot: string, specifier: string): boolean {
+function escapesPluginSource(file: string, pluginRoot: string, specifier: string): boolean {
   if (isAbsolute(specifier) || specifier.startsWith("file:")) return true;
   if (!specifier.startsWith(".")) return false;
 
   const target = resolve(dirname(file), specifier);
-  const fromRoot = relative(resolve(pluginRoot), target);
-  return fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot);
+  const fromSource = relative(resolve(pluginRoot, "src"), target);
+  return fromSource === ".." || fromSource.startsWith(`..${sep}`) || isAbsolute(fromSource);
 }
 
 /**
@@ -98,7 +116,7 @@ function escapesPluginRoot(file: string, pluginRoot: string, specifier: string):
  * Allowed:
  * - exactly `@chemdraft/plugin-api`;
  * - ordinary npm packages;
- * - relative imports that stay inside the plugin package.
+ * - relative imports that stay inside the plugin's shipped `src/` tree.
  *
  * Rejected:
  * - every other `@chemdraft/*` package, including subpaths;
@@ -114,7 +132,7 @@ export function checkPluginBoundary(pluginRoot: string, sdkPackage: string = PLU
       if (
         specifier === DYNAMIC_MODULE_SPECIFIER ||
         isDisallowedChemDraftImport ||
-        escapesPluginRoot(file, pluginRoot, specifier)
+        escapesPluginSource(file, pluginRoot, specifier)
       ) {
         violations.push({ file: relative(pluginRoot, file), specifier });
       }

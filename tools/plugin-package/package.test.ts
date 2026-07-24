@@ -7,7 +7,7 @@
  * mass-fragment plugin in `apps/desktop/src/plugins/packagedPluginLoad.test.ts`.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,6 +103,105 @@ describe("plugin:package — fail-closed gates", () => {
     );
   });
 
+  it("refuses committed symlinks before the bundler can follow them", async () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.caseRoot, "outside-secret.ts"), "export const secret = true;\n");
+    symlinkSync(join(fixture.caseRoot, "outside-secret.ts"), join(fixture.pluginRoot, "src/local-secret.ts"));
+    git(fixture.pluginRoot, ["add", "src/local-secret.ts"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "symlink fixture"
+    ]);
+
+    await expect(packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture) })).rejects.toThrow(
+      /symbolic link.*src[/\\]local-secret\.ts/
+    );
+  });
+
+  it("builds from the recorded commit, so an import cannot pull ignored source into the bundle", async () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.pluginRoot, ".gitignore"), "node_modules/\nsrc/private.cjs\n");
+    writeFileSync(
+      join(fixture.pluginRoot, DEFAULT_WORKER_ENTRY),
+      `import { secret } from "./private.cjs";\nexport const started = secret;\n`
+    );
+    mkdirSync(join(fixture.pluginRoot, "node_modules"));
+    writeFileSync(join(fixture.pluginRoot, "node_modules/dependency.js"), "ignored dependency fixture\n");
+    git(fixture.pluginRoot, ["add", ".gitignore", DEFAULT_WORKER_ENTRY]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "ignore fixture"
+    ]);
+    writeFileSync(join(fixture.pluginRoot, "src/private.cjs"), "module.exports = 'secret';\n");
+
+    await expect(packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture) })).rejects.toThrow(
+      /private\.cjs/
+    );
+  });
+
+  it("allows unrelated ignored build output and OS metadata because neither enters the committed snapshot", async () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.pluginRoot, ".gitignore"), ".DS_Store\ndist/\n");
+    git(fixture.pluginRoot, ["add", ".gitignore"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "ignore build output"
+    ]);
+    writeFileSync(join(fixture.pluginRoot, ".DS_Store"), "local Finder metadata\n");
+    mkdirSync(join(fixture.pluginRoot, "dist"));
+    writeFileSync(join(fixture.pluginRoot, "dist/old-entry.js"), "must not ship\n");
+
+    const result = await packagePlugin({
+      pluginRoot: fixture.pluginRoot,
+      outDir: outFor(fixture),
+      repoRoot: join(import.meta.dirname, "../..")
+    });
+    expect(result.files.map((file) => file.path)).not.toContain("old-entry.js");
+  });
+
+  it("allows an ignored node_modules dependency tree because it is bundled, never copied wholesale", async () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.pluginRoot, ".gitignore"), "node_modules/\n");
+    mkdirSync(join(fixture.pluginRoot, "node_modules"));
+    writeFileSync(join(fixture.pluginRoot, "node_modules/dependency.js"), "ignored dependency fixture\n");
+    git(fixture.pluginRoot, ["add", ".gitignore"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "dependency fixture"
+    ]);
+
+    const result = await packagePlugin({
+      pluginRoot: fixture.pluginRoot,
+      outDir: outFor(fixture),
+      repoRoot: join(import.meta.dirname, "../..")
+    });
+    expect(result.files.map((file) => file.path)).not.toContain("node_modules/dependency.js");
+  });
+
   it("refuses to build an installable package without explicit license terms", async () => {
     const fixture = createPluginFixture({ license: false });
     await expect(packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture) })).rejects.toThrow(
@@ -125,6 +224,56 @@ describe("plugin:package — fail-closed gates", () => {
     await expect(
       packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture), entry: "src/nope.ts" })
     ).rejects.toThrow(/worker entry "src\/nope\.ts" does not exist/);
+  });
+
+  it("refuses an explicit --entry outside the plugin tree", async () => {
+    const fixture = createPluginFixture();
+    const outsideEntry = join(fixture.caseRoot, "outside-worker.mjs");
+    writeFileSync(outsideEntry, "export const outside = true;\n");
+
+    await expect(
+      packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture), entry: outsideEntry })
+    ).rejects.toThrow(/worker entry must be a file inside the plugin's src directory/);
+  });
+
+  it("refuses an explicit runtime entry outside src, where the boundary scanner cannot inspect it", async () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.pluginRoot, "worker.mjs"), "export const unscanned = true;\n");
+    git(fixture.pluginRoot, ["add", "worker.mjs"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "out-of-src entry fixture"
+    ]);
+
+    await expect(
+      packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture), entry: "worker.mjs" })
+    ).rejects.toThrow(/worker entry must be a file inside the plugin's src directory/);
+  });
+
+  it("refuses an explicit --entry with a non-runtime extension", async () => {
+    const fixture = createPluginFixture();
+    writeFileSync(join(fixture.pluginRoot, "src/worker.json"), "{}\n");
+    git(fixture.pluginRoot, ["add", "src/worker.json"]);
+    git(fixture.pluginRoot, [
+      "-c",
+      "user.name=ChemDraft Test",
+      "-c",
+      "user.email=tests@chemdraft.invalid",
+      "commit",
+      "-q",
+      "-m",
+      "non-runtime entry fixture"
+    ]);
+
+    await expect(
+      packagePlugin({ pluginRoot: fixture.pluginRoot, outDir: outFor(fixture), entry: "src/worker.json" })
+    ).rejects.toThrow(/supported JavaScript or TypeScript extension/);
   });
 
   it("refuses an ambiguous plugin that exports more than one manifest rather than guessing", async () => {

@@ -22,9 +22,9 @@ registers bundled plugins once inside that guard (StrictMode-safe). The active
 document and selection reach the host through **provider callbacks**
 (`() => documentRef.current`, a selection-snapshot builder), so the host is
 **never rebuilt** when the document, selection, page, viewport, or undo history
-changes. This matters because the core `CommandRegistry` *is* rebuilt on those
-changes (its `useMemo` depends on selection) — the plugin host deliberately does
-not live there. React re-renders on host/panel changes via a subscription.
+changes. Core and plugin commands share one stable `CommandRegistry`; core
+bindings are synchronized in place as state changes. React re-renders on
+host/panel changes via subscriptions.
 
 ## Capability APIs (permission-gated, optional)
 
@@ -60,22 +60,21 @@ compares it against the live document (`computeObjectFingerprint`) and shows a
 ## Menu integration + drift test
 
 Plugin menu contributions become app-menu items via `pluginMenuModel`, tagged
-`pluginContributed`. That flag excludes them from `nativeRoutedCommandIds`, so the
-web↔native menu drift test stays meaningful (mirrors the existing
-`nativePredefined` exclusion, ADR-0009). Plugin items are web-menu-only for now;
-a native dynamic menu can adopt them later the way toolset menus already do.
+`pluginContributed`. That flag excludes them from the *static core*
+`nativeRoutedCommandIds` drift test. The desktop separately sends every dynamic
+item — target location and enabled state included — to the native menu bridge;
+clicks return through the same `plugin.*` command route used by the web menu.
 
 ## Worker pattern
 
-Long-running providers run off the main thread behind a request-id protocol
-modeled on the conformer worker: `initialize` / `predict` / `cancel` ↔
-`ready` / `result` / `cancelled` / `error`. The client (`createNmrWorkerClient`)
-correlates responses by id, spawns the worker lazily, ignores results for
-no-longer-active requests, and returns `null` where `Worker` is unavailable so the
-caller can fall back in-thread. A worker defined in a workspace plugin package
-bundles under the desktop Vite build via
-`new Worker(new URL("./worker.ts", import.meta.url), { type: "module" })` — the one
-prerequisite is that the desktop declares the plugin as a `workspace:*` dependency.
+Each analyzer plugin runs in its own lazy ES-module Worker through
+`PluginWorkerBridge`. A versioned `ready` handshake must complete before
+registration; startup has a finite timeout, invocation/capability messages carry
+request ids, and `terminate()` rejects startup plus every command in flight.
+Disable, uninstall, failed install, startup cancellation, and successful package
+replacement all perform that teardown. Installed worker responses allow only
+same-origin code/data/network access; external network access cannot bypass the
+manifest capability layer.
 
 ## Panel-close lifecycle (ADR-0012)
 

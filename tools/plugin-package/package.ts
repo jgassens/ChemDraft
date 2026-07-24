@@ -34,7 +34,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -48,10 +48,11 @@ import {
   PluginManifestSchema,
   type PluginManifest
 } from "../../packages/plugin-api/src/index";
-import { PLUGIN_SDK_PACKAGE } from "../plugin-extract/checkBoundary";
+import { isRuntimeSourcePath, PLUGIN_SDK_PACKAGE } from "../plugin-extract/checkBoundary";
 import {
   assertPluginBoundary,
   canonicalPath,
+  createPluginSourceSnapshot,
   distributionName,
   findLicense,
   PluginGateError,
@@ -158,19 +159,24 @@ async function loadVite(repoRoot: string): Promise<ViteModule> {
   return (await import(pathToFileURL(vitePath).href)) as ViteModule;
 }
 
-/** The worker entry to bundle: an explicit `--entry`, else the plugin's own `src/workerEntry.ts`. */
-function resolveWorkerEntry(pluginRoot: string, repoRoot: string, entry: string | undefined): string {
-  if (entry) {
-    const candidate = resolve(entry);
-    const relativeToPlugin = resolve(pluginRoot, entry);
-    for (const path of [candidate, relativeToPlugin, resolve(repoRoot, entry)]) {
-      if (existsSync(path)) return realpathSync(path);
+/** The worker entry to bundle: an explicit plugin-relative path, else `src/workerEntry.ts`. */
+function resolveWorkerEntry(pluginRoot: string, entry: string | undefined): string {
+  const requested = entry ?? DEFAULT_WORKER_ENTRY;
+  const candidate = isAbsolute(requested) ? resolve(requested) : resolve(pluginRoot, requested);
+  if (!existsSync(candidate)) {
+    if (entry) throw new PluginPackagingError(`worker entry "${entry}" does not exist`);
+  } else {
+    const realEntry = realpathSync(candidate);
+    if (!contains(join(pluginRoot, "src"), realEntry)) {
+      throw new PluginPackagingError("worker entry must be a file inside the plugin's src directory");
     }
-    throw new PluginPackagingError(`worker entry "${entry}" does not exist`);
+    if (!isRuntimeSourcePath(realEntry)) {
+      throw new PluginPackagingError(
+        "worker entry must use a supported JavaScript or TypeScript extension (.js, .jsx, .mjs, .cjs, .ts, .tsx, .mts, or .cts)"
+      );
+    }
+    return realEntry;
   }
-
-  const conventional = join(pluginRoot, DEFAULT_WORKER_ENTRY);
-  if (existsSync(conventional)) return realpathSync(conventional);
 
   throw new PluginPackagingError(
     `plugin has no ${DEFAULT_WORKER_ENTRY}, so there is nothing to run in a worker.\n` +
@@ -257,24 +263,66 @@ function collectFiles(dir: string, prefix = ""): PackagedFile[] {
 
 export async function packagePlugin(options: PackagePluginOptions): Promise<PackagePluginResult> {
   const repoRoot = resolve(options.repoRoot ?? repositoryRoot);
-  const pluginRoot = realpathSync(resolve(options.pluginRoot));
+  const sourcePluginRoot = realpathSync(resolve(options.pluginRoot));
   const outDir = canonicalPath(options.outDir ?? join(repoRoot, DEFAULT_OUT_DIR));
 
+  // Resolve only the plugin-relative name here. The committed snapshot below is where existence,
+  // extension, symlink, and SDK-boundary checks become authoritative.
+  const requestedEntry = options.entry ?? DEFAULT_WORKER_ENTRY;
+  const sourceEntry = isAbsolute(requestedEntry)
+    ? resolve(requestedEntry)
+    : resolve(sourcePluginRoot, requestedEntry);
+  if (!contains(join(sourcePluginRoot, "src"), sourceEntry)) {
+    throw new PluginPackagingError("worker entry must be a file inside the plugin's src directory");
+  }
+  const entryRelativeToPlugin = relative(sourcePluginRoot, sourceEntry);
+
+  const gitState = readPluginGitState(sourcePluginRoot, gateError);
+  const snapshot = createPluginSourceSnapshot(gitState, gateError);
+  try {
+    // Dependencies are intentionally the one live, ignored input: package managers install
+    // node_modules as a symlink forest, and Vite bundles only dependencies reached by committed
+    // source. The directory itself is never copied to staging or the zip.
+    const liveDependencies = join(sourcePluginRoot, "node_modules");
+    const snapshotDependencies = join(snapshot.pluginRoot, "node_modules");
+    if (existsSync(liveDependencies) && !existsSync(snapshotDependencies)) {
+      symlinkSync(realpathSync(liveDependencies), snapshotDependencies, "dir");
+    }
+    return await packageCommittedPlugin(
+      snapshot.pluginRoot,
+      sourcePluginRoot,
+      repoRoot,
+      outDir,
+      gitState.sourceCommit,
+      options.entry === undefined ? undefined : entryRelativeToPlugin
+    );
+  } finally {
+    snapshot.dispose();
+  }
+}
+
+async function packageCommittedPlugin(
+  pluginRoot: string,
+  sourcePluginRoot: string,
+  repoRoot: string,
+  outDir: string,
+  sourceCommit: string,
+  entryRelativeToPlugin: string | undefined
+): Promise<PackagePluginResult> {
   // --- Fail-closed gates, identical to plugin:extract's (ADR-0028 §4) -----------------------------
   assertPluginBoundary(pluginRoot, gateError);
   const licenseFile = findLicense(pluginRoot, gateError);
-  const { sourceCommit } = readPluginGitState(pluginRoot, gateError);
   const pkg = readPluginPackageJson(pluginRoot, gateError);
-  const name = distributionName(pluginRoot, gateError);
+  const name = distributionName(sourcePluginRoot, gateError);
   const sdkVersion = sdkVersionFrom(repoRoot, gateError);
 
-  const workerEntry = resolveWorkerEntry(pluginRoot, repoRoot, options.entry);
+  const workerEntry = resolveWorkerEntry(pluginRoot, entryRelativeToPlugin);
   const manifest = await discoverManifest(pluginRoot);
 
   const staging = join(outDir, `${name}-${pkg.version}`);
   const zipPath = join(outDir, `${name}-${pkg.version}.zip`);
   const checksumPath = `${zipPath}.sha256`;
-  assertSafePackagePaths(pluginRoot, staging, zipPath);
+  assertSafePackagePaths(sourcePluginRoot, staging, zipPath);
 
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
