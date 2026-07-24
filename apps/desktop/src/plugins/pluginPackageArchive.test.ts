@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
 import {
+  DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS,
   PluginPackageError,
   PluginPackageErrorCodes,
   crc32,
@@ -55,8 +56,92 @@ describe("readPluginPackageArchive", () => {
   });
 
   it("refuses an entry whose declared length disagrees with its contents", async () => {
-    const zip = await createZipFixture([{ path: "entry.js", content: "abc", sizeOverride: 999 }]);
+    const zip = await createZipFixture([{ path: "entry.js", content: "abc", sizeOverride: 100 }]);
     await expectPackageError(readPluginPackageArchive(zip), PluginPackageErrorCodes.CorruptEntry);
+  });
+
+  it("stops a deflate stream that expands beyond its declared size", async () => {
+    const zip = await createZipFixture([
+      { path: "entry.js", content: "A".repeat(100_000), deflate: true, sizeOverride: 1 }
+    ]);
+    const error = await expectPackageError(readPluginPackageArchive(zip), PluginPackageErrorCodes.CorruptEntry);
+    expect(error.message).toContain("expands beyond its declared 1-byte size");
+  });
+
+  it("enforces the compressed archive byte limit before parsing", async () => {
+    const zip = await createZipFixture([{ path: "entry.js", content: "abc" }]);
+    const limits = { ...DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, maxCompressedBytes: zip.byteLength - 1 };
+
+    const error = await expectPackageError(
+      readPluginPackageArchive(zip, limits),
+      PluginPackageErrorCodes.ResourceLimitExceeded
+    );
+    expect(error.message).toContain("compressed bytes");
+  });
+
+  it("enforces the central-directory entry-count limit", async () => {
+    const zip = await createZipFixture([
+      { path: "one.js", content: "1" },
+      { path: "two.js", content: "2" },
+      { path: "three.js", content: "3" }
+    ]);
+    const limits = { ...DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, maxEntryCount: 2 };
+
+    const error = await expectPackageError(
+      readPluginPackageArchive(zip, limits),
+      PluginPackageErrorCodes.ResourceLimitExceeded
+    );
+    expect(error.message).toContain("3 archive entries");
+  });
+
+  it("enforces per-entry and total uncompressed limits from metadata before inflation", async () => {
+    const oversizedEntry = await createZipFixture([{ path: "entry.js", content: "12345" }]);
+    const perEntryLimits = { ...DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, maxEntryUncompressedBytes: 4 };
+    let error = await expectPackageError(
+      readPluginPackageArchive(oversizedEntry, perEntryLimits),
+      PluginPackageErrorCodes.ResourceLimitExceeded
+    );
+    expect(error.message).toContain("per-entry limit");
+
+    const oversizedTotal = await createZipFixture([
+      { path: "one.js", content: "1234" },
+      { path: "two.js", content: "5678" }
+    ]);
+    const totalLimits = { ...DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, maxTotalUncompressedBytes: 7 };
+    error = await expectPackageError(
+      readPluginPackageArchive(oversizedTotal, totalLimits),
+      PluginPackageErrorCodes.ResourceLimitExceeded
+    );
+    expect(error.message).toContain("total limit");
+  });
+
+  it("validates the complete archive's limits before inflating an earlier entry", async () => {
+    const zip = await createZipFixture([
+      // If the reader inflates as it scans, this deliberately bad CRC would win. The later total-size
+      // violation must be found first so no decompressor sees attacker-controlled bytes prematurely.
+      { path: "first.js", content: "1234", deflate: true, crcOverride: 0x12345678 },
+      { path: "second.js", content: "5678" }
+    ]);
+    const limits = { ...DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, maxTotalUncompressedBytes: 7 };
+
+    const error = await expectPackageError(
+      readPluginPackageArchive(zip, limits),
+      PluginPackageErrorCodes.ResourceLimitExceeded
+    );
+    expect(error.message).toContain("total limit");
+  });
+
+  it("rejects excessive compression ratios before decompression", async () => {
+    const zip = await createZipFixture([
+      { path: "entry.js", content: "repeated source line\n".repeat(2_000), deflate: true }
+    ]);
+    const limits = { ...DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, maxCompressionRatio: 2 };
+
+    const error = await expectPackageError(
+      readPluginPackageArchive(zip, limits),
+      PluginPackageErrorCodes.ResourceLimitExceeded
+    );
+    expect(error.message).toContain("compression ratio");
   });
 
   it("refuses an encrypted entry rather than producing garbage", async () => {

@@ -82,6 +82,8 @@ export const PluginWorkerErrorCodes = {
   UnknownCommand: "PLUGIN_WORKER_UNKNOWN_COMMAND",
   /** The worker was terminated (or aborted) before the command settled. */
   Terminated: "PLUGIN_WORKER_TERMINATED",
+  /** A command returned a value that cannot cross the structured-clone boundary. */
+  UncloneableResult: "PLUGIN_WORKER_UNCLONEABLE_RESULT",
   /** The startup handshake failed a version check. */
   VersionMismatch: "PLUGIN_WORKER_VERSION_MISMATCH",
   /** The worker thread crashed. */

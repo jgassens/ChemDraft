@@ -68,6 +68,9 @@ describe("MainWindow bundled plugin integration", () => {
       await Promise.resolve();
     });
 
+    expect(container.querySelectorAll('[role="menubar"]')).toHaveLength(1);
+    expect(container.querySelector("[data-dev-browser-menu-bar]")).toBeNull();
+
     await click(container.querySelector('button[data-menu-section="plugins"]')!);
     const manageItem = container.querySelector<HTMLButtonElement>('button[data-command-id="plugins.manage"]');
     expect(manageItem?.textContent).toContain("Add or Remove Plugins");

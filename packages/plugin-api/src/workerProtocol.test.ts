@@ -17,6 +17,7 @@ import {
 import { runPluginWorker } from "./workerRuntime";
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const commandId = "plugin.runtime.run";
 
 /** A controllable worker-side endpoint: captures what the runtime posts, and lets a test deliver
  *  host→worker messages synchronously. */
@@ -37,6 +38,14 @@ class ControlledEndpoint implements PluginWorkerEndpoint {
   }
 }
 
+/** Mirrors the browser's structured-clone check, including synchronous DataCloneError failures. */
+class CloneCheckingEndpoint extends ControlledEndpoint {
+  override postMessage(message: unknown): void {
+    structuredClone(message);
+    super.postMessage(message);
+  }
+}
+
 function manifest(permissions: PluginManifest["permissions"]): PluginManifest {
   return parsePluginManifest({
     id: "org.test.rt",
@@ -46,7 +55,7 @@ function manifest(permissions: PluginManifest["permissions"]): PluginManifest {
     entry: "x",
     permissions,
     contributes: {
-      commands: [{ id: "cmd", title: "C", requiredPermissions: permissions.filter((p) => p === "selection.read") }]
+      commands: [{ id: commandId, title: "C", requiredPermissions: permissions.filter((p) => p === "selection.read") }]
     }
   });
 }
@@ -99,12 +108,12 @@ describe("runPluginWorker", () => {
   it("runs a command against capability stubs that request/await across the boundary", async () => {
     const endpoint = new ControlledEndpoint();
     runPluginWorker(
-      { manifest: manifest(["selection.read"]), commandHandlers: { cmd: async (context) => context.selection?.getSelection() } },
+      { manifest: manifest(["selection.read"]), commandHandlers: { [commandId]: async (context) => context.selection?.getSelection() } },
       endpoint
     );
     endpoint.sent.length = 0;
 
-    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 7, commandId: "cmd" });
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 7, commandId });
     await flush();
 
     const request = endpoint.sent.find((m): m is Extract<WorkerToHostMessage, { kind: "capabilityRequest" }> => m.kind === "capabilityRequest");
@@ -124,7 +133,7 @@ describe("runPluginWorker", () => {
       {
         manifest: manifest([]),
         commandHandlers: {
-          cmd: async (context) => {
+          [commandId]: async (context) => {
             sawSelection = context.selection !== undefined;
             return { ok: true };
           }
@@ -132,7 +141,7 @@ describe("runPluginWorker", () => {
       },
       endpoint
     );
-    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId: "cmd" });
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
     await flush();
     expect(sawSelection).toBe(false);
   });
@@ -144,6 +153,76 @@ describe("runPluginWorker", () => {
     endpoint.deliver({ kind: "invokeCommand", commandRequestId: 3, commandId: "nope" });
     await flush();
     expect(endpoint.sent[0]).toMatchObject({ kind: "commandSettled", commandRequestId: 3, ok: false });
+  });
+
+  it("reports a clone-safe failure when a command result cannot cross the worker boundary", async () => {
+    const endpoint = new CloneCheckingEndpoint();
+    runPluginWorker(
+      {
+        manifest: manifest([]),
+        commandHandlers: { [commandId]: async () => ({ callback: () => undefined }) }
+      },
+      endpoint
+    );
+    endpoint.sent.length = 0;
+
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 4, commandId });
+    await flush();
+
+    expect(endpoint.sent).toEqual([
+      expect.objectContaining({
+        kind: "commandSettled",
+        commandRequestId: 4,
+        ok: false,
+        error: expect.objectContaining({ code: "PLUGIN_WORKER_UNCLONEABLE_RESULT" })
+      })
+    ]);
+  });
+
+  it("aborts only capability calls belonging to the selected command", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker(
+      {
+        manifest: manifest(["selection.read"]),
+        commandHandlers: { [commandId]: async (context) => context.selection?.getSelection() }
+      },
+      endpoint
+    );
+    endpoint.sent.length = 0;
+
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 10, commandId });
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 11, commandId });
+    await flush();
+
+    const requests = endpoint.sent.filter(
+      (message): message is Extract<WorkerToHostMessage, { kind: "capabilityRequest" }> =>
+        message.kind === "capabilityRequest"
+    );
+    expect(requests).toHaveLength(2);
+
+    endpoint.deliver({ kind: "abort", commandRequestId: 10 });
+    await flush();
+    endpoint.deliver({
+      kind: "capabilityResult",
+      requestId: requests.find((request) => request.commandRequestId === 11)!.requestId,
+      ok: true,
+      value: { objectIds: ["still-running"], molecules: [] }
+    });
+    await flush();
+
+    expect(endpoint.sent).toContainEqual(
+      expect.objectContaining({
+        kind: "commandSettled",
+        commandRequestId: 11,
+        ok: true,
+        value: { objectIds: ["still-running"], molecules: [] }
+      })
+    );
+    expect(
+      endpoint.sent.some(
+        (message) => message.kind === "commandSettled" && message.commandRequestId === 10
+      )
+    ).toBe(false);
   });
 
   it("forwards a panel-close signal to the plugin's onPanelClosed hook", () => {

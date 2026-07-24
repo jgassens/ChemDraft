@@ -85,7 +85,10 @@ export function runPluginWorker(
   const has = (permission: PluginPermission): boolean => permissions.has(permission);
 
   let nextCapabilityId = 1;
-  const pendingCapabilities = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
+  const pendingCapabilities = new Map<
+    number,
+    { commandRequestId: number; resolve: (value: unknown) => void; reject: (error: unknown) => void }
+  >();
   /** Commands the host aborted/terminated: their eventual settlement is suppressed, and their pending
    *  capability calls are rejected so a handler cannot hang forever. */
   const abortedCommands = new Set<number>();
@@ -106,7 +109,7 @@ export function runPluginWorker(
         return;
       }
       const requestId = nextCapabilityId++;
-      pendingCapabilities.set(requestId, { resolve, reject });
+      pendingCapabilities.set(requestId, { commandRequestId, resolve, reject });
       post({ kind: "capabilityRequest", requestId, commandRequestId, namespace, method, args });
     });
 
@@ -192,7 +195,25 @@ export function runPluginWorker(
             abortedCommands.delete(commandRequestId);
             return; // host already settled this command (abort/terminate); suppress the late result
           }
-          post({ kind: "commandSettled", commandRequestId, ok: true, value });
+          try {
+            post({ kind: "commandSettled", commandRequestId, ok: true, value });
+          } catch (error) {
+            // `postMessage` synchronously throws DataCloneError for functions, symbols, and other
+            // non-cloneable results. Report a clone-safe failure so the host invocation rejects
+            // instead of waiting forever for a settlement that could never cross the boundary.
+            post({
+              kind: "commandSettled",
+              commandRequestId,
+              ok: false,
+              error: {
+                code: PluginWorkerErrorCodes.UncloneableResult,
+                message:
+                  error instanceof Error && error.message
+                    ? `Plugin command result could not be serialized: ${error.message}`
+                    : "Plugin command result could not be serialized."
+              }
+            });
+          }
         },
         (error: unknown) => {
           if (abortedCommands.has(commandRequestId)) {
@@ -229,6 +250,9 @@ export function runPluginWorker(
         abortedCommands.add(message.commandRequestId);
         // Reject any capability calls still in flight for this command so the handler unwinds.
         for (const [requestId, pending] of pendingCapabilities) {
+          if (pending.commandRequestId !== message.commandRequestId) {
+            continue;
+          }
           pending.reject(new PluginWorkerCapabilityError({ code: PluginWorkerErrorCodes.Terminated, message: "Command was aborted." }));
           pendingCapabilities.delete(requestId);
         }

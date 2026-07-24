@@ -17,13 +17,14 @@ export function composeMassReport(source: PluginSelectedMolecule, report: MassRe
         title: "Molecular formula",
         rows: [
           { label: "Formula", value: report.formula },
+          { label: "Net charge", value: formatCharge(report.netCharge) },
           { label: "Monoisotopic mass", value: `${report.monoisotopicMass.toFixed(4)} Da` },
           { label: "Average mass", value: `${report.averageMass.toFixed(2)} Da` }
         ]
       },
       {
         kind: "table",
-        title: "Common ions (monoisotopic m/z)",
+        title: report.netCharge === 0 ? "Common ions (monoisotopic m/z)" : "Native ion (monoisotopic m/z)",
         columns: ["Species", "m/z", "Charge"],
         rows: report.ions.map((ion) => [ion.species, ion.mz.toFixed(4), ion.charge > 0 ? `+${ion.charge}` : String(ion.charge)])
       },
@@ -35,12 +36,21 @@ export function composeMassReport(source: PluginSelectedMolecule, report: MassRe
       },
       {
         kind: "text",
-        body:
-          "Monoisotopic m/z for common ESI adducts. Isotope intensities are a first-order approximation " +
-          "(¹³C/¹⁵N for M+1; ³⁷Cl/⁸¹Br/³⁴S and ¹³C₂ for M+2), not a full isotopic convolution."
+        body: report.netCharge === 0
+          ? "Monoisotopic m/z for common ESI adducts. Isotope intensities are normalized to the " +
+            "monoisotopic peak and are a first-order approximation (¹³C/¹⁵N for M+1; " +
+            "³⁷Cl/⁸¹Br/³⁴S and ¹³C₂ for M+2), not a full isotopic convolution."
+          : `The selected structure has net charge ${formatCharge(report.netCharge)}. The table reports its ` +
+            "native ion; neutral-precursor adducts are omitted because applying them to an already charged " +
+            "structure would be chemically misleading. Isotope intensities are a first-order approximation " +
+            "normalized to the monoisotopic peak."
       }
     ]
   };
+}
+
+function formatCharge(charge: number): string {
+  return charge > 0 ? `+${charge}` : String(charge);
 }
 
 /** Error report mirroring the NMR plugin's, so failures surface uniformly in the same panel. */

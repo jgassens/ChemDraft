@@ -93,6 +93,16 @@ export class CommandRegistry {
     this.commands.delete(commandId);
   }
 
+  /** Remove a command only when it is still owned by the expected plugin. This prevents plugin
+   *  rollback/uninstall from deleting a core command or a replacement registered under the same id. */
+  unregisterOwnedByPlugin(commandId: string, pluginId: string): boolean {
+    const entry = this.commands.get(commandId);
+    if (entry?.definition.source !== "plugin" || entry.definition.pluginId !== pluginId) {
+      return false;
+    }
+    return this.commands.delete(commandId);
+  }
+
   has(commandId: string): boolean {
     return this.commands.has(commandId);
   }
@@ -210,13 +220,17 @@ export class PluginHost {
 
     this.assertContributionPermissions(manifest);
     this.assertContributionCommands(manifest);
+    this.assertCommandIdsAvailable(manifest);
 
     const registered: RegisteredPlugin = {
       manifest,
       permissions: new Set(manifest.permissions)
     };
-    this.plugins.set(manifest.id, registered);
     this.registerManifestCommands(manifest, options.commandHandlers ?? {});
+    // Commit host-visible plugin state only after every shared-registry mutation succeeds. Command
+    // handlers cannot be invoked synchronously during registration, so they will always observe the
+    // committed plugin once registerPlugin returns.
+    this.plugins.set(manifest.id, registered);
     if (options.onPanelClosed) {
       this.panelClosedHandlers.set(manifest.id, options.onPanelClosed);
     }
@@ -235,7 +249,7 @@ export class PluginHost {
   unregisterPlugin(pluginId: string): void {
     const plugin = this.requireRegisteredPlugin(pluginId);
     for (const command of plugin.manifest.contributes.commands) {
-      this.commands.unregister(command.id);
+      this.commands.unregisterOwnedByPlugin(command.id, pluginId);
     }
     this.plugins.delete(pluginId);
     this.panelClosedHandlers.delete(pluginId);
@@ -468,32 +482,51 @@ export class PluginHost {
     manifest: PluginManifest,
     handlers: Record<string, PluginCommandHandler>
   ): void {
+    const registeredCommandIds: string[] = [];
+    try {
+      for (const command of manifest.contributes.commands) {
+        const handler = handlers[command.id];
+        // Track before calling into the registry: even an injected registry that throws after
+        // mutating is rolled back, while the ownership check makes a throw-before-mutation a no-op.
+        registeredCommandIds.push(command.id);
+        this.commands.register(
+          {
+            id: command.id,
+            title: command.title,
+            category: command.category,
+            description: command.description,
+            source: "plugin",
+            pluginId: manifest.id,
+            requiredPermissions: command.requiredPermissions,
+            defaultShortcut: command.defaultShortcut,
+            enabled: command.enabled && Boolean(handler)
+          },
+          async () => {
+            if (!handler) {
+              throw new CommandRegistryError(`Command "${command.id}" has no registered handler.`);
+            }
+
+            for (const permission of command.requiredPermissions) {
+              this.requirePermission(manifest.id, permission);
+            }
+
+            return await handler(this.createCommandContext(manifest.id));
+          }
+        );
+      }
+    } catch (error) {
+      for (const commandId of registeredCommandIds.reverse()) {
+        this.commands.unregisterOwnedByPlugin(commandId, manifest.id);
+      }
+      throw error;
+    }
+  }
+
+  private assertCommandIdsAvailable(manifest: PluginManifest): void {
     for (const command of manifest.contributes.commands) {
-      const handler = handlers[command.id];
-      this.commands.register(
-        {
-          id: command.id,
-          title: command.title,
-          category: command.category,
-          description: command.description,
-          source: "plugin",
-          pluginId: manifest.id,
-          requiredPermissions: command.requiredPermissions,
-          defaultShortcut: command.defaultShortcut,
-          enabled: command.enabled && Boolean(handler)
-        },
-        async () => {
-          if (!handler) {
-            throw new CommandRegistryError(`Command "${command.id}" has no registered handler.`);
-          }
-
-          for (const permission of command.requiredPermissions) {
-            this.requirePermission(manifest.id, permission);
-          }
-
-          return await handler(this.createCommandContext(manifest.id));
-        }
-      );
+      if (this.commands.has(command.id)) {
+        throw new CommandRegistryError(`Command "${command.id}" is already registered.`);
+      }
     }
   }
 

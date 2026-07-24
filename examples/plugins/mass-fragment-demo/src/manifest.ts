@@ -10,7 +10,7 @@ export const massFragmentPluginId = "org.chemdraft.mass.fragment";
 
 export const massAnalyzeCommandId = "plugin.massFragment.analyzeSelectedStructure";
 export const massFragmentPanelId = "panel.massFragment.review";
-export const massFragmentAnalyzerId = "plugin.massFragment.forwardAnalysis";
+export const massFragmentAnalyzerId = "analyzer.massFragment.forwardAnalysis";
 
 /** analysisType stamped on records written to the generic analysis store. */
 export const massForwardAnalysisType = "mass.forward-analysis";

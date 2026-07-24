@@ -3,6 +3,7 @@ import type {
   PluginAnalysisRecord,
   PluginAnalysisRecordInput
 } from "@chemdraft/plugin-api";
+import { parsePluginAnalysisRecordInput } from "@chemdraft/plugin-api";
 
 export interface AnalysisStoreOptions {
   /** Returns an ISO timestamp; the host passes its injectable clock. */
@@ -31,8 +32,9 @@ export class AnalysisStore {
   constructor(private readonly options: AnalysisStoreOptions) {}
 
   write<TPayload>(pluginId: string, input: PluginAnalysisRecordInput<TPayload>): PluginAnalysisRecord<TPayload> {
+    const parsedInput = parsePluginAnalysisRecordInput<TPayload>(input);
     const record: PluginAnalysisRecord<TPayload> = {
-      ...structuredClone(input),
+      ...structuredClone(parsedInput),
       id: this.options.createId(),
       pluginId,
       createdAt: this.options.now()

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { AppMenuItem, AppMenuSection } from "./appMenu";
 
@@ -17,10 +18,34 @@ export interface MenuBarProps {
  */
 export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProps) {
   const rootRef = useRef<HTMLElement | null>(null);
+  const sectionButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   // openPath[0] = open top-level section id; openPath[1..] = nested submenu ids (flyout chain).
   const [openPath, setOpenPath] = useState<string[]>([]);
+  const [activeSectionIndex, setActiveSectionIndex] = useState(0);
 
   const close = useCallback(() => setOpenPath([]), []);
+
+  const afterRender = useCallback((callback: () => void) => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(callback);
+    } else {
+      window.setTimeout(callback, 0);
+    }
+  }, []);
+
+  const restoreSectionFocus = useCallback(
+    (sectionId = openPath[0]) => {
+      if (!sectionId) return;
+      afterRender(() => sectionButtonRefs.current.get(sectionId)?.focus());
+    },
+    [afterRender, openPath]
+  );
+
+  const closeAndRestore = useCallback(() => {
+    const sectionId = openPath[0];
+    close();
+    restoreSectionFocus(sectionId);
+  }, [close, openPath, restoreSectionFocus]);
 
   const toggleSection = useCallback((sectionId: string) => {
     setOpenPath((current) => (current[0] === sectionId ? [] : [sectionId]));
@@ -41,10 +66,42 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
 
   const invoke = useCallback(
     (commandId: string) => {
+      const sectionId = openPath[0];
       close();
       onInvoke(commandId);
+      restoreSectionFocus(sectionId);
     },
-    [close, onInvoke]
+    [close, onInvoke, openPath, restoreSectionFocus]
+  );
+
+  const focusMenuEdge = useCallback(
+    (sectionId: string, edge: "first" | "last" = "first") => {
+      afterRender(() => {
+        const sectionButton = sectionButtonRefs.current.get(sectionId);
+        const section = sectionButton?.parentElement;
+        const menu = section?.querySelector<HTMLUListElement>(":scope > ul[role='menu']");
+        const buttons = menu ? directEnabledMenuButtons(menu) : [];
+        buttons[edge === "first" ? 0 : buttons.length - 1]?.focus();
+      });
+    },
+    [afterRender]
+  );
+
+  const moveAcrossSections = useCallback(
+    (fromSectionId: string, delta: number, focusMenu: boolean) => {
+      if (sections.length === 0) return;
+      const from = Math.max(0, sections.findIndex((section) => section.id === fromSectionId));
+      const next = (from + delta + sections.length) % sections.length;
+      const section = sections[next];
+      setActiveSectionIndex(next);
+      setOpenPath((current) => (current.length > 0 || focusMenu ? [section.id] : current));
+      if (focusMenu) {
+        focusMenuEdge(section.id);
+      } else {
+        afterRender(() => sectionButtonRefs.current.get(section.id)?.focus());
+      }
+    },
+    [afterRender, focusMenuEdge, sections]
   );
 
   useEffect(() => {
@@ -59,7 +116,8 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        close();
+        event.preventDefault();
+        closeAndRestore();
       }
     };
 
@@ -69,9 +127,106 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [openPath.length, close]);
+  }, [openPath.length, close, closeAndRestore]);
 
-  const renderItems = (items: readonly AppMenuItem[], depth: number) => (
+  const onSectionKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>, sectionId: string) => {
+      switch (event.key) {
+        case "ArrowRight":
+          event.preventDefault();
+          moveAcrossSections(sectionId, 1, false);
+          return;
+        case "ArrowLeft":
+          event.preventDefault();
+          moveAcrossSections(sectionId, -1, false);
+          return;
+        case "ArrowDown":
+        case "ArrowUp":
+          event.preventDefault();
+          setOpenPath([sectionId]);
+          focusMenuEdge(sectionId, event.key === "ArrowDown" ? "first" : "last");
+          return;
+        case "Home":
+          event.preventDefault();
+          moveAcrossSections(sectionId, -sections.findIndex((section) => section.id === sectionId), false);
+          return;
+        case "End":
+          event.preventDefault();
+          moveAcrossSections(sectionId, sections.length - 1 - sections.findIndex((section) => section.id === sectionId), false);
+          return;
+      }
+    },
+    [focusMenuEdge, moveAcrossSections, sections]
+  );
+
+  const onMenuItemKeyDown = useCallback(
+    (
+      event: ReactKeyboardEvent<HTMLButtonElement>,
+      sectionId: string,
+      depth: number,
+      submenuId?: string
+    ) => {
+      const currentButton = event.currentTarget;
+      const currentMenu = currentButton.parentElement?.parentElement;
+      if (!(currentMenu instanceof HTMLUListElement)) return;
+      const buttons = directEnabledMenuButtons(currentMenu);
+      const currentIndex = buttons.indexOf(currentButton);
+      const focusAt = (index: number) => buttons[(index + buttons.length) % buttons.length]?.focus();
+
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          focusAt(currentIndex + 1);
+          return;
+        case "ArrowUp":
+          event.preventDefault();
+          focusAt(currentIndex - 1);
+          return;
+        case "Home":
+          event.preventDefault();
+          buttons[0]?.focus();
+          return;
+        case "End":
+          event.preventDefault();
+          buttons[buttons.length - 1]?.focus();
+          return;
+        case "ArrowRight":
+          event.preventDefault();
+          if (submenuId) {
+            setBranch(depth, submenuId);
+            afterRender(() => {
+              const submenu = currentButton.parentElement?.querySelector<HTMLUListElement>(":scope > ul[role='menu']");
+              directEnabledMenuButtons(submenu)[0]?.focus();
+            });
+          } else if (depth === 1) {
+            moveAcrossSections(sectionId, 1, true);
+          }
+          return;
+        case "ArrowLeft":
+          event.preventDefault();
+          if (depth > 1) {
+            const parentItem = currentMenu.parentElement;
+            const parentButton = parentItem?.querySelector<HTMLButtonElement>(":scope > button[role='menuitem']");
+            setBranch(depth - 1);
+            afterRender(() => parentButton?.focus());
+          } else {
+            moveAcrossSections(sectionId, -1, true);
+          }
+          return;
+        case "Escape":
+          event.preventDefault();
+          event.stopPropagation();
+          closeAndRestore();
+          return;
+        case "Tab":
+          close();
+          return;
+      }
+    },
+    [afterRender, close, closeAndRestore, moveAcrossSections, setBranch]
+  );
+
+  const renderItems = (items: readonly AppMenuItem[], depth: number, sectionId: string) => (
     <ul className={depth === 1 ? "menu-dropdown" : "menu-dropdown menu-flyout"} role="menu">
       {items.map((item) => {
         if (item.kind === "separator") {
@@ -96,6 +251,7 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
                 aria-haspopup="menu"
                 aria-expanded={submenuOpen}
                 onClick={() => setBranch(depth, submenuOpen ? undefined : item.id)}
+                onKeyDown={(event) => onMenuItemKeyDown(event, sectionId, depth, item.id)}
               >
                 <span className="menu-item-check" aria-hidden="true" />
                 <span className="menu-item-label">{item.label}</span>
@@ -103,7 +259,7 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
                   ›
                 </span>
               </button>
-              {submenuOpen ? renderItems(item.items, depth + 1) : null}
+              {submenuOpen ? renderItems(item.items, depth + 1, sectionId) : null}
             </li>
           );
         }
@@ -120,6 +276,7 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
               className="menu-dropdown-button"
               data-command-id={item.commandId}
               onClick={() => item.enabled && invoke(item.commandId)}
+              onKeyDown={(event) => onMenuItemKeyDown(event, sectionId, depth)}
             >
               <span className="menu-item-check" aria-hidden="true">
                 {item.checked ? "✓" : ""}
@@ -148,16 +305,34 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
                 aria-haspopup="menu"
                 aria-expanded={open}
                 data-menu-section={section.id}
+                tabIndex={indexForSection(sections, section.id) === activeSectionIndex ? 0 : -1}
+                ref={(node) => {
+                  if (node) sectionButtonRefs.current.set(section.id, node);
+                  else sectionButtonRefs.current.delete(section.id);
+                }}
                 onClick={() => toggleSection(section.id)}
                 onPointerEnter={() => focusSection(section.id)}
+                onFocus={() => setActiveSectionIndex(indexForSection(sections, section.id))}
+                onKeyDown={(event) => onSectionKeyDown(event, section.id)}
               >
                 {section.label}
               </button>
-              {open ? renderItems(section.items, 1) : null}
+              {open ? renderItems(section.items, 1, section.id) : null}
             </div>
           );
         })}
       </nav>
     </header>
   );
+}
+
+function indexForSection(sections: readonly AppMenuSection[], sectionId: string): number {
+  return Math.max(0, sections.findIndex((section) => section.id === sectionId));
+}
+
+function directEnabledMenuButtons(menu: HTMLUListElement | null | undefined): HTMLButtonElement[] {
+  if (!menu) return [];
+  return Array.from(menu.children)
+    .map((child) => child.firstElementChild)
+    .filter((element): element is HTMLButtonElement => element instanceof HTMLButtonElement && !element.disabled);
 }

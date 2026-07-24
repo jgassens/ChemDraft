@@ -26,6 +26,10 @@ export interface BundledPluginDescriptor {
    *  command handlers in `options` delegate to this bridge; `bridge.terminate()` is the full teardown
    *  M36's uninstall will call. Absent when the plugin runs in-process (no Worker, e.g. tests). */
   bridge?: PluginWorkerBridge;
+  /** Rebuild a fresh lazy bridge after a disable/re-enable cycle. In-process plugins omit this. */
+  activate?: () => void;
+  /** Total worker teardown for disable, replacement, uninstall, and failed registration. */
+  deactivate?: () => void;
 }
 
 /** Lazily creates a plugin's isolation worker, or `undefined` to force the in-process path. Injectable
@@ -108,12 +112,29 @@ export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: Plug
  */
 function buildMassDescriptor(factory: PluginWorkerFactory | undefined): BundledPluginDescriptor {
   if (factory) {
-    const bridge = new PluginWorkerBridge({
-      pluginId: massFragmentManifest.id,
-      createWorker: factory,
-      hostApiVersion: PluginApiVersion
-    });
-    return { manifest: massFragmentManifest, options: createWorkerRoutedOptions(massFragmentManifest, bridge), bridge };
+    let active = false;
+    const descriptor: BundledPluginDescriptor = {
+      manifest: massFragmentManifest,
+      options: { commandHandlers: {} }
+    };
+    descriptor.activate = () => {
+      if (active) return;
+      const bridge = new PluginWorkerBridge({
+        pluginId: massFragmentManifest.id,
+        createWorker: factory,
+        hostApiVersion: PluginApiVersion
+      });
+      descriptor.bridge = bridge;
+      descriptor.options = createWorkerRoutedOptions(massFragmentManifest, bridge);
+      active = true;
+    };
+    descriptor.deactivate = () => {
+      if (!active) return;
+      descriptor.bridge?.terminate();
+      active = false;
+    };
+    descriptor.activate();
+    return descriptor;
   }
   return { manifest: massFragmentManifest, options: { commandHandlers: createMassRegistration().commandHandlers } };
 }
@@ -139,18 +160,25 @@ export function applyEnabledPlugins(
         }
         for (const detached of runtime.panels.getDetachedPanels()) {
           if (detached.pluginId === pluginId) {
-            runtime.panels.closeDetachedPanel(detached.panelId);
+            runtime.panels.closeDetachedPanel(detached.pluginId, detached.panelId);
           }
         }
         runtime.unregisterPlugin(pluginId);
       }
+      descriptor.deactivate?.();
       continue;
     }
 
     if (!registered) {
       // Through the runtime (not the bare host), so toolset contributions are staged with their
       // ui.toolbar gate and whole-plugin rollback no matter how a plugin arrives.
-      runtime.registerPlugin(descriptor.manifest, descriptor.options);
+      descriptor.activate?.();
+      try {
+        runtime.registerPlugin(descriptor.manifest, descriptor.options);
+      } catch (error) {
+        descriptor.deactivate?.();
+        throw error;
+      }
     }
   }
 }

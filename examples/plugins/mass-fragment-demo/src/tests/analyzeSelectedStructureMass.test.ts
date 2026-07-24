@@ -88,4 +88,14 @@ describe("analyzeSelectedStructureMass (the generic path, no NMR concepts)", () 
   it("registration exposes a handler keyed on the analyze command id", () => {
     expect(typeof createMassRegistration().commandHandlers[massAnalyzeCommandId]).toBe("function");
   });
+
+  it("records an explicit native-ion warning for an already charged selection", async () => {
+    const harness = makeContext([molecule({ structure: "C[N+](C)(C)C" })]);
+    const result = await analyzeSelectedStructureMass(harness.context);
+
+    expect(result.ok).toBe(true);
+    expect(harness.writes[0].warnings).toEqual([
+      expect.objectContaining({ code: "CHARGED_PRECURSOR_NATIVE_ION_ONLY", severity: "info" })
+    ]);
+  });
 });

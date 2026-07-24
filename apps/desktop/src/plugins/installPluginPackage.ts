@@ -18,12 +18,13 @@
  * incompatibility, duplicate id, and traversal entries each refuse the install with a message that says
  * what was wrong. None of them leaves state behind.
  *
- * ## Permissive, per ADR-0029 §3
+ * ## Permissive for capabilities this build actually implements, per ADR-0029 §3
  *
- * Declared permissions are **auto-granted and merely displayed**. There is no consent gate here and no
- * signature check anywhere: the checksum is integrity only. The host still builds the capability context
- * strictly from the manifest, so an undeclared capability is simply never available to the worker — that
- * is enforcement by construction rather than by prompting.
+ * Available declared permissions are **auto-granted and merely displayed**. There is no consent gate here
+ * and no signature check anywhere: the checksum is integrity only. A reserved permission with no safe
+ * desktop broker is rejected rather than advertised as granted. The host still builds the capability
+ * context strictly from the manifest, so an undeclared capability is simply never available to the worker
+ * — that is enforcement by construction rather than by prompting.
  */
 
 import {
@@ -34,7 +35,10 @@ import {
   type PluginManifest
 } from "@chemdraft/plugin-api";
 
-import type { DesktopPluginRuntime } from "./createPluginRuntime";
+import {
+  getUnavailableDesktopPluginPermissions,
+  type DesktopPluginRuntime
+} from "./createPluginRuntime";
 import { installedPluginBaseUrl, installedPluginStagingDir } from "./installedPluginPaths";
 import {
   createInstalledPluginRecord,
@@ -177,6 +181,8 @@ export interface InstallPluginPackageOptions {
   /** Injectable for tests; production uses `loadPackagedPlugin`'s real module Worker. */
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
   installedAt?: Date;
+  /** Existing bundled descriptor with the same id, restored if the replacement transaction fails. */
+  replaces?: BundledPluginDescriptor;
 }
 
 export interface InstalledPlugin {
@@ -195,6 +201,7 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
   const { runtime, fs, inspection, hostApiVersion = PluginApiVersion, createWorker, installedAt } = options;
   const pluginId = inspection.manifest.id;
 
+  assertInstallPermissionsAvailable(inspection.manifest);
   await assertInstallable(fs, pluginId);
 
   const stagingDir = installedPluginStagingDir(pluginId);
@@ -202,6 +209,8 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
   // staged tree always corresponds to exactly one package.
   await fs.removeDir(stagingDir);
 
+  let descriptor: PackagedPluginDescriptor | undefined;
+  let replacementRegistered = false;
   try {
     for (const entry of inspection.entries) {
       // `safeEntryPath` already refused traversal at read time. This is not that check repeated: it is
@@ -210,13 +219,15 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
       await fs.writeFile(`${stagingDir}/${assertStagedPath(entry.path)}`, entry.bytes);
     }
 
-    const descriptor = await loadAndRegisterInstalledPlugin({
+    descriptor = await loadAndRegisterInstalledPlugin({
       runtime,
       manifest: inspection.manifest,
       origin: options.origin,
       hostApiVersion,
-      createWorker
+      createWorker,
+      replaces: options.replaces
     });
+    replacementRegistered = true;
 
     const record = createInstalledPluginRecord({
       id: pluginId,
@@ -230,9 +241,14 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
   } catch (cause: unknown) {
     // Roll back to "never installed": drop the staged bytes and any registration we managed to make.
     await safelyRemove(fs, stagingDir);
+    descriptor?.deactivate?.();
     try {
-      if (runtime.host.getPlugin(pluginId)) {
+      if (replacementRegistered && runtime.host.getPlugin(pluginId)) {
         runtime.unregisterPlugin(pluginId);
+      }
+      if (replacementRegistered && options.replaces) {
+        options.replaces.activate?.();
+        runtime.registerPlugin(options.replaces.manifest, options.replaces.options);
       }
     } catch {
       /* nothing more we can do while already failing */
@@ -288,11 +304,17 @@ async function loadAndRegisterInstalledPlugin(options: {
   origin?: string;
   hostApiVersion: string;
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
+  replaces?: BundledPluginDescriptor;
 }): Promise<PackagedPluginDescriptor> {
   const descriptor = buildInstalledDescriptor(options);
-  await descriptor.bridge.whenReady();
-  registerReplacing(options.runtime, descriptor);
-  return descriptor;
+  try {
+    await descriptor.bridge.whenReady();
+    registerReplacing(options.runtime, descriptor, options.replaces);
+    return descriptor;
+  } catch (error) {
+    descriptor.deactivate?.();
+    throw error;
+  }
 }
 
 /**
@@ -306,13 +328,17 @@ async function loadAndRegisterInstalledPlugin(options: {
  * The handshake has already passed by the time this runs, so the bundled copy is only dropped once the
  * replacement is known to work.
  */
-function registerReplacing(runtime: DesktopPluginRuntime, descriptor: PackagedPluginDescriptor): void {
-  if (runtime.host.getPlugin(descriptor.manifest.id)) {
-    runtime.unregisterPlugin(descriptor.manifest.id);
-  }
+function registerReplacing(
+  runtime: DesktopPluginRuntime,
+  descriptor: PackagedPluginDescriptor,
+  replaces?: BundledPluginDescriptor
+): void {
   // Through the runtime (not the bare host), so an installed plugin's toolset contributions are
   // staged — ui.toolbar gate, duplicate rejection, whole-plugin rollback — like any other plugin's.
-  runtime.registerPlugin(descriptor.manifest, descriptor.options);
+  runtime.replacePlugin(descriptor.manifest.id, descriptor.manifest, descriptor.options);
+  // Only tear the old worker down after the new registration has committed. `replacePlugin` restores
+  // the previous registration if staging the replacement throws, so this ordering is the transaction.
+  replaces?.deactivate?.();
 }
 
 /** Reload every recorded install at startup. */
@@ -323,6 +349,8 @@ export async function loadInstalledPlugins(options: {
   hostApiVersion?: string;
   disabledIds?: ReadonlySet<string>;
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
+  replacements?: readonly BundledPluginDescriptor[];
+  signal?: AbortSignal;
 }): Promise<{
   installed: readonly InstalledPluginCatalogEntry[];
   failures: readonly InstalledPluginFailure[];
@@ -334,13 +362,24 @@ export async function loadInstalledPlugins(options: {
   const failures: InstalledPluginFailure[] = [];
 
   for (const record of records) {
+    if (options.signal?.aborted) break;
+    let descriptor: PackagedPluginDescriptor | undefined;
+    let manifest: PluginManifest | undefined;
     try {
-      const manifest = await readStagedManifest(fs, record);
+      manifest = await readStagedManifest(fs, record);
+      const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+      if (unavailablePermissions.length > 0) {
+        // Keep an older install visible and uninstallable, but never spawn or register its worker. This
+        // is the migration-safe form of fail-closed: the package is not silently orphaned on disk.
+        installed.push({ record, manifest, descriptor: undefined });
+        failures.push({ record, message: unavailablePermissionMessage(manifest.id, unavailablePermissions) });
+        continue;
+      }
       // The descriptor is always built — it is lazy, so this spawns no worker — and only the *enabled*
       // ones are registered and handshaken. That is what keeps a disabled install listed and genuinely
       // re-enableable (the M32 rule, which installs inherit): re-enabling registers the descriptor's
       // real command handlers rather than an empty set.
-      const descriptor = buildInstalledDescriptor({
+      descriptor = buildInstalledDescriptor({
         manifest,
         origin: options.origin,
         hostApiVersion,
@@ -348,18 +387,44 @@ export async function loadInstalledPlugins(options: {
       });
       if (!disabledIds.has(record.id)) {
         await descriptor.bridge.whenReady();
+        if (options.signal?.aborted) {
+          descriptor.deactivate?.();
+          break;
+        }
         // Replaces the bundled copy of the same id, which `registerBundledPlugins` already registered
         // during synchronous startup — installs are reloaded afterwards and win.
-        registerReplacing(runtime, descriptor);
+        registerReplacing(
+          runtime,
+          descriptor,
+          options.replacements?.find((candidate) => candidate.manifest.id === record.id)
+        );
       }
       installed.push({ record, manifest, descriptor });
     } catch (cause: unknown) {
+      descriptor?.deactivate?.();
       // One broken install must not stop the others, or the app, from starting.
       failures.push({ record, message: cause instanceof Error ? cause.message : String(cause) });
     }
   }
 
   return { installed, failures };
+}
+
+function assertInstallPermissionsAvailable(manifest: PluginManifest): void {
+  const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+  if (unavailablePermissions.length === 0) return;
+  throw new PluginInstallError(
+    PluginInstallErrorCodes.Unsupported,
+    unavailablePermissionMessage(manifest.id, unavailablePermissions)
+  );
+}
+
+function unavailablePermissionMessage(pluginId: string, permissions: readonly string[]): string {
+  return (
+    `Plugin "${pluginId}" declares ${permissions.join(", ")}, but ${
+      permissions.length === 1 ? "that permission is" : "those permissions are"
+    } reserved and unavailable in this ChemDraft build. The package was not loaded.`
+  );
 }
 
 /** An installed plugin in the manager's catalog, whether currently enabled or not. */
@@ -400,10 +465,10 @@ export async function uninstallPlugin(options: {
   }
   for (const detached of runtime.panels.getDetachedPanels()) {
     if (detached.pluginId === pluginId) {
-      runtime.panels.closeDetachedPanel(detached.panelId);
+      runtime.panels.closeDetachedPanel(detached.pluginId, detached.panelId);
     }
   }
-  descriptor?.bridge.terminate();
+  descriptor?.deactivate?.();
   if (runtime.host.getPlugin(pluginId)) {
     runtime.unregisterPlugin(pluginId);
   }
@@ -413,6 +478,7 @@ export async function uninstallPlugin(options: {
   // Hand the id back to the bundled copy the install had taken it from, so uninstalling a package
   // built from a bundled plugin returns the build to its shipped state rather than losing the plugin.
   if (restores && !disabledIds?.has(pluginId)) {
+    restores.activate?.();
     runtime.registerPlugin(restores.manifest, restores.options);
   }
 }

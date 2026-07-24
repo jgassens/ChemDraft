@@ -1,12 +1,16 @@
-import { useEffect, useId, useReducer, useState } from "react";
+import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { dangerousPluginPermissions, type PluginPermission } from "@chemdraft/plugin-api";
 
-import type { DesktopPluginRuntime } from "./createPluginRuntime";
+import {
+  getUnavailableDesktopPluginPermissions,
+  unavailableDesktopPluginPermissions,
+  type DesktopPluginRuntime
+} from "./createPluginRuntime";
 import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
 import type { PickedPluginPackage } from "./pickPluginPackage";
-import { saveDisabledPluginIds } from "./pluginPreferences";
+import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 
 export interface PluginManagerDialogProps {
@@ -32,14 +36,13 @@ export interface PluginManagerDialogProps {
  * live host registration is removed. That rule predates installs (M32) and is why the catalog, not
  * `PluginHost.listPlugins()`, drives this list: the host only knows what is *currently registered*.
  *
- * ## The permissions panel is a disclosure, not a gate
+ * ## The permissions panel is a disclosure, with a fail-closed availability check
  *
- * ADR-0029 §3 is permissive: a plugin's declared permissions are **auto-granted at install**. So the
- * review step here exists to *show* what a package declares — name, version, description, permissions,
- * provenance — and the install button beside it is an action, not an adjudication. There is deliberately
- * no allow/deny for individual permissions, and no way to install with a reduced set: the only choice is
- * to install this plugin or not. Dangerous permissions are marked because a user deserves to see them,
- * not because marking them changes what is granted.
+ * ADR-0029 §3 remains permissive for capabilities this build implements: available declared permissions
+ * are auto-granted, without a per-permission prompt. A reserved permission whose capability broker does
+ * not exist yet is different: the review names it as unavailable and refuses the whole package rather
+ * than claiming a grant the worker cannot exercise. Dangerous permissions are still marked because a
+ * user deserves to see them, not because marking them adds a consent prompt.
  */
 export function PluginManagerDialog({
   runtime,
@@ -57,19 +60,20 @@ export function PluginManagerDialog({
   const [error, setError] = useState<string | undefined>(undefined);
   const [pending, setPending] = useState<PickedPluginPackage | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const backdropPressStartedRef = useRef(false);
 
   // Keep the checkboxes truthful even when a registration changes outside this dialog.
   useEffect(() => runtime.host.subscribe(refreshFromHost), [runtime]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !busy) {
         onClose();
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [busy, onClose]);
 
   if (typeof document === "undefined") {
     return null;
@@ -82,19 +86,30 @@ export function PluginManagerDialog({
   const installedIds = new Set(installedPlugins.map((entry) => entry.record.id));
   const catalog: readonly BundledPluginDescriptor[] = [
     ...bundledPlugins.filter((descriptor) => !installedIds.has(descriptor.manifest.id)),
-    ...installedPlugins.map((entry) => ({
-      manifest: entry.manifest,
-      options: entry.descriptor?.options ?? { commandHandlers: {} },
-      bridge: entry.descriptor?.bridge
-    }))
+    ...installedPlugins.map(
+      (entry): BundledPluginDescriptor =>
+        entry.descriptor ?? { manifest: entry.manifest, options: { commandHandlers: {} } }
+    )
   ];
   const enabledIds = new Set(runtime.host.listPlugins().map((manifest) => manifest.id));
   const canInstall = onPickPackage !== undefined && onInstallPackage !== undefined;
 
   const togglePlugin = (pluginId: string): void => {
-    const disabledIds = new Set(
-      catalog.map((descriptor) => descriptor.manifest.id).filter((candidate) => !enabledIds.has(candidate))
-    );
+    if (busy) {
+      return;
+    }
+
+    // Preserve preferences for catalog entries that failed to load or are temporarily absent. A
+    // toggle may update the visible catalog, but it must never silently re-enable an unseen plugin.
+    const disabledIds = loadDisabledPluginIds();
+    for (const descriptor of catalog) {
+      const candidate = descriptor.manifest.id;
+      if (enabledIds.has(candidate)) {
+        disabledIds.delete(candidate);
+      } else {
+        disabledIds.add(candidate);
+      }
+    }
 
     if (enabledIds.has(pluginId)) {
       disabledIds.add(pluginId);
@@ -152,9 +167,22 @@ export function PluginManagerDialog({
       className="plugin-manager-backdrop"
       data-testid="plugin-manager-backdrop"
       role="presentation"
-      onClick={onClose}
+      onPointerDown={(event) => {
+        backdropPressStartedRef.current = event.target === event.currentTarget;
+      }}
+      onPointerCancel={() => {
+        backdropPressStartedRef.current = false;
+      }}
+      onClick={(event) => {
+        const directBackdropClick = event.target === event.currentTarget && backdropPressStartedRef.current;
+        backdropPressStartedRef.current = false;
+        if (directBackdropClick && !busy) {
+          onClose();
+        }
+      }}
     >
       <section
+        aria-busy={busy}
         aria-labelledby={titleId}
         aria-modal="true"
         className="plugin-manager-dialog"
@@ -167,7 +195,7 @@ export function PluginManagerDialog({
             <h2 id={titleId}>Add or Remove Plugins</h2>
             <p>Enable or disable the plugins bundled with this ChemDraft build, or install one from a package.</p>
           </div>
-          <button type="button" className="plugin-manager-button" onClick={onClose} autoFocus>
+          <button type="button" className="plugin-manager-button" disabled={busy} onClick={onClose} autoFocus>
             Close
           </button>
         </header>
@@ -183,6 +211,10 @@ export function PluginManagerDialog({
             const manifest = descriptor.manifest;
             const enabled = enabledIds.has(manifest.id);
             const installed = installedIds.has(manifest.id);
+            const installedEntry = installedPlugins.find((entry) => entry.record.id === manifest.id);
+            const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+            const unavailable =
+              installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0);
             return (
               <li className="plugin-manager-item" data-plugin-id={manifest.id} key={manifest.id}>
                 <div className="plugin-manager-details">
@@ -200,9 +232,10 @@ export function PluginManagerDialog({
                       type="checkbox"
                       aria-label={`Enable ${manifest.name}`}
                       checked={enabled}
+                      disabled={busy || unavailable}
                       onChange={() => togglePlugin(manifest.id)}
                     />
-                    <span>{enabled ? "Enabled" : "Disabled"}</span>
+                    <span>{unavailable ? "Unavailable" : enabled ? "Enabled" : "Disabled"}</span>
                   </label>
                   {installed && onUninstallPlugin ? (
                     <button
@@ -243,7 +276,7 @@ export function PluginManagerDialog({
             </button>
             <p id={packageNoteId}>
               {canInstall
-                ? "Install plugins you trust: a plugin runs with the permissions its package declares."
+                ? "Install plugins you trust: supported declared permissions take effect without a separate consent prompt."
                 : "Installing plugins from a package is only available in the ChemDraft desktop app."}
             </p>
           </footer>
@@ -257,8 +290,8 @@ export function PluginManagerDialog({
 /**
  * What the package declares, shown before it is staged.
  *
- * Everything here is disclosure. There is no permission-by-permission choice because there is no
- * permission-by-permission grant: ADR-0029 auto-grants what the manifest declares.
+ * Everything here is disclosure. There is no permission-by-permission choice: supported permissions
+ * take effect together, while a package containing a reserved/unavailable permission is refused whole.
  */
 function PackageReview({
   busy,
@@ -272,6 +305,7 @@ function PackageReview({
   onInstall: () => void;
 }) {
   const { manifest, provenance, unpackedBytes, sourceChecksum } = picked.inspection;
+  const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
   return (
     <footer className="plugin-manager-review" data-testid="plugin-package-review">
       <div className="plugin-manager-review-body">
@@ -282,6 +316,13 @@ function PackageReview({
         {manifest.description ? <p data-testid="plugin-package-description">{manifest.description}</p> : null}
 
         <PermissionList permissions={manifest.permissions} />
+
+        {unavailablePermissions.length > 0 ? (
+          <p className="plugin-manager-unavailable" data-testid="plugin-package-unavailable" role="alert">
+            Cannot install this package: {unavailablePermissions.join(", ")} is reserved for a future
+            capability broker and is unavailable in this build.
+          </p>
+        ) : null}
 
         <dl className="plugin-manager-provenance">
           <div>
@@ -310,18 +351,18 @@ function PackageReview({
         <button
           className="plugin-manager-button"
           data-action="confirm-install-package"
-          disabled={busy}
+          disabled={busy || unavailablePermissions.length > 0}
           onClick={onInstall}
           type="button"
         >
-          {busy ? "Installing…" : "Install"}
+          {busy ? "Installing…" : unavailablePermissions.length > 0 ? "Cannot install" : "Install"}
         </button>
       </div>
     </footer>
   );
 }
 
-/** Declared permissions, displayed. Auto-granted — marking one "dangerous" informs, it does not gate. */
+/** Declared permissions, displayed without implying that reserved capabilities are currently granted. */
 function PermissionList({ permissions }: { permissions: readonly PluginPermission[] }) {
   if (permissions.length === 0) {
     return (
@@ -331,19 +372,26 @@ function PermissionList({ permissions }: { permissions: readonly PluginPermissio
     );
   }
   const dangerous = new Set<string>(dangerousPluginPermissions);
+  const unavailable = new Set<string>(unavailableDesktopPluginPermissions);
   return (
     <div className="plugin-manager-permissions" data-testid="plugin-package-permissions">
-      <span>Granted permissions:</span>
+      <span>Declared permissions:</span>
       <ul>
-        {permissions.map((permission) => (
-          <li
-            className={dangerous.has(permission) ? "plugin-manager-permission is-dangerous" : "plugin-manager-permission"}
-            data-permission={permission}
-            key={permission}
-          >
-            {permission}
-          </li>
-        ))}
+        {permissions.map((permission) => {
+          const className = [
+            "plugin-manager-permission",
+            dangerous.has(permission) ? "is-dangerous" : undefined,
+            unavailable.has(permission) ? "is-unavailable" : undefined
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return (
+            <li className={className} data-permission={permission} key={permission}>
+              {permission}
+              {unavailable.has(permission) ? " — unavailable in this build" : null}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

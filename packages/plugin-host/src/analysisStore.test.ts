@@ -52,6 +52,24 @@ describe("AnalysisStore", () => {
     expect(store.list<{ shifts: number[] }>()[0].payload.shifts).toEqual([1, 2, 3]);
   });
 
+  it("rejects malformed record envelopes before they can poison source-keyed queries", () => {
+    const { store, onChange } = makeStore();
+
+    expect(() =>
+      store.write("org.a", {
+        analysisType: "nmr.forward-prediction",
+        schemaVersion: "1",
+        status: "complete",
+        payload: {},
+        provenance: { engineId: "fixture", method: "fixture-fragment" }
+      } as never)
+    ).toThrow(/source/i);
+
+    expect(store.list({ documentId: "doc1" })).toEqual([]);
+    expect(store.getLatest({ objectId: "m1" })).toBeUndefined();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("filters by plugin, analysisType, document, page, and object (conjunctive)", () => {
     const { store } = makeStore();
     store.write("org.a", sampleInput());
@@ -73,12 +91,12 @@ describe("AnalysisStore", () => {
     store.write("org.a", sampleInput({ payload: { n: 2 } }));
     expect(store.getLatest<{ n: number }>({ pluginId: "org.a" })?.payload.n).toBe(2);
 
-    // Increasing timestamps → highest time wins regardless of write interleaving.
-    let tick = 0;
-    const timed = makeStore(() => `2026-07-07T00:00:0${tick++}.000Z`).store;
-    timed.write("org.a", sampleInput({ payload: { n: 10 } })); // t0
-    timed.write("org.a", sampleInput({ payload: { n: 20 } })); // t1
-    expect(timed.getLatest<{ n: number }>()?.payload.n).toBe(20);
+    // Out-of-order timestamps → highest time wins rather than last-write order.
+    const times = ["2026-07-07T00:00:09.000Z", "2026-07-07T00:00:01.000Z"];
+    const timed = makeStore(() => times.shift()!).store;
+    timed.write("org.a", sampleInput({ payload: { n: 10 } })); // newer timestamp, written first
+    timed.write("org.a", sampleInput({ payload: { n: 20 } })); // older timestamp, written last
+    expect(timed.getLatest<{ n: number }>()?.payload.n).toBe(10);
     expect(timed.getLatest({ objectId: "nope" })).toBeUndefined();
   });
 });
@@ -86,6 +104,7 @@ describe("AnalysisStore", () => {
 // A candidate manifest for registerPlugin (which validates `unknown`); schema fills contribution
 // defaults, so only the fields under test are specified.
 function writeManifest(id: string) {
+  const commandId = (action: string): string => `plugin.${id}.${action}`;
   return {
     id,
     name: id,
@@ -95,8 +114,8 @@ function writeManifest(id: string) {
     permissions: ["analysis.write"],
     contributes: {
       commands: [
-        { id: `${id}.write`, title: "Write", requiredPermissions: ["analysis.write"] },
-        { id: `${id}.list`, title: "List", requiredPermissions: ["analysis.write"] }
+        { id: commandId("write"), title: "Write", requiredPermissions: ["analysis.write"] },
+        { id: commandId("list"), title: "List", requiredPermissions: ["analysis.write"] }
       ]
     }
   };
@@ -106,9 +125,9 @@ describe("PluginHost analysis wiring", () => {
   it("exposes analysis only with analysis.write", async () => {
     const granted = new PluginHost();
     granted.registerPlugin(writeManifest("org.granted"), {
-      commandHandlers: { "org.granted.write": async (context) => context.analysis !== undefined }
+      commandHandlers: { "plugin.org.granted.write": async (context) => context.analysis !== undefined }
     });
-    await expect(granted.invokeCommand("org.granted.write")).resolves.toBe(true);
+    await expect(granted.invokeCommand("plugin.org.granted.write")).resolves.toBe(true);
 
     const denied = new PluginHost();
     denied.registerPlugin(
@@ -119,11 +138,11 @@ describe("PluginHost analysis wiring", () => {
         apiVersion: "^0.1.0",
         entry: "dist/plugin.js",
         permissions: [],
-        contributes: { commands: [{ id: "org.denied.check", title: "Check" }] }
+        contributes: { commands: [{ id: "plugin.org.denied.check", title: "Check" }] }
       },
-      { commandHandlers: { "org.denied.check": async (context) => context.analysis } }
+      { commandHandlers: { "plugin.org.denied.check": async (context) => context.analysis } }
     );
-    await expect(denied.invokeCommand("org.denied.check")).resolves.toBeUndefined();
+    await expect(denied.invokeCommand("plugin.org.denied.check")).resolves.toBeUndefined();
   });
 
   it("stamps records via the host clock and id factory, and notifies subscribers on write", async () => {
@@ -131,11 +150,11 @@ describe("PluginHost analysis wiring", () => {
     const listener = vi.fn();
     host.subscribe(listener);
     host.registerPlugin(writeManifest("org.a"), {
-      commandHandlers: { "org.a.write": async (context) => context.analysis?.write(sampleInput()) }
+      commandHandlers: { "plugin.org.a.write": async (context) => context.analysis?.write(sampleInput()) }
     });
     listener.mockClear();
 
-    const record = await host.invokeCommand("org.a.write");
+    const record = await host.invokeCommand("plugin.org.a.write");
     expect(record).toMatchObject({ id: "rec-fixed", pluginId: "org.a", createdAt: FIXED_TIME });
     expect(listener).toHaveBeenCalled();
   });
@@ -146,17 +165,17 @@ describe("PluginHost analysis wiring", () => {
     for (const id of ["org.a", "org.b"]) {
       host.registerPlugin(writeManifest(id), {
         commandHandlers: {
-          [`${id}.write`]: async (context) =>
+          [`plugin.${id}.write`]: async (context) =>
             context.analysis?.write(sampleInput({ source: { documentId: "doc1", pageId: "p1", objectId: id, sourceFingerprint: id } })),
-          [`${id}.list`]: async (context) => context.analysis?.list()
+          [`plugin.${id}.list`]: async (context) => context.analysis?.list()
         }
       });
     }
 
-    await host.invokeCommand("org.a.write");
-    await host.invokeCommand("org.b.write");
+    await host.invokeCommand("plugin.org.a.write");
+    await host.invokeCommand("plugin.org.b.write");
 
-    const aRecords = (await host.invokeCommand("org.a.list")) as ReadonlyArray<{ pluginId: string }>;
+    const aRecords = (await host.invokeCommand("plugin.org.a.list")) as ReadonlyArray<{ pluginId: string }>;
     expect(aRecords.map((record) => record.pluginId)).toEqual(["org.a"]);
 
     // Trusted desktop path is unscoped.

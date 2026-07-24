@@ -33,6 +33,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "apps/**/*.test.ts",
+      "apps/**/*.test.tsx",
       "packages/**/*.test.ts",
       "examples/plugins/**/*.test.ts",
       "tools/**/*.test.ts"

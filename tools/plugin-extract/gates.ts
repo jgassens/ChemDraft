@@ -15,7 +15,8 @@
  * and nothing here adjudicates whether a plugin *should* be trusted.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,6 +74,38 @@ export function assertPluginBoundary(pluginRoot: string, error: (message: string
 }
 
 /**
+ * Refuse links and other non-regular filesystem objects in the committed distribution snapshot. The
+ * live checkout's `node_modules` is deliberately added only after this gate for package dependency
+ * resolution; it is never copied wholesale. A committed link could make `zip` dereference a local
+ * secret, so there is no safe distributable interpretation of it.
+ */
+export function assertRegularDistributionTree(
+  pluginRoot: string,
+  error: (message: string) => PluginGateError
+): void {
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (dir === pluginRoot && entry.name === ".git") {
+        continue;
+      }
+      const full = join(dir, entry.name);
+      const pluginRelative = relative(pluginRoot, full);
+      const stat = lstatSync(full);
+      if (stat.isSymbolicLink()) {
+        throw error(`plugin contains a symbolic link, which cannot be distributed safely: ${pluginRelative}`);
+      }
+      if (stat.isDirectory()) {
+        walk(full);
+      } else if (!stat.isFile()) {
+        throw error(`plugin contains a non-regular filesystem entry, which cannot be distributed safely: ${pluginRelative}`);
+      }
+    }
+  };
+
+  walk(pluginRoot);
+}
+
+/**
  * Gate 2 — provenance. The plugin must live in Git with a clean tree, so the commit recorded in the
  * artifact genuinely identifies the source that produced it. A dirty tree would attach a commit that
  * does not describe the shipped bytes, which is worse than no provenance at all.
@@ -80,7 +113,7 @@ export function assertPluginBoundary(pluginRoot: string, error: (message: string
 export function readPluginGitState(
   pluginRoot: string,
   error: (message: string) => PluginGateError
-): { sourceCommit: string; repository: string } {
+): { sourceCommit: string; repository: string; pathspec: string } {
   let repository: string;
   let sourceCommit: string;
   try {
@@ -95,7 +128,73 @@ export function readPluginGitState(
   if (status) {
     throw error(`plugin has uncommitted or untracked files; commit or clean them before distributing:\n${status}`);
   }
-  return { sourceCommit, repository };
+
+  return { sourceCommit, repository, pathspec };
+}
+
+export interface PluginSourceSnapshot {
+  /** Plugin root containing only bytes materialized from `sourceCommit`. */
+  pluginRoot: string;
+  /** Remove the private temporary archive and checkout. Safe to call more than once. */
+  dispose(): void;
+}
+
+/**
+ * Materialize exactly the committed plugin tree, excluding every ignored file by construction.
+ *
+ * Distribution must not recursively copy the live checkout after recording `sourceCommit`: ignored
+ * files are invisible to Git's clean-tree status and could otherwise leak secrets or silently change a
+ * Vite bundle. `git archive` gives both tools the committed bytes themselves. The package tool may add
+ * a temporary `node_modules` link afterward solely for dependency resolution; that tree is never
+ * copied wholesale into either artifact.
+ */
+export function createPluginSourceSnapshot(
+  state: { sourceCommit: string; repository: string; pathspec: string },
+  error: (message: string) => PluginGateError
+): PluginSourceSnapshot {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "chemdraft-plugin-source-"));
+  const archivePath = join(temporaryRoot, "source.tar");
+  const archivePrefix = "committed/";
+  try {
+    execFileSync(
+      "git",
+      [
+        "archive",
+        "--format=tar",
+        `--prefix=${archivePrefix}`,
+        `--output=${archivePath}`,
+        state.sourceCommit,
+        "--",
+        state.pathspec
+      ],
+      { cwd: state.repository, stdio: ["ignore", "ignore", "pipe"] }
+    );
+    execFileSync("tar", ["-xf", archivePath, "-C", temporaryRoot], {
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+
+    const archivedPluginRoot = join(
+      temporaryRoot,
+      archivePrefix,
+      state.pathspec === "." ? "" : state.pathspec
+    );
+    if (!existsSync(archivedPluginRoot)) {
+      throw error("the recorded commit contains no plugin files at the requested path");
+    }
+    // A sparse checkout may omit a committed link from the live tree that was inspected above; the
+    // commit snapshot is the final authority, so vet the materialized distribution tree as well.
+    assertRegularDistributionTree(archivedPluginRoot, error);
+    return {
+      pluginRoot: realpathSync(archivedPluginRoot),
+      dispose: () => rmSync(temporaryRoot, { recursive: true, force: true })
+    };
+  } catch (cause: unknown) {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    if (cause instanceof PluginGateError) throw cause;
+    throw error(
+      `could not materialize the plugin's committed source tree: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
 }
 
 /** Gate 3 — explicit terms. Never build a distributable whose recipient cannot know what they may do

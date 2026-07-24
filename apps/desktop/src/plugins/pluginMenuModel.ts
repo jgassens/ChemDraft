@@ -12,14 +12,15 @@ export const PLUGIN_DIAGNOSTICS_COMMAND_ID = "plugin.runtime.showDiagnostics";
 
 /** Convert one host menu contribution into a web app-menu command bound to the plugin's command. */
 export function pluginMenuContributionToAppMenuCommand(
-  entry: RegisteredContribution<PluginMenuContribution>
+  entry: RegisteredContribution<PluginMenuContribution>,
+  commandEnabled = true
 ): AppMenuCommand {
   return {
     kind: "command",
     id: entry.contribution.id,
     commandId: entry.contribution.commandId,
     label: entry.contribution.title,
-    enabled: true,
+    enabled: commandEnabled,
     pluginContributed: true
   };
 }
@@ -29,11 +30,12 @@ export function pluginMenuContributionToAppMenuCommand(
  * declared location, plus the always-available "Bundled Plugins…" diagnostics opener under Analyze.
  */
 export function buildPluginMenuItems(
-  menuContributions: readonly RegisteredContribution<PluginMenuContribution>[]
+  menuContributions: readonly RegisteredContribution<PluginMenuContribution>[],
+  isCommandEnabled: (commandId: string) => boolean = () => true
 ): PluginAppMenuItem[] {
   const items: PluginAppMenuItem[] = menuContributions.map((entry) => ({
     location: entry.contribution.location,
-    command: pluginMenuContributionToAppMenuCommand(entry)
+    command: pluginMenuContributionToAppMenuCommand(entry, isCommandEnabled(entry.contribution.commandId))
   }));
 
   items.push({

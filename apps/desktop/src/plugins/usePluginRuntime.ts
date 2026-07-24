@@ -118,15 +118,26 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       return;
     }
     let cancelled = false;
+    const abortController = new AbortController();
+    let loaded: readonly InstalledPluginCatalogEntry[] = [];
     void (async () => {
       // Installs are reloaded asynchronously *after* the bundled plugins are already registered, so a
       // slow or broken install can never delay or block app startup.
       const { installed, failures } = await loadInstalledPlugins({
         runtime,
         fs: stagingFs,
-        disabledIds: loadDisabledPluginIds()
+        disabledIds: loadDisabledPluginIds(),
+        replacements: bundledPlugins,
+        signal: abortController.signal
       });
+      loaded = installed;
       if (cancelled) {
+        for (const entry of installed) {
+          if (runtime.host.getPlugin(entry.record.id)) {
+            runtime.unregisterPlugin(entry.record.id);
+          }
+          entry.descriptor?.deactivate?.();
+        }
         return;
       }
       for (const failure of failures) {
@@ -139,21 +150,32 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     })();
     return () => {
       cancelled = true;
+      abortController.abort();
+      // Workers that completed startup before the cancellation are owned by this effect. Tear them
+      // down so StrictMode cleanup or a real unmount cannot leave an orphan plugin running.
+      for (const entry of loaded) {
+        entry.descriptor?.deactivate?.();
+      }
     };
-  }, [runtime, stagingFs]);
+  }, [bundledPlugins, runtime, stagingFs]);
 
   const pickPackage = useCallback(() => pickPluginPackage(), []);
 
   const installPackage = useCallback(
     async (inspection: PluginPackageInspection): Promise<void> => {
       if (!stagingFs) return;
-      const { record, descriptor } = await installPluginPackage({ runtime, fs: stagingFs, inspection });
+      const { record, descriptor } = await installPluginPackage({
+        runtime,
+        fs: stagingFs,
+        inspection,
+        replaces: bundledPlugins.find((candidate) => candidate.manifest.id === inspection.manifest.id)
+      });
       setInstalledPlugins((current) => [
         ...current.filter((entry) => entry.record.id !== record.id),
         { record, manifest: descriptor.manifest, descriptor }
       ]);
     },
-    [runtime, stagingFs]
+    [bundledPlugins, runtime, stagingFs]
   );
 
   const uninstallInstalledPlugin = useCallback(
@@ -182,7 +204,11 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
 
   const plugins = useMemo(() => runtime.host.listPlugins(), [runtime, version]);
   const pluginMenuItems = useMemo(
-    () => buildPluginMenuItems(runtime.host.listMenuContributions()),
+    () =>
+      buildPluginMenuItems(
+        runtime.host.listMenuContributions(),
+        (commandId) => runtime.host.commands.get(commandId)?.enabled === true
+      ),
     [runtime, version]
   );
   const openPanel = useMemo(() => runtime.panels.getOpenPanel(), [runtime, version]);

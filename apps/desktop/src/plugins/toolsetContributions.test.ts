@@ -94,7 +94,7 @@ describe("desktop plugin runtime + toolbar catalog", () => {
             enabled: true
           }
         ],
-        panels: [{ id: "surfaces.result", title: "Result" }]
+        panels: [{ id: "panel.surfaces.result", title: "Result" }]
       }
     };
 
@@ -104,7 +104,7 @@ describe("desktop plugin runtime + toolbar catalog", () => {
         "plugin.surfaces.run": async (context) => {
           const selection = await context.selection?.getSelection();
           seenStructure = selection?.molecules[0]?.structure ?? "";
-          await context.panels?.showReport("surfaces.result", {
+          await context.panels?.showReport("panel.surfaces.result", {
             title: "Result",
             sections: [{ kind: "text", body: "ok" }]
           });
@@ -117,7 +117,28 @@ describe("desktop plugin runtime + toolbar catalog", () => {
     expect(seenStructure).toBe("c1ccccc1");
     // The union runtime routes reports through the panel controller rather than a bare callback
     // (main's original asserted a showPanelReport spy); the report surfaces as the open panel.
-    expect(runtime.panels.getOpenPanel()?.panelId).toBe("surfaces.result");
+    expect(runtime.panels.getOpenPanel()?.panelId).toBe("panel.surfaces.result");
+  });
+
+  it("restores the previous registration when a same-id replacement fails", async () => {
+    const runtime = makeRuntime();
+    let originalRuns = 0;
+    runtime.registerPlugin(
+      fixturePluginManifest,
+      createFixturePluginOptions(() => {
+        originalRuns += 1;
+      })
+    );
+    const invalidReplacement = { ...fixturePluginManifest, permissions: [] };
+
+    expect(() => runtime.replacePlugin(FIXTURE_PLUGIN_ID, invalidReplacement, createFixturePluginOptions())).toThrow(
+      /ui\.toolbar/
+    );
+
+    expect(runtime.host.getPlugin(FIXTURE_PLUGIN_ID)).toBeDefined();
+    expect(runtime.listPluginToolsets().map((toolset) => toolset.id)).toContain(FIXTURE_PLUGIN_TOOLSET_ID);
+    await runtime.host.invokeCommand(FIXTURE_PLUGIN_PING_COMMAND_ID);
+    expect(originalRuns).toBe(1);
   });
 
   it("notifies listeners when plugin toolsets change", () => {

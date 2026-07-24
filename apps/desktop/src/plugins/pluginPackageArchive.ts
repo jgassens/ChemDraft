@@ -31,6 +31,7 @@ export const PluginPackageErrorCodes = {
   UnsupportedArchive: "PLUGIN_PACKAGE_UNSUPPORTED_ARCHIVE",
   CorruptEntry: "PLUGIN_PACKAGE_CORRUPT_ENTRY",
   UnsafeEntryPath: "PLUGIN_PACKAGE_UNSAFE_ENTRY_PATH",
+  ResourceLimitExceeded: "PLUGIN_PACKAGE_RESOURCE_LIMIT_EXCEEDED",
   ChecksumMismatch: "PLUGIN_PACKAGE_CHECKSUM_MISMATCH",
   DigestUnavailable: "PLUGIN_PACKAGE_DIGEST_UNAVAILABLE"
 } as const;
@@ -52,6 +53,28 @@ export interface PluginPackageEntry {
   path: string;
   bytes: Uint8Array;
 }
+
+/**
+ * Hard limits applied to untrusted zip metadata before any entry is decompressed. The NMR plugin's
+ * current package is comfortably below these ceilings; they are deliberately large enough for
+ * code-split chemistry workers while small enough to bound memory use during package inspection.
+ */
+export interface PluginPackageArchiveLimits {
+  maxCompressedBytes: number;
+  maxEntryCount: number;
+  maxEntryUncompressedBytes: number;
+  maxTotalUncompressedBytes: number;
+  maxCompressionRatio: number;
+}
+
+const MEBIBYTE = 1024 * 1024;
+export const DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS: Readonly<PluginPackageArchiveLimits> = Object.freeze({
+  maxCompressedBytes: 32 * MEBIBYTE,
+  maxEntryCount: 1024,
+  maxEntryUncompressedBytes: 64 * MEBIBYTE,
+  maxTotalUncompressedBytes: 128 * MEBIBYTE,
+  maxCompressionRatio: 200
+});
 
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
 const CENTRAL_HEADER_SIGNATURE = 0x02014b50;
@@ -130,7 +153,16 @@ export function parseChecksumSidecar(sidecar: string): string {
  * Walks the central directory (the archive's authoritative index) rather than scanning local headers, so
  * a truncated or spliced archive is detected instead of partially trusted.
  */
-export async function readPluginPackageArchive(zipBytes: Uint8Array): Promise<readonly PluginPackageEntry[]> {
+export async function readPluginPackageArchive(
+  zipBytes: Uint8Array,
+  limits: Readonly<PluginPackageArchiveLimits> = DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS
+): Promise<readonly PluginPackageEntry[]> {
+  if (zipBytes.byteLength > limits.maxCompressedBytes) {
+    throw resourceLimit(
+      `This plugin package is ${zipBytes.byteLength} compressed bytes, exceeding ChemDraft's ` +
+        `${limits.maxCompressedBytes}-byte package limit.`
+    );
+  }
   const view = new DataView(zipBytes.buffer, zipBytes.byteOffset, zipBytes.byteLength);
   const eocdOffset = findEndOfCentralDirectory(zipBytes);
   rejectZip64(zipBytes, eocdOffset);
@@ -142,13 +174,20 @@ export async function readPluginPackageArchive(zipBytes: Uint8Array): Promise<re
   if (entryCount === ZIP64_SENTINEL_16 || centralDirectoryOffset === ZIP64_SENTINEL_32) {
     throw unsupported("This plugin package uses the Zip64 format, which ChemDraft cannot read.");
   }
+  if (entryCount > limits.maxEntryCount) {
+    throw resourceLimit(
+      `This plugin package contains ${entryCount} archive entries, exceeding ChemDraft's ` +
+        `${limits.maxEntryCount}-entry limit.`
+    );
+  }
   if (centralDirectoryOffset + centralDirectorySize > zipBytes.byteLength) {
     throw malformed("This plugin package's central directory runs past the end of the file, so it is truncated.");
   }
 
-  const entries: PluginPackageEntry[] = [];
+  const locations: EntryLocation[] = [];
   const seen = new Set<string>();
   let cursor = centralDirectoryOffset;
+  let totalUncompressedBytes = 0;
 
   for (let index = 0; index < entryCount; index++) {
     if (cursor + 46 > zipBytes.byteLength || view.getUint32(cursor, true) !== CENTRAL_HEADER_SIGNATURE) {
@@ -164,6 +203,10 @@ export async function readPluginPackageArchive(zipBytes: Uint8Array): Promise<re
     const extraLength = view.getUint16(cursor + 30, true);
     const commentLength = view.getUint16(cursor + 32, true);
     const localHeaderOffset = view.getUint32(cursor + 42, true);
+    const recordEnd = cursor + 46 + nameLength + extraLength + commentLength;
+    if (recordEnd > centralDirectoryOffset + centralDirectorySize || recordEnd > zipBytes.byteLength) {
+      throw malformed(`This plugin package's directory entry ${index + 1} of ${entryCount} is truncated.`);
+    }
     const name = decodeUtf8(zipBytes.subarray(cursor + 46, cursor + 46 + nameLength));
 
     assertSupportedEntry(name, flags, compression, compressedSize, uncompressedSize, localHeaderOffset);
@@ -175,8 +218,16 @@ export async function readPluginPackageArchive(zipBytes: Uint8Array): Promise<re
         throw malformed(`This plugin package contains "${path}" more than once, so its contents are ambiguous.`);
       }
       seen.add(path);
+      assertEntryResourceLimits(path, compressedSize, uncompressedSize, limits);
+      totalUncompressedBytes += uncompressedSize;
+      if (totalUncompressedBytes > limits.maxTotalUncompressedBytes) {
+        throw resourceLimit(
+          `This plugin package declares ${totalUncompressedBytes} uncompressed bytes, exceeding ` +
+            `ChemDraft's ${limits.maxTotalUncompressedBytes}-byte total limit.`
+        );
+      }
 
-      const bytes = await readEntryData(zipBytes, view, {
+      locations.push({
         path,
         localHeaderOffset,
         compression,
@@ -184,14 +235,21 @@ export async function readPluginPackageArchive(zipBytes: Uint8Array): Promise<re
         uncompressedSize,
         crc32Expected
       });
-      entries.push({ path, bytes });
     }
 
-    cursor += 46 + nameLength + extraLength + commentLength;
+    cursor = recordEnd;
   }
 
-  if (entries.length === 0) {
+  if (locations.length === 0) {
     throw malformed("This plugin package contains no files.");
+  }
+
+  // Only after the complete central directory has passed every resource and path check do we allow
+  // a decompressor to see any bytes. Keep inflation sequential so peak memory remains bounded by the
+  // accumulated result plus one declared entry.
+  const entries: PluginPackageEntry[] = [];
+  for (const location of locations) {
+    entries.push({ path: location.path, bytes: await readEntryData(zipBytes, view, location) });
   }
   return entries;
 }
@@ -226,7 +284,9 @@ async function readEntryData(
   }
 
   const raw = zipBytes.subarray(dataStart, dataEnd);
-  const bytes = entry.compression === COMPRESSION_STORED ? raw.slice() : await inflateRaw(raw, entry.path);
+  const bytes = entry.compression === COMPRESSION_STORED
+    ? raw.slice()
+    : await inflateRaw(raw, entry.path, entry.uncompressedSize);
 
   if (bytes.byteLength !== entry.uncompressedSize) {
     throw corrupt(
@@ -244,21 +304,67 @@ async function readEntryData(
   return bytes;
 }
 
-async function inflateRaw(raw: Uint8Array, path: string): Promise<Uint8Array> {
+async function inflateRaw(raw: Uint8Array, path: string, expectedBytes: number): Promise<Uint8Array> {
   if (typeof DecompressionStream === "undefined") {
     throw unsupported(
       "This environment cannot decompress a plugin package (no DecompressionStream), so the package " +
         "cannot be installed."
     );
   }
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const stream = new Blob([raw.slice()]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    reader = stream.getReader();
+    const output = new Uint8Array(expectedBytes);
+    let offset = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (offset + value.byteLength > expectedBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw corrupt(
+          `This plugin package's entry "${path}" expands beyond its declared ${expectedBytes}-byte size, ` +
+            "so the package is corrupted or attempts excessive decompression."
+        );
+      }
+      output.set(value, offset);
+      offset += value.byteLength;
+    }
+    return offset === expectedBytes ? output : output.slice(0, offset);
   } catch (cause: unknown) {
+    if (cause instanceof PluginPackageError) throw cause;
     // A deflate stream that will not inflate is corruption, not an unsupported feature.
     throw corrupt(
       `This plugin package's entry "${path}" could not be decompressed, so the package is corrupted ` +
         `(${cause instanceof Error ? cause.message : String(cause)}).`
+    );
+  } finally {
+    reader?.releaseLock();
+  }
+}
+
+function assertEntryResourceLimits(
+  path: string,
+  compressedSize: number,
+  uncompressedSize: number,
+  limits: Readonly<PluginPackageArchiveLimits>
+): void {
+  if (uncompressedSize > limits.maxEntryUncompressedBytes) {
+    throw resourceLimit(
+      `This plugin package's entry "${path}" declares ${uncompressedSize} uncompressed bytes, exceeding ` +
+        `ChemDraft's ${limits.maxEntryUncompressedBytes}-byte per-entry limit.`
+    );
+  }
+  if (uncompressedSize > 0 && compressedSize === 0) {
+    throw resourceLimit(
+      `This plugin package's entry "${path}" declares non-empty output from zero compressed bytes.`
+    );
+  }
+  const ratio = uncompressedSize === 0 ? 0 : uncompressedSize / compressedSize;
+  if (ratio > limits.maxCompressionRatio) {
+    throw resourceLimit(
+      `This plugin package's entry "${path}" declares a ${ratio.toFixed(1)}:1 compression ratio, exceeding ` +
+        `ChemDraft's ${limits.maxCompressionRatio}:1 limit.`
     );
   }
 }
@@ -400,4 +506,8 @@ function corrupt(message: string): PluginPackageError {
 
 function unsafePath(message: string): PluginPackageError {
   return new PluginPackageError(PluginPackageErrorCodes.UnsafeEntryPath, message);
+}
+
+function resourceLimit(message: string): PluginPackageError {
+  return new PluginPackageError(PluginPackageErrorCodes.ResourceLimitExceeded, message);
 }

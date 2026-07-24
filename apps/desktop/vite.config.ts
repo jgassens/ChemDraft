@@ -86,6 +86,11 @@ function buildStamp(): string {
  */
 function serveInstalledPluginsInDev(): Plugin {
   const urlPrefix = "/installed-plugins/";
+  // Must match `installed_plugins::INSTALLED_PLUGIN_WORKER_CSP`. Worker CSP comes from the worker
+  // script's own response, not from the page that created it; without this header an installed plugin
+  // could use ambient fetch/XHR and bypass the manifest's `network.fetch` boundary during development.
+  const installedPluginWorkerCsp =
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'";
   // Mirrors `installed_plugins::installed_plugins_root` and `tauri.conf.json`'s identifier.
   const root = join(homedir(), "Library", "Application Support", "org.chemdraft.desktop", "installed-plugins");
   const contentTypes: Record<string, string> = {
@@ -126,6 +131,7 @@ function serveInstalledPluginsInDev(): Plugin {
         const extension = file.slice(file.lastIndexOf("."));
         response.setHeader("Content-Type", contentTypes[extension] ?? "application/octet-stream");
         response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("Content-Security-Policy", installedPluginWorkerCsp);
         response.end(readFileSync(file));
       });
     }

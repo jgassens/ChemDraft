@@ -91,6 +91,32 @@ describe("plugin import boundary", () => {
     ]);
   });
 
+  it("rejects runtime imports outside src because those files are neither scanned nor source-distributed", () => {
+    const root = temporaryPlugin(`import "../unscanned-runtime.js";`);
+    writeFileSync(join(root, "unscanned-runtime.js"), `import "@chemdraft/plugin-host";\n`);
+
+    expect(checkPluginBoundary(root)).toEqual([
+      { file: "src/index.ts", specifier: "../unscanned-runtime.js" }
+    ]);
+  });
+
+  it("scans every supported JavaScript and TypeScript runtime extension", () => {
+    const root = temporaryPlugin("");
+    for (const extension of ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"]) {
+      writeFileSync(
+        join(root, `src/runtime.${extension}`),
+        `import "../../outside-${extension}.js";\n`
+      );
+    }
+
+    expect(checkPluginBoundary(root)).toEqual(
+      ["cjs", "cts", "js", "jsx", "mjs", "mts", "ts", "tsx"].map((extension) => ({
+        file: `src/runtime.${extension}`,
+        specifier: `../../outside-${extension}.js`
+      }))
+    );
+  });
+
   it("rejects computed dynamic imports because their package boundary cannot be proven", () => {
     const root = temporaryPlugin(`
       const packageName = "@chemdraft/plugin-host";

@@ -347,11 +347,9 @@ describe("ChemDraft desktop shell", () => {
     const markup = renderToStaticMarkup(createElement(MainWindow, { initialPaletteMode: "floating", nativePalette: false }));
 
     expect(markup).toContain("app-shell");
-    expect(markup).toContain("dev-browser-menu-shell");
-    expect(markup).toContain("dev-browser-menu-bar");
-    expect(markup).toContain('data-dev-browser-menu-bar="true"');
-    expect(markup).toContain('data-dev-browser-menu-button="file"');
-    expect(markup).toContain('data-dev-browser-menu-button="view"');
+    expect(markup).not.toContain("dev-browser-menu-shell");
+    expect(markup).not.toContain("dev-browser-menu-bar");
+    expect(markup).not.toContain('data-dev-browser-menu-bar="true"');
     expect(markup).toContain("web-floating-palette");
     expect(markup).toContain("data-floating-palette");
     expect(markup).toContain("tool-palette");
@@ -366,6 +364,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("menu-bar");
     expect(markup).toContain('aria-label="Application menu"');
     expect(markup).toContain('data-menu-section="file"');
+    expect(markup).toContain('data-menu-section="view"');
     expect(markup).toContain('data-menu-section="analyze"');
     expect(markup).not.toContain("command-bar");
     expect(markup).not.toContain("statusbar");

@@ -21,6 +21,12 @@ RUN_APP_BUNDLE_ID="org.chemdraft.desktop"
 LEGACY_RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
 RUN_APP_DISPLAY_NAME="ChemDraft"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+DEV_APP_EXECUTABLE="$APP_DIR/src-tauri/target/debug/chemdraft"
+RELEASE_APP_EXECUTABLE="$APP_DIR/src-tauri/target/release/chemdraft"
+RUN_APP_EXECUTABLE="$RUN_APP_BUNDLE/Contents/MacOS/chemdraft"
+RUN_APP_EXECUTABLE_PRODUCT_NAME="$RUN_APP_BUNDLE/Contents/MacOS/ChemDraft"
+LEGACY_RUN_APP_EXECUTABLE="$LEGACY_RUN_APP_BUNDLE/Contents/MacOS/chemdraft"
+LEGACY_RUN_APP_EXECUTABLE_PRODUCT_NAME="$LEGACY_RUN_APP_BUNDLE/Contents/MacOS/ChemDraft"
 
 print_launch_banner() {
   local mode="$1"
@@ -50,13 +56,30 @@ fi
 process_cwd() {
   local pid="$1"
 
-  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+  # A process can disappear or belong to another user between pgrep/lsof. Under pipefail, that is an
+  # expected empty result rather than a launcher-fatal error.
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
+    | sed -n 's/^n//p' \
+    | awk 'NR == 1 { first = $0 } END { if (first != "") print first }' \
+    || true
 }
 
 process_command() {
   local pid="$1"
 
   ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//' || true
+}
+
+process_executable() {
+  local pid="$1"
+
+  # The first text mapping reported by lsof is the executable itself. Unlike argv/pgrep -f this is
+  # an exact filesystem path, so a checkout path mentioned merely as an argument cannot claim an
+  # unrelated or sibling ChemDraft process.
+  lsof -a -p "$pid" -d txt -Fn 2>/dev/null \
+    | sed -n 's/^n//p' \
+    | awk 'NR == 1 { first = $0 } END { if (first != "") print first }' \
+    || true
 }
 
 stop_process() {
@@ -78,35 +101,31 @@ stop_existing_dev_apps() {
     return 0
   fi
 
-  # Stop ChemDraft app processes launched from THIS checkout so a relaunch replaces the previous
-  # build instead of leaving a stale window shadowing the new one. Scope by each process's working
-  # directory (dev binary) or executable path (packaged bundle) against $ROOT_DIR rather than a fixed
-  # argv fragment: `tauri dev` runs the binary through `cargo run`, which launches it with a
-  # *relative* path ("target/debug/chemdraft"), so the old absolute-path match never fired and older
-  # dev builds were never actually killed. Comparing to $ROOT_DIR both fixes that and keeps the blast
-  # radius to this worktree — a sibling worktree's build (its cwd and paths live elsewhere) is left
-  # running on purpose.
-  local pid pids cwd command belongs
+  # Stop only an executable at one of THIS checkout's exact build paths. Working directories and argv
+  # mentions are useful diagnostics but are not ownership proof: another process can run from, or be
+  # passed, a checkout path. Exact executable identity keeps sibling worktrees and ambiguous processes
+  # alive. If lsof cannot establish identity, fail safe by leaving the process alone.
+  local pid pids command executable belongs
   pids="$(
     { pgrep -x chemdraft 2>/dev/null || true; }
-    { pgrep -f "/target/debug/chemdraft" 2>/dev/null || true; }
-    { pgrep -f "/target/release/chemdraft" 2>/dev/null || true; }
-    { pgrep -f "$RUN_APP_BUNDLE" 2>/dev/null || true; }
+    { pgrep -x ChemDraft 2>/dev/null || true; }
   )"
 
-  for pid in $(printf "%s\n" $pids | awk 'NF && !seen[$0]++'); do
+  while IFS= read -r pid; do
+    if [ -z "$pid" ]; then
+      continue
+    fi
     if [ "$pid" = "$$" ]; then
       continue
     fi
 
-    cwd="$(process_cwd "$pid")"
     command="$(process_command "$pid")"
+    executable="$(process_executable "$pid")"
     belongs=0
-    case "$cwd" in
-      "$ROOT_DIR" | "$ROOT_DIR"/*) belongs=1 ;;
-    esac
-    case "$command" in
-      *"$ROOT_DIR"/*) belongs=1 ;;
+    case "$executable" in
+      "$DEV_APP_EXECUTABLE" | "$RELEASE_APP_EXECUTABLE" | \
+      "$RUN_APP_EXECUTABLE" | "$RUN_APP_EXECUTABLE_PRODUCT_NAME" | \
+      "$LEGACY_RUN_APP_EXECUTABLE" | "$LEGACY_RUN_APP_EXECUTABLE_PRODUCT_NAME") belongs=1 ;;
     esac
 
     if [ "$belongs" = "1" ]; then
@@ -117,7 +136,7 @@ stop_existing_dev_apps() {
       fi
       stop_process "$pid"
     fi
-  done
+  done < <(printf "%s\n" "$pids" | awk 'NF && !seen[$0]++')
 }
 
 unregister_bundle() {

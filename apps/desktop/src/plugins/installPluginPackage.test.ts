@@ -24,7 +24,11 @@ import { describe, expect, it } from "vitest";
 import { createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
 import { INSTALLED_PLUGINS_RECORD_FILE } from "./installedPluginPaths";
-import { loadInstalledPluginRecords } from "./installedPluginStore";
+import {
+  createInstalledPluginRecord,
+  loadInstalledPluginRecords,
+  saveInstalledPluginRecords
+} from "./installedPluginStore";
 import {
   PluginInstallError,
   PluginInstallErrorCodes,
@@ -202,6 +206,7 @@ async function installFixture(
     runtime?: DesktopPluginRuntime;
     zip?: Uint8Array;
     worker?: FakeWorkerOptions;
+    replaces?: ReturnType<typeof bundledCopy>;
   } = {}
 ) {
   const fs = options.fs ?? new MemoryStagingFs();
@@ -214,7 +219,8 @@ async function installFixture(
     fs,
     inspection,
     origin: ORIGIN,
-    createWorker: () => worker.handle
+    createWorker: () => worker.handle,
+    replaces: options.replaces as never
   });
   return { fs, runtime, result, worker };
 }
@@ -336,12 +342,72 @@ describe("installPluginPackage", () => {
     expect(await loadInstalledPluginRecords(fs)).toHaveLength(1);
   });
 
-  it("auto-grants the declared permissions with no consent gate", async () => {
+  it("auto-grants supported declared permissions with no consent gate", async () => {
     const { runtime } = await installFixture();
 
     // ADR-0029 §3: nothing was asked, and the manifest's permissions are simply in force.
     const registered = runtime.host.getPlugin(PLUGIN_ID);
     expect(registered?.manifest.permissions).toEqual(["ui.menu", "ui.panel"]);
+  });
+
+  it("refuses network.fetch before staging or starting a worker", async () => {
+    const fs = new MemoryStagingFs();
+    const runtime = createRuntime();
+    const zip = await createPackage({ manifest: manifestDocument({ permissions: ["ui.menu", "network.fetch"] }) });
+    const inspection = await inspectPluginPackage({ zipBytes: zip });
+    let workerStarts = 0;
+
+    await expect(
+      installPluginPackage({
+        runtime,
+        fs,
+        inspection,
+        origin: ORIGIN,
+        createWorker: () => {
+          workerStarts += 1;
+          return createFakeWorker().handle;
+        }
+      })
+    ).rejects.toMatchObject({ code: PluginInstallErrorCodes.Unsupported });
+
+    expect(workerStarts).toBe(0);
+    expect(fs.pathsUnder(`installed-plugins/${PLUGIN_ID}/`)).toEqual([]);
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+    expect(runtime.host.hasPermission(PLUGIN_ID, "network.fetch")).toBe(false);
+  });
+
+  it("keeps a legacy network-fetch install visible for removal without loading its worker", async () => {
+    const fs = new MemoryStagingFs();
+    const runtime = createRuntime();
+    const record = createInstalledPluginRecord({
+      id: PLUGIN_ID,
+      version: "2.0.1",
+      name: "Legacy Network Plugin",
+      sourceChecksum: "a".repeat(64),
+      installedAt: new Date("2026-07-16T00:00:00.000Z")
+    });
+    await saveInstalledPluginRecords(fs, [record]);
+    await fs.writeTextFile(
+      `${record.stagedPath}/manifest.json`,
+      JSON.stringify(manifestDocument({ permissions: ["ui.menu", "network.fetch"] }))
+    );
+    let workerStarts = 0;
+
+    const loaded = await loadInstalledPlugins({
+      runtime,
+      fs,
+      origin: ORIGIN,
+      createWorker: () => {
+        workerStarts += 1;
+        return createFakeWorker().handle;
+      }
+    });
+
+    expect(workerStarts).toBe(0);
+    expect(loaded.installed).toHaveLength(1);
+    expect(loaded.installed[0]?.descriptor).toBeUndefined();
+    expect(loaded.failures[0]?.message).toMatch(/network\.fetch.*unavailable/i);
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
   });
 
   // Criterion 4 (the real half): a package that passes inspection but cannot load must not half-install.
@@ -390,14 +456,25 @@ describe("installPluginPackage", () => {
    */
   it("replaces a bundled plugin of the same id, and restores it on uninstall", async () => {
     const runtime = createRuntime();
-    const bundled = bundledCopy();
+    let deactivations = 0;
+    let activations = 0;
+    const bundled = {
+      ...bundledCopy(),
+      deactivate: () => {
+        deactivations += 1;
+      },
+      activate: () => {
+        activations += 1;
+      }
+    };
     runtime.host.registerPlugin(bundled.manifest, bundled.options);
 
-    const { fs, result } = await installFixture({ runtime });
+    const { fs, result } = await installFixture({ runtime, replaces: bundled });
 
     // The installed copy now owns the id: invoking the command reaches the *packaged* plugin's worker,
     // not the bundled handler. One registration, not two.
     expect(runtime.host.listPlugins().filter((manifest) => manifest.id === PLUGIN_ID)).toHaveLength(1);
+    expect(deactivations).toBe(1);
     await expect(runtime.host.invokeCommand(COMMAND_ID)).resolves.toMatchObject({ from: "installed" });
 
     await uninstallPlugin({
@@ -410,6 +487,7 @@ describe("installPluginPackage", () => {
 
     // The bundled copy is back and live again — the build returns to its shipped state.
     expect(runtime.host.getPlugin(PLUGIN_ID)).toBeDefined();
+    expect(activations).toBe(1);
     await expect(runtime.host.invokeCommand(COMMAND_ID)).resolves.toMatchObject({ from: "bundled" });
   });
 

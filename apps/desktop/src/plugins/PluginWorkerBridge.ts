@@ -8,7 +8,7 @@
  *
  *  - **Declared-only enforcement falls out of the context itself.** The host builds a context whose
  *    `selection` / `analysis` / `storage` / `panels` objects are present only when the manifest grants
- *    the matching permission (auto-granted; ADR-0029 is permissive — no consent gate). If the worker
+ *    the matching available permission (auto-granted; ADR-0029 is permissive — no consent gate). If the worker
  *    asks for a namespace the context does not carry, the bridge rejects the request. `documents` is
  *    always present but its methods re-check `document.read` / `document.proposePatch` and throw.
  *  - **Reverse signals** (`panelClosed`, `abort`) travel worker-ward so ADR-0012 panel-close
@@ -39,12 +39,23 @@ export interface PluginWorkerBridgeOptions {
   createWorker: () => PluginWorkerHandle;
   /** Host API version the worker's handshake is validated against. Defaults to the SDK's version. */
   hostApiVersion?: string;
+  /** Maximum time to wait for the worker's protocol handshake. Defaults to 10 seconds. */
+  startupTimeoutMs?: number;
 }
+
+const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 
 interface PendingInvocation {
   context: PluginCommandContext;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
+}
+
+/** Public cancellation handle for one bridge invocation. Callers never need the bridge's private
+ * numeric protocol id; `abort()` works both while startup is pending and after dispatch. */
+export interface PluginWorkerInvocation<Result = unknown> {
+  promise: Promise<Result>;
+  abort: () => void;
 }
 
 /** A capability object indexed by method name, for dynamic dispatch after the method whitelist check. */
@@ -54,9 +65,12 @@ export class PluginWorkerBridge {
   private readonly pluginId: string;
   private readonly createWorker: () => PluginWorkerHandle;
   private readonly hostApiVersion?: string;
+  private readonly startupTimeoutMs: number;
 
   private worker: PluginWorkerHandle | undefined;
   private readyPromise: Promise<void> | undefined;
+  private rejectStartup: ((error: unknown) => void) | undefined;
+  private startupTimer: ReturnType<typeof setTimeout> | undefined;
   private terminated = false;
 
   private nextCommandRequestId = 1;
@@ -66,6 +80,7 @@ export class PluginWorkerBridge {
     this.pluginId = options.pluginId;
     this.createWorker = options.createWorker;
     this.hostApiVersion = options.hostApiVersion;
+    this.startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   }
 
   /** Spawn the worker (if needed) and resolve once its startup handshake passes; reject loudly on a
@@ -80,6 +95,37 @@ export class PluginWorkerBridge {
    * reports an error, is aborted, or is terminated.
    */
   async invokeCommand(commandId: string, context: PluginCommandContext): Promise<unknown> {
+    return this.invokeCommandCancellable(commandId, context).promise;
+  }
+
+  /** Invoke with a usable cancellation handle instead of exposing an internal request id. */
+  invokeCommandCancellable(commandId: string, context: PluginCommandContext): PluginWorkerInvocation {
+    const state: { aborted: boolean; commandRequestId?: number } = { aborted: false };
+    let rejectBeforeDispatch!: (error: unknown) => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      rejectBeforeDispatch = reject;
+    });
+    const execution = this.startInvocation(commandId, context, state);
+    const promise = Promise.race([execution, cancelled]);
+    return {
+      promise,
+      abort: () => {
+        if (state.aborted) return;
+        state.aborted = true;
+        if (state.commandRequestId !== undefined) {
+          this.abortCommand(state.commandRequestId);
+        } else {
+          rejectBeforeDispatch(this.abortedError("before dispatch"));
+        }
+      }
+    };
+  }
+
+  private async startInvocation(
+    commandId: string,
+    context: PluginCommandContext,
+    state: { aborted: boolean; commandRequestId?: number }
+  ): Promise<unknown> {
     if (this.terminated) {
       throw this.terminatedError();
     }
@@ -87,10 +133,19 @@ export class PluginWorkerBridge {
     if (this.terminated) {
       throw this.terminatedError();
     }
+    if (state.aborted) {
+      throw this.abortedError("before dispatch");
+    }
     const commandRequestId = this.nextCommandRequestId++;
+    state.commandRequestId = commandRequestId;
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(commandRequestId, { context, resolve, reject });
-      this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId });
+      try {
+        this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId });
+      } catch (error) {
+        this.pending.delete(commandRequestId);
+        reject(this.wrapCrash(error));
+      }
     });
   }
 
@@ -115,7 +170,7 @@ export class PluginWorkerBridge {
       this.postToWorker({ kind: "abort", commandRequestId });
     }
     invocation.reject(
-      new PluginWorkerBridgeError({ code: PluginWorkerErrorCodes.Terminated, message: `Command ${commandRequestId} was aborted.` })
+      this.abortedError(String(commandRequestId))
     );
   }
 
@@ -126,6 +181,11 @@ export class PluginWorkerBridge {
       return;
     }
     this.terminated = true;
+    const error = this.terminatedError();
+    this.clearStartupTimer();
+    const rejectStartup = this.rejectStartup;
+    this.rejectStartup = undefined;
+    this.readyPromise = undefined;
     const inFlight = [...this.pending.values()];
     this.pending.clear();
     try {
@@ -134,8 +194,9 @@ export class PluginWorkerBridge {
       /* already dead */
     }
     this.worker = undefined;
+    rejectStartup?.(error);
     for (const invocation of inFlight) {
-      invocation.reject(this.terminatedError());
+      invocation.reject(error);
     }
   }
 
@@ -146,51 +207,74 @@ export class PluginWorkerBridge {
     if (this.readyPromise) {
       return this.readyPromise;
     }
-    this.readyPromise = new Promise<void>((resolve, reject) => {
-      let worker: PluginWorkerHandle;
-      try {
-        worker = this.createWorker();
-      } catch (error) {
-        reject(this.wrapCrash(error));
+    let resolveStartup!: () => void;
+    let rejectStartup!: (error: unknown) => void;
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      resolveStartup = resolve;
+      rejectStartup = reject;
+    });
+    this.readyPromise = readyPromise;
+    this.rejectStartup = rejectStartup;
+
+    let worker: PluginWorkerHandle;
+    try {
+      worker = this.createWorker();
+    } catch (error) {
+      this.failStartup(this.wrapCrash(error));
+      return readyPromise;
+    }
+    this.worker = worker;
+
+    const settleReady = (message: WorkerToHostMessage): void => {
+      if (message.kind !== "ready" || this.worker !== worker || this.terminated) {
         return;
       }
-      this.worker = worker;
+      const mismatch = checkWorkerHandshake(message, this.hostApiVersion);
+      if (mismatch) {
+        this.failStartup(
+          new PluginWorkerBridgeError({ code: PluginWorkerErrorCodes.VersionMismatch, message: mismatch })
+        );
+        return;
+      }
+      this.clearStartupTimer();
+      this.rejectStartup = undefined;
+      resolveStartup();
+    };
 
-      const settleReady = (message: WorkerToHostMessage): void => {
-        if (message.kind !== "ready") {
-          return;
-        }
-        const mismatch = checkWorkerHandshake(message, this.hostApiVersion);
-        if (mismatch) {
-          const error = new PluginWorkerBridgeError({ code: PluginWorkerErrorCodes.VersionMismatch, message: mismatch });
-          this.failStartup(error);
-          reject(error);
-          return;
-        }
-        resolve();
-      };
-
-      worker.addEventListener("message", (event: { data: unknown }) => {
-        const message = event.data as WorkerToHostMessage;
-        // The very first message must be the handshake; route it there, then hand off to the router.
-        if (message.kind === "ready") {
-          settleReady(message);
-          return;
-        }
-        this.handleWorkerMessage(message);
-      });
-      worker.addEventListener("error", (event: unknown) => {
-        const error = this.wrapCrash(event);
-        this.failStartup(error);
-        reject(error);
-      });
-      worker.addEventListener("messageerror", (event: unknown) => {
-        const error = this.wrapCrash(event);
-        this.failStartup(error);
-        reject(error);
-      });
+    worker.addEventListener("message", (event: { data: unknown }) => {
+      if (this.worker !== worker || this.terminated) {
+        return;
+      }
+      const message = event.data as WorkerToHostMessage;
+      // The very first message must be the handshake; route it there, then hand off to the router.
+      if (message.kind === "ready") {
+        settleReady(message);
+        return;
+      }
+      this.handleWorkerMessage(message);
     });
-    return this.readyPromise;
+    worker.addEventListener("error", (event: unknown) => {
+      if (this.worker === worker) {
+        this.failStartup(this.wrapCrash(event));
+      }
+    });
+    worker.addEventListener("messageerror", (event: unknown) => {
+      if (this.worker === worker) {
+        this.failStartup(this.wrapCrash(event));
+      }
+    });
+    this.startupTimer = setTimeout(() => {
+      if (this.worker !== worker || this.terminated) {
+        return;
+      }
+      this.failStartup(
+        new PluginWorkerBridgeError({
+          code: PluginWorkerErrorCodes.WorkerCrashed,
+          message: `Plugin worker for "${this.pluginId}" did not complete its startup handshake within ${this.startupTimeoutMs} ms.`
+        })
+      );
+    }, this.startupTimeoutMs);
+    return readyPromise;
   }
 
   /** A startup/crash failure after the worker was created: reject every in-flight command and drop the
@@ -198,6 +282,9 @@ export class PluginWorkerBridge {
   private failStartup(error: unknown): void {
     const inFlight = [...this.pending.values()];
     this.pending.clear();
+    this.clearStartupTimer();
+    const rejectStartup = this.rejectStartup;
+    this.rejectStartup = undefined;
     try {
       this.worker?.terminate();
     } catch {
@@ -205,8 +292,16 @@ export class PluginWorkerBridge {
     }
     this.worker = undefined;
     this.readyPromise = undefined;
+    rejectStartup?.(error);
     for (const invocation of inFlight) {
       invocation.reject(error);
+    }
+  }
+
+  private clearStartupTimer(): void {
+    if (this.startupTimer !== undefined) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = undefined;
     }
   }
 
@@ -326,6 +421,13 @@ export class PluginWorkerBridge {
     return new PluginWorkerBridgeError({
       code: PluginWorkerErrorCodes.Terminated,
       message: `Plugin worker for "${this.pluginId}" has been terminated.`
+    });
+  }
+
+  private abortedError(command: string): PluginWorkerBridgeError {
+    return new PluginWorkerBridgeError({
+      code: PluginWorkerErrorCodes.Terminated,
+      message: `Plugin command ${command} was aborted.`
     });
   }
 

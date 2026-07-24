@@ -52,16 +52,72 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-confirm",
-    "fs:allow-read-text-file",
-    "fs:allow-read-file",
-    "fs:allow-write-text-file",
-    "fs:allow-write-file",
-    "fs:allow-mkdir",
-    "fs:allow-remove",
-    "fs:allow-exists",
-    "fs:allow-read-dir",
     {
-      "identifier": "fs:scope",
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$TEMP/**" },
+        { "path": "$APPDATA/installed-plugins.json" },
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$TEMP/**" },
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$TEMP/**" },
+        { "path": "$APPDATA/installed-plugins.json" },
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$TEMP/**" },
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
       "allow": [
         { "path": "$HOME/**" },
         { "path": "$DOCUMENT/**" },

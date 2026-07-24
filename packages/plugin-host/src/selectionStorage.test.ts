@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { PluginSelectionSnapshot, PluginStorage } from "@chemdraft/plugin-api";
 import { PluginHost } from "./index";
 
+const commandIdFor = (id: string, action = "run"): string => `plugin.${id}.${action}`;
+
 const manifestWith = (id: string, permissions: string[]) => ({
   id,
   name: "Selection Test Plugin",
@@ -10,7 +12,7 @@ const manifestWith = (id: string, permissions: string[]) => ({
   entry: "./index.ts",
   permissions,
   contributes: {
-    commands: [{ id: `${id}.run`, title: "Run" }]
+    commands: [{ id: commandIdFor(id), title: "Run" }]
   }
 });
 
@@ -25,18 +27,18 @@ describe("plugin host selection + storage backends", () => {
 
     const granted = new PluginHost({ getSelection: () => snapshot });
     granted.registerPlugin(manifestWith("org.test.granted", ["selection.read"]), {
-      commandHandlers: { "org.test.granted.run": async (context) => context.selection?.getSelection() }
+      commandHandlers: { [commandIdFor("org.test.granted")]: async (context) => context.selection?.getSelection() }
     });
-    await expect(granted.invokeCommand("org.test.granted.run")).resolves.toMatchObject({
+    await expect(granted.invokeCommand(commandIdFor("org.test.granted"))).resolves.toMatchObject({
       objectIds: ["m1"],
       molecules: [{ structure: "c1ccccc1" }]
     });
 
     const denied = new PluginHost({ getSelection: () => snapshot });
     denied.registerPlugin(manifestWith("org.test.denied", []), {
-      commandHandlers: { "org.test.denied.run": async (context) => context.selection }
+      commandHandlers: { [commandIdFor("org.test.denied")]: async (context) => context.selection }
     });
-    await expect(denied.invokeCommand("org.test.denied.run")).resolves.toBeUndefined();
+    await expect(denied.invokeCommand(commandIdFor("org.test.denied"))).resolves.toBeUndefined();
   });
 
   it("hands plugins a deeply frozen, independent copy of the selection snapshot", async () => {
@@ -46,11 +48,11 @@ describe("plugin host selection + storage backends", () => {
     };
     const host = new PluginHost({ getSelection: () => source });
     host.registerPlugin(manifestWith("org.test.frozen", ["selection.read"]), {
-      commandHandlers: { "org.test.frozen.run": async (context) => context.selection?.getSelection() }
+      commandHandlers: { [commandIdFor("org.test.frozen")]: async (context) => context.selection?.getSelection() }
     });
 
-    const first = await host.invokeCommand<PluginSelectionSnapshot>("org.test.frozen.run");
-    const second = await host.invokeCommand<PluginSelectionSnapshot>("org.test.frozen.run");
+    const first = await host.invokeCommand<PluginSelectionSnapshot>(commandIdFor("org.test.frozen"));
+    const second = await host.invokeCommand<PluginSelectionSnapshot>(commandIdFor("org.test.frozen"));
 
     // Immutable: the returned snapshot and its nested objects are frozen.
     expect(Object.isFrozen(first)).toBe(true);
@@ -101,31 +103,31 @@ describe("plugin host selection + storage backends", () => {
       ...manifestWith("org.test.panels", ["ui.panel"]),
       contributes: {
         commands: [
-          { id: "org.test.panels.show", title: "Show" },
-          { id: "org.test.panels.showUndeclared", title: "Show Undeclared" }
+          { id: commandIdFor("org.test.panels", "show"), title: "Show" },
+          { id: commandIdFor("org.test.panels", "showUndeclared"), title: "Show Undeclared" }
         ],
-        panels: [{ id: "nmr.results", title: "NMR Results" }]
+        panels: [{ id: "panel.test.nmrResults", title: "NMR Results" }]
       }
     };
     host.registerPlugin(manifest, {
       commandHandlers: {
-        "org.test.panels.show": async (context) =>
-          context.panels?.showReport("nmr.results", {
+        [commandIdFor("org.test.panels", "show")]: async (context) =>
+          context.panels?.showReport("panel.test.nmrResults", {
             title: "Predicted 1H NMR",
             sections: [
               { kind: "keyValue", rows: [{ label: "Solvent", value: "CDCl3" }] },
               { kind: "svg", svg: "<svg xmlns='http://www.w3.org/2000/svg'/>" }
             ]
           }),
-        "org.test.panels.showUndeclared": async (context) =>
-          context.panels?.showReport("not.declared", { title: "Nope", sections: [] })
+        [commandIdFor("org.test.panels", "showUndeclared")]: async (context) =>
+          context.panels?.showReport("panel.test.notDeclared", { title: "Nope", sections: [] })
       }
     });
 
-    await host.invokeCommand("org.test.panels.show");
-    expect(shown).toEqual([{ pluginId: "org.test.panels", panelId: "nmr.results", title: "Predicted 1H NMR" }]);
+    await host.invokeCommand(commandIdFor("org.test.panels", "show"));
+    expect(shown).toEqual([{ pluginId: "org.test.panels", panelId: "panel.test.nmrResults", title: "Predicted 1H NMR" }]);
 
-    await expect(host.invokeCommand("org.test.panels.showUndeclared")).rejects.toThrow(/does not declare panel/);
+    await expect(host.invokeCommand(commandIdFor("org.test.panels", "showUndeclared"))).rejects.toThrow(/does not declare panel/);
   });
 
   it("fires onProposedPatchesChanged across the proposal lifecycle", () => {

@@ -54,9 +54,30 @@ const NonEmptyStringSchema = z.string().min(1);
 const PermissionListSchema = z.array(PluginPermissionSchema);
 const OptionalPermissionListSchema = z.array(PluginPermissionSchema).default([]);
 
+function namespacedContributionIdSchema(namespace: "plugin" | "menu" | "panel" | "analyzer", label: string) {
+  return IdSchema.regex(
+    new RegExp(`^${namespace}\\.[A-Za-z0-9][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9][A-Za-z0-9_-]*)+$`),
+    `${label} ids must use the form "${namespace}.<pluginName>.<name>".`
+  );
+}
+
+/** Command ids occupy the shared application registry, so plugin commands must never use a core id. */
+export const PluginCommandIdSchema = namespacedContributionIdSchema("plugin", "Plugin command");
+export const PluginMenuIdSchema = namespacedContributionIdSchema("menu", "Plugin menu");
+export const PluginPanelIdSchema = namespacedContributionIdSchema("panel", "Plugin panel");
+export const PluginAnalyzerIdSchema = namespacedContributionIdSchema("analyzer", "Plugin analyzer");
+
+// M39 extracted the already-packaged NMR plugin while its analyzer id still used the older
+// `plugin.*` prefix. Accept that legacy wire shape only at this field boundary and immediately
+// canonicalize it; every parsed manifest and all newly authored output still use `analyzer.*`.
+const CompatiblePluginAnalyzerIdSchema = z.preprocess((candidate) => {
+  const legacy = PluginCommandIdSchema.safeParse(candidate);
+  return legacy.success ? `analyzer.${legacy.data.slice("plugin.".length)}` : candidate;
+}, PluginAnalyzerIdSchema);
+
 export const PluginCommandContributionSchema = z
   .object({
-    id: IdSchema,
+    id: PluginCommandIdSchema,
     title: NonEmptyStringSchema,
     category: z.string().optional(),
     description: z.string().optional(),
@@ -68,9 +89,9 @@ export const PluginCommandContributionSchema = z
 
 export const PluginMenuContributionSchema = z
   .object({
-    id: IdSchema,
+    id: PluginMenuIdSchema,
     title: NonEmptyStringSchema,
-    commandId: IdSchema,
+    commandId: PluginCommandIdSchema,
     location: z.enum(["file", "edit", "view", "structure", "tools", "analyze", "plugins"]).default("plugins"),
     requiredPermissions: OptionalPermissionListSchema
   })
@@ -79,7 +100,7 @@ export const PluginMenuContributionSchema = z
 export const PluginToolbarContributionSchema = z
   .object({
     id: IdSchema,
-    commandId: IdSchema,
+    commandId: PluginCommandIdSchema,
     title: NonEmptyStringSchema.optional(),
     group: z.string().optional(),
     order: z.number().finite().optional(),
@@ -95,7 +116,7 @@ const IconDataUriSchema = z
 
 export const PluginToolsetItemSchema = z
   .object({
-    commandId: IdSchema,
+    commandId: PluginCommandIdSchema,
     title: NonEmptyStringSchema.optional(),
     iconDataUri: IconDataUriSchema.optional(),
     shortcutDisplay: z.string().optional()
@@ -129,9 +150,9 @@ export const PluginToolsetContributionSchema = z
 
 export const PluginPanelContributionSchema = z
   .object({
-    id: IdSchema,
+    id: PluginPanelIdSchema,
     title: NonEmptyStringSchema,
-    commandId: IdSchema.optional(),
+    commandId: PluginCommandIdSchema.optional(),
     requiredPermissions: OptionalPermissionListSchema
   })
   .strict();
@@ -141,7 +162,7 @@ export const PluginTemplateContributionSchema = z
     id: IdSchema,
     title: NonEmptyStringSchema,
     category: z.string().optional(),
-    commandId: IdSchema.optional(),
+    commandId: PluginCommandIdSchema.optional(),
     requiredPermissions: OptionalPermissionListSchema
   })
   .strict();
@@ -151,16 +172,25 @@ export const PluginFormatContributionSchema = z
     id: IdSchema,
     title: NonEmptyStringSchema,
     fileExtensions: z.array(z.string().min(1)).default([]),
-    commandId: IdSchema,
+    commandId: PluginCommandIdSchema,
     requiredPermissions: OptionalPermissionListSchema
   })
   .strict();
 
 export const PluginAnalyzerContributionSchema = z
   .object({
+    id: CompatiblePluginAnalyzerIdSchema,
+    title: NonEmptyStringSchema,
+    commandId: PluginCommandIdSchema,
+    requiredPermissions: OptionalPermissionListSchema
+  })
+  .strict();
+
+export const PluginTransformerContributionSchema = z
+  .object({
     id: IdSchema,
     title: NonEmptyStringSchema,
-    commandId: IdSchema,
+    commandId: PluginCommandIdSchema,
     requiredPermissions: OptionalPermissionListSchema
   })
   .strict();
@@ -170,7 +200,7 @@ export const PluginRecognizerContributionSchema = z
     id: IdSchema,
     title: NonEmptyStringSchema,
     input: z.enum(["selected-image", "pasted-image", "image-file"]).default("selected-image"),
-    commandId: IdSchema,
+    commandId: PluginCommandIdSchema,
     requiredPermissions: OptionalPermissionListSchema
   })
   .strict();
@@ -187,7 +217,7 @@ export const PluginContributionsSchema = z
     importers: z.array(PluginFormatContributionSchema).default([]),
     exporters: z.array(PluginFormatContributionSchema).default([]),
     analyzers: z.array(PluginAnalyzerContributionSchema).default([]),
-    transformers: z.array(PluginAnalyzerContributionSchema).default([]),
+    transformers: z.array(PluginTransformerContributionSchema).default([]),
     recognizers: z.array(PluginRecognizerContributionSchema).default([])
   })
   .strict()
@@ -234,6 +264,27 @@ export const PluginManifestSchema = z
       manifest.contributes.toolsets.map((toolset) => toolset.id),
       ["contributes", "toolsets"],
       "toolset id",
+      ctx
+    );
+
+    addDuplicateIssue(
+      manifest.contributes.menus.map((menu) => menu.id),
+      ["contributes", "menus"],
+      "menu id",
+      ctx
+    );
+
+    addDuplicateIssue(
+      manifest.contributes.panels.map((panel) => panel.id),
+      ["contributes", "panels"],
+      "panel id",
+      ctx
+    );
+
+    addDuplicateIssue(
+      manifest.contributes.analyzers.map((analyzer) => analyzer.id),
+      ["contributes", "analyzers"],
+      "analyzer id",
       ctx
     );
 
@@ -476,6 +527,7 @@ export type PluginPanelContribution = z.infer<typeof PluginPanelContributionSche
 export type PluginTemplateContribution = z.infer<typeof PluginTemplateContributionSchema>;
 export type PluginFormatContribution = z.infer<typeof PluginFormatContributionSchema>;
 export type PluginAnalyzerContribution = z.infer<typeof PluginAnalyzerContributionSchema>;
+export type PluginTransformerContribution = z.infer<typeof PluginTransformerContributionSchema>;
 export type PluginRecognizerContribution = z.infer<typeof PluginRecognizerContributionSchema>;
 export type PluginContributions = z.infer<typeof PluginContributionsSchema>;
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
@@ -574,6 +626,15 @@ export function createStructureSourceFingerprint(input: {
 /** Generic, framework- and domain-neutral derived-analysis records. The host owns id/plugin/time;
  *  the payload is opaque (`unknown`) and interpreted only by the plugin and desktop that share its
  *  `analysisType`/`schemaVersion`. No NMR (or any domain) concepts appear here. */
+export const PluginAnalysisSourceSchema = z
+  .object({
+    documentId: NonEmptyStringSchema,
+    pageId: NonEmptyStringSchema,
+    objectId: NonEmptyStringSchema,
+    sourceFingerprint: NonEmptyStringSchema
+  })
+  .strict();
+
 export interface PluginAnalysisSource {
   documentId: string;
   pageId: string;
@@ -582,6 +643,15 @@ export interface PluginAnalysisSource {
   sourceFingerprint: string;
 }
 
+export const PluginAnalysisProvenanceSchema = z
+  .object({
+    engineId: NonEmptyStringSchema,
+    engineVersion: NonEmptyStringSchema.optional(),
+    dataVersion: NonEmptyStringSchema.optional(),
+    method: NonEmptyStringSchema
+  })
+  .strict();
+
 export interface PluginAnalysisProvenance {
   engineId: string;
   engineVersion?: string;
@@ -589,12 +659,36 @@ export interface PluginAnalysisProvenance {
   method: string;
 }
 
+export const PluginAnalysisWarningSchema = z
+  .object({
+    code: NonEmptyStringSchema,
+    message: NonEmptyStringSchema,
+    severity: z.enum(["info", "warning", "error"]),
+    details: z.record(z.string(), z.unknown()).optional()
+  })
+  .strict();
+
 export interface PluginAnalysisWarning {
   code: string;
   message: string;
   severity: "info" | "warning" | "error";
   details?: Readonly<Record<string, unknown>>;
 }
+
+/** Runtime boundary for analysis writes received from worker or third-party plugin code. The
+ *  domain payload intentionally remains opaque; the host validates the identity/query fields that
+ *  it dereferences and rejects stray or malformed envelope data before storing it. */
+export const PluginAnalysisRecordInputSchema = z
+  .object({
+    analysisType: NonEmptyStringSchema,
+    schemaVersion: NonEmptyStringSchema,
+    source: PluginAnalysisSourceSchema,
+    status: z.enum(["complete", "partial", "failed"]),
+    payload: z.unknown(),
+    warnings: z.array(PluginAnalysisWarningSchema).optional(),
+    provenance: PluginAnalysisProvenanceSchema
+  })
+  .strict();
 
 export interface PluginAnalysisRecordInput<TPayload = unknown> {
   analysisType: string;
@@ -604,6 +698,10 @@ export interface PluginAnalysisRecordInput<TPayload = unknown> {
   payload: TPayload;
   warnings?: readonly PluginAnalysisWarning[];
   provenance: PluginAnalysisProvenance;
+}
+
+export function parsePluginAnalysisRecordInput<TPayload = unknown>(candidate: unknown): PluginAnalysisRecordInput<TPayload> {
+  return PluginAnalysisRecordInputSchema.parse(candidate) as PluginAnalysisRecordInput<TPayload>;
 }
 
 export interface PluginAnalysisRecord<TPayload = unknown> extends PluginAnalysisRecordInput<TPayload> {

@@ -56,7 +56,15 @@ export async function analyzeSelectedStructureMass(
       },
       status: "complete",
       payload: report,
-      warnings: [],
+      warnings: report.netCharge === 0
+        ? []
+        : [
+            {
+              code: "CHARGED_PRECURSOR_NATIVE_ION_ONLY",
+              message: "The selected structure is already charged, so only its native ion is reported.",
+              severity: "info"
+            }
+          ],
       provenance: { engineId: "chemdraft.mass.ocl", engineVersion: "0.0.0", method: "formula-mass" }
     });
 
