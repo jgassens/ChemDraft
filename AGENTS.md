@@ -36,7 +36,7 @@ When `PLANS.md` exists, treat it as the active scoped implementation plan unless
 newer instructions. Keep edits focused on the files, behaviors, and verification listed there; do
 not broaden the slice into adjacent chemistry, rendering, UI polish, or format work.
 
-Notary and app-signing instructions live at `/Users/jeremiahgassensmith/Documents/programming/.notary`.
+Notary and app-signing instructions live at `/Users/jeremiahgassensmith/programming/.notary`.
 Read that directory before signing, notarizing, packaging, or changing release automation.
 
 ## Toolbar Button Contract
