@@ -314,6 +314,42 @@ describe("RecognizedStructureResult", () => {
     expect(dangerousPluginPermissions).toContain("native.execute");
     expect(dangerousPluginPermissions).toContain("model.download");
   });
+
+  // The patch interior is deliberately `passthrough()` (chem-core owns its shape, and the SDK boundary
+  // forbids a runtime chem-core dependency here), which makes this schema the only checkpoint between
+  // untrusted worker output and a trusted `applyPatch`. It must at least refuse keys that are dangerous
+  // purely by being copied onto a target. `JSON.parse` and `structuredClone` both produce these as real
+  // own keys, so a worker really can send one.
+  it("refuses a proposed patch carrying a prototype-polluting key", () => {
+    const polluted = (patch: unknown) => () =>
+      RecognizedStructureResultSchema.parse({
+        sourceImageRef: "fixture://x.png",
+        confidence: 0.5,
+        proposedPatch: { reason: "recognized-structure", patch }
+      });
+
+    // Top level, nested in an object, and nested inside an array element.
+    expect(polluted(JSON.parse('{"op":"addObject","__proto__":{"polluted":true}}'))).toThrow(/prototype-polluting/);
+    expect(polluted(JSON.parse('{"op":"addObject","object":{"__proto__":{"polluted":true}}}'))).toThrow(/prototype-polluting/);
+    expect(polluted(JSON.parse('{"op":"addObject","objects":[{"constructor":{"prototype":{}}}]}'))).toThrow(
+      /prototype-polluting/
+    );
+
+    // Object.prototype must be intact regardless — the guard rejects, it does not merge.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    // An ordinary patch with the same shape but no dangerous key still parses.
+    expect(
+      RecognizedStructureResultSchema.parse({
+        sourceImageRef: "fixture://x.png",
+        confidence: 0.5,
+        proposedPatch: {
+          reason: "recognized-structure",
+          patch: JSON.parse('{"op":"addObject","pageId":"page_001","object":{"id":"mol_001"}}')
+        }
+      }).proposedPatch?.patch.op
+    ).toBe("addObject");
+  });
 });
 
 describe("linkedFigure panel section (ADR-0015)", () => {

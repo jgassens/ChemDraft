@@ -152,6 +152,42 @@ describe("PluginHost", () => {
     expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(PluginHostError);
   });
 
+  // The proposal queue is the one place plugin-authored data is held pending a trusted `applyPatch`.
+  // Handing out the stored object let a caller flip `status` behind the host's back, so that the
+  // queue and `requirePendingProposal` disagreed about what was still pending.
+  it("hands out proposals as frozen copies, so a caller cannot mutate the queue's own state", () => {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({
+      id: "org.chemdraft.patch.demo",
+      name: "Patch Demo",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.proposePatch"]
+    });
+    const queued = host.proposePatch("org.chemdraft.patch.demo", {
+      reason: "recognized-structure",
+      patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+    });
+
+    expect(Object.isFrozen(queued)).toBe(true);
+    expect(() => {
+      (queued as { status: string }).status = "accepted";
+    }).toThrow(TypeError);
+
+    // Mutating a listed copy must not reach the queue either.
+    const [listed] = host.listProposedPatches("pending");
+    expect(() => {
+      (listed as { status: string }).status = "rejected";
+    }).toThrow(TypeError);
+    expect(host.listProposedPatches("pending")).toHaveLength(1);
+
+    // The host's own transitions still work on its internal copy.
+    expect(host.rejectProposedPatch(queued.id).status).toBe("rejected");
+    expect(host.listProposedPatches("pending")).toHaveLength(0);
+  });
+
   it("rejects proposed patches from plugins without document.proposePatch", () => {
     const host = new PluginHost();
     host.registerPlugin({

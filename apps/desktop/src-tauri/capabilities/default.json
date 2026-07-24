@@ -5,7 +5,6 @@
   "windows": [
     "main",
     "toolset-*",
-    "plugin-panel-*",
     "spin3d-debugger",
     "preferences"
   ],

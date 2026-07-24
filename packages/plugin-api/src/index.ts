@@ -488,11 +488,65 @@ export const RecognitionConfidencePointSchema = z
   })
   .strict();
 
+/** Own-property names that poison `Object.prototype` (or an object's prototype chain) when copied
+ *  onto a target by ordinary assignment/merge. `JSON.parse` and `structuredClone` both produce these
+ *  as real own keys, so a worker can send one across the boundary. */
+const PROTOTYPE_POLLUTION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Refuse a patch whose object graph carries a prototype-polluting own key.
+ *
+ * `DocumentPatchLikeSchema` is deliberately `passthrough()`: the patch interior is chem-core's
+ * business, and plugin-api may not take a runtime dependency on chem-core (the M33 SDK boundary), so
+ * it cannot re-validate the op union here. That leaves this schema as the only checkpoint between
+ * untrusted worker output and a trusted `applyPatch`, so it at least refuses the one class of key
+ * that is dangerous purely by virtue of being copied. Rejecting (rather than silently stripping)
+ * keeps a malformed or hostile plugin loud instead of half-applied.
+ */
+function hasPrototypePollutionKey(value: unknown, seen: Set<object> = new Set()): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  if (seen.has(value)) {
+    return false; // already inspected; also stops a cyclic graph from recursing forever
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasPrototypePollutionKey(entry, seen));
+  }
+  for (const key of Object.getOwnPropertyNames(value)) {
+    if (PROTOTYPE_POLLUTION_KEYS.has(key)) {
+      return true;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    // Read through the descriptor: a getter would otherwise run during traversal.
+    if (descriptor && "value" in descriptor && hasPrototypePollutionKey(descriptor.value, seen)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const DocumentPatchLikeSchema = z
-  .object({
-    op: NonEmptyStringSchema
+  .unknown()
+  // Checked on the RAW input, before the object parse. zod writes a top-level `__proto__` with
+  // ordinary assignment, which invokes the prototype setter instead of creating an own key — so by
+  // the time a `.superRefine()` on the parsed output runs, the most dangerous case is invisible.
+  .superRefine((raw, ctx) => {
+    if (hasPrototypePollutionKey(raw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Proposed patch contains a prototype-polluting key (__proto__, constructor, or prototype)."
+      });
+    }
   })
-  .passthrough()
+  .pipe(
+    z
+      .object({
+        op: NonEmptyStringSchema
+      })
+      .passthrough()
+  )
   .transform((patch) => patch as unknown as DocumentPatch);
 
 export const ProposedDocumentPatchSchema = z

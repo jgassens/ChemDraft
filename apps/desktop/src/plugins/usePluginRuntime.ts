@@ -112,11 +112,17 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     []
   );
   const [installedPlugins, setInstalledPlugins] = useState<readonly InstalledPluginCatalogEntry[]>([]);
+  /** Which effect invocation currently owns the installed-plugin registrations in the shared host.
+   *  The host and runtime are created once and outlive every invocation, so under StrictMode two
+   *  invocations register the *same ids* into the *same* host. Ownership is tracked explicitly
+   *  because the registered plugin cannot be compared by identity (the host re-parses the manifest). */
+  const installOwnerGenerationRef = useRef(0);
 
   useEffect(() => {
     if (!stagingFs) {
       return;
     }
+    const generation = ++installOwnerGenerationRef.current;
     let cancelled = false;
     const abortController = new AbortController();
     let loaded: readonly InstalledPluginCatalogEntry[] = [];
@@ -132,8 +138,13 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       });
       loaded = installed;
       if (cancelled) {
+        // Unregister by id ONLY while this invocation is still the owner. A later invocation
+        // (StrictMode's second mount) registers the same ids into the same host, so an id match
+        // alone would tear down *its* live registration and leave the plugin silently missing.
+        // The worker this invocation started is always ours, so it is always deactivated.
+        const superseded = installOwnerGenerationRef.current !== generation;
         for (const entry of installed) {
-          if (runtime.host.getPlugin(entry.record.id)) {
+          if (!superseded && runtime.host.getPlugin(entry.record.id)) {
             runtime.unregisterPlugin(entry.record.id);
           }
           entry.descriptor?.deactivate?.();

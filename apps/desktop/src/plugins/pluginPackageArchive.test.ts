@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
+import { ZIP64_SENTINEL_16, ZIP64_SENTINEL_32, createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
 import {
   DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS,
   PluginPackageError,
@@ -154,6 +154,45 @@ describe("readPluginPackageArchive", () => {
     const zip = await createZipFixture([{ path: "entry.js", content: "abc", methodOverride: 14 }]);
     const error = await expectPackageError(readPluginPackageArchive(zip), PluginPackageErrorCodes.UnsupportedArchive);
     expect(error.message).toContain("compression method 14");
+  });
+
+  // "Zip64 fails closed and loudly" is a headline safety property of this reader: every 32-bit field
+  // below can carry a sentinel meaning "the real value lives in a Zip64 extra field", and silently
+  // treating a sentinel as a real length/offset is how a reader ends up doing arithmetic on 0xffffffff.
+  // Each guard is driven independently so one still-working guard cannot mask a broken one.
+  it("refuses a Zip64 end-of-central-directory locator", async () => {
+    const zip = await createZipFixture([{ path: "entry.js", content: "abc" }], { zip64Locator: true });
+    const error = await expectPackageError(readPluginPackageArchive(zip), PluginPackageErrorCodes.UnsupportedArchive);
+    expect(error.message).toContain("Zip64");
+  });
+
+  it("refuses the Zip64 entry-count and central-directory-offset sentinels in the EOCD", async () => {
+    const withEntryCountSentinel = await createZipFixture([{ path: "entry.js", content: "abc" }], {
+      entryCountOverride: ZIP64_SENTINEL_16
+    });
+    expect(
+      (await expectPackageError(readPluginPackageArchive(withEntryCountSentinel), PluginPackageErrorCodes.UnsupportedArchive))
+        .message
+    ).toContain("Zip64");
+
+    const withOffsetSentinel = await createZipFixture([{ path: "entry.js", content: "abc" }], {
+      centralDirectoryOffsetOverride: ZIP64_SENTINEL_32
+    });
+    expect(
+      (await expectPackageError(readPluginPackageArchive(withOffsetSentinel), PluginPackageErrorCodes.UnsupportedArchive)).message
+    ).toContain("Zip64");
+  });
+
+  it("refuses a Zip64 sentinel in an entry's sizes or local-header offset", async () => {
+    for (const override of [
+      { compressedSizeOverride: ZIP64_SENTINEL_32 },
+      { sizeOverride: ZIP64_SENTINEL_32 },
+      { localHeaderOffsetOverride: ZIP64_SENTINEL_32 }
+    ]) {
+      const zip = await createZipFixture([{ path: "entry.js", content: "abc", ...override }]);
+      const error = await expectPackageError(readPluginPackageArchive(zip), PluginPackageErrorCodes.UnsupportedArchive);
+      expect(error.message, JSON.stringify(override)).toContain("Zip64");
+    }
   });
 
   it("refuses a file that is not a zip, and one that is truncated", async () => {

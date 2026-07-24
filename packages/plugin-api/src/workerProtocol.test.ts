@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { parsePluginManifest, type PluginManifest } from "./index";
 import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
+  PluginWorkerErrorCodes,
   checkWorkerHandshake,
   isPluginApiVersionCompatible,
   type HostToWorkerMessage,
@@ -35,6 +36,11 @@ class ControlledEndpoint implements PluginWorkerEndpoint {
 
   deliver(message: HostToWorkerMessage): void {
     this.listener?.({ data: message });
+  }
+
+  /** Deliver an arbitrary payload, to exercise the runtime's tolerance of non-protocol frames. */
+  deliverRaw(data: unknown): void {
+    this.listener?.({ data });
   }
 }
 
@@ -231,5 +237,67 @@ describe("runPluginWorker", () => {
     runPluginWorker({ manifest: manifest([]), commandHandlers: {}, onPanelClosed: (panelId) => (closed = panelId) }, endpoint);
     endpoint.deliver({ kind: "panelClosed", panelId: "panel.review" });
     expect(closed).toBe("panel.review");
+  });
+
+  // A failure frame whose `error` payload is missing/!string must still settle the pending capability.
+  // Building the rejection eagerly used to throw *before* the reject ran, and because the pending entry
+  // was already removed from the map nothing could ever settle it: the handler — and the host
+  // invocation waiting on it — hung forever.
+  it("settles a capability call even when the host's failure payload is malformed", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker(
+      {
+        manifest: manifest(["selection.read"]),
+        commandHandlers: {
+          [commandId]: async (context) => {
+            try {
+              await context.selection?.getSelection();
+              return "unexpectedly-resolved";
+            } catch (error: unknown) {
+              return `rejected:${(error as { code?: string }).code}`;
+            }
+          }
+        }
+      },
+      endpoint
+    );
+    endpoint.sent.length = 0;
+
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 20, commandId });
+    await flush();
+    const request = endpoint.sent.find(
+      (message): message is Extract<WorkerToHostMessage, { kind: "capabilityRequest" }> => message.kind === "capabilityRequest"
+    );
+    expect(request).toBeDefined();
+
+    // `error` omitted entirely — a host bug, but the worker must not hang on it.
+    endpoint.deliver({ kind: "capabilityResult", requestId: request!.requestId, ok: false } as unknown as HostToWorkerMessage);
+    await flush();
+
+    expect(endpoint.sent).toContainEqual(
+      expect.objectContaining({
+        kind: "commandSettled",
+        commandRequestId: 20,
+        ok: true,
+        value: `rejected:${PluginWorkerErrorCodes.MalformedMessage}`
+      })
+    );
+  });
+
+  it("ignores a non-protocol message instead of throwing inside the listener", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker({ manifest: manifest([]), commandHandlers: { [commandId]: async () => "ok" } }, endpoint);
+    endpoint.sent.length = 0;
+
+    // `event.data` is only as trustworthy as the sender; dereferencing `.kind` on these used to throw.
+    for (const hostile of [null, undefined, 42, "invokeCommand", { kind: "invokeCommand" }, { kind: "nope" }]) {
+      expect(() => endpoint.deliverRaw(hostile), JSON.stringify(hostile ?? null)).not.toThrow();
+    }
+    expect(endpoint.sent).toEqual([]);
+
+    // A well-formed message still works after the bad frames.
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 21, commandId });
+    await flush();
+    expect(endpoint.sent).toContainEqual(expect.objectContaining({ kind: "commandSettled", commandRequestId: 21, ok: true }));
   });
 });

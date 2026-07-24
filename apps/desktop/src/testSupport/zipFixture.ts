@@ -14,6 +14,11 @@
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
 const CENTRAL_HEADER_SIGNATURE = 0x02014b50;
 const EOCD_SIGNATURE = 0x06054b50;
+const ZIP64_EOCD_LOCATOR_SIGNATURE = 0x07064b50;
+/** The value a 32-bit zip field carries when the real value lives in a Zip64 extra field. */
+export const ZIP64_SENTINEL_32 = 0xffffffff;
+/** The 16-bit equivalent, used for the EOCD's entry count. */
+export const ZIP64_SENTINEL_16 = 0xffff;
 
 export interface ZipFixtureEntry {
   path: string;
@@ -27,14 +32,33 @@ export interface ZipFixtureEntry {
   crcOverride?: number;
   /** Override the uncompressed size written to the archive. */
   sizeOverride?: number;
+  /** Override the compressed size written to the archive. `0xffffffff` is the Zip64 sentinel. */
+  compressedSizeOverride?: number;
+  /** Override the local-header offset in the central directory. `0xffffffff` is the Zip64 sentinel. */
+  localHeaderOffsetOverride?: number;
   /** Override the compression method, to simulate an unreadable archive. */
   methodOverride?: number;
   /** Set general-purpose bit flags (e.g. 0x01 for "encrypted"). */
   flags?: number;
 }
 
+export interface ZipFixtureOptions {
+  /**
+   * Emit a Zip64 end-of-central-directory locator immediately before the EOCD, as a real Zip64
+   * writer does. Readers that cannot handle Zip64 are expected to detect this and refuse.
+   */
+  zip64Locator?: boolean;
+  /** Override the entry count written to the EOCD. `0xffff` is the Zip64 sentinel. */
+  entryCountOverride?: number;
+  /** Override the central-directory offset written to the EOCD. `0xffffffff` is the Zip64 sentinel. */
+  centralDirectoryOffsetOverride?: number;
+}
+
 /** Build a zip. Entries are stored (method 0) unless `deflate` is set. */
-export async function createZipFixture(entries: readonly ZipFixtureEntry[]): Promise<Uint8Array> {
+export async function createZipFixture(
+  entries: readonly ZipFixtureEntry[],
+  options: ZipFixtureOptions = {}
+): Promise<Uint8Array> {
   const locals: Uint8Array[] = [];
   const centrals: Uint8Array[] = [];
   let offset = 0;
@@ -47,6 +71,8 @@ export async function createZipFixture(entries: readonly ZipFixtureEntry[]): Pro
     const crc = entry.crcOverride ?? crc32(raw);
     const uncompressedSize = entry.sizeOverride ?? raw.byteLength;
     const flags = entry.flags ?? 0;
+    const compressedSize = entry.compressedSizeOverride ?? data.byteLength;
+    const localHeaderOffset = entry.localHeaderOffsetOverride ?? offset;
 
     const local = new Uint8Array(30 + name.byteLength);
     const localView = new DataView(local.buffer);
@@ -55,7 +81,7 @@ export async function createZipFixture(entries: readonly ZipFixtureEntry[]): Pro
     localView.setUint16(6, flags, true);
     localView.setUint16(8, method, true);
     localView.setUint32(14, crc, true);
-    localView.setUint32(18, data.byteLength, true);
+    localView.setUint32(18, compressedSize, true);
     localView.setUint32(22, uncompressedSize, true);
     localView.setUint16(26, name.byteLength, true);
     local.set(name, 30);
@@ -68,10 +94,10 @@ export async function createZipFixture(entries: readonly ZipFixtureEntry[]): Pro
     centralView.setUint16(8, flags, true);
     centralView.setUint16(10, method, true);
     centralView.setUint32(16, crc, true);
-    centralView.setUint32(20, data.byteLength, true);
+    centralView.setUint32(20, compressedSize, true);
     centralView.setUint32(24, uncompressedSize, true);
     centralView.setUint16(28, name.byteLength, true);
-    centralView.setUint32(42, offset, true);
+    centralView.setUint32(42, localHeaderOffset, true);
     central.set(name, 46);
 
     locals.push(local, data);
@@ -83,12 +109,27 @@ export async function createZipFixture(entries: readonly ZipFixtureEntry[]): Pro
   const eocd = new Uint8Array(22);
   const eocdView = new DataView(eocd.buffer);
   eocdView.setUint32(0, EOCD_SIGNATURE, true);
-  eocdView.setUint16(8, entries.length, true);
-  eocdView.setUint16(10, entries.length, true);
+  eocdView.setUint16(8, options.entryCountOverride ?? entries.length, true);
+  eocdView.setUint16(10, options.entryCountOverride ?? entries.length, true);
   eocdView.setUint32(12, centralDirectory.byteLength, true);
-  eocdView.setUint32(16, offset, true);
+  eocdView.setUint32(16, options.centralDirectoryOffsetOverride ?? offset, true);
 
-  return concat([...locals, centralDirectory, eocd]);
+  // A real Zip64 archive carries a 20-byte locator directly before the EOCD; emitting it is how a
+  // fixture can prove the reader refuses Zip64 instead of misreading the 32-bit fields.
+  const locator = options.zip64Locator ? buildZip64Locator(offset + centralDirectory.byteLength) : undefined;
+
+  return concat([...locals, centralDirectory, ...(locator ? [locator] : []), eocd]);
+}
+
+function buildZip64Locator(zip64EocdOffset: number): Uint8Array {
+  const locator = new Uint8Array(20);
+  const view = new DataView(locator.buffer);
+  view.setUint32(0, ZIP64_EOCD_LOCATOR_SIGNATURE, true);
+  view.setUint32(4, 0, true); // disk holding the Zip64 EOCD
+  view.setUint32(8, zip64EocdOffset, true); // 64-bit offset, low word
+  view.setUint32(12, 0, true); // high word
+  view.setUint32(16, 1, true); // total disks
+  return locator;
 }
 
 /** Flip one byte, to simulate a corrupted download. */

@@ -250,8 +250,16 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
         options.replaces.activate?.();
         runtime.registerPlugin(options.replaces.manifest, options.replaces.options);
       }
-    } catch {
-      /* nothing more we can do while already failing */
+    } catch (rollbackFailure: unknown) {
+      // Rollback itself failed, so the bundled plugin this install replaced is now registered
+      // nowhere and silently disappears until the next reload. Nothing here can repair that, but it
+      // must not be invisible: surface it alongside the install error being thrown below.
+      runtime.panels.reportDiagnostic(
+        "installed-plugin-rollback-failed",
+        `Restoring the bundled plugin "${pluginId}" after a failed install did not succeed; it is unavailable until the app is reloaded: ${
+          rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)
+        }`
+      );
     }
     throw asInstallError(cause, pluginId);
   }

@@ -427,13 +427,13 @@ export class PluginHost {
 
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
-    return queued;
+    return snapshotProposal(queued);
   }
 
   listProposedPatches(status?: ProposedPatchStatus): QueuedProposedPatch[] {
-    return Array.from(this.proposedPatches.values()).filter((proposal) => {
-      return status ? proposal.status === status : true;
-    });
+    return Array.from(this.proposedPatches.values())
+      .filter((proposal) => (status ? proposal.status === status : true))
+      .map(snapshotProposal);
   }
 
   acceptProposedPatch(
@@ -455,7 +455,7 @@ export class PluginHost {
     queued.status = "rejected";
     queued.resolvedAt = this.timestamp();
     this.onProposedPatchesChanged?.();
-    return queued;
+    return snapshotProposal(queued);
   }
 
   getStorage(pluginId: string): PluginStorage {
@@ -653,6 +653,13 @@ function assertStorageKey(key: string): void {
  *  immutable, so a plugin can neither mutate the host's state nor another caller's result. */
 function freezeSelectionSnapshot(snapshot: PluginSelectionSnapshot): PluginSelectionSnapshot {
   return deepFreeze(structuredClone(snapshot));
+}
+
+/** Hand out proposals by value, matching the selection/analysis boundaries. Returning the stored
+ *  object let a caller flip `status` underneath the queue (so `requirePendingProposal` would then
+ *  disagree with the host's own state); a frozen clone makes that mutation fail instead. */
+function snapshotProposal(queued: QueuedProposedPatch): QueuedProposedPatch {
+  return deepFreeze(structuredClone(queued));
 }
 
 function deepFreeze<T>(value: T): T {

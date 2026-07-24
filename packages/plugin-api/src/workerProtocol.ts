@@ -87,8 +87,63 @@ export const PluginWorkerErrorCodes = {
   /** The startup handshake failed a version check. */
   VersionMismatch: "PLUGIN_WORKER_VERSION_MISMATCH",
   /** The worker thread crashed. */
-  WorkerCrashed: "PLUGIN_WORKER_CRASHED"
+  WorkerCrashed: "PLUGIN_WORKER_CRASHED",
+  /** A message crossing the boundary did not match the protocol shape and was refused. */
+  MalformedMessage: "PLUGIN_WORKER_MALFORMED_MESSAGE"
 } as const;
+
+/**
+ * Normalize an arbitrary value into a usable error payload.
+ *
+ * A malformed failure message must still settle the waiting promise: constructing an error from a
+ * missing/!string `message` used to throw *before* the rejection ran, stranding the caller forever.
+ * Anything unrecognizable degrades to a {@link PluginWorkerErrorCodes.MalformedMessage} payload.
+ */
+export function toPluginWorkerErrorPayload(value: unknown): PluginWorkerErrorPayload {
+  const candidate = typeof value === "object" && value !== null ? (value as Partial<PluginWorkerErrorPayload>) : undefined;
+  const code = typeof candidate?.code === "string" && candidate.code.length > 0 ? candidate.code : PluginWorkerErrorCodes.MalformedMessage;
+  const message =
+    typeof candidate?.message === "string" && candidate.message.length > 0
+      ? candidate.message
+      : "The plugin worker boundary reported a failure with no usable message.";
+  return { code, message };
+}
+
+/**
+ * Structurally validate a host → worker message before the runtime acts on it.
+ *
+ * `event.data` is attacker-shaped in principle and host-bug-shaped in practice; dereferencing
+ * `message.kind` on a `null`/primitive payload throws inside the worker's message listener, which
+ * surfaces as an opaque worker error rather than an ignored bad frame. Returns `undefined` for
+ * anything that is not a well-formed message so the caller can drop it deliberately.
+ */
+export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | undefined {
+  if (typeof data !== "object" || data === null) {
+    return undefined;
+  }
+  const message = data as { kind?: unknown; [key: string]: unknown };
+  const isIndex = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
+  switch (message.kind) {
+    case "invokeCommand":
+      return isIndex(message.commandRequestId) && typeof message.commandId === "string"
+        ? (message as unknown as HostToWorkerMessage)
+        : undefined;
+    case "capabilityResult": {
+      if (!isIndex(message.requestId) || typeof message.ok !== "boolean") {
+        return undefined;
+      }
+      // A failure frame is accepted even when `error` is malformed; the payload is normalized by
+      // `toPluginWorkerErrorPayload` so the pending capability always settles.
+      return message as unknown as HostToWorkerMessage;
+    }
+    case "panelClosed":
+      return typeof message.panelId === "string" ? (message as unknown as HostToWorkerMessage) : undefined;
+    case "abort":
+      return isIndex(message.commandRequestId) ? (message as unknown as HostToWorkerMessage) : undefined;
+    default:
+      return undefined;
+  }
+}
 
 /** A minimal message-port shape both a real worker global scope and a real main-thread `Worker`
  *  satisfy structurally (both have `postMessage` + `addEventListener("message")`). Kept here so the
