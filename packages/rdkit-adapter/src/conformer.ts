@@ -38,12 +38,18 @@ import {
 export interface RdkitJsMol {
   generate_3d_embed(detailsJson: string): string;
   optimize_3d_conformer(detailsJson: string): string;
+  /** MinimalLib's built-in CoordGen/RDKit 2D coordinate generator. */
+  set_new_coords?(useCoordGen?: boolean): boolean;
+  /** Serialize the molecule, including generated 2D coordinates and stereo bonds. */
+  get_molblock?(): string;
+  /** Canonical isomeric SMILES, used by real-engine identity regression tests. */
+  get_smiles?(): string;
   delete(): void;
 }
 
 export interface RdkitMinimalModule {
-  /** Parse a molblock. `detailsJson` carries e.g. `{ removeHs: false }`. Returns null on failure. */
-  get_mol(molblock: string, detailsJson?: string): RdkitJsMol | null;
+  /** Parse SMILES or a molblock. `detailsJson` carries e.g. `{ removeHs: false }`. */
+  get_mol(structure: string, detailsJson?: string): RdkitJsMol | null;
   version?(): string;
 }
 
@@ -76,6 +82,348 @@ export function ensureRdkit(): Promise<RdkitMinimalModule> {
 export function resetRdkitForTesting(): void {
   moduleLoader = undefined;
   modulePromise = undefined;
+}
+
+interface DepictionCandidateMetrics {
+  atomCount: number;
+  bondCount: number;
+  properCrossings: number;
+  minimumNonbondedDistanceInBondLengths: number;
+  horizontalAspectRatio: number;
+}
+
+function depictionCandidateMetrics(molfile: string): DepictionCandidateMetrics | undefined {
+  const lines = molfile.split(/\r?\n/);
+  const countsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+  if (countsIndex < 0) return undefined;
+  const countsLine = lines[countsIndex] ?? "";
+  const atomCount = Number.parseInt(countsLine.slice(0, 3).trim(), 10);
+  const bondCount = Number.parseInt(countsLine.slice(3, 6).trim(), 10);
+  if (!Number.isInteger(atomCount) || atomCount < 1 || !Number.isInteger(bondCount) || bondCount < 1) {
+    return undefined;
+  }
+
+  const atoms = lines.slice(countsIndex + 1, countsIndex + 1 + atomCount).map((line) => ({
+    x: Number.parseFloat(line.slice(0, 10)),
+    y: Number.parseFloat(line.slice(10, 20))
+  }));
+  const bonds = lines
+    .slice(countsIndex + 1 + atomCount, countsIndex + 1 + atomCount + bondCount)
+    .map((line) => ({
+      from: Number.parseInt(line.slice(0, 3).trim(), 10) - 1,
+      to: Number.parseInt(line.slice(3, 6).trim(), 10) - 1
+    }));
+  if (
+    atoms.length !== atomCount || bonds.length !== bondCount ||
+    atoms.some((atom) => !Number.isFinite(atom.x) || !Number.isFinite(atom.y)) ||
+    bonds.some((bond) =>
+      !Number.isInteger(bond.from) || !Number.isInteger(bond.to) ||
+      bond.from < 0 || bond.to < 0 || bond.from >= atomCount || bond.to >= atomCount
+    )
+  ) {
+    return undefined;
+  }
+
+  const lengths = bonds.map((bond) => {
+    const from = atoms[bond.from]!;
+    const to = atoms[bond.to]!;
+    return Math.hypot(to.x - from.x, to.y - from.y);
+  });
+  const meanLength = lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+  if (!Number.isFinite(meanLength) || meanLength <= 0) return undefined;
+
+  const bondedPairs = new Set(bonds.flatMap((bond) => [
+    `${bond.from}:${bond.to}`,
+    `${bond.to}:${bond.from}`
+  ]));
+  let minimumNonbondedDistance = Number.POSITIVE_INFINITY;
+  for (let first = 0; first < atoms.length; first += 1) {
+    for (let second = first + 1; second < atoms.length; second += 1) {
+      if (bondedPairs.has(`${first}:${second}`)) continue;
+      const left = atoms[first]!;
+      const right = atoms[second]!;
+      minimumNonbondedDistance = Math.min(
+        minimumNonbondedDistance,
+        Math.hypot(right.x - left.x, right.y - left.y)
+      );
+    }
+  }
+
+  const orientation = (first: number, second: number, third: number): number => {
+    const a = atoms[first]!;
+    const b = atoms[second]!;
+    const c = atoms[third]!;
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  };
+  let properCrossings = 0;
+  for (let left = 0; left < bonds.length; left += 1) {
+    for (let right = left + 1; right < bonds.length; right += 1) {
+      const a = bonds[left]!;
+      const b = bonds[right]!;
+      if (new Set([a.from, a.to, b.from, b.to]).size < 4) continue;
+      if (
+        orientation(a.from, a.to, b.from) * orientation(a.from, a.to, b.to) < -1e-8 &&
+        orientation(b.from, b.to, a.from) * orientation(b.from, b.to, a.to) < -1e-8
+      ) {
+        properCrossings += 1;
+      }
+    }
+  }
+
+  const xs = atoms.map((atom) => atom.x);
+  const ys = atoms.map((atom) => atom.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  return {
+    atomCount,
+    bondCount,
+    properCrossings,
+    minimumNonbondedDistanceInBondLengths: minimumNonbondedDistance / meanLength,
+    horizontalAspectRatio: height > 0 ? width / height : Number.POSITIVE_INFINITY
+  };
+}
+
+function preferCoordGenDepiction(standardMolfile: string, coordGenMolfile: string): boolean {
+  const standard = depictionCandidateMetrics(standardMolfile);
+  const coordGen = depictionCandidateMetrics(coordGenMolfile);
+  if (
+    !standard || !coordGen ||
+    standard.atomCount !== coordGen.atomCount || standard.bondCount !== coordGen.bondCount
+  ) {
+    return false;
+  }
+
+  if (coordGen.properCrossings !== standard.properCrossings) {
+    return coordGen.properCrossings < standard.properCrossings &&
+      coordGen.minimumNonbondedDistanceInBondLengths >= 0.6;
+  }
+
+  // Do not trade a clear atom overlap for a preferred orientation. This keeps the standard
+  // drawer for compact bridged cages where CoordGen can place non-bonded atoms too close.
+  if (
+    coordGen.minimumNonbondedDistanceInBondLengths < 0.6 ||
+    coordGen.minimumNonbondedDistanceInBondLengths + 0.1 <
+      standard.minimumNonbondedDistanceInBondLengths
+  ) {
+    return false;
+  }
+  if (
+    standard.minimumNonbondedDistanceInBondLengths + 0.1 <
+      coordGen.minimumNonbondedDistanceInBondLengths
+  ) {
+    return true;
+  }
+
+  // When both candidates are equally clear, prefer the horizontal ring-train depiction. That
+  // is the important distinction for the reported 63-atom polyether: 2.90:1 with CoordGen versus
+  // a folded 0.75:1 standard result, with equal spacing and no crossings.
+  return coordGen.horizontalAspectRatio > standard.horizontalAspectRatio + 0.2;
+}
+
+/**
+ * Return canonical isomeric identity when MinimalLib exposes it.
+ *
+ * `undefined` means this loader does not expose `get_smiles` (the lightweight unit-test
+ * mocks predate the 2D identity guard); `null` means the identity API exists but parsing
+ * or canonicalization failed. Keeping those states distinct lets old mocks retain their
+ * geometry-only fallback while a real-engine failure rejects the optional CoordGen candidate.
+ */
+function canonicalIsomericIdentity(
+  rdkit: RdkitMinimalModule,
+  structure: string
+): string | null | undefined {
+  let molecule: RdkitJsMol | null;
+  try {
+    molecule = rdkit.get_mol(structure);
+  } catch {
+    return null;
+  }
+  if (!molecule) return null;
+  try {
+    if (!molecule.get_smiles) return undefined;
+    const identity = molecule.get_smiles();
+    return typeof identity === "string" && identity.length > 0 ? identity : null;
+  } catch {
+    return null;
+  } finally {
+    molecule.delete();
+  }
+}
+
+/**
+ * Establish the source identity only after proving RDKit's standard serialized depiction
+ * preserves it. A standard/source mismatch must escape `generateSmiles2DMolfile`: unlike an
+ * optional bad CoordGen candidate, there is no safe RDKit fallback left, so the desktop caller
+ * needs the rejection to invoke its OpenChemLib path.
+ *
+ * `undefined` is the deliberate mock fallback for injected MinimalLib surfaces that predate
+ * canonical SMILES support.
+ */
+function validatedStandardIsomericIdentity(
+  rdkit: RdkitMinimalModule,
+  sourceSmiles: string,
+  standardMolfile: string
+): string | undefined {
+  const sourceIdentity = canonicalIsomericIdentity(rdkit, sourceSmiles);
+  if (sourceIdentity === undefined) return undefined;
+  if (sourceIdentity === null) {
+    throw new Error("RDKit could not verify the source SMILES isomeric identity.");
+  }
+
+  const standardIdentity = canonicalIsomericIdentity(rdkit, standardMolfile);
+  if (standardIdentity !== sourceIdentity) {
+    throw new Error("RDKit standard 2D depiction changed the source isomeric stereochemistry.");
+  }
+  return sourceIdentity;
+}
+
+/**
+ * A CoordGen molfile is eligible only when reparsing it gives the already-validated source
+ * identity. This catches lost as well as inverted tetrahedral/alkene stereo in the serialized
+ * candidate rather than trusting the live generator molecule, whose internal chiral tags may
+ * survive a bad wedge layout.
+ */
+function coordGenPreservesIsomericIdentity(
+  rdkit: RdkitMinimalModule,
+  sourceIdentity: string | undefined,
+  coordGenMolfile: string
+): boolean | undefined {
+  if (sourceIdentity === undefined) return undefined;
+  const coordGenIdentity = canonicalIsomericIdentity(rdkit, coordGenMolfile);
+  return coordGenIdentity === sourceIdentity;
+}
+
+/**
+ * Give elongated pasted SMILES a stable reading direction: the atom at which the SMILES starts
+ * belongs on the left. CoordGen can otherwise emit the same wide depiction in either horizontal
+ * orientation, which made the reported polyether read backwards relative to its input and the
+ * reference drawing.
+ *
+ * A horizontal reflection reverses the planar handedness of tetrahedral centers, so every V2000
+ * up/down stereo flag must be exchanged at the same time. The real-engine regression below reparses
+ * the result and compares canonical isomeric SMILES; this is an appearance-only operation.
+ */
+function orientHorizontalDepictionFromSmilesStart(molfile: string): string {
+  const lineEnding = molfile.includes("\r\n") ? "\r\n" : "\n";
+  const lines = molfile.split(/\r?\n/);
+  const countsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+  if (countsIndex < 0) return molfile;
+
+  const countsLine = lines[countsIndex] ?? "";
+  const atomCount = Number.parseInt(countsLine.slice(0, 3).trim(), 10);
+  const bondCount = Number.parseInt(countsLine.slice(3, 6).trim(), 10);
+  if (!Number.isInteger(atomCount) || atomCount < 2 || !Number.isInteger(bondCount) || bondCount < 1) {
+    return molfile;
+  }
+
+  const atomStart = countsIndex + 1;
+  const atomLines = lines.slice(atomStart, atomStart + atomCount);
+  const atoms = atomLines.map((line) => ({
+    x: Number.parseFloat(line.slice(0, 10)),
+    y: Number.parseFloat(line.slice(10, 20))
+  }));
+  if (atoms.some((atom) => !Number.isFinite(atom.x) || !Number.isFinite(atom.y))) return molfile;
+
+  const xs = atoms.map((atom) => atom.x);
+  const ys = atoms.map((atom) => atom.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const width = maxX - minX;
+  const height = Math.max(...ys) - Math.min(...ys);
+  const firstAtom = atoms[0]!;
+  const midpointX = (minX + maxX) / 2;
+
+  // Compact and near-symmetric depictions do not have a useful left-to-right reading direction.
+  if (width <= height * 1.5 || firstAtom.x <= midpointX + width * 0.02) return molfile;
+
+  const reflected = [...lines];
+  for (let index = 0; index < atomCount; index += 1) {
+    const line = atomLines[index]!;
+    const reflectedX = minX + maxX - atoms[index]!.x;
+    reflected[atomStart + index] = `${reflectedX.toFixed(4).padStart(10)}${line.slice(10)}`;
+  }
+
+  const bondStart = atomStart + atomCount;
+  for (let index = 0; index < bondCount; index += 1) {
+    const line = lines[bondStart + index];
+    if (!line) return molfile;
+    const stereo = Number.parseInt(line.slice(9, 12).trim(), 10) || 0;
+    const reflectedStereo = stereo === 1 ? 6 : stereo === 6 ? 1 : stereo;
+    if (reflectedStereo !== stereo) {
+      reflected[bondStart + index] = `${line.slice(0, 9)}${String(reflectedStereo).padStart(3)}${line.slice(12)}`;
+    }
+  }
+  return reflected.join(lineEnding);
+}
+
+function identityCheckedHorizontalOrientation(
+  rdkit: RdkitMinimalModule,
+  sourceIdentity: string | undefined,
+  molfile: string
+): string {
+  const oriented = orientHorizontalDepictionFromSmilesStart(molfile);
+  if (oriented === molfile || sourceIdentity === undefined) return oriented;
+  // Reflection is appearance-only only if reparsing proves the same isomer. Keep the already
+  // validated unreflected candidate if an unfamiliar molfile stereo encoding cannot be mirrored
+  // safely by the V2000 up/down swap above.
+  return canonicalIsomericIdentity(rdkit, oriented) === sourceIdentity ? oriented : molfile;
+}
+
+function generated2DMolfile(
+  rdkit: RdkitMinimalModule,
+  smiles: string,
+  useCoordGen: boolean
+): string {
+  const molecule = rdkit.get_mol(smiles);
+  if (!molecule) {
+    throw new Error("RDKit could not parse the pasted SMILES.");
+  }
+  try {
+    if (!molecule.set_new_coords || !molecule.get_molblock) {
+      throw new Error("The bundled RDKit engine does not expose 2D coordinate generation.");
+    }
+    if (!molecule.set_new_coords(useCoordGen)) {
+      throw new Error("RDKit could not generate 2D coordinates for the pasted SMILES.");
+    }
+    const molfile = molecule.get_molblock();
+    if (!molfile.includes("M  END")) {
+      throw new Error("RDKit returned an invalid 2D molfile.");
+    }
+    return molfile;
+  } finally {
+    molecule.delete();
+  }
+}
+
+/**
+ * Generate depiction-grade 2D coordinates for a SMILES with the already bundled RDKit
+ * MinimalLib. The module remains lazy: callers register its loader and invoke this only after
+ * the user pastes a SMILES. Returning a molfile lets the existing, tested molfile parser own
+ * atom/bond extraction and wedge direction semantics.
+ */
+export async function generateSmiles2DMolfile(smiles: string): Promise<string> {
+  const rdkit = await ensureRdkit();
+  const standardMolfile = generated2DMolfile(rdkit, smiles, false);
+  // Keep this outside the optional CoordGen try/catch. If RDKit's baseline depiction has already
+  // changed stereo, returning it would suppress the caller's safer OpenChemLib fallback.
+  const sourceIdentity = validatedStandardIsomericIdentity(rdkit, smiles, standardMolfile);
+  try {
+    const coordGenMolfile = generated2DMolfile(rdkit, smiles, true);
+    const preservesIsomericIdentity = coordGenPreservesIsomericIdentity(
+      rdkit,
+      sourceIdentity,
+      coordGenMolfile
+    );
+    const selectedMolfile = preservesIsomericIdentity !== false &&
+      preferCoordGenDepiction(standardMolfile, coordGenMolfile)
+      ? coordGenMolfile
+      : standardMolfile;
+    return identityCheckedHorizontalOrientation(rdkit, sourceIdentity, selectedMolfile);
+  } catch {
+    // The standard depiction is already valid. CoordGen is a readability candidate, not a
+    // prerequisite, so a missing/failed optional candidate must not reject the SMILES paste.
+    return identityCheckedHorizontalOrientation(rdkit, sourceIdentity, standardMolfile);
+  }
 }
 
 // --- binding payloads (see ../vendor/BUILD.md) ------------------------------

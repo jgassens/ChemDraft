@@ -356,6 +356,7 @@ import {
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
   insertSmilesMolecule,
+  pastedStructureDepictionFromMolfile,
   nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
   nativeChargeAssociationsForMolecule,
@@ -1269,7 +1270,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.17.12.50-fable";
+const CURRENT_BUILD_STAMP = "7.24.09.42-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1488,9 +1489,9 @@ export interface SelectionPressSample {
   /** The document object resolved under the press, if any. */
   objectId?: string;
   /**
-   * The molecule sub-part the press resolved to (atom/bond/ring), if any. Two presses on the same
-   * molecule but different parts are NOT a double-press: clicking ring A then ring B selects ring
-   * B rather than drilling into the whole molecule.
+   * The molecule sub-part the press resolved to (atom/bond/ring), if any. Different parts count
+   * only when both presses stay on the same molecule and are spatially tight; clicking a distant
+   * ring or a neighboring molecule remains ordinary part selection.
    */
   partKey?: string;
 }
@@ -4895,13 +4896,61 @@ export function MainWindow({
     setStatus(result.status);
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
-  // SMILES → editable 2D structure with stereochemistry. Async because the OCL engine
-  // is dynamically imported (kept out of the static/test graph). Returns false when the
-  // text isn't a parseable SMILES, so callers can fall back to pasting it as plain text.
+  // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
+  // on demand (kept out of the static startup graph). Returns false when the text isn't a
+  // parseable SMILES, so callers can fall back to pasting it as plain text.
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<boolean> => {
     try {
       const ocl = await import("@chemdraft/ocl-adapter");
-      const depiction = ocl.depictSmiles2D(smilesText);
+      let depiction: ReturnType<typeof pastedStructureDepictionFromMolfile>;
+      let stereoCount = 0;
+      try {
+        const [{ registerRdkitWasmLoader }, rdkit] = await Promise.all([
+          import("./rdkitWasmLoader"),
+          import("@chemdraft/rdkit-adapter")
+        ]);
+        registerRdkitWasmLoader();
+        const generatedMolfile = await rdkit.generateSmiles2DMolfile(smilesText);
+        depiction = pastedStructureDepictionFromMolfile(generatedMolfile);
+        stereoCount = ocl.perceiveStereoCentersFromMolfile(generatedMolfile)
+          .filter((center) => center.isStereoCenter).length;
+      } catch {
+        // RDKit is the readability-first path for fused/bridged systems. OpenChemLib remains a
+        // complete local fallback if its WASM asset cannot be loaded or cannot depict a SMILES.
+        const fallback = ocl.depictSmiles2D(smilesText);
+        try {
+          depiction = pastedStructureDepictionFromMolfile(fallback.molfile);
+          stereoCount = ocl.perceiveStereoCentersFromMolfile(fallback.molfile)
+            .filter((center) => center.isStereoCenter).length;
+        } catch {
+          // Very large layouts can overflow V2000's fixed-width coordinate columns. Preserve
+          // OCL's structured atoms/bonds directly in that case rather than rejecting a valid
+          // peptide just because its compatibility molfile cannot be reparsed.
+          depiction = {
+            atoms: fallback.atoms.map((atom) => ({
+              element: atom.element,
+              x: atom.x,
+              y: atom.y,
+              charge: atom.charge
+            })),
+            bonds: fallback.bonds.map((bond) => ({
+              from: bond.from,
+              to: bond.to,
+              order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+              wedge: bond.wedge
+            }))
+          };
+          // The status line reports stereocenters; OCL can usually still perceive its own
+          // molfile even when the fixed-column reparse above failed. Only if perception also
+          // fails do we approximate with the wedge-bond count.
+          try {
+            stereoCount = ocl.perceiveStereoCentersFromMolfile(fallback.molfile)
+              .filter((center) => center.isStereoCenter).length;
+          } catch {
+            stereoCount = fallback.bonds.filter((bond) => bond.wedge !== null).length;
+          }
+        }
+      }
       if (depiction.atoms.length === 0) {
         return false;
       }
@@ -4909,25 +4958,19 @@ export function MainWindow({
         documentRef.current,
         pastePointForViewport(),
         {
-          atoms: depiction.atoms.map((atom) => ({ element: atom.element, x: atom.x, y: atom.y, charge: atom.charge })),
-          bonds: depiction.bonds.map((bond) => ({
-            from: bond.from,
-            to: bond.to,
-            order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
-            wedge: bond.wedge
-          }))
+          atoms: depiction.atoms,
+          bonds: depiction.bonds
         },
         smilesText
       );
       commitDocumentChange(nextDocument);
       resetPasteUiState();
-      const stereoCount = depiction.bonds.filter((bond) => bond.wedge).length;
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
       // the same page-resize prompt the external-CDXML import path uses, when the pasted
       // content overflows and a larger preset (up to A0) would fit it.
       const fit = recommendImportedPageFit(nextDocument);
       setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
-      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereo bond${stereoCount === 1 ? "" : "s"}` : ""}`;
+      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereocenter${stereoCount === 1 ? "" : "s"}` : ""}`;
       setStatus(fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus);
@@ -11782,19 +11825,20 @@ export function MainWindow({
         gesture: "click",
         shiftFallback: shiftKeyPressedRef.current
       });
-      // A double-press selects the WHOLE molecule (or drills into a grouped child). A plain
-      // (replace) double-press requires the SAME part as the previous press, so rapid ring A → ring
-      // B picks ring B instead of drilling. A Shift double-press JOINS the whole molecule to the
-      // current selection; it additionally accepts a spatially-tight pair so part jitter between
-      // the two presses can't drop it onto the toggle path (which would cancel itself out).
+      // A double-press selects the WHOLE molecule (or drills into a grouped child). Two presses on
+      // the same part count even when a tiny low-zoom molecule spans more than the screen-distance
+      // fallback. A spatially tight pair also counts when selection-layer redraw or pointer jitter
+      // makes the two presses resolve to adjacent parts of the same dense molecule. A press on a
+      // genuinely different, farther-away ring remains an ordinary replacement selection.
       const previousPress = lastSelectionPressRef.current;
-      const samePartAsPreviousPress = previousPress?.partKey === pressPartKey;
+      const sameObjectAsPreviousPress = previousPress?.objectId === objectId;
+      const samePartAsPreviousPress = sameObjectAsPreviousPress
+        && previousPress?.partKey === pressPartKey;
       const rawDoublePress = event.detail >= 2 || isSelectionDoublePress(previousPress, press);
-      const tightDoublePress = previousPress !== undefined
+      const tightDoublePress = sameObjectAsPreviousPress && previousPress !== undefined
         && Math.hypot(press.x - previousPress.x, press.y - previousPress.y) <= DOUBLE_PRESS_SCREEN_PX;
-      const doublePress = rawDoublePress && selectionMode !== "subtract" && (
-        selectionMode === "replace" ? samePartAsPreviousPress : (samePartAsPreviousPress || tightDoublePress)
-      );
+      const doublePress = rawDoublePress && selectionMode !== "subtract"
+        && (samePartAsPreviousPress || tightDoublePress);
       lastSelectionPressRef.current = press;
       if (object.type === "molecule" && doublePress) {
         event.stopPropagation();

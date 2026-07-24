@@ -3,13 +3,15 @@
 import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow, pruneNativeMoleculePart } from "./MainWindow";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import {
   applyMoleculeRingFillColor,
   applyNativeTemplateToolAtTarget,
   createPhase4Document,
-  insertNativeTemplateMolecule
+  insertNativeTemplateMolecule,
+  selectDocumentObjects
 } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { objectFillOpacityCommandId } from "./commands";
@@ -107,7 +109,7 @@ describe("toolset bridge interactions", () => {
     type: "pointerdown" | "pointerup",
     point: { x: number; y: number },
     pointerId: number,
-    options: { shiftKey?: boolean } = {}
+    options: { detail?: number; shiftKey?: boolean } = {}
   ) {
     const event = new MouseEvent(type, {
       bubbles: true,
@@ -116,6 +118,7 @@ describe("toolset bridge interactions", () => {
       cancelable: true,
       clientX: point.x,
       clientY: point.y,
+      detail: options.detail,
       shiftKey: options.shiftKey
     });
     Object.defineProperties(event, {
@@ -663,6 +666,217 @@ describe("toolset bridge interactions", () => {
 
     expect(wrapperFor(molecule.id).classList.contains("native-molecule-selected")).toBe(true);
     expect(wrapperFor(molecule.id).getAttribute("data-selected-native-bond-id")).toBeNull();
+  });
+
+  it("ordinary double-clicking a molecule bond selects the whole molecule", async () => {
+    const insertedDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Double-click whole molecule"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const initialDocument = selectDocumentObjects(
+      insertedDocument,
+      insertedDocument.pages[0].id,
+      []
+    );
+    const molecule = initialDocument.pages[0]?.objects[0];
+    if (molecule?.type !== "molecule") {
+      throw new Error("Expected benzene molecule.");
+    }
+    const bond = molecule.bonds.find((candidate) => candidate.id === "bond_001");
+    const from = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
+    const to = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
+    if (!bond || !from || !to) {
+      throw new Error("Expected benzene bond endpoints.");
+    }
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+
+    const wrapperFor = (): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`);
+      if (!element) {
+        throw new Error(`Expected wrapper for ${molecule.id}.`);
+      }
+      return element;
+    };
+
+    await renderMainWindow(initialDocument);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(), "pointerdown", midpoint, 81);
+      dispatchPointer(wrapperFor(), "pointerup", midpoint, 81);
+    });
+    expect(wrapperFor().getAttribute("data-selected-native-bond-id")).toBe("bond_001");
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(), "pointerdown", midpoint, 82);
+      dispatchPointer(wrapperFor(), "pointerup", midpoint, 82);
+    });
+
+    expect(wrapperFor().classList.contains("native-molecule-selected")).toBe(true);
+    expect(wrapperFor().getAttribute("data-selected-native-bond-id")).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected molecule");
+  });
+
+  it("keeps a tight double-click whole-molecule gesture when the two presses resolve to adjacent parts", async () => {
+    const insertedDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Dense double-click whole molecule"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const molecule = insertedDocument.pages[0]?.objects[0];
+    if (molecule?.type !== "molecule") {
+      throw new Error("Expected benzene molecule.");
+    }
+
+    // At low zoom, several distinct atoms/bonds can sit within a handful of screen pixels. A
+    // physically tight double-click is still one whole-molecule gesture even if tiny pointer
+    // jitter makes the two presses resolve to different sub-parts.
+    const compressedMolecule = {
+      ...molecule,
+      atoms: molecule.atoms.map((atom) => ({
+        ...atom,
+        x: 300 + (atom.x - 300) * 0.1,
+        y: 300 + (atom.y - 300) * 0.1
+      }))
+    };
+    const compressedDocument = {
+      ...insertedDocument,
+      pages: insertedDocument.pages.map((page, pageIndex) => pageIndex === 0
+        ? {
+            ...page,
+            objects: page.objects.map((object) => object.id === molecule.id ? compressedMolecule : object)
+          }
+        : page)
+    };
+    const initialDocument = selectDocumentObjects(
+      compressedDocument,
+      compressedDocument.pages[0].id,
+      []
+    );
+    const firstPoint = compressedMolecule.atoms[0];
+    const secondPoint = compressedMolecule.atoms[1];
+    if (!firstPoint || !secondPoint) {
+      throw new Error("Expected adjacent benzene atoms.");
+    }
+    expect(Math.hypot(secondPoint.x - firstPoint.x, secondPoint.y - firstPoint.y)).toBeLessThanOrEqual(6);
+
+    const wrapperFor = (): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`);
+      if (!element) {
+        throw new Error(`Expected wrapper for ${molecule.id}.`);
+      }
+      return element;
+    };
+
+    await renderMainWindow(initialDocument);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(), "pointerdown", firstPoint, 91);
+      dispatchPointer(wrapperFor(), "pointerup", firstPoint, 91);
+    });
+    expect(wrapperFor().getAttribute("data-selected-native-atom-id")).toBe(firstPoint.id);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(), "pointerdown", secondPoint, 92);
+      dispatchPointer(wrapperFor(), "pointerup", secondPoint, 92);
+    });
+
+    expect(wrapperFor().classList.contains("native-molecule-selected")).toBe(true);
+    expect(wrapperFor().getAttribute("data-selected-native-atom-id")).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected molecule");
+  });
+
+  it("keeps rapid clicks on distinct distant molecule parts as part selection", async () => {
+    const insertedDocument = insertNativeTemplateMolecule(
+      createPhase4Document("Distinct-part rapid clicks"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    const initialDocument = selectDocumentObjects(
+      insertedDocument,
+      insertedDocument.pages[0].id,
+      []
+    );
+    const molecule = initialDocument.pages[0]?.objects[0];
+    if (molecule?.type !== "molecule") {
+      throw new Error("Expected benzene molecule.");
+    }
+    const firstPoint = molecule.atoms[0];
+    const secondPoint = molecule.atoms[3];
+    if (!firstPoint || !secondPoint) {
+      throw new Error("Expected opposite benzene atoms.");
+    }
+    expect(Math.hypot(secondPoint.x - firstPoint.x, secondPoint.y - firstPoint.y)).toBeGreaterThan(6);
+
+    const wrapperFor = (): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`);
+      if (!element) {
+        throw new Error(`Expected wrapper for ${molecule.id}.`);
+      }
+      return element;
+    };
+
+    await renderMainWindow(initialDocument);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(), "pointerdown", firstPoint, 93);
+      dispatchPointer(wrapperFor(), "pointerup", firstPoint, 93);
+    });
+    expect(wrapperFor().getAttribute("data-selected-native-atom-id")).toBe(firstPoint.id);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(), "pointerdown", secondPoint, 94, { detail: 2 });
+      dispatchPointer(wrapperFor(), "pointerup", secondPoint, 94, { detail: 2 });
+    });
+
+    expect(wrapperFor().classList.contains("native-molecule-selected")).toBe(false);
+    expect(wrapperFor().getAttribute("data-selected-native-atom-id")).toBe(secondPoint.id);
+  });
+
+  it("does not turn tight clicks on neighboring molecules into a whole-molecule double-click", async () => {
+    let document = insertNativeTemplateMolecule(
+      createPhase4Document("Neighboring molecule clicks"),
+      { x: 300, y: 300 },
+      "benzene"
+    );
+    document = insertNativeTemplateMolecule(document, { x: 304, y: 300 }, "benzene");
+    document = selectDocumentObjects(document, document.pages[0].id, []);
+    const molecules = document.pages[0].objects.filter(
+      (object): object is MoleculeObject => object.type === "molecule"
+    );
+    const first = molecules[0];
+    const second = molecules[1];
+    const firstPoint = first?.atoms[0];
+    const secondPoint = second?.atoms[0];
+    if (!first || !second || !firstPoint || !secondPoint) {
+      throw new Error("Expected two neighboring benzene molecules.");
+    }
+    expect(Math.hypot(secondPoint.x - firstPoint.x, secondPoint.y - firstPoint.y))
+      .toBeLessThanOrEqual(6);
+
+    const wrapperFor = (objectId: string): HTMLElement => {
+      const element = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+      if (!element) throw new Error(`Expected wrapper for ${objectId}.`);
+      return element;
+    };
+
+    await renderMainWindow(document);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(first.id), "pointerdown", firstPoint, 95);
+      dispatchPointer(wrapperFor(first.id), "pointerup", firstPoint, 95);
+    });
+    expect(wrapperFor(first.id).getAttribute("data-selected-native-atom-id"))
+      .toBe(firstPoint.id);
+
+    await act(async () => {
+      dispatchPointer(wrapperFor(second.id), "pointerdown", secondPoint, 96, { detail: 2 });
+      dispatchPointer(wrapperFor(second.id), "pointerup", secondPoint, 96, { detail: 2 });
+    });
+
+    expect(wrapperFor(second.id).classList.contains("native-molecule-selected")).toBe(false);
+    expect(wrapperFor(second.id).getAttribute("data-selected-native-atom-id"))
+      .toBe(secondPoint.id);
   });
 
   it("adds a second ring after a normal first-ring click with Shift held", async () => {

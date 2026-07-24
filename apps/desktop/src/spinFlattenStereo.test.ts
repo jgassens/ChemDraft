@@ -24,6 +24,11 @@ import {
   perceiveStereoCentersFromMolfile,
   type Depiction2D
 } from "@chemdraft/ocl-adapter";
+import {
+  planPageSvgRender,
+  type PageSvgElementFragment,
+  type PageSvgFragment
+} from "@chemdraft/layout-engine";
 import { Molecule } from "openchemlib";
 
 import {
@@ -96,6 +101,18 @@ const center = (descriptor: "R" | "S" | "unspecified", isStereoCenter = true): P
   { isStereoCenter: false, descriptor: "unspecified" }
 ];
 const styleOfB0 = (bonds: MoleculeBond[]) => bonds.find((b) => b.id === "b0")?.display?.bondStyle;
+const stereoBondCodes = (molfile: string): Array<{ from: number; to: number; stereo: number }> => {
+  const lines = molfile.split(/\r?\n/);
+  const countsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+  const atomCount = Number.parseInt((lines[countsIndex] ?? "").slice(0, 3).trim(), 10);
+  const bondCount = Number.parseInt((lines[countsIndex] ?? "").slice(3, 6).trim(), 10);
+  const bondStart = countsIndex + 1 + atomCount;
+  return lines.slice(bondStart, bondStart + bondCount).map((line) => ({
+    from: Number.parseInt(line.slice(0, 3).trim(), 10) - 1,
+    to: Number.parseInt(line.slice(3, 6).trim(), 10) - 1,
+    stereo: Number.parseInt(line.slice(9, 12).trim(), 10) || 0
+  }));
+};
 
 describe("reconcileFlattenedStereo — repair algorithm", () => {
   it("leaves a depiction that already reads correctly untouched", () => {
@@ -121,6 +138,7 @@ describe("reconcileFlattenedStereo — repair algorithm", () => {
     const result = reconcileFlattenedStereo(template, atoms, bonds, new Map([[0, "R"]]), reader.read);
     expect(result.ok).toBe(false);
     expect(result.unresolved).toContain(0);
+    expect(result.reason).toBe("stereochemistry");
   });
 
   it("does nothing (and never reads) when no center was specified before the flatten", () => {
@@ -138,6 +156,164 @@ describe("reconcileFlattenedStereo — repair algorithm", () => {
     expect(result.ok).toBe(false);
     expect(result.unresolved).toContain(0);
   });
+
+  it("refuses with a legibility reason when a repeated glyph has no CIP-safe relocation", () => {
+    const { template, atoms, bonds } = stubMolecule("wedge");
+    // Second wedge from the same center: a repeated glyph the relocator must try to move.
+    bonds[2] = { ...bonds[2]!, display: { bondStyle: "wedge" } };
+    template.bonds = bonds;
+    // Only the exact starting configuration (two solid wedges, no hash) reads back correctly, so
+    // every relocation trial fails CIP revalidation and the collision cannot be resolved.
+    const perceive: StereoPerceiver = (molfile) => {
+      const codes = stereoBondCodes(molfile);
+      const matchesInitial =
+        codes.filter((code) => code.stereo === 1).length === 2 &&
+        codes.every((code) => code.stereo !== 6);
+      return center(matchesInitial ? "R" : "S");
+    };
+    const result = reconcileFlattenedStereo(template, atoms, bonds, new Map([[0, "R"]]), perceive);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("legibility");
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("uses depth to rank CIP-valid wedge/hash alternatives", () => {
+    const { template, atoms, bonds } = stubMolecule("wedge");
+    const reader = scriptedReader([center("R")]);
+    const result = reconcileFlattenedStereo(
+      template,
+      atoms,
+      bonds,
+      new Map([[0, "R"]]),
+      reader.read,
+      {
+        depthByAtomId: new Map([
+          ["a0", 0],
+          ["a1", -1],
+          ["a2", 1],
+          ["a3", 0]
+        ])
+      }
+    );
+    expect(result.ok).toBe(true);
+    // The starting solid wedge points to the farther a1. With every trial declared CIP-valid by
+    // this scripted reader, the depth ranker chooses the validated away cue on that bond.
+    expect(styleOfB0(result.bonds)).toBe("hashed");
+  });
+
+  it("relocates a repeated wedge only through the one whole-molecule-valid trial", () => {
+    const atoms: MoleculeAtom[] = [
+      { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a1", element: "C", x: 1, y: 0, formalCharge: 0 },
+      { id: "a2", element: "N", x: -2, y: 0, formalCharge: 0 },
+      { id: "a3", element: "O", x: 0, y: 1, formalCharge: 0 },
+      { id: "a4", element: "C", x: 2, y: 0, formalCharge: 0 },
+      { id: "a5", element: "F", x: 3, y: 1, formalCharge: 0 },
+      { id: "a6", element: "Cl", x: 3, y: -1, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [
+      { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single", display: { bondStyle: "wedge" } },
+      { id: "b1", fromAtomId: "a4", toAtomId: "a1", order: "single", display: { bondStyle: "wedge" } },
+      { id: "b2", fromAtomId: "a0", toAtomId: "a2", order: "single" },
+      { id: "b3", fromAtomId: "a0", toAtomId: "a3", order: "single" },
+      { id: "b4", fromAtomId: "a4", toAtomId: "a5", order: "single" },
+      { id: "b5", fromAtomId: "a4", toAtomId: "a6", order: "single" }
+    ];
+    const template: MoleculeObject = {
+      id: "two-center-collision",
+      type: "molecule",
+      x: 0,
+      y: 0,
+      width: 6,
+      height: 2,
+      rotation: 0,
+      style: {},
+      structureFormat: "molfile-v2000",
+      structure: "",
+      atoms,
+      bonds,
+      superatoms: [],
+      rGroups: []
+    };
+    let perceptionCalls = 0;
+    const perceive: StereoPerceiver = (molfile) => {
+      perceptionCalls += 1;
+      const encoded = stereoBondCodes(molfile);
+      const initial =
+        encoded[0]?.from === 0 && encoded[0]?.to === 1 && encoded[0]?.stereo === 1 &&
+        encoded[1]?.from === 4 && encoded[1]?.to === 1 && encoded[1]?.stereo === 1;
+      const onlyValidRelocation =
+        encoded[0]?.stereo === 0 &&
+        encoded[1]?.from === 4 && encoded[1]?.to === 1 && encoded[1]?.stereo === 1 &&
+        encoded[2]?.from === 0 && encoded[2]?.to === 2 && encoded[2]?.stereo === 6;
+      return atoms.map((_, index): PerceivedAtom => {
+        if (index === 0) {
+          return {
+            isStereoCenter: true,
+            descriptor: initial || onlyValidRelocation ? "R" : "S"
+          };
+        }
+        if (index === 4) return { isStereoCenter: true, descriptor: "S" };
+        return { isStereoCenter: false, descriptor: "unspecified" };
+      });
+    };
+
+    const result = reconcileFlattenedStereo(
+      template,
+      atoms,
+      bonds,
+      new Map([[0, "R"], [4, "S"]]),
+      perceive
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.bonds.find((bond) => bond.id === "b0")?.display?.bondStyle).toBeUndefined();
+    expect(result.bonds.find((bond) => bond.id === "b2")).toMatchObject({
+      fromAtomId: "a0",
+      toAtomId: "a2",
+      display: { bondStyle: "hashed" }
+    });
+    expect(perceptionCalls).toBeLessThanOrEqual(6);
+  });
+
+  it("rejects a depth-favored sub-pixel marker bond in favor of a readable bond", () => {
+    const { template, atoms, bonds } = stubMolecule("wedge");
+    atoms[1] = { ...atoms[1]!, x: 1, y: 0 };
+    atoms[2] = { ...atoms[2]!, x: 0.001, y: 0 };
+    atoms[3] = { ...atoms[3]!, x: -2, y: 0 };
+    template.atoms = atoms;
+    template.bonds = bonds;
+    let perceptionCalls = 0;
+    const perceive: StereoPerceiver = () => {
+      perceptionCalls += 1;
+      return center("R");
+    };
+
+    const result = reconcileFlattenedStereo(
+      template,
+      atoms,
+      bonds,
+      new Map([[0, "R"]]),
+      perceive,
+      {
+        depthByAtomId: new Map([
+          ["a0", 0],
+          ["a1", -1],
+          ["a2", 10],
+          ["a3", 1]
+        ])
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.bonds.find((bond) => bond.id === "b1")?.display?.bondStyle).toBeUndefined();
+    expect(result.bonds.find((bond) => bond.id === "b2")).toMatchObject({
+      fromAtomId: "a0",
+      toAtomId: "a3",
+      display: { bondStyle: "wedge" }
+    });
+    expect(perceptionCalls).toBeLessThanOrEqual(6);
+  });
 });
 
 // --- slow end-to-end tests: real chemistry on the historical reproducers -----------------------
@@ -149,6 +325,27 @@ const molOf = (document: ReturnType<typeof insertSmilesMolecule>, id: string): M
 };
 const mf = (mol: MoleculeObject) => moleculeToMolfileV2000(mol, { fromDocFrame: true });
 const isoSmiles = (mol: MoleculeObject) => Molecule.fromMolfile(mf(mol)).toIsomericSmiles();
+const elementFragments = (fragment: PageSvgFragment): PageSvgElementFragment[] =>
+  fragment.kind === "text" ? [] : [fragment, ...fragment.children.flatMap(elementFragments)];
+
+function renderedStereoStyleByBond(
+  document: ReturnType<typeof insertSmilesMolecule>
+): Map<string, "wedge" | "hashed"> {
+  const styles = new Map<string, "wedge" | "hashed">();
+  planPageSvgRender(document.pages[0]).fragments
+    .flatMap(elementFragments)
+    .forEach((fragment) => {
+      const bondId = fragment.attrs["data-bond-id"];
+      const style = fragment.attrs["data-bond-style"];
+      if (
+        typeof bondId === "string" &&
+        (style === "wedge" || style === "hashed")
+      ) {
+        styles.set(bondId, style);
+      }
+    });
+  return styles;
+}
 
 function placeSmiles(smiles: string) {
   const dep: Depiction2D = depictSmiles2D(smiles);
@@ -192,13 +389,59 @@ describe("flattenSpunMolecule — stereo preserved end-to-end (real perceiver)",
 
       let committed = 0;
       for (let attempt = 0; attempt < 40 && committed < 6; attempt += 1) {
-        const outcome = flattenSpunMolecule(document, molId, coords, quatToViewMatrix(randomQuat()), {
+        const viewMatrix = quatToViewMatrix(randomQuat());
+        const outcome = flattenSpunMolecule(document, molId, coords, viewMatrix, {
           stereoCenterAtomIds: centerIds,
           perceiveStereo: perceiveStereoCentersFromMolfile
         });
         if (outcome.status !== "committed") continue;
         committed += 1;
-        expect(isoSmiles(molOf(outcome.document, molId)), `${name} committed view #${committed} changed stereo`).toBe(startIso);
+        const flattened = molOf(outcome.document, molId);
+        expect(isoSmiles(flattened), `${name} committed view #${committed} changed stereo`).toBe(startIso);
+        const visualStyleByBond = renderedStereoStyleByBond(outcome.document);
+        for (const atom of flattened.atoms) {
+          const incidentStyles = flattened.bonds
+            .filter((bond) =>
+              bond.fromAtomId === atom.id || bond.toAtomId === atom.id
+            )
+            .map((bond) => visualStyleByBond.get(bond.id))
+            .filter((style): style is "wedge" | "hashed" => style !== undefined);
+          expect(
+            incidentStyles.filter((style) => style === "wedge").length,
+            `${name} committed view #${committed} rendered duplicate wedges at ${atom.id}`
+          ).toBeLessThanOrEqual(1);
+          expect(
+            incidentStyles.filter((style) => style === "hashed").length,
+            `${name} committed view #${committed} rendered duplicate hashes at ${atom.id}`
+          ).toBeLessThanOrEqual(1);
+        }
+        if (name === "strychnine" && committed === 1) {
+          const benzylicBonds = flattened.bonds
+            .filter((bond) => bond.fromAtomId === "a12" || bond.toAtomId === "a12")
+            .filter((bond) => visualStyleByBond.has(bond.id));
+          expect(benzylicBonds.length).toBeGreaterThan(0);
+          const atomIndex = new Map(flattened.atoms.map((atom, index) => [atom.id, index] as const));
+          const depthOf = (atomId: string): number => {
+            const index = atomIndex.get(atomId);
+            if (index === undefined) throw new Error(`Missing atom ${atomId}`);
+            return (
+              viewMatrix[8] * coords[index * 3] +
+              viewMatrix[9] * coords[index * 3 + 1] +
+              viewMatrix[10] * coords[index * 3 + 2] +
+              viewMatrix[11]
+            );
+          };
+          if (benzylicBonds.length > 1) {
+            const depthOrdered = [...benzylicBonds].sort((left, right) =>
+              ((depthOf(right.fromAtomId) + depthOf(right.toAtomId)) / 2) -
+              ((depthOf(left.fromAtomId) + depthOf(left.toAtomId)) / 2)
+            );
+            expect(new Set(depthOrdered.map((bond) => visualStyleByBond.get(bond.id))))
+              .toEqual(new Set(["wedge", "hashed"]));
+            expect(visualStyleByBond.get(depthOrdered[0]!.id)).toBe("wedge");
+            expect(visualStyleByBond.get(depthOrdered.at(-1)!.id)).toBe("hashed");
+          }
+        }
       }
       expect(committed, `${name}: expected some legible committing orientation`).toBeGreaterThan(0);
     }, 180_000);

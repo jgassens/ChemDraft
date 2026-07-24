@@ -1034,8 +1034,8 @@ describe("layout-engine page SVG planner", () => {
 
     expect(visiblePrimitiveSignature(planPageSvgRender(page).fragments)).toMatchInlineSnapshot(`
       [
-        "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|162.4|157|162.4",
-        "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|157.6|157|157.6",
+        "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|160|157|160",
+        "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|124.5|164.8|152.5|164.8",
         "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
         "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
         "text|text_snapshot|text|220|178|start",
@@ -1088,6 +1088,54 @@ describe("layout-engine page SVG planner", () => {
       fill: "#c75c12",
       "font-style": "italic"
     });
+  });
+
+  it("places an alcohol hydrogen away from its right-hand bond and anchors the oxygen at the atom", () => {
+    const molecule = moleculeObject({
+      id: "mol_directional_alcohol_label",
+      atoms: [
+        { id: "atom_oxygen", element: "O", x: 120, y: 140, formalCharge: 0 },
+        { id: "atom_carbon", element: "C", x: 142, y: 158, formalCharge: 0 },
+        { id: "atom_next", element: "C", x: 164, y: 150, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_wedge",
+          fromAtomId: "atom_oxygen",
+          toAtomId: "atom_carbon",
+          order: "single",
+          display: { bondStyle: "wedge" }
+        },
+        {
+          id: "bond_next",
+          fromAtomId: "atom_carbon",
+          toAtomId: "atom_next",
+          order: "single"
+        }
+      ],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        atomLabelHideImplicitHydrogens: false
+      }
+    });
+
+    expect(atomDisplayLabel(
+      molecule.atoms[0]!,
+      molecule.bonds,
+      nativeDrawingStyleFromObjectStyle(molecule.style),
+      molecule.atoms
+    )).toBe("HO");
+
+    const oxygenLabel = planMoleculeAtomLabels(molecule)
+      .find((plan) => plan.atom.id === "atom_oxygen");
+    expect(oxygenLabel?.label).toBe("HO");
+    expect(oxygenLabel?.layout.runs).toMatchObject([
+      { text: "H", x: expect.any(Number), textAnchor: "end" },
+      { text: "O", x: 0, textAnchor: "middle" }
+    ]);
+    const hydrogenRight = oxygenLabel?.layout.runs[0]?.x;
+    expect(hydrogenRight).toBeDefined();
+    expect(hydrogenRight!).toBeLessThanOrEqual(-6);
   });
 
   it("resolves sparse atom-label style overrides per atom", () => {
@@ -1319,6 +1367,887 @@ describe("layout-engine page SVG planner", () => {
       .filter((fragment) => fragment.attrs.class === "native-bond-hash");
 
     expect(hashes).toHaveLength(24);
+  });
+
+  it("uses a 24%-of-bond wedge base and five visually distinct hash bars on a full bond", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_stereo_proportions",
+        atoms: [
+          { id: "atom_001", element: "C", x: 120, y: 140, formalCharge: 0 },
+          { id: "atom_002", element: "C", x: 142, y: 140, formalCharge: 0 },
+          { id: "atom_003", element: "C", x: 120, y: 180, formalCharge: 0 },
+          { id: "atom_004", element: "C", x: 142, y: 180, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_wedge", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } },
+          { id: "bond_hash", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single", display: { bondStyle: "hashed" } }
+        ]
+      })
+    ]);
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const wedge = fragments.find((fragment) =>
+      fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "bond_wedge"
+    );
+    const points = String(wedge?.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    const tip = points[0];
+    const wideLeft = points[1];
+    const wideRight = points[2];
+    if (!tip || !wideLeft || !wideRight) {
+      throw new Error("Expected a three-point solid wedge polygon.");
+    }
+    const wideCenter = {
+      x: (wideLeft.x + wideRight.x) / 2,
+      y: (wideLeft.y + wideRight.y) / 2
+    };
+    const wedgeLength = Math.hypot(wideCenter.x - tip.x, wideCenter.y - tip.y);
+    const wedgeWidth = Math.hypot(wideRight.x - wideLeft.x, wideRight.y - wideLeft.y);
+    expect(wedgeLength).toBeCloseTo(22, 6);
+    expect(wedgeWidth).toBeCloseTo(5.28, 6);
+    expect(wedgeWidth / wedgeLength).toBeCloseTo(0.24, 6);
+
+    const hashes = fragments.filter((fragment) => fragment.attrs.class === "native-bond-hash");
+    expect(hashes).toHaveLength(5);
+    expect(hashes.map((hash) => (Number(hash.attrs.x1) + Number(hash.attrs.x2)) / 2))
+      .toEqual([124.4, 128.8, 133.2, 137.6, 142]);
+    const hashWidths = hashes.map((hash) =>
+      Math.hypot(
+        Number(hash.attrs.x2) - Number(hash.attrs.x1),
+        Number(hash.attrs.y2) - Number(hash.attrs.y1)
+      )
+    );
+    expect(Math.min(...hashWidths)).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...hashWidths)).toBeLessThanOrEqual(wedgeWidth);
+    expect(Number(hashes[0]?.attrs.x1)).toBeGreaterThan(120);
+  });
+
+  it("uses depth-cued hash stroke widths for density, white gaps, and effect sources", () => {
+    const molecule = moleculeObject({
+      id: "mol_hash_depth",
+      atoms: [
+        { id: "atom_far_from", element: "C", x: 120, y: 120, formalCharge: 0 },
+        { id: "atom_far_to", element: "C", x: 142, y: 120, formalCharge: 0 },
+        { id: "atom_mid_from", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_mid_to", element: "C", x: 142, y: 160, formalCharge: 0 },
+        { id: "atom_near_from", element: "C", x: 120, y: 200, formalCharge: 0 },
+        { id: "atom_near_to", element: "C", x: 142, y: 200, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_far",
+          fromAtomId: "atom_far_from",
+          toAtomId: "atom_far_to",
+          order: "single",
+          display: { bondStyle: "hashed", depthWeight: 0 }
+        },
+        {
+          id: "bond_mid",
+          fromAtomId: "atom_mid_from",
+          toAtomId: "atom_mid_to",
+          order: "single",
+          display: { bondStyle: "hashed", depthWeight: 0.5 }
+        },
+        {
+          id: "bond_near",
+          fromAtomId: "atom_near_from",
+          toAtomId: "atom_near_to",
+          order: "single",
+          display: { bondStyle: "hashed", depthWeight: 1 }
+        }
+      ],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        visualEffects: [
+          { kind: "shadow", color: "#52616b", opacity: 0.28, offsetX: 4, offsetY: 4, blurPx: 2 }
+        ]
+      }
+    });
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments);
+    const cases = [
+      { bondId: "bond_far", strokeWidth: 1.2, hashCount: 5 },
+      { bondId: "bond_mid", strokeWidth: 2, hashCount: 5 },
+      { bondId: "bond_near", strokeWidth: 2.8, hashCount: 3 }
+    ];
+
+    for (const { bondId, strokeWidth, hashCount } of cases) {
+      const group = fragments.find((fragment) =>
+        fragment.tag === "g" &&
+        fragment.attrs["data-bond-id"] === bondId &&
+        fragment.attrs["data-bond-style"] === "hashed"
+      );
+      const hashes = group
+        ? elementFragments(group).filter((fragment) => fragment.attrs.class === "native-bond-hash")
+        : [];
+      expect(hashes, bondId).toHaveLength(hashCount);
+      expect(hashes.map((hash) => Number(hash.attrs["stroke-width"])), bondId)
+        .toEqual(Array(hashCount).fill(strokeWidth));
+
+      const centers = hashes.map((hash) =>
+        (Number(hash.attrs.x1) + Number(hash.attrs.x2)) / 2
+      );
+      const whiteGaps = centers.slice(1).map((center, index) =>
+        center - centers[index]! - strokeWidth
+      );
+      expect(Math.min(...whiteGaps), bondId).toBeGreaterThanOrEqual(strokeWidth - 1e-9);
+
+      const effectHashes = fragments.filter((fragment) =>
+        fragment.tag === "line" &&
+        fragment.key.startsWith(
+          `molecule-effect-source-bond-hash-mol_hash_depth-${bondId}-`
+        )
+      );
+      expect(effectHashes, `${bondId} effect source`).toHaveLength(hashCount);
+      expect(effectHashes.map((hash) => Number(hash.attrs["stroke-width"])), `${bondId} effect source`)
+        .toEqual(Array(hashCount).fill(strokeWidth));
+    }
+  });
+
+  it("keeps two visible bars on each short hashed wedge whose broad ends collide", () => {
+    const shared = { x: 130, y: 140 };
+    const endpoints = {
+      bond_hash_left: { x: 120, y: 140 },
+      bond_hash_top: { x: 130, y: 130 }
+    };
+    const molecule = moleculeObject({
+      id: "mol_short_hash_collision",
+      atoms: [
+        { id: "atom_left", element: "C", ...endpoints.bond_hash_left, formalCharge: 0 },
+        { id: "atom_top", element: "C", ...endpoints.bond_hash_top, formalCharge: 0 },
+        { id: "atom_shared", element: "C", ...shared, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_hash_left",
+          fromAtomId: "atom_left",
+          toAtomId: "atom_shared",
+          order: "single",
+          display: { bondStyle: "hashed" }
+        },
+        {
+          id: "bond_hash_top",
+          fromAtomId: "atom_top",
+          toAtomId: "atom_shared",
+          order: "single",
+          display: { bondStyle: "hashed" }
+        }
+      ]
+    });
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments);
+
+    for (const bondId of ["bond_hash_left", "bond_hash_top"]) {
+      const group = fragments.find((fragment) =>
+        fragment.tag === "g" &&
+        fragment.attrs["data-bond-id"] === bondId &&
+        fragment.attrs["data-bond-style"] === "hashed"
+      );
+      const hashes = group
+        ? elementFragments(group).filter((fragment) => fragment.attrs.class === "native-bond-hash")
+        : [];
+      expect(hashes, bondId).toHaveLength(2);
+      expect(hashes.every((hash) => hash.tag === "line"), bondId).toBe(true);
+      const from = endpoints[bondId as keyof typeof endpoints];
+      const length = Math.hypot(shared.x - from.x, shared.y - from.y);
+      const unit = {
+        x: (shared.x - from.x) / length,
+        y: (shared.y - from.y) / length
+      };
+      const axialCenters = hashes.map((hash) => {
+        const center = {
+          x: (Number(hash.attrs.x1) + Number(hash.attrs.x2)) / 2,
+          y: (Number(hash.attrs.y1) + Number(hash.attrs.y2)) / 2
+        };
+        return (center.x - from.x) * unit.x + (center.y - from.y) * unit.y;
+      }).sort((left, right) => left - right);
+      const strokeWidth = Number(hashes[0]?.attrs["stroke-width"]);
+      expect(strokeWidth, bondId).toBe(2);
+      expect(
+        axialCenters[1]! - axialCenters[0]! - strokeWidth,
+        `${bondId} axial white gap`
+      ).toBeGreaterThanOrEqual(strokeWidth - 1e-9);
+      expect(hashes.some((hash) => {
+        const center = {
+          x: (Number(hash.attrs.x1) + Number(hash.attrs.x2)) / 2,
+          y: (Number(hash.attrs.y1) + Number(hash.attrs.y2)) / 2
+        };
+        return Math.hypot(center.x - shared.x, center.y - shared.y) < 0.001;
+      }), bondId).toBe(false);
+    }
+  });
+
+  it("renders two stored solid wedges at one broad endpoint with one shared miter", () => {
+    const shared = { x: 160, y: 160 };
+    const molecule = moleculeObject({
+      id: "mol_shared_wide_wedges",
+      atoms: [
+        { id: "atom_left", element: "C", x: 130, y: 160, formalCharge: 0 },
+        { id: "atom_top", element: "C", x: 160, y: 130, formalCharge: 0 },
+        { id: "atom_shared", element: "C", ...shared, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_wedge_left",
+          fromAtomId: "atom_left",
+          toAtomId: "atom_shared",
+          order: "single",
+          display: { bondStyle: "wedge" }
+        },
+        {
+          id: "bond_wedge_top",
+          fromAtomId: "atom_top",
+          toAtomId: "atom_shared",
+          order: "single",
+          display: { bondStyle: "wedge" }
+        }
+      ]
+    });
+    const storedBonds = molecule.bonds.map((bond) => ({
+      id: bond.id,
+      fromAtomId: bond.fromAtomId,
+      toAtomId: bond.toAtomId,
+      bondStyle: bond.display?.bondStyle
+    }));
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments);
+
+    expect(molecule.bonds.map((bond) => ({
+      id: bond.id,
+      fromAtomId: bond.fromAtomId,
+      toAtomId: bond.toAtomId,
+      bondStyle: bond.display?.bondStyle
+    }))).toEqual(storedBonds);
+
+    const wedgePoints = ["bond_wedge_left", "bond_wedge_top"].map((bondId) => {
+      const wedge = fragments.find((fragment) =>
+        fragment.tag === "polygon" &&
+        fragment.attrs["data-bond-id"] === bondId &&
+        fragment.attrs["data-bond-style"] === "wedge"
+      );
+      expect(wedge, bondId).toBeDefined();
+      return String(wedge?.attrs.points ?? "").split(/\s+/).map((point) => {
+        const [x, y] = point.split(",").map(Number);
+        return { x, y };
+      });
+    });
+    expect(wedgePoints[0]).toHaveLength(3);
+    expect(wedgePoints[1]).toHaveLength(3);
+
+    const sharedMiterPoints = wedgePoints[0]!.filter((leftPoint) =>
+      wedgePoints[1]!.some((rightPoint) =>
+        Math.hypot(leftPoint.x - rightPoint.x, leftPoint.y - rightPoint.y) < 0.001
+      )
+    );
+    expect(sharedMiterPoints).toHaveLength(1);
+    expect(Math.hypot(
+      sharedMiterPoints[0]!.x - shared.x,
+      sharedMiterPoints[0]!.y - shared.y
+    )).toBeGreaterThan(0.001);
+  });
+
+  it("miters a solid wedge into the single bond leaving its wide-end carbon", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_wedge_junction",
+        atoms: [
+          { id: "atom_tip", element: "C", x: 120, y: 180, formalCharge: 0 },
+          { id: "atom_junction", element: "C", x: 142, y: 140, formalCharge: 0 },
+          { id: "atom_next", element: "C", x: 170, y: 140, formalCharge: 0 }
+        ],
+        bonds: [
+          {
+            id: "bond_wedge",
+            fromAtomId: "atom_tip",
+            toAtomId: "atom_junction",
+            order: "single",
+            display: { bondStyle: "wedge" }
+          },
+          {
+            id: "bond_next",
+            fromAtomId: "atom_junction",
+            toAtomId: "atom_next",
+            order: "single"
+          }
+        ]
+      })
+    ]);
+    const wedge = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .find((fragment) =>
+        fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "bond_wedge"
+      );
+
+    const points = String(wedge?.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    expect(points).toHaveLength(5);
+    expect(points[0]).toEqual({ x: 120, y: 180 });
+    expect(points[1]).toEqual({ x: 144.484, y: 141 });
+    expect(points[4]).toEqual({ x: 139.557, y: 139 });
+    expect(points[2]!.x).toBeGreaterThan(142);
+    expect(points[3]!.x).toBeGreaterThan(142);
+    expect(Math.hypot(
+      points[2]!.x - points[3]!.x,
+      points[2]!.y - points[3]!.y
+    )).toBeCloseTo(2, 3);
+    expect(points[1]!.y).toEqual(points[2]!.y);
+    expect(points[4]!.y).toEqual(points[3]!.y);
+
+    const renderedFragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const junction = renderedFragments.find((fragment) =>
+      fragment.attrs.class === "native-carbon-junction" &&
+      fragment.attrs["data-atom-id"] === "atom_junction"
+    );
+    expect(junction?.tag).toBe("circle");
+    expect(junction?.attrs).toMatchObject({
+      cx: 142,
+      cy: 140,
+      fill: "#000000",
+      stroke: "none"
+    });
+    expect(Number(junction?.attrs.r)).toBeGreaterThan(1);
+
+    const adjacentBond = renderedFragments.find((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") &&
+      fragment.attrs["data-bond-id"] === "bond_next"
+    );
+    expect(adjacentBond?.attrs).toMatchObject({
+      x1: 142,
+      y1: 140,
+      x2: 170,
+      y2: 140
+    });
+  });
+
+  it("absorbs the terminal hash into the single bond leaving its wide-end carbon", () => {
+    const tip = { x: 275.1499818530336, y: 337.37075656112074 };
+    const junction = { x: 292.3483233769756, y: 359.4537761410923 };
+    const next = { x: 320.3566949143234, y: 359.68028607004834 };
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_hash_junction",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondLengthPx: 28,
+          bondHashSpacingPx: 9,
+          source: "clipboard-smiles"
+        },
+        atoms: [
+          { id: "atom_tip", element: "C", ...tip, formalCharge: 0 },
+          { id: "atom_junction", element: "C", ...junction, formalCharge: 0 },
+          { id: "atom_next", element: "C", ...next, formalCharge: 0 }
+        ],
+        bonds: [
+          {
+            id: "bond_hash",
+            fromAtomId: "atom_tip",
+            toAtomId: "atom_junction",
+            order: "single",
+            display: { bondStyle: "hashed" }
+          },
+          {
+            id: "bond_next",
+            fromAtomId: "atom_junction",
+            toAtomId: "atom_next",
+            order: "single"
+          }
+        ]
+      })
+    ]);
+    const hashes = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs.class === "native-bond-hash");
+
+    expect(hashes).toHaveLength(5);
+    expect(hashes.slice(0, 4).every((fragment) => fragment.tag === "line")).toBe(true);
+    const terminalHash = hashes[4];
+    expect(terminalHash?.tag).toBe("polygon");
+    expect(terminalHash?.attrs["data-bond-hash-index"]).toBe(4);
+
+    const points = String(terminalHash?.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    expect(points).toHaveLength(6);
+
+    const adjacent = {
+      x: next.x - junction.x,
+      y: next.y - junction.y
+    };
+    const leftContinuation = {
+      x: points[2]!.x - points[1]!.x,
+      y: points[2]!.y - points[1]!.y
+    };
+    const rightContinuation = {
+      x: points[3]!.x - points[4]!.x,
+      y: points[3]!.y - points[4]!.y
+    };
+    expect(
+      leftContinuation.x * adjacent.y - leftContinuation.y * adjacent.x
+    ).toBeCloseTo(0, 2);
+    expect(
+      rightContinuation.x * adjacent.y - rightContinuation.y * adjacent.x
+    ).toBeCloseTo(0, 2);
+    expect(
+      leftContinuation.x * adjacent.x + leftContinuation.y * adjacent.y
+    ).toBeGreaterThan(0);
+    expect(
+      rightContinuation.x * adjacent.x + rightContinuation.y * adjacent.y
+    ).toBeGreaterThan(0);
+
+    // No complete crossbar remains centered on the carbon: the fifth stripe is a filled band whose
+    // two sides run into the outgoing bond edges, so neither old square-ended hook can protrude.
+    expect(hashes.some((fragment) =>
+      fragment.tag === "line" &&
+      (Number(fragment.attrs.x1) + Number(fragment.attrs.x2)) / 2 === junction.x &&
+      (Number(fragment.attrs.y1) + Number(fragment.attrs.y2)) / 2 === junction.y
+    )).toBe(false);
+  });
+
+  it("keeps a label-trimmed hashed wedge spaced and flared beside a three-bond wedge junction", () => {
+    const junction = { x: 378.2910243116096, y: 254.01958718322953 };
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_three_bond_stereo_junction",
+        style: {
+          ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+          bondLengthPx: 22,
+          bondHashSpacingPx: 9,
+          source: "clipboard-molfile"
+        },
+        atoms: [
+          {
+            id: "atom_nitrogen",
+            element: "N",
+            x: 374.0139730852311,
+            y: 274.14542006770444,
+            formalCharge: 0
+          },
+          { id: "atom_junction", element: "C", ...junction, formalCharge: 0 },
+          {
+            id: "atom_wedge_tip",
+            element: "C",
+            x: 396.1099928320028,
+            y: 243.7322190731355,
+            formalCharge: 0
+          },
+          {
+            id: "atom_plain_neighbor",
+            element: "C",
+            x: 360.47454969863696,
+            y: 243.7322190731355,
+            formalCharge: 0
+          }
+        ],
+        bonds: [
+          {
+            id: "bond_hash",
+            fromAtomId: "atom_junction",
+            toAtomId: "atom_nitrogen",
+            order: "single",
+            display: { bondStyle: "hashed" }
+          },
+          {
+            id: "bond_wedge",
+            fromAtomId: "atom_wedge_tip",
+            toAtomId: "atom_junction",
+            order: "single",
+            display: { bondStyle: "wedge" }
+          },
+          {
+            id: "bond_plain",
+            fromAtomId: "atom_junction",
+            toAtomId: "atom_plain_neighbor",
+            order: "single"
+          }
+        ]
+      })
+    ]);
+    const fragments = planPageSvgRender(page).fragments.flatMap(elementFragments);
+    const wedge = fragments.find((fragment) =>
+      fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "bond_wedge"
+    );
+    const wedgePoints = String(wedge?.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    expect(wedgePoints).toHaveLength(5);
+
+    const plainBond = fragments.find((fragment) =>
+      String(fragment.attrs.class).includes("native-bond-line") &&
+      fragment.attrs["data-bond-id"] === "bond_plain"
+    );
+    const plainDirection = {
+      x: Number(plainBond?.attrs.x2) - Number(plainBond?.attrs.x1),
+      y: Number(plainBond?.attrs.y2) - Number(plainBond?.attrs.y1)
+    };
+    const upperContinuation = {
+      x: wedgePoints[2]!.x - wedgePoints[1]!.x,
+      y: wedgePoints[2]!.y - wedgePoints[1]!.y
+    };
+    const lowerContinuation = {
+      x: wedgePoints[3]!.x - wedgePoints[4]!.x,
+      y: wedgePoints[3]!.y - wedgePoints[4]!.y
+    };
+    expect(
+      upperContinuation.x * plainDirection.y - upperContinuation.y * plainDirection.x
+    ).toBeCloseTo(0, 1);
+    expect(
+      lowerContinuation.x * plainDirection.y - lowerContinuation.y * plainDirection.x
+    ).toBeCloseTo(0, 1);
+
+    const hashes = fragments.filter((fragment) =>
+      fragment.attrs.class === "native-bond-hash" &&
+      fragment.attrs["data-bond-id"] === undefined
+    );
+    expect(hashes).toHaveLength(2);
+    const widths = hashes.map((hash) =>
+      Math.hypot(
+        Number(hash.attrs.x2) - Number(hash.attrs.x1),
+        Number(hash.attrs.y2) - Number(hash.attrs.y1)
+      )
+    );
+    const centers = hashes.map((hash) => ({
+      x: (Number(hash.attrs.x1) + Number(hash.attrs.x2)) / 2,
+      y: (Number(hash.attrs.y1) + Number(hash.attrs.y2)) / 2
+    }));
+    const axialWhiteGap =
+      Math.hypot(
+        centers[1]!.x - centers[0]!.x,
+        centers[1]!.y - centers[0]!.y
+      ) - 2;
+    expect(axialWhiteGap).toBeGreaterThanOrEqual(2);
+    expect(widths[1]).toBeGreaterThan(widths[0]!);
+    expect(widths[1]).toBeCloseTo(5.28, 2);
+  });
+
+  it("fills every unlabeled internal carbon so independent butt-capped bonds have no junction seam", () => {
+    const page = pageWithObjects([
+      moleculeObject({
+        id: "mol_continuous_chain",
+        atoms: [
+          { id: "atom_terminal_left", element: "C", x: 100, y: 160, formalCharge: 0 },
+          { id: "atom_internal_left", element: "C", x: 122, y: 148, formalCharge: 0 },
+          { id: "atom_internal_right", element: "C", x: 144, y: 160, formalCharge: 0 },
+          { id: "atom_terminal_right", element: "C", x: 166, y: 148, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bond_left", fromAtomId: "atom_terminal_left", toAtomId: "atom_internal_left", order: "single" },
+          { id: "bond_middle", fromAtomId: "atom_internal_left", toAtomId: "atom_internal_right", order: "single" },
+          { id: "bond_right", fromAtomId: "atom_internal_right", toAtomId: "atom_terminal_right", order: "single" }
+        ]
+      })
+    ]);
+
+    const junctions = planPageSvgRender(page).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs.class === "native-carbon-junction");
+
+    expect(junctions.map((fragment) => fragment.attrs["data-atom-id"]))
+      .toEqual(["atom_internal_left", "atom_internal_right"]);
+    expect(junctions.every((fragment) =>
+      fragment.tag === "circle" &&
+      fragment.attrs.fill === "#000000" &&
+      Number(fragment.attrs.r) > 1
+    )).toBe(true);
+  });
+
+  it("draws an aldehyde with a backbone-connected primary line and a short inward secondary line", () => {
+    const molecule = moleculeObject({
+      id: "mol_aldehyde_double_bond",
+      atoms: [
+        { id: "atom_backbone", element: "C", x: 120, y: 152, formalCharge: 0 },
+        { id: "atom_carbonyl", element: "C", x: 142, y: 140, formalCharge: 0 },
+        { id: "atom_oxygen", element: "O", x: 164, y: 162, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_backbone",
+          fromAtomId: "atom_backbone",
+          toAtomId: "atom_carbonyl",
+          order: "single"
+        },
+        {
+          id: "bond_carbonyl",
+          fromAtomId: "atom_carbonyl",
+          toAtomId: "atom_oxygen",
+          order: "double"
+        }
+      ]
+    });
+    const fragments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments);
+    const backbone = fragments.find((fragment) =>
+      fragment.attrs["data-bond-id"] === "bond_backbone" &&
+      String(fragment.attrs.class).includes("native-bond-line")
+    );
+    const carbonylSegments = fragments.filter((fragment) =>
+      fragment.attrs["data-bond-id"] === "bond_carbonyl" &&
+      String(fragment.attrs.class).includes("native-bond-line")
+    );
+    const primary = carbonylSegments.find((fragment) =>
+      fragment.attrs["data-bond-segment"] === "primary"
+    );
+    const secondary = carbonylSegments.find((fragment) =>
+      fragment.attrs["data-bond-segment"] === "secondary"
+    );
+    if (!backbone || !primary || !secondary) {
+      throw new Error("Expected backbone, primary carbonyl, and secondary carbonyl lines.");
+    }
+
+    expect({ x: primary.attrs.x1, y: primary.attrs.y1 }).toEqual({ x: 142, y: 140 });
+    expect({ x: backbone.attrs.x2, y: backbone.attrs.y2 }).toEqual({ x: 142, y: 140 });
+    expect(primary.attrs["data-double-bond-side"]).toBe("left");
+    expect(secondary.attrs["data-double-bond-side"]).toBe("left");
+
+    const segmentLength = (fragment: PageSvgElementFragment) => Math.hypot(
+      Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
+      Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
+    );
+    expect(segmentLength(secondary)).toBeLessThan(segmentLength(primary));
+
+    const carbonylUnit = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+    const carbonylNormal = { x: -carbonylUnit.y, y: carbonylUnit.x };
+    const secondaryOffset = {
+      x: Number(secondary.attrs.x1) - Number(primary.attrs.x1),
+      y: Number(secondary.attrs.y1) - Number(primary.attrs.y1)
+    };
+    const backboneDirection = { x: -22, y: 12 };
+    expect(secondaryOffset.x * carbonylNormal.x + secondaryOffset.y * carbonylNormal.y)
+      .toBeGreaterThan(0);
+    expect(backboneDirection.x * carbonylNormal.x + backboneDirection.y * carbonylNormal.y)
+      .toBeGreaterThan(0);
+  });
+
+  it("ends both lines of a terminal methylene at the same terminal plane", () => {
+    const molecule = moleculeObject({
+      id: "mol_terminal_methylene",
+      atoms: [
+        { id: "atom_backbone", element: "C", x: 120, y: 132, formalCharge: 0 },
+        { id: "atom_junction", element: "C", x: 142, y: 140, formalCharge: 0 },
+        { id: "atom_ch2", element: "C", x: 142, y: 170, formalCharge: 0 }
+      ],
+      bonds: [
+        {
+          id: "bond_backbone",
+          fromAtomId: "atom_backbone",
+          toAtomId: "atom_junction",
+          order: "single"
+        },
+        {
+          id: "bond_methylene",
+          fromAtomId: "atom_junction",
+          toAtomId: "atom_ch2",
+          order: "double"
+        }
+      ]
+    });
+    const methyleneSegments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) =>
+        fragment.attrs["data-bond-id"] === "bond_methylene" &&
+        String(fragment.attrs.class).includes("native-bond-line")
+      );
+    const primary = methyleneSegments.find((fragment) =>
+      fragment.attrs["data-bond-segment"] === "primary"
+    );
+    const secondary = methyleneSegments.find((fragment) =>
+      fragment.attrs["data-bond-segment"] === "secondary"
+    );
+    if (!primary || !secondary) {
+      throw new Error("Expected primary and secondary terminal-methylene lines.");
+    }
+
+    // The secondary line is inset at the substituted junction...
+    expect(Number(secondary.attrs.y1)).toBeGreaterThan(Number(primary.attrs.y1));
+    // ...but reaches the same terminal-carbon plane as the primary line.
+    expect(Number(secondary.attrs.y2)).toBe(Number(primary.attrs.y2));
+  });
+
+  it("renders ethylene's double bond symmetrically with both lines full length", () => {
+    const molecule = moleculeObject({
+      id: "mol_ethylene",
+      atoms: [
+        { id: "atom_ch2_left", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_ch2_right", element: "C", x: 148, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_ethylene", fromAtomId: "atom_ch2_left", toAtomId: "atom_ch2_right", order: "double" }
+      ]
+    });
+    const segments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) =>
+        fragment.attrs["data-bond-id"] === "bond_ethylene" &&
+        String(fragment.attrs.class).includes("native-bond-line")
+      );
+    const primary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "primary");
+    const secondary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "secondary");
+    if (!primary || !secondary) {
+      throw new Error("Expected primary and secondary ethylene lines.");
+    }
+
+    // Both carbons are terminal methylenes, so neither end of the secondary line is inset: a
+    // symmetric molecule must not render flush at one end and inset at the other.
+    expect(Number(secondary.attrs.x1)).toBe(Number(primary.attrs.x1));
+    expect(Number(secondary.attrs.x2)).toBe(Number(primary.attrs.x2));
+  });
+
+  it("straddles a symmetric ketone C=O evenly instead of picking an arbitrary side", () => {
+    const molecule = moleculeObject({
+      id: "mol_ketone",
+      atoms: [
+        { id: "atom_methyl_left", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_carbonyl", element: "C", x: 142, y: 160, formalCharge: 0 },
+        { id: "atom_methyl_right", element: "C", x: 164, y: 160, formalCharge: 0 },
+        { id: "atom_oxygen", element: "O", x: 142, y: 132, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_left", fromAtomId: "atom_methyl_left", toAtomId: "atom_carbonyl", order: "single" },
+        { id: "bond_right", fromAtomId: "atom_carbonyl", toAtomId: "atom_methyl_right", order: "single" },
+        { id: "bond_carbonyl", fromAtomId: "atom_carbonyl", toAtomId: "atom_oxygen", order: "double" }
+      ]
+    });
+    const segments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) =>
+        fragment.attrs["data-bond-id"] === "bond_carbonyl" &&
+        String(fragment.attrs.class).includes("native-bond-line")
+      );
+    const primary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "primary");
+    const secondary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "secondary");
+    if (!primary || !secondary) {
+      throw new Error("Expected primary and secondary ketone lines.");
+    }
+
+    const segmentLength = (fragment: PageSvgElementFragment) => Math.hypot(
+      Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
+      Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
+    );
+    // The junction has two backbone neighbors, so no inner side is derivable: the pair must
+    // straddle the C=O centerline symmetrically with equal lengths, mirroring around x = 142.
+    expect(segmentLength(primary)).toBeCloseTo(segmentLength(secondary), 6);
+    expect(Number(primary.attrs.x1) + Number(secondary.attrs.x1)).toBeCloseTo(284, 6);
+    expect(Number(primary.attrs.x2) + Number(secondary.attrs.x2)).toBeCloseTo(284, 6);
+    expect(Number(primary.attrs.x1)).not.toBeCloseTo(142, 3);
+  });
+
+  it("keeps a collinear wedge's ink behind its wide-end atom when the miter is rejected", () => {
+    const molecule = moleculeObject({
+      id: "mol_collinear_wedge",
+      atoms: [
+        { id: "atom_tip", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_wide", element: "C", x: 148, y: 160, formalCharge: 0 },
+        { id: "atom_far", element: "C", x: 176, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_wedge", fromAtomId: "atom_tip", toAtomId: "atom_wide", order: "single", display: { bondStyle: "wedge" } },
+        { id: "bond_next", fromAtomId: "atom_wide", toAtomId: "atom_far", order: "single" }
+      ]
+    });
+    const wedge = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .find((fragment) =>
+        fragment.tag === "polygon" &&
+        fragment.attrs["data-bond-id"] === "bond_wedge" &&
+        fragment.attrs["data-bond-style"] === "wedge"
+      );
+    if (!wedge) {
+      throw new Error("Expected a wedge polygon.");
+    }
+
+    // A straight chain rejects the taper-edge miter; the wedge must then fall back to its plain
+    // centered base rather than extending continuation overlap that flares outside the 2 px
+    // continuing stroke (a visible barb past the wide atom).
+    const points = String(wedge.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    expect(points).toHaveLength(3);
+    for (const point of points) {
+      expect(point.x).toBeLessThanOrEqual(148 + 1e-6);
+    }
+  });
+
+  it("removes a hash rather than compressing gaps when a heteroatom label trims the bond", () => {
+    const molecule = moleculeObject({
+      id: "mol_trimmed_hash",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "O", x: 148, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_hash", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "hashed" } }
+      ],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        bondLengthPx: 28
+      }
+    });
+    const hashes = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs.class === "native-bond-hash");
+    const widths = hashes.map((hash) =>
+      Math.hypot(
+        Number(hash.attrs.x2) - Number(hash.attrs.x1),
+        Number(hash.attrs.y2) - Number(hash.attrs.y1)
+      )
+    );
+
+    expect(hashes.length).toBeGreaterThanOrEqual(2);
+    expect(hashes.length).toBeLessThan(4);
+    expect(Math.min(...widths)).toBeGreaterThanOrEqual(2);
+    expect(widths.at(-1)).toBeGreaterThan(widths[0]!);
+    const centers = hashes.map((hash) => ({
+      x: (Number(hash.attrs.x1) + Number(hash.attrs.x2)) / 2,
+      y: (Number(hash.attrs.y1) + Number(hash.attrs.y2)) / 2
+    }));
+    const axialWhiteGaps = centers.slice(1).map((center, index) =>
+      Math.hypot(
+        center.x - centers[index]!.x,
+        center.y - centers[index]!.y
+      ) - 2
+    );
+    expect(Math.min(...axialWhiteGaps)).toBeGreaterThanOrEqual(2);
+  });
+
+  it("caps a label-trimmed wedge width by its actual visible length", () => {
+    const molecule = moleculeObject({
+      id: "mol_trimmed_wedge",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "O", x: 142, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_wedge", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "wedge" } }
+      ]
+    });
+    const wedge = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .find((fragment) => fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "bond_wedge");
+    const points = String(wedge?.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    const tip = points[0];
+    const wideLeft = points[1];
+    const wideRight = points[2];
+    if (!tip || !wideLeft || !wideRight) {
+      throw new Error("Expected a three-point label-trimmed wedge polygon.");
+    }
+    const wideCenter = {
+      x: (wideLeft.x + wideRight.x) / 2,
+      y: (wideLeft.y + wideRight.y) / 2
+    };
+    const visibleLength = Math.hypot(wideCenter.x - tip.x, wideCenter.y - tip.y);
+    const visibleWidth = Math.hypot(wideRight.x - wideLeft.x, wideRight.y - wideLeft.y);
+
+    expect(visibleLength).toBeLessThan(22);
+    expect(visibleWidth / visibleLength).toBeLessThanOrEqual(0.281);
   });
 
   it("uses bond margin width when trimming bonds away from atom labels", () => {

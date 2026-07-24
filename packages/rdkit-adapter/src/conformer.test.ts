@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureRdkit,
   generate3DConformerProgressive,
+  generateSmiles2DMolfile,
   resetRdkitForTesting,
   setRdkitModuleLoader,
   type RdkitJsMol,
@@ -9,13 +10,19 @@ import {
 } from "./conformer";
 
 /** Fixed-column V2000 molfile so the adapter's explicit-H detection (parseV2000AtomBlock) works. */
-function v2000(atoms: { element: string; x?: number; y?: number; z?: number }[]): string {
+function v2000(
+  atoms: { element: string; x?: number; y?: number; z?: number }[],
+  bonds: { from: number; to: number; order?: number; stereo?: number }[] = []
+): string {
   const f = (n: number) => n.toFixed(4).padStart(10);
-  const counts = `${String(atoms.length).padStart(3)}  0  0  0  0  0  0  0  0  0999 V2000`;
+  const counts = `${String(atoms.length).padStart(3)}${String(bonds.length).padStart(3)}  0  0  0  0  0  0  0  0999 V2000`;
   const lines = atoms.map(
     (a) => `${f(a.x ?? 0)}${f(a.y ?? 0)}${f(a.z ?? 0)} ${a.element.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`
   );
-  return ["", "  mock", "", counts, ...lines, "M  END"].join("\n");
+  const bondLines = bonds.map((bond) =>
+    `${String(bond.from).padStart(3)}${String(bond.to).padStart(3)}${String(bond.order ?? 1).padStart(3)}${String(bond.stereo ?? 0).padStart(3)}  0  0  0`
+  );
+  return ["", "  mock", "", counts, ...lines, ...bondLines, "M  END"].join("\n");
 }
 
 const EMBED_MOLBLOCK = "EMBED_MOLBLOCK_3D";
@@ -110,6 +117,229 @@ function installMock(hooks: MockHooks = {}) {
 const INPUT = { molfile: v2000([{ element: "C" }, { element: "O" }, { element: "H" }]), originalAtomCount: 3 };
 
 afterEach(() => resetRdkitForTesting());
+
+describe("rdkit adapter — 2D SMILES depiction", () => {
+  function install2dMock(options: {
+    coordinates?: boolean;
+    molfile?: string;
+    standardMolfile?: string;
+    coordGenMolfile?: string;
+    canonicalIdentity?: (structure: string) => string;
+  } = {}) {
+    let input = "";
+    let deleted = 0;
+    const useCoordGen: Array<boolean | undefined> = [];
+    setRdkitModuleLoader(() => Promise.resolve({
+      get_mol(structure: string): RdkitJsMol {
+        input = structure;
+        let requestedUseCoordGen: boolean | undefined;
+        return {
+          generate_3d_embed: () => "{}",
+          optimize_3d_conformer: () => "{}",
+          set_new_coords: (useCoordGenCandidate) => {
+            requestedUseCoordGen = useCoordGenCandidate;
+            useCoordGen.push(useCoordGenCandidate);
+            return options.coordinates ?? true;
+          },
+          get_molblock: () =>
+            (requestedUseCoordGen ? options.coordGenMolfile : options.standardMolfile) ??
+            options.molfile ??
+            v2000([{ element: "C" }, { element: "O", x: 1.5 }]),
+          ...(options.canonicalIdentity
+            ? { get_smiles: () => options.canonicalIdentity!(structure) }
+            : {}),
+          delete: () => { deleted += 1; }
+        };
+      }
+    }));
+    return { input: () => input, deleted: () => deleted, useCoordGen: () => useCoordGen };
+  }
+
+  it("returns a generated molfile and always releases the WASM molecule", async () => {
+    const state = install2dMock();
+    const molfile = await generateSmiles2DMolfile("CO");
+    expect(state.input()).toBe("CO");
+    expect(molfile).toContain("V2000");
+    expect(state.useCoordGen()).toEqual([false, true]);
+    expect(state.deleted()).toBe(3);
+  });
+
+  it("fails explicitly and still releases the molecule when 2D generation fails", async () => {
+    const state = install2dMock({ coordinates: false });
+    await expect(generateSmiles2DMolfile("CO")).rejects.toThrow("could not generate 2D coordinates");
+    expect(state.deleted()).toBe(1);
+  });
+
+  it("orients a wide depiction from left to right without reversing tetrahedral stereo", async () => {
+    install2dMock({
+      molfile: v2000(
+        [
+          { element: "C", x: 4, y: 0 },
+          { element: "C", x: 3, y: 0.3 },
+          { element: "C", x: 2, y: 0 },
+          { element: "O", x: 0, y: 0 }
+        ],
+        [
+          { from: 1, to: 2, stereo: 1 },
+          { from: 2, to: 3 },
+          { from: 3, to: 4 }
+        ]
+      )
+    });
+
+    const molfile = await generateSmiles2DMolfile("CCCO");
+    const lines = molfile.split(/\r?\n/);
+    const countsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+    expect(Number.parseFloat(lines[countsIndex + 1]!.slice(0, 10))).toBe(0);
+    expect(Number.parseFloat(lines[countsIndex + 4]!.slice(0, 10))).toBe(4);
+    expect(Number.parseInt(lines[countsIndex + 5]!.slice(9, 12).trim(), 10)).toBe(6);
+  });
+
+  it.each([
+    ["lost", "FC(Cl)Br", 0],
+    ["inverted", "F[C@@H](Cl)Br", 6]
+  ])("rejects a clearer CoordGen candidate with %s tetrahedral stereo", async (
+    _,
+    coordGenIdentity,
+    coordGenStereo
+  ) => {
+    const source = "F[C@H](Cl)Br";
+    const standardMolfile = v2000(
+      [
+        { element: "F", x: 0, y: 0 },
+        { element: "C", x: 1, y: 0 },
+        { element: "Cl", x: 1, y: 1 },
+        { element: "Br", x: 0, y: 1 }
+      ],
+      [
+        { from: 2, to: 1, stereo: 1 },
+        { from: 2, to: 3 },
+        { from: 2, to: 4 }
+      ]
+    );
+    const coordGenMolfile = v2000(
+      [
+        { element: "F", x: 0, y: 0 },
+        { element: "C", x: 1, y: 0 },
+        { element: "Cl", x: 2, y: 0 },
+        { element: "Br", x: 3, y: 0 }
+      ],
+      [
+        { from: 2, to: 1, stereo: coordGenStereo },
+        { from: 2, to: 3 },
+        { from: 2, to: 4 }
+      ]
+    );
+    install2dMock({
+      standardMolfile,
+      coordGenMolfile,
+      canonicalIdentity: (structure) => {
+        if (structure === coordGenMolfile) return coordGenIdentity;
+        return source;
+      }
+    });
+
+    await expect(generateSmiles2DMolfile(source)).resolves.toBe(standardMolfile);
+  });
+
+  it.each([
+    ["lost", "FC(Cl)Br", 0],
+    ["inverted", "F[C@@H](Cl)Br", 6]
+  ])("rejects when the standard depiction has %s tetrahedral stereo", async (
+    _,
+    standardIdentity,
+    standardStereo
+  ) => {
+    const source = "F[C@H](Cl)Br";
+    const standardMolfile = v2000(
+      [
+        { element: "F", x: 0, y: 0 },
+        { element: "C", x: 1, y: 0 },
+        { element: "Cl", x: 1, y: 1 },
+        { element: "Br", x: 0, y: 1 }
+      ],
+      [
+        { from: 2, to: 1, stereo: standardStereo },
+        { from: 2, to: 3 },
+        { from: 2, to: 4 }
+      ]
+    );
+    const state = install2dMock({
+      standardMolfile,
+      canonicalIdentity: (structure) =>
+        structure === standardMolfile ? standardIdentity : source
+    });
+
+    await expect(generateSmiles2DMolfile(source)).rejects.toThrow(
+      "RDKit standard 2D depiction changed the source isomeric stereochemistry"
+    );
+    expect(state.useCoordGen()).toEqual([false]);
+  });
+
+  // Candidate-selection heuristic (preferCoordGenDepiction). Each fixture pair keeps atom/bond
+  // counts equal and the first atom on the left so the orientation pass never rewrites the
+  // molfile, letting `resolves.toBe` identify the selected candidate exactly.
+  const CHAIN_BONDS = [{ from: 1, to: 2 }, { from: 2, to: 3 }, { from: 3, to: 4 }];
+  const horizontalChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 1, y: 0 },
+      { element: "C", x: 2, y: 0 },
+      { element: "O", x: 3, y: 0 }
+    ],
+    CHAIN_BONDS
+  );
+  const verticalChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 0, y: 1 },
+      { element: "C", x: 0, y: 2 },
+      { element: "O", x: 0, y: 3 }
+    ],
+    CHAIN_BONDS
+  );
+  // Bonds 1-2 and 3-4 properly cross at (0.5, 0.5); the chain stays connected via 2-3.
+  const crossedChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 1, y: 1 },
+      { element: "C", x: 1, y: 0 },
+      { element: "O", x: 0, y: 1 }
+    ],
+    CHAIN_BONDS
+  );
+  // Wide layout whose terminal O sits 0.42 units (≈0.34 bond lengths) from atom 1: a clear
+  // non-bonded overlap that must veto the otherwise preferred wide aspect.
+  const overlappingWideChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 1, y: 0 },
+      { element: "C", x: 2, y: 0 },
+      { element: "O", x: 0.3, y: 0.3 }
+    ],
+    CHAIN_BONDS
+  );
+
+  it("prefers the CoordGen depiction when it removes a bond crossing with clear spacing", async () => {
+    install2dMock({ standardMolfile: crossedChain, coordGenMolfile: horizontalChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(horizontalChain);
+  });
+
+  it("keeps the standard depiction when CoordGen introduces a bond crossing", async () => {
+    install2dMock({ standardMolfile: horizontalChain, coordGenMolfile: crossedChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(horizontalChain);
+  });
+
+  it("keeps the standard depiction when the wider CoordGen candidate overlaps non-bonded atoms", async () => {
+    install2dMock({ standardMolfile: verticalChain, coordGenMolfile: overlappingWideChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(verticalChain);
+  });
+
+  it("prefers the horizontal CoordGen depiction when both candidates are equally clear", async () => {
+    install2dMock({ standardMolfile: verticalChain, coordGenMolfile: horizontalChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(horizontalChain);
+  });
+});
 
 describe("rdkit conformer adapter — embed mapping", () => {
   it("scatters engine-order coords onto original atoms and maps hydrogens", async () => {
