@@ -1620,20 +1620,6 @@ describe("layout-engine page SVG planner", () => {
       toAtomId: bond.toAtomId,
       bondStyle: bond.display?.bondStyle
     }))).toEqual(storedBonds);
-    expect(storedBonds).toEqual([
-      {
-        id: "bond_wedge_left",
-        fromAtomId: "atom_left",
-        toAtomId: "atom_shared",
-        bondStyle: "wedge"
-      },
-      {
-        id: "bond_wedge_top",
-        fromAtomId: "atom_top",
-        toAtomId: "atom_shared",
-        bondStyle: "wedge"
-      }
-    ]);
 
     const wedgePoints = ["bond_wedge_left", "bond_wedge_top"].map((bondId) => {
       const wedge = fragments.find((fragment) =>
@@ -2080,6 +2066,111 @@ describe("layout-engine page SVG planner", () => {
     expect(Number(secondary.attrs.y1)).toBeGreaterThan(Number(primary.attrs.y1));
     // ...but reaches the same terminal-carbon plane as the primary line.
     expect(Number(secondary.attrs.y2)).toBe(Number(primary.attrs.y2));
+  });
+
+  it("renders ethylene's double bond symmetrically with both lines full length", () => {
+    const molecule = moleculeObject({
+      id: "mol_ethylene",
+      atoms: [
+        { id: "atom_ch2_left", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_ch2_right", element: "C", x: 148, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_ethylene", fromAtomId: "atom_ch2_left", toAtomId: "atom_ch2_right", order: "double" }
+      ]
+    });
+    const segments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) =>
+        fragment.attrs["data-bond-id"] === "bond_ethylene" &&
+        String(fragment.attrs.class).includes("native-bond-line")
+      );
+    const primary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "primary");
+    const secondary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "secondary");
+    if (!primary || !secondary) {
+      throw new Error("Expected primary and secondary ethylene lines.");
+    }
+
+    // Both carbons are terminal methylenes, so neither end of the secondary line is inset: a
+    // symmetric molecule must not render flush at one end and inset at the other.
+    expect(Number(secondary.attrs.x1)).toBe(Number(primary.attrs.x1));
+    expect(Number(secondary.attrs.x2)).toBe(Number(primary.attrs.x2));
+  });
+
+  it("straddles a symmetric ketone C=O evenly instead of picking an arbitrary side", () => {
+    const molecule = moleculeObject({
+      id: "mol_ketone",
+      atoms: [
+        { id: "atom_methyl_left", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_carbonyl", element: "C", x: 142, y: 160, formalCharge: 0 },
+        { id: "atom_methyl_right", element: "C", x: 164, y: 160, formalCharge: 0 },
+        { id: "atom_oxygen", element: "O", x: 142, y: 132, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_left", fromAtomId: "atom_methyl_left", toAtomId: "atom_carbonyl", order: "single" },
+        { id: "bond_right", fromAtomId: "atom_carbonyl", toAtomId: "atom_methyl_right", order: "single" },
+        { id: "bond_carbonyl", fromAtomId: "atom_carbonyl", toAtomId: "atom_oxygen", order: "double" }
+      ]
+    });
+    const segments = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) =>
+        fragment.attrs["data-bond-id"] === "bond_carbonyl" &&
+        String(fragment.attrs.class).includes("native-bond-line")
+      );
+    const primary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "primary");
+    const secondary = segments.find((fragment) => fragment.attrs["data-bond-segment"] === "secondary");
+    if (!primary || !secondary) {
+      throw new Error("Expected primary and secondary ketone lines.");
+    }
+
+    const segmentLength = (fragment: PageSvgElementFragment) => Math.hypot(
+      Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
+      Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
+    );
+    // The junction has two backbone neighbors, so no inner side is derivable: the pair must
+    // straddle the C=O centerline symmetrically with equal lengths, mirroring around x = 142.
+    expect(segmentLength(primary)).toBeCloseTo(segmentLength(secondary), 6);
+    expect(Number(primary.attrs.x1) + Number(secondary.attrs.x1)).toBeCloseTo(284, 6);
+    expect(Number(primary.attrs.x2) + Number(secondary.attrs.x2)).toBeCloseTo(284, 6);
+    expect(Number(primary.attrs.x1)).not.toBeCloseTo(142, 3);
+  });
+
+  it("keeps a collinear wedge's ink behind its wide-end atom when the miter is rejected", () => {
+    const molecule = moleculeObject({
+      id: "mol_collinear_wedge",
+      atoms: [
+        { id: "atom_tip", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_wide", element: "C", x: 148, y: 160, formalCharge: 0 },
+        { id: "atom_far", element: "C", x: 176, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_wedge", fromAtomId: "atom_tip", toAtomId: "atom_wide", order: "single", display: { bondStyle: "wedge" } },
+        { id: "bond_next", fromAtomId: "atom_wide", toAtomId: "atom_far", order: "single" }
+      ]
+    });
+    const wedge = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .find((fragment) =>
+        fragment.tag === "polygon" &&
+        fragment.attrs["data-bond-id"] === "bond_wedge" &&
+        fragment.attrs["data-bond-style"] === "wedge"
+      );
+    if (!wedge) {
+      throw new Error("Expected a wedge polygon.");
+    }
+
+    // A straight chain rejects the taper-edge miter; the wedge must then fall back to its plain
+    // centered base rather than extending continuation overlap that flares outside the 2 px
+    // continuing stroke (a visible barb past the wide atom).
+    const points = String(wedge.attrs.points ?? "").split(/\s+/).map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    expect(points).toHaveLength(3);
+    for (const point of points) {
+      expect(point.x).toBeLessThanOrEqual(148 + 1e-6);
+    }
   });
 
   it("removes a hash rather than compressing gaps when a heteroatom label trims the bond", () => {

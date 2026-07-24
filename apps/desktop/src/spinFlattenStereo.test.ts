@@ -138,6 +138,7 @@ describe("reconcileFlattenedStereo — repair algorithm", () => {
     const result = reconcileFlattenedStereo(template, atoms, bonds, new Map([[0, "R"]]), reader.read);
     expect(result.ok).toBe(false);
     expect(result.unresolved).toContain(0);
+    expect(result.reason).toBe("stereochemistry");
   });
 
   it("does nothing (and never reads) when no center was specified before the flatten", () => {
@@ -154,6 +155,26 @@ describe("reconcileFlattenedStereo — repair algorithm", () => {
     const result = reconcileFlattenedStereo(template, atoms, bonds, new Map([[0, "R"]]), reader.read);
     expect(result.ok).toBe(false);
     expect(result.unresolved).toContain(0);
+  });
+
+  it("refuses with a legibility reason when a repeated glyph has no CIP-safe relocation", () => {
+    const { template, atoms, bonds } = stubMolecule("wedge");
+    // Second wedge from the same center: a repeated glyph the relocator must try to move.
+    bonds[2] = { ...bonds[2]!, display: { bondStyle: "wedge" } };
+    template.bonds = bonds;
+    // Only the exact starting configuration (two solid wedges, no hash) reads back correctly, so
+    // every relocation trial fails CIP revalidation and the collision cannot be resolved.
+    const perceive: StereoPerceiver = (molfile) => {
+      const codes = stereoBondCodes(molfile);
+      const matchesInitial =
+        codes.filter((code) => code.stereo === 1).length === 2 &&
+        codes.every((code) => code.stereo !== 6);
+      return center(matchesInitial ? "R" : "S");
+    };
+    const result = reconcileFlattenedStereo(template, atoms, bonds, new Map([[0, "R"]]), perceive);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("legibility");
+    expect(result.unresolved).toEqual([]);
   });
 
   it("uses depth to rank CIP-valid wedge/hash alternatives", () => {

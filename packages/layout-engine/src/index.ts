@@ -3996,6 +3996,37 @@ function bondLineSegments(
       object,
       bond
     );
+    // A terminal heteroatom double bond with no derivable inner side (a ketone's two backbone
+    // neighbors, formaldehyde's none) has no publication convention to lean on: keep the legacy
+    // symmetric ±gap/2 straddle so a symmetric molecule never picks an arbitrary side. The user's
+    // explicit side still wins below.
+    if (
+      bond.display?.doubleBondSide === undefined &&
+      ringInteriorSide === undefined &&
+      terminalHeteroatomSide === undefined &&
+      isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
+    ) {
+      const halfGap = gap / 2;
+      return [
+        {
+          x1: x1 + normal.x * halfGap,
+          y1: y1 + normal.y * halfGap,
+          x2: x2 + normal.x * halfGap,
+          y2: y2 + normal.y * halfGap,
+          segment: "primary",
+          doubleBondSide: "left"
+        },
+        {
+          x1: x1 - normal.x * halfGap,
+          y1: y1 - normal.y * halfGap,
+          x2: x2 - normal.x * halfGap,
+          y2: y2 - normal.y * halfGap,
+          segment: "secondary",
+          doubleBondSide: "left"
+        }
+      ];
+    }
+
     // Default a ring double bond's inner line to the ring interior; the user's explicit side
     // (bond.display.doubleBondSide) always wins. A terminal heteroatom double bond (such as an
     // aldehyde C=O) follows the same publication convention as a ring: the primary line stays on
@@ -4013,9 +4044,9 @@ function bondLineSegments(
       drawingStyle.doubleBondInsetPx,
       Math.max(0, (trimmedLength - minimumSecondaryLength) / 2)
     );
-    const terminalMethyleneAtom = terminalMethyleneCarbon(fromAtom, toAtom, object, bond);
-    const secondaryFromInset = terminalMethyleneAtom?.id === fromAtom.id ? 0 : inset;
-    const secondaryToInset = terminalMethyleneAtom?.id === toAtom.id ? 0 : inset;
+    const methyleneEnds = terminalMethyleneCarbons(fromAtom, toAtom, object, bond);
+    const secondaryFromInset = methyleneEnds.some((atom) => atom.id === fromAtom.id) ? 0 : inset;
+    const secondaryToInset = methyleneEnds.some((atom) => atom.id === toAtom.id) ? 0 : inset;
     return [
       { x1, y1, x2, y2, segment: "primary", doubleBondSide },
       {
@@ -4932,14 +4963,18 @@ function nativeWedgeWideEndMiter(
   );
   const miterLimit = Math.max(width, adjacentHalfStroke * 2) * 2;
   if (
-    leftMiter &&
-    rightMiter &&
-    distance(leftMiter, wideAtom) <= miterLimit &&
-    distance(rightMiter, wideAtom) <= miterLimit
+    !leftMiter ||
+    !rightMiter ||
+    distance(leftMiter, wideAtom) > miterLimit ||
+    distance(rightMiter, wideAtom) > miterLimit
   ) {
-    result.wideLeft = leftMiter;
-    result.wideRight = rightMiter;
+    // Near-collinear junctions reject the miter, and then the continuation overlap is NOT hidden
+    // by the adjacent stroke: extending the full-width centered base along a bond of ordinary
+    // stroke width paints a visible barb past the wide atom. Fall back to the plain centered base.
+    return result;
   }
+  result.wideLeft = leftMiter;
+  result.wideRight = rightMiter;
 
   // Carry the overlap slightly beyond whichever miter lands farther along the regular bond. This
   // keeps the five-point fill ordered and prevents a sub-pixel fold-back on the inside edge, while
@@ -5321,23 +5356,25 @@ function terminalHeteroatomDoubleBondInnerSide(
   return adjacentSide > 0 ? "left" : "right";
 }
 
-function terminalMethyleneCarbon(
+function terminalMethyleneCarbons(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
   object: MoleculeObject,
   bond: CoreMoleculeBond
-): MoleculeAtom | undefined {
+): MoleculeAtom[] {
   if (bond.order !== "double") {
-    return undefined;
+    return [];
   }
   if (
     nativeElementFromAtomLabel(fromAtom.element) !== "C" ||
     nativeElementFromAtomLabel(toAtom.element) !== "C"
   ) {
-    return undefined;
+    return [];
   }
 
-  return [fromAtom, toAtom].find((atom) =>
+  // Both ends can qualify (ethylene): each terminal CH2 keeps its secondary line flush, so the
+  // symmetric molecule renders symmetrically instead of favoring whichever atom comes first.
+  return [fromAtom, toAtom].filter((atom) =>
     atom.formalCharge === 0 &&
     atomBondCount(object, atom.id) === 1
   );

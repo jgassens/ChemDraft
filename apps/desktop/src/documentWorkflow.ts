@@ -10979,7 +10979,17 @@ export function reconcileFlattenedStereo(
     /** Rotated conformer depth by atom id; larger values are nearer the viewer. */
     depthByAtomId?: ReadonlyMap<string, number>;
   } = {}
-): { ok: boolean; bonds: MoleculeBond[]; unresolved: number[] } {
+): {
+  ok: boolean;
+  bonds: MoleculeBond[];
+  unresolved: number[];
+  /**
+   * Why `ok` is false: "stereochemistry" means the drawing reads back wrong CIP descriptors at
+   * `unresolved` centers; "legibility" means every descriptor is correct but the depiction keeps
+   * two same-style glyphs at one atom and no CIP-safe relocation was found.
+   */
+  reason?: "stereochemistry" | "legibility";
+} {
   const cloneBonds = (source: readonly MoleculeBond[]): MoleculeBond[] =>
     source.map((bond) => ({ ...bond, display: bond.display ? { ...bond.display } : undefined }));
   if (reference.size === 0) return { ok: true, bonds: cloneBonds(bonds), unresolved: [] };
@@ -11020,9 +11030,11 @@ export function reconcileFlattenedStereo(
         perceive,
         options.depthByAtomId
       );
+      // Every CIP descriptor is already validated here, so a relocation failure is a pure
+      // legibility refusal: report it as such rather than claiming centers would change.
       return readable
         ? { ok: true, bonds: readable, unresolved: [] }
-        : { ok: false, bonds: current, unresolved: [...reference.keys()] };
+        : { ok: false, bonds: current, unresolved: [], reason: "legibility" };
     }
 
     const next = cloneBonds(current);
@@ -11039,10 +11051,17 @@ export function reconcileFlattenedStereo(
       ownWedge.display.bondStyle = ownWedge.display.bondStyle === "wedge" ? "hashed" : "wedge";
       flippedAny = true;
     }
-    if (!flippedAny) return { ok: false, bonds: current, unresolved: unfixable.length > 0 ? unfixable : wrong };
+    if (!flippedAny) {
+      return {
+        ok: false,
+        bonds: current,
+        unresolved: unfixable.length > 0 ? unfixable : wrong,
+        reason: "stereochemistry"
+      };
+    }
     current = next;
   }
-  return { ok: false, bonds: current, unresolved: [...reference.keys()] };
+  return { ok: false, bonds: current, unresolved: [...reference.keys()], reason: "stereochemistry" };
 }
 
 type RepeatedStereoMarker = {
@@ -11585,7 +11604,9 @@ export function flattenSpunMolecule(
         status: "refused",
         warnings: result.warnings,
         refusalReasons: [
-          `flatten would change stereochemistry at ${reconciled.unresolved.length} center(s); re-orient and try again`
+          reconciled.reason === "legibility"
+            ? "flatten preserves stereochemistry but would draw two identical wedge/hash marks at one atom; re-orient and try again"
+            : `flatten would change stereochemistry at ${reconciled.unresolved.length} center(s); re-orient and try again`
         ],
         stereoCenters: result.stereoCenters
       };

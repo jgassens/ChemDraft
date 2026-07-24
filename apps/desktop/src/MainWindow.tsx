@@ -4940,7 +4940,15 @@ export function MainWindow({
               wedge: bond.wedge
             }))
           };
-          stereoCount = fallback.bonds.filter((bond) => bond.wedge !== null).length;
+          // The status line reports stereocenters; OCL can usually still perceive its own
+          // molfile even when the fixed-column reparse above failed. Only if perception also
+          // fails do we approximate with the wedge-bond count.
+          try {
+            stereoCount = ocl.perceiveStereoCentersFromMolfile(fallback.molfile)
+              .filter((center) => center.isStereoCenter).length;
+          } catch {
+            stereoCount = fallback.bonds.filter((bond) => bond.wedge !== null).length;
+          }
         }
       }
       if (depiction.atoms.length === 0) {

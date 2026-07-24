@@ -159,6 +159,8 @@ describe("insertSmilesMolecule — renders pasted SMILES with stereochemistry", 
     expect(molecule.atoms).toHaveLength(25);
     expect(molecule.bonds).toHaveLength(31);
     expect(molecule.bonds.filter(isWedge)).toHaveLength(6);
+    // Pin the literal so a regressed constant cannot silently self-validate below.
+    expect(smilesPasteBondLengthPx).toBe(28);
     expect(molecule.style.bondLengthPx).toBe(smilesPasteBondLengthPx);
 
     const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));

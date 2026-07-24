@@ -275,6 +275,70 @@ describe("rdkit adapter — 2D SMILES depiction", () => {
     );
     expect(state.useCoordGen()).toEqual([false]);
   });
+
+  // Candidate-selection heuristic (preferCoordGenDepiction). Each fixture pair keeps atom/bond
+  // counts equal and the first atom on the left so the orientation pass never rewrites the
+  // molfile, letting `resolves.toBe` identify the selected candidate exactly.
+  const CHAIN_BONDS = [{ from: 1, to: 2 }, { from: 2, to: 3 }, { from: 3, to: 4 }];
+  const horizontalChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 1, y: 0 },
+      { element: "C", x: 2, y: 0 },
+      { element: "O", x: 3, y: 0 }
+    ],
+    CHAIN_BONDS
+  );
+  const verticalChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 0, y: 1 },
+      { element: "C", x: 0, y: 2 },
+      { element: "O", x: 0, y: 3 }
+    ],
+    CHAIN_BONDS
+  );
+  // Bonds 1-2 and 3-4 properly cross at (0.5, 0.5); the chain stays connected via 2-3.
+  const crossedChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 1, y: 1 },
+      { element: "C", x: 1, y: 0 },
+      { element: "O", x: 0, y: 1 }
+    ],
+    CHAIN_BONDS
+  );
+  // Wide layout whose terminal O sits 0.42 units (≈0.34 bond lengths) from atom 1: a clear
+  // non-bonded overlap that must veto the otherwise preferred wide aspect.
+  const overlappingWideChain = v2000(
+    [
+      { element: "C", x: 0, y: 0 },
+      { element: "C", x: 1, y: 0 },
+      { element: "C", x: 2, y: 0 },
+      { element: "O", x: 0.3, y: 0.3 }
+    ],
+    CHAIN_BONDS
+  );
+
+  it("prefers the CoordGen depiction when it removes a bond crossing with clear spacing", async () => {
+    install2dMock({ standardMolfile: crossedChain, coordGenMolfile: horizontalChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(horizontalChain);
+  });
+
+  it("keeps the standard depiction when CoordGen introduces a bond crossing", async () => {
+    install2dMock({ standardMolfile: horizontalChain, coordGenMolfile: crossedChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(horizontalChain);
+  });
+
+  it("keeps the standard depiction when the wider CoordGen candidate overlaps non-bonded atoms", async () => {
+    install2dMock({ standardMolfile: verticalChain, coordGenMolfile: overlappingWideChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(verticalChain);
+  });
+
+  it("prefers the horizontal CoordGen depiction when both candidates are equally clear", async () => {
+    install2dMock({ standardMolfile: verticalChain, coordGenMolfile: horizontalChain });
+    await expect(generateSmiles2DMolfile("CCCO")).resolves.toBe(horizontalChain);
+  });
 });
 
 describe("rdkit conformer adapter — embed mapping", () => {
