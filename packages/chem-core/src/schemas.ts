@@ -370,7 +370,7 @@ export const ReactionObjectSchema = BaseObjectSchema.extend({
 
 export const ArrowObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction-arrow"),
-  arrowKind: z.enum(["forward", "equilibrium", "retrosynthesis", "unknown"]),
+  arrowKind: z.enum(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"]),
   start: AnchorSchema,
   end: AnchorSchema,
   labels: z.array(IdSchema).default([])

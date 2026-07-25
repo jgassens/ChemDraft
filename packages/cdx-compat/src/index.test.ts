@@ -968,6 +968,35 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((reactionArrow.document?.pages[0].objects[0] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
   });
 
+  it("round-trips a resonance reaction arrow through CDXML", () => {
+    const document = documentWithObjects([
+      {
+        id: "arrow_res",
+        type: "reaction-arrow",
+        x: 100,
+        y: 88,
+        width: 120,
+        height: 24,
+        rotation: 0,
+        style: {},
+        arrowKind: "resonance",
+        start: { kind: "point", point: { x: 100, y: 100 } },
+        end: { kind: "point", point: { x: 220, y: 100 } },
+        labels: []
+      }
+    ]);
+    const exported = exportDocumentToCdxml(document, { creationProgram: "Resonance Arrow Test" });
+
+    expect(exported.contents).toContain('ArrowType="resonance"');
+    const reopened = openChemDraftPayload(exported.contents);
+    const arrow = reopened.document?.pages[0].objects.find(
+      (object): object is ArrowObject => object.type === "reaction-arrow"
+    );
+    expect(arrow?.arrowKind).toBe("resonance");
+    expect(arrow?.start).toEqual({ kind: "point", point: { x: 100, y: 100 } });
+    expect(arrow?.end).toEqual({ kind: "point", point: { x: 220, y: 100 } });
+  });
+
   it("preserves unsupported synthetic CDXML objects as unknown compatibility objects", () => {
     const opened = openChemDraftPayload(cdxmlFixture("unsupported-step.cdxml"));
 

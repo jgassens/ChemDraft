@@ -137,6 +137,7 @@ import {
   type PageSvgElementFragment,
   type PageSvgFragment,
   type PageSvgRenderPlan,
+  planReactionArrowGeometry,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -356,6 +357,9 @@ import {
   insertNativeTextObject,
   insertNativeSymbolGlyph,
   symbolGlyphForToolCommand,
+  reactionArrowKindForToolCommand,
+  applyReactionArrowToolAtPoint,
+  stretchNativeReactionArrowTo,
   insertNativeArtGraphicObject,
   nativeBezierPathDocument,
   nativeArtToolIsFreehand,
@@ -678,7 +682,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template";
+  kind: "single-bond" | "template" | "arrow";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -686,6 +690,7 @@ type NativePlacementDragState = {
   latestPoint: ClientPoint;
   bondStyle?: NativeBondDisplayStyle;
   templateId?: NativeMoleculeTemplateId;
+  arrowKind?: ArrowObject["arrowKind"];
   dragging: boolean;
 };
 type NativeBondEditDragState = {
@@ -8616,12 +8621,17 @@ export function MainWindow({
   const startNativePlacementDrag = useCallback((
     event: ObjectPointerEvent,
     point: ClientPoint,
-    placement: { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle } | { kind: "template"; templateId: NativeMoleculeTemplateId }
+    placement:
+      | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle }
+      | { kind: "template"; templateId: NativeMoleculeTemplateId }
+      | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
   ): boolean => {
     const startDocument = documentRef.current;
     const placementDocument = placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
-      : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+      : placement.kind === "arrow"
+        ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
+        : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
     const objectId = placementDocument.selection.objectIds[0];
     if (placementDocument === startDocument || !objectId || findDocumentObject(startDocument, objectId)) {
       return false;
@@ -8637,6 +8647,7 @@ export function MainWindow({
       latestPoint: point,
       bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
+      arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
@@ -8928,12 +8939,15 @@ export function MainWindow({
   const nativePlacementDocumentFromDrag = useCallback((
     drag: NativePlacementDragState,
     point: ClientPoint
-  ): ChemDraftDocument => rotateNativeMoleculeObjectAroundPoint(
-    drag.placementDocument,
-    drag.objectId,
-    drag.startPoint,
-    nativePlacementRotationDegrees(drag.startPoint, point)
-  ), []);
+  ): ChemDraftDocument => drag.kind === "arrow"
+    // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
+    ? stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point)
+    : rotateNativeMoleculeObjectAroundPoint(
+      drag.placementDocument,
+      drag.objectId,
+      drag.startPoint,
+      nativePlacementRotationDegrees(drag.startPoint, point)
+    ), []);
 
   const previewNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -10384,6 +10398,22 @@ export function MainWindow({
     }
 
     {
+      const arrowKind = reactionArrowKindForToolCommand(activeToolState.activeCommandId);
+      if (arrowKind) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
+          const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
+          if (nextDocument !== documentRef.current) {
+            commitDocumentChange(nextDocument);
+            setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
+          }
+        }
+        return;
+      }
+    }
+
+    {
       const symbolGlyph = symbolGlyphForToolCommand(activeToolState.activeCommandId);
       if (symbolGlyph) {
         event.preventDefault();
@@ -10428,6 +10458,7 @@ export function MainWindow({
     applySingleBondDocumentAtPoint,
     applySymbolGlyphAtPoint,
     applyTextDocumentAtPoint,
+    commitDocumentChange,
     document,
     pagePointFromPointerEvent,
     startTapeMeasureDrag,
@@ -11075,8 +11106,9 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
       const changed = commitNativePlacementDrag(nativePlacementDrag, point);
       const label = nativePlacementStatusLabel(nativePlacementDrag);
+      const draggedVerb = nativePlacementDrag.kind === "arrow" ? "Inserted angled" : "Inserted rotated";
       setStatus(changed
-        ? nativePlacementDrag.dragging ? `Inserted rotated ${label}` : `Inserted ${label}`
+        ? nativePlacementDrag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
         : `${capitalizeLabel(label)} not placed`);
       clearNativePlacementDrag(event);
       return;
@@ -16542,9 +16574,42 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "arrow" && drag.arrowKind) {
+    return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
+  }
   return drag.kind === "template" && drag.templateId
     ? `${nativeTemplateStatusLabel(drag.templateId)} template`
     : `${nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
+}
+
+function nativeReactionArrowAriaLabel(arrowKind: ArrowObject["arrowKind"]): string {
+  switch (arrowKind) {
+    case "forward":
+      return "Forward reaction arrow";
+    case "resonance":
+      return "Resonance arrow";
+    case "equilibrium":
+      return "Equilibrium arrow";
+    case "retrosynthesis":
+      return "Retrosynthesis arrow";
+    default:
+      return "Reaction arrow";
+  }
+}
+
+function nativeReactionArrowStatusLabel(arrowKind: ArrowObject["arrowKind"]): string {
+  switch (arrowKind) {
+    case "forward":
+      return "reaction";
+    case "resonance":
+      return "resonance";
+    case "equilibrium":
+      return "equilibrium";
+    case "retrosynthesis":
+      return "retrosynthesis";
+    default:
+      return "reaction";
+  }
 }
 
 function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string {
@@ -20609,7 +20674,10 @@ function DocumentObjectView({
     const height = Math.max(object.height, 1);
     const start = arrowAnchorPointRelativeToObject(object, object.start, { x: 0, y: height / 2 });
     const end = arrowAnchorPointRelativeToObject(object, object.end, { x: width, y: height / 2 });
-    const markerId = `reaction-arrowhead-${object.id}`;
+    // Same geometry plan as SVG export (layout-engine), projected per point for Spin 3D parity.
+    const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
+    const project = (point: { x: number; y: number }) =>
+      projectArtPoint(point, width, height, artObjectProjection?.matrix);
     return (
       <div
         className={["document-object", "document-object-overlay", "reaction-arrow-object"].join(" ")}
@@ -20617,7 +20685,7 @@ function DocumentObjectView({
         data-object-id={object.id}
         data-layer-index={layerIndex}
         data-arrow-kind={object.arrowKind}
-        aria-label={`${object.arrowKind === "forward" ? "Forward" : "Reaction"} arrow`}
+        aria-label={`${nativeReactionArrowAriaLabel(object.arrowKind)}`}
         onPointerDown={handleObjectPointerDown}
         onPointerMove={handleObjectPointerMove}
         onPointerUp={handleObjectPointerUp}
@@ -20631,27 +20699,32 @@ function DocumentObjectView({
           preserveAspectRatio="none"
           aria-hidden="true"
         >
-          <defs>
-            <marker
-              id={markerId}
-              markerHeight="7"
-              markerUnits="strokeWidth"
-              markerWidth="7"
-              orient="auto"
-              refX="6"
-              refY="3.5"
-            >
-              <path d="M 0 0 L 7 3.5 L 0 7 z" />
-            </marker>
-          </defs>
-          <line
-            className="reaction-arrow-line"
-            x1={formatSvgNumber(projectArtPoint(start, width, height, artObjectProjection?.matrix).x)}
-            y1={formatSvgNumber(projectArtPoint(start, width, height, artObjectProjection?.matrix).y)}
-            x2={formatSvgNumber(projectArtPoint(end, width, height, artObjectProjection?.matrix).x)}
-            y2={formatSvgNumber(projectArtPoint(end, width, height, artObjectProjection?.matrix).y)}
-            markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
-          />
+          {geometry.lines.map((line, index) => {
+            const lineStart = project(line.start);
+            const lineEnd = project(line.end);
+            return (
+              <line
+                key={`line-${index}`}
+                className="reaction-arrow-line"
+                x1={formatSvgNumber(lineStart.x)}
+                y1={formatSvgNumber(lineStart.y)}
+                x2={formatSvgNumber(lineEnd.x)}
+                y2={formatSvgNumber(lineEnd.y)}
+              />
+            );
+          })}
+          {geometry.heads.map((head, index) => (
+            <polygon
+              key={`head-${index}`}
+              className={head.filled ? "reaction-arrow-head" : "reaction-arrow-head reaction-arrow-head-open"}
+              points={head.points
+                .map((point) => {
+                  const projected = project(point);
+                  return `${formatSvgNumber(projected.x)},${formatSvgNumber(projected.y)}`;
+                })
+                .join(" ")}
+            />
+          ))}
         </svg>
         {artObjectTransformFrame}
       </div>

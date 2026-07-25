@@ -48,6 +48,7 @@ import {
   stylePresetToObjectStyle,
   textStyleToObjectStyle,
   type Anchor,
+  type ArrowObject,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -3332,6 +3333,128 @@ export function insertNativeTextObject(
       { op: "addObject", pageId: page.id, object },
       { op: "setSelection", pageId: page.id, objectIds: [object.id] }
     ],
+    { now: phase4Timestamp }
+  );
+}
+
+const reactionArrowKindByToolCommandId: ReadonlyMap<string, ArrowObject["arrowKind"]> = new Map([
+  ["tool.reactionArrow", "forward"],
+  ["tool.resonanceArrow", "resonance"],
+  ["tool.equilibriumArrow", "equilibrium"],
+  ["tool.retroArrow", "retrosynthesis"]
+]);
+
+export function reactionArrowKindForToolCommand(commandId: string): ArrowObject["arrowKind"] | undefined {
+  return reactionArrowKindByToolCommandId.get(commandId);
+}
+
+export const nativeReactionArrowDefaultLengthPx = 120;
+const nativeReactionArrowMinHeightPx = 24;
+const nativeReactionArrowMinLengthPx = 8;
+
+export function createNativeReactionArrow(
+  document: ChemDraftDocument,
+  startPoint: PagePoint,
+  endPoint: PagePoint,
+  arrowKind: ArrowObject["arrowKind"]
+): ArrowObject {
+  const minX = Math.min(startPoint.x, endPoint.x);
+  const maxX = Math.max(startPoint.x, endPoint.x);
+  const minY = Math.min(startPoint.y, endPoint.y);
+  const maxY = Math.max(startPoint.y, endPoint.y);
+  const height = Math.max(maxY - minY, nativeReactionArrowMinHeightPx);
+  const midY = (minY + maxY) / 2;
+
+  return {
+    id: nextObjectId(document, "arrow"),
+    type: "reaction-arrow",
+    x: minX,
+    y: midY - height / 2,
+    width: Math.max(maxX - minX, 1),
+    height,
+    rotation: 0,
+    style: {},
+    arrowKind,
+    start: { kind: "point", point: { x: startPoint.x, y: startPoint.y } },
+    end: { kind: "point", point: { x: endPoint.x, y: endPoint.y } },
+    labels: [],
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    }
+  };
+}
+
+export function insertNativeReactionArrow(
+  document: ChemDraftDocument,
+  startPoint: PagePoint,
+  endPoint: PagePoint,
+  arrowKind: ArrowObject["arrowKind"]
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeReactionArrow(document, startPoint, endPoint, arrowKind);
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/** Click placement: a default-length horizontal arrow starting at the click point, clamped to the
+ *  page so the whole arrow stays visible. */
+export function applyReactionArrowToolAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  arrowKind: ArrowObject["arrowKind"]
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const startX = clamp(point.x, 0, Math.max(0, page.width - nativeReactionArrowDefaultLengthPx));
+  const y = clamp(point.y, nativeReactionArrowMinHeightPx / 2, Math.max(nativeReactionArrowMinHeightPx / 2, page.height - nativeReactionArrowMinHeightPx / 2));
+
+  return insertNativeReactionArrow(
+    document,
+    { x: startX, y },
+    { x: startX + nativeReactionArrowDefaultLengthPx, y },
+    arrowKind
+  );
+}
+
+/** Drag placement: keep the press point as the tail and stretch the head to the pointer. Below the
+ *  minimum drag length the default click arrow is kept unchanged. */
+export function stretchNativeReactionArrowTo(
+  document: ChemDraftDocument,
+  objectId: string,
+  startPoint: PagePoint,
+  endPoint: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "reaction-arrow") {
+    return document;
+  }
+  if (Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y) < nativeReactionArrowMinLengthPx) {
+    return document;
+  }
+
+  const replacement = createNativeReactionArrow(document, startPoint, endPoint, object.arrowKind);
+  return applyPatches(
+    document,
+    [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        x: replacement.x,
+        y: replacement.y,
+        width: replacement.width,
+        height: replacement.height,
+        start: replacement.start,
+        end: replacement.end
+      }
+    }],
     { now: phase4Timestamp }
   );
 }

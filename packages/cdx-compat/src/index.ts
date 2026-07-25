@@ -2725,7 +2725,7 @@ function resolveAnchorPoint(anchor: Anchor, objectsById: ReadonlyMap<string, Doc
 }
 
 function arrowKindFromCdxml(value: string): ArrowObject["arrowKind"] {
-  if (value === "forward" || value === "equilibrium" || value === "retrosynthesis") {
+  if (value === "forward" || value === "resonance" || value === "equilibrium" || value === "retrosynthesis") {
     return value;
   }
   return "unknown";

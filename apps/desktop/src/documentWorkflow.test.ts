@@ -115,8 +115,12 @@ import {
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
+  applyReactionArrowToolAtPoint,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
+  nativeReactionArrowDefaultLengthPx,
+  reactionArrowKindForToolCommand,
+  stretchNativeReactionArrowTo,
   symbolGlyphForToolCommand,
   insertNativeMolfileMolecule,
   insertNativeSingleBondMolecule,
@@ -1142,6 +1146,55 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("maps arrow tool commands to reaction-arrow kinds", () => {
+    expect(reactionArrowKindForToolCommand("tool.reactionArrow")).toBe("forward");
+    expect(reactionArrowKindForToolCommand("tool.resonanceArrow")).toBe("resonance");
+    expect(reactionArrowKindForToolCommand("tool.equilibriumArrow")).toBe("equilibrium");
+    expect(reactionArrowKindForToolCommand("tool.retroArrow")).toBe("retrosynthesis");
+    expect(reactionArrowKindForToolCommand("tool.bond")).toBeUndefined();
+  });
+
+  it("inserts a default-length reaction arrow at the click point", () => {
+    const blank = createPhase4Document("Arrow Click Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 220 }, "equilibrium");
+    const object = placed.pages[0].objects[0];
+
+    expect(object).toMatchObject({
+      type: "reaction-arrow",
+      arrowKind: "equilibrium",
+      start: { kind: "point", point: { x: 200, y: 220 } },
+      end: { kind: "point", point: { x: 200 + nativeReactionArrowDefaultLengthPx, y: 220 } }
+    });
+    expect(placed.selection.objectIds).toEqual([object.id]);
+    if (object.type === "reaction-arrow") {
+      expect(object.width).toBe(nativeReactionArrowDefaultLengthPx);
+      expect(object.height).toBeGreaterThanOrEqual(24);
+    }
+  });
+
+  it("stretches a placed reaction arrow to the drag point and ignores tiny drags", () => {
+    const blank = createPhase4Document("Arrow Stretch Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 220 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+
+    const stretched = stretchNativeReactionArrowTo(placed, objectId, { x: 200, y: 220 }, { x: 320, y: 300 });
+    const arrow = stretched.pages[0].objects[0];
+    expect(arrow).toMatchObject({
+      type: "reaction-arrow",
+      arrowKind: "forward",
+      start: { kind: "point", point: { x: 200, y: 220 } },
+      end: { kind: "point", point: { x: 320, y: 300 } }
+    });
+    if (arrow.type === "reaction-arrow") {
+      expect(arrow.x).toBe(200);
+      expect(arrow.width).toBe(120);
+      expect(arrow.height).toBe(80);
+    }
+
+    expect(stretchNativeReactionArrowTo(placed, objectId, { x: 200, y: 220 }, { x: 203, y: 221 })).toBe(placed);
+    expect(stretchNativeReactionArrowTo(placed, "missing_object", { x: 0, y: 0 }, { x: 90, y: 0 })).toBe(placed);
   });
 
   it("maps symbol tool commands to their stamp glyphs", () => {

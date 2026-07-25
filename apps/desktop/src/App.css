@@ -4026,6 +4026,19 @@ textarea:focus-visible,
   stroke: none;
 }
 
+.reaction-arrow-head {
+  fill: #111111;
+  stroke: none;
+}
+
+.reaction-arrow-head-open {
+  fill: none;
+  stroke: #111111;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
 .bracket-glyph-path {
   stroke-width: 1.5;
 }

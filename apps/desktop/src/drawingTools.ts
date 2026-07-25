@@ -269,7 +269,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   {
     commandId: "tool.resonanceArrow",
@@ -277,7 +277,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   {
     commandId: "tool.equilibriumArrow",
@@ -285,7 +285,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   {
     commandId: "tool.retroArrow",
@@ -293,7 +293,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   ...artDrawingToolDefinitions()
 ] as const satisfies readonly DrawingToolDefinition[];
@@ -357,12 +357,8 @@ export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
   "style.formulaText",
   "tool.bracket",
   "tool.chain",
-  "tool.equilibriumArrow",
   "tool.lobe",
   "tool.pOrbital",
-  "tool.reactionArrow",
-  "tool.resonanceArrow",
-  "tool.retroArrow",
   "tool.sOrbital",
   "tool.shadedLobe",
   "tool.squareBracket"
