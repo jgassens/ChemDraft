@@ -582,7 +582,7 @@ Phase E: confidence overlay and fixture-based accuracy tests
 
 Do not vendor large checkpoints into the repository. Do not present recognized structures as guaranteed correct.
 
-## 8a. Plugin runtime, packaging, and NMR rules (merged from `codex/nmr-plugin`, 2026-07-16)
+## 8a. Plugin runtime, packaging, and NMR rules (merged 2026-07-16, `1232a444`; see ADR-0030)
 
 These are shipped repo truths from the plugin program (M1–M36 + the runtime union merge), not
 branch-scoped guidance. The decision record and milestone reports live in the planning workspace

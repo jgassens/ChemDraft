@@ -1,5 +1,12 @@
 # PLAN — Separate the NMR plugin into its own project
 
+> **Completed and superseded (2026-07-25).** All phases shipped; the standalone plugin repo lives at
+> `~/programming/chemdraft-nmr-plugin`. The body below is the plan as written on 2026-07-16 and is
+> kept as a record — it is in the present tense throughout, so statements like "the entire plugin
+> system is still on `codex/nmr-plugin`" describe that day, not today. Every branch it names has
+> since been deleted; the commits survive in `main`'s ancestry (see the addendum to reports/0036 for
+> the recovery path). Current state is in `STATUS.md`.
+
 **Status:** approved by owner 2026-07-16 (D-15 MIT per-package, D-16 keep mass-fragment, D-17 publish the
 packaging CLI) — **but Phase 1 is ON HOLD as written.** Pre-flight for the merge discovered that
 ChemDraft main **independently built its own plugin runtime** (`e04734ea` "Phase 2: real plugin runtime,

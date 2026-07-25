@@ -1,6 +1,6 @@
 # PLAN — User-selectable 3D refinement engine / force field for Spin 3D
 
-> Scoped feature plan for branch `feature/advanced-3d-rendering`. The repo-wide
+> Scoped feature plan for the Spin 3D refinement work. The repo-wide
 > master plan is `PLAN.md`; this file is the guidepost checklist for *this*
 > feature only. Three phases: OCL refinement modes → Preferences window →
 > OpenBabel sidecar.

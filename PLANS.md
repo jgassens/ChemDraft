@@ -1,12 +1,15 @@
 # ChemDraft Plans
 
-## Host-managed plugin updates (2026-07-25) — on `feat/toolbar-wiring-and-plugin-updates`
+## Host-managed plugin updates (2026-07-25) — on `main` (PR #21, merge `a7c88a69`)
 
-The `codex/plugin-updates` implementation was ported file-by-file rather than merged: that branch
-forked before the toolbar slice, so taking its tree would have reverted eight commits of tool
-wiring. It now rides the same branch as the toolbar slice, open against `main` as PR #21. The
-`codex/plugin-updates` and `parked/plugin-fixes` branches (and the shared worktree) have since been
-deleted; only two things were carried forward from the parked snapshot, both reworked.
+A concurrent session's implementation was ported file-by-file rather than merged: its branch forked
+before the toolbar slice, so taking its tree would have reverted eight commits of tool wiring. It
+landed on `main` alongside the toolbar slice through PR #21. Only two things were carried forward
+from an earlier parked snapshot, both reworked.
+
+(Every branch involved — the concurrent session's, the parked snapshot's, and the shared feature
+branch — has been deleted. PR numbers and commit SHAs are the durable references; branch names are
+not, so this file names them only where one still exists.)
 
 Ported forward from the parked snapshot:
 
@@ -83,16 +86,16 @@ Application Support `installed-plugins` directory and are revalidated by the nor
 relaunch. Plugin/API incompatibility remains the plugin author's responsibility and must not block or
 rewrite an app update.
 
-## Runtime union merge (2026-07-16, branch `merge/plugin-union`)
+## Runtime union merge (2026-07-16, merge commit `1232a444`)
 
-The `codex/nmr-plugin` program (M1–M36: plugin runtime, NMR/mass analyzers, worker isolation,
-packaging, installer, manager) merged into the trunk on this branch per ADR-0030: trunk = `main`,
-plugin architecture = the plugin branch's, with main's four unique plugin pieces (stable command
-registry, toolset-contribution stage, disk-backed plugin storage, patch-review tray) ported onto that
-runtime and one unified panel renderer serving both the in-app surface and floating panel windows.
-That program's full plan and milestone records live in the planning workspace
-(`~/Documents/programming/Chemdraw-NMRplugin`) and in `PLANS.md` on the `codex/nmr-plugin` branch;
-they are not duplicated here. Remaining plugin-separation work (publish the SDK, strip bundled NMR,
+The plugin program (M1–M36: plugin runtime, NMR/mass analyzers, worker isolation, packaging,
+installer, manager) merged into the trunk per ADR-0030: trunk = `main`, plugin architecture = the
+plugin program's, with main's four unique plugin pieces (stable command registry,
+toolset-contribution stage, disk-backed plugin storage, patch-review tray) ported onto that runtime
+and one unified panel renderer serving both the in-app surface and floating panel windows. That
+program's full plan and milestone records live in the planning workspace
+(`~/Documents/programming/Chemdraw-NMRplugin`) and in `docs/nmr-plugin-planning/`; they are not
+duplicated here. Remaining plugin-separation work (publish the SDK, strip bundled NMR,
 from-zero install test) is queued there as PLAN-plugin-separation Phases 2+.
 
 The sections below are the trunk's active plan.
@@ -106,11 +109,11 @@ the style compatibility boundary, `.template` export, and a shared font catalog 
 export font database. Durable schema and architecture notes live in
 `docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
 
-# Toolbar Wiring and Honesty (branch `feat/toolbar-wiring-and-plugin-updates`, PR #21)
+# Toolbar Wiring and Honesty (2026-07-25) — on `main` (PR #21, merge `a7c88a69`)
 
-Status: all eight phases implemented and hardened across two review rounds. Shares its branch with
-the plugin-updates slice above. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain
-zero permanently disabled buttons.
+Status: all eight phases implemented and hardened across two review rounds, landed together with the
+plugin-updates slice above. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain zero
+permanently disabled buttons.
 
 An external review plus three adversarial passes found roughly nineteen defects in the first cut of
 this slice. All five P1s and the P2s are now fixed with regression tests: imported structures keep

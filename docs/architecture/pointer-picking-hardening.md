@@ -1,7 +1,7 @@
 # Pointer Picking Hardening
 
-Status: **Complete** — steps 1–6 done (deferred: state-machine completion + single pointer
-surface). Branch: `codex/chemdraft-worktree-cleanup`.
+Status: **Complete** on `main` — steps 1–6 done (deferred: state-machine completion + single
+pointer surface).
 
 > **Ready to test in the Tauri app.** Steps 2–4 together make bond/atom picking
 > self-consistent: screen-stable tolerance, no marquee fall-through, and a hover highlight
