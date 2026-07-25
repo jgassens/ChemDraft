@@ -3,6 +3,7 @@ import {
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   type BondRef,
+  type BracketObject,
   type CrossingOverride,
   type DocumentObject,
   type DocumentPage,
@@ -1259,6 +1260,8 @@ function planDocumentObjectSvg(
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
       return reactionArrowFragment(object, layerIndex);
+    case "bracket":
+      return bracketObjectFragment(object, layerIndex);
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
     case "group":
@@ -3850,6 +3853,49 @@ function arrowAnchorPointForObject(
     return anchor.point;
   }
   return fallback;
+}
+
+/** Shared bracket glyph outline for the canvas renderer and SVG export, in object-local
+ *  coordinates. "round" is a single open curve, "curly" a brace with a center spur; "polymer" and
+ *  "unknown" fall back to the square outline. */
+export function bracketGlyphPathD(
+  kind: BracketObject["bracketKind"],
+  width: number,
+  height: number
+): string {
+  const right = Math.max(width - 1, 0);
+  const bottom = Math.max(height - 1, 0);
+  if (kind === "round") {
+    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
+  }
+  if (kind === "curly") {
+    return [
+      `M ${right} 0`,
+      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
+      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
+    ].join(" ");
+  }
+  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
+}
+
+function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+    transform: rotationTransform(object)
+  }), [
+    elementFragment("path", `bracket-path-${object.id}`, {
+      class: "bracket-glyph-path",
+      "data-bracket-kind": object.bracketKind,
+      transform: `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      d: bracketGlyphPathD(object.bracketKind, width, height),
+      fill: "none",
+      stroke: "#172026",
+      "stroke-width": 1.5,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round"
+    })
+  ]);
 }
 
 export interface ReactionArrowGeometry {

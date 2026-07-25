@@ -1916,6 +1916,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.shadedLobe",
       "tool.pOrbital",
       "tool.sOrbital",
+      "tool.bracket",
+      "tool.squareBracket",
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
@@ -2943,9 +2945,7 @@ describe("ChemDraft desktop shell", () => {
     // wire it or retire it.
     const expectedTransitionalStubs = [
       "style.formulaText",
-      "tool.bracket",
-      "tool.chain",
-      "tool.squareBracket"
+      "tool.chain"
     ];
     expect([...TRANSITIONAL_STUB_COMMAND_IDS].sort()).toEqual(expectedTransitionalStubs);
 

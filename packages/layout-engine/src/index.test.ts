@@ -28,6 +28,7 @@ import {
   planMoleculeAtomLabels,
   planFreeformBondExtension,
   planReactionArrowGeometry,
+  bracketGlyphPathD,
   ringInteriorDoubleBondSides,
   type BondExtensionPlanningInput,
   type PageSvgElementFragment,
@@ -952,6 +953,43 @@ describe("layout-engine page SVG planner", () => {
     const arrowFragments = plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001");
     expect(arrowFragments.map((fragment) => fragment.tag)).toEqual(["line", "polygon"]);
     expect(arrowFragments.flatMap((fragment) => fragment.children)).toEqual([]);
+  });
+
+  it("renders bracket objects as real glyph paths instead of the labeled fallback", () => {
+    const page = pageWithObjects([
+      {
+        id: "bracket_001",
+        type: "bracket",
+        x: 40,
+        y: 60,
+        width: 16,
+        height: 64,
+        rotation: 0,
+        style: {},
+        bracketKind: "curly",
+        containedObjectIds: []
+      }
+    ]);
+
+    const plan = planPageSvgRender(page);
+    const bracketFragments = plan.fragments.filter(
+      (fragment) => fragment.attrs["data-object-id"] === "bracket_001"
+    );
+
+    expect(bracketFragments.map((fragment) => fragment.tag)).toEqual(["path"]);
+    expect(bracketFragments[0].attrs["data-bracket-kind"]).toBe("curly");
+    expect(bracketFragments[0].attrs.transform).toContain("translate(40 60)");
+    expect(String(bracketFragments[0].attrs.d)).toContain("C");
+    expect(plan.warnings.map((warning) => warning.code)).not.toContain("export.svg.object_fallback");
+  });
+
+  it("shares one bracket glyph outline across bracket kinds", () => {
+    expect(bracketGlyphPathD("square", 16, 64)).toBe("M 15 0 L 0 0 L 0 63 L 15 63");
+    expect(bracketGlyphPathD("curly", 16, 64)).toContain("C");
+    expect(bracketGlyphPathD("round", 16, 64).startsWith("M 15 0 C")).toBe(true);
+    // Polymer and unknown fall back to the square outline.
+    expect(bracketGlyphPathD("polymer", 16, 64)).toBe(bracketGlyphPathD("square", 16, 64));
+    expect(bracketGlyphPathD("unknown", 16, 64)).toBe(bracketGlyphPathD("square", 16, 64));
   });
 
   it("plans reaction-arrow geometry per arrow kind", () => {

@@ -49,6 +49,7 @@ import {
   textStyleToObjectStyle,
   type Anchor,
   type ArrowObject,
+  type BracketObject,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -3360,6 +3361,53 @@ export function insertNativeTextObject(
 ): ChemDraftDocument {
   const page = firstPage(document);
   const object = createNativeTextObject(document, point, text, style);
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+const bracketKindByToolCommandId: ReadonlyMap<string, BracketObject["bracketKind"]> = new Map([
+  ["tool.bracket", "curly"],
+  ["tool.squareBracket", "square"]
+]);
+
+export function bracketKindForToolCommand(commandId: string): BracketObject["bracketKind"] | undefined {
+  return bracketKindByToolCommandId.get(commandId);
+}
+
+export const nativeBracketDefaultSize = { width: 16, height: 64 } as const;
+
+/** Click placement: a default-size bracket centered on the click point, clamped to the page. */
+export function insertNativeBracket(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  bracketKind: BracketObject["bracketKind"]
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const { width, height } = nativeBracketDefaultSize;
+  const object: BracketObject = {
+    id: nextObjectId(document, "bracket"),
+    type: "bracket",
+    x: clamp(point.x - width / 2, 0, Math.max(0, page.width - width)),
+    y: clamp(point.y - height / 2, 0, Math.max(0, page.height - height)),
+    width,
+    height,
+    rotation: 0,
+    style: {},
+    bracketKind,
+    containedObjectIds: [],
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    }
+  };
 
   return applyPatches(
     document,

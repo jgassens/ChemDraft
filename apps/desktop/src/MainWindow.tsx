@@ -137,6 +137,7 @@ import {
   type PageSvgElementFragment,
   type PageSvgFragment,
   type PageSvgRenderPlan,
+  bracketGlyphPathD,
   planReactionArrowGeometry,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
@@ -360,6 +361,8 @@ import {
   reactionArrowKindForToolCommand,
   applyReactionArrowToolAtPoint,
   stretchNativeReactionArrowTo,
+  bracketKindForToolCommand,
+  insertNativeBracket,
   insertNativeArtGraphicObject,
   nativeBezierPathDocument,
   nativeArtToolIsFreehand,
@@ -10414,6 +10417,17 @@ export function MainWindow({
     }
 
     {
+      const bracketKind = bracketKindForToolCommand(activeToolState.activeCommandId);
+      if (bracketKind) {
+        event.preventDefault();
+        event.stopPropagation();
+        commitDocumentChange(insertNativeBracket(documentRef.current, point, bracketKind));
+        setStatus(`Inserted ${bracketKind} bracket`);
+        return;
+      }
+    }
+
+    {
       const symbolGlyph = symbolGlyphForToolCommand(activeToolState.activeCommandId);
       if (symbolGlyph) {
         event.preventDefault();
@@ -11567,6 +11581,17 @@ export function MainWindow({
 
       applyChargeDocumentAtPoint(activeChargeToolValue, point);
       return;
+    }
+
+    {
+      const bracketKind = bracketKindForToolCommand(activeToolState.activeCommandId);
+      if (bracketKind && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        commitDocumentChange(insertNativeBracket(documentRef.current, point, bracketKind));
+        setStatus(`Inserted ${bracketKind} bracket`);
+        return;
+      }
     }
 
     {
@@ -21137,7 +21162,8 @@ function arrowAnchorPointRelativeToObject(
 function BracketGlyph({ object, projection }: { object: BracketObject; projection?: DocumentObjectProjection }) {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
-  const pathD = bracketPath(object.bracketKind, width, height);
+  // Shared generator with SVG export (layout-engine) so canvas and export cannot drift.
+  const pathD = bracketGlyphPathD(object.bracketKind, width, height);
   return (
     <svg
       className="bracket-glyph"
@@ -21152,22 +21178,6 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
       />
     </svg>
   );
-}
-
-function bracketPath(kind: BracketObject["bracketKind"], width: number, height: number): string {
-  const right = Math.max(width - 1, 0);
-  const bottom = Math.max(height - 1, 0);
-  if (kind === "round") {
-    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
-  }
-  if (kind === "curly") {
-    return [
-      `M ${right} 0`,
-      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
-      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
-    ].join(" ");
-  }
-  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
 }
 
 function reactSvgPaintAttrs(

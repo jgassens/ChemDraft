@@ -1,6 +1,6 @@
 import type { CommandSpec } from "./commands";
 
-export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "art";
+export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "bracket" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
 
 export interface DrawingToolDefinition {
@@ -200,6 +200,22 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
   },
   {
+    commandId: "tool.bracket",
+    title: "Curly Bracket Tool",
+    kind: "bracket",
+    category: "annotation",
+    icon: "bracket",
+    usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
+  },
+  {
+    commandId: "tool.squareBracket",
+    title: "Square Bracket Tool",
+    kind: "bracket",
+    category: "annotation",
+    icon: "bracket",
+    usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
+  },
+  {
     commandId: "tool.dagger",
     title: "Dagger Symbol Tool",
     kind: "text",
@@ -355,9 +371,7 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
  *  and it must reach empty at closeout. */
 export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
   "style.formulaText",
-  "tool.bracket",
-  "tool.chain",
-  "tool.squareBracket"
+  "tool.chain"
 ]);
 
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {

@@ -116,9 +116,12 @@ import {
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
   applyReactionArrowToolAtPoint,
+  bracketKindForToolCommand,
+  insertNativeBracket,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
   nativeArtToolForCommand,
+  nativeBracketDefaultSize,
   nativeReactionArrowDefaultLengthPx,
   reactionArrowKindForToolCommand,
   stretchNativeReactionArrowTo,
@@ -1147,6 +1150,30 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("maps bracket tool commands and inserts a selected default bracket", () => {
+    expect(bracketKindForToolCommand("tool.bracket")).toBe("curly");
+    expect(bracketKindForToolCommand("tool.squareBracket")).toBe("square");
+    expect(bracketKindForToolCommand("tool.text")).toBeUndefined();
+
+    const blank = createPhase4Document("Bracket Fixture");
+    const placed = insertNativeBracket(blank, { x: 200, y: 220 }, "curly");
+    const object = placed.pages[0].objects[0];
+
+    expect(object).toMatchObject({
+      type: "bracket",
+      bracketKind: "curly",
+      width: nativeBracketDefaultSize.width,
+      height: nativeBracketDefaultSize.height
+    });
+    if (object.type === "bracket") {
+      // Centered on the click point.
+      expect(object.x).toBe(200 - nativeBracketDefaultSize.width / 2);
+      expect(object.y).toBe(220 - nativeBracketDefaultSize.height / 2);
+      expect(object.containedObjectIds).toEqual([]);
+    }
+    expect(placed.selection.objectIds).toEqual([object.id]);
   });
 
   it("registers orbital tools as closed art shapes with chemistry command ids", () => {
