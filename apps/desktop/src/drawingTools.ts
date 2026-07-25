@@ -231,22 +231,6 @@ export const coreDrawingToolDefinitions = [
     icon: "export",
     disabledReason: EDITOR_ADAPTER_UNAVAILABLE
   },
-  {
-    commandId: "tool.mechanismArrow",
-    title: "Curved Mechanism Arrow",
-    kind: "arrow",
-    category: "arrows",
-    icon: "mechanism",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
-  },
-  {
-    commandId: "tool.arrows",
-    title: "Arrow Tool Group",
-    kind: "arrow",
-    category: "arrows",
-    icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
-  },
   ...artDrawingToolDefinitions()
 ] as const satisfies readonly DrawingToolDefinition[];
 
@@ -298,6 +282,34 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
 
   return dedupeCommandSpecs([...commands, ...standaloneCommands]);
 }
+
+/** The declared set of tool ids that ship visibly in toolsets but still await their wiring slice
+ *  (PLANS.md, Toolbar Wiring and Honesty). Declaration is deliberate: stub-ness cannot be derived
+ *  from disabled state alone, because selection-dependent commands (layout.align*, boolean ops) are
+ *  also disabled-with-reason in the manifest yet have live behavior. The customize gallery excludes
+ *  these ids so a stub can never be dragged onto a real toolbar; each wiring slice shrinks this set
+ *  and it must reach empty at closeout. */
+export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
+  "style.color",
+  "style.formulaText",
+  "tool.atom",
+  "tool.bracket",
+  "tool.chain",
+  "tool.dagger",
+  "tool.equilibriumArrow",
+  "tool.lobe",
+  "tool.pOrbital",
+  "tool.reactionArrow",
+  "tool.resonanceArrow",
+  "tool.retroArrow",
+  "tool.sOrbital",
+  "tool.settings",
+  "tool.shadedLobe",
+  "tool.shape",
+  "tool.shapeShadow",
+  "tool.squareBracket",
+  "tool.symbol"
+]);
 
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   return withStandaloneDrawingToolCommands(commands)

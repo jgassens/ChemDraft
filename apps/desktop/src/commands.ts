@@ -1810,63 +1810,7 @@ export const toolbarCustomizationActions: CommandSpec[] = [
     category: "view",
     enabled: true,
     description: "Customize the Main toolbar in place — drag to reorder, add, or remove items"
-  },
-  {
-    id: "view.toolset.resetLayout",
-    title: "Reset Toolbar Layout",
-    icon: "palette",
-    source: "core",
-    category: "view",
-    enabled: false,
-    disabledReason: "Use View ‣ Customize Toolbars",
-    description: "Reset the selected toolbar layout (also available in the Customize Toolbars dialog)"
-  },
-  {
-    id: "view.toolset.resetAllLayouts",
-    title: "Reset All Toolbar Layouts",
-    icon: "palette",
-    source: "core",
-    category: "view",
-    enabled: false,
-    disabledReason: "Use View ‣ Customize Toolbars",
-    description: "Reset all toolbar customization (also available in the Customize Toolbars dialog)"
-  },
-  {
-    id: "view.toolset.createUserToolset",
-    title: "Create User Toolbar",
-    icon: "palette",
-    source: "core",
-    category: "view",
-    enabled: false,
-    disabledReason: "Use View ‣ Customize Toolbars",
-    description: "Create a user toolbar (also available in the Customize Toolbars dialog)"
-  },
-  {
-    id: "view.toolset.cloneToolset",
-    title: "Clone Toolbar",
-    icon: "palette",
-    source: "core",
-    category: "view",
-    enabled: false,
-    disabledReason: "Use View ‣ Customize Toolbars",
-    description: "Clone a built-in or plugin toolbar (also available in the Customize Toolbars dialog)"
   }
-];
-
-export const styleActions: CommandSpec[] = [
-  {
-    id: "style.importStyleSheet",
-    title: "Import Style Sheet",
-    icon: "style",
-    source: "core",
-    category: "style",
-    enabled: false,
-    disabledReason: "Style-sheet file picker is not implemented yet",
-    description: "Import a supported external style sheet into a native ChemDraft style preset"
-  },
-  { id: "style.bondStroke", title: "Bond Stroke 2 px", icon: "style", source: "core", enabled: false },
-  { id: "style.textSize", title: "Text Size 10 pt", icon: "text", source: "core", enabled: false },
-  { id: "style.preset.synthetic", title: "ChemDraft Synthetic Style", icon: "style", source: "core", enabled: false }
 ];
 
 export function allPaletteCommands(
@@ -1897,8 +1841,7 @@ export function allShellCommands(
     ...pageOrientationActions,
     ...textToolbarActions,
     ...objectStyleActions,
-    ...toolbarCustomizationActions,
-    ...styleActions
+    ...toolbarCustomizationActions
   ]);
 }
 

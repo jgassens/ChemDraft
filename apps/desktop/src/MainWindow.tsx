@@ -268,6 +268,7 @@ import {
   createActiveToolState,
   drawingToolStatusLabel,
   isDrawingToolCommand,
+  TRANSITIONAL_STUB_COMMAND_IDS,
   withStandaloneDrawingToolCommands,
   type ActiveToolState
 } from "./drawingTools";
@@ -7429,8 +7430,14 @@ export function MainWindow({
     return [...byId].map(([id, title]) => ({ id, title }));
   }, [shellCommandSpecs]);
 
-  // Full live specs (including current enabled state) for the in-place customize gallery.
-  const galleryCommands = shellCommandSpecs;
+  // Full live specs (including current enabled state) for the in-place customize gallery — minus
+  // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
+  // used rather than live enabled state, so transiently disabled commands (Undo, align, boolean
+  // ops) stay offered.
+  const galleryCommands = useMemo(
+    () => shellCommandSpecs.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)),
+    [shellCommandSpecs]
+  );
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).

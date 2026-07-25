@@ -24,6 +24,7 @@ import {
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
+import { TRANSITIONAL_STUB_COMMAND_IDS } from "./drawingTools";
 import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
@@ -135,6 +136,12 @@ export function PaletteWindow({
   // The main window owns live command metadata/availability and publishes snapshots to detached
   // palettes. The state initializer above is only a first-paint fallback before that handshake.
   const allCommands = commandSpecs;
+  // Same rule as the main window's in-place gallery: transitional stubs are not draggable onto
+  // toolbars. The declared stub set is used rather than the snapshot's enabled state.
+  const galleryCommands = useMemo(
+    () => allCommands.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)),
+    [allCommands]
+  );
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
     [allCommands]
@@ -865,7 +872,7 @@ export function PaletteWindow({
                 onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
               />
               <GalleryTray
-                commands={allCommands}
+                commands={galleryCommands}
                 widgets={galleryWidgets}
                 presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
               />

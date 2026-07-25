@@ -193,6 +193,7 @@ import {
   getToolsetToggleActions,
   type ToolbarPaletteItemModel
 } from "./toolsets";
+import { TRANSITIONAL_STUB_COMMAND_IDS, withStandaloneDrawingToolCommands } from "./drawingTools";
 
 // Phase 5: widgets are declared as manifest `control` items and read state from context. This
 // isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
@@ -227,6 +228,7 @@ function buttonMarkupForCommand(markup: string, commandId: string): string {
 const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
 const desktopToolsetsSource = readFileSync(new URL("./toolsets/desktop-toolsets.json", import.meta.url), "utf8");
@@ -1757,18 +1759,17 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("<CustomPageSizeDialog");
   });
 
-  it("enables the customize-toolbars command; reset/create/clone remain dialog-driven placeholders", () => {
-    // view.customizeToolbars now opens the editor; the reset/create/clone actions are performed
-    // inside that dialog, so their standalone command entries stay disabled placeholders for now.
-    expect(toolbarCustomizationActions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "view.customizeToolbars", enabled: true }),
-        expect.objectContaining({ id: "view.toolset.resetLayout", enabled: false }),
-        expect.objectContaining({ id: "view.toolset.resetAllLayouts", enabled: false }),
-        expect.objectContaining({ id: "view.toolset.createUserToolset", enabled: false }),
-        expect.objectContaining({ id: "view.toolset.cloneToolset", enabled: false })
-      ])
-    );
+  it("ships only live customize-toolbar commands", () => {
+    // The Customize Toolbars dialog and the in-place Main-toolbar editor own reset/create/clone
+    // through layoutStateEdits; the standalone view.toolset.* redirect commands are retired
+    // (PLANS.md, Toolbar Wiring and Honesty).
+    expect(toolbarCustomizationActions.map((command) => command.id).sort()).toEqual([
+      "view.customizeMainToolbar",
+      "view.customizeToolbars"
+    ]);
+    toolbarCustomizationActions.forEach((command) => {
+      expect(command.enabled).toBe(true);
+    });
   });
 
   it("defines command-backed text toolbar actions", () => {
@@ -2910,8 +2911,56 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("canvas-region");
   });
 
-  it("keeps disabled placeholder tools from pretending to perform chemistry", () => {
-    const disabledTools = getToolsetCommandSpecs().filter((command) => command.enabled === false);
+  it("ships only the declared transitional stub tools, each disabled with a reason", () => {
+    // The exact set of ids still awaiting their wiring slice (PLANS.md, Toolbar Wiring and
+    // Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
+    // disabled outside this list is either a live selection-dependent command or a regression:
+    // wire it or retire it.
+    const expectedTransitionalStubs = [
+      "style.color",
+      "style.formulaText",
+      "tool.atom",
+      "tool.bracket",
+      "tool.chain",
+      "tool.dagger",
+      "tool.equilibriumArrow",
+      "tool.lobe",
+      "tool.pOrbital",
+      "tool.reactionArrow",
+      "tool.resonanceArrow",
+      "tool.retroArrow",
+      "tool.sOrbital",
+      "tool.settings",
+      "tool.shadedLobe",
+      "tool.shape",
+      "tool.shapeShadow",
+      "tool.squareBracket",
+      "tool.symbol"
+    ];
+    expect([...TRANSITIONAL_STUB_COMMAND_IDS].sort()).toEqual(expectedTransitionalStubs);
+
+    // Every declared stub really is a disabled-with-reason spec in the shipped catalog.
+    const catalog = withStandaloneDrawingToolCommands(getToolsetCommandSpecs());
+    const catalogById = new Map(catalog.map((command) => [command.id, command]));
+    expectedTransitionalStubs.forEach((id) => {
+      const spec = catalogById.get(id);
+      expect(spec, `${id} missing from the shell catalog`).toBeDefined();
+      expect(spec?.enabled, `${id} should be disabled until its slice lands`).toBe(false);
+      expect(spec?.disabledReason, `${id} must carry a disabled reason`).toBeTruthy();
+    });
+
+    // And every manifest-disabled spec is either a declared stub or a live selection-dependent
+    // layout command — nothing disabled hides outside the declaration.
+    getToolsetCommandSpecs()
+      .filter((command) => command.enabled === false)
+      .forEach((command) => {
+        expect(command.disabledReason, `${command.id} must carry a disabled reason`).toBeTruthy();
+        expect(
+          TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) || /^layout\./.test(command.id),
+          `${command.id} is disabled but neither a declared stub nor a live layout command`
+        ).toBe(true);
+      });
+
     const enabledNativeStructureTools = [
       "tool.bond",
       "tool.wedgeBond",
@@ -2924,14 +2973,34 @@ describe("ChemDraft desktop shell", () => {
       "tool.chairCyclohexaneA",
       "tool.chairCyclohexaneB"
     ];
-
-    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
-    expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
     enabledNativeStructureTools.forEach((commandId) => {
-      expect(disabledTools.some((command) => command.id === commandId)).toBe(false);
+      expect(TRANSITIONAL_STUB_COMMAND_IDS.has(commandId)).toBe(false);
     });
-    expect(disabledTools.some((command) => command.id === "tool.chain")).toBe(true);
-    expect(disabledTools.some((command) => command.id === "tool.reactionArrow")).toBe(true);
+
+    // Retired command ids must be gone from the whole shell catalog, not just disabled.
+    const retiredCommandIds = [
+      "tool.mechanismArrow",
+      "tool.arrows",
+      "tool.templateGrid",
+      "tool.toolOptions",
+      "view.toolset.resetLayout",
+      "view.toolset.resetAllLayouts",
+      "view.toolset.createUserToolset",
+      "view.toolset.cloneToolset",
+      "style.importStyleSheet",
+      "style.bondStroke",
+      "style.textSize",
+      "style.preset.synthetic"
+    ];
+    retiredCommandIds.forEach((id) => {
+      expect(catalogById.has(id), `${id} is retired and must not be in the catalog`).toBe(false);
+    });
+  });
+
+  it("filters transitional stubs out of both customize gallery sources", () => {
+    expect(mainWindowSource).toContain("shellCommandSpecs.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id))");
+    expect(paletteWindowSource).toContain("allCommands.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id))");
+    expect(paletteWindowSource).toContain("commands={galleryCommands}");
   });
 
   it("exposes active tool state without rendering fake chemistry", () => {
@@ -3099,8 +3168,7 @@ describe("ChemDraft desktop shell", () => {
       structureCleanupCommandId,
       structureSpin3dCommandId,
       structureInteractive3dCommandId,
-      structureCleanup3dCommandId,
-      "tool.templateGrid"
+      structureCleanup3dCommandId
     ];
 
     expect(mainCommandIds.slice(-chromeCluster.length)).toEqual(chromeCluster);

@@ -523,18 +523,6 @@
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
-                  },
-                  {
-                    "commandId": "tool.mechanismArrow",
-                    "label": "Curved Mechanism Arrow",
-                    "icon": "mechanism",
-                    "assetName": "Custom_Curved_Arrow"
-                  },
-                  {
-                    "commandId": "tool.arrows",
-                    "label": "Arrow Tool Group",
-                    "icon": "export",
-                    "assetName": "Custom_Arrows"
                   }
                 ],
                 "id": "arrow-tools"
@@ -614,54 +602,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "Retrosynthesis Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.mechanismArrow",
-              "title": "Curved Mechanism Arrow",
-              "icon": "mechanism",
-              "assetName": "Custom_Curved_Arrow",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.mechanismArrow",
-              "kind": "button",
-              "label": "Curved Mechanism Arrow",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.mechanismArrow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Curved Mechanism Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.arrows",
-              "title": "Arrow Tool Group",
-              "icon": "export",
-              "assetName": "Custom_Arrows",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.arrows",
-              "kind": "button",
-              "label": "Arrow Tool Group",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.arrows"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Arrow Tool Group",
                 "shortcut": null
               },
               "layout": {
@@ -1779,30 +1719,6 @@
               }
             },
             {
-              "commandId": "tool.templateGrid",
-              "title": "Template Grid",
-              "icon": "grid",
-              "assetName": "Custom_Tools",
-              "disabledReason": "Requires an active structure editor",
-              "category": "template",
-              "id": "tool.templateGrid",
-              "kind": "button",
-              "label": "Template Grid",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.templateGrid"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Template Grid",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
               "id": "widget.core.mainStyleControls",
               "kind": "control",
               "label": "Text style controls",
@@ -2344,18 +2260,6 @@
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
-                  },
-                  {
-                    "commandId": "tool.mechanismArrow",
-                    "label": "Curved Mechanism Arrow",
-                    "icon": "mechanism",
-                    "assetName": "Custom_Curved_Arrow"
-                  },
-                  {
-                    "commandId": "tool.arrows",
-                    "label": "Arrow Tool Group",
-                    "icon": "export",
-                    "assetName": "Custom_Arrows"
                   }
                 ],
                 "id": "arrow-tools"
@@ -2435,54 +2339,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "Retrosynthesis Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.mechanismArrow",
-              "title": "Curved Mechanism Arrow",
-              "icon": "mechanism",
-              "assetName": "Custom_Curved_Arrow",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.mechanismArrow",
-              "kind": "button",
-              "label": "Curved Mechanism Arrow",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.mechanismArrow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Curved Mechanism Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.arrows",
-              "title": "Arrow Tool Group",
-              "icon": "export",
-              "assetName": "Custom_Arrows",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.arrows",
-              "kind": "button",
-              "label": "Arrow Tool Group",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.arrows"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Arrow Tool Group",
                 "shortcut": null
               },
               "layout": {
@@ -4839,54 +4695,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "Object Settings",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.toolOptions",
-              "title": "Tool Options",
-              "icon": "palette",
-              "assetName": "Custom_Tools",
-              "disabledReason": "Requires an active structure editor",
-              "category": "selection",
-              "id": "tool.toolOptions",
-              "kind": "button",
-              "label": "Tool Options",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.toolOptions"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Tool Options",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.templateGrid",
-              "title": "Template Grid",
-              "icon": "grid",
-              "assetName": "Custom_Tools",
-              "disabledReason": "Requires an active structure editor",
-              "category": "template",
-              "id": "tool.templateGrid",
-              "kind": "button",
-              "label": "Template Grid",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.templateGrid"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Template Grid",
                 "shortcut": null
               },
               "layout": {
