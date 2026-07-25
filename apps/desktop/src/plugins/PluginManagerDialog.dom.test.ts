@@ -344,7 +344,7 @@ describe("PluginManagerDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("cannot be dismissed or toggled while an install is in progress", async () => {
+  it("stays closable but refuses a second operation while an install is in progress", async () => {
     const runtime = createRuntime();
     const onClose = vi.fn();
     let finishInstall: (() => void) | undefined;
@@ -371,24 +371,39 @@ describe("PluginManagerDialog", () => {
       document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
     });
     expect(install).toHaveBeenCalledOnce();
-    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(true);
+    // What must be locked while an operation runs is the ability to start a *second* one.
     expect(document.querySelector<HTMLInputElement>(`[data-plugin-id="${pluginId}"] input`)?.disabled).toBe(true);
+    // Closing is not one of those. A trusted-update download is allowed two minutes, and the work
+    // belongs to the install machinery rather than to this dialog, so refusing to close only traps
+    // the user in front of a progress line they cannot leave.
+    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(
+      false
+    );
 
+    // An accidental backdrop click still must not dismiss mid-operation...
     act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       const backdrop = document.querySelector<HTMLElement>('[data-testid="plugin-manager-backdrop"]')!;
       backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       backdrop.click();
-      document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!.click();
     });
     expect(onClose).not.toHaveBeenCalled();
     expect(runtime.host.getPlugin(pluginId)).toBeDefined();
+
+    // ...but a deliberate Escape does, and so does the Close button.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+    act(() => {
+      document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!.click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       finishInstall?.();
       await Promise.resolve();
     });
-    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLInputElement>(`[data-plugin-id="${pluginId}"] input`)?.disabled).toBe(false);
   });
 
   it("preserves disabled ids that are absent from the visible catalog", () => {

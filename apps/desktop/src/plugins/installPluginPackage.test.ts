@@ -19,7 +19,7 @@ import {
   type PluginManifest,
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
@@ -798,29 +798,109 @@ describe("updateInstalledPluginPackage", () => {
       code: "installed-plugin-update-cleanup-failed"
     });
   });
+
+  it("keeps the committed package when post-commit reporting itself fails", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    // Force the cleanup handler to run, then make the diagnostic channel throw from inside it. The
+    // record already names the new directory at that point, so escaping to the failure path would
+    // delete the live payload and leave the catalog pointing at nothing.
+    fs.refusedRemovals.add(installed.record.stagedPath);
+    vi.spyOn(runtime.panels, "reportDiagnostic").mockImplementation(() => {
+      throw new Error("Diagnostic channel unavailable");
+    });
+
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+
+    expect(updated.record.version).toBe("2.1.0");
+    expect(await loadInstalledPluginRecords(fs)).toEqual([updated.record]);
+    expect(fs.pathsUnder(`${updated.record.stagedPath}/`).length).toBeGreaterThan(0);
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.1.0");
+    vi.restoreAllMocks();
+  });
+
+  it("refuses to update when the catalog cannot be read, before staging anything", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    // A catalog this build cannot parse cannot be rewritten without dropping the records it could
+    // not read. Failing here beats failing after the runtime has already been swapped.
+    await fs.writeTextFile(INSTALLED_PLUGINS_RECORD_FILE, "{ truncated");
+
+    await expect(
+      updateInstalledPluginPackage({
+        runtime,
+        fs,
+        current: installedCatalogEntry(installed),
+        inspection,
+        disabled: false,
+        origin: ORIGIN,
+        createWorker: () => createFakeWorker().handle
+      })
+    ).rejects.toThrow(/catalog could not be read/i);
+
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe(installed.record.version);
+    expect(fs.pathsUnder(`installed-plugins/packages/${inspection.sourceChecksum}/`)).toEqual([]);
+  });
 });
 
 describe("uninstallPlugin path validation", () => {
-  it("refuses an unsafe recorded path before tearing the plugin down", async () => {
+  it("forgets a record whose recorded path is unsafe, without deleting anything", async () => {
     const { fs, runtime, result: installed, worker } = await installFixture();
+    const removeDir = vi.spyOn(fs, "removeDir");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     // An id like "packages" collides with the update namespace; older builds could install it, and
-    // the path validator now rejects it. Validating after unregistering would leave the plugin gone
-    // from the session but still in the catalog — an unremovable ghost.
-    await expect(
-      uninstallPlugin({
-        runtime,
-        fs,
-        pluginId: PLUGIN_ID,
-        record: { stagedPath: "installed-plugins/packages" },
-        descriptor: installed.descriptor
-      })
-    ).rejects.toThrow(/unsafe installed-plugin staging path/i);
+    // the path validator rejects it. Refusing the whole uninstall on that basis is what makes the
+    // entry unremovable: the catalog keeps resurrecting a plugin the user asked to remove, with no
+    // path out from the UI. So the record goes, and only the file deletion is skipped.
+    await uninstallPlugin({
+      runtime,
+      fs,
+      pluginId: PLUGIN_ID,
+      record: { stagedPath: "installed-plugins/packages" },
+      descriptor: installed.descriptor
+    });
 
-    // Still registered, still running, still recorded — the uninstall simply did not happen.
-    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeDefined();
-    expect(worker.terminated()).toBe(false);
-    expect(await loadInstalledPluginRecords(fs)).toEqual([installed.record]);
+    expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+    expect(worker.terminated()).toBe(true);
+    // Critically, the rejected path is never handed to removeDir — that namespace holds every other
+    // plugin's package directory.
+    expect(removeDir).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+
+    removeDir.mockRestore();
+    warn.mockRestore();
+  });
+
+  it("forgets the record even when the package directory cannot be deleted", async () => {
+    const { fs, runtime, result: installed, worker } = await installFixture();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.refusedRemovals.add(installed.record.stagedPath);
+
+    // A locked file or a denied scope must not strand the record either; the next launch's orphan
+    // sweep retries the directory once nothing points at it.
+    await uninstallPlugin({
+      runtime,
+      fs,
+      pluginId: PLUGIN_ID,
+      record: installed.record,
+      descriptor: installed.descriptor
+    });
+
+    expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+    expect(worker.terminated()).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
@@ -883,6 +963,41 @@ describe("pruneOrphanedPluginPackages", () => {
       records: [liveRecord(`${drifted.live}/`)]
     })).toEqual([drifted.orphan]);
     expect(drifted.fs.pathsUnder(`${drifted.live}/`)).toHaveLength(1);
+  });
+
+  it("sweeps nothing when a record points at the packages root or above it", async () => {
+    // An older build could install an id that resolves to the packages root itself. Such a record
+    // names no single child, so every child looks orphaned — and the sweep would delete the whole
+    // subtree, including that record's own payload.
+    for (const path of ["installed-plugins/packages", "installed-plugins/packages/", "installed-plugins"]) {
+      const { fs, live, orphan } = await treeWithBoth();
+      expect(await pruneOrphanedPluginPackages(fs, { status: "loaded", records: [liveRecord(path)] })).toEqual([]);
+      expect(fs.pathsUnder(`${live}/`)).toHaveLength(1);
+      expect(fs.pathsUnder(`${orphan}/`)).toHaveLength(1);
+    }
+  });
+
+  it("keeps a directory alive for a record nested below it, and matches case-insensitively", async () => {
+    const nested = await treeWithBoth();
+    // A record pointing inside a package directory still makes that directory live.
+    expect(
+      await pruneOrphanedPluginPackages(nested.fs, {
+        status: "loaded",
+        records: [liveRecord(`${nested.live}/inner`)]
+      })
+    ).toEqual([nested.orphan]);
+    expect(nested.fs.pathsUnder(`${nested.live}/`)).toHaveLength(1);
+
+    const cased = await treeWithBoth();
+    // The record and the directory listing can disagree in case on the case-insensitive filesystems
+    // this ships on; a missed match here deletes a live payload.
+    expect(
+      await pruneOrphanedPluginPackages(cased.fs, {
+        status: "loaded",
+        records: [liveRecord(cased.live.toUpperCase())]
+      })
+    ).toEqual([cased.orphan]);
+    expect(cased.fs.pathsUnder(`${cased.live}/`)).toHaveLength(1);
   });
 
   it("never throws when a directory resists removal", async () => {

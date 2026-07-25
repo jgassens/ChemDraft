@@ -125,14 +125,17 @@ export function PluginManagerDialog({
   useEffect(() => runtime.host.subscribe(refreshFromHost), [runtime]);
 
   useEffect(() => {
+    // Escape works even while an operation runs. A trusted-update download is allowed two minutes,
+    // and the operation is owned by the install machinery rather than by this dialog — closing does
+    // not abandon it, it just stops holding the user hostage to a progress line.
     const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !busy) {
+      if (event.key === "Escape") {
         onClose();
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [busy, onClose]);
+  }, [onClose]);
 
   if (typeof document === "undefined") {
     return null;
@@ -313,7 +316,9 @@ export function PluginManagerDialog({
               Enable or disable plugins, install a package, or check installed plugins for trusted updates.
             </p>
           </div>
-          <button type="button" className="plugin-manager-button" disabled={busy} onClick={onClose} autoFocus>
+          {/* Never disabled — see the Escape handler. The row buttons below stay disabled while
+              busy, which is what actually prevents a second concurrent operation. */}
+          <button type="button" className="plugin-manager-button" onClick={onClose} autoFocus>
             Close
           </button>
         </header>

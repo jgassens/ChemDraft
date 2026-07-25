@@ -14,6 +14,9 @@
           "url": "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/*/nmr-predictor-*.zip"
         },
         {
+          "url": "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/*/nmr-predictor-*.zip.sha256"
+        },
+        {
           "url": "https://release-assets.githubusercontent.com/github-production-release-asset/*"
         }
       ]

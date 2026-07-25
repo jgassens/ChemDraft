@@ -338,7 +338,16 @@ export async function updateInstalledPluginPackage(
     );
   }
 
-  const records = await loadInstalledPluginRecords(fs);
+  const catalog = await readInstalledPluginCatalog(fs);
+  if (catalog.status === "unreadable") {
+    // The commit step rewrites this file. Refuse now rather than after staging and swapping the
+    // runtime, when the failure would leave a live plugin with no record pointing at its files.
+    throw new PluginInstallError(
+      PluginInstallErrorCodes.UpdateStateChanged,
+      "The installed-plugin catalog could not be read, so the update cannot be recorded. Resolve the catalog file first."
+    );
+  }
+  const records = catalog.records;
   const persisted = records.find((record) => record.id === pluginId);
   if (
     !persisted ||
@@ -384,6 +393,9 @@ export async function updateInstalledPluginPackage(
   // Whether the superseded descriptor has been deactivated yet; rollback must not re-activate a
   // descriptor that is still live.
   let oldDescriptorTornDown = false;
+  // Whether the catalog now names `candidatePath`. Once it does the update has succeeded, and the
+  // failure path must not delete that directory — the record would be left pointing at nothing.
+  let committed = false;
   try {
     await stagePluginEntries(fs, candidatePath, inspection.entries);
     candidate = buildInstalledDescriptor({
@@ -410,41 +422,50 @@ export async function updateInstalledPluginPackage(
       installedAt
     });
     await upsertInstalledPluginRecord(fs, record);
+    committed = true;
 
+    // Everything below is post-commit bookkeeping on an update that has already succeeded. It is
+    // fenced off from the failure path because that path deletes `candidatePath` and rolls the
+    // runtime back to a directory this function is about to delete — both wrong once the catalog
+    // names the new one. Even `reportDiagnostic` can throw, so the fence wraps the handlers too.
     try {
-      if (disabled) {
-        // The handshake proves loadability, then total teardown preserves the user's disabled state.
-        // applyEnabledPlugins calls activate() before a later user-initiated enable.
-        candidate.deactivate?.();
-        // The superseded descriptor still has to go: its worker may have been started earlier in
-        // the session, and its files are deleted immediately below.
-        current.descriptor?.deactivate?.();
-        if (!current.descriptor) {
-          options.replaces?.deactivate?.();
+      try {
+        if (disabled) {
+          // The handshake proves loadability, then total teardown preserves the user's disabled state.
+          // applyEnabledPlugins calls activate() before a later user-initiated enable.
+          candidate.deactivate?.();
+          // The superseded descriptor still has to go: its worker may have been started earlier in
+          // the session, and its files are deleted immediately below.
+          current.descriptor?.deactivate?.();
+          if (!current.descriptor) {
+            options.replaces?.deactivate?.();
+          }
+        } else {
+          current.descriptor?.deactivate?.();
+          if (!current.descriptor) {
+            options.replaces?.deactivate?.();
+          }
         }
-      } else {
-        current.descriptor?.deactivate?.();
-        if (!current.descriptor) {
-          options.replaces?.deactivate?.();
-        }
+        oldDescriptorTornDown = true;
+      } catch (teardownFailure: unknown) {
+        runtime.panels.reportDiagnostic(
+          "installed-plugin-update-old-worker-teardown-failed",
+          `Plugin "${pluginId}" updated to ${record.version}, but the previous worker did not tear down ` +
+            `cleanly: ${teardownFailure instanceof Error ? teardownFailure.message : String(teardownFailure)}`
+        );
       }
-      oldDescriptorTornDown = true;
-    } catch (teardownFailure: unknown) {
-      runtime.panels.reportDiagnostic(
-        "installed-plugin-update-old-worker-teardown-failed",
-        `Plugin "${pluginId}" updated to ${record.version}, but the previous worker did not tear down ` +
-          `cleanly: ${teardownFailure instanceof Error ? teardownFailure.message : String(teardownFailure)}`
-      );
-    }
 
-    try {
-      await fs.removeDir(current.record.stagedPath);
-    } catch (cleanupFailure: unknown) {
-      runtime.panels.reportDiagnostic(
-        "installed-plugin-update-cleanup-failed",
-        `Plugin "${pluginId}" updated to ${record.version}, but its previous package directory could not be ` +
-          `removed: ${cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)}`
-      );
+      try {
+        await fs.removeDir(current.record.stagedPath);
+      } catch (cleanupFailure: unknown) {
+        runtime.panels.reportDiagnostic(
+          "installed-plugin-update-cleanup-failed",
+          `Plugin "${pluginId}" updated to ${record.version}, but its previous package directory could not be ` +
+            `removed: ${cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)}`
+        );
+      }
+    } catch {
+      // The diagnostic channel itself failed. The update stands; there is nowhere left to report to.
     }
     return { record, descriptor: candidate };
   } catch (cause: unknown) {
@@ -468,6 +489,16 @@ export async function updateInstalledPluginPackage(
           runtime.unregisterPlugin(pluginId);
         }
       } catch (rollbackFailure: unknown) {
+        // The restore failed, so the host is still registered against the candidate — whose
+        // directory is deleted a few lines below. Leaving that registration in place gives the
+        // session a plugin backed by no files; dropping it degrades to "absent until reload".
+        try {
+          if (runtime.host.getPlugin(pluginId)) {
+            runtime.unregisterPlugin(pluginId);
+          }
+        } catch {
+          // Nothing further to try; the diagnostic below is the user's signal to reload.
+        }
         runtime.panels.reportDiagnostic(
           "installed-plugin-update-rollback-failed",
           `Restoring plugin "${pluginId}" after a failed update did not succeed; reload ChemDraft before ` +
@@ -476,7 +507,10 @@ export async function updateInstalledPluginPackage(
       }
     }
     candidate?.deactivate?.();
-    await safelyRemove(fs, candidatePath);
+    if (!committed) {
+      // Guarded: after the commit this directory is the live payload the catalog names.
+      await safelyRemove(fs, candidatePath);
+    }
     throw asUpdateError(cause, pluginId);
   }
 }
@@ -663,17 +697,35 @@ export async function pruneOrphanedPluginPackages(
   }
 
   const root = installedPluginPackagesRoot();
+  const rootKey = root.replace(/\/+$/, "").toLowerCase();
   const referenced = new Set<string>();
   for (const record of catalog.records) {
     // Normalise before comparing: stored-path drift must not make a live directory look orphaned.
-    referenced.add(record.stagedPath.replace(/\/+$/, ""));
+    // Case-fold too — the record and the directory listing can disagree in case on the
+    // case-insensitive filesystems this ships on, and a missed match here deletes a live payload.
+    const recorded = record.stagedPath.replace(/\/+$/, "").toLowerCase();
+    if (!recorded.startsWith(`${rootKey}/`)) {
+      // A record that points at the root itself, at an ancestor of it, or outside the subtree
+      // entirely (a legacy per-id install) tells us nothing about which children are live. Deleting
+      // on that basis would take a working plugin's files with it, so sweep nothing this launch.
+      if (recorded === rootKey || rootKey.startsWith(`${recorded}/`)) {
+        return [];
+      }
+      continue;
+    }
+    // Mark the child-of-root ancestor, not just the exact path: a record nested deeper than one
+    // level still keeps its top-level directory alive.
+    const [child] = recorded.slice(rootKey.length + 1).split("/");
+    if (child) {
+      referenced.add(`${rootKey}/${child}`);
+    }
   }
 
   const removed: string[] = [];
   try {
     for (const name of await fs.readDirNames(root)) {
       const path = `${root}/${name}`;
-      if (referenced.has(path)) {
+      if (referenced.has(path.toLowerCase())) {
         continue;
       }
       try {
@@ -741,20 +793,39 @@ export async function uninstallPlugin(options: {
 }): Promise<void> {
   const { runtime, fs, pluginId, descriptor, restores, disabledIds } = options;
 
-  // Validate before touching runtime state. A path this validator rejects — an id like "packages"
-  // that an older build was able to install — would otherwise throw after the plugin had already
-  // been torn down but before its record was removed, leaving an unremovable ghost that returns on
-  // the next launch with no way out from the UI.
-  const stagedPath = assertInstalledPluginStagedPath(
-    options.record?.stagedPath ?? installedPluginStagingDir(pluginId)
-  );
+  // Validate before touching runtime state, but do not let a rejected path abort the uninstall. A
+  // path this validator refuses — an id like "packages" that an older build was able to install —
+  // is exactly the case where the user most needs the entry gone: throwing here would leave an
+  // unremovable ghost that returns on the next launch with no way out from the UI. Skip the file
+  // removal in that case (the sweep is not allowed to guess at it either) and still forget the
+  // record, so the catalog stops resurrecting a plugin the user asked to remove.
+  let stagedPath: string | undefined;
+  try {
+    stagedPath = assertInstalledPluginStagedPath(
+      options.record?.stagedPath ?? installedPluginStagingDir(pluginId)
+    );
+  } catch (error) {
+    console.warn(
+      `Uninstalling "${pluginId}": its recorded package directory is not a path this build will ` +
+        `delete, so the files are left in place and only the record is removed.`,
+      error
+    );
+  }
 
   closePluginPanels(runtime, pluginId);
   descriptor?.deactivate?.();
   if (runtime.host.getPlugin(pluginId)) {
     runtime.unregisterPlugin(pluginId);
   }
-  await fs.removeDir(stagedPath);
+  if (stagedPath !== undefined) {
+    try {
+      await fs.removeDir(stagedPath);
+    } catch (error) {
+      // A directory that resists removal (a locked file, a denied scope) must not strand the record
+      // either. The next launch's orphan sweep retries it once the record is gone.
+      console.warn(`Uninstalling "${pluginId}": could not remove ${stagedPath}.`, error);
+    }
+  }
   await removeInstalledPluginRecord(fs, pluginId);
 
   // Hand the id back to the bundled copy the install had taken it from, so uninstalling a package

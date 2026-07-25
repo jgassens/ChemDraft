@@ -256,8 +256,28 @@ describe("host-managed plugin update catalog", () => {
     expect(allowed).toContain(
       `https://${GITHUB_RELEASE_ASSET_HOST}${GITHUB_RELEASE_ASSET_PATH_PREFIX}*`
     );
-    // And the package/checksum URLs the code derives are covered too.
-    expect(allowed.some((url) => url.endsWith("/nmr-predictor-*.zip"))).toBe(true);
+
+    // Match real URLs against the real patterns. The previous version of this test asserted only
+    // that the `.zip` pattern existed, which is why a missing `.zip.sha256` entry shipped: Tauri
+    // compiles these with URLPattern, whose pathname match is exact, so `…zip` does not cover
+    // `…zip.sha256` and every update died after downloading the package.
+    const isAllowed = (url: string) =>
+      allowed.some((pattern) => new URLPattern(pattern).test(url));
+
+    const packageUrl =
+      "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.1.0/nmr-predictor-0.1.0.zip";
+    expect(isAllowed(API_URL)).toBe(true);
+    expect(isAllowed(packageUrl)).toBe(true);
+    expect(isAllowed(`${packageUrl}.sha256`)).toBe(true);
+    expect(
+      isAllowed(`https://${GITHUB_RELEASE_ASSET_HOST}${GITHUB_RELEASE_ASSET_PATH_PREFIX}1/asset?x=1`)
+    ).toBe(true);
+
+    // And nothing outside the catalog is reachable.
+    expect(isAllowed("https://example.com/nmr-predictor-0.1.0.zip")).toBe(false);
+    expect(
+      isAllowed("https://github.com/attacker/ChemDraft-NMR-Plugin/releases/download/v1/nmr-predictor-1.zip")
+    ).toBe(false);
   });
 
   it("requires the published sidecar to agree with the release asset digest", async () => {

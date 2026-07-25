@@ -115,12 +115,31 @@ export async function saveInstalledPluginRecords(
   await fs.rename(INSTALLED_PLUGINS_RECORD_TEMP_FILE, INSTALLED_PLUGINS_RECORD_FILE);
 }
 
+/**
+ * Read the records for a caller that is about to write them back.
+ *
+ * `loadInstalledPluginRecords` is deliberately lossy so startup survives a broken file, but a writer
+ * that reads a partial list and saves it has just deleted every record it could not parse — and
+ * those records are the only pointers to their package directories. Refuse instead.
+ */
+async function readInstalledPluginRecordsForWrite(
+  fs: PluginStagingFs
+): Promise<readonly InstalledPluginRecord[]> {
+  const catalog = await readInstalledPluginCatalog(fs);
+  if (catalog.status === "unreadable") {
+    throw new Error(
+      "The installed-plugin catalog could not be read, so it cannot be rewritten without losing records. Resolve the catalog file first."
+    );
+  }
+  return catalog.records;
+}
+
 /** Add or replace a record, keyed by id. */
 export async function upsertInstalledPluginRecord(
   fs: PluginStagingFs,
   record: InstalledPluginRecord
 ): Promise<readonly InstalledPluginRecord[]> {
-  const existing = await loadInstalledPluginRecords(fs);
+  const existing = await readInstalledPluginRecordsForWrite(fs);
   const next = [...existing.filter((candidate) => candidate.id !== record.id), record];
   await saveInstalledPluginRecords(fs, next);
   return next;
@@ -131,7 +150,7 @@ export async function removeInstalledPluginRecord(
   fs: PluginStagingFs,
   pluginId: string
 ): Promise<readonly InstalledPluginRecord[]> {
-  const existing = await loadInstalledPluginRecords(fs);
+  const existing = await readInstalledPluginRecordsForWrite(fs);
   const next = existing.filter((candidate) => candidate.id !== pluginId);
   await saveInstalledPluginRecords(fs, next);
   return next;
